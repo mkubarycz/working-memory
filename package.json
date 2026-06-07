@@ -1,0 +1,724 @@
+{
+  "name": "working-memory",
+  "displayName": "Working Memory",
+  "description": "Workstream-aware session journal for Michael's hub workspace.",
+  "version": "0.3.0",
+  "publisher": "kubarycz",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0",
+    "node": ">=18"
+  },
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onView:workingMemory.workstreams",
+    "onLanguageModelTool:wm_list_workstreams",
+    "onLanguageModelTool:wm_get_workstream",
+    "onLanguageModelTool:wm_create_workstream",
+    "onLanguageModelTool:wm_update_workstream",
+    "onLanguageModelTool:wm_delete_workstream",
+    "onLanguageModelTool:wm_start_session",
+    "onLanguageModelTool:wm_end_session",
+    "onLanguageModelTool:wm_get_session",
+    "onLanguageModelTool:wm_delete_session",
+    "onLanguageModelTool:wm_append_entry",
+    "onLanguageModelTool:wm_search_entries",
+    "onLanguageModelTool:wm_delete_entry",
+    "onLanguageModelTool:wm_list_topics",
+    "onLanguageModelTool:wm_get_topic",
+    "onLanguageModelTool:wm_create_topic",
+    "onLanguageModelTool:wm_update_topic",
+    "onLanguageModelTool:wm_delete_topic",
+    "onLanguageModelTool:wm_link_workstream_topic",
+    "onLanguageModelTool:wm_unlink_workstream_topic",
+    "onLanguageModelTool:wm_link_entry_topic",
+    "onLanguageModelTool:wm_unlink_entry_topic"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "working-memory",
+          "title": "Working Memory",
+          "icon": "media/brain.svg"
+        }
+      ]
+    },
+    "views": {
+      "working-memory": [
+        {
+          "id": "workingMemory.workstreams",
+          "name": "Workstreams"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "working-memory.refresh",
+        "title": "Refresh",
+        "category": "Working Memory",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "working-memory.reloadWindow",
+        "title": "Reload Window",
+        "category": "Working Memory",
+        "icon": "$(debug-restart)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "working-memory.refresh",
+          "when": "view == workingMemory.workstreams",
+          "group": "navigation"
+        },
+        {
+          "command": "working-memory.reloadWindow",
+          "when": "view == workingMemory.workstreams",
+          "group": "navigation"
+        }
+      ]
+    },
+    "languageModelTools": [
+      {
+        "name": "wm_list_workstreams",
+        "displayName": "Working Memory: List Workstreams",
+        "toolReferenceName": "wm_list_workstreams",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "List workstreams from the Working Memory journal database. Returns each workstream's id, slug, title, status (open|closed), opened_at and closed_at (unix seconds), closure note, deleted_at, and session_count (excluding soft-deleted sessions). Use to discover which workstreams exist before starting a session or appending entries. Soft-deleted workstreams are hidden unless include_deleted is true.",
+        "userDescription": "List workstreams from the Working Memory journal",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "open",
+                "closed",
+                "all"
+              ],
+              "description": "Filter by status. Defaults to 'all'."
+            },
+            "include_deleted": {
+              "type": "boolean",
+              "description": "Include soft-deleted workstreams. Defaults to false."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_get_workstream",
+        "displayName": "Working Memory: Get Workstream",
+        "toolReferenceName": "wm_get_workstream",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Fetch a single workstream by slug or id, along with its sessions (session_id, started_at, ended_at, summary, entry_count, deleted_at) and total_entries count. Mirrors what the Working Memory virtual document shows but as structured JSON. Provide exactly one of `slug` or `id`. Soft-deleted children are hidden unless include_deleted is true.",
+        "userDescription": "Get a workstream and its sessions",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "The workstream slug, e.g. 'memory-system'."
+            },
+            "id": {
+              "type": "number",
+              "description": "The workstream numeric id (alternative to slug)."
+            },
+            "include_deleted": {
+              "type": "boolean",
+              "description": "Include soft-deleted child sessions/entries. Defaults to false."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_create_workstream",
+        "displayName": "Working Memory: Create Workstream",
+        "toolReferenceName": "wm_create_workstream",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Create a new workstream. Slug must be unique across all workstreams (including soft-deleted ones). Title is the human-readable name. Status defaults to 'open'; if 'closed' is given, closed_at is set to now. Returns the created row.",
+        "userDescription": "Create a new workstream",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug",
+            "title"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Unique kebab-case identifier, e.g. 'mcp-integration'."
+            },
+            "title": {
+              "type": "string",
+              "description": "Human-readable title, e.g. 'MCP Integration Work'."
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "open",
+                "closed"
+              ],
+              "description": "Initial status. Defaults to 'open'."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_update_workstream",
+        "displayName": "Working Memory: Update Workstream",
+        "toolReferenceName": "wm_update_workstream",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Partially update a workstream identified by slug. Any of title, status, closure can be changed. If status transitions to 'closed' and closed_at is currently null, closed_at is set to now. Returns the updated row.",
+        "userDescription": "Update a workstream's title, status, or closure note",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Slug of the workstream to update."
+            },
+            "title": {
+              "type": "string",
+              "description": "New title."
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "open",
+                "closed"
+              ],
+              "description": "New status. Setting to 'closed' stamps closed_at to now if it was unset."
+            },
+            "closure": {
+              "type": "string",
+              "description": "Closure note (typically set when status flips to closed)."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_delete_workstream",
+        "displayName": "Working Memory: Delete Workstream",
+        "toolReferenceName": "wm_delete_workstream",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Soft-delete a workstream and cascade soft-delete to all its sessions and entries. Sets deleted_at = now on every affected row in a single transaction; the rows remain in the DB but are hidden from list/get/search calls unless include_deleted is true. Affected entries are also removed from the FTS index. Returns counts of affected rows per table.",
+        "userDescription": "Soft-delete a workstream (cascades to its sessions and entries)",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Slug of the workstream to soft-delete."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_start_session",
+        "displayName": "Working Memory: Start Session",
+        "toolReferenceName": "wm_start_session",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Start a new journaling session within a workstream. Generates a UUID v4 session_id if not provided. Sets started_at = now. Returns the session row; remember the session_id to append entries with wm_append_entry and to close it with wm_end_session.",
+        "userDescription": "Start a new journaling session",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "workstream_slug"
+          ],
+          "properties": {
+            "workstream_slug": {
+              "type": "string",
+              "description": "Slug of the parent workstream."
+            },
+            "summary": {
+              "type": "string",
+              "description": "Optional opening summary; usually written at session end via wm_end_session."
+            },
+            "session_id": {
+              "type": "string",
+              "description": "Optional explicit session_id. If omitted, a UUID v4 is generated."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_end_session",
+        "displayName": "Working Memory: End Session",
+        "toolReferenceName": "wm_end_session",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Close a session by stamping ended_at = now. Optionally updates the summary (1-2 lines that describe what the session accomplished). Returns the updated session.",
+        "userDescription": "End a journaling session",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "description": "The session_id returned by wm_start_session."
+            },
+            "summary": {
+              "type": "string",
+              "description": "Optional final summary."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_get_session",
+        "displayName": "Working Memory: Get Session",
+        "toolReferenceName": "wm_get_session",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Fetch a session plus all its entries in chronological order. Soft-deleted entries are hidden unless include_deleted is true.",
+        "userDescription": "Get a session and its entries",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "description": "The session_id."
+            },
+            "include_deleted": {
+              "type": "boolean",
+              "description": "Include soft-deleted entries. Defaults to false."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_delete_session",
+        "displayName": "Working Memory: Delete Session",
+        "toolReferenceName": "wm_delete_session",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Soft-delete a session and cascade soft-delete to all its entries in one transaction. Affected entries are removed from the FTS index. Returns counts of affected rows.",
+        "userDescription": "Soft-delete a session (cascades to its entries)",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "description": "The session_id to soft-delete."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_append_entry",
+        "displayName": "Working Memory: Append Entry",
+        "toolReferenceName": "wm_append_entry",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Append a single journal entry to a session. This is the workhorse tool — call it after every meaningful event (chat, command, decision, file change, system action, frustration, fact, idea, question). Body is the entry text — prefer a single line prefixed with the entry type, e.g. 'decision: chose option 2 because…'. Timestamp defaults to now (unix seconds). Returns the new entry's id and timestamp.",
+        "userDescription": "Append an entry to a session journal",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "body"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "description": "The session_id this entry belongs to."
+            },
+            "body": {
+              "type": "string",
+              "description": "Entry text. One or two lines. Prefer prefixing with the entry type."
+            },
+            "timestamp": {
+              "type": "number",
+              "description": "Optional override (unix seconds). Defaults to now."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_search_entries",
+        "displayName": "Working Memory: Search Entries",
+        "toolReferenceName": "wm_search_entries",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Full-text search across entries using SQLite FTS5. The `query` accepts FTS5 MATCH syntax (e.g. 'sqlite OR fts5', '\"exact phrase\"', 'work*'). Returns matches with a highlighted snippet (delimited by << and >>), workstream slug + title, session_id, and timestamp. Soft-deleted entries/sessions/workstreams are always excluded. Optionally scope to a single workstream by slug. Default limit 25, max 200.",
+        "userDescription": "Search journal entries (FTS5)",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "FTS5 MATCH expression."
+            },
+            "workstream_slug": {
+              "type": "string",
+              "description": "Restrict results to one workstream."
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results. Default 25, max 200."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_delete_entry",
+        "displayName": "Working Memory: Delete Entry",
+        "toolReferenceName": "wm_delete_entry",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Soft-delete a single entry by id. Removes it from the FTS index and sets deleted_at = now in one transaction. Returns the count of affected rows.",
+        "userDescription": "Soft-delete a journal entry",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "entry_id"
+          ],
+          "properties": {
+            "entry_id": {
+              "type": "number",
+              "description": "Numeric id of the entry to soft-delete."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_list_topics",
+        "displayName": "Working Memory: List Topics",
+        "toolReferenceName": "wm_list_topics",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "List topics (durable, evolving subjects) with link counts. Each topic returns slug, title, status (active|dormant|archived), body, created_at/updated_at/deleted_at, workstream_count (active workstream links), and entry_count (active entry links). Filter by status, optionally scope to one workstream via workstream_slug (returns only topics linked to that workstream). Soft-deleted topics are hidden unless include_deleted is true.",
+        "userDescription": "List topics from the journal",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "active",
+                "dormant",
+                "archived",
+                "all"
+              ],
+              "description": "Filter by status. Defaults to 'all'."
+            },
+            "include_deleted": {
+              "type": "boolean",
+              "description": "Include soft-deleted topics. Defaults to false."
+            },
+            "workstream_slug": {
+              "type": "string",
+              "description": "Optional: only return topics linked to this workstream."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_get_topic",
+        "displayName": "Working Memory: Get Topic",
+        "toolReferenceName": "wm_get_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Fetch a topic by slug, plus its linked workstreams (active links) and up to 25 most recent linked entries (newest first), each with workstream context. Mirrors what the topic virtual document shows but as structured JSON. Use to inspect a topic before editing it or linking new entries.",
+        "userDescription": "Get a topic with its linked workstreams and recent entries",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Topic slug, e.g. 'soft-delete'."
+            },
+            "include_deleted": {
+              "type": "boolean",
+              "description": "Include soft-deleted topic. Defaults to false."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_create_topic",
+        "displayName": "Working Memory: Create Topic",
+        "toolReferenceName": "wm_create_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'active'.",
+        "userDescription": "Create a new topic",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Unique kebab-case identifier, e.g. 'fts5-tokenization'."
+            },
+            "title": {
+              "type": "string",
+              "description": "Optional human-readable title. Defaults to humanized slug."
+            },
+            "body": {
+              "type": "string",
+              "description": "Optional initial markdown body."
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "active",
+                "dormant",
+                "archived"
+              ],
+              "description": "Initial status. Defaults to 'active'."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_update_topic",
+        "displayName": "Working Memory: Update Topic",
+        "toolReferenceName": "wm_update_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Partially update a topic by slug. Any of title, body, status can be changed. Bumps `updated_at`. Returns the updated topic row.",
+        "userDescription": "Update a topic's title, body, or status",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Slug of the topic to update."
+            },
+            "title": {
+              "type": "string",
+              "description": "New title."
+            },
+            "body": {
+              "type": "string",
+              "description": "New markdown body."
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "active",
+                "dormant",
+                "archived"
+              ],
+              "description": "New status."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_delete_topic",
+        "displayName": "Working Memory: Delete Topic",
+        "toolReferenceName": "wm_delete_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Soft-delete a topic and cascade soft-delete to its workstream_topics and entry_topics link rows in a single transaction. The topic falls out of the tree and out of every linked workstream's Topics section, but a future re-link (via wm_link_workstream_topic or wm_link_entry_topic) will undelete it transparently. Returns counts of affected rows per table.",
+        "userDescription": "Soft-delete a topic (cascades to its link rows)",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Slug of the topic to soft-delete."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_link_workstream_topic",
+        "displayName": "Working Memory: Link Workstream ↔ Topic",
+        "toolReferenceName": "wm_link_workstream_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Pin a topic to a workstream (M:N). Idempotent. If the topic slug doesn't exist yet, auto-creates a stub topic with title = humanized slug, empty body, status 'active' in the same transaction (topic_created: true in the result). If the link row exists but is soft-deleted, restores it (link_restored: true). The workstream must exist (and not be soft-deleted).",
+        "userDescription": "Link a topic to a workstream",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "workstream_slug",
+            "topic_slug"
+          ],
+          "properties": {
+            "workstream_slug": {
+              "type": "string",
+              "description": "Slug of the workstream."
+            },
+            "topic_slug": {
+              "type": "string",
+              "description": "Slug of the topic (auto-created if missing)."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_unlink_workstream_topic",
+        "displayName": "Working Memory: Unlink Workstream ↔ Topic",
+        "toolReferenceName": "wm_unlink_workstream_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Soft-delete the workstream_topics link row between a workstream and a topic. The topic itself is untouched (it may still be linked to other workstreams via entries). Returns the count of removed link rows (0 if none was active).",
+        "userDescription": "Unlink a topic from a workstream",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "workstream_slug",
+            "topic_slug"
+          ],
+          "properties": {
+            "workstream_slug": {
+              "type": "string",
+              "description": "Slug of the workstream."
+            },
+            "topic_slug": {
+              "type": "string",
+              "description": "Slug of the topic."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_link_entry_topic",
+        "displayName": "Working Memory: Link Entry ↔ Topic",
+        "toolReferenceName": "wm_link_entry_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Tag a journal entry with a topic (M:N). Idempotent. Auto-creates a stub topic (title = humanized slug, status 'active', empty body) if topic_slug is unknown — flagged in the response as topic_created. ALSO auto-creates a workstream_topics row linking the topic to the entry's workstream if one doesn't exist; if such a row exists but is soft-deleted, it is restored. This is the bit of magic that makes the tree useful: any entry tagged with a topic causes that topic to appear under its workstream's Topics group without a separate wm_link_workstream_topic call. If the entry, its session, or its workstream is soft-deleted, the link is rejected. If the topic itself is soft-deleted, it is undeleted (so re-linking a 'restored' topic is implicit).",
+        "userDescription": "Tag an entry with a topic (auto-links workstream too)",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "entry_id",
+            "topic_slug"
+          ],
+          "properties": {
+            "entry_id": {
+              "type": "number",
+              "description": "Numeric id of the entry."
+            },
+            "topic_slug": {
+              "type": "string",
+              "description": "Slug of the topic (auto-created if missing)."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_unlink_entry_topic",
+        "displayName": "Working Memory: Unlink Entry ↔ Topic",
+        "toolReferenceName": "wm_unlink_entry_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Soft-delete the entry_topics link row between an entry and a topic. Does NOT touch the workstream_topics link — other entries in the same workstream may still link the topic. Use wm_unlink_workstream_topic if you also want to remove the workstream pin. Returns the count of removed link rows (0 if none was active).",
+        "userDescription": "Untag an entry from a topic",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "entry_id",
+            "topic_slug"
+          ],
+          "properties": {
+            "entry_id": {
+              "type": "number",
+              "description": "Numeric id of the entry."
+            },
+            "topic_slug": {
+              "type": "string",
+              "description": "Slug of the topic."
+            }
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . -w",
+    "seed": "node ./out/scripts/seed.js",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0"
+  }
+}

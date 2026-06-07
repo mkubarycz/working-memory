@@ -1,0 +1,20 @@
+node_modules/
+out/
+*.vsix
+.DS_Store
+*.log
+.vscode-test/
+
+# TypeScript incremental build artifacts
+*.tsbuildinfo
+
+# Secrets (defensive — none committed today, but keep the floor)
+.env
+.env.local
+.env.*.local
+
+# Test coverage output (defensive)
+coverage/
+
+# vsce temp/partial packages
+*.vsix.tmp
