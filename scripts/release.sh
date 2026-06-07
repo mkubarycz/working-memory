@@ -134,8 +134,10 @@ rm -f "$VSIX_PATH"
 # --no-yarn: don't try to use yarn even if a yarn.lock is around.
 # --no-dependencies: skip vsce's dependency-tree walk; we ship node_modules verbatim,
 #                    so the walk is wasted work and emits warnings that prompt y/N.
-# 'yes' pipe: auto-confirm any remaining interactive prompts (e.g. file-count warnings).
-yes | npx --no-install vsce package --allow-missing-repository --no-yarn --no-dependencies -o "$VSIX_PATH"
+# printf 'y' feed: auto-confirm the LICENSE-missing prompt. We avoid `yes |`
+# because under `set -o pipefail` SIGPIPE from `yes` after vsce exits trips
+# the whole script (exit 141). A finite feed works around that.
+printf 'y\ny\ny\n' | npx --no-install vsce package --allow-missing-repository --no-yarn --no-dependencies -o "$VSIX_PATH"
 [[ -f "$VSIX_PATH" ]] || die "vsce did not produce $VSIX_PATH"
 ok "packaged."
 
@@ -156,11 +158,11 @@ cat <<EOF
 \033[32m✓ build installed: v$VERSION\033[0m
 
 NEXT:
-  1. Reload VS Code: Cmd+Shift+P → 'Developer: Reload Window'
+  1. Reload VS Code: Cmd+Shift+P -> Developer: Reload Window
   2. Test the new build.
   3. Only if it works, commit the in-flight changes and tag the release.
-     Principle: we don't commit until we've tested. No git work happens
-     in this script — that step is intentionally left to a human/agent
+     Principle: do not commit until tested. No git work happens
+     in this script -- that step is intentionally left to a human/agent
      decision after verification.
 
 ROLLBACK (if testing fails):

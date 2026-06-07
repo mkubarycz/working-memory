@@ -204,3 +204,84 @@ html, body {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
 }
+
+/* -- Workstream cards (Active tab) -------------------------------------- */
+
+/* When the Active tab is showing, the list switches into "cards" mode:
+   each top-level workstream renders as its own bordered container with a
+   tinted header (the workstream row) and a body holding the nested tree. */
+
+.list.cards {
+  padding: 6px 6px 12px;
+}
+
+.ws-card {
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, var(--vscode-sideBarSectionHeader-border, rgba(128, 128, 128, 0.25))));
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, transparent));
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.ws-card:last-child {
+  margin-bottom: 0;
+}
+
+.ws-card-header {
+  background: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorGroupHeader-tabsBackground, transparent));
+  border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-sideBarSectionHeader-border, transparent));
+}
+
+.ws-card:not(.expanded) .ws-card-header {
+  border-bottom: none;
+}
+
+/* Per-workstream color palette: dark muted fills with a noticeably lighter
+   border so each card reads as a distinct framed block. Color slot is
+   assigned deterministically by hashing the workstream node id in panel.js
+   (see colorIndexForId). Header gets a slightly lifted tint of the same
+   hue so the card still has visual depth without losing color identity. */
+
+.ws-card-color-0 { /* red    */
+  --ws-card-bg: hsl(0, 30%, 18%);
+  --ws-card-border: hsl(0, 35%, 42%);
+  --ws-card-header-bg: hsl(0, 32%, 23%);
+}
+.ws-card-color-1 { /* blue   */
+  --ws-card-bg: hsl(210, 32%, 18%);
+  --ws-card-border: hsl(210, 38%, 44%);
+  --ws-card-header-bg: hsl(210, 34%, 23%);
+}
+.ws-card-color-2 { /* green  */
+  --ws-card-bg: hsl(130, 25%, 16%);
+  --ws-card-border: hsl(130, 30%, 40%);
+  --ws-card-header-bg: hsl(130, 27%, 21%);
+}
+.ws-card-color-3 { /* yellow */
+  --ws-card-bg: hsl(45, 28%, 17%);
+  --ws-card-border: hsl(45, 35%, 44%);
+  --ws-card-header-bg: hsl(45, 30%, 22%);
+}
+
+.ws-card[class*="ws-card-color-"] {
+  background: var(--ws-card-bg);
+  border-color: var(--ws-card-border);
+}
+
+.ws-card[class*="ws-card-color-"] .ws-card-header {
+  background: var(--ws-card-header-bg);
+  border-bottom-color: var(--ws-card-border);
+}
+
+.ws-card-header .row {
+  height: 26px;
+  font-weight: 600;
+}
+
+.ws-card-header .row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.ws-card-body {
+  padding: 2px 0 4px;
+}

@@ -12,6 +12,21 @@
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
+  /**
+   * Deterministically map a workstream node id to one of the card color
+   * slots (0..3 → red/blue/green/yellow). Stable across reloads so each
+   * workstream keeps the same color.
+   * @param {string} id
+   * @returns {number}
+   */
+  function colorIndexForId(id) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) {
+      h = (h * 31 + id.charCodeAt(i)) | 0;
+    }
+    return Math.abs(h) % 4;
+  }
+
   // --- Icons ------------------------------------------------------------
   //
   // The webview loads the official VS Code codicon font (`media/codicons/`,
@@ -67,11 +82,13 @@
   const tabsEl = /** @type {HTMLElement} */ (document.querySelector('.tabs'));
 
   /**
+   * Build the row element for a node — no children, no recursion. Returned
+   * element is detached; caller decides where to put it.
    * @param {Node} node
    * @param {number} depth
-   * @param {DocumentFragment} frag
+   * @returns {HTMLElement}
    */
-  function renderNode(node, depth, frag) {
+  function renderRow(node, depth) {
     const row = document.createElement('div');
     row.className = 'row';
     row.setAttribute('role', 'treeitem');
@@ -175,11 +192,22 @@
       }
     });
 
-    frag.appendChild(row);
+    return row;
+  }
 
-    if (hasChildren && expanded) {
+  /**
+   * Append a row plus its expanded subtree to a target element/fragment.
+   * @param {Node} node
+   * @param {number} depth
+   * @param {HTMLElement | DocumentFragment} target
+   */
+  function renderNode(node, depth, target) {
+    target.appendChild(renderRow(node, depth));
+    const hasChildren =
+      Array.isArray(node.children) && node.children.length > 0;
+    if (hasChildren && state.expanded.has(node.id)) {
       for (const child of node.children) {
-        renderNode(child, depth + 1, frag);
+        renderNode(child, depth + 1, target);
       }
     }
   }
@@ -205,6 +233,7 @@
 
     // List
     listEl.replaceChildren();
+    listEl.classList.toggle('cards', state.activeTab === 'active');
     const data = state.data[state.activeTab];
     if (!data || data.items.length === 0) {
       const empty = document.createElement('div');
@@ -214,8 +243,43 @@
       return;
     }
     const frag = document.createDocumentFragment();
-    for (const item of data.items) {
-      renderNode(item, 0, frag);
+    if (state.activeTab === 'active') {
+      // Each top-level workstream renders as its own collapsible card.
+      // Header is the workstream row itself; body holds the nested subtree.
+      for (const item of data.items) {
+        const card = document.createElement('div');
+        card.className = 'ws-card ws-card-color-' + colorIndexForId(item.id);
+        const expanded = state.expanded.has(item.id);
+        if (expanded) {
+          card.classList.add('expanded');
+        }
+
+        const header = document.createElement('div');
+        header.className = 'ws-card-header';
+        header.appendChild(renderRow(item, 0));
+        card.appendChild(header);
+
+        const hasChildren =
+          Array.isArray(item.children) && item.children.length > 0;
+        if (hasChildren) {
+          const body = document.createElement('div');
+          body.className = 'ws-card-body';
+          if (!expanded) {
+            body.hidden = true;
+          } else {
+            for (const child of item.children) {
+              renderNode(child, 1, body);
+            }
+          }
+          card.appendChild(body);
+        }
+
+        frag.appendChild(card);
+      }
+    } else {
+      for (const item of data.items) {
+        renderNode(item, 0, frag);
+      }
     }
     listEl.appendChild(frag);
   }
