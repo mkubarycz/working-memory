@@ -33,6 +33,7 @@ import {
   updateWorkstream,
   type Topic,
   type TopicStatus,
+  type TopicTypeId,
 } from './db';
 
 interface ToolDeps {
@@ -135,6 +136,7 @@ interface ListTopicsInput {
   status?: TopicStatus | 'all';
   include_deleted?: boolean;
   workstream_slug?: string;
+  topic_type?: TopicTypeId;
 }
 interface GetTopicInput {
   slug: string;
@@ -145,12 +147,14 @@ interface CreateTopicToolInput {
   title?: string;
   body?: string;
   status?: TopicStatus;
+  topic_type?: TopicTypeId;
 }
 interface UpdateTopicToolInput {
   slug: string;
   title?: string;
   body?: string;
   status?: TopicStatus;
+  topic_type?: TopicTypeId;
 }
 interface DeleteTopicInput {
   slug: string;
@@ -341,6 +345,7 @@ export function registerTools(
           status: input.status,
           includeDeleted: input.include_deleted ?? false,
           workstreamSlug: input.workstream_slug,
+          topicType: input.topic_type,
         });
         return { ok: true, count: rows.length, topics: rows };
       }),
@@ -375,6 +380,7 @@ export function registerTools(
           title: input.title,
           body: input.body,
           status: input.status,
+          topic_type: input.topic_type,
         });
         deps.refresh();
         return { ok: true, topic: row };
@@ -386,6 +392,7 @@ export function registerTools(
           title: input.title,
           body: input.body,
           status: input.status,
+          topic_type: input.topic_type,
         });
         deps.refresh();
         return { ok: true, topic: row };

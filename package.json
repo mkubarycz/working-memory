@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -437,7 +437,7 @@
         "displayName": "Working Memory: List Topics",
         "toolReferenceName": "wm_list_topics",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "List topics (durable, evolving subjects) with link counts. Each topic returns slug, title, status (open|closed), body, created_at/updated_at/deleted_at, workstream_count (active workstream links), and entry_count (active entry links). Filter by status, optionally scope to one workstream via workstream_slug (returns only topics linked to that workstream). Soft-deleted topics are hidden unless include_deleted is true.",
+        "modelDescription": "List topics (durable, evolving subjects) with link counts. Each topic returns slug, title, status (open|closed), topic_type (discriminator — currently one of 'topic', 'feature', 'task'; defaults to 'topic' for legacy rows), body, created_at/updated_at/deleted_at, workstream_count (active workstream links), and entry_count (active entry links). Filter by status, optionally scope to one workstream via workstream_slug (returns only topics linked to that workstream), and optionally filter to a single topic_type. Soft-deleted topics are hidden unless include_deleted is true.",
         "userDescription": "List topics from the journal",
         "tags": [
           "working-memory"
@@ -461,6 +461,15 @@
             "workstream_slug": {
               "type": "string",
               "description": "Optional: only return topics linked to this workstream."
+            },
+            "topic_type": {
+              "type": "string",
+              "enum": [
+                "topic",
+                "feature",
+                "task"
+              ],
+              "description": "Optional: filter to a single topic_type discriminator. Omit to include all types."
             }
           }
         }
@@ -497,7 +506,7 @@
         "displayName": "Working Memory: Create Topic",
         "toolReferenceName": "wm_create_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'open'.",
+        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'open'. `topic_type` is a discriminator — currently one of 'topic' (default, a durable subject), 'feature' (a user-visible capability), or 'task' (a unit of work).",
         "userDescription": "Create a new topic",
         "tags": [
           "working-memory"
@@ -527,6 +536,15 @@
                 "closed"
               ],
               "description": "Initial status. Defaults to 'open'."
+            },
+            "topic_type": {
+              "type": "string",
+              "enum": [
+                "topic",
+                "feature",
+                "task"
+              ],
+              "description": "Discriminator for this topic. Defaults to 'topic'."
             }
           }
         }
@@ -536,8 +554,8 @@
         "displayName": "Working Memory: Update Topic",
         "toolReferenceName": "wm_update_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a topic by slug. Any of title, body, status can be changed. Bumps `updated_at`. Returns the updated topic row.",
-        "userDescription": "Update a topic's title, body, or status",
+        "modelDescription": "Partially update a topic by slug. Any of title, body, status, topic_type can be changed. Bumps `updated_at`. Returns the updated topic row.",
+        "userDescription": "Update a topic's title, body, status, or type",
         "tags": [
           "working-memory"
         ],
@@ -566,6 +584,15 @@
                 "closed"
               ],
               "description": "New status."
+            },
+            "topic_type": {
+              "type": "string",
+              "enum": [
+                "topic",
+                "feature",
+                "task"
+              ],
+              "description": "New topic_type discriminator."
             }
           }
         }

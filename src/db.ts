@@ -3,6 +3,12 @@ import * as path from 'path';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync as DatabaseSyncT } from 'node:sqlite';
 import * as vscode from 'vscode';
+import {
+  DEFAULT_TOPIC_TYPE,
+  isTopicTypeId,
+  TOPIC_TYPE_IDS,
+  type TopicTypeId,
+} from './topicTypes';
 
 export interface Workstream {
   id: number;
@@ -107,6 +113,7 @@ const MIGRATIONS: Migration[] = [
   { version: 4, file: '004_topic_status_open_closed.sql' },
   { version: 5, file: '005_safe_topic_rebuild_template.sql' },
   { version: 6, file: '006_topic_parents.sql' },
+  { version: 7, file: '007_topic_type.sql' },
 ];
 
 function nowEpoch(): number {
@@ -777,11 +784,14 @@ export interface Topic {
   slug: string;
   title: string;
   status: TopicStatus;
+  topic_type: TopicTypeId;
   body: string;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
 }
+
+export { TOPIC_TYPE_IDS, DEFAULT_TOPIC_TYPE, isTopicTypeId, type TopicTypeId };
 
 export interface TopicWithCounts extends Topic {
   workstream_count: number;
@@ -810,6 +820,7 @@ export interface ListTopicsOptions {
   status?: TopicStatus | 'all';
   includeDeleted?: boolean;
   workstreamSlug?: string;
+  topicType?: TopicTypeId;
 }
 
 function snippetBody(body: string, max = 200): string {
@@ -843,6 +854,15 @@ export function listTopics(opts: ListTopicsOptions = {}): TopicWithCounts[] {
     clauses.push('t.status = ?');
     params.push(status);
   }
+  if (opts.topicType !== undefined) {
+    if (!isTopicTypeId(opts.topicType)) {
+      throw new Error(
+        `invalid topic_type: ${opts.topicType} (must be one of ${TOPIC_TYPE_IDS.join(', ')})`,
+      );
+    }
+    clauses.push('t.topic_type = ?');
+    params.push(opts.topicType);
+  }
   let join = '';
   if (opts.workstreamSlug) {
     join = `JOIN workstream_topics wt ON wt.topic_slug = t.slug
@@ -856,7 +876,7 @@ export function listTopics(opts: ListTopicsOptions = {}): TopicWithCounts[] {
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const sql = `
-    SELECT t.slug, t.title, t.status, t.body,
+    SELECT t.slug, t.title, t.status, t.topic_type, t.body,
            t.created_at, t.updated_at, t.deleted_at,
            (SELECT COUNT(*) FROM workstream_topics wt2
               JOIN workstreams w2 ON w2.id = wt2.workstream_id
@@ -883,7 +903,7 @@ export function getTopic(slug: string, includeDeleted = false): Topic | null {
     return null;
   }
   const sql = `
-    SELECT slug, title, status, body, created_at, updated_at, deleted_at
+    SELECT slug, title, status, topic_type, body, created_at, updated_at, deleted_at
       FROM topics
       WHERE slug = ?
         ${includeDeleted ? '' : 'AND deleted_at IS NULL'}
@@ -897,6 +917,7 @@ export interface CreateTopicInput {
   title?: string;
   body?: string;
   status?: TopicStatus;
+  topic_type?: TopicTypeId;
 }
 
 export function createTopic(input: CreateTopicInput): Topic {
@@ -909,15 +930,24 @@ export function createTopic(input: CreateTopicInput): Topic {
     const tag = existing.deleted_at ? ' (soft-deleted)' : '';
     throw new Error(`topic slug already exists${tag}: ${input.slug}`);
   }
+  let topicType: TopicTypeId = DEFAULT_TOPIC_TYPE;
+  if (input.topic_type !== undefined) {
+    if (!isTopicTypeId(input.topic_type)) {
+      throw new Error(
+        `invalid topic_type: ${input.topic_type} (must be one of ${TOPIC_TYPE_IDS.join(', ')})`,
+      );
+    }
+    topicType = input.topic_type;
+  }
   const now = nowEpoch();
   const title = input.title?.trim() || humanizeSlug(input.slug);
   const status = input.status ?? 'open';
   handle
     .prepare(
-      `INSERT INTO topics (slug, title, status, body, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO topics (slug, title, status, topic_type, body, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(input.slug, title, status, input.body ?? '', now, now);
+    .run(input.slug, title, status, topicType, input.body ?? '', now, now);
   const row = getTopic(input.slug);
   if (!row) {
     throw new Error('createTopic: insert succeeded but row not found');
@@ -929,6 +959,7 @@ export interface UpdateTopicInput {
   title?: string;
   body?: string;
   status?: TopicStatus;
+  topic_type?: TopicTypeId;
 }
 
 export function updateTopic(slug: string, patch: UpdateTopicInput): Topic {
@@ -950,6 +981,15 @@ export function updateTopic(slug: string, patch: UpdateTopicInput): Topic {
   if (patch.status !== undefined) {
     sets.push('status = ?');
     params.push(patch.status);
+  }
+  if (patch.topic_type !== undefined) {
+    if (!isTopicTypeId(patch.topic_type)) {
+      throw new Error(
+        `invalid topic_type: ${patch.topic_type} (must be one of ${TOPIC_TYPE_IDS.join(', ')})`,
+      );
+    }
+    sets.push('topic_type = ?');
+    params.push(patch.topic_type);
   }
   if (!sets.length) {
     return current;
@@ -1359,7 +1399,7 @@ export function listTopicsForWorkstream(
     return [];
   }
   const sql = `
-    SELECT t.slug, t.title, t.status, t.body,
+    SELECT t.slug, t.title, t.status, t.topic_type, t.body,
            t.created_at, t.updated_at, t.deleted_at,
            wt.created_at AS linked_at,
            (SELECT COUNT(*) FROM workstream_topics wt2
@@ -1409,7 +1449,7 @@ export function listTopicParents(slug: string): Topic[] {
     return [];
   }
   const sql = `
-    SELECT t.slug, t.title, t.status, t.body,
+    SELECT t.slug, t.title, t.status, t.topic_type, t.body,
            t.created_at, t.updated_at, t.deleted_at
       FROM topic_parents tp
       JOIN topics t ON t.slug = tp.parent_slug
@@ -1431,7 +1471,7 @@ export function listTopicChildren(slug: string): Topic[] {
     return [];
   }
   const sql = `
-    SELECT t.slug, t.title, t.status, t.body,
+    SELECT t.slug, t.title, t.status, t.topic_type, t.body,
            t.created_at, t.updated_at, t.deleted_at
       FROM topic_parents tp
       JOIN topics t ON t.slug = tp.child_slug

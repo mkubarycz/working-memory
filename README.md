@@ -173,7 +173,9 @@ working-memory/
 │   ├── 002_soft_delete.sql    # deleted_at on workstreams/sessions/entries
 │   ├── 003_topics.sql         # topics + workstream/entry join tables
 │   ├── 004_topic_status_open_closed.sql
-│   └── 005_safe_topic_rebuild_template.sql  # cure for the 004 cascade bug
+│   ├── 005_safe_topic_rebuild_template.sql  # cure for the 004 cascade bug
+│   ├── 006_topic_parents.sql  # topic-to-topic DAG (parent/child links)
+│   └── 007_topic_type.sql     # topic_type discriminator (default 'topic')
 ├── src/
 │   ├── extension.ts           # activate/deactivate, registers views + commands
 │   ├── db.ts                  # hub lookup, open + migrate, all queries
@@ -186,3 +188,11 @@ working-memory/
 │   └── rollback.sh            # restore snapshot + reinstall previous vsix
 └── dist/                      # built .vsix artifacts (gitignored)
 ```
+
+## Release history
+
+- **v0.7.0** — add `topic_type` discriminator on topics (default `'topic'`, registry in `src/topicTypes.ts`); surfaced on `wm_create_topic`, `wm_update_topic`, `wm_list_topics`.
+- **v0.6.1** — topic parents DAG + muted closed topic rows.
+- **v0.5.1** — Topics tab in the panel.
+- **v0.5.0** — webview panel with Active/Archive tabs.
+- **v0.4.2** — archive tab + topic status open/closed + last-activity sort.
