@@ -97,6 +97,13 @@ html, body {
   color: var(--vscode-list-activeSelectionForeground);
 }
 
+/* Closed topic rows render muted so the eye skips past them when scanning.
+   Applies only to the single row — child topics render as sibling DOM rows,
+   so open children of a closed parent stay full-opacity. */
+.row.is-closed {
+  opacity: 0.6;
+}
+
 .twisty {
   flex: 0 0 16px;
   width: 16px;

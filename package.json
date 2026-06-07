@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.5.1",
+  "version": "0.6.1",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -31,7 +31,9 @@
     "onLanguageModelTool:wm_link_workstream_topic",
     "onLanguageModelTool:wm_unlink_workstream_topic",
     "onLanguageModelTool:wm_link_entry_topic",
-    "onLanguageModelTool:wm_unlink_entry_topic"
+    "onLanguageModelTool:wm_unlink_entry_topic",
+    "onLanguageModelTool:wm_link_topic_parent",
+    "onLanguageModelTool:wm_unlink_topic_parent"
   ],
   "contributes": {
     "viewsContainers": {
@@ -468,7 +470,7 @@
         "displayName": "Working Memory: Get Topic",
         "toolReferenceName": "wm_get_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Fetch a topic by slug, plus its linked workstreams (active links) and up to 25 most recent linked entries (newest first), each with workstream context. Mirrors what the topic virtual document shows but as structured JSON. Use to inspect a topic before editing it or linking new entries.",
+        "modelDescription": "Fetch a topic by slug, plus its linked workstreams (active links), up to 25 most recent linked entries (newest first), and its DAG neighborhood: `parents` (active parent topics) and `children` (active child topics), each as { slug, title, status }. Mirrors what the topic virtual document shows but as structured JSON. Use to inspect a topic before editing it, linking new entries, or rewiring its parent/child relationships.",
         "userDescription": "Get a topic with its linked workstreams and recent entries",
         "tags": [
           "working-memory"
@@ -699,6 +701,62 @@
             "topic_slug": {
               "type": "string",
               "description": "Slug of the topic."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_link_topic_parent",
+        "displayName": "Working Memory: Link Topic Parent (DAG)",
+        "toolReferenceName": "wm_link_topic_parent",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Link a topic to a parent topic (DAG, M:N). A topic may have 0 or more parents and appears under each of them in the Topics tree. Idempotent: if an active link already exists, the existing row is returned unchanged; if a soft-deleted link exists for the same pair, it is restored (link_restored: true). Rejects self-links and cycles — a link is refused when child_slug is already in the ancestor closure walked upward from parent_slug. Both topics must exist and not be soft-deleted; topics are NOT auto-created (use wm_create_topic first if needed). Closing a parent has NO cascade effect on children.",
+        "userDescription": "Link a topic to a parent topic (DAG)",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "child_slug",
+            "parent_slug"
+          ],
+          "properties": {
+            "child_slug": {
+              "type": "string",
+              "description": "Slug of the child topic (the one nested under the parent)."
+            },
+            "parent_slug": {
+              "type": "string",
+              "description": "Slug of the parent topic."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_unlink_topic_parent",
+        "displayName": "Working Memory: Unlink Topic Parent (DAG)",
+        "toolReferenceName": "wm_unlink_topic_parent",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Soft-delete a topic parent link. Idempotent; returns the count of removed rows (0 if no active link existed for the pair). Other parent/child relationships of the two topics are untouched.",
+        "userDescription": "Unlink a topic from a parent topic",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "child_slug",
+            "parent_slug"
+          ],
+          "properties": {
+            "child_slug": {
+              "type": "string",
+              "description": "Slug of the child topic."
+            },
+            "parent_slug": {
+              "type": "string",
+              "description": "Slug of the parent topic."
             }
           }
         }

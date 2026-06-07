@@ -1,7 +1,10 @@
 import {
+  listTopicChildren,
+  listTopicParents,
   listTopics,
   listTopicsForWorkstream,
   listWorkstreams,
+  type Topic,
   type TopicWithCounts,
   type WorkstreamTopicRow,
   type WorkstreamWithCount,
@@ -30,6 +33,7 @@ export interface PanelTopic {
   tooltip: string;
   icon: 'symbol-key';
   openUri: string;
+  status: 'open' | 'closed';
 }
 
 export interface PanelTopicsGroup {
@@ -62,6 +66,8 @@ export interface PanelTopicRow {
   tooltip: string;
   icon: 'symbol-key';
   openUri: string;
+  status: 'open' | 'closed';
+  children?: PanelTopicRow[];
 }
 
 export type PanelItem = PanelWorkstream | PanelTopicRow;
@@ -116,6 +122,7 @@ function buildTopics(
     tooltip: `${t.title} (${t.slug}) — ${t.status}`,
     icon: 'symbol-key',
     openUri: `working-memory:/topic/${t.slug}.md`,
+    status: t.status,
   }));
   return {
     kind: 'topics-group',
@@ -161,23 +168,83 @@ function buildWorkstream(
   };
 }
 
-function buildTopicRow(t: TopicWithCounts): PanelTopicRow {
+function buildTopicRow(
+  t: TopicWithCounts | Topic,
+  parentSlug: string | null,
+  countsBySlug: Map<string, TopicWithCounts>,
+): PanelTopicRow {
+  const counts = countsBySlug.get(t.slug);
+  const description = counts
+    ? describeTopicRow(counts)
+    : describeTopicRow({
+        ...(t as Topic),
+        workstream_count: 0,
+        entry_count: 0,
+      } as TopicWithCounts);
   return {
     kind: 'topic-row',
-    id: `topics:topic-row:${t.slug}`,
+    id: `topics:topic:${parentSlug ?? 'root'}:${t.slug}`,
     label: t.title,
-    description: describeTopicRow(t),
+    description,
     tooltip: `${t.title} (${t.slug}) — ${t.status}`,
     icon: 'symbol-key',
     openUri: `working-memory:/topic/${t.slug}.md`,
+    status: t.status,
   };
 }
 
+const MAX_TOPIC_DEPTH = 20;
+
+/**
+ * Recursively populate `children` on a topic row by walking active
+ * `listTopicChildren` links. Only open + non-deleted children are kept
+ * (the Topics tab is the "open" view).
+ *
+ * `path` tracks the slugs from the current root down to this node so we
+ * can defensively break any unexpected cycle without infinite recursion.
+ * The DB rejects cycles at write time, but render-side guarding makes
+ * the panel robust to drift (e.g. someone editing the DB by hand).
+ */
+function attachChildren(
+  row: PanelTopicRow,
+  parentSlug: string,
+  countsBySlug: Map<string, TopicWithCounts>,
+  path: Set<string>,
+  depth: number,
+): void {
+  if (depth >= MAX_TOPIC_DEPTH) {
+    return;
+  }
+  const children = listTopicChildren(parentSlug)
+    .filter((c) => c.status === 'open' && c.deleted_at === null)
+    .filter((c) => !path.has(c.slug));
+  if (children.length === 0) {
+    return;
+  }
+  row.children = children.map((c) => {
+    const childRow = buildTopicRow(c, parentSlug, countsBySlug);
+    const nextPath = new Set(path);
+    nextPath.add(c.slug);
+    attachChildren(childRow, c.slug, countsBySlug, nextPath, depth + 1);
+    return childRow;
+  });
+}
+
 export function getPanelTopicsData(): PanelData {
-  const rows = listTopics({ status: 'open' });
+  const open = listTopics({ status: 'open' });
+  const countsBySlug = new Map<string, TopicWithCounts>(
+    open.map((t) => [t.slug, t]),
+  );
+  // Roots = open topics with no active parent links.
+  const roots = open.filter((t) => listTopicParents(t.slug).length === 0);
+  const items: PanelItem[] = roots.map((t) => {
+    const row = buildTopicRow(t, null, countsBySlug);
+    attachChildren(row, t.slug, countsBySlug, new Set([t.slug]), 1);
+    return row;
+  });
   return {
     tab: 'topics',
-    items: rows.map((t) => buildTopicRow(t)),
+    items,
     emptyMessage: 'No open topics.',
   };
 }

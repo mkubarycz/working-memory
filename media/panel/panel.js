@@ -7,7 +7,8 @@
   /** @typedef {{ command: string, title: string, args?: unknown[] }} Action */
   /** @typedef {{ kind: string, id: string, label: string, description?: string,
    *              tooltip?: string, icon?: string, openUri?: string,
-   *              actions?: Action[], children?: any[], collapsible?: boolean }} Node */
+   *              actions?: Action[], children?: any[], collapsible?: boolean,
+   *              status?: 'open'|'closed' }} Node */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -93,6 +94,15 @@
     row.style.paddingLeft = (depth * 12 + 4) + 'px';
     if (state.focusedId === node.id) {
       row.classList.add('focused');
+    }
+    // Mute closed topic rows so the eye skips past them. Children render as
+    // sibling DOM rows (not nested), so this opacity does not bleed into
+    // open child topics under a closed parent.
+    if (
+      (node.kind === 'topic' || node.kind === 'topic-row') &&
+      node.status === 'closed'
+    ) {
+      row.classList.add('is-closed');
     }
 
     const hasChildren =

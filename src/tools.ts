@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import {
+  addTopicParent,
   appendEntry,
   createTopic,
   createWorkstream,
@@ -15,8 +16,11 @@ import {
   listEntriesForTopic,
   listSessionsForWorkstream,
   listTopics,
+  listTopicChildren,
+  listTopicParents,
   listWorkstreams,
   listWorkstreamsForTopic,
+  removeTopicParent,
   searchEntries,
   softDeleteEntry,
   softDeleteSession,
@@ -27,6 +31,7 @@ import {
   unlinkWorkstreamTopic,
   updateTopic,
   updateWorkstream,
+  type Topic,
   type TopicStatus,
 } from './db';
 
@@ -157,6 +162,14 @@ interface LinkWorkstreamTopicToolInput {
 interface LinkEntryTopicToolInput {
   entry_id: number;
   topic_slug: string;
+}
+interface TopicParentLinkInput {
+  child_slug: string;
+  parent_slug: string;
+}
+
+function topicSummary(t: Topic): { slug: string; title: string; status: TopicStatus } {
+  return { slug: t.slug, title: t.title, status: t.status };
 }
 
 export function registerTools(
@@ -341,6 +354,8 @@ export function registerTools(
         }
         const workstreams = listWorkstreamsForTopic(input.slug);
         const entries = listEntriesForTopic(input.slug, 25);
+        const parents = listTopicParents(input.slug).map(topicSummary);
+        const children = listTopicChildren(input.slug).map(topicSummary);
         return {
           ok: true,
           topic,
@@ -348,6 +363,8 @@ export function registerTools(
           entry_count: entries.length,
           workstreams,
           entries,
+          parents,
+          children,
         };
       }),
     }),
@@ -425,6 +442,26 @@ export function registerTools(
         });
         deps.refresh();
         return { ok: true, unlink: result };
+      }),
+    }),
+    vscode.lm.registerTool<TopicParentLinkInput>('wm_link_topic_parent', {
+      invoke: safe<TopicParentLinkInput>((input) => {
+        if (!input.child_slug || !input.parent_slug) {
+          throw new Error('child_slug and parent_slug are required');
+        }
+        const result = addTopicParent(input.child_slug, input.parent_slug);
+        deps.refresh();
+        return { ok: true, link: result };
+      }),
+    }),
+    vscode.lm.registerTool<TopicParentLinkInput>('wm_unlink_topic_parent', {
+      invoke: safe<TopicParentLinkInput>((input) => {
+        if (!input.child_slug || !input.parent_slug) {
+          throw new Error('child_slug and parent_slug are required');
+        }
+        const result = removeTopicParent(input.child_slug, input.parent_slug);
+        deps.refresh();
+        return { ok: true, removed: result.removed, unlink: result };
       }),
     }),
   );

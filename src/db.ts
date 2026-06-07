@@ -106,6 +106,7 @@ const MIGRATIONS: Migration[] = [
   { version: 3, file: '003_topics.sql' },
   { version: 4, file: '004_topic_status_open_closed.sql' },
   { version: 5, file: '005_safe_topic_rebuild_template.sql' },
+  { version: 6, file: '006_topic_parents.sql' },
 ];
 
 function nowEpoch(): number {
@@ -1392,4 +1393,187 @@ export function listTopicsForWorkstream(
   return db
     .prepare(sql)
     .all(workstreamId, workstreamId) as unknown as WorkstreamTopicRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Topic parents (migration 006 — DAG)
+// ---------------------------------------------------------------------------
+
+/**
+ * Active parent topics of `slug` — only links and parent topics that are
+ * not soft-deleted. Ordered by `created_at DESC, slug ASC` so the most
+ * recently linked parent surfaces first.
+ */
+export function listTopicParents(slug: string): Topic[] {
+  if (!db) {
+    return [];
+  }
+  const sql = `
+    SELECT t.slug, t.title, t.status, t.body,
+           t.created_at, t.updated_at, t.deleted_at
+      FROM topic_parents tp
+      JOIN topics t ON t.slug = tp.parent_slug
+      WHERE tp.child_slug = ?
+        AND tp.deleted_at IS NULL
+        AND t.deleted_at IS NULL
+      ORDER BY tp.created_at DESC, t.slug ASC
+  `;
+  return db.prepare(sql).all(slug) as unknown as Topic[];
+}
+
+/**
+ * Active child topics of `slug` — only links and child topics that are
+ * not soft-deleted. Ordered by `created_at ASC, slug ASC` so children
+ * render in the order they were linked (stable, parent-first feel).
+ */
+export function listTopicChildren(slug: string): Topic[] {
+  if (!db) {
+    return [];
+  }
+  const sql = `
+    SELECT t.slug, t.title, t.status, t.body,
+           t.created_at, t.updated_at, t.deleted_at
+      FROM topic_parents tp
+      JOIN topics t ON t.slug = tp.child_slug
+      WHERE tp.parent_slug = ?
+        AND tp.deleted_at IS NULL
+        AND t.deleted_at IS NULL
+      ORDER BY tp.created_at ASC, t.slug ASC
+  `;
+  return db.prepare(sql).all(slug) as unknown as Topic[];
+}
+
+export interface AddTopicParentResult {
+  child_slug: string;
+  parent_slug: string;
+  created_at: number;
+  link_restored: boolean;
+}
+
+/**
+ * Link a child topic to a parent topic (DAG, M:N). Throws on:
+ *   - self-link
+ *   - either topic missing or soft-deleted
+ *   - cycle (parent_slug is already a descendant of child_slug, i.e.
+ *     child_slug appears in the ancestor closure walked upward from
+ *     parent_slug)
+ *
+ * Idempotent: if an active link already exists, it's returned unchanged.
+ * If a soft-deleted link row exists, it is restored.
+ */
+export function addTopicParent(
+  childSlug: string,
+  parentSlug: string,
+): AddTopicParentResult {
+  const handle = requireDb();
+  if (childSlug === parentSlug) {
+    throw new Error(`cannot link a topic to itself: ${childSlug}`);
+  }
+  const child = getTopic(childSlug);
+  if (!child) {
+    throw new Error(`child topic not found (or soft-deleted): ${childSlug}`);
+  }
+  const parent = getTopic(parentSlug);
+  if (!parent) {
+    throw new Error(`parent topic not found (or soft-deleted): ${parentSlug}`);
+  }
+
+  return withTransaction(() => {
+    // Cycle check: walk the ancestor closure UP from parent_slug (seeded
+    // with parent_slug itself). If child_slug appears anywhere in that
+    // set, the new link would close a loop. The seed catches the self-link
+    // case too, but we've already rejected it above for a clearer error.
+    const cycleHit = handle
+      .prepare(
+        `WITH RECURSIVE ancestors(slug) AS (
+            SELECT ? AS slug
+           UNION
+            SELECT tp.parent_slug
+              FROM topic_parents tp
+              JOIN ancestors a ON a.slug = tp.child_slug
+              WHERE tp.deleted_at IS NULL
+          )
+          SELECT 1 AS x FROM ancestors WHERE slug = ? LIMIT 1`,
+      )
+      .get(parentSlug, childSlug);
+    if (cycleHit) {
+      throw new Error(
+        `cycle: '${parentSlug}' is already a descendant of '${childSlug}'`,
+      );
+    }
+
+    const now = nowEpoch();
+    const existing = handle
+      .prepare(
+        `SELECT created_at, deleted_at FROM topic_parents
+          WHERE child_slug = ? AND parent_slug = ?`,
+      )
+      .get(childSlug, parentSlug) as unknown as
+      | { created_at: number; deleted_at: number | null }
+      | undefined;
+
+    if (existing && existing.deleted_at === null) {
+      return {
+        child_slug: childSlug,
+        parent_slug: parentSlug,
+        created_at: existing.created_at,
+        link_restored: false,
+      };
+    }
+    if (existing && existing.deleted_at !== null) {
+      handle
+        .prepare(
+          `UPDATE topic_parents
+              SET deleted_at = NULL, created_at = ?
+            WHERE child_slug = ? AND parent_slug = ?`,
+        )
+        .run(now, childSlug, parentSlug);
+      return {
+        child_slug: childSlug,
+        parent_slug: parentSlug,
+        created_at: now,
+        link_restored: true,
+      };
+    }
+    handle
+      .prepare(
+        `INSERT INTO topic_parents (child_slug, parent_slug, created_at)
+         VALUES (?, ?, ?)`,
+      )
+      .run(childSlug, parentSlug, now);
+    return {
+      child_slug: childSlug,
+      parent_slug: parentSlug,
+      created_at: now,
+      link_restored: false,
+    };
+  });
+}
+
+export interface RemoveTopicParentResult {
+  child_slug: string;
+  parent_slug: string;
+  removed: number;
+}
+
+/**
+ * Soft-delete a topic parent link. Idempotent — returns `removed: 0` if
+ * the link doesn't exist or is already soft-deleted.
+ */
+export function removeTopicParent(
+  childSlug: string,
+  parentSlug: string,
+): RemoveTopicParentResult {
+  const handle = requireDb();
+  const res = handle
+    .prepare(
+      `UPDATE topic_parents SET deleted_at = ?
+         WHERE child_slug = ? AND parent_slug = ? AND deleted_at IS NULL`,
+    )
+    .run(nowEpoch(), childSlug, parentSlug);
+  return {
+    child_slug: childSlug,
+    parent_slug: parentSlug,
+    removed: Number(res.changes),
+  };
 }
