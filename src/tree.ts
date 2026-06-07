@@ -96,7 +96,9 @@ export class WorkstreamTreeProvider
 
   getChildren(element?: WMNode): WMNode[] {
     if (!element) {
-      return listWorkstreams().map((w) => new WorkstreamNode(w));
+      return listWorkstreams({ status: 'open' }).map(
+        (w) => new WorkstreamNode(w),
+      );
     }
     if (element.kind === 'workstream') {
       const topics = listTopicsForWorkstream(element.workstream.id);
