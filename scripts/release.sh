@@ -131,7 +131,11 @@ info "package: $VSIX_PATH"
 mkdir -p "$VSIX_DIR"
 # vsce honors -o but won't overwrite an existing file; guard for re-runs.
 rm -f "$VSIX_PATH"
-npx --no-install vsce package --allow-missing-repository -o "$VSIX_PATH"
+# --no-yarn: don't try to use yarn even if a yarn.lock is around.
+# --no-dependencies: skip vsce's dependency-tree walk; we ship node_modules verbatim,
+#                    so the walk is wasted work and emits warnings that prompt y/N.
+# 'yes' pipe: auto-confirm any remaining interactive prompts (e.g. file-count warnings).
+yes | npx --no-install vsce package --allow-missing-repository --no-yarn --no-dependencies -o "$VSIX_PATH"
 [[ -f "$VSIX_PATH" ]] || die "vsce did not produce $VSIX_PATH"
 ok "packaged."
 
