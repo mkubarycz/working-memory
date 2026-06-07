@@ -22,6 +22,22 @@ import {
 
 const TZ = 'America/New_York';
 
+/**
+ * Build a `vscode://` deep-link URL pointing at the URI handler registered
+ * in `extension.ts`. Rendered cross-links inside virtual docs MUST use this
+ * form (not the raw `working-memory:` scheme) — only `vscode://` URLs are
+ * clickable from markdown preview / Copilot Chat surfaces.
+ *
+ * Raw `working-memory:` URIs remain correct for `vscode.open` calls in the
+ * panel tree and for the content provider's own routing.
+ */
+function deepLink(
+  kind: 'topic' | 'session' | 'workstream',
+  id: string,
+): string {
+  return `vscode://kubarycz.working-memory/open/${kind}/${encodeURIComponent(id)}`;
+}
+
 function fmtDateTime(unixSeconds: number | null | undefined): string {
   if (!unixSeconds) {
     return '—';
@@ -76,7 +92,7 @@ function fmtDuration(
 function renderSession(session: Session): string {
   // Session header is a link to the per-session virtual doc — added with
   // the session doc feature so workstream docs can drill in.
-  const header = `### [${session.session_id}](working-memory:/session/${session.session_id}.md) — ${fmtDateTime(session.started_at)}`;
+  const header = `### [${session.session_id}](${deepLink('session', session.session_id)}) — ${fmtDateTime(session.started_at)}`;
   const summary = session.summary?.trim()
     ? session.summary.trim()
     : '_No summary._';
@@ -109,7 +125,7 @@ function renderWorkstreamDoc(slug: string): string {
             parts.push(`_${t.status}_`);
           }
           const meta = parts.length ? ` — ${parts.join(' • ')}` : '';
-          return `- [${t.title}](working-memory:/topic/${t.slug}.md) \`${t.slug}\`${meta}`;
+          return `- [${t.title}](${deepLink('topic', t.slug)}) \`${t.slug}\`${meta}`;
         })
         .join('\n')
     : '_No topics linked yet._';
@@ -179,7 +195,7 @@ function renderTopicDoc(slug: string): string {
     ? workstreams
         .map(
           (w) =>
-            `- [${w.workstream_title}](working-memory:/workstream/${w.workstream_slug}.md) \`${w.workstream_slug}\` — linked ${fmtDateTime(w.linked_at)}`,
+            `- [${w.workstream_title}](${deepLink('workstream', w.workstream_slug)}) \`${w.workstream_slug}\` — linked ${fmtDateTime(w.linked_at)}`,
         )
         .join('\n')
     : '_No workstreams linked yet._';
@@ -198,10 +214,10 @@ function renderTopicDoc(slug: string): string {
           const lines = rows
             .map(
               (e) =>
-                `- \`${fmtDateTime(e.timestamp)}\` [#${e.entry_id}](working-memory:/workstream/${wsSlug}.md) ${e.snippet}`,
+                `- \`${fmtDateTime(e.timestamp)}\` [#${e.entry_id}](${deepLink('workstream', wsSlug)}) ${e.snippet}`,
             )
             .join('\n');
-          return `### [${title}](working-memory:/workstream/${wsSlug}.md) \`${wsSlug}\`\n${lines}`;
+          return `### [${title}](${deepLink('workstream', wsSlug)}) \`${wsSlug}\`\n${lines}`;
         })
         .join('\n\n')
     : '_No entries linked yet._';
@@ -238,7 +254,7 @@ function renderTopicDoc(slug: string): string {
  * which topics a given entry is tagged with.
  */
 function topicPill(t: Topic): string {
-  return `[${t.title}](working-memory:/topic/${t.slug}.md)`;
+  return `[${t.title}](${deepLink('topic', t.slug)})`;
 }
 
 /**
@@ -280,7 +296,7 @@ function renderSessionDoc(sessionId: string): string {
 
   const ws = getWorkstreamById(session.workstream_id, true);
   const wsHeader = ws
-    ? `[${ws.title}](working-memory:/workstream/${ws.slug}.md) \`${ws.slug}\``
+    ? `[${ws.title}](${deepLink('workstream', ws.slug)}) \`${ws.slug}\``
     : `_(unknown workstream id ${session.workstream_id})_`;
 
   const durationStr = fmtDuration(session.started_at, session.ended_at);
@@ -303,7 +319,7 @@ function renderSessionDoc(sessionId: string): string {
     ? sessionTopics
         .map(
           (t) =>
-            `- [${t.title}](working-memory:/topic/${t.slug}.md) \`${t.slug}\``,
+            `- [${t.title}](${deepLink('topic', t.slug)}) \`${t.slug}\``,
         )
         .join('\n')
     : '_No topics tagged on entries in this session._';
@@ -337,10 +353,10 @@ function renderSessionDoc(sessionId: string): string {
       )
     : null;
   const prevStr = prev
-    ? `[${fmtDateTime(prev.started_at)}](working-memory:/session/${prev.session_id}.md)`
+    ? `[${fmtDateTime(prev.started_at)}](${deepLink('session', prev.session_id)})`
     : '—';
   const nextStr = next
-    ? `[${fmtDateTime(next.started_at)}](working-memory:/session/${next.session_id}.md)`
+    ? `[${fmtDateTime(next.started_at)}](${deepLink('session', next.session_id)})`
     : '—';
 
   return [
