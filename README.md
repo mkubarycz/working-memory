@@ -85,6 +85,48 @@ code --install-extension working-memory-0.1.0.vsix
 # then reload the window
 ```
 
+## Chat link patterns
+
+VS Code's Copilot Chat panel only linkifies a narrow set of URI forms in
+assistant output. Custom schemes (`working-memory:`) are stripped, and
+`command:` URIs require trusted markdown — a privilege not granted to
+assistant-rendered links. The form that survives is VS Code's own
+extension deep-link scheme: **`vscode://<publisher>.<extension>/...`**.
+
+The extension registers a URI handler for
+`vscode://kubarycz.working-memory/open/<kind>/<id>`, where:
+
+- `<kind>` ∈ `session | topic | workstream`
+- `<id>` is the session uuid or the topic/workstream slug
+
+| Kind | Markdown shape | Example |
+|---|---|---|
+| Session | `[label](vscode://kubarycz.working-memory/open/session/<uuid>)` | `[chat session](vscode://kubarycz.working-memory/open/session/de55954a-d717-4b5f-9aa5-dc2513ba6f71)` |
+| Topic | `[label](vscode://kubarycz.working-memory/open/topic/<slug>)` | `[chat-clickable-links](vscode://kubarycz.working-memory/open/topic/chat-clickable-links)` |
+| Workstream | `[label](vscode://kubarycz.working-memory/open/workstream/<slug>)` | `[topic-types](vscode://kubarycz.working-memory/open/workstream/topic-types)` |
+
+Slugs containing reserved characters should be URI-encoded (the handler
+calls `decodeURIComponent` on the id). Unknown slugs/uuids fall through
+to the content provider, which renders its own not-found body (parity
+with clicking a stale row in the panel). Malformed paths surface a
+single error notification — no extension crash.
+
+### Palette + `command:` parity
+
+The same four `working-memory.open*` commands also exist for use from
+the Command Palette (`Working Memory: Open Session / Topic / Workstream`)
+and from trusted markdown contexts. If you control a `MarkdownString`
+with `isTrusted = true` (e.g. a hover, a chat participant), you can
+still use:
+
+```
+[label]\(command:working-memory.openTopic?%5B%22<slug>%22%5D\)
+```
+
+The `?...` payload is `encodeURIComponent(JSON.stringify([id]))`. The
+deep-link form above is preferred for chat because it does not require
+trust.
+
 ## Schema migrations
 
 New migrations go in `schema/NNN_<name>.sql` and are registered in the

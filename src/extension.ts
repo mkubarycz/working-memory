@@ -23,6 +23,78 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('working-memory.reloadWindow', () => {
       vscode.commands.executeCommand('workbench.action.reloadWindow');
     }),
+    // Open a virtual doc by kind + id. Used primarily for chat-rendered
+    // `command:` links (VS Code's chat panel strips custom URI schemes like
+    // `working-memory:` but honors `command:` URIs). The content provider
+    // handles missing/invalid ids by rendering its own not-found body, so
+    // we don't validate here — parity with row clicks in the panel.
+    vscode.commands.registerCommand(
+      'working-memory.open',
+      async (arg?: { kind?: string; id?: string } | string, maybeId?: string) => {
+        // Tolerate two shapes: ({kind,id}) from chat markdown args, or
+        // (kind, id) from a manual executeCommand call.
+        let kind: string | undefined;
+        let id: string | undefined;
+        if (typeof arg === 'string') {
+          kind = arg;
+          id = maybeId;
+        } else if (arg && typeof arg === 'object') {
+          kind = arg.kind;
+          id = arg.id;
+        }
+        if (!kind || !id) {
+          const pickedKind = await vscode.window.showQuickPick(
+            ['session', 'topic', 'workstream'],
+            { placeHolder: 'Kind of working-memory doc to open' },
+          );
+          if (!pickedKind) {
+            return;
+          }
+          kind = pickedKind;
+          id = await vscode.window.showInputBox({
+            prompt: `Enter ${kind} ${kind === 'session' ? 'uuid' : 'slug'}`,
+          });
+          if (!id) {
+            return;
+          }
+        }
+        if (kind !== 'session' && kind !== 'topic' && kind !== 'workstream') {
+          vscode.window.showWarningMessage(
+            `Working Memory: unknown kind "${kind}" (expected session|topic|workstream).`,
+          );
+          return;
+        }
+        const uri = vscode.Uri.parse(`working-memory:/${kind}/${id}.md`);
+        await vscode.commands.executeCommand('vscode.open', uri);
+      },
+    ),
+    // Discoverable shortcuts — each delegates to the consolidated command
+    // above so there's one code path. These are what shows up in the
+    // Command Palette as "Working Memory: Open Session/Topic/Workstream".
+    vscode.commands.registerCommand(
+      'working-memory.openSession',
+      (id?: string) =>
+        vscode.commands.executeCommand('working-memory.open', {
+          kind: 'session',
+          id,
+        }),
+    ),
+    vscode.commands.registerCommand(
+      'working-memory.openTopic',
+      (id?: string) =>
+        vscode.commands.executeCommand('working-memory.open', {
+          kind: 'topic',
+          id,
+        }),
+    ),
+    vscode.commands.registerCommand(
+      'working-memory.openWorkstream',
+      (id?: string) =>
+        vscode.commands.executeCommand('working-memory.open', {
+          kind: 'workstream',
+          id,
+        }),
+    ),
     vscode.commands.registerCommand(
       'working-memory.reopenWorkstream',
       async (arg?: { slug?: string; workstream?: { slug?: string } }) => {
@@ -56,6 +128,46 @@ export function activate(context: vscode.ExtensionContext): void {
       contentProvider,
       { isCaseSensitive: true, isReadonly: false },
     ),
+    // Deep-link handler — `vscode://kubarycz.working-memory/open/<kind>/<id>`.
+    // Copilot Chat renders these as clickable links in assistant output
+    // (unlike `command:` URIs, which require trusted markdown). We route
+    // through the existing `working-memory.open` command so there's one
+    // code path. Bogus slugs/uuids fall through to the content provider's
+    // not-found body — only malformed paths produce a notification.
+    vscode.window.registerUriHandler({
+      handleUri(uri: vscode.Uri): void {
+        const parts = uri.path.split('/').filter((p) => p.length > 0);
+        // Expect ['open', '<kind>', '<id>'] — note `<id>` may contain
+        // additional slashes, but slugs/uuids don't, so we treat anything
+        // beyond 3 parts as malformed.
+        if (parts.length !== 3 || parts[0] !== 'open') {
+          vscode.window.showErrorMessage(
+            `Working Memory: unrecognized deep link: ${uri.toString()}`,
+          );
+          return;
+        }
+        const kind = parts[1];
+        if (kind !== 'session' && kind !== 'topic' && kind !== 'workstream') {
+          vscode.window.showErrorMessage(
+            `Working Memory: unrecognized deep link: ${uri.toString()}`,
+          );
+          return;
+        }
+        let id: string;
+        try {
+          id = decodeURIComponent(parts[2]);
+        } catch {
+          vscode.window.showErrorMessage(
+            `Working Memory: unrecognized deep link: ${uri.toString()}`,
+          );
+          return;
+        }
+        void vscode.commands.executeCommand('working-memory.open', {
+          kind,
+          id,
+        });
+      },
+    }),
   );
 
   // Register LM tools BEFORE opening the DB. Each tool handler checks

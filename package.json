@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.9.0",
+  "version": "0.9.2",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -11,6 +11,7 @@
   },
   "main": "./out/src/extension.js",
   "activationEvents": [
+    "onUri",
     "onLanguageModelTool:wm_list_workstreams",
     "onLanguageModelTool:wm_get_workstream",
     "onLanguageModelTool:wm_create_workstream",
@@ -67,6 +68,26 @@
         "title": "Reload Window",
         "category": "Working Memory",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "working-memory.open",
+        "title": "Open Doc…",
+        "category": "Working Memory"
+      },
+      {
+        "command": "working-memory.openSession",
+        "title": "Open Session",
+        "category": "Working Memory"
+      },
+      {
+        "command": "working-memory.openTopic",
+        "title": "Open Topic",
+        "category": "Working Memory"
+      },
+      {
+        "command": "working-memory.openWorkstream",
+        "title": "Open Workstream",
+        "category": "Working Memory"
       }
     ],
     "menus": {
