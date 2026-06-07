@@ -1,0 +1,192 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background, transparent);
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* -- Tab strip ----------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  flex-direction: row;
+  border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+  background: var(--vscode-sideBarSectionHeader-background, transparent);
+  flex: 0 0 auto;
+}
+
+.tab {
+  flex: 1 1 0;
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: none;
+  border-bottom: 1px solid transparent;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  outline: none;
+  opacity: 0.7;
+}
+
+.tab:hover {
+  background: var(--vscode-toolbar-hoverBackground, transparent);
+  opacity: 1;
+}
+
+.tab[aria-selected="true"] {
+  opacity: 1;
+  border-bottom-color: var(--vscode-focusBorder, var(--vscode-foreground));
+}
+
+.tab:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/* -- List ---------------------------------------------------------------- */
+
+.list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+}
+
+.empty {
+  padding: 12px;
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  text-align: center;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px 0 0;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+}
+
+.row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.row.focused {
+  background: var(--vscode-list-inactiveSelectionBackground);
+}
+
+.row.focused.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.twisty {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  opacity: 0.85;
+}
+
+.twisty.collapsible {
+  cursor: pointer;
+}
+
+.twisty svg {
+  width: 12px;
+  height: 12px;
+  transition: transform 80ms ease-in-out;
+}
+
+.twisty.expanded svg {
+  transform: rotate(90deg);
+}
+
+.twisty.leaf svg {
+  visibility: hidden;
+}
+
+.icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+}
+
+.icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.label {
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.description {
+  margin-left: 8px;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.actions {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  display: none;
+}
+
+.row:hover .actions,
+.row.focused .actions {
+  display: inline-flex;
+}
+
+.action-btn {
+  background: transparent;
+  border: none;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.action-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.action-btn:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}

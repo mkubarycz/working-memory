@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -11,8 +11,6 @@
   },
   "main": "./out/src/extension.js",
   "activationEvents": [
-    "onView:workingMemory.workstreams.active",
-    "onView:workingMemory.workstreams.archive",
     "onLanguageModelTool:wm_list_workstreams",
     "onLanguageModelTool:wm_get_workstream",
     "onLanguageModelTool:wm_create_workstream",
@@ -48,12 +46,9 @@
     "views": {
       "working-memory": [
         {
-          "id": "workingMemory.workstreams.active",
-          "name": "Active"
-        },
-        {
-          "id": "workingMemory.workstreams.archive",
-          "name": "Archive"
+          "id": "workingMemory.workstreams",
+          "name": "Workstreams",
+          "type": "webview"
         }
       ]
     },
@@ -75,12 +70,12 @@
       "view/title": [
         {
           "command": "working-memory.refresh",
-          "when": "view == workingMemory.workstreams.active || view == workingMemory.workstreams.archive",
+          "when": "view == workingMemory.workstreams",
           "group": "navigation"
         },
         {
           "command": "working-memory.reloadWindow",
-          "when": "view == workingMemory.workstreams.active || view == workingMemory.workstreams.archive",
+          "when": "view == workingMemory.workstreams",
           "group": "navigation"
         }
       ]

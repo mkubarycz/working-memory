@@ -1,27 +1,23 @@
 import * as vscode from 'vscode';
 import { openDb, closeDb, getDbPath, reopenWorkstream } from './db';
-import { TABS, WorkstreamNode, WorkstreamTreeProvider } from './tree';
 import { WorkstreamDocumentProvider } from './contentProvider';
 import { registerTools } from './tools';
+import { WorkstreamPanelProvider } from './webview/panelProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const providers = TABS.map((tab) => ({
-    tab,
-    provider: new WorkstreamTreeProvider(tab),
-  }));
+  const panelProvider = new WorkstreamPanelProvider(context.extensionUri);
   const contentProvider = new WorkstreamDocumentProvider();
 
   const refresh = (): void => {
-    for (const { provider } of providers) {
-      provider.refresh();
-    }
+    panelProvider.refresh();
     contentProvider.refresh();
   };
 
-  // Register commands, both tree providers, and the virtual-doc provider
-  // FIRST so the title-bar actions and click-to-open work even if the DB
-  // layer fails to load for any reason. The db.ts helpers guard on a missing
-  // DB and return empty results, so the virtual docs degrade gracefully.
+  // Register commands, the webview view provider, and the virtual-doc
+  // provider FIRST so the title-bar actions and click-to-open work even if
+  // the DB layer fails to load for any reason. The db.ts helpers guard on a
+  // missing DB and return empty results, so the virtual docs degrade
+  // gracefully.
   context.subscriptions.push(
     vscode.commands.registerCommand('working-memory.refresh', refresh),
     vscode.commands.registerCommand('working-memory.reloadWindow', () => {
@@ -29,15 +25,16 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand(
       'working-memory.reopenWorkstream',
-      async (node?: WorkstreamNode) => {
-        if (!node || node.kind !== 'workstream') {
+      async (arg?: { slug?: string; workstream?: { slug?: string } }) => {
+        const slug = arg?.slug ?? arg?.workstream?.slug;
+        if (!slug) {
           vscode.window.showWarningMessage(
-            'Working Memory: Reopen Workstream must be invoked from an Archive tree item.',
+            'Working Memory: Reopen Workstream requires a workstream slug.',
           );
           return;
         }
         try {
-          const updated = reopenWorkstream(node.workstream.slug);
+          const updated = reopenWorkstream(slug);
           refresh();
           vscode.window.showInformationMessage(
             `Working Memory: reopened "${updated.title}".`,
@@ -50,18 +47,16 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
     ),
+    vscode.window.registerWebviewViewProvider(
+      WorkstreamPanelProvider.viewType,
+      panelProvider,
+    ),
     vscode.workspace.registerFileSystemProvider(
       WorkstreamDocumentProvider.scheme,
       contentProvider,
       { isCaseSensitive: true, isReadonly: false },
     ),
   );
-
-  for (const { tab, provider } of providers) {
-    context.subscriptions.push(
-      vscode.window.registerTreeDataProvider(tab.viewId, provider),
-    );
-  }
 
   // Register LM tools BEFORE opening the DB. Each tool handler checks
   // `isDbOpen()` at invoke-time and returns a structured error result rather
@@ -70,12 +65,12 @@ export function activate(context: vscode.ExtensionContext): void {
   registerTools(context, { refresh });
 
   // Now try to open the DB. Any failure here is surfaced but non-fatal:
-  // the views will simply be empty until the underlying issue is resolved.
+  // the view will simply be empty until the underlying issue is resolved.
   try {
     const db = openDb(context.extensionPath);
     if (!db) {
       vscode.window.showWarningMessage(
-        'Working Memory: no hub workspace found (need a folder with AGENTS.md and a memory/ directory). The Workstreams views will be empty.',
+        'Working Memory: no hub workspace found (need a folder with AGENTS.md and a memory/ directory). The Workstreams panel will be empty.',
       );
     } else {
       console.log(`[working-memory] DB opened at ${getDbPath()}`);
