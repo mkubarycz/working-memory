@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -266,6 +266,10 @@
             "session_id": {
               "type": "string",
               "description": "Optional explicit session_id. If omitted, a UUID v4 is generated."
+            },
+            "chat_ref": {
+              "type": "string",
+              "description": "Optional reference to the chat that produced this session — typically the value of the VSCODE_TARGET_SESSION_LOG env var (a path to the per-chat debug-logs folder) or any other stable per-chat identifier. Rendered on the session virtual doc; never fabricated."
             }
           }
         }

@@ -1,10 +1,13 @@
 import {
+  listEntriesForSession,
+  listSessionsForWorkstream,
   listTopicChildren,
   listTopicParents,
   listTopics,
   listTopicsForWorkstream,
   listTopicTypes,
   listWorkstreams,
+  type Session,
   type Topic,
   type TopicType,
   type TopicWithCounts,
@@ -50,6 +53,27 @@ export interface PanelTopicsGroup {
   children: PanelTopic[];
 }
 
+export interface PanelSession {
+  kind: 'session';
+  id: string;
+  label: string;
+  description: string;
+  tooltip: string;
+  /** Codicon id (default 'comment-discussion'). */
+  icon: string;
+  openUri: string;
+}
+
+export interface PanelSessionsGroup {
+  kind: 'sessions-group';
+  id: string;
+  label: string;
+  description?: string;
+  icon: string;
+  collapsible: boolean;
+  children: PanelSession[];
+}
+
 export interface PanelWorkstream {
   kind: 'workstream';
   id: string;
@@ -59,7 +83,7 @@ export interface PanelWorkstream {
   icon: 'repo';
   openUri: string;
   actions: PanelAction[];
-  children: PanelTopicsGroup[];
+  children: (PanelTopicsGroup | PanelSessionsGroup)[];
 }
 
 export interface PanelTopicRow {
@@ -87,6 +111,10 @@ export interface PanelData {
 const FALLBACK_TOPIC_ICON = 'symbol-key';
 /** Fallback codicon id for an empty (no topics linked) group header. */
 const FALLBACK_GROUP_ICON = 'symbol-keyword';
+/** Codicon id used for individual session rows. */
+const SESSION_ROW_ICON = 'comment-discussion';
+/** Codicon id used for the Sessions group header. */
+const SESSIONS_GROUP_ICON = 'history';
 
 function describeTopic(t: WorkstreamTopicRow): string {
   const here = t.entry_count_in_workstream;
@@ -160,6 +188,86 @@ function buildTopics(
   };
 }
 
+/**
+ * Build a single PanelSessionsGroup for a workstream containing every
+ * (non-deleted) session as a flat child row. Each session row carries
+ * an `openUri` pointing at its per-session virtual doc, so clicking
+ * mirrors workstream / topic row behaviour.
+ */
+function buildSessions(
+  tab: PanelTab,
+  ws: WorkstreamWithCount,
+): PanelSessionsGroup {
+  const sessions = listSessionsForWorkstream(ws.id);
+  const children: PanelSession[] = sessions.map((s) =>
+    buildSessionRow(tab, ws.id, s),
+  );
+  return {
+    kind: 'sessions-group',
+    id: `${tab}:sessions-group:${ws.id}`,
+    label:
+      sessions.length > 0 ? `Sessions (${sessions.length})` : 'Sessions',
+    description: sessions.length > 0 ? undefined : 'none logged',
+    icon: SESSIONS_GROUP_ICON,
+    collapsible: sessions.length > 0,
+    children,
+  };
+}
+
+function buildSessionRow(
+  tab: PanelTab,
+  workstreamId: number,
+  s: Session,
+): PanelSession {
+  const started = formatStarted(s.started_at);
+  const entryCount = listEntriesForSession(s.session_id).length;
+  const summary = s.summary?.trim();
+  const label = summary && summary.length > 0 ? summary : started;
+  const descParts: string[] = [];
+  if (summary && summary.length > 0) {
+    descParts.push(started);
+  }
+  descParts.push(
+    `${entryCount} entr${entryCount === 1 ? 'y' : 'ies'}`,
+  );
+  if (!s.ended_at) {
+    descParts.push('in progress');
+  }
+  const tooltipLines: string[] = [`Session ${s.session_id}`, `Started ${started}`];
+  if (s.ended_at) {
+    tooltipLines.push(`Ended ${formatStarted(s.ended_at)}`);
+  } else {
+    tooltipLines.push('In progress');
+  }
+  if (summary) {
+    tooltipLines.push('', summary);
+  }
+  return {
+    kind: 'session',
+    id: `${tab}:session:${workstreamId}:${s.session_id}`,
+    label,
+    description: descParts.join(' • '),
+    tooltip: tooltipLines.join('\n'),
+    icon: SESSION_ROW_ICON,
+    openUri: `working-memory:/session/${s.session_id}.md`,
+  };
+}
+
+/** ISO-ish local timestamp for session rows; no per-row tz conversion. */
+function formatStarted(unixSeconds: number | null | undefined): string {
+  if (!unixSeconds) {
+    return '—';
+  }
+  const d = new Date(unixSeconds * 1000);
+  const date = d.toLocaleDateString('en-CA');
+  const time = d.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  return `${date} ${time}`;
+}
+
 function buildWorkstream(
   tab: PanelTab,
   ws: WorkstreamWithCount,
@@ -190,7 +298,7 @@ function buildWorkstream(
     icon: 'repo',
     openUri: `working-memory:/workstream/${ws.slug}.md`,
     actions,
-    children: [buildTopics(tab, ws, typeMap)],
+    children: [buildTopics(tab, ws, typeMap), buildSessions(tab, ws)],
   };
 }
 

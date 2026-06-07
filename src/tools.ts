@@ -104,6 +104,7 @@ interface StartSessionToolInput {
   workstream_slug: string;
   summary?: string;
   session_id?: string;
+  chat_ref?: string | null;
 }
 interface EndSessionToolInput {
   session_id: string;
@@ -265,6 +266,7 @@ export function registerTools(
           workstream_slug: input.workstream_slug,
           summary: input.summary,
           session_id: input.session_id,
+          chat_ref: input.chat_ref,
         });
         deps.refresh();
         return { ok: true, session: row };

@@ -33,6 +33,15 @@ export interface Session {
   started_at: number;
   ended_at: number | null;
   summary: string | null;
+  /**
+   * Optional, free-form identifier of the chat/conversation that produced
+   * this session. Populated by `wm_start_session` when the caller supplies
+   * `chat_ref` (typically the path to the VS Code chat debug-logs folder).
+   * NULL when not recorded — the session virtual doc renders that as
+   * "(no chat link recorded)" rather than fabricating a link. Added in
+   * migration 010.
+   */
+  chat_ref: string | null;
   deleted_at: number | null;
 }
 
@@ -128,6 +137,7 @@ const MIGRATIONS: Migration[] = [
   // unwrapped so `PRAGMA foreign_keys = OFF` actually takes effect; see
   // 005_safe_topic_rebuild_template.sql for the why.
   { version: 9, file: '009_topic_type_fk.sql', noWrap: true },
+  { version: 10, file: '010_session_chat_ref.sql' },
 ];
 
 function nowEpoch(): number {
@@ -563,7 +573,8 @@ export function listSessionsForWorkstream(
     return [];
   }
   const sql = `
-    SELECT session_id, workstream_id, started_at, ended_at, summary, deleted_at
+    SELECT session_id, workstream_id, started_at, ended_at, summary,
+           chat_ref, deleted_at
       FROM sessions
       WHERE workstream_id = ?
         ${includeDeleted ? '' : 'AND deleted_at IS NULL'}
@@ -580,7 +591,8 @@ export function getSession(
     return null;
   }
   const sql = `
-    SELECT session_id, workstream_id, started_at, ended_at, summary, deleted_at
+    SELECT session_id, workstream_id, started_at, ended_at, summary,
+           chat_ref, deleted_at
       FROM sessions
       WHERE session_id = ?
         ${includeDeleted ? '' : 'AND deleted_at IS NULL'}
@@ -589,10 +601,126 @@ export function getSession(
   return row ?? null;
 }
 
+/**
+ * Return the immediately preceding non-deleted session in the same
+ * workstream, ordered by `started_at`. Returns null if this session is the
+ * first. Used by the session virtual doc to render Prev/Next navigation.
+ */
+export function getPreviousSessionInWorkstream(
+  workstreamId: number,
+  startedAt: number,
+  sessionId: string,
+): Session | null {
+  if (!db) {
+    return null;
+  }
+  const sql = `
+    SELECT session_id, workstream_id, started_at, ended_at, summary,
+           chat_ref, deleted_at
+      FROM sessions
+      WHERE workstream_id = ?
+        AND deleted_at IS NULL
+        AND session_id <> ?
+        AND (started_at < ? OR (started_at = ? AND session_id < ?))
+      ORDER BY started_at DESC, session_id DESC
+      LIMIT 1
+  `;
+  const row = db
+    .prepare(sql)
+    .get(workstreamId, sessionId, startedAt, startedAt, sessionId) as unknown as
+    | Session
+    | undefined;
+  return row ?? null;
+}
+
+/**
+ * Return the immediately following non-deleted session in the same
+ * workstream, ordered by `started_at`. Returns null if this session is the
+ * latest.
+ */
+export function getNextSessionInWorkstream(
+  workstreamId: number,
+  startedAt: number,
+  sessionId: string,
+): Session | null {
+  if (!db) {
+    return null;
+  }
+  const sql = `
+    SELECT session_id, workstream_id, started_at, ended_at, summary,
+           chat_ref, deleted_at
+      FROM sessions
+      WHERE workstream_id = ?
+        AND deleted_at IS NULL
+        AND session_id <> ?
+        AND (started_at > ? OR (started_at = ? AND session_id > ?))
+      ORDER BY started_at ASC, session_id ASC
+      LIMIT 1
+  `;
+  const row = db
+    .prepare(sql)
+    .get(workstreamId, sessionId, startedAt, startedAt, sessionId) as unknown as
+    | Session
+    | undefined;
+  return row ?? null;
+}
+
+/**
+ * Distinct topics tagged on any entry in the given session. Soft-deleted
+ * links and soft-deleted topics are excluded. Ordered by topic slug for a
+ * stable render. Used by the session virtual doc's "Linked topics"
+ * section.
+ */
+export function listTopicsForSession(sessionId: string): Topic[] {
+  if (!db) {
+    return [];
+  }
+  const sql = `
+    SELECT DISTINCT t.slug, t.title, t.status, t.topic_type, t.body,
+           t.created_at, t.updated_at, t.deleted_at
+      FROM entry_topics et
+      JOIN entries e ON e.id = et.entry_id
+      JOIN topics t  ON t.slug = et.topic_slug
+      WHERE e.session_id = ?
+        AND et.deleted_at IS NULL
+        AND e.deleted_at IS NULL
+        AND t.deleted_at IS NULL
+      ORDER BY t.slug ASC
+  `;
+  return db.prepare(sql).all(sessionId) as unknown as Topic[];
+}
+
+/**
+ * Topics tagged on a single entry. Cheap lookup used to render per-entry
+ * topic pills inside the session virtual doc.
+ */
+export function listTopicsForEntry(entryId: number): Topic[] {
+  if (!db) {
+    return [];
+  }
+  const sql = `
+    SELECT t.slug, t.title, t.status, t.topic_type, t.body,
+           t.created_at, t.updated_at, t.deleted_at
+      FROM entry_topics et
+      JOIN topics t ON t.slug = et.topic_slug
+      WHERE et.entry_id = ?
+        AND et.deleted_at IS NULL
+        AND t.deleted_at IS NULL
+      ORDER BY t.slug ASC
+  `;
+  return db.prepare(sql).all(entryId) as unknown as Topic[];
+}
+
 export interface StartSessionInput {
   workstream_slug: string;
   summary?: string;
   session_id?: string;
+  /**
+   * Optional free-form identifier of the chat that's starting this session.
+   * Typically the path of the VS Code chat debug-logs folder; the renderer
+   * doesn't enforce a shape. Stored in `sessions.chat_ref` (migration 010).
+   */
+  chat_ref?: string | null;
 }
 
 export function startSession(input: StartSessionInput): Session {
@@ -606,12 +734,16 @@ export function startSession(input: StartSessionInput): Session {
   if (existing) {
     throw new Error(`session_id already exists: ${sessionId}`);
   }
+  const chatRef =
+    input.chat_ref !== undefined && input.chat_ref !== null
+      ? String(input.chat_ref).trim() || null
+      : null;
   handle
     .prepare(
-      `INSERT INTO sessions (session_id, workstream_id, started_at, summary)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO sessions (session_id, workstream_id, started_at, summary, chat_ref)
+       VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(sessionId, ws.id, nowEpoch(), input.summary ?? null);
+    .run(sessionId, ws.id, nowEpoch(), input.summary ?? null, chatRef);
   const row = getSession(sessionId);
   if (!row) {
     throw new Error('startSession: insert succeeded but row not found');

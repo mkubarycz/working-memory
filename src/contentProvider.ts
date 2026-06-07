@@ -1,15 +1,22 @@
 import * as vscode from 'vscode';
 import {
+  getPreviousSessionInWorkstream,
+  getNextSessionInWorkstream,
+  getSession,
   getTopic,
+  getWorkstreamById,
   getWorkstreamBySlug,
   listEntriesForSession,
   listEntriesForTopic,
   listSessionsForWorkstream,
+  listTopicsForEntry,
+  listTopicsForSession,
   listTopicsForWorkstream,
   listTopicTypes,
   listWorkstreamsForTopic,
   updateTopic,
   type Session,
+  type Topic,
   type TopicEntryLink,
 } from './db';
 
@@ -39,8 +46,37 @@ function fmtTime(unixSeconds: number): string {
   });
 }
 
+/**
+ * Human-readable duration between two unix timestamps. Returns `null` if
+ * either is missing. Used by the session virtual doc to surface how long a
+ * closed session lasted.
+ */
+function fmtDuration(
+  startedAt: number | null | undefined,
+  endedAt: number | null | undefined,
+): string | null {
+  if (!startedAt || !endedAt || endedAt < startedAt) {
+    return null;
+  }
+  const totalSec = endedAt - startedAt;
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const parts: string[] = [];
+  if (h > 0) {
+    parts.push(`${h}h`);
+  }
+  if (m > 0 || h > 0) {
+    parts.push(`${m}m`);
+  }
+  parts.push(`${s}s`);
+  return parts.join(' ');
+}
+
 function renderSession(session: Session): string {
-  const header = `### ${session.session_id} — ${fmtDateTime(session.started_at)}`;
+  // Session header is a link to the per-session virtual doc — added with
+  // the session doc feature so workstream docs can drill in.
+  const header = `### [${session.session_id}](working-memory:/session/${session.session_id}.md) — ${fmtDateTime(session.started_at)}`;
   const summary = session.summary?.trim()
     ? session.summary.trim()
     : '_No summary._';
@@ -197,6 +233,147 @@ function renderTopicDoc(slug: string): string {
 }
 
 /**
+ * Render a topic as a small inline pill (markdown link with the title)
+ * pointing at its virtual doc. Used inside the session doc to surface
+ * which topics a given entry is tagged with.
+ */
+function topicPill(t: Topic): string {
+  return `[${t.title}](working-memory:/topic/${t.slug}.md)`;
+}
+
+/**
+ * Render the per-session virtual doc — header (workstream back-link, ids,
+ * timestamps, summary), optional chat link, linked topics, entries with
+ * per-entry topic pills, and Prev/Next session links inside the same
+ * workstream. Always read-only; matches workstream-doc semantics.
+ *
+ * `sessionId` is the UUID from the URI. Missing or soft-deleted sessions
+ * render a clear "not found" / "deleted" body rather than throwing — the
+ * URI may have been bookmarked before the session was deleted.
+ */
+function renderSessionDoc(sessionId: string): string {
+  const liveSession = getSession(sessionId, false);
+  const session = liveSession ?? getSession(sessionId, true);
+
+  if (!session) {
+    return [
+      '# Session not found',
+      '',
+      `No session with id \`${sessionId}\`.`,
+      '',
+      '_Tip: check the workstream doc for the current list of sessions._',
+      '',
+    ].join('\n');
+  }
+
+  if (session.deleted_at !== null) {
+    return [
+      '# Session deleted',
+      '',
+      `Session \`${sessionId}\` was soft-deleted at ${fmtDateTime(session.deleted_at)}.`,
+      '',
+      '_Soft-deleted sessions are hidden from normal listings. To inspect_',
+      '_one, query the DB directly._',
+      '',
+    ].join('\n');
+  }
+
+  const ws = getWorkstreamById(session.workstream_id, true);
+  const wsHeader = ws
+    ? `[${ws.title}](working-memory:/workstream/${ws.slug}.md) \`${ws.slug}\``
+    : `_(unknown workstream id ${session.workstream_id})_`;
+
+  const durationStr = fmtDuration(session.started_at, session.ended_at);
+  const durationLine = session.ended_at
+    ? `- **Duration:** ${durationStr ?? '—'}`
+    : `- **Duration:** _(in progress)_`;
+
+  const chatLine = session.chat_ref
+    ? `- **Chat:** \`${session.chat_ref}\``
+    : `- **Chat:** _(no chat link recorded)_`;
+
+  const entries = listEntriesForSession(session.session_id);
+  const sessionTopics = listTopicsForSession(session.session_id);
+
+  const summary = session.summary?.trim()
+    ? session.summary.trim()
+    : '_No summary._';
+
+  const topicsBlock = sessionTopics.length
+    ? sessionTopics
+        .map(
+          (t) =>
+            `- [${t.title}](working-memory:/topic/${t.slug}.md) \`${t.slug}\``,
+        )
+        .join('\n')
+    : '_No topics tagged on entries in this session._';
+
+  const entriesBlock = entries.length
+    ? entries
+        .map((e) => {
+          const tags = listTopicsForEntry(e.id);
+          const tagsSuffix = tags.length
+            ? ` — ${tags.map(topicPill).join(' · ')}`
+            : '';
+          return `- \`${fmtTime(e.timestamp)}\` ${e.body}${tagsSuffix}`;
+        })
+        .join('\n')
+    : '_No entries._';
+
+  // Prev/Next siblings inside the same workstream. Cheap two-row lookups;
+  // skipped (rendered as a dash) when there's no neighbour on that side.
+  const prev = ws
+    ? getPreviousSessionInWorkstream(
+        ws.id,
+        session.started_at,
+        session.session_id,
+      )
+    : null;
+  const next = ws
+    ? getNextSessionInWorkstream(
+        ws.id,
+        session.started_at,
+        session.session_id,
+      )
+    : null;
+  const prevStr = prev
+    ? `[${fmtDateTime(prev.started_at)}](working-memory:/session/${prev.session_id}.md)`
+    : '—';
+  const nextStr = next
+    ? `[${fmtDateTime(next.started_at)}](working-memory:/session/${next.session_id}.md)`
+    : '—';
+
+  return [
+    `# Session ${session.session_id}`,
+    '',
+    `- **Workstream:** ${wsHeader}`,
+    `- **Session id:** \`${session.session_id}\``,
+    `- **Started:** ${fmtDateTime(session.started_at)}`,
+    `- **Ended:** ${fmtDateTime(session.ended_at)}`,
+    durationLine,
+    chatLine,
+    `- **Entries:** ${entries.length}`,
+    '',
+    '## Summary',
+    '',
+    summary,
+    '',
+    '## Linked topics',
+    '',
+    topicsBlock,
+    '',
+    '## Entries',
+    '',
+    entriesBlock,
+    '',
+    '---',
+    '',
+    `**Prev session:** ${prevStr}   ·   **Next session:** ${nextStr}`,
+    '',
+  ].join('\n');
+}
+
+/**
  * Parse a topic doc on save. Returns the body text between the two `---`
  * fences that follow the metadata header.
  */
@@ -228,7 +405,7 @@ function extractTopicBody(full: string): string {
   return body;
 }
 
-type DocKind = 'workstream' | 'topic' | 'unknown';
+type DocKind = 'workstream' | 'topic' | 'session' | 'unknown';
 
 function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
   const p = uri.path;
@@ -239,6 +416,12 @@ function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
   if (p.startsWith('/topic/') && p.endsWith('.md')) {
     const slug = p.slice('/topic/'.length, p.length - '.md'.length);
     return { kind: 'topic', slug: slug || null };
+  }
+  if (p.startsWith('/session/') && p.endsWith('.md')) {
+    // For sessions, `slug` actually carries the UUID — same key shape from
+    // the FileSystemProvider's POV, just routed to the session renderer.
+    const id = p.slice('/session/'.length, p.length - '.md'.length);
+    return { kind: 'session', slug: id || null };
   }
   return { kind: 'unknown', slug: null };
 }
@@ -350,6 +533,9 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     }
     if (kind === 'topic') {
       return renderTopicDoc(slug);
+    }
+    if (kind === 'session') {
+      return renderSessionDoc(slug);
     }
     return `# Unknown working-memory URI\n\n\`${uri.toString()}\``;
   }
