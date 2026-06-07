@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "kubarycz",
   "private": true,
   "engines": {

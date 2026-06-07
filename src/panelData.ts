@@ -1,6 +1,8 @@
 import {
+  listTopics,
   listTopicsForWorkstream,
   listWorkstreams,
+  type TopicWithCounts,
   type WorkstreamTopicRow,
   type WorkstreamWithCount,
 } from './db';
@@ -9,7 +11,7 @@ import {
  * Plain-JSON shapes shipped to the webview. Keep these serializable —
  * nothing in here may reference `vscode.*` types or DB row objects directly.
  */
-export type PanelTab = 'active' | 'archive';
+export type PanelTab = 'active' | 'archive' | 'topics';
 
 export interface PanelAction {
   /** VS Code command id to invoke. */
@@ -52,9 +54,21 @@ export interface PanelWorkstream {
   children: PanelTopicsGroup[];
 }
 
+export interface PanelTopicRow {
+  kind: 'topic-row';
+  id: string;
+  label: string;
+  description: string;
+  tooltip: string;
+  icon: 'symbol-key';
+  openUri: string;
+}
+
+export type PanelItem = PanelWorkstream | PanelTopicRow;
+
 export interface PanelData {
   tab: PanelTab;
-  workstreams: PanelWorkstream[];
+  items: PanelItem[];
   emptyMessage: string;
 }
 
@@ -70,6 +84,21 @@ function describeTopic(t: WorkstreamTopicRow): string {
   }
   if (t.status !== 'open') {
     parts.push(t.status);
+  }
+  return parts.join(' • ');
+}
+
+function describeTopicRow(t: TopicWithCounts): string {
+  const parts: string[] = [t.slug];
+  if (t.workstream_count > 0) {
+    parts.push(
+      `${t.workstream_count} workstream${t.workstream_count === 1 ? '' : 's'}`,
+    );
+  }
+  if (t.entry_count > 0) {
+    parts.push(
+      `${t.entry_count} entr${t.entry_count === 1 ? 'y' : 'ies'}`,
+    );
   }
   return parts.join(' • ');
 }
@@ -132,14 +161,38 @@ function buildWorkstream(
   };
 }
 
+function buildTopicRow(t: TopicWithCounts): PanelTopicRow {
+  return {
+    kind: 'topic-row',
+    id: `topics:topic-row:${t.slug}`,
+    label: t.title,
+    description: describeTopicRow(t),
+    tooltip: `${t.title} (${t.slug}) — ${t.status}`,
+    icon: 'symbol-key',
+    openUri: `working-memory:/topic/${t.slug}.md`,
+  };
+}
+
+export function getPanelTopicsData(): PanelData {
+  const rows = listTopics({ status: 'open' });
+  return {
+    tab: 'topics',
+    items: rows.map((t) => buildTopicRow(t)),
+    emptyMessage: 'No open topics.',
+  };
+}
+
 export function getPanelData(tab: PanelTab): PanelData {
+  if (tab === 'topics') {
+    return getPanelTopicsData();
+  }
   const rows =
     tab === 'active'
       ? listWorkstreams({ status: 'open', orderBy: 'last-activity-desc' })
       : listWorkstreams({ status: 'closed', orderBy: 'closed-desc' });
   return {
     tab,
-    workstreams: rows.map((w) => buildWorkstream(tab, w)),
+    items: rows.map((w) => buildWorkstream(tab, w)),
     emptyMessage:
       tab === 'active'
         ? 'No active workstreams.'
@@ -147,9 +200,14 @@ export function getPanelData(tab: PanelTab): PanelData {
   };
 }
 
-export function getAllPanelData(): { active: PanelData; archive: PanelData } {
+export function getAllPanelData(): {
+  active: PanelData;
+  archive: PanelData;
+  topics: PanelData;
+} {
   return {
     active: getPanelData('active'),
     archive: getPanelData('archive'),
+    topics: getPanelTopicsData(),
   };
 }

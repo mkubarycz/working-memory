@@ -8,7 +8,7 @@
   /** @typedef {{ kind: string, id: string, label: string, description?: string,
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean }} Node */
-  /** @typedef {{ tab: 'active'|'archive', workstreams: Node[],
+  /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
   // --- Icons (inline SVG, currentColor) ---------------------------------
@@ -44,15 +44,18 @@
   // --- State ------------------------------------------------------------
 
   const persisted =
-    /** @type {{ activeTab?: 'active'|'archive', expanded?: string[] } | undefined} */ (
+    /** @type {{ activeTab?: 'active'|'archive'|'topics', expanded?: string[] } | undefined} */ (
       vscode.getState()
     );
 
-  /** @type {{ activeTab: 'active'|'archive', expanded: Set<string>,
-   *           data: { active?: TabData, archive?: TabData },
+  /** @type {{ activeTab: 'active'|'archive'|'topics', expanded: Set<string>,
+   *           data: { active?: TabData, archive?: TabData, topics?: TabData },
    *           focusedId: string | null }} */
   const state = {
-    activeTab: persisted?.activeTab === 'archive' ? 'archive' : 'active',
+    activeTab:
+      persisted?.activeTab === 'archive' || persisted?.activeTab === 'topics'
+        ? persisted.activeTab
+        : 'active',
     expanded: new Set(Array.isArray(persisted?.expanded) ? persisted.expanded : []),
     data: {},
     focusedId: null,
@@ -196,7 +199,7 @@
     // List
     listEl.replaceChildren();
     const data = state.data[state.activeTab];
-    if (!data || data.workstreams.length === 0) {
+    if (!data || data.items.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'empty';
       empty.textContent = data ? data.emptyMessage : '';
@@ -204,8 +207,8 @@
       return;
     }
     const frag = document.createDocumentFragment();
-    for (const ws of data.workstreams) {
-      renderNode(ws, 0, frag);
+    for (const item of data.items) {
+      renderNode(item, 0, frag);
     }
     listEl.appendChild(frag);
   }
@@ -219,7 +222,7 @@
       return;
     }
     const t = btn.getAttribute('data-tab');
-    if (t !== 'active' && t !== 'archive') {
+    if (t !== 'active' && t !== 'archive' && t !== 'topics') {
       return;
     }
     if (state.activeTab === t) {
@@ -249,10 +252,10 @@
           }
         }
       };
-      for (const tab of /** @type {const} */ (['active', 'archive'])) {
+      for (const tab of /** @type {const} */ (['active', 'archive', 'topics'])) {
         const td = msg.data?.[tab];
-        if (td?.workstreams) {
-          for (const w of td.workstreams) {
+        if (td?.items) {
+          for (const w of td.items) {
             visit(w);
           }
         }
