@@ -85,15 +85,13 @@ fi
   && ok "snapshot: ${SNAP_BASE}.sqlite-shm" || true
 
 # Prune snapshots older than the 10 most recent (by .sqlite file mtime).
+# Use a while-read loop (not `mapfile`) so this works on macOS's stock bash 3.2.
 info "snapshot: pruning old backups (keeping 10 most recent)"
-mapfile -t OLD_SNAPS < <(
-  ls -1t "$BACKUP_DIR"/journal-pre-v*.sqlite 2>/dev/null | tail -n +11 || true
-)
-for snap in "${OLD_SNAPS[@]:-}"; do
+while IFS= read -r snap; do
   [[ -z "$snap" ]] && continue
   rm -f "$snap" "${snap}-wal" "${snap}-shm"
   ok "pruned: $(basename "$snap")"
-done
+done < <(ls -1t "$BACKUP_DIR"/journal-pre-v*.sqlite 2>/dev/null | tail -n +11 || true)
 
 # ---------------------------------------------------------------------------
 # 2. Compile

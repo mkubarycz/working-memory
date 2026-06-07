@@ -68,7 +68,7 @@ function renderWorkstreamDoc(slug: string): string {
           if (elsewhere > 0) {
             parts.push(`${elsewhere} elsewhere`);
           }
-          if (t.status !== 'active') {
+          if (t.status !== 'open') {
             parts.push(`_${t.status}_`);
           }
           const meta = parts.length ? ` — ${parts.join(' • ')}` : '';

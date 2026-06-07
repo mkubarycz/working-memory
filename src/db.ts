@@ -17,6 +17,7 @@ export interface Workstream {
 
 export interface WorkstreamWithCount extends Workstream {
   session_count: number;
+  last_activity_at?: number;
 }
 
 export interface Session {
@@ -103,6 +104,8 @@ const MIGRATIONS: Migration[] = [
   { version: 1, file: '001_initial.sql' },
   { version: 2, file: '002_soft_delete.sql' },
   { version: 3, file: '003_topics.sql' },
+  { version: 4, file: '004_topic_status_open_closed.sql' },
+  { version: 5, file: '005_safe_topic_rebuild_template.sql' },
 ];
 
 function nowEpoch(): number {
@@ -234,6 +237,15 @@ function withTransaction<T>(fn: () => T): T {
 export interface ListWorkstreamsOptions {
   status?: 'open' | 'closed' | 'all';
   includeDeleted?: boolean;
+  /**
+   * Sort order. Defaults to `opened-asc` (oldest first), matching the original
+   * tree behavior. `closed-desc` is used by the Archive tab to show
+   * most-recently-closed first; rows with a null `closed_at` sink to the end.
+   * `last-activity-desc` sorts by the most recent (non-deleted) entry
+   * timestamp across the workstream's sessions, falling back to `opened_at`
+   * when no entries exist.
+   */
+  orderBy?: 'opened-asc' | 'closed-desc' | 'last-activity-desc';
 }
 
 export function listWorkstreams(
@@ -244,6 +256,7 @@ export function listWorkstreams(
   }
   const status = opts.status ?? 'all';
   const includeDeleted = opts.includeDeleted ?? false;
+  const orderBy = opts.orderBy ?? 'opened-asc';
 
   const clauses: string[] = [];
   const params: (string | number)[] = [];
@@ -256,15 +269,38 @@ export function listWorkstreams(
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
+  let orderSql: string;
+  if (orderBy === 'closed-desc') {
+    orderSql = 'ORDER BY w.closed_at IS NULL, w.closed_at DESC, w.id DESC';
+  } else if (orderBy === 'last-activity-desc') {
+    orderSql = 'ORDER BY last_activity_at DESC, w.id DESC';
+  } else {
+    orderSql = 'ORDER BY w.opened_at ASC, w.id ASC';
+  }
+
+  const lastActivitySelect =
+    orderBy === 'last-activity-desc'
+      ? `,
+           COALESCE(
+             (SELECT MAX(e.timestamp)
+                FROM entries e
+                JOIN sessions s ON s.session_id = e.session_id
+               WHERE s.workstream_id = w.id
+                 AND s.deleted_at IS NULL
+                 AND e.deleted_at IS NULL),
+             w.opened_at
+           ) AS last_activity_at`
+      : '';
+
   const sql = `
     SELECT w.id, w.slug, w.title, w.status, w.opened_at, w.closed_at,
            w.closure, w.deleted_at,
            (SELECT COUNT(*) FROM sessions s
               WHERE s.workstream_id = w.id AND s.deleted_at IS NULL)
-             AS session_count
+             AS session_count${lastActivitySelect}
       FROM workstreams w
       ${where}
-      ORDER BY w.opened_at ASC, w.id ASC
+      ${orderSql}
   `;
   return db.prepare(sql).all(...params) as unknown as WorkstreamWithCount[];
 }
@@ -379,6 +415,34 @@ export function updateWorkstream(
   const updated = getWorkstreamBySlug(slug);
   if (!updated) {
     throw new Error('updateWorkstream: row vanished after update');
+  }
+  return updated;
+}
+
+/**
+ * Flip a closed workstream back to `open` and clear `closed_at`. Closure note
+ * is preserved (it's still historically accurate). No-op (returns the row
+ * unchanged) if the workstream is already open.
+ */
+export function reopenWorkstream(slug: string): Workstream {
+  const handle = requireDb();
+  const current = getWorkstreamBySlug(slug);
+  if (!current) {
+    throw new Error(`workstream not found: ${slug}`);
+  }
+  if (current.status === 'open' && current.closed_at === null) {
+    return current;
+  }
+  handle
+    .prepare(
+      `UPDATE workstreams
+          SET status = 'open', closed_at = NULL
+        WHERE slug = ?`,
+    )
+    .run(slug);
+  const updated = getWorkstreamBySlug(slug);
+  if (!updated) {
+    throw new Error('reopenWorkstream: row vanished after update');
   }
   return updated;
 }
@@ -706,7 +770,7 @@ export function softDeleteEntry(entryId: number): SoftDeleteResult {
 // Topics (migration 003)
 // ---------------------------------------------------------------------------
 
-export type TopicStatus = 'active' | 'dormant' | 'archived';
+export type TopicStatus = 'open' | 'closed';
 
 export interface Topic {
   slug: string;
@@ -846,7 +910,7 @@ export function createTopic(input: CreateTopicInput): Topic {
   }
   const now = nowEpoch();
   const title = input.title?.trim() || humanizeSlug(input.slug);
-  const status = input.status ?? 'active';
+  const status = input.status ?? 'open';
   handle
     .prepare(
       `INSERT INTO topics (slug, title, status, body, created_at, updated_at)
@@ -1025,7 +1089,7 @@ function ensureTopicStub(
   handle
     .prepare(
       `INSERT INTO topics (slug, title, status, body, created_at, updated_at)
-       VALUES (?, ?, 'active', '', ?, ?)`,
+       VALUES (?, ?, 'open', '', ?, ?)`,
     )
     .run(slug, humanizeSlug(slug), now, now);
   return { created: true };

@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.3.1",
+  "version": "0.4.2",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -11,7 +11,8 @@
   },
   "main": "./out/src/extension.js",
   "activationEvents": [
-    "onView:workingMemory.workstreams",
+    "onView:workingMemory.workstreams.active",
+    "onView:workingMemory.workstreams.archive",
     "onLanguageModelTool:wm_list_workstreams",
     "onLanguageModelTool:wm_get_workstream",
     "onLanguageModelTool:wm_create_workstream",
@@ -47,8 +48,12 @@
     "views": {
       "working-memory": [
         {
-          "id": "workingMemory.workstreams",
-          "name": "Workstreams"
+          "id": "workingMemory.workstreams.active",
+          "name": "Active"
+        },
+        {
+          "id": "workingMemory.workstreams.archive",
+          "name": "Archive"
         }
       ]
     },
@@ -70,12 +75,12 @@
       "view/title": [
         {
           "command": "working-memory.refresh",
-          "when": "view == workingMemory.workstreams",
+          "when": "view == workingMemory.workstreams.active || view == workingMemory.workstreams.archive",
           "group": "navigation"
         },
         {
           "command": "working-memory.reloadWindow",
-          "when": "view == workingMemory.workstreams",
+          "when": "view == workingMemory.workstreams.active || view == workingMemory.workstreams.archive",
           "group": "navigation"
         }
       ]
@@ -435,7 +440,7 @@
         "displayName": "Working Memory: List Topics",
         "toolReferenceName": "wm_list_topics",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "List topics (durable, evolving subjects) with link counts. Each topic returns slug, title, status (active|dormant|archived), body, created_at/updated_at/deleted_at, workstream_count (active workstream links), and entry_count (active entry links). Filter by status, optionally scope to one workstream via workstream_slug (returns only topics linked to that workstream). Soft-deleted topics are hidden unless include_deleted is true.",
+        "modelDescription": "List topics (durable, evolving subjects) with link counts. Each topic returns slug, title, status (open|closed), body, created_at/updated_at/deleted_at, workstream_count (active workstream links), and entry_count (active entry links). Filter by status, optionally scope to one workstream via workstream_slug (returns only topics linked to that workstream). Soft-deleted topics are hidden unless include_deleted is true.",
         "userDescription": "List topics from the journal",
         "tags": [
           "working-memory"
@@ -446,9 +451,8 @@
             "status": {
               "type": "string",
               "enum": [
-                "active",
-                "dormant",
-                "archived",
+                "open",
+                "closed",
                 "all"
               ],
               "description": "Filter by status. Defaults to 'all'."
@@ -496,7 +500,7 @@
         "displayName": "Working Memory: Create Topic",
         "toolReferenceName": "wm_create_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'active'.",
+        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'open'.",
         "userDescription": "Create a new topic",
         "tags": [
           "working-memory"
@@ -522,11 +526,10 @@
             "status": {
               "type": "string",
               "enum": [
-                "active",
-                "dormant",
-                "archived"
+                "open",
+                "closed"
               ],
-              "description": "Initial status. Defaults to 'active'."
+              "description": "Initial status. Defaults to 'open'."
             }
           }
         }
@@ -562,9 +565,8 @@
             "status": {
               "type": "string",
               "enum": [
-                "active",
-                "dormant",
-                "archived"
+                "open",
+                "closed"
               ],
               "description": "New status."
             }
@@ -599,7 +601,7 @@
         "displayName": "Working Memory: Link Workstream ↔ Topic",
         "toolReferenceName": "wm_link_workstream_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Pin a topic to a workstream (M:N). Idempotent. If the topic slug doesn't exist yet, auto-creates a stub topic with title = humanized slug, empty body, status 'active' in the same transaction (topic_created: true in the result). If the link row exists but is soft-deleted, restores it (link_restored: true). The workstream must exist (and not be soft-deleted).",
+        "modelDescription": "Pin a topic to a workstream (M:N). Idempotent. If the topic slug doesn't exist yet, auto-creates a stub topic with title = humanized slug, empty body, status 'open' in the same transaction (topic_created: true in the result). If the link row exists but is soft-deleted, restores it (link_restored: true). The workstream must exist (and not be soft-deleted).",
         "userDescription": "Link a topic to a workstream",
         "tags": [
           "working-memory"
@@ -655,7 +657,7 @@
         "displayName": "Working Memory: Link Entry ↔ Topic",
         "toolReferenceName": "wm_link_entry_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Tag a journal entry with a topic (M:N). Idempotent. Auto-creates a stub topic (title = humanized slug, status 'active', empty body) if topic_slug is unknown — flagged in the response as topic_created. ALSO auto-creates a workstream_topics row linking the topic to the entry's workstream if one doesn't exist; if such a row exists but is soft-deleted, it is restored. This is the bit of magic that makes the tree useful: any entry tagged with a topic causes that topic to appear under its workstream's Topics group without a separate wm_link_workstream_topic call. If the entry, its session, or its workstream is soft-deleted, the link is rejected. If the topic itself is soft-deleted, it is undeleted (so re-linking a 'restored' topic is implicit).",
+        "modelDescription": "Tag a journal entry with a topic (M:N). Idempotent. Auto-creates a stub topic (title = humanized slug, status 'open', empty body) if topic_slug is unknown — flagged in the response as topic_created. ALSO auto-creates a workstream_topics row linking the topic to the entry's workstream if one doesn't exist; if such a row exists but is soft-deleted, it is restored. This is the bit of magic that makes the tree useful: any entry tagged with a topic causes that topic to appear under its workstream's Topics group without a separate wm_link_workstream_topic call. If the entry, its session, or its workstream is soft-deleted, the link is rejected. If the topic itself is soft-deleted, it is undeleted (so re-linking a 'restored' topic is implicit).",
         "userDescription": "Tag an entry with a topic (auto-links workstream too)",
         "tags": [
           "working-memory"
