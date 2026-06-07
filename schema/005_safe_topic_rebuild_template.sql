@@ -1,0 +1,57 @@
+-- 005_safe_topic_rebuild_template.sql
+-- Data no-op. This migration exists solely to colocate the lesson from the
+-- v0.4.0 / migration-004 incident with the place where future migrations
+-- will be written.
+--
+-- ============================================================================
+-- Safe table-rebuild pattern when `PRAGMA foreign_keys = ON` is set globally
+-- ============================================================================
+--
+-- The DB layer opens every connection with `PRAGMA foreign_keys = ON`. That
+-- means any `DROP TABLE foo` will fire `ON DELETE CASCADE` actions on every
+-- child table that references `foo` — BEFORE the new table you're about to
+-- rename into place exists. Result: the join tables are emptied.
+--
+-- `PRAGMA defer_foreign_keys = ON` does NOT save you. It defers the integrity
+-- *check* to COMMIT, not the cascade *actions*. By COMMIT the new table holds
+-- the same keys, the check passes, and the migration records as successful —
+-- silently lossy.
+--
+-- This is exactly what migration 004 did to `workstream_topics` and
+-- `entry_topics`. Both were wiped. Topics survived; their links did not.
+--
+-- ----------------------------------------------------------------------------
+-- Use this sequence instead:
+-- ----------------------------------------------------------------------------
+--
+--   1. PRAGMA foreign_keys = OFF;       -- MUST be outside the transaction
+--   2. BEGIN;
+--   3. CREATE TABLE foo_new (...);
+--   4. INSERT INTO foo_new SELECT ... FROM foo;
+--   5. -- BEFORE the drop: capture any child-table rows that would cascade.
+--      --   CREATE TEMP TABLE _saved_links AS SELECT * FROM foo_children;
+--   6. DROP TABLE foo;
+--   7. ALTER TABLE foo_new RENAME TO foo;
+--   8. -- Re-insert the captured child rows now that the parent keys exist again.
+--      --   INSERT INTO foo_children SELECT * FROM _saved_links;
+--   9. PRAGMA foreign_key_check;         -- abort the txn if this returns rows
+--  10. COMMIT;
+--  11. PRAGMA foreign_keys = ON;
+--
+-- Notes:
+--   - Steps 1 and 11 MUST be outside the transaction. Toggling foreign_keys
+--     inside a txn is a no-op.
+--   - Step 9 is the explicit-integrity-check replacement for defer_foreign_keys.
+--     Inspect its rows and ROLLBACK if anything is dangling.
+--   - The migration runner in db.ts wraps every migration in BEGIN/COMMIT, so
+--     a migration that needs steps 1/11 must either bypass the runner or call
+--     the PRAGMAs and emit BEGIN/COMMIT itself (and the runner needs to be
+--     taught to not double-wrap). When in doubt, snapshot the DB first via
+--     scripts/release.sh and inspect afterward.
+--
+-- ============================================================================
+-- Body: no-op. The migration runner records this version as applied; the
+-- comment block above is the deliverable.
+-- ============================================================================
+
+SELECT 1;  -- explicit no-op so the runner's exec() has a statement to chew on.
