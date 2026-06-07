@@ -175,7 +175,9 @@ working-memory/
 │   ├── 004_topic_status_open_closed.sql
 │   ├── 005_safe_topic_rebuild_template.sql  # cure for the 004 cascade bug
 │   ├── 006_topic_parents.sql  # topic-to-topic DAG (parent/child links)
-│   └── 007_topic_type.sql     # topic_type discriminator (default 'topic')
+│   ├── 007_topic_type.sql     # topic_type discriminator (default 'topic')
+│   ├── 008_topic_types_table.sql  # `topic_types` registry table + seed
+│   └── 009_topic_type_fk.sql      # FK topics.topic_type -> topic_types.id
 ├── src/
 │   ├── extension.ts           # activate/deactivate, registers views + commands
 │   ├── db.ts                  # hub lookup, open + migrate, all queries
@@ -191,6 +193,8 @@ working-memory/
 
 ## Release history
 
+- **v0.7.2** — `topic_types` DB table with FK from `topics.topic_type`. Removed the TS registry + build-time sync script in favor of server-side validation; new `wm_list_topic_types` tool exposes the registry.
+- **v0.7.1** — TopicType registry; Feature type registered.
 - **v0.7.0** — add `topic_type` discriminator on topics (default `'topic'`, registry in `src/topicTypes.ts`); surfaced on `wm_create_topic`, `wm_update_topic`, `wm_list_topics`.
 - **v0.6.1** — topic parents DAG + muted closed topic rows.
 - **v0.5.1** — Topics tab in the panel.

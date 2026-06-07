@@ -3,12 +3,13 @@ import * as path from 'path';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync as DatabaseSyncT } from 'node:sqlite';
 import * as vscode from 'vscode';
-import {
-  DEFAULT_TOPIC_TYPE,
-  isTopicTypeId,
-  TOPIC_TYPE_IDS,
-  type TopicTypeId,
-} from './topicTypes';
+
+/**
+ * Default value for `topics.topic_type` when a caller doesn't specify one.
+ * Matches the column DEFAULT set in migration 007. Also the id of the
+ * always-seeded built-in row in `topic_types`.
+ */
+export const DEFAULT_TOPIC_TYPE = 'topic';
 
 export interface Workstream {
   id: number;
@@ -104,6 +105,14 @@ export function resolveDbPath(): string | null {
 interface Migration {
   version: number;
   file: string;
+  /**
+   * If true, the runner does NOT wrap this migration in BEGIN/COMMIT — the
+   * migration file is expected to manage its own transaction (and any
+   * `PRAGMA foreign_keys` toggles that have to live outside one). After the
+   * migration runs, the runner performs `PRAGMA foreign_key_check` and
+   * aborts the install if any rows are returned.
+   */
+  noWrap?: boolean;
 }
 
 const MIGRATIONS: Migration[] = [
@@ -114,6 +123,11 @@ const MIGRATIONS: Migration[] = [
   { version: 5, file: '005_safe_topic_rebuild_template.sql' },
   { version: 6, file: '006_topic_parents.sql' },
   { version: 7, file: '007_topic_type.sql' },
+  { version: 8, file: '008_topic_types_table.sql' },
+  // 009 rebuilds the `topics` table to add the FK on topic_type. Must run
+  // unwrapped so `PRAGMA foreign_keys = OFF` actually takes effect; see
+  // 005_safe_topic_rebuild_template.sql for the why.
+  { version: 9, file: '009_topic_type_fk.sql', noWrap: true },
 ];
 
 function nowEpoch(): number {
@@ -158,6 +172,26 @@ function runMigrations(instance: DatabaseSyncT, extensionPath: string): void {
       path.join(extensionPath, 'schema', m.file),
       'utf8',
     );
+    if (m.noWrap) {
+      // Migration manages its own transaction (and any FK toggles that have
+      // to live outside one). After it runs, verify FK integrity before
+      // recording the migration as applied.
+      instance.exec(sql);
+      const violations = instance
+        .prepare(`PRAGMA foreign_key_check`)
+        .all() as unknown as Record<string, unknown>[];
+      if (violations.length) {
+        throw new Error(
+          `migration ${m.file} left ${violations.length} foreign-key violation(s): ${JSON.stringify(violations)}`,
+        );
+      }
+      instance
+        .prepare(
+          `INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+        )
+        .run(m.version, nowEpoch());
+      continue;
+    }
     instance.exec('BEGIN');
     try {
       instance.exec(sql);
@@ -784,14 +818,80 @@ export interface Topic {
   slug: string;
   title: string;
   status: TopicStatus;
-  topic_type: TopicTypeId;
+  topic_type: string;
   body: string;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
 }
 
-export { TOPIC_TYPE_IDS, DEFAULT_TOPIC_TYPE, isTopicTypeId, type TopicTypeId };
+// ---------------------------------------------------------------------------
+// Topic types (migration 008 — DB-backed registry)
+// ---------------------------------------------------------------------------
+
+export interface TopicType {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * Return all rows from `topic_types`, ordered by id. Cheap PK scan — used by
+ * the panel for icons/labels and by `wm_list_topic_types`. Returns `[]` if
+ * the DB isn't open.
+ */
+export function listTopicTypes(): TopicType[] {
+  if (!db) {
+    return [];
+  }
+  const sql = `
+    SELECT id, label, icon, description, created_at, updated_at
+      FROM topic_types
+      ORDER BY id ASC
+  `;
+  return db.prepare(sql).all() as unknown as TopicType[];
+}
+
+/**
+ * Return the set of valid topic_type ids from the DB. Used for server-side
+ * validation of `topic_type` parameters in tool calls.
+ */
+export function listTopicTypeIds(): string[] {
+  if (!db) {
+    return [];
+  }
+  const rows = db
+    .prepare(`SELECT id FROM topic_types ORDER BY id ASC`)
+    .all() as unknown as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
+/**
+ * True if `id` is a primary key in `topic_types`. False on a missing DB
+ * (caller should have checked `isDbOpen()` first).
+ */
+export function topicTypeExists(id: string): boolean {
+  if (!db) {
+    return false;
+  }
+  const row = db
+    .prepare(`SELECT 1 AS x FROM topic_types WHERE id = ?`)
+    .get(id);
+  return Boolean(row);
+}
+
+function assertValidTopicType(value: string): void {
+  if (topicTypeExists(value)) {
+    return;
+  }
+  const ids = listTopicTypeIds();
+  throw new Error(
+    `invalid topic_type: ${value} (must be one of ${ids.join(', ')})`,
+  );
+}
 
 export interface TopicWithCounts extends Topic {
   workstream_count: number;
@@ -820,7 +920,7 @@ export interface ListTopicsOptions {
   status?: TopicStatus | 'all';
   includeDeleted?: boolean;
   workstreamSlug?: string;
-  topicType?: TopicTypeId;
+  topicType?: string;
 }
 
 function snippetBody(body: string, max = 200): string {
@@ -855,11 +955,7 @@ export function listTopics(opts: ListTopicsOptions = {}): TopicWithCounts[] {
     params.push(status);
   }
   if (opts.topicType !== undefined) {
-    if (!isTopicTypeId(opts.topicType)) {
-      throw new Error(
-        `invalid topic_type: ${opts.topicType} (must be one of ${TOPIC_TYPE_IDS.join(', ')})`,
-      );
-    }
+    assertValidTopicType(opts.topicType);
     clauses.push('t.topic_type = ?');
     params.push(opts.topicType);
   }
@@ -917,7 +1013,7 @@ export interface CreateTopicInput {
   title?: string;
   body?: string;
   status?: TopicStatus;
-  topic_type?: TopicTypeId;
+  topic_type?: string;
 }
 
 export function createTopic(input: CreateTopicInput): Topic {
@@ -930,13 +1026,9 @@ export function createTopic(input: CreateTopicInput): Topic {
     const tag = existing.deleted_at ? ' (soft-deleted)' : '';
     throw new Error(`topic slug already exists${tag}: ${input.slug}`);
   }
-  let topicType: TopicTypeId = DEFAULT_TOPIC_TYPE;
+  let topicType: string = DEFAULT_TOPIC_TYPE;
   if (input.topic_type !== undefined) {
-    if (!isTopicTypeId(input.topic_type)) {
-      throw new Error(
-        `invalid topic_type: ${input.topic_type} (must be one of ${TOPIC_TYPE_IDS.join(', ')})`,
-      );
-    }
+    assertValidTopicType(input.topic_type);
     topicType = input.topic_type;
   }
   const now = nowEpoch();
@@ -959,7 +1051,7 @@ export interface UpdateTopicInput {
   title?: string;
   body?: string;
   status?: TopicStatus;
-  topic_type?: TopicTypeId;
+  topic_type?: string;
 }
 
 export function updateTopic(slug: string, patch: UpdateTopicInput): Topic {
@@ -983,11 +1075,7 @@ export function updateTopic(slug: string, patch: UpdateTopicInput): Topic {
     params.push(patch.status);
   }
   if (patch.topic_type !== undefined) {
-    if (!isTopicTypeId(patch.topic_type)) {
-      throw new Error(
-        `invalid topic_type: ${patch.topic_type} (must be one of ${TOPIC_TYPE_IDS.join(', ')})`,
-      );
-    }
+    assertValidTopicType(patch.topic_type);
     sets.push('topic_type = ?');
     params.push(patch.topic_type);
   }

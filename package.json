@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.7.0",
+  "version": "0.8.1",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -33,7 +33,8 @@
     "onLanguageModelTool:wm_link_entry_topic",
     "onLanguageModelTool:wm_unlink_entry_topic",
     "onLanguageModelTool:wm_link_topic_parent",
-    "onLanguageModelTool:wm_unlink_topic_parent"
+    "onLanguageModelTool:wm_unlink_topic_parent",
+    "onLanguageModelTool:wm_list_topic_types"
   ],
   "contributes": {
     "viewsContainers": {
@@ -437,7 +438,7 @@
         "displayName": "Working Memory: List Topics",
         "toolReferenceName": "wm_list_topics",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "List topics (durable, evolving subjects) with link counts. Each topic returns slug, title, status (open|closed), topic_type (discriminator — currently one of 'topic', 'feature', 'task'; defaults to 'topic' for legacy rows), body, created_at/updated_at/deleted_at, workstream_count (active workstream links), and entry_count (active entry links). Filter by status, optionally scope to one workstream via workstream_slug (returns only topics linked to that workstream), and optionally filter to a single topic_type. Soft-deleted topics are hidden unless include_deleted is true.",
+        "modelDescription": "List topics (durable, evolving subjects) with link counts. Each topic returns slug, title, status (open|closed), topic_type (discriminator; defaults to 'topic' for legacy rows), body, created_at/updated_at/deleted_at, workstream_count (active workstream links), and entry_count (active entry links). Filter by status, optionally scope to one workstream via workstream_slug (returns only topics linked to that workstream), and optionally filter to a single topic_type. Soft-deleted topics are hidden unless include_deleted is true. Valid topic_type values live in the `topic_types` table — call wm_list_topic_types to enumerate them.",
         "userDescription": "List topics from the journal",
         "tags": [
           "working-memory"
@@ -464,12 +465,7 @@
             },
             "topic_type": {
               "type": "string",
-              "enum": [
-                "topic",
-                "feature",
-                "task"
-              ],
-              "description": "Optional: filter to a single topic_type discriminator. Omit to include all types."
+              "description": "Optional: filter to a single topic_type id. Any id from the `topic_types` table — call wm_list_topic_types to see valid values."
             }
           }
         }
@@ -506,7 +502,7 @@
         "displayName": "Working Memory: Create Topic",
         "toolReferenceName": "wm_create_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'open'. `topic_type` is a discriminator — currently one of 'topic' (default, a durable subject), 'feature' (a user-visible capability), or 'task' (a unit of work).",
+        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'open'. `topic_type` defaults to 'topic'. Valid topic_type values live in the `topic_types` table — call wm_list_topic_types to enumerate them. Unknown ids are rejected with a server-side error listing the current valid set.",
         "userDescription": "Create a new topic",
         "tags": [
           "working-memory"
@@ -539,12 +535,7 @@
             },
             "topic_type": {
               "type": "string",
-              "enum": [
-                "topic",
-                "feature",
-                "task"
-              ],
-              "description": "Discriminator for this topic. Defaults to 'topic'."
+              "description": "Any id from the `topic_types` table — call wm_list_topic_types to see valid values. Defaults to 'topic'."
             }
           }
         }
@@ -554,7 +545,7 @@
         "displayName": "Working Memory: Update Topic",
         "toolReferenceName": "wm_update_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a topic by slug. Any of title, body, status, topic_type can be changed. Bumps `updated_at`. Returns the updated topic row.",
+        "modelDescription": "Partially update a topic by slug. Any of title, body, status, topic_type can be changed. Bumps `updated_at`. Returns the updated topic row. Valid topic_type values live in the `topic_types` table — call wm_list_topic_types to enumerate them.",
         "userDescription": "Update a topic's title, body, status, or type",
         "tags": [
           "working-memory"
@@ -587,12 +578,7 @@
             },
             "topic_type": {
               "type": "string",
-              "enum": [
-                "topic",
-                "feature",
-                "task"
-              ],
-              "description": "New topic_type discriminator."
+              "description": "Any id from the `topic_types` table — call wm_list_topic_types to see valid values."
             }
           }
         }
@@ -787,6 +773,21 @@
             }
           }
         }
+      },
+      {
+        "name": "wm_list_topic_types",
+        "displayName": "Working Memory: List Topic Types",
+        "toolReferenceName": "wm_list_topic_types",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "List the rows in the `topic_types` registry table. Each row returns id (the value stored in `topics.topic_type`), label (human-readable singular display name), icon (VS Code codicon id, see https://microsoft.github.io/vscode-codicons/), description (one-sentence semantics), created_at, and updated_at. Call this before passing `topic_type` to wm_create_topic / wm_update_topic / wm_list_topics to know which ids are valid — the topic-mutating tools reject unknown ids server-side with a clear error.",
+        "userDescription": "List available topic types",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
       }
     ]
   },
@@ -800,6 +801,7 @@
   "devDependencies": {
     "@types/node": "^22.5.0",
     "@types/vscode": "^1.95.0",
+    "@vscode/codicons": "^0.0.45",
     "@vscode/vsce": "^2.24.0",
     "typescript": "^5.4.0"
   }

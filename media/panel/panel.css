@@ -119,17 +119,16 @@ html, body {
   cursor: pointer;
 }
 
-.twisty svg {
-  width: 12px;
-  height: 12px;
+.twisty .codicon {
+  font-size: 12px;
   transition: transform 80ms ease-in-out;
 }
 
-.twisty.expanded svg {
+.twisty.expanded .codicon {
   transform: rotate(90deg);
 }
 
-.twisty.leaf svg {
+.twisty.leaf .codicon {
   visibility: hidden;
 }
 
@@ -144,9 +143,17 @@ html, body {
   color: var(--vscode-icon-foreground, var(--vscode-foreground));
 }
 
-.icon svg {
-  width: 16px;
-  height: 16px;
+/* Codicon sizing + vertical alignment. Codicon spans normally inherit the
+   surrounding font metrics; pin to 14px so row icons and the …-actions glyph
+   render at a predictable size regardless of the host font. */
+.codicon {
+  font-size: 14px;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.icon .codicon {
+  font-size: 14px;
 }
 
 .label {

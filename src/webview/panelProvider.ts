@@ -122,6 +122,12 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     const styleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(base, 'panel.css'),
     );
+    const codiconUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'codicons', 'codicon.css'),
+    );
+    // Codicon stylesheet declares @font-face { src: url('./codicon.ttf') } —
+    // the font fetch needs font-src on cspSource, the stylesheet itself needs
+    // style-src on cspSource. Both are already enabled below.
     const csp = [
       `default-src 'none'`,
       `img-src ${webview.cspSource} data:`,
@@ -136,6 +142,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="${csp}" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="${codiconUri}" />
     <link rel="stylesheet" href="${styleUri}" />
     <title>Working Memory</title>
   </head>

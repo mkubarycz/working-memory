@@ -18,6 +18,7 @@ import {
   listTopics,
   listTopicChildren,
   listTopicParents,
+  listTopicTypes,
   listWorkstreams,
   listWorkstreamsForTopic,
   removeTopicParent,
@@ -33,7 +34,6 @@ import {
   updateWorkstream,
   type Topic,
   type TopicStatus,
-  type TopicTypeId,
 } from './db';
 
 interface ToolDeps {
@@ -136,7 +136,7 @@ interface ListTopicsInput {
   status?: TopicStatus | 'all';
   include_deleted?: boolean;
   workstream_slug?: string;
-  topic_type?: TopicTypeId;
+  topic_type?: string;
 }
 interface GetTopicInput {
   slug: string;
@@ -147,14 +147,14 @@ interface CreateTopicToolInput {
   title?: string;
   body?: string;
   status?: TopicStatus;
-  topic_type?: TopicTypeId;
+  topic_type?: string;
 }
 interface UpdateTopicToolInput {
   slug: string;
   title?: string;
   body?: string;
   status?: TopicStatus;
-  topic_type?: TopicTypeId;
+  topic_type?: string;
 }
 interface DeleteTopicInput {
   slug: string;
@@ -469,6 +469,12 @@ export function registerTools(
         const result = removeTopicParent(input.child_slug, input.parent_slug);
         deps.refresh();
         return { ok: true, removed: result.removed, unlink: result };
+      }),
+    }),
+    vscode.lm.registerTool<Record<string, never>>('wm_list_topic_types', {
+      invoke: safe<Record<string, never>>(() => {
+        const rows = listTopicTypes();
+        return { ok: true, count: rows.length, topic_types: rows };
       }),
     }),
   );

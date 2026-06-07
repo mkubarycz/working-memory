@@ -106,6 +106,24 @@ fi
 ok "compiled."
 
 # ---------------------------------------------------------------------------
+# 2b. Stage codicon assets
+#
+# Copy the VS Code codicon font + stylesheet from the npm package into
+# media/codicons/ so the webview can load them as static resources. Kept
+# as a build artifact (gitignored) — the npm package is the source of truth.
+# ---------------------------------------------------------------------------
+
+info "codicons: stage from node_modules/@vscode/codicons/dist"
+CODICONS_SRC="$PROJECT_ROOT/node_modules/@vscode/codicons/dist"
+CODICONS_DST="$PROJECT_ROOT/media/codicons"
+[[ -f "$CODICONS_SRC/codicon.css" && -f "$CODICONS_SRC/codicon.ttf" ]] \
+  || die "missing $CODICONS_SRC/codicon.{css,ttf} — run 'npm install' first"
+mkdir -p "$CODICONS_DST"
+cp "$CODICONS_SRC/codicon.css" "$CODICONS_DST/codicon.css"
+cp "$CODICONS_SRC/codicon.ttf" "$CODICONS_DST/codicon.ttf"
+ok "codicons: $CODICONS_DST/codicon.{css,ttf}"
+
+# ---------------------------------------------------------------------------
 # 3. Package
 # ---------------------------------------------------------------------------
 

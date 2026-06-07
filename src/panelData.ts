@@ -3,8 +3,10 @@ import {
   listTopicParents,
   listTopics,
   listTopicsForWorkstream,
+  listTopicTypes,
   listWorkstreams,
   type Topic,
+  type TopicType,
   type TopicWithCounts,
   type WorkstreamTopicRow,
   type WorkstreamWithCount,
@@ -31,7 +33,8 @@ export interface PanelTopic {
   label: string;
   description: string;
   tooltip: string;
-  icon: 'symbol-key';
+  /** Codicon id (e.g. 'rocket', 'checklist'). Sourced from topic_types.icon. */
+  icon: string;
   openUri: string;
   status: 'open' | 'closed';
 }
@@ -41,7 +44,8 @@ export interface PanelTopicsGroup {
   id: string;
   label: string;
   description?: string;
-  icon: 'symbol-keyword';
+  /** Codicon id for the group header. */
+  icon: string;
   collapsible: boolean;
   children: PanelTopic[];
 }
@@ -64,7 +68,8 @@ export interface PanelTopicRow {
   label: string;
   description: string;
   tooltip: string;
-  icon: 'symbol-key';
+  /** Codicon id (per-topic, sourced from topic_types.icon). */
+  icon: string;
   openUri: string;
   status: 'open' | 'closed';
   children?: PanelTopicRow[];
@@ -77,6 +82,11 @@ export interface PanelData {
   items: PanelItem[];
   emptyMessage: string;
 }
+
+/** Fallback codicon id when a topic_type isn't in the type map. */
+const FALLBACK_TOPIC_ICON = 'symbol-key';
+/** Fallback codicon id for an empty (no topics linked) group header. */
+const FALLBACK_GROUP_ICON = 'symbol-keyword';
 
 function describeTopic(t: WorkstreamTopicRow): string {
   const here = t.entry_count_in_workstream;
@@ -109,9 +119,24 @@ function describeTopicRow(t: TopicWithCounts): string {
   return parts.join(' • ');
 }
 
+/** Look up icon for a topic_type id, falling back to FALLBACK_TOPIC_ICON. */
+function iconForType(
+  typeId: string,
+  typeMap: Map<string, TopicType>,
+): string {
+  return typeMap.get(typeId)?.icon ?? FALLBACK_TOPIC_ICON;
+}
+
+/**
+ * Build a single PanelTopicsGroup for a workstream containing all linked
+ * topics as flat children (pre-0.8.0 shape). Per-row icons are sourced
+ * from `topic_types.icon` via `iconForType` so the type is still visually
+ * disambiguated at the row level, but no per-type bucketing happens.
+ */
 function buildTopics(
   tab: PanelTab,
   ws: WorkstreamWithCount,
+  typeMap: Map<string, TopicType>,
 ): PanelTopicsGroup {
   const topics = listTopicsForWorkstream(ws.id);
   const children: PanelTopic[] = topics.map((t) => ({
@@ -120,7 +145,7 @@ function buildTopics(
     label: t.title,
     description: describeTopic(t),
     tooltip: `${t.title} (${t.slug}) — ${t.status}`,
-    icon: 'symbol-key',
+    icon: iconForType(t.topic_type, typeMap),
     openUri: `working-memory:/topic/${t.slug}.md`,
     status: t.status,
   }));
@@ -129,7 +154,7 @@ function buildTopics(
     id: `${tab}:topics-group:${ws.id}`,
     label: topics.length > 0 ? `Topics (${topics.length})` : 'Topics',
     description: topics.length > 0 ? undefined : 'none linked',
-    icon: 'symbol-keyword',
+    icon: FALLBACK_GROUP_ICON,
     collapsible: topics.length > 0,
     children,
   };
@@ -138,6 +163,7 @@ function buildTopics(
 function buildWorkstream(
   tab: PanelTab,
   ws: WorkstreamWithCount,
+  typeMap: Map<string, TopicType>,
 ): PanelWorkstream {
   const baseTooltip = `${ws.title} (${ws.slug}) — ${ws.status}`;
   const tooltip = ws.closure?.trim()
@@ -164,7 +190,7 @@ function buildWorkstream(
     icon: 'repo',
     openUri: `working-memory:/workstream/${ws.slug}.md`,
     actions,
-    children: [buildTopics(tab, ws)],
+    children: [buildTopics(tab, ws, typeMap)],
   };
 }
 
@@ -172,6 +198,7 @@ function buildTopicRow(
   t: TopicWithCounts | Topic,
   parentSlug: string | null,
   countsBySlug: Map<string, TopicWithCounts>,
+  typeMap: Map<string, TopicType>,
 ): PanelTopicRow {
   const counts = countsBySlug.get(t.slug);
   const description = counts
@@ -187,7 +214,7 @@ function buildTopicRow(
     label: t.title,
     description,
     tooltip: `${t.title} (${t.slug}) — ${t.status}`,
-    icon: 'symbol-key',
+    icon: iconForType(t.topic_type, typeMap),
     openUri: `working-memory:/topic/${t.slug}.md`,
     status: t.status,
   };
@@ -209,6 +236,7 @@ function attachChildren(
   row: PanelTopicRow,
   parentSlug: string,
   countsBySlug: Map<string, TopicWithCounts>,
+  typeMap: Map<string, TopicType>,
   path: Set<string>,
   depth: number,
 ): void {
@@ -222,15 +250,21 @@ function attachChildren(
     return;
   }
   row.children = children.map((c) => {
-    const childRow = buildTopicRow(c, parentSlug, countsBySlug);
+    const childRow = buildTopicRow(c, parentSlug, countsBySlug, typeMap);
     const nextPath = new Set(path);
     nextPath.add(c.slug);
-    attachChildren(childRow, c.slug, countsBySlug, nextPath, depth + 1);
+    attachChildren(childRow, c.slug, countsBySlug, typeMap, nextPath, depth + 1);
     return childRow;
   });
 }
 
+/** Build the id→TopicType lookup used by every render path. */
+function loadTypeMap(): Map<string, TopicType> {
+  return new Map(listTopicTypes().map((t) => [t.id, t]));
+}
+
 export function getPanelTopicsData(): PanelData {
+  const typeMap = loadTypeMap();
   const open = listTopics({ status: 'open' });
   const countsBySlug = new Map<string, TopicWithCounts>(
     open.map((t) => [t.slug, t]),
@@ -238,8 +272,8 @@ export function getPanelTopicsData(): PanelData {
   // Roots = open topics with no active parent links.
   const roots = open.filter((t) => listTopicParents(t.slug).length === 0);
   const items: PanelItem[] = roots.map((t) => {
-    const row = buildTopicRow(t, null, countsBySlug);
-    attachChildren(row, t.slug, countsBySlug, new Set([t.slug]), 1);
+    const row = buildTopicRow(t, null, countsBySlug, typeMap);
+    attachChildren(row, t.slug, countsBySlug, typeMap, new Set([t.slug]), 1);
     return row;
   });
   return {
@@ -253,13 +287,14 @@ export function getPanelData(tab: PanelTab): PanelData {
   if (tab === 'topics') {
     return getPanelTopicsData();
   }
+  const typeMap = loadTypeMap();
   const rows =
     tab === 'active'
       ? listWorkstreams({ status: 'open', orderBy: 'last-activity-desc' })
       : listWorkstreams({ status: 'closed', orderBy: 'closed-desc' });
   return {
     tab,
-    items: rows.map((w) => buildWorkstream(tab, w)),
+    items: rows.map((w) => buildWorkstream(tab, w, typeMap)),
     emptyMessage:
       tab === 'active'
         ? 'No active workstreams.'

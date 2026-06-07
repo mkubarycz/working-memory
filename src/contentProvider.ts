@@ -6,6 +6,7 @@ import {
   listEntriesForTopic,
   listSessionsForWorkstream,
   listTopicsForWorkstream,
+  listTopicTypes,
   listWorkstreamsForTopic,
   updateTopic,
   type Session,
@@ -127,6 +128,17 @@ function renderTopicDoc(slug: string): string {
   const workstreams = listWorkstreamsForTopic(slug);
   const entries = listEntriesForTopic(slug, 25);
 
+  // Map topic_type id → human label for the **Type:** header line. Built
+  // per render call (cheap — three rows today). If the id isn't found
+  // (shouldn't happen post-FK in migration 009), render the raw id with
+  // an "_(unknown type)_" suffix rather than crashing.
+  const typeLabels = new Map<string, string>(
+    listTopicTypes().map((t) => [t.id, t.label]),
+  );
+  const typeLabel =
+    typeLabels.get(topic.topic_type) ??
+    `${topic.topic_type} _(unknown type)_`;
+
   const wsBlock = workstreams.length
     ? workstreams
         .map(
@@ -162,6 +174,7 @@ function renderTopicDoc(slug: string): string {
     `# ${topic.title}`,
     '',
     `- **Slug:** \`${topic.slug}\``,
+    `- **Type:** ${typeLabel}`,
     `- **Status:** ${topic.status}`,
     `- **Created:** ${fmtDateTime(topic.created_at)}`,
     `- **Updated:** ${fmtDateTime(topic.updated_at)}`,
