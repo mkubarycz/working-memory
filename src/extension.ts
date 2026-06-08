@@ -15,11 +15,9 @@ import { findLatestVsix } from './vsix';
 
 let activeStore: JournalStore | null = null;
 
-function runCommand(command: string, args: string[]): Promise<void> {
+function runCommand(command: 'gh' | 'code', args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      shell: process.platform === 'win32',
-    });
+    const child = spawn(command, args, { shell: false });
     let stderr = '';
     let stdout = '';
     child.stdout.on('data', (chunk: Buffer) => {

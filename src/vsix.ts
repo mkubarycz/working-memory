@@ -25,9 +25,14 @@ export function findLatestVsix(rootDir: string): string | null {
     return null;
   }
 
-  candidates.sort((a, b) => {
-    const mtimeDiff = statSync(b).mtimeMs - statSync(a).mtimeMs;
-    return mtimeDiff !== 0 ? mtimeDiff : a.localeCompare(b);
+  const byMtime = candidates.map((path) => ({
+    path,
+    mtimeMs: statSync(path).mtimeMs,
+  }));
+
+  byMtime.sort((a, b) => {
+    const mtimeDiff = b.mtimeMs - a.mtimeMs;
+    return mtimeDiff !== 0 ? mtimeDiff : a.path.localeCompare(b.path);
   });
-  return candidates[0];
+  return byMtime[0].path;
 }
