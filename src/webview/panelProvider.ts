@@ -30,6 +30,7 @@ interface ReadyMessage {
 interface CardUnfocusMessage {
   type: 'card.unfocus';
   slug: string;
+  topicSlug: string;
 }
 
 type InboundMessage =
@@ -112,24 +113,32 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         void this.showActionsQuickPick(msg.actions);
         return;
       case 'card.unfocus':
-        if (typeof msg.slug === 'string' && msg.slug.trim().length > 0) {
-          this.handleCardUnfocus(msg.slug);
+        if (
+          typeof msg.slug === 'string' &&
+          msg.slug.trim().length > 0 &&
+          typeof msg.topicSlug === 'string' &&
+          msg.topicSlug.trim().length > 0
+        ) {
+          this.handleCardUnfocus(msg.slug, msg.topicSlug);
         }
         return;
     }
   }
 
-  private handleCardUnfocus(slug: string): void {
+  private handleCardUnfocus(slug: string, topicSlug: string): void {
     if (!this.store) {
       return;
     }
     try {
-      this.store.unfocusWorkstream(slug);
+      this.store.unfocusWorkstreamTopic({
+        workstream_slug: slug,
+        topic_slug: topicSlug,
+      });
       this.refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       vscode.window.showErrorMessage(
-        `Working Memory: failed to unfocus workstream — ${message}`,
+        `Working Memory: failed to remove topic from focus — ${message}`,
       );
     }
   }

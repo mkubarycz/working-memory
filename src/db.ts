@@ -379,6 +379,12 @@ export interface UnfocusWorkstreamResult {
   cleared: number;
 }
 
+export interface UnfocusWorkstreamTopicResult {
+  workstream_slug: string;
+  topic_slug: string;
+  cleared: number;
+}
+
 export interface LinkEntryTopicInput {
   entry_id: number;
   topic_slug: string;
@@ -1369,6 +1375,30 @@ export class JournalStore {
       .run(ws.id);
     return {
       workstream_slug: ws.slug,
+      cleared: Number(res.changes),
+    };
+  }
+
+  unfocusWorkstreamTopic(
+    input: LinkWorkstreamTopicInput,
+  ): UnfocusWorkstreamTopicResult {
+    const ws = this.getWorkstreamBySlug(input.workstream_slug);
+    if (!ws) {
+      throw new Error(`workstream not found: ${input.workstream_slug}`);
+    }
+    const res = this.db
+      .prepare(
+        `UPDATE workstream_topics
+            SET focused = 0
+          WHERE workstream_id = ?
+            AND topic_slug = ?
+            AND deleted_at IS NULL
+            AND focused <> 0`,
+      )
+      .run(ws.id, input.topic_slug);
+    return {
+      workstream_slug: ws.slug,
+      topic_slug: input.topic_slug,
       cleared: Number(res.changes),
     };
   }

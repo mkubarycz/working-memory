@@ -9,7 +9,7 @@
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
    *              status?: 'open'|'closed' }} Node */
-  /** @typedef {{ label: string, action: string, enabled: boolean, slug: string }} CardMenuItem */
+  /** @typedef {{ label: string, action: string, enabled: boolean, slug: string, topicSlug: string }} CardMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -106,26 +106,43 @@
   }
 
   /**
+   * @param {string | undefined} openUri
+   * @returns {string | null}
+   */
+  function topicSlugFromOpenUri(openUri) {
+    if (!openUri) {
+      return null;
+    }
+    const match = /^working-memory:\/topic\/(.+)\.md$/.exec(openUri);
+    if (!match || !match[1]) {
+      return null;
+    }
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+
+  /**
    * @param {Node & { focused_topics?: unknown[] }} card
+   * @param {string | null} topicSlug
    * @returns {CardMenuItem[]}
    */
-  function cardContextMenu(card) {
+  function cardContextMenu(card, topicSlug) {
     const slug = workstreamSlugFromOpenUri(card.openUri);
-    if (!slug) {
+    if (!slug || !topicSlug) {
       return [];
     }
-    const hasFocusedTopics = Array.isArray(card.focused_topics) &&
-      card.focused_topics.length > 0;
-    const items = [];
-    if (hasFocusedTopics) {
-      items.push({
-        label: 'Unfocus workstream',
+    return [
+      {
+        label: 'Remove from Focus',
         action: 'card.unfocus',
         enabled: true,
         slug,
-      });
-    }
-    return items;
+        topicSlug,
+      },
+    ];
   }
 
   /**
@@ -133,7 +150,14 @@
    * @param {Node & { focused_topics?: unknown[] }} card
    */
   function openCardContextMenu(event, card) {
-    const items = cardContextMenu(card);
+    const target = event.target;
+    const pinnedRow = target instanceof Element
+      ? target.closest('.pinned-focused')
+      : null;
+    const topicSlug = pinnedRow instanceof HTMLElement
+      ? pinnedRow.dataset.topicSlug ?? null
+      : null;
+    const items = cardContextMenu(card, topicSlug);
     if (items.length === 0) {
       closeCardContextMenu();
       return;
@@ -151,7 +175,11 @@
         if (!item.enabled) {
           return;
         }
-        vscode.postMessage({ type: item.action, slug: item.slug });
+        vscode.postMessage({
+          type: item.action,
+          slug: item.slug,
+          topicSlug: item.topicSlug,
+        });
       });
       cardMenuEl.appendChild(btn);
     }
@@ -334,6 +362,10 @@
     });
     const row = renderRow(clone, 1);
     row.classList.add('pinned-focused');
+    const topicSlug = topicSlugFromOpenUri(topic.openUri);
+    if (topicSlug) {
+      row.dataset.topicSlug = topicSlug;
+    }
     // Prepend a pin codicon before the existing icon so the marker is the
     // first thing the eye lands on. Insert after the twisty (first child)
     // so indentation stays aligned with sibling rows.
