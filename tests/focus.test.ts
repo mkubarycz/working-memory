@@ -123,3 +123,50 @@ test('panel data surfaces focused on PanelTopic for focused links', () => {
 
   store.close();
 });
+
+test('unfocusWorkstreamTopic clears only the selected focused topic link', () => {
+  const store = setup();
+  store.createTopic({
+    slug: 'foc-topic-2',
+    title: 'Focus Topic 2',
+    topic_type: 'feature',
+  });
+  store.linkWorkstreamTopic({
+    workstream_slug: 'foc-ws',
+    topic_slug: 'foc-topic',
+    focused: true,
+  });
+  store.linkWorkstreamTopic({
+    workstream_slug: 'foc-ws',
+    topic_slug: 'foc-topic-2',
+    focused: true,
+  });
+  store.startSession({ workstream_slug: 'foc-ws' });
+
+  const cleared = store.unfocusWorkstreamTopic({
+    workstream_slug: 'foc-ws',
+    topic_slug: 'foc-topic',
+  });
+  expect(cleared.workstream_slug).toBe('foc-ws');
+  expect(cleared.topic_slug).toBe('foc-topic');
+  expect(cleared.cleared).toBe(1);
+
+  const ws = store.getWorkstreamBySlug('foc-ws')!;
+  const linked = store.listTopicsForWorkstream(ws.id);
+  expect(linked).toHaveLength(2);
+  const bySlug = new Map(linked.map((topic) => [topic.slug, topic]));
+  expect(bySlug.get('foc-topic')?.focused).toBe(0);
+  expect(bySlug.get('foc-topic-2')?.focused).toBe(1);
+
+  const { active } = getAllPanelData(store);
+  const activeWs = active.items.find(
+    (i) => i.kind === 'workstream' && i.label === 'Focus WS',
+  );
+  if (!activeWs || activeWs.kind !== 'workstream') {
+    throw new Error('expected workstream');
+  }
+  expect(activeWs.focused_topics).toHaveLength(1);
+  expect(activeWs.focused_topics[0].label).toBe('Focus Topic 2');
+
+  store.close();
+});

@@ -9,6 +9,7 @@
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
    *              status?: 'open'|'closed' }} Node */
+  /** @typedef {{ label: string, action: string, enabled: boolean, slug: string, topicSlug: string }} CardMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -80,6 +81,129 @@
 
   const listEl = /** @type {HTMLElement} */ (document.getElementById('list'));
   const tabsEl = /** @type {HTMLElement} */ (document.querySelector('.tabs'));
+  const cardMenuEl = document.createElement('div');
+  cardMenuEl.className = 'card-context-menu';
+  cardMenuEl.hidden = true;
+  document.body.appendChild(cardMenuEl);
+
+  /**
+   * @param {string | undefined} openUri
+   * @returns {string | null}
+   */
+  function workstreamSlugFromOpenUri(openUri) {
+    if (!openUri) {
+      return null;
+    }
+    const match = /^working-memory:\/workstream\/(.+)\.md$/.exec(openUri);
+    if (!match || !match[1]) {
+      return null;
+    }
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+
+  /**
+   * @param {string | undefined} openUri
+   * @returns {string | null}
+   */
+  function topicSlugFromOpenUri(openUri) {
+    if (!openUri) {
+      return null;
+    }
+    const match = /^working-memory:\/topic\/(.+)\.md$/.exec(openUri);
+    if (!match || !match[1]) {
+      return null;
+    }
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+
+  /**
+   * @param {Node & { focused_topics?: unknown[] }} card
+   * @param {string | null} topicSlug
+   * @returns {CardMenuItem[]}
+   */
+  function cardContextMenu(card, topicSlug) {
+    const slug = workstreamSlugFromOpenUri(card.openUri);
+    if (!slug || !topicSlug) {
+      return [];
+    }
+    return [
+      {
+        label: 'Remove from Focus',
+        action: 'card.unfocus',
+        enabled: true,
+        slug,
+        topicSlug,
+      },
+    ];
+  }
+
+  /**
+   * @param {MouseEvent} event
+   * @param {Node & { focused_topics?: unknown[] }} card
+   */
+  function openCardContextMenu(event, card) {
+    const target = event.target;
+    const pinnedRow = target instanceof Element
+      ? target.closest('.pinned-focused')
+      : null;
+    const topicSlug = pinnedRow instanceof HTMLElement
+      ? pinnedRow.dataset.topicSlug ?? null
+      : null;
+    const items = cardContextMenu(card, topicSlug);
+    if (items.length === 0) {
+      closeCardContextMenu();
+      return;
+    }
+    cardMenuEl.replaceChildren();
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.className = 'card-context-menu-item';
+      btn.type = 'button';
+      btn.textContent = item.label;
+      btn.disabled = !item.enabled;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeCardContextMenu();
+        if (!item.enabled) {
+          return;
+        }
+        vscode.postMessage({
+          type: item.action,
+          slug: item.slug,
+          topicSlug: item.topicSlug,
+        });
+      });
+      cardMenuEl.appendChild(btn);
+    }
+    cardMenuEl.hidden = false;
+
+    const margin = 6;
+    const maxLeft = Math.max(
+      margin,
+      window.innerWidth - cardMenuEl.offsetWidth - margin,
+    );
+    const maxTop = Math.max(
+      margin,
+      window.innerHeight - cardMenuEl.offsetHeight - margin,
+    );
+    const left = Math.min(Math.max(event.clientX, margin), maxLeft);
+    const top = Math.min(Math.max(event.clientY, margin), maxTop);
+    cardMenuEl.style.left = left + 'px';
+    cardMenuEl.style.top = top + 'px';
+  }
+
+  function closeCardContextMenu() {
+    cardMenuEl.hidden = true;
+    cardMenuEl.replaceChildren();
+  }
 
   /**
    * Build the row element for a node — no children, no recursion. Returned
@@ -238,6 +362,10 @@
     });
     const row = renderRow(clone, 1);
     row.classList.add('pinned-focused');
+    const topicSlug = topicSlugFromOpenUri(topic.openUri);
+    if (topicSlug) {
+      row.dataset.topicSlug = topicSlug;
+    }
     // Prepend a pin codicon before the existing icon so the marker is the
     // first thing the eye lands on. Insert after the twisty (first child)
     // so indentation stays aligned with sibling rows.
@@ -318,6 +446,12 @@
           card.appendChild(body);
         }
 
+        card.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openCardContextMenu(event, item);
+        });
+
         frag.appendChild(card);
       }
     } else {
@@ -345,9 +479,34 @@
     }
     state.activeTab = t;
     state.focusedId = null;
+    closeCardContextMenu();
     persist();
     render();
   });
+
+  document.addEventListener('click', (e) => {
+    if (cardMenuEl.hidden) {
+      return;
+    }
+    const target = e.target;
+    if (!(target instanceof Element) || !cardMenuEl.contains(target)) {
+      closeCardContextMenu();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeCardContextMenu();
+    }
+  });
+
+  document.addEventListener(
+    'scroll',
+    () => {
+      closeCardContextMenu();
+    },
+    true,
+  );
 
   window.addEventListener('message', (event) => {
     const msg = event.data;
@@ -381,6 +540,7 @@
         }
       }
       state.data = msg.data || {};
+      closeCardContextMenu();
       render();
     }
   });
