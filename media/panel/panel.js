@@ -14,7 +14,7 @@
 
   /**
    * Deterministically map a workstream node id to one of the card color
-   * slots (0..3 → red/blue/green/yellow). Stable across reloads so each
+   * slots (0..14). Stable across reloads so each
    * workstream keeps the same color.
    * @param {string} id
    * @returns {number}
@@ -24,7 +24,7 @@
     for (let i = 0; i < id.length; i++) {
       h = (h * 31 + id.charCodeAt(i)) | 0;
     }
-    return Math.abs(h) % 4;
+    return Math.abs(h) % 15;
   }
 
   // --- Icons ------------------------------------------------------------

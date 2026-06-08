@@ -242,25 +242,80 @@ html, body {
    (see colorIndexForId). Header gets a slightly lifted tint of the same
    hue so the card still has visual depth without losing color identity. */
 
-.ws-card-color-0 { /* red    */
+.ws-card-color-0  { /* red          */
   --ws-card-bg: hsl(0, 30%, 18%);
   --ws-card-border: hsl(0, 35%, 42%);
   --ws-card-header-bg: hsl(0, 32%, 23%);
 }
-.ws-card-color-1 { /* blue   */
-  --ws-card-bg: hsl(210, 32%, 18%);
-  --ws-card-border: hsl(210, 38%, 44%);
-  --ws-card-header-bg: hsl(210, 34%, 23%);
+.ws-card-color-1  { /* red-orange   */
+  --ws-card-bg: hsl(24, 30%, 18%);
+  --ws-card-border: hsl(24, 35%, 42%);
+  --ws-card-header-bg: hsl(24, 32%, 23%);
 }
-.ws-card-color-2 { /* green  */
+.ws-card-color-2  { /* orange       */
+  --ws-card-bg: hsl(45, 28%, 17%);
+  --ws-card-border: hsl(45, 35%, 44%);
+  --ws-card-header-bg: hsl(45, 30%, 22%);
+}
+.ws-card-color-3  { /* yellow-green */
+  --ws-card-bg: hsl(72, 25%, 16%);
+  --ws-card-border: hsl(72, 30%, 40%);
+  --ws-card-header-bg: hsl(72, 27%, 21%);
+}
+.ws-card-color-4  { /* chartreuse   */
+  --ws-card-bg: hsl(96, 25%, 16%);
+  --ws-card-border: hsl(96, 30%, 40%);
+  --ws-card-header-bg: hsl(96, 27%, 21%);
+}
+.ws-card-color-5  { /* green        */
   --ws-card-bg: hsl(130, 25%, 16%);
   --ws-card-border: hsl(130, 30%, 40%);
   --ws-card-header-bg: hsl(130, 27%, 21%);
 }
-.ws-card-color-3 { /* yellow */
-  --ws-card-bg: hsl(45, 28%, 17%);
-  --ws-card-border: hsl(45, 35%, 44%);
-  --ws-card-header-bg: hsl(45, 30%, 22%);
+.ws-card-color-6  { /* spring-green */
+  --ws-card-bg: hsl(150, 28%, 16%);
+  --ws-card-border: hsl(150, 33%, 40%);
+  --ws-card-header-bg: hsl(150, 30%, 21%);
+}
+.ws-card-color-7  { /* teal         */
+  --ws-card-bg: hsl(168, 30%, 17%);
+  --ws-card-border: hsl(168, 35%, 41%);
+  --ws-card-header-bg: hsl(168, 32%, 22%);
+}
+.ws-card-color-8  { /* cyan-teal    */
+  --ws-card-bg: hsl(192, 32%, 17%);
+  --ws-card-border: hsl(192, 37%, 42%);
+  --ws-card-header-bg: hsl(192, 34%, 22%);
+}
+.ws-card-color-9  { /* blue         */
+  --ws-card-bg: hsl(210, 32%, 18%);
+  --ws-card-border: hsl(210, 38%, 44%);
+  --ws-card-header-bg: hsl(210, 34%, 23%);
+}
+.ws-card-color-10 { /* indigo       */
+  --ws-card-bg: hsl(240, 30%, 18%);
+  --ws-card-border: hsl(240, 35%, 43%);
+  --ws-card-header-bg: hsl(240, 32%, 23%);
+}
+.ws-card-color-11 { /* violet       */
+  --ws-card-bg: hsl(264, 28%, 18%);
+  --ws-card-border: hsl(264, 33%, 42%);
+  --ws-card-header-bg: hsl(264, 30%, 23%);
+}
+.ws-card-color-12 { /* purple       */
+  --ws-card-bg: hsl(288, 28%, 17%);
+  --ws-card-border: hsl(288, 33%, 41%);
+  --ws-card-header-bg: hsl(288, 30%, 22%);
+}
+.ws-card-color-13 { /* magenta      */
+  --ws-card-bg: hsl(312, 28%, 17%);
+  --ws-card-border: hsl(312, 33%, 41%);
+  --ws-card-header-bg: hsl(312, 30%, 22%);
+}
+.ws-card-color-14 { /* rose         */
+  --ws-card-bg: hsl(336, 30%, 18%);
+  --ws-card-border: hsl(336, 35%, 42%);
+  --ws-card-header-bg: hsl(336, 32%, 23%);
 }
 
 .ws-card[class*="ws-card-color-"] {
