@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { getAllPanelData, getPanelData, type PanelTab } from './panelData';
 import {
   addTopicParent,
   appendEntry,
@@ -171,6 +172,9 @@ interface LinkEntryTopicToolInput {
 interface TopicParentLinkInput {
   child_slug: string;
   parent_slug: string;
+}
+interface GetPanelDataInput {
+  tab?: 'active' | 'archive' | 'topics' | 'all';
 }
 
 function topicSummary(t: Topic): { slug: string; title: string; status: TopicStatus } {
@@ -477,6 +481,20 @@ export function registerTools(
       invoke: safe<Record<string, never>>(() => {
         const rows = listTopicTypes();
         return { ok: true, count: rows.length, topic_types: rows };
+      }),
+    }),
+    vscode.lm.registerTool<GetPanelDataInput>('wm_get_panel_data', {
+      invoke: safe<GetPanelDataInput>((input) => {
+        const tab = input?.tab ?? 'all';
+        if (tab === 'all') {
+          return { ok: true, tab, data: getAllPanelData() };
+        }
+        if (tab !== 'active' && tab !== 'archive' && tab !== 'topics') {
+          throw new Error(
+            `invalid tab '${String(tab)}' — must be one of 'active' | 'archive' | 'topics' | 'all'`,
+          );
+        }
+        return { ok: true, tab, data: getPanelData(tab as PanelTab) };
       }),
     }),
   );

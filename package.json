@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -35,7 +35,8 @@
     "onLanguageModelTool:wm_unlink_entry_topic",
     "onLanguageModelTool:wm_link_topic_parent",
     "onLanguageModelTool:wm_unlink_topic_parent",
-    "onLanguageModelTool:wm_list_topic_types"
+    "onLanguageModelTool:wm_list_topic_types",
+    "onLanguageModelTool:wm_get_panel_data"
   ],
   "contributes": {
     "viewsContainers": {
@@ -812,6 +813,32 @@
         "inputSchema": {
           "type": "object",
           "properties": {}
+        }
+      },
+      {
+        "name": "wm_get_panel_data",
+        "displayName": "Working Memory: Get Panel Data",
+        "toolReferenceName": "wm_get_panel_data",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Returns the exact data the Working Memory panel UI is rendering — workstreams, sessions, topics, nested as the webview sees them. Use to verify what's visible in the panel, or to debug discrepancies between DB state and UI. Input is an optional `tab`: 'active' | 'archive' | 'topics' returns a single `PanelData` for that tab; 'all' (default, also used when input is omitted) returns `{ active, archive, topics }` — the full shape from getAllPanelData(). Output items use tagged-union shapes from src/panelData.ts (PanelWorkstream, PanelTopic, PanelSession, PanelTopicsGroup, etc.) and are fully JSON-serializable. Pure read, no side effects.",
+        "userDescription": "Get the data currently rendered by the Working Memory panel",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tab": {
+              "type": "string",
+              "enum": [
+                "active",
+                "archive",
+                "topics",
+                "all"
+              ],
+              "description": "Which panel tab to return. Defaults to 'all', which returns the full {active, archive, topics} shape."
+            }
+          }
         }
       }
     ]
