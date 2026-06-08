@@ -325,6 +325,10 @@ html, body {
   gap: 2px;
 }
 
+.card-context-menu[hidden] {
+  display: none;
+}
+
 .card-context-menu-item {
   border: none;
   border-radius: 4px;
