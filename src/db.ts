@@ -95,6 +95,8 @@ export interface TopicWorkstreamLink {
   workstream_slug: string;
   workstream_title: string;
   linked_at: number;
+  /** 0 / 1 — whether this workstream currently has the topic in focus. */
+  focused: number;
 }
 
 export interface TopicEntryLink {
@@ -111,6 +113,8 @@ export interface TopicEntryLink {
 export interface WorkstreamTopicRow extends TopicWithCounts {
   linked_at: number;
   entry_count_in_workstream: number;
+  /** 0 / 1 — whether this topic is currently focused in the workstream. */
+  focused: number;
 }
 
 /**
@@ -175,6 +179,7 @@ const MIGRATIONS: Migration[] = [
   // 005_safe_topic_rebuild_template.sql for the why.
   { version: 9, file: '009_topic_type_fk.sql', noWrap: true },
   { version: 10, file: '010_session_chat_ref.sql' },
+  { version: 11, file: '011_workstream_topic_focus.sql' },
 ];
 
 /**
@@ -343,6 +348,13 @@ export interface SoftDeleteTopicResult {
 export interface LinkWorkstreamTopicInput {
   workstream_slug: string;
   topic_slug: string;
+  /**
+   * Optional focus override (workstream-focus-mechanism, migration 011).
+   * - `true`  → set `focused = 1` on the link.
+   * - `false` → set `focused = 0` (does NOT remove the link).
+   * - omitted → preserve the existing focused value (just ensure the link).
+   */
+  focused?: boolean;
 }
 
 export interface LinkWorkstreamTopicResult {
@@ -352,6 +364,8 @@ export interface LinkWorkstreamTopicResult {
   link_created: boolean;
   link_restored: boolean;
   linked_at: number;
+  /** Resolved focus value on the link after the operation (0 or 1). */
+  focused: number;
 }
 
 export interface UnlinkWorkstreamTopicResult {
@@ -1280,6 +1294,28 @@ export class JournalStore {
         input.topic_slug,
         now,
       );
+      // Resolve focus: explicit input wins; otherwise read whatever's on the row
+      // (the link row was just ensured to exist above, so SELECT is safe).
+      let focused: number;
+      if (input.focused !== undefined) {
+        focused = input.focused ? 1 : 0;
+        this.db
+          .prepare(
+            `UPDATE workstream_topics SET focused = ?
+               WHERE workstream_id = ? AND topic_slug = ?`,
+          )
+          .run(focused, ws.id, input.topic_slug);
+      } else {
+        const row = this.db
+          .prepare(
+            `SELECT focused FROM workstream_topics
+              WHERE workstream_id = ? AND topic_slug = ?`,
+          )
+          .get(ws.id, input.topic_slug) as unknown as
+          | { focused: number }
+          | undefined;
+        focused = row?.focused ?? 0;
+      }
       return {
         workstream_slug: ws.slug,
         topic_slug: input.topic_slug,
@@ -1287,6 +1323,7 @@ export class JournalStore {
         link_created: link.link_created,
         link_restored: link.link_restored,
         linked_at: link.linked_at,
+        focused,
       };
     });
   }
@@ -1413,7 +1450,8 @@ export class JournalStore {
   listWorkstreamsForTopic(topicSlug: string): TopicWorkstreamLink[] {
     const sql = `
       SELECT w.id AS workstream_id, w.slug AS workstream_slug,
-             w.title AS workstream_title, wt.created_at AS linked_at
+             w.title AS workstream_title, wt.created_at AS linked_at,
+             wt.focused AS focused
         FROM workstream_topics wt
         JOIN workstreams w ON w.id = wt.workstream_id
         WHERE wt.topic_slug = ?
@@ -1470,6 +1508,7 @@ export class JournalStore {
       SELECT t.slug, t.title, t.status, t.topic_type, t.body,
              t.created_at, t.updated_at, t.deleted_at,
              wt.created_at AS linked_at,
+             wt.focused AS focused,
              (SELECT COUNT(*) FROM workstream_topics wt2
                 JOIN workstreams w2 ON w2.id = wt2.workstream_id
                 WHERE wt2.topic_slug = t.slug

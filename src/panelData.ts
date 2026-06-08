@@ -34,6 +34,12 @@ export interface PanelTopic {
   openUri: string;
   status: 'open' | 'closed';
   /**
+   * Whether this topic is currently focused in the parent workstream
+   * (workstream-focus-mechanism). Plumbed through for the UI to render a
+   * marker; the panel doesn't render it yet (follow-up task).
+   */
+  focused: boolean;
+  /**
    * Nested child topics — populated when a workstream's linked topics have
    * parent/child relationships among themselves. Only set when non-empty.
    */
@@ -81,6 +87,13 @@ export interface PanelWorkstream {
   icon: 'repo';
   openUri: string;
   actions: PanelAction[];
+  /**
+   * Focused topics for this workstream, in linked_at order (newest first).
+   * Subset of the topics rendered in the regular topics group below; the
+   * panel renders these as a pinned quick-access row at the top of the
+   * workstream card. Empty array when no topic is focused.
+   */
+  focused_topics: PanelTopic[];
   children: (PanelTopicsGroup | PanelSessionsGroup)[];
 }
 
@@ -157,11 +170,12 @@ function buildTopics(
   tab: PanelTab,
   ws: WorkstreamWithCount,
   typeMap: Map<string, TopicType>,
-): PanelTopicsGroup {
+): { group: PanelTopicsGroup; orderedTopics: PanelTopic[] } {
   const topics = store.listTopicsForWorkstream(ws.id);
   const panelBySlug = new Map<string, PanelTopic>();
+  const ordered: PanelTopic[] = [];
   for (const t of topics) {
-    panelBySlug.set(t.slug, {
+    const panel: PanelTopic = {
       kind: 'topic',
       id: `${tab}:topic:${ws.id}:${t.slug}`,
       label: t.title,
@@ -170,7 +184,10 @@ function buildTopics(
       icon: iconForType(t.topic_type, typeMap),
       openUri: `working-memory:/topic/${t.slug}.md`,
       status: t.status,
-    });
+      focused: t.focused === 1,
+    };
+    panelBySlug.set(t.slug, panel);
+    ordered.push(panel);
   }
 
   // Nest children under their parent when both are linked to this workstream.
@@ -219,13 +236,16 @@ function buildTopics(
   const children = rootSlugs.map((s) => panelBySlug.get(s)!);
 
   return {
-    kind: 'topics-group',
-    id: `${tab}:topics-group:${ws.id}`,
-    label: topics.length > 0 ? `Topics (${topics.length})` : 'Topics',
-    description: topics.length > 0 ? undefined : 'none linked',
-    icon: FALLBACK_GROUP_ICON,
-    collapsible: topics.length > 0,
-    children,
+    group: {
+      kind: 'topics-group',
+      id: `${tab}:topics-group:${ws.id}`,
+      label: topics.length > 0 ? `Topics (${topics.length})` : 'Topics',
+      description: topics.length > 0 ? undefined : 'none linked',
+      icon: FALLBACK_GROUP_ICON,
+      collapsible: topics.length > 0,
+      children,
+    },
+    orderedTopics: ordered,
   };
 }
 
@@ -327,6 +347,13 @@ function buildWorkstream(
           },
         ]
       : [];
+  const { group: topicsGroup, orderedTopics } = buildTopics(
+    store,
+    tab,
+    ws,
+    typeMap,
+  );
+  const focusedTopics = orderedTopics.filter((t) => t.focused);
   return {
     kind: 'workstream',
     id: `${tab}:workstream:${ws.id}`,
@@ -336,8 +363,9 @@ function buildWorkstream(
     icon: 'repo',
     openUri: `working-memory:/workstream/${ws.slug}.md`,
     actions,
+    focused_topics: focusedTopics,
     children: [
-      buildTopics(store, tab, ws, typeMap),
+      topicsGroup,
       buildSessions(store, tab, ws),
     ],
   };

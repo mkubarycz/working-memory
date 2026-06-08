@@ -126,6 +126,12 @@ interface DeleteTopicInput {
 interface LinkWorkstreamTopicToolInput {
   workstream_slug: string;
   topic_slug: string;
+  /**
+   * Optional. true → mark this topic as focused in the workstream;
+   * false → clear focus (link itself stays); omitted → preserve existing
+   * focus state.
+   */
+  focused?: boolean;
 }
 interface LinkEntryTopicToolInput {
   entry_id: number;
@@ -194,7 +200,22 @@ export function registerTools(
             deleted_at: s.deleted_at,
           }));
         const total_entries = sessions.reduce((n, s) => n + s.entry_count, 0);
-        return { ok: true, workstream: ws, sessions, total_entries };
+        const focused_topics = store
+          .listTopicsForWorkstream(ws.id)
+          .filter((t) => t.focused === 1)
+          .map((t) => ({
+            slug: t.slug,
+            title: t.title,
+            status: t.status,
+            linked_at: t.linked_at,
+          }));
+        return {
+          ok: true,
+          workstream: ws,
+          sessions,
+          total_entries,
+          focused_topics,
+        };
       }),
     }),
     vscode.lm.registerTool<CreateWorkstreamToolInput>('wm_create_workstream', {
@@ -334,6 +355,12 @@ export function registerTools(
         const entries = store.listEntriesForTopic(input.slug, 25);
         const parents = store.listTopicParents(input.slug).map(topicSummary);
         const children = store.listTopicChildren(input.slug).map(topicSummary);
+        const focused_in_workstreams = workstreams
+          .filter((w) => w.focused === 1)
+          .map((w) => ({
+            slug: w.workstream_slug,
+            title: w.workstream_title,
+          }));
         return {
           ok: true,
           topic,
@@ -343,6 +370,7 @@ export function registerTools(
           entries,
           parents,
           children,
+          focused_in_workstreams,
         };
       }),
     }),
@@ -385,6 +413,7 @@ export function registerTools(
           const result = store.linkWorkstreamTopic({
             workstream_slug: input.workstream_slug,
             topic_slug: input.topic_slug,
+            focused: input.focused,
           });
           deps.refresh();
           return { ok: true, link: result };

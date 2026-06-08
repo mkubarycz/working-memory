@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.10.1",
+  "version": "0.11.1",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -140,7 +140,7 @@
         "displayName": "Working Memory: Get Workstream",
         "toolReferenceName": "wm_get_workstream",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Fetch a single workstream by slug or id, along with its sessions (session_id, started_at, ended_at, summary, entry_count, deleted_at) and total_entries count. Mirrors what the Working Memory virtual document shows but as structured JSON. Provide exactly one of `slug` or `id`. Soft-deleted children are hidden unless include_deleted is true.",
+        "modelDescription": "Fetch a single workstream by slug or id, along with its sessions (session_id, started_at, ended_at, summary, entry_count, deleted_at), total_entries count, and `focused_topics` (subset of linked topics where the workstream→topic link is currently focused; each entry is { slug, title, status, linked_at }). Mirrors what the Working Memory virtual document shows but as structured JSON. Provide exactly one of `slug` or `id`. Soft-deleted children are hidden unless include_deleted is true.",
         "userDescription": "Get a workstream and its sessions",
         "tags": [
           "working-memory"
@@ -501,7 +501,7 @@
         "displayName": "Working Memory: Get Topic",
         "toolReferenceName": "wm_get_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Fetch a topic by slug, plus its linked workstreams (active links), up to 25 most recent linked entries (newest first), and its DAG neighborhood: `parents` (active parent topics) and `children` (active child topics), each as { slug, title, status }. Mirrors what the topic virtual document shows but as structured JSON. Use to inspect a topic before editing it, linking new entries, or rewiring its parent/child relationships.",
+        "modelDescription": "Fetch a topic by slug, plus its linked workstreams (active links), up to 25 most recent linked entries (newest first), its DAG neighborhood: `parents` (active parent topics) and `children` (active child topics), each as { slug, title, status }, and `focused_in_workstreams` (subset of linked workstreams where this topic is currently focused; each entry is { slug, title }). Mirrors what the topic virtual document shows but as structured JSON. Use to inspect a topic before editing it, linking new entries, or rewiring its parent/child relationships.",
         "userDescription": "Get a topic with its linked workstreams and recent entries",
         "tags": [
           "working-memory"
@@ -637,7 +637,7 @@
         "displayName": "Working Memory: Link Workstream ↔ Topic",
         "toolReferenceName": "wm_link_workstream_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Pin a topic to a workstream (M:N). Idempotent. If the topic slug doesn't exist yet, auto-creates a stub topic with title = humanized slug, empty body, status 'open' in the same transaction (topic_created: true in the result). If the link row exists but is soft-deleted, restores it (link_restored: true). The workstream must exist (and not be soft-deleted).",
+        "modelDescription": "Pin a topic to a workstream (M:N). Idempotent. If the topic slug doesn't exist yet, auto-creates a stub topic with title = humanized slug, empty body, status 'open' in the same transaction (topic_created: true in the result). If the link row exists but is soft-deleted, restores it (link_restored: true). The workstream must exist (and not be soft-deleted). Optional `focused` boolean (workstream-focus-mechanism): true marks the topic as currently focused in the workstream; false clears focus without removing the link; omitted preserves the existing focused value. The resolved focus value is returned as `focused` (0/1).",
         "userDescription": "Link a topic to a workstream",
         "tags": [
           "working-memory"
@@ -656,6 +656,10 @@
             "topic_slug": {
               "type": "string",
               "description": "Slug of the topic (auto-created if missing)."
+            },
+            "focused": {
+              "type": "boolean",
+              "description": "Optional. true = mark this topic as focused in the workstream; false = clear focus (link itself stays); omitted = preserve existing focus state."
             }
           }
         }

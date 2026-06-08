@@ -285,3 +285,32 @@ html, body {
 .ws-card-body {
   padding: 2px 0 4px;
 }
+
+/* Pinned focused-topic row at the top of a workstream card. Visually a
+   sibling of the normal rows below, but with a pin marker as the leading
+   glyph and a subtle bottom rule to separate it from the topics/sessions
+   sections that follow. */
+
+.row.pinned-focused {
+  font-weight: 600;
+}
+
+.ws-card-body > .row.pinned-focused {
+  border-bottom: 1px dashed var(--vscode-widget-border, rgba(128, 128, 128, 0.3));
+  margin-bottom: 2px;
+}
+
+.pin-marker {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-charts-yellow, var(--vscode-icon-foreground, var(--vscode-foreground)));
+}
+
+.pin-marker .codicon {
+  font-size: 13px;
+}

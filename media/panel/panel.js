@@ -222,6 +222,40 @@
     render();
   }
 
+  /**
+   * Build a pinned-focused-topic row for a workstream card. Clones the
+   * underlying PanelTopic node, prefixes its id so expand-state of the
+   * normal topic row isn't shared, and leads with a pin codicon to mark
+   * it as the focused / quick-access slot.
+   * @param {Node} topic
+   * @returns {HTMLElement}
+   */
+  function renderPinnedFocusedTopic(topic) {
+    const clone = /** @type {Node} */ ({
+      ...topic,
+      id: 'pinned:' + topic.id,
+      children: undefined,
+    });
+    const row = renderRow(clone, 1);
+    row.classList.add('pinned-focused');
+    // Prepend a pin codicon before the existing icon so the marker is the
+    // first thing the eye lands on. Insert after the twisty (first child)
+    // so indentation stays aligned with sibling rows.
+    const pin = document.createElement('span');
+    pin.className = 'pin-marker';
+    const pinIcon = makeCodicon('pin');
+    if (pinIcon) {
+      pin.appendChild(pinIcon);
+    }
+    const twisty = row.firstChild;
+    if (twisty && twisty.nextSibling) {
+      row.insertBefore(pin, twisty.nextSibling);
+    } else {
+      row.appendChild(pin);
+    }
+    return row;
+  }
+
   function render() {
     // Tabs
     const tabButtons = tabsEl.querySelectorAll('.tab');
@@ -261,12 +295,22 @@
 
         const hasChildren =
           Array.isArray(item.children) && item.children.length > 0;
-        if (hasChildren) {
+        const focusedTopics = Array.isArray(item.focused_topics)
+          ? item.focused_topics
+          : [];
+        if (hasChildren || focusedTopics.length > 0) {
           const body = document.createElement('div');
           body.className = 'ws-card-body';
           if (!expanded) {
             body.hidden = true;
           } else {
+            // Pinned focused-topic row(s) render first, above the normal
+            // topics group / sessions. They're a duplicate quick-access
+            // surface; the topic still appears in its regular slot below.
+            for (const ft of focusedTopics) {
+              const pinned = renderPinnedFocusedTopic(ft);
+              body.appendChild(pinned);
+            }
             for (const child of item.children) {
               renderNode(child, 1, body);
             }
