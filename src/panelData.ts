@@ -33,6 +33,11 @@ export interface PanelTopic {
   icon: string;
   openUri: string;
   status: 'open' | 'closed';
+  /**
+   * Nested child topics — populated when a workstream's linked topics have
+   * parent/child relationships among themselves. Only set when non-empty.
+   */
+  children?: PanelTopic[];
 }
 
 export interface PanelTopicsGroup {
@@ -154,16 +159,65 @@ function buildTopics(
   typeMap: Map<string, TopicType>,
 ): PanelTopicsGroup {
   const topics = store.listTopicsForWorkstream(ws.id);
-  const children: PanelTopic[] = topics.map((t) => ({
-    kind: 'topic',
-    id: `${tab}:topic:${ws.id}:${t.slug}`,
-    label: t.title,
-    description: describeTopic(t),
-    tooltip: `${t.title} (${t.slug}) — ${t.status}`,
-    icon: iconForType(t.topic_type, typeMap),
-    openUri: `working-memory:/topic/${t.slug}.md`,
-    status: t.status,
-  }));
+  const panelBySlug = new Map<string, PanelTopic>();
+  for (const t of topics) {
+    panelBySlug.set(t.slug, {
+      kind: 'topic',
+      id: `${tab}:topic:${ws.id}:${t.slug}`,
+      label: t.title,
+      description: describeTopic(t),
+      tooltip: `${t.title} (${t.slug}) — ${t.status}`,
+      icon: iconForType(t.topic_type, typeMap),
+      openUri: `working-memory:/topic/${t.slug}.md`,
+      status: t.status,
+    });
+  }
+
+  // Nest children under their parent when both are linked to this workstream.
+  // A topic with multiple in-set parents nests under the first one returned
+  // by listTopicParents (newest link wins, matching that query's ORDER BY).
+  const slugSet = new Set(panelBySlug.keys());
+  const childrenBySlug = new Map<string, string[]>();
+  const rootSlugs: string[] = [];
+  for (const t of topics) {
+    const inSetParent = store
+      .listTopicParents(t.slug)
+      .find((p) => slugSet.has(p.slug) && p.slug !== t.slug);
+    if (inSetParent) {
+      const arr = childrenBySlug.get(inSetParent.slug) ?? [];
+      arr.push(t.slug);
+      childrenBySlug.set(inSetParent.slug, arr);
+    } else {
+      rootSlugs.push(t.slug);
+    }
+  }
+
+  const attach = (slug: string, path: Set<string>, depth: number): void => {
+    if (depth >= MAX_TOPIC_DEPTH) {
+      return;
+    }
+    const kids = (childrenBySlug.get(slug) ?? []).filter((s) => !path.has(s));
+    if (kids.length === 0) {
+      return;
+    }
+    const panel = panelBySlug.get(slug);
+    if (!panel) {
+      return;
+    }
+    panel.children = kids.map((s) => panelBySlug.get(s)!);
+    for (const s of kids) {
+      const next = new Set(path);
+      next.add(s);
+      attach(s, next, depth + 1);
+    }
+  };
+
+  for (const s of rootSlugs) {
+    attach(s, new Set([s]), 1);
+  }
+
+  const children = rootSlugs.map((s) => panelBySlug.get(s)!);
+
   return {
     kind: 'topics-group',
     id: `${tab}:topics-group:${ws.id}`,
