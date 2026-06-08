@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.9.6",
+  "version": "0.10.0",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -848,6 +848,8 @@
     "watch": "tsc -p . -w",
     "seed": "node ./out/scripts/seed.js",
     "package": "vsce package",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
@@ -855,6 +857,7 @@
     "@types/vscode": "^1.95.0",
     "@vscode/codicons": "^0.0.45",
     "@vscode/vsce": "^2.24.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.8"
   }
 }

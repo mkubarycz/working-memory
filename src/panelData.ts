@@ -1,12 +1,5 @@
 import {
-  listEntriesForSession,
-  listSessionsForWorkstream,
-  listTopicChildren,
-  listTopicParents,
-  listTopics,
-  listTopicsForWorkstream,
-  listTopicTypes,
-  listWorkstreams,
+  JournalStore,
   type Session,
   type Topic,
   type TopicType,
@@ -147,7 +140,6 @@ function describeTopicRow(t: TopicWithCounts): string {
   return parts.join(' • ');
 }
 
-/** Look up icon for a topic_type id, falling back to FALLBACK_TOPIC_ICON. */
 function iconForType(
   typeId: string,
   typeMap: Map<string, TopicType>,
@@ -155,18 +147,13 @@ function iconForType(
   return typeMap.get(typeId)?.icon ?? FALLBACK_TOPIC_ICON;
 }
 
-/**
- * Build a single PanelTopicsGroup for a workstream containing all linked
- * topics as flat children (pre-0.8.0 shape). Per-row icons are sourced
- * from `topic_types.icon` via `iconForType` so the type is still visually
- * disambiguated at the row level, but no per-type bucketing happens.
- */
 function buildTopics(
+  store: JournalStore,
   tab: PanelTab,
   ws: WorkstreamWithCount,
   typeMap: Map<string, TopicType>,
 ): PanelTopicsGroup {
-  const topics = listTopicsForWorkstream(ws.id);
+  const topics = store.listTopicsForWorkstream(ws.id);
   const children: PanelTopic[] = topics.map((t) => ({
     kind: 'topic',
     id: `${tab}:topic:${ws.id}:${t.slug}`,
@@ -188,19 +175,14 @@ function buildTopics(
   };
 }
 
-/**
- * Build a single PanelSessionsGroup for a workstream containing every
- * (non-deleted) session as a flat child row. Each session row carries
- * an `openUri` pointing at its per-session virtual doc, so clicking
- * mirrors workstream / topic row behaviour.
- */
 function buildSessions(
+  store: JournalStore,
   tab: PanelTab,
   ws: WorkstreamWithCount,
 ): PanelSessionsGroup {
-  const sessions = listSessionsForWorkstream(ws.id);
+  const sessions = store.listSessionsForWorkstream(ws.id);
   const children: PanelSession[] = sessions.map((s) =>
-    buildSessionRow(tab, ws.id, s),
+    buildSessionRow(store, tab, ws.id, s),
   );
   return {
     kind: 'sessions-group',
@@ -215,12 +197,13 @@ function buildSessions(
 }
 
 function buildSessionRow(
+  store: JournalStore,
   tab: PanelTab,
   workstreamId: number,
   s: Session,
 ): PanelSession {
   const started = formatStarted(s.started_at);
-  const entryCount = listEntriesForSession(s.session_id).length;
+  const entryCount = store.listEntriesForSession(s.session_id).length;
   const summary = s.summary?.trim();
   const label = summary && summary.length > 0 ? summary : started;
   const descParts: string[] = [];
@@ -269,6 +252,7 @@ function formatStarted(unixSeconds: number | null | undefined): string {
 }
 
 function buildWorkstream(
+  store: JournalStore,
   tab: PanelTab,
   ws: WorkstreamWithCount,
   typeMap: Map<string, TopicType>,
@@ -298,7 +282,10 @@ function buildWorkstream(
     icon: 'repo',
     openUri: `working-memory:/workstream/${ws.slug}.md`,
     actions,
-    children: [buildTopics(tab, ws, typeMap), buildSessions(tab, ws)],
+    children: [
+      buildTopics(store, tab, ws, typeMap),
+      buildSessions(store, tab, ws),
+    ],
   };
 }
 
@@ -330,17 +317,8 @@ function buildTopicRow(
 
 const MAX_TOPIC_DEPTH = 20;
 
-/**
- * Recursively populate `children` on a topic row by walking active
- * `listTopicChildren` links. Only open + non-deleted children are kept
- * (the Topics tab is the "open" view).
- *
- * `path` tracks the slugs from the current root down to this node so we
- * can defensively break any unexpected cycle without infinite recursion.
- * The DB rejects cycles at write time, but render-side guarding makes
- * the panel robust to drift (e.g. someone editing the DB by hand).
- */
 function attachChildren(
+  store: JournalStore,
   row: PanelTopicRow,
   parentSlug: string,
   countsBySlug: Map<string, TopicWithCounts>,
@@ -351,7 +329,8 @@ function attachChildren(
   if (depth >= MAX_TOPIC_DEPTH) {
     return;
   }
-  const children = listTopicChildren(parentSlug)
+  const children = store
+    .listTopicChildren(parentSlug)
     .filter((c) => c.status === 'open' && c.deleted_at === null)
     .filter((c) => !path.has(c.slug));
   if (children.length === 0) {
@@ -361,27 +340,41 @@ function attachChildren(
     const childRow = buildTopicRow(c, parentSlug, countsBySlug, typeMap);
     const nextPath = new Set(path);
     nextPath.add(c.slug);
-    attachChildren(childRow, c.slug, countsBySlug, typeMap, nextPath, depth + 1);
+    attachChildren(
+      store,
+      childRow,
+      c.slug,
+      countsBySlug,
+      typeMap,
+      nextPath,
+      depth + 1,
+    );
     return childRow;
   });
 }
 
-/** Build the id→TopicType lookup used by every render path. */
-function loadTypeMap(): Map<string, TopicType> {
-  return new Map(listTopicTypes().map((t) => [t.id, t]));
+function loadTypeMap(store: JournalStore): Map<string, TopicType> {
+  return new Map(store.listTopicTypes().map((t) => [t.id, t]));
 }
 
-export function getPanelTopicsData(): PanelData {
-  const typeMap = loadTypeMap();
-  const open = listTopics({ status: 'open' });
+export function getPanelTopicsData(store: JournalStore): PanelData {
+  const typeMap = loadTypeMap(store);
+  const open = store.listTopics({ status: 'open' });
   const countsBySlug = new Map<string, TopicWithCounts>(
     open.map((t) => [t.slug, t]),
   );
-  // Roots = open topics with no active parent links.
-  const roots = open.filter((t) => listTopicParents(t.slug).length === 0);
+  const roots = open.filter((t) => store.listTopicParents(t.slug).length === 0);
   const items: PanelItem[] = roots.map((t) => {
     const row = buildTopicRow(t, null, countsBySlug, typeMap);
-    attachChildren(row, t.slug, countsBySlug, typeMap, new Set([t.slug]), 1);
+    attachChildren(
+      store,
+      row,
+      t.slug,
+      countsBySlug,
+      typeMap,
+      new Set([t.slug]),
+      1,
+    );
     return row;
   });
   return {
@@ -391,18 +384,21 @@ export function getPanelTopicsData(): PanelData {
   };
 }
 
-export function getPanelData(tab: PanelTab): PanelData {
+export function getPanelData(store: JournalStore, tab: PanelTab): PanelData {
   if (tab === 'topics') {
-    return getPanelTopicsData();
+    return getPanelTopicsData(store);
   }
-  const typeMap = loadTypeMap();
+  const typeMap = loadTypeMap(store);
   const rows =
     tab === 'active'
-      ? listWorkstreams({ status: 'open', orderBy: 'last-activity-desc' })
-      : listWorkstreams({ status: 'closed', orderBy: 'closed-desc' });
+      ? store.listWorkstreams({
+          status: 'open',
+          orderBy: 'last-activity-desc',
+        })
+      : store.listWorkstreams({ status: 'closed', orderBy: 'closed-desc' });
   return {
     tab,
-    items: rows.map((w) => buildWorkstream(tab, w, typeMap)),
+    items: rows.map((w) => buildWorkstream(store, tab, w, typeMap)),
     emptyMessage:
       tab === 'active'
         ? 'No active workstreams.'
@@ -410,14 +406,28 @@ export function getPanelData(tab: PanelTab): PanelData {
   };
 }
 
-export function getAllPanelData(): {
+export function getAllPanelData(store: JournalStore): {
   active: PanelData;
   archive: PanelData;
   topics: PanelData;
 } {
   return {
-    active: getPanelData('active'),
-    archive: getPanelData('archive'),
-    topics: getPanelTopicsData(),
+    active: getPanelData(store, 'active'),
+    archive: getPanelData(store, 'archive'),
+    topics: getPanelTopicsData(store),
+  };
+}
+
+/** Empty-data fallback used when no store is available (no hub workspace). */
+export function emptyAllPanelData(): {
+  active: PanelData;
+  archive: PanelData;
+  topics: PanelData;
+} {
+  const noHub = 'No hub workspace open — open the folder containing AGENTS.md.';
+  return {
+    active: { tab: 'active', items: [], emptyMessage: noHub },
+    archive: { tab: 'archive', items: [], emptyMessage: noHub },
+    topics: { tab: 'topics', items: [], emptyMessage: noHub },
   };
 }

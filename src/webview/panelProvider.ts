@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
-import { getAllPanelData, type PanelAction } from '../panelData';
+import {
+  emptyAllPanelData,
+  getAllPanelData,
+  type PanelAction,
+} from '../panelData';
+import { JournalStore } from '../db';
 
 interface InvokeMessage {
   type: 'invoke';
@@ -30,16 +35,20 @@ type InboundMessage =
 
 /**
  * `WebviewViewProvider` for the single Working Memory panel. Hosts a tab
- * strip (Active / Archive) + tree-like list, replacing the two prior
- * `TreeView` blades. Data is shaped by `panelData.ts`; rendering and
- * expand/collapse state live in `media/panel/panel.js`.
+ * strip (Active / Archive / Topics) + tree-like list. Data is shaped by
+ * `panelData.ts`; rendering and expand/collapse state live in
+ * `media/panel/panel.js`. When `store` is null (no hub workspace) the
+ * panel renders an empty state with a hint to open the hub folder.
  */
 export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'workingMemory.workstreams';
 
   private view: vscode.WebviewView | undefined;
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly store: JournalStore | null,
+  ) {}
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -67,7 +76,8 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     if (!this.view) {
       return;
     }
-    this.view.webview.postMessage({ type: 'data', data: getAllPanelData() });
+    const data = this.store ? getAllPanelData(this.store) : emptyAllPanelData();
+    this.view.webview.postMessage({ type: 'data', data });
   }
 
   private handleMessage(msg: InboundMessage): void {
@@ -125,9 +135,6 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     const codiconUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'codicons', 'codicon.css'),
     );
-    // Codicon stylesheet declares @font-face { src: url('./codicon.ttf') } —
-    // the font fetch needs font-src on cspSource, the stylesheet itself needs
-    // style-src on cspSource. Both are already enabled below.
     const csp = [
       `default-src 'none'`,
       `img-src ${webview.cspSource} data:`,

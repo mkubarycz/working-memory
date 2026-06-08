@@ -3,6 +3,8 @@
 src/**
 scripts/**
 out/scripts/**
+tests/**
+vitest.config.ts
 **/*.map
 **/*.ts
 !out/**/*.js

@@ -1,20 +1,6 @@
 import * as vscode from 'vscode';
 import {
-  getPreviousSessionInWorkstream,
-  getNextSessionInWorkstream,
-  getSession,
-  getTopic,
-  getWorkstreamById,
-  getWorkstreamBySlug,
-  listEntriesForSession,
-  listEntriesForTopic,
-  listSessionsForWorkstream,
-  listTopicsForEntry,
-  listTopicsForSession,
-  listTopicsForWorkstream,
-  listTopicTypes,
-  listWorkstreamsForTopic,
-  updateTopic,
+  JournalStore,
   type Session,
   type Topic,
   type TopicEntryLink,
@@ -27,9 +13,6 @@ const TZ = 'America/New_York';
  * in `extension.ts`. Rendered cross-links inside virtual docs MUST use this
  * form (not the raw `working-memory:` scheme) — only `vscode://` URLs are
  * clickable from markdown preview / Copilot Chat surfaces.
- *
- * Raw `working-memory:` URIs remain correct for `vscode.open` calls in the
- * panel tree and for the content provider's own routing.
  */
 function deepLink(
   kind: 'topic' | 'session' | 'workstream',
@@ -62,11 +45,6 @@ function fmtTime(unixSeconds: number): string {
   });
 }
 
-/**
- * Human-readable duration between two unix timestamps. Returns `null` if
- * either is missing. Used by the session virtual doc to surface how long a
- * closed session lasted.
- */
 function fmtDuration(
   startedAt: number | null | undefined,
   endedAt: number | null | undefined,
@@ -89,26 +67,24 @@ function fmtDuration(
   return parts.join(' ');
 }
 
-function renderSession(session: Session): string {
-  // Session header is a link to the per-session virtual doc — added with
-  // the session doc feature so workstream docs can drill in.
+function renderSession(store: JournalStore, session: Session): string {
   const header = `### [${session.session_id}](${deepLink('session', session.session_id)}) — ${fmtDateTime(session.started_at)}`;
   const summary = session.summary?.trim()
     ? session.summary.trim()
     : '_No summary._';
-  const entries = listEntriesForSession(session.session_id);
+  const entries = store.listEntriesForSession(session.session_id);
   const entryLines = entries.length
     ? entries.map((e) => `- \`${fmtTime(e.timestamp)}\` ${e.body}`).join('\n')
     : '_No entries._';
   return `${header}\n${summary}\n\n${entryLines}`;
 }
 
-function renderWorkstreamDoc(slug: string): string {
-  const ws = getWorkstreamBySlug(slug);
+function renderWorkstreamDoc(store: JournalStore, slug: string): string {
+  const ws = store.getWorkstreamBySlug(slug);
   if (!ws) {
     return `# Workstream not found\n\nNo workstream with slug \`${slug}\`.`;
   }
-  const topics = listTopicsForWorkstream(ws.id);
+  const topics = store.listTopicsForWorkstream(ws.id);
   const topicsBlock = topics.length
     ? topics
         .map((t) => {
@@ -130,9 +106,9 @@ function renderWorkstreamDoc(slug: string): string {
         .join('\n')
     : '_No topics linked yet._';
 
-  const sessions = listSessionsForWorkstream(ws.id);
+  const sessions = store.listSessionsForWorkstream(ws.id);
   const sessionsBlock = sessions.length
-    ? sessions.map(renderSession).join('\n\n')
+    ? sessions.map((s) => renderSession(store, s)).join('\n\n')
     : '_No sessions logged yet._';
 
   return [
@@ -159,33 +135,16 @@ function renderWorkstreamDoc(slug: string): string {
   ].join('\n');
 }
 
-/**
- * Topic doc layout (the two `---` lines act as the body fences on read AND write):
- *
- *     # Title
- *     - metadata...
- *     ---
- *     <BODY — editable region>
- *     ---
- *     ## Linked workstreams
- *     ...
- *     ## Recent entries
- *     ...
- */
-function renderTopicDoc(slug: string): string {
-  const topic = getTopic(slug);
+function renderTopicDoc(store: JournalStore, slug: string): string {
+  const topic = store.getTopic(slug);
   if (!topic) {
     return `# Topic not found\n\nNo topic with slug \`${slug}\`.\n\n_Tip: use the \`wm_create_topic\` tool to create it._\n`;
   }
-  const workstreams = listWorkstreamsForTopic(slug);
-  const entries = listEntriesForTopic(slug, 25);
+  const workstreams = store.listWorkstreamsForTopic(slug);
+  const entries = store.listEntriesForTopic(slug, 25);
 
-  // Map topic_type id → human label for the **Type:** header line. Built
-  // per render call (cheap — three rows today). If the id isn't found
-  // (shouldn't happen post-FK in migration 009), render the raw id with
-  // an "_(unknown type)_" suffix rather than crashing.
   const typeLabels = new Map<string, string>(
-    listTopicTypes().map((t) => [t.id, t.label]),
+    store.listTopicTypes().map((t) => [t.id, t.label]),
   );
   const typeLabel =
     typeLabels.get(topic.topic_type) ??
@@ -233,7 +192,9 @@ function renderTopicDoc(slug: string): string {
     '',
     '---',
     '',
-    topic.body.trim().length ? topic.body : '_Empty body — write something here, then save (⌘S)._',
+    topic.body.trim().length
+      ? topic.body
+      : '_Empty body — write something here, then save (⌘S)._',
     '',
     '---',
     '',
@@ -248,28 +209,13 @@ function renderTopicDoc(slug: string): string {
   ].join('\n');
 }
 
-/**
- * Render a topic as a small inline pill (markdown link with the title)
- * pointing at its virtual doc. Used inside the session doc to surface
- * which topics a given entry is tagged with.
- */
 function topicPill(t: Topic): string {
   return `[${t.title}](${deepLink('topic', t.slug)})`;
 }
 
-/**
- * Render the per-session virtual doc — header (workstream back-link, ids,
- * timestamps, summary), optional chat link, linked topics, entries with
- * per-entry topic pills, and Prev/Next session links inside the same
- * workstream. Always read-only; matches workstream-doc semantics.
- *
- * `sessionId` is the UUID from the URI. Missing or soft-deleted sessions
- * render a clear "not found" / "deleted" body rather than throwing — the
- * URI may have been bookmarked before the session was deleted.
- */
-function renderSessionDoc(sessionId: string): string {
-  const liveSession = getSession(sessionId, false);
-  const session = liveSession ?? getSession(sessionId, true);
+function renderSessionDoc(store: JournalStore, sessionId: string): string {
+  const liveSession = store.getSession(sessionId, false);
+  const session = liveSession ?? store.getSession(sessionId, true);
 
   if (!session) {
     return [
@@ -294,7 +240,7 @@ function renderSessionDoc(sessionId: string): string {
     ].join('\n');
   }
 
-  const ws = getWorkstreamById(session.workstream_id, true);
+  const ws = store.getWorkstreamById(session.workstream_id, true);
   const wsHeader = ws
     ? `[${ws.title}](${deepLink('workstream', ws.slug)}) \`${ws.slug}\``
     : `_(unknown workstream id ${session.workstream_id})_`;
@@ -308,8 +254,8 @@ function renderSessionDoc(sessionId: string): string {
     ? `- **Chat:** \`${session.chat_ref}\``
     : `- **Chat:** _(no chat link recorded)_`;
 
-  const entries = listEntriesForSession(session.session_id);
-  const sessionTopics = listTopicsForSession(session.session_id);
+  const entries = store.listEntriesForSession(session.session_id);
+  const sessionTopics = store.listTopicsForSession(session.session_id);
 
   const summary = session.summary?.trim()
     ? session.summary.trim()
@@ -327,7 +273,7 @@ function renderSessionDoc(sessionId: string): string {
   const entriesBlock = entries.length
     ? entries
         .map((e) => {
-          const tags = listTopicsForEntry(e.id);
+          const tags = store.listTopicsForEntry(e.id);
           const tagsSuffix = tags.length
             ? ` — ${tags.map(topicPill).join(' · ')}`
             : '';
@@ -336,17 +282,15 @@ function renderSessionDoc(sessionId: string): string {
         .join('\n')
     : '_No entries._';
 
-  // Prev/Next siblings inside the same workstream. Cheap two-row lookups;
-  // skipped (rendered as a dash) when there's no neighbour on that side.
   const prev = ws
-    ? getPreviousSessionInWorkstream(
+    ? store.getPreviousSessionInWorkstream(
         ws.id,
         session.started_at,
         session.session_id,
       )
     : null;
   const next = ws
-    ? getNextSessionInWorkstream(
+    ? store.getNextSessionInWorkstream(
         ws.id,
         session.started_at,
         session.session_id,
@@ -389,10 +333,6 @@ function renderSessionDoc(sessionId: string): string {
   ].join('\n');
 }
 
-/**
- * Parse a topic doc on save. Returns the body text between the two `---`
- * fences that follow the metadata header.
- */
 function extractTopicBody(full: string): string {
   const lines = full.split(/\r?\n/);
   const fenceIdxs: number[] = [];
@@ -434,8 +374,6 @@ function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
     return { kind: 'topic', slug: slug || null };
   }
   if (p.startsWith('/session/') && p.endsWith('.md')) {
-    // For sessions, `slug` actually carries the UUID — same key shape from
-    // the FileSystemProvider's POV, just routed to the session renderer.
     const id = p.slice('/session/'.length, p.length - '.md'.length);
     return { kind: 'session', slug: id || null };
   }
@@ -443,10 +381,12 @@ function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
 }
 
 /**
- * `FileSystemProvider` for the `working-memory:` scheme. Workstream docs are
- * read-only (the body is rendered fresh from the DB every read); topic docs
- * are writable — on save we parse the body fence region and persist it via
- * `updateTopic()`.
+ * `FileSystemProvider` for the `working-memory:` scheme. Workstream and
+ * session docs are read-only (rendered fresh from the DB every read);
+ * topic docs are writable — on save we parse the body fence region and
+ * persist it via `store.updateTopic()`. When `store` is null (no hub
+ * workspace) every doc renders a "DB not available" body and writes
+ * are rejected.
  */
 export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
   public static readonly scheme = 'working-memory';
@@ -458,6 +398,8 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
 
   private readonly knownUris = new Set<string>();
   private readonly mtimes = new Map<string, number>();
+
+  constructor(private readonly store: JournalStore | null) {}
 
   refresh(uri?: vscode.Uri): void {
     if (uri) {
@@ -494,7 +436,9 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       mtime,
       size: Buffer.byteLength(text, 'utf8'),
       permissions:
-        kind === 'topic' ? undefined : vscode.FilePermission.Readonly,
+        kind === 'topic' && this.store
+          ? undefined
+          : vscode.FilePermission.Readonly,
     };
   }
 
@@ -525,13 +469,16 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     if (kind !== 'topic' || !slug) {
       throw vscode.FileSystemError.NoPermissions(uri);
     }
-    const topic = getTopic(slug);
+    if (!this.store) {
+      throw vscode.FileSystemError.NoPermissions(uri);
+    }
+    const topic = this.store.getTopic(slug);
     if (!topic) {
       throw vscode.FileSystemError.FileNotFound(uri);
     }
     const text = Buffer.from(content).toString('utf8');
     const body = extractTopicBody(text);
-    updateTopic(slug, { body });
+    this.store.updateTopic(slug, { body });
     this.markChanged(uri);
   }
 
@@ -544,14 +491,25 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
   }
 
   private render(kind: DocKind, slug: string, uri: vscode.Uri): string {
+    if (!this.store) {
+      return [
+        `# Working Memory DB not available`,
+        '',
+        `Cannot render \`${uri.toString()}\` — no hub workspace is open.`,
+        '',
+        '_Tip: open the folder containing `AGENTS.md` and a `memory/`_',
+        '_directory, then run "Working Memory: Reload Window"._',
+        '',
+      ].join('\n');
+    }
     if (kind === 'workstream') {
-      return renderWorkstreamDoc(slug);
+      return renderWorkstreamDoc(this.store, slug);
     }
     if (kind === 'topic') {
-      return renderTopicDoc(slug);
+      return renderTopicDoc(this.store, slug);
     }
     if (kind === 'session') {
-      return renderSessionDoc(slug);
+      return renderSessionDoc(this.store, slug);
     }
     return `# Unknown working-memory URI\n\n\`${uri.toString()}\``;
   }

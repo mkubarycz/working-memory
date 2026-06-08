@@ -1,41 +1,10 @@
 import * as vscode from 'vscode';
-import { getAllPanelData, getPanelData, type PanelTab } from './panelData';
 import {
-  addTopicParent,
-  appendEntry,
-  createTopic,
-  createWorkstream,
-  endSession,
-  getSession,
-  getTopic,
-  getWorkstreamBySlug,
-  getWorkstreamById,
-  isDbOpen,
-  linkEntryTopic,
-  linkWorkstreamTopic,
-  listEntriesForSession,
-  listEntriesForTopic,
-  listSessionsForWorkstream,
-  listTopics,
-  listTopicChildren,
-  listTopicParents,
-  listTopicTypes,
-  listWorkstreams,
-  listWorkstreamsForTopic,
-  removeTopicParent,
-  searchEntries,
-  softDeleteEntry,
-  softDeleteSession,
-  softDeleteTopic,
-  softDeleteWorkstream,
-  startSession,
-  unlinkEntryTopic,
-  unlinkWorkstreamTopic,
-  updateTopic,
-  updateWorkstream,
-  type Topic,
-  type TopicStatus,
-} from './db';
+  getAllPanelData,
+  getPanelData,
+  type PanelTab,
+} from './panelData';
+import { JournalStore, type Topic, type TopicStatus } from './db';
 
 interface ToolDeps {
   refresh: () => void;
@@ -57,14 +26,10 @@ function errorResult(message: string): vscode.LanguageModelToolResult {
 
 function safe<TInput>(
   handler: (input: TInput) => unknown,
-): (options: vscode.LanguageModelToolInvocationOptions<TInput>) =>
-  Promise<vscode.LanguageModelToolResult> {
+): (
+  options: vscode.LanguageModelToolInvocationOptions<TInput>,
+) => Promise<vscode.LanguageModelToolResult> {
   return async (options) => {
-    if (!isDbOpen()) {
-      return errorResult(
-        'journal DB is not open — open the hub workspace (folder containing AGENTS.md and memory/) and reload the window',
-      );
-    }
     try {
       const out = handler(options.input);
       return jsonResult(out);
@@ -75,7 +40,7 @@ function safe<TInput>(
 }
 
 // ---------------------------------------------------------------------------
-// Input interfaces
+// Tool input interfaces
 // ---------------------------------------------------------------------------
 
 interface ListWorkstreamsInput {
@@ -131,9 +96,6 @@ interface SearchEntriesToolInput {
 interface DeleteEntryInput {
   entry_id: number;
 }
-
-// ----- topics -----
-
 interface ListTopicsInput {
   status?: TopicStatus | 'all';
   include_deleted?: boolean;
@@ -177,12 +139,15 @@ interface GetPanelDataInput {
   tab?: 'active' | 'archive' | 'topics' | 'all';
 }
 
-function topicSummary(t: Topic): { slug: string; title: string; status: TopicStatus } {
+function topicSummary(
+  t: Topic,
+): { slug: string; title: string; status: TopicStatus } {
   return { slug: t.slug, title: t.title, status: t.status };
 }
 
 export function registerTools(
   context: vscode.ExtensionContext,
+  store: JournalStore,
   deps: ToolDeps,
 ): void {
   const subs: vscode.Disposable[] = [];
@@ -192,7 +157,7 @@ export function registerTools(
   subs.push(
     vscode.lm.registerTool<ListWorkstreamsInput>('wm_list_workstreams', {
       invoke: safe<ListWorkstreamsInput>((input) => {
-        const rows = listWorkstreams({
+        const rows = store.listWorkstreams({
           status: input.status,
           includeDeleted: input.include_deleted ?? false,
         });
@@ -204,9 +169,9 @@ export function registerTools(
         const includeDeleted = input.include_deleted ?? false;
         let ws = null;
         if (input.slug) {
-          ws = getWorkstreamBySlug(input.slug, includeDeleted);
+          ws = store.getWorkstreamBySlug(input.slug, includeDeleted);
         } else if (typeof input.id === 'number') {
-          ws = getWorkstreamById(input.id, includeDeleted);
+          ws = store.getWorkstreamById(input.id, includeDeleted);
         } else {
           throw new Error('one of `slug` or `id` is required');
         }
@@ -215,24 +180,26 @@ export function registerTools(
             `workstream not found (slug=${input.slug ?? '∅'}, id=${input.id ?? '∅'})`,
           );
         }
-        const sessions = listSessionsForWorkstream(ws.id, includeDeleted).map(
-          (s) => ({
+        const sessions = store
+          .listSessionsForWorkstream(ws.id, includeDeleted)
+          .map((s) => ({
             session_id: s.session_id,
             started_at: s.started_at,
             ended_at: s.ended_at,
             summary: s.summary,
-            entry_count: listEntriesForSession(s.session_id, includeDeleted)
-              .length,
+            entry_count: store.listEntriesForSession(
+              s.session_id,
+              includeDeleted,
+            ).length,
             deleted_at: s.deleted_at,
-          }),
-        );
+          }));
         const total_entries = sessions.reduce((n, s) => n + s.entry_count, 0);
         return { ok: true, workstream: ws, sessions, total_entries };
       }),
     }),
     vscode.lm.registerTool<CreateWorkstreamToolInput>('wm_create_workstream', {
       invoke: safe<CreateWorkstreamToolInput>((input) => {
-        const row = createWorkstream({
+        const row = store.createWorkstream({
           slug: input.slug,
           title: input.title,
           status: input.status,
@@ -243,7 +210,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<UpdateWorkstreamToolInput>('wm_update_workstream', {
       invoke: safe<UpdateWorkstreamToolInput>((input) => {
-        const row = updateWorkstream(input.slug, {
+        const row = store.updateWorkstream(input.slug, {
           title: input.title,
           status: input.status,
           closure: input.closure,
@@ -254,7 +221,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<DeleteWorkstreamInput>('wm_delete_workstream', {
       invoke: safe<DeleteWorkstreamInput>((input) => {
-        const counts = softDeleteWorkstream(input.slug);
+        const counts = store.softDeleteWorkstream(input.slug);
         deps.refresh();
         return { ok: true, soft_deleted: counts };
       }),
@@ -266,7 +233,7 @@ export function registerTools(
   subs.push(
     vscode.lm.registerTool<StartSessionToolInput>('wm_start_session', {
       invoke: safe<StartSessionToolInput>((input) => {
-        const row = startSession({
+        const row = store.startSession({
           workstream_slug: input.workstream_slug,
           summary: input.summary,
           session_id: input.session_id,
@@ -278,7 +245,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<EndSessionToolInput>('wm_end_session', {
       invoke: safe<EndSessionToolInput>((input) => {
-        const row = endSession(input.session_id, input.summary);
+        const row = store.endSession(input.session_id, input.summary);
         deps.refresh();
         return { ok: true, session: row };
       }),
@@ -286,11 +253,11 @@ export function registerTools(
     vscode.lm.registerTool<GetSessionInput>('wm_get_session', {
       invoke: safe<GetSessionInput>((input) => {
         const includeDeleted = input.include_deleted ?? false;
-        const session = getSession(input.session_id, includeDeleted);
+        const session = store.getSession(input.session_id, includeDeleted);
         if (!session) {
           throw new Error(`session not found: ${input.session_id}`);
         }
-        const entries = listEntriesForSession(
+        const entries = store.listEntriesForSession(
           input.session_id,
           includeDeleted,
         );
@@ -299,7 +266,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<DeleteSessionInput>('wm_delete_session', {
       invoke: safe<DeleteSessionInput>((input) => {
-        const counts = softDeleteSession(input.session_id);
+        const counts = store.softDeleteSession(input.session_id);
         deps.refresh();
         return { ok: true, soft_deleted: counts };
       }),
@@ -311,7 +278,7 @@ export function registerTools(
   subs.push(
     vscode.lm.registerTool<AppendEntryToolInput>('wm_append_entry', {
       invoke: safe<AppendEntryToolInput>((input) => {
-        const row = appendEntry({
+        const row = store.appendEntry({
           session_id: input.session_id,
           body: input.body,
           timestamp: input.timestamp,
@@ -325,7 +292,7 @@ export function registerTools(
         if (!input.query || !input.query.trim()) {
           throw new Error('query is required');
         }
-        const hits = searchEntries({
+        const hits = store.searchEntries({
           query: input.query,
           workstream_slug: input.workstream_slug,
           limit: input.limit,
@@ -335,7 +302,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<DeleteEntryInput>('wm_delete_entry', {
       invoke: safe<DeleteEntryInput>((input) => {
-        const counts = softDeleteEntry(input.entry_id);
+        const counts = store.softDeleteEntry(input.entry_id);
         deps.refresh();
         return { ok: true, soft_deleted: counts };
       }),
@@ -347,7 +314,7 @@ export function registerTools(
   subs.push(
     vscode.lm.registerTool<ListTopicsInput>('wm_list_topics', {
       invoke: safe<ListTopicsInput>((input) => {
-        const rows = listTopics({
+        const rows = store.listTopics({
           status: input.status,
           includeDeleted: input.include_deleted ?? false,
           workstreamSlug: input.workstream_slug,
@@ -359,14 +326,14 @@ export function registerTools(
     vscode.lm.registerTool<GetTopicInput>('wm_get_topic', {
       invoke: safe<GetTopicInput>((input) => {
         const includeDeleted = input.include_deleted ?? false;
-        const topic = getTopic(input.slug, includeDeleted);
+        const topic = store.getTopic(input.slug, includeDeleted);
         if (!topic) {
           throw new Error(`topic not found: ${input.slug}`);
         }
-        const workstreams = listWorkstreamsForTopic(input.slug);
-        const entries = listEntriesForTopic(input.slug, 25);
-        const parents = listTopicParents(input.slug).map(topicSummary);
-        const children = listTopicChildren(input.slug).map(topicSummary);
+        const workstreams = store.listWorkstreamsForTopic(input.slug);
+        const entries = store.listEntriesForTopic(input.slug, 25);
+        const parents = store.listTopicParents(input.slug).map(topicSummary);
+        const children = store.listTopicChildren(input.slug).map(topicSummary);
         return {
           ok: true,
           topic,
@@ -381,7 +348,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<CreateTopicToolInput>('wm_create_topic', {
       invoke: safe<CreateTopicToolInput>((input) => {
-        const row = createTopic({
+        const row = store.createTopic({
           slug: input.slug,
           title: input.title,
           body: input.body,
@@ -394,7 +361,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<UpdateTopicToolInput>('wm_update_topic', {
       invoke: safe<UpdateTopicToolInput>((input) => {
-        const row = updateTopic(input.slug, {
+        const row = store.updateTopic(input.slug, {
           title: input.title,
           body: input.body,
           status: input.status,
@@ -406,7 +373,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<DeleteTopicInput>('wm_delete_topic', {
       invoke: safe<DeleteTopicInput>((input) => {
-        const counts = softDeleteTopic(input.slug);
+        const counts = store.softDeleteTopic(input.slug);
         deps.refresh();
         return { ok: true, soft_deleted: counts };
       }),
@@ -415,7 +382,7 @@ export function registerTools(
       'wm_link_workstream_topic',
       {
         invoke: safe<LinkWorkstreamTopicToolInput>((input) => {
-          const result = linkWorkstreamTopic({
+          const result = store.linkWorkstreamTopic({
             workstream_slug: input.workstream_slug,
             topic_slug: input.topic_slug,
           });
@@ -428,7 +395,7 @@ export function registerTools(
       'wm_unlink_workstream_topic',
       {
         invoke: safe<LinkWorkstreamTopicToolInput>((input) => {
-          const result = unlinkWorkstreamTopic({
+          const result = store.unlinkWorkstreamTopic({
             workstream_slug: input.workstream_slug,
             topic_slug: input.topic_slug,
           });
@@ -439,7 +406,7 @@ export function registerTools(
     ),
     vscode.lm.registerTool<LinkEntryTopicToolInput>('wm_link_entry_topic', {
       invoke: safe<LinkEntryTopicToolInput>((input) => {
-        const result = linkEntryTopic({
+        const result = store.linkEntryTopic({
           entry_id: input.entry_id,
           topic_slug: input.topic_slug,
         });
@@ -449,7 +416,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<LinkEntryTopicToolInput>('wm_unlink_entry_topic', {
       invoke: safe<LinkEntryTopicToolInput>((input) => {
-        const result = unlinkEntryTopic({
+        const result = store.unlinkEntryTopic({
           entry_id: input.entry_id,
           topic_slug: input.topic_slug,
         });
@@ -462,7 +429,10 @@ export function registerTools(
         if (!input.child_slug || !input.parent_slug) {
           throw new Error('child_slug and parent_slug are required');
         }
-        const result = addTopicParent(input.child_slug, input.parent_slug);
+        const result = store.addTopicParent(
+          input.child_slug,
+          input.parent_slug,
+        );
         deps.refresh();
         return { ok: true, link: result };
       }),
@@ -472,14 +442,17 @@ export function registerTools(
         if (!input.child_slug || !input.parent_slug) {
           throw new Error('child_slug and parent_slug are required');
         }
-        const result = removeTopicParent(input.child_slug, input.parent_slug);
+        const result = store.removeTopicParent(
+          input.child_slug,
+          input.parent_slug,
+        );
         deps.refresh();
         return { ok: true, removed: result.removed, unlink: result };
       }),
     }),
     vscode.lm.registerTool<Record<string, never>>('wm_list_topic_types', {
       invoke: safe<Record<string, never>>(() => {
-        const rows = listTopicTypes();
+        const rows = store.listTopicTypes();
         return { ok: true, count: rows.length, topic_types: rows };
       }),
     }),
@@ -487,14 +460,14 @@ export function registerTools(
       invoke: safe<GetPanelDataInput>((input) => {
         const tab = input?.tab ?? 'all';
         if (tab === 'all') {
-          return { ok: true, tab, data: getAllPanelData() };
+          return { ok: true, tab, data: getAllPanelData(store) };
         }
         if (tab !== 'active' && tab !== 'archive' && tab !== 'topics') {
           throw new Error(
             `invalid tab '${String(tab)}' — must be one of 'active' | 'archive' | 'topics' | 'all'`,
           );
         }
-        return { ok: true, tab, data: getPanelData(tab as PanelTab) };
+        return { ok: true, tab, data: getPanelData(store, tab as PanelTab) };
       }),
     }),
   );
