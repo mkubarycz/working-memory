@@ -1,13 +1,22 @@
 {
+  // Launch config for testing this extension in an Extension Development Host
+  // window. F5 compiles the extension, spawns an isolated VS Code window with
+  // only this extension loaded, and opens ~/wm-sandbox (a snapshot hub) as the
+  // workspace so the extension finds the snapshot DB instead of the live one.
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Extension",
+      "name": "Run Extension (sandbox hub)",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
-      "outFiles": ["${workspaceFolder}/out/**/*.js"],
-      "preLaunchTask": "${defaultBuildTask}"
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "${env:HOME}/wm-sandbox"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/out/**/*.js"
+      ],
+      "preLaunchTask": "npm: compile"
     }
   ]
 }
