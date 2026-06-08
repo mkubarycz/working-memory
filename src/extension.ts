@@ -1,4 +1,8 @@
 import * as vscode from 'vscode';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   JournalStore,
   openJournalStore,
@@ -7,8 +11,34 @@ import { resolveDbPath } from './paths';
 import { WorkstreamDocumentProvider } from './contentProvider';
 import { registerTools } from './tools';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
+import { findLatestVsix } from './vsix';
 
 let activeStore: JournalStore | null = null;
+
+function runCommand(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      shell: process.platform === 'win32',
+    });
+    let stderr = '';
+    let stdout = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const message = stderr.trim() || stdout.trim() || `exit code ${code}`;
+      reject(new Error(message));
+    });
+  });
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   // Try to open the store first so we can pass it (or null) into every
@@ -50,6 +80,65 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('working-memory.reloadWindow', () => {
       vscode.commands.executeCommand('workbench.action.reloadWindow');
     }),
+    vscode.commands.registerCommand(
+      'working-memory.updateToLatest',
+      async () => {
+        const choice = await vscode.window.showWarningMessage(
+          'This will download and install the latest build of Working Memory from GitHub Actions and reload the window. Continue?',
+          { modal: true },
+          'Continue',
+        );
+        if (choice !== 'Continue') {
+          return;
+        }
+
+        const downloadDir = mkdtempSync(
+          join(tmpdir(), 'working-memory-update-latest-'),
+        );
+        try {
+          await vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: 'Working Memory: updating to latest CI build…',
+            },
+            async () => {
+              await runCommand('gh', [
+                'run',
+                'download',
+                '--repo',
+                'mkubarycz/working-memory',
+                '--name',
+                'working-memory-vsix',
+                '--dir',
+                downloadDir,
+              ]);
+
+              const vsixPath = findLatestVsix(downloadDir);
+              if (!vsixPath) {
+                throw new Error(
+                  'Downloaded artifact did not contain a .vsix file.',
+                );
+              }
+
+              await runCommand('code', [
+                '--install-extension',
+                vsixPath,
+                '--force',
+              ]);
+            },
+          );
+
+          await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to update to latest build — ${message}`,
+          );
+        } finally {
+          rmSync(downloadDir, { recursive: true, force: true });
+        }
+      },
+    ),
     vscode.commands.registerCommand(
       'working-memory.open',
       async (

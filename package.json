@@ -71,6 +71,13 @@
         "icon": "$(debug-restart)"
       },
       {
+        "command": "working-memory.updateToLatest",
+        "title": "Download and install the latest CI build of Working Memory",
+        "shortTitle": "Update to Latest",
+        "category": "Working Memory",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "working-memory.open",
         "title": "Open Doc…",
         "category": "Working Memory"
@@ -100,6 +107,11 @@
         },
         {
           "command": "working-memory.reloadWindow",
+          "when": "view == workingMemory.workstreams",
+          "group": "navigation"
+        },
+        {
+          "command": "working-memory.updateToLatest",
           "when": "view == workingMemory.workstreams",
           "group": "navigation"
         }
