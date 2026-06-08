@@ -236,31 +236,32 @@ html, body {
   border-bottom: none;
 }
 
-/* Per-workstream color palette: dark muted fills with a noticeably lighter
-   border so each card reads as a distinct framed block. Color slot is
-   assigned deterministically by hashing the workstream node id in panel.js
-   (see colorIndexForId). Header gets a slightly lifted tint of the same
-   hue so the card still has visual depth without losing color identity. */
+/* Per-workstream color palette: very dark, low-saturation fills with a
+   metallic sheen. Color slot is assigned deterministically by hashing the
+   workstream node id in panel.js (see colorIndexForId). The inset box-shadow
+   adds a top-edge highlight and a bottom inner shadow to simulate depth.
+   Only the hue angle differs between slots. */
 
-.ws-card-color-0  { /* red          */ --ws-card-bg: hsl(0,   30%, 18%); --ws-card-border: hsl(0,   35%, 42%); --ws-card-header-bg: hsl(0,   32%, 23%); }
-.ws-card-color-1  { /* red-orange   */ --ws-card-bg: hsl(24,  30%, 18%); --ws-card-border: hsl(24,  35%, 42%); --ws-card-header-bg: hsl(24,  32%, 23%); }
-.ws-card-color-2  { /* orange       */ --ws-card-bg: hsl(45,  30%, 18%); --ws-card-border: hsl(45,  35%, 42%); --ws-card-header-bg: hsl(45,  32%, 23%); }
-.ws-card-color-3  { /* yellow       */ --ws-card-bg: hsl(68,  30%, 18%); --ws-card-border: hsl(68,  35%, 42%); --ws-card-header-bg: hsl(68,  32%, 23%); }
-.ws-card-color-4  { /* chartreuse   */ --ws-card-bg: hsl(92,  30%, 18%); --ws-card-border: hsl(92,  35%, 42%); --ws-card-header-bg: hsl(92,  32%, 23%); }
-.ws-card-color-5  { /* green        */ --ws-card-bg: hsl(130, 30%, 18%); --ws-card-border: hsl(130, 35%, 42%); --ws-card-header-bg: hsl(130, 32%, 23%); }
-.ws-card-color-6  { /* spring-green */ --ws-card-bg: hsl(152, 30%, 18%); --ws-card-border: hsl(152, 35%, 42%); --ws-card-header-bg: hsl(152, 32%, 23%); }
-.ws-card-color-7  { /* teal         */ --ws-card-bg: hsl(170, 30%, 18%); --ws-card-border: hsl(170, 35%, 42%); --ws-card-header-bg: hsl(170, 32%, 23%); }
-.ws-card-color-8  { /* cyan         */ --ws-card-bg: hsl(192, 30%, 18%); --ws-card-border: hsl(192, 35%, 42%); --ws-card-header-bg: hsl(192, 32%, 23%); }
-.ws-card-color-9  { /* blue         */ --ws-card-bg: hsl(210, 30%, 18%); --ws-card-border: hsl(210, 35%, 42%); --ws-card-header-bg: hsl(210, 32%, 23%); }
-.ws-card-color-10 { /* indigo       */ --ws-card-bg: hsl(240, 30%, 18%); --ws-card-border: hsl(240, 35%, 42%); --ws-card-header-bg: hsl(240, 32%, 23%); }
-.ws-card-color-11 { /* violet       */ --ws-card-bg: hsl(264, 30%, 18%); --ws-card-border: hsl(264, 35%, 42%); --ws-card-header-bg: hsl(264, 32%, 23%); }
-.ws-card-color-12 { /* purple       */ --ws-card-bg: hsl(288, 30%, 18%); --ws-card-border: hsl(288, 35%, 42%); --ws-card-header-bg: hsl(288, 32%, 23%); }
-.ws-card-color-13 { /* magenta      */ --ws-card-bg: hsl(312, 30%, 18%); --ws-card-border: hsl(312, 35%, 42%); --ws-card-header-bg: hsl(312, 32%, 23%); }
-.ws-card-color-14 { /* rose         */ --ws-card-bg: hsl(336, 30%, 18%); --ws-card-border: hsl(336, 35%, 42%); --ws-card-header-bg: hsl(336, 32%, 23%); }
+.ws-card-color-0  { /* red          */ --ws-card-bg: hsl(0,   18%, 12%); --ws-card-border: hsl(0,   22%, 36%); --ws-card-header-bg: hsl(0,   20%, 16%); --ws-card-glow: hsla(0,   35%, 55%, 0.22); }
+.ws-card-color-1  { /* red-orange   */ --ws-card-bg: hsl(24,  18%, 12%); --ws-card-border: hsl(24,  22%, 36%); --ws-card-header-bg: hsl(24,  20%, 16%); --ws-card-glow: hsla(24,  35%, 55%, 0.22); }
+.ws-card-color-2  { /* orange       */ --ws-card-bg: hsl(45,  18%, 12%); --ws-card-border: hsl(45,  22%, 36%); --ws-card-header-bg: hsl(45,  20%, 16%); --ws-card-glow: hsla(45,  35%, 55%, 0.22); }
+.ws-card-color-3  { /* yellow       */ --ws-card-bg: hsl(68,  18%, 12%); --ws-card-border: hsl(68,  22%, 36%); --ws-card-header-bg: hsl(68,  20%, 16%); --ws-card-glow: hsla(68,  35%, 55%, 0.22); }
+.ws-card-color-4  { /* chartreuse   */ --ws-card-bg: hsl(92,  18%, 12%); --ws-card-border: hsl(92,  22%, 36%); --ws-card-header-bg: hsl(92,  20%, 16%); --ws-card-glow: hsla(92,  35%, 55%, 0.22); }
+.ws-card-color-5  { /* green        */ --ws-card-bg: hsl(130, 18%, 12%); --ws-card-border: hsl(130, 22%, 36%); --ws-card-header-bg: hsl(130, 20%, 16%); --ws-card-glow: hsla(130, 35%, 55%, 0.22); }
+.ws-card-color-6  { /* spring-green */ --ws-card-bg: hsl(152, 18%, 12%); --ws-card-border: hsl(152, 22%, 36%); --ws-card-header-bg: hsl(152, 20%, 16%); --ws-card-glow: hsla(152, 35%, 55%, 0.22); }
+.ws-card-color-7  { /* teal         */ --ws-card-bg: hsl(170, 18%, 12%); --ws-card-border: hsl(170, 22%, 36%); --ws-card-header-bg: hsl(170, 20%, 16%); --ws-card-glow: hsla(170, 35%, 55%, 0.22); }
+.ws-card-color-8  { /* cyan         */ --ws-card-bg: hsl(192, 18%, 12%); --ws-card-border: hsl(192, 22%, 36%); --ws-card-header-bg: hsl(192, 20%, 16%); --ws-card-glow: hsla(192, 35%, 55%, 0.22); }
+.ws-card-color-9  { /* blue         */ --ws-card-bg: hsl(210, 18%, 12%); --ws-card-border: hsl(210, 22%, 36%); --ws-card-header-bg: hsl(210, 20%, 16%); --ws-card-glow: hsla(210, 35%, 55%, 0.22); }
+.ws-card-color-10 { /* indigo       */ --ws-card-bg: hsl(240, 18%, 12%); --ws-card-border: hsl(240, 22%, 36%); --ws-card-header-bg: hsl(240, 20%, 16%); --ws-card-glow: hsla(240, 35%, 55%, 0.22); }
+.ws-card-color-11 { /* violet       */ --ws-card-bg: hsl(264, 18%, 12%); --ws-card-border: hsl(264, 22%, 36%); --ws-card-header-bg: hsl(264, 20%, 16%); --ws-card-glow: hsla(264, 35%, 55%, 0.22); }
+.ws-card-color-12 { /* purple       */ --ws-card-bg: hsl(288, 18%, 12%); --ws-card-border: hsl(288, 22%, 36%); --ws-card-header-bg: hsl(288, 20%, 16%); --ws-card-glow: hsla(288, 35%, 55%, 0.22); }
+.ws-card-color-13 { /* magenta      */ --ws-card-bg: hsl(312, 18%, 12%); --ws-card-border: hsl(312, 22%, 36%); --ws-card-header-bg: hsl(312, 20%, 16%); --ws-card-glow: hsla(312, 35%, 55%, 0.22); }
+.ws-card-color-14 { /* rose         */ --ws-card-bg: hsl(336, 18%, 12%); --ws-card-border: hsl(336, 22%, 36%); --ws-card-header-bg: hsl(336, 20%, 16%); --ws-card-glow: hsla(336, 35%, 55%, 0.22); }
 
 .ws-card[class*="ws-card-color-"] {
   background: var(--ws-card-bg);
   border-color: var(--ws-card-border);
+  box-shadow: inset 0 1px 0 var(--ws-card-glow), inset 0 -3px 8px rgba(0, 0, 0, 0.5);
 }
 
 .ws-card[class*="ws-card-color-"] .ws-card-header {
