@@ -9,6 +9,7 @@
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
    *              status?: 'open'|'closed' }} Node */
+  /** @typedef {{ label: string, action: string, enabled: boolean, slug: string }} CardMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -80,6 +81,101 @@
 
   const listEl = /** @type {HTMLElement} */ (document.getElementById('list'));
   const tabsEl = /** @type {HTMLElement} */ (document.querySelector('.tabs'));
+  const cardMenuEl = document.createElement('div');
+  cardMenuEl.className = 'card-context-menu';
+  cardMenuEl.hidden = true;
+  document.body.appendChild(cardMenuEl);
+
+  /**
+   * @param {string | undefined} openUri
+   * @returns {string | null}
+   */
+  function workstreamSlugFromOpenUri(openUri) {
+    if (!openUri) {
+      return null;
+    }
+    const match = /^working-memory:\/workstream\/(.+)\.md$/.exec(openUri);
+    if (!match || !match[1]) {
+      return null;
+    }
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+
+  /**
+   * @param {Node & { focused_topics?: unknown[] }} card
+   * @returns {CardMenuItem[]}
+   */
+  function cardContextMenu(card) {
+    const slug = workstreamSlugFromOpenUri(card.openUri);
+    if (!slug) {
+      return [];
+    }
+    const hasFocusedTopics = Array.isArray(card.focused_topics) &&
+      card.focused_topics.length > 0;
+    const items = [];
+    if (hasFocusedTopics) {
+      items.push({
+        label: 'Unfocus workstream',
+        action: 'card.unfocus',
+        enabled: true,
+        slug,
+      });
+    }
+    return items;
+  }
+
+  /**
+   * @param {MouseEvent} event
+   * @param {Node & { focused_topics?: unknown[] }} card
+   */
+  function openCardContextMenu(event, card) {
+    const items = cardContextMenu(card);
+    if (items.length === 0) {
+      closeCardContextMenu();
+      return;
+    }
+    cardMenuEl.replaceChildren();
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.className = 'card-context-menu-item';
+      btn.type = 'button';
+      btn.textContent = item.label;
+      btn.disabled = !item.enabled;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeCardContextMenu();
+        if (!item.enabled) {
+          return;
+        }
+        vscode.postMessage({ type: item.action, slug: item.slug });
+      });
+      cardMenuEl.appendChild(btn);
+    }
+    cardMenuEl.hidden = false;
+
+    const margin = 6;
+    const maxLeft = Math.max(
+      margin,
+      window.innerWidth - cardMenuEl.offsetWidth - margin,
+    );
+    const maxTop = Math.max(
+      margin,
+      window.innerHeight - cardMenuEl.offsetHeight - margin,
+    );
+    const left = Math.min(Math.max(event.clientX, margin), maxLeft);
+    const top = Math.min(Math.max(event.clientY, margin), maxTop);
+    cardMenuEl.style.left = left + 'px';
+    cardMenuEl.style.top = top + 'px';
+  }
+
+  function closeCardContextMenu() {
+    cardMenuEl.hidden = true;
+    cardMenuEl.replaceChildren();
+  }
 
   /**
    * Build the row element for a node — no children, no recursion. Returned
@@ -318,6 +414,12 @@
           card.appendChild(body);
         }
 
+        card.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openCardContextMenu(event, item);
+        });
+
         frag.appendChild(card);
       }
     } else {
@@ -345,9 +447,34 @@
     }
     state.activeTab = t;
     state.focusedId = null;
+    closeCardContextMenu();
     persist();
     render();
   });
+
+  document.addEventListener('click', (e) => {
+    if (cardMenuEl.hidden) {
+      return;
+    }
+    const target = e.target;
+    if (!(target instanceof Element) || !cardMenuEl.contains(target)) {
+      closeCardContextMenu();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeCardContextMenu();
+    }
+  });
+
+  document.addEventListener(
+    'scroll',
+    () => {
+      closeCardContextMenu();
+    },
+    true,
+  );
 
   window.addEventListener('message', (event) => {
     const msg = event.data;
@@ -381,6 +508,7 @@
         }
       }
       state.data = msg.data || {};
+      closeCardContextMenu();
       render();
     }
   });

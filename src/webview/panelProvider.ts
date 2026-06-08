@@ -27,11 +27,17 @@ interface ReadyMessage {
   type: 'ready';
 }
 
+interface CardUnfocusMessage {
+  type: 'card.unfocus';
+  slug: string;
+}
+
 type InboundMessage =
   | InvokeMessage
   | OpenMessage
   | ActionsMessage
-  | ReadyMessage;
+  | ReadyMessage
+  | CardUnfocusMessage;
 
 /**
  * `WebviewViewProvider` for the single Working Memory panel. Hosts a tab
@@ -105,6 +111,26 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
       case 'actions':
         void this.showActionsQuickPick(msg.actions);
         return;
+      case 'card.unfocus':
+        if (typeof msg.slug === 'string' && msg.slug.trim().length > 0) {
+          this.handleCardUnfocus(msg.slug);
+        }
+        return;
+    }
+  }
+
+  private handleCardUnfocus(slug: string): void {
+    if (!this.store) {
+      return;
+    }
+    try {
+      this.store.unfocusWorkstream(slug);
+      this.refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(
+        `Working Memory: failed to unfocus workstream — ${message}`,
+      );
     }
   }
 
