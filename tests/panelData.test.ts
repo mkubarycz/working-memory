@@ -125,3 +125,49 @@ test('entry-count chips use total journal entries per workstream/topic/session s
 
   store.close();
 });
+
+test('active tab hides closed sessions; archive tab still shows them', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  // arrange: open workstream + one session
+  store.createWorkstream({ slug: 'hide-ws', title: 'Hide WS', status: 'open' });
+  const session = store.startSession({ workstream_slug: 'hide-ws' });
+
+  // session is open → should appear on active tab
+  const activeBefore = getAllPanelData(store).active;
+  const wsBefore = activeBefore.items[0];
+  expect(wsBefore.kind).toBe('workstream');
+  if (wsBefore.kind !== 'workstream') { throw new Error('expected workstream'); }
+  const sgBefore = wsBefore.children.find((c) => c.kind === 'sessions-group');
+  expect(sgBefore?.children).toHaveLength(1);
+  expect(sgBefore?.label).toBe('Sessions (1)');
+  expect(sgBefore?.collapsible).toBe(true);
+
+  // close the session
+  store.endSession(session.session_id, 'wrap-up');
+
+  // closed session → must NOT appear on active tab
+  const activeAfter = getAllPanelData(store).active;
+  const wsAfter = activeAfter.items[0];
+  expect(wsAfter.kind).toBe('workstream');
+  if (wsAfter.kind !== 'workstream') { throw new Error('expected workstream'); }
+  const sgAfter = wsAfter.children.find((c) => c.kind === 'sessions-group');
+  expect(sgAfter?.children).toHaveLength(0);
+  expect(sgAfter?.label).toBe('Sessions');
+  expect(sgAfter?.description).toBe('none logged');
+  expect(sgAfter?.collapsible).toBe(false);
+
+  // close the workstream so it appears on the archive tab
+  store.updateWorkstream('hide-ws', { status: 'closed' });
+
+  // closed session MUST still appear on archive tab
+  const archiveData = getAllPanelData(store).archive;
+  const wsArchive = archiveData.items[0];
+  expect(wsArchive.kind).toBe('workstream');
+  if (wsArchive.kind !== 'workstream') { throw new Error('expected workstream'); }
+  const sgArchive = wsArchive.children.find((c) => c.kind === 'sessions-group');
+  expect(sgArchive?.children).toHaveLength(1);
+  expect(sgArchive?.label).toBe('Sessions (1)');
+
+  store.close();
+});
