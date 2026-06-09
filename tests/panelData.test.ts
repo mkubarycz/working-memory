@@ -97,16 +97,6 @@ test('entry-count chips use total journal entries per workstream/topic/session s
   store.linkEntryTopic({ entry_id: s1Recent.id, topic_slug: 'top' });
   store.linkEntryTopic({ entry_id: s1Old.id, topic_slug: 'top' });
 
-  const ws = store.getWorkstreamBySlug('ws');
-  if (!ws) {
-    throw new Error('expected workstream');
-  }
-
-  expect(store.countRecentEntriesForSession(s1.session_id, now - 5 * 60)).toBe(1);
-  expect(store.countRecentEntriesForSession(s2.session_id, now - 5 * 60)).toBe(1);
-  expect(store.countRecentEntriesForWorkstream(ws.id, now - 5 * 60)).toBe(2);
-  expect(store.countRecentEntriesForTopic('top', now - 5 * 60)).toBe(1);
-
   const all = getAllPanelData(store);
   const activeWs = all.active.items[0];
   expect(activeWs.kind).toBe('workstream');

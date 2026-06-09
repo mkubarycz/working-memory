@@ -130,6 +130,7 @@ const FALLBACK_GROUP_ICON = 'symbol-keyword';
 const SESSION_ROW_ICON = 'comment-discussion';
 /** Codicon id used for the Sessions group header. */
 const SESSIONS_GROUP_ICON = 'history';
+const ALL_TIME_SINCE = 0;
 function describeTopic(t: WorkstreamTopicRow): string {
   const here = t.entry_count_in_workstream;
   const elsewhere = t.entry_count - here;
@@ -359,9 +360,9 @@ function buildWorkstream(
     typeMap,
   );
   const sessionsGroup = buildSessions(store, tab, ws);
-  const recentEntryCount = sessionsGroup.children.reduce(
-    (sum, session) => sum + session.recentEntryCount,
-    0,
+  const recentEntryCount = store.countRecentEntriesForWorkstream(
+    ws.id,
+    ALL_TIME_SINCE,
   );
   const focusedTopics = orderedTopics.filter((t) => t.focused);
   return {
