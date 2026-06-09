@@ -2,9 +2,8 @@
  * Tests for the `created_by` column on `entries` (migration 012).
  *
  * Covers:
- *  - Migration: known-prefix rows (system:, chat:, agent:) are migrated with
- *    the prefix stripped and created_by = '<actor>*'; unrecognised rows fall
- *    back to created_by = 'migration-tool*'.
+ *  - Migration: all pre-existing rows receive created_by='migration-tool*'
+ *    regardless of body content; body is left untouched.
  *  - Happy-path append: wm_append_entry (via store.appendEntry) writes and
  *    reads back the created_by value verbatim.
  *  - Validation: rejects missing, empty/whitespace, and `*`-suffixed values.
@@ -86,7 +85,7 @@ function buildPre012Db(): DatabaseSync {
 // Migration test
 // ---------------------------------------------------------------------------
 
-test('migration 012: system:-prefixed bodies → created_by=system* with prefix stripped', () => {
+test('migration 012: all pre-existing rows get created_by=migration-tool* with body unchanged', () => {
   const db = buildPre012Db();
 
   // Insert a workstream + session so FK constraints are satisfied.
@@ -95,13 +94,17 @@ test('migration 012: system:-prefixed bodies → created_by=system* with prefix 
   db.exec(`INSERT INTO sessions (session_id, workstream_id, started_at)
            VALUES ('mig-sess', 1, 1000)`);
 
-  // One system:-prefixed body, one regular body (no known prefix).
-  db.prepare(
-    `INSERT INTO entries (session_id, timestamp, body) VALUES (?, ?, ?)`,
-  ).run('mig-sess', 1001, 'system: topic foo created');
-  db.prepare(
-    `INSERT INTO entries (session_id, timestamp, body) VALUES (?, ?, ?)`,
-  ).run('mig-sess', 1002, 'decision: keep it simple');
+  const bodies = [
+    'system: topic foo created',
+    'chat: hello there',
+    'agent: ran npm install',
+    'decision: keep it simple',
+  ];
+  for (let i = 0; i < bodies.length; i++) {
+    db.prepare(
+      `INSERT INTO entries (session_id, timestamp, body) VALUES (?, ?, ?)`,
+    ).run('mig-sess', 1000 + i, bodies[i]);
+  }
 
   // Apply migration 012.
   db.exec('BEGIN');
@@ -112,53 +115,11 @@ test('migration 012: system:-prefixed bodies → created_by=system* with prefix 
     .prepare(`SELECT body, created_by FROM entries ORDER BY timestamp ASC`)
     .all() as { body: string; created_by: string }[];
 
-  expect(rows).toHaveLength(2);
-
-  const systemRow = rows[0];
-  expect(systemRow.created_by).toBe('system*');
-  expect(systemRow.body).toBe('topic foo created');
-
-  // No known prefix → falls back to 'migration-tool*'.
-  const otherRow = rows[1];
-  expect(otherRow.created_by).toBe('migration-tool*');
-  expect(otherRow.body).toBe('decision: keep it simple');
-
-  db.close();
-});
-
-test('migration 012: known prefixes chat:/agent: extracted; unknown rows get migration-tool*', () => {
-  const db = buildPre012Db();
-
-  db.exec(`INSERT INTO workstreams (slug, title, status, opened_at)
-           VALUES ('mig-ws2', 'Mig WS2', 'open', 1000)`);
-  db.exec(`INSERT INTO sessions (session_id, workstream_id, started_at)
-           VALUES ('mig-sess2', 1, 1000)`);
-
-  const fixtures: Array<{ body: string; wantActor: string; wantBody: string }> = [
-    { body: 'chat: hello there',      wantActor: 'chat*',           wantBody: 'hello there' },
-    { body: 'agent: ran npm install', wantActor: 'agent*',          wantBody: 'ran npm install' },
-    { body: 'fact: vitest rocks',     wantActor: 'migration-tool*', wantBody: 'fact: vitest rocks' },
-    { body: 'command: npm test',      wantActor: 'migration-tool*', wantBody: 'command: npm test' },
-  ];
-
-  for (let i = 0; i < fixtures.length; i++) {
-    db.prepare(
-      `INSERT INTO entries (session_id, timestamp, body) VALUES (?, ?, ?)`,
-    ).run('mig-sess2', 1000 + i, fixtures[i].body);
-  }
-
-  db.exec('BEGIN');
-  db.exec(readMigration('012_entries_created_by.sql'));
-  db.exec('COMMIT');
-
-  const rows = db
-    .prepare(`SELECT body, created_by FROM entries ORDER BY timestamp ASC`)
-    .all() as { body: string; created_by: string }[];
-
-  expect(rows).toHaveLength(fixtures.length);
-  for (let i = 0; i < fixtures.length; i++) {
-    expect(rows[i].created_by).toBe(fixtures[i].wantActor);
-    expect(rows[i].body).toBe(fixtures[i].wantBody);
+  expect(rows).toHaveLength(bodies.length);
+  for (let i = 0; i < rows.length; i++) {
+    expect(rows[i].created_by).toBe('migration-tool*');
+    // Body must be left completely untouched.
+    expect(rows[i].body).toBe(bodies[i]);
   }
 
   db.close();
