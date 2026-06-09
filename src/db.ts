@@ -931,6 +931,55 @@ export class JournalStore {
     return this.db.prepare(sql).all(sessionId) as unknown as Entry[];
   }
 
+  countRecentEntriesForWorkstream(
+    workstreamId: number,
+    sinceTimestamp: number,
+  ): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n
+           FROM entries e
+           JOIN sessions s ON s.session_id = e.session_id
+          WHERE s.workstream_id = ?
+            AND e.timestamp > ?
+            AND e.deleted_at IS NULL
+            AND s.deleted_at IS NULL`,
+      )
+      .get(workstreamId, sinceTimestamp) as unknown as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
+  countRecentEntriesForSession(
+    sessionId: string,
+    sinceTimestamp: number,
+  ): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n
+           FROM entries
+          WHERE session_id = ?
+            AND timestamp > ?
+            AND deleted_at IS NULL`,
+      )
+      .get(sessionId, sinceTimestamp) as unknown as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
+  countRecentEntriesForTopic(topicSlug: string, sinceTimestamp: number): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n
+           FROM entry_topics et
+           JOIN entries e ON e.id = et.entry_id
+          WHERE et.topic_slug = ?
+            AND e.timestamp > ?
+            AND et.deleted_at IS NULL
+            AND e.deleted_at IS NULL`,
+      )
+      .get(topicSlug, sinceTimestamp) as unknown as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
   appendEntry(input: AppendEntryInput): Entry {
     if (!input.body || !input.body.trim()) {
       throw new Error('body is required');

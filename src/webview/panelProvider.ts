@@ -15,6 +15,7 @@ interface InvokeMessage {
 interface OpenMessage {
   type: 'open';
   uri: string;
+  revealSection?: 'sessions' | 'recent-entries' | 'entries';
 }
 
 interface ActionsMessage {
@@ -97,16 +98,53 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         return;
       case 'open':
         if (typeof msg.uri === 'string') {
-          vscode.commands.executeCommand(
-            'vscode.open',
-            vscode.Uri.parse(msg.uri),
-          );
+          if (
+            msg.revealSection === 'sessions' ||
+            msg.revealSection === 'recent-entries' ||
+            msg.revealSection === 'entries'
+          ) {
+            const parsed = this.parseWorkingMemoryUri(msg.uri);
+            if (parsed) {
+              void vscode.commands.executeCommand('working-memory.open', {
+                ...parsed,
+                revealSection: msg.revealSection,
+              });
+              return;
+            }
+          }
+          void vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(msg.uri));
         }
         return;
       case 'invoke':
         if (typeof msg.command === 'string') {
           const args = Array.isArray(msg.args) ? msg.args : [];
           vscode.commands.executeCommand(msg.command, ...args);
+        }
+
+        private parseWorkingMemoryUri(
+          raw: string,
+        ): { kind: 'workstream' | 'topic' | 'session'; id: string } | null {
+          let uri: vscode.Uri;
+          try {
+            uri = vscode.Uri.parse(raw);
+          } catch {
+            return null;
+          }
+          const match = /^\/(workstream|topic|session)\/(.+)\.md$/.exec(uri.path);
+          if (!match || !match[1] || !match[2]) {
+            return null;
+          }
+          try {
+            return {
+              kind: match[1] as 'workstream' | 'topic' | 'session',
+              id: decodeURIComponent(match[2]),
+            };
+          } catch {
+            return {
+              kind: match[1] as 'workstream' | 'topic' | 'session',
+              id: match[2],
+            };
+          }
         }
         return;
       case 'actions':

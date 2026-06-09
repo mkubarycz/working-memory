@@ -8,7 +8,7 @@
   /** @typedef {{ kind: string, id: string, label: string, description?: string,
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
-   *              status?: 'open'|'closed' }} Node */
+   *              status?: 'open'|'closed', recentEntryCount?: number }} Node */
   /** @typedef {{ label: string, action: string, enabled: boolean, slug: string, topicSlug: string }} CardMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
@@ -59,7 +59,8 @@
 
   /** @type {{ activeTab: 'active'|'archive'|'topics', expanded: Set<string>,
    *           data: { active?: TabData, archive?: TabData, topics?: TabData },
-   *           focusedId: string | null }} */
+   *           focusedId: string | null, recentCounts: Map<string, number>,
+   *           flashChipIds: Set<string> }} */
   const state = {
     activeTab:
       persisted?.activeTab === 'archive' || persisted?.activeTab === 'topics'
@@ -68,6 +69,8 @@
     expanded: new Set(Array.isArray(persisted?.expanded) ? persisted.expanded : []),
     data: {},
     focusedId: null,
+    recentCounts: new Map(),
+    flashChipIds: new Set(),
   };
 
   function persist() {
@@ -279,6 +282,43 @@
       row.appendChild(desc);
     }
 
+    // Recent entries chip
+    const recentEntryCount =
+      typeof node.recentEntryCount === 'number' ? node.recentEntryCount : 0;
+    if (recentEntryCount > 0) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'recent-chip' +
+        (state.flashChipIds.has(node.id) ? ' flash' : '');
+      chip.textContent = String(recentEntryCount);
+      chip.title =
+        `${recentEntryCount} new entries in the last 5 minutes — click to view`;
+      chip.setAttribute(
+        'aria-label',
+        `${recentEntryCount} new entries in the last 5 minutes — click to view`,
+      );
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const revealSection = node.kind === 'workstream'
+          ? 'sessions'
+          : node.kind === 'session'
+            ? 'entries'
+            : node.kind === 'topic' || node.kind === 'topic-row'
+              ? 'recent-entries'
+              : null;
+        state.focusedId = node.id;
+        if (node.openUri) {
+          vscode.postMessage({
+            type: 'open',
+            uri: node.openUri,
+            revealSection,
+          });
+          render();
+        }
+      });
+      row.appendChild(chip);
+    }
+
     // Actions
     if (Array.isArray(node.actions) && node.actions.length > 0) {
       const actions = document.createElement('span');
@@ -460,6 +500,7 @@
       }
     }
     listEl.appendChild(frag);
+    state.flashChipIds.clear();
   }
 
   // --- Event wiring -----------------------------------------------------
@@ -539,6 +580,38 @@
           state.expanded.delete(id);
         }
       }
+      /** @type {Map<string, number>} */
+      const nextRecentCounts = new Map();
+      /** @type {Set<string>} */
+      const flashChipIds = new Set();
+      const collectRecent = (n) => {
+        const count = typeof n.recentEntryCount === 'number' ? n.recentEntryCount : 0;
+        nextRecentCounts.set(n.id, count);
+        const previous = state.recentCounts.get(n.id) ?? 0;
+        if (count > previous) {
+          flashChipIds.add(n.id);
+        }
+        if (Array.isArray(n.focused_topics)) {
+          for (const ft of n.focused_topics) {
+            collectRecent(ft);
+          }
+        }
+        if (Array.isArray(n.children)) {
+          for (const c of n.children) {
+            collectRecent(c);
+          }
+        }
+      };
+      for (const tab of /** @type {const} */ (['active', 'archive', 'topics'])) {
+        const td = msg.data?.[tab];
+        if (td?.items) {
+          for (const n of td.items) {
+            collectRecent(n);
+          }
+        }
+      }
+      state.recentCounts = nextRecentCounts;
+      state.flashChipIds = flashChipIds;
       state.data = msg.data || {};
       closeCardContextMenu();
       render();

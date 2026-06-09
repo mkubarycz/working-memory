@@ -171,6 +171,51 @@ html, body {
   font-size: 0.9em;
 }
 
+.recent-chip {
+  flex: 0 0 auto;
+  margin-left: auto;
+  margin-right: 4px;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--vscode-descriptionForeground) 18%, transparent);
+  color: var(--vscode-foreground);
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.recent-chip:hover {
+  background: color-mix(in srgb, var(--vscode-descriptionForeground) 28%, transparent);
+}
+
+.recent-chip:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.recent-chip.flash {
+  animation: recent-chip-flash 600ms ease-out;
+}
+
+@keyframes recent-chip-flash {
+  from {
+    background: color-mix(in srgb, var(--vscode-editor-findMatchHighlightBackground, var(--vscode-charts-blue)) 92%, transparent);
+  }
+  to {
+    background: color-mix(in srgb, var(--vscode-descriptionForeground) 18%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .recent-chip.flash {
+    animation: none;
+  }
+}
+
 .actions {
   flex: 0 0 auto;
   margin-left: 4px;
