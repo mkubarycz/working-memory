@@ -120,32 +120,6 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           const args = Array.isArray(msg.args) ? msg.args : [];
           vscode.commands.executeCommand(msg.command, ...args);
         }
-
-        private parseWorkingMemoryUri(
-          raw: string,
-        ): { kind: 'workstream' | 'topic' | 'session'; id: string } | null {
-          let uri: vscode.Uri;
-          try {
-            uri = vscode.Uri.parse(raw);
-          } catch {
-            return null;
-          }
-          const match = /^\/(workstream|topic|session)\/(.+)\.md$/.exec(uri.path);
-          if (!match || !match[1] || !match[2]) {
-            return null;
-          }
-          try {
-            return {
-              kind: match[1] as 'workstream' | 'topic' | 'session',
-              id: decodeURIComponent(match[2]),
-            };
-          } catch {
-            return {
-              kind: match[1] as 'workstream' | 'topic' | 'session',
-              id: match[2],
-            };
-          }
-        }
         return;
       case 'actions':
         void this.showActionsQuickPick(msg.actions);
@@ -160,6 +134,32 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           this.handleCardUnfocus(msg.slug, msg.topicSlug);
         }
         return;
+    }
+  }
+
+  private parseWorkingMemoryUri(
+    raw: string,
+  ): { kind: 'workstream' | 'topic' | 'session'; id: string } | null {
+    let uri: vscode.Uri;
+    try {
+      uri = vscode.Uri.parse(raw);
+    } catch {
+      return null;
+    }
+    const match = /^\/(workstream|topic|session)\/(.+)\.md$/.exec(uri.path);
+    if (!match || !match[1] || !match[2]) {
+      return null;
+    }
+    try {
+      return {
+        kind: match[1] as 'workstream' | 'topic' | 'session',
+        id: decodeURIComponent(match[2]),
+      };
+    } catch {
+      return {
+        kind: match[1] as 'workstream' | 'topic' | 'session',
+        id: match[2],
+      };
     }
   }
 
