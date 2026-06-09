@@ -1,15 +1,19 @@
-/* Styles for journal entry rows rendered inside working-memory virtual docs.
+/* Styles for journal entry sections rendered inside working-memory virtual docs.
    Applied to the VS Code markdown preview via `contributes.markdown.previewStyles`. */
 
-.wm-entry {
-  padding: 3px 8px;
-  margin: 2px 0;
-  background: var(--vscode-textCodeBlock-background);
-  border-radius: 3px;
-  font-size: 0.9em;
-  line-height: 1.5;
+.wm-entries {
+  border-left: 3px solid var(--vscode-textBlockQuote-border, #666);
+  padding: 8px 12px;
+  margin: 8px 0;
 }
 
-.wm-entry + .wm-entry {
-  margin-top: 3px;
+.wm-entries ul {
+  /* Targets <ul> rendered by markdown-it from the bullet list items inside the container div. */
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.wm-entries ul li {
+  margin: 2px 0;
+  line-height: 1.5;
 }

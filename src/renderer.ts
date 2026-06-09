@@ -62,15 +62,17 @@ export function renderSession(store: JournalStore, session: Session): string {
     : '_No summary._';
   const entries = store.listEntriesForSession(session.session_id).slice().reverse();
   const entryLines = entries.length
-    ? entries
+    ? `<div class="wm-entries">\n\n` +
+      entries
         .map((e) => {
           const tags = store.listTopicsForEntry(e.id);
           const tagsSuffix = tags.length
-            ? ` — <em>${tags.map(topicPill).join(' · ')}</em>`
+            ? ` — _${tags.map(topicPill).join(' · ')}_`
             : '';
-          return `<div class="wm-entry"><code>${fmtDateTime(e.timestamp)}</code> (${e.created_by}) ${e.body}${tagsSuffix}</div>`;
+          return `- \`${fmtDateTime(e.timestamp)}\` (${e.created_by}) ${e.body}${tagsSuffix}`;
         })
-        .join('\n')
+        .join('\n') +
+      `\n\n</div>`
     : '_No entries._';
   return `${header}\n${summary}\n\n${entryLines}`;
 }
@@ -169,10 +171,10 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
           const lines = rows
             .map(
               (e) =>
-                `<div class="wm-entry"><code>${fmtDateTime(e.timestamp)}</code> [#${e.entry_id}](${deepLink('workstream', wsSlug)}) ${e.snippet}</div>`,
+                `- \`${fmtDateTime(e.timestamp)}\` [#${e.entry_id}](${deepLink('workstream', wsSlug)}) ${e.snippet}`,
             )
             .join('\n');
-          return `### [${title}](${deepLink('workstream', wsSlug)}) \`${wsSlug}\`\n${lines}`;
+          return `### [${title}](${deepLink('workstream', wsSlug)}) \`${wsSlug}\`\n\n<div class="wm-entries">\n\n${lines}\n\n</div>`;
         })
         .join('\n\n')
     : '_No entries linked yet._';
@@ -266,17 +268,19 @@ export function renderSessionDoc(
     : '_No topics tagged on entries in this session._';
 
   const entriesBlock = entries.length
-    ? entries
+    ? `<div class="wm-entries">\n\n` +
+      entries
         .slice()
         .reverse()
         .map((e) => {
           const tags = store.listTopicsForEntry(e.id);
           const tagsSuffix = tags.length
-            ? ` — <em>${tags.map(topicPill).join(' · ')}</em>`
+            ? ` — _${tags.map(topicPill).join(' · ')}_`
             : '';
-          return `<div class="wm-entry"><code>${fmtDateTime(e.timestamp)}</code> (${e.created_by}) ${e.body}${tagsSuffix}</div>`;
+          return `- \`${fmtDateTime(e.timestamp)}\` (${e.created_by}) ${e.body}${tagsSuffix}`;
         })
-        .join('\n')
+        .join('\n') +
+      `\n\n</div>`
     : '_No entries._';
 
   const prev = ws
