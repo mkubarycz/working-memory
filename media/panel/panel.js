@@ -292,10 +292,10 @@
         (state.flashChipIds.has(node.id) ? ' flash' : '');
       chip.textContent = String(recentEntryCount);
       chip.title =
-        `${recentEntryCount} new entries in the last 5 minutes — click to view`;
+        `${recentEntryCount} entr${recentEntryCount === 1 ? 'y' : 'ies'} — click to view`;
       chip.setAttribute(
         'aria-label',
-        `${recentEntryCount} new entries in the last 5 minutes — click to view`,
+        `${recentEntryCount} entr${recentEntryCount === 1 ? 'y' : 'ies'} — click to view`,
       );
       chip.addEventListener('click', (e) => {
         e.stopPropagation();

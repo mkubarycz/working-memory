@@ -130,8 +130,6 @@ const FALLBACK_GROUP_ICON = 'symbol-keyword';
 const SESSION_ROW_ICON = 'comment-discussion';
 /** Codicon id used for the Sessions group header. */
 const SESSIONS_GROUP_ICON = 'history';
-const RECENT_WINDOW_SECONDS = 5 * 60;
-
 function describeTopic(t: WorkstreamTopicRow): string {
   const here = t.entry_count_in_workstream;
   const elsewhere = t.entry_count - here;
@@ -174,7 +172,6 @@ function buildTopics(
   store: JournalStore,
   tab: PanelTab,
   ws: WorkstreamWithCount,
-  sinceTimestamp: number,
   typeMap: Map<string, TopicType>,
 ): { group: PanelTopicsGroup; orderedTopics: PanelTopic[] } {
   const topics = store.listTopicsForWorkstream(ws.id);
@@ -191,7 +188,7 @@ function buildTopics(
       openUri: `working-memory:/topic/${t.slug}.md`,
       status: t.status,
       focused: t.focused === 1,
-      recentEntryCount: store.countRecentEntriesForTopic(t.slug, sinceTimestamp),
+      recentEntryCount: t.entry_count_in_workstream,
     };
     panelBySlug.set(t.slug, panel);
     ordered.push(panel);
@@ -260,11 +257,10 @@ function buildSessions(
   store: JournalStore,
   tab: PanelTab,
   ws: WorkstreamWithCount,
-  sinceTimestamp: number,
 ): PanelSessionsGroup {
   const sessions = store.listSessionsForWorkstream(ws.id);
   const children: PanelSession[] = sessions.map((s) =>
-    buildSessionRow(store, tab, ws.id, s, sinceTimestamp),
+    buildSessionRow(store, tab, ws.id, s),
   );
   return {
     kind: 'sessions-group',
@@ -283,7 +279,6 @@ function buildSessionRow(
   tab: PanelTab,
   workstreamId: number,
   s: Session,
-  sinceTimestamp: number,
 ): PanelSession {
   const started = formatStarted(s.started_at);
   const entryCount = store.listEntriesForSession(s.session_id).length;
@@ -316,10 +311,7 @@ function buildSessionRow(
     tooltip: tooltipLines.join('\n'),
     icon: SESSION_ROW_ICON,
     openUri: `working-memory:/session/${s.session_id}.md`,
-    recentEntryCount: store.countRecentEntriesForSession(
-      s.session_id,
-      sinceTimestamp,
-    ),
+    recentEntryCount: entryCount,
   };
 }
 
@@ -342,7 +334,6 @@ function buildWorkstream(
   store: JournalStore,
   tab: PanelTab,
   ws: WorkstreamWithCount,
-  sinceTimestamp: number,
   typeMap: Map<string, TopicType>,
 ): PanelWorkstream {
   const baseTooltip = `${ws.title} (${ws.slug}) — ${ws.status}`;
@@ -365,8 +356,12 @@ function buildWorkstream(
     store,
     tab,
     ws,
-    sinceTimestamp,
     typeMap,
+  );
+  const sessionsGroup = buildSessions(store, tab, ws);
+  const recentEntryCount = sessionsGroup.children.reduce(
+    (sum, session) => sum + session.recentEntryCount,
+    0,
   );
   const focusedTopics = orderedTopics.filter((t) => t.focused);
   return {
@@ -377,22 +372,20 @@ function buildWorkstream(
     tooltip,
     icon: 'repo',
     openUri: `working-memory:/workstream/${ws.slug}.md`,
-    recentEntryCount: store.countRecentEntriesForWorkstream(ws.id, sinceTimestamp),
+    recentEntryCount,
     actions,
     focused_topics: focusedTopics,
     children: [
       topicsGroup,
-      buildSessions(store, tab, ws, sinceTimestamp),
+      sessionsGroup,
     ],
   };
 }
 
 function buildTopicRow(
-  store: JournalStore,
   t: TopicWithCounts | Topic,
   parentSlug: string | null,
   countsBySlug: Map<string, TopicWithCounts>,
-  sinceTimestamp: number,
   typeMap: Map<string, TopicType>,
 ): PanelTopicRow {
   const counts = countsBySlug.get(t.slug);
@@ -412,7 +405,7 @@ function buildTopicRow(
     icon: iconForType(t.topic_type, typeMap),
     openUri: `working-memory:/topic/${t.slug}.md`,
     status: t.status,
-    recentEntryCount: store.countRecentEntriesForTopic(t.slug, sinceTimestamp),
+    recentEntryCount: counts?.entry_count ?? 0,
   };
 }
 
@@ -423,7 +416,6 @@ function attachChildren(
   row: PanelTopicRow,
   parentSlug: string,
   countsBySlug: Map<string, TopicWithCounts>,
-  sinceTimestamp: number,
   typeMap: Map<string, TopicType>,
   path: Set<string>,
   depth: number,
@@ -440,11 +432,9 @@ function attachChildren(
   }
   row.children = children.map((c) => {
     const childRow = buildTopicRow(
-      store,
       c,
       parentSlug,
       countsBySlug,
-      sinceTimestamp,
       typeMap,
     );
     const nextPath = new Set(path);
@@ -454,7 +444,6 @@ function attachChildren(
       childRow,
       c.slug,
       countsBySlug,
-      sinceTimestamp,
       typeMap,
       nextPath,
       depth + 1,
@@ -469,7 +458,6 @@ function loadTypeMap(store: JournalStore): Map<string, TopicType> {
 
 export function getPanelTopicsData(store: JournalStore): PanelData {
   const typeMap = loadTypeMap(store);
-  const sinceTimestamp = Math.floor(Date.now() / 1000) - RECENT_WINDOW_SECONDS;
   const open = store.listTopics({ status: 'open' });
   const countsBySlug = new Map<string, TopicWithCounts>(
     open.map((t) => [t.slug, t]),
@@ -477,11 +465,9 @@ export function getPanelTopicsData(store: JournalStore): PanelData {
   const roots = open.filter((t) => store.listTopicParents(t.slug).length === 0);
   const items: PanelItem[] = roots.map((t) => {
     const row = buildTopicRow(
-      store,
       t,
       null,
       countsBySlug,
-      sinceTimestamp,
       typeMap,
     );
     attachChildren(
@@ -489,7 +475,6 @@ export function getPanelTopicsData(store: JournalStore): PanelData {
       row,
       t.slug,
       countsBySlug,
-      sinceTimestamp,
       typeMap,
       new Set([t.slug]),
       1,
@@ -508,7 +493,6 @@ export function getPanelData(store: JournalStore, tab: PanelTab): PanelData {
     return getPanelTopicsData(store);
   }
   const typeMap = loadTypeMap(store);
-  const sinceTimestamp = Math.floor(Date.now() / 1000) - RECENT_WINDOW_SECONDS;
   const rows =
     tab === 'active'
       ? store.listWorkstreams({
@@ -518,7 +502,7 @@ export function getPanelData(store: JournalStore, tab: PanelTab): PanelData {
       : store.listWorkstreams({ status: 'closed', orderBy: 'closed-desc' });
   return {
     tab,
-    items: rows.map((w) => buildWorkstream(store, tab, w, sinceTimestamp, typeMap)),
+    items: rows.map((w) => buildWorkstream(store, tab, w, typeMap)),
     emptyMessage:
       tab === 'active'
         ? 'No active workstreams.'

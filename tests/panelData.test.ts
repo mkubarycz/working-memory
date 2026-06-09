@@ -63,10 +63,9 @@ test('a workstream with a linked topic and entries appears correctly in panel da
   store.close();
 });
 
-test('recent-entry counts use a 5-minute window per workstream/topic/session scope', () => {
+test('entry-count chips use total journal entries per workstream/topic/session scope', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   const now = Math.floor(Date.now() / 1000);
-  const cutoff = now - 5 * 60;
 
   store.createWorkstream({ slug: 'ws', title: 'WS', status: 'open' });
   store.createTopic({
@@ -103,10 +102,10 @@ test('recent-entry counts use a 5-minute window per workstream/topic/session sco
     throw new Error('expected workstream');
   }
 
-  expect(store.countRecentEntriesForSession(s1.session_id, cutoff)).toBe(1);
-  expect(store.countRecentEntriesForSession(s2.session_id, cutoff)).toBe(1);
-  expect(store.countRecentEntriesForWorkstream(ws.id, cutoff)).toBe(2);
-  expect(store.countRecentEntriesForTopic('top', cutoff)).toBe(1);
+  expect(store.countRecentEntriesForSession(s1.session_id, now - 5 * 60)).toBe(1);
+  expect(store.countRecentEntriesForSession(s2.session_id, now - 5 * 60)).toBe(1);
+  expect(store.countRecentEntriesForWorkstream(ws.id, now - 5 * 60)).toBe(2);
+  expect(store.countRecentEntriesForTopic('top', now - 5 * 60)).toBe(1);
 
   const all = getAllPanelData(store);
   const activeWs = all.active.items[0];
@@ -114,21 +113,21 @@ test('recent-entry counts use a 5-minute window per workstream/topic/session sco
   if (activeWs.kind !== 'workstream') {
     throw new Error('expected workstream item');
   }
-  expect(activeWs.recentEntryCount).toBe(2);
+  expect(activeWs.recentEntryCount).toBe(3);
 
   const activeTopicsGroup = activeWs.children.find((c) => c.kind === 'topics-group');
-  expect(activeTopicsGroup?.children[0].recentEntryCount).toBe(1);
+  expect(activeTopicsGroup?.children[0].recentEntryCount).toBe(2);
   const activeSessionsGroup = activeWs.children.find(
     (c) => c.kind === 'sessions-group',
   );
-  expect(activeSessionsGroup?.children.map((s) => s.recentEntryCount)).toEqual([1, 1]);
+  expect(activeSessionsGroup?.children.map((s) => s.recentEntryCount)).toEqual([2, 1]);
 
   const topicTabRow = all.topics.items[0];
   expect(topicTabRow.kind).toBe('topic-row');
   if (topicTabRow.kind !== 'topic-row') {
     throw new Error('expected topic-row item');
   }
-  expect(topicTabRow.recentEntryCount).toBe(1);
+  expect(topicTabRow.recentEntryCount).toBe(2);
 
   store.close();
 });
