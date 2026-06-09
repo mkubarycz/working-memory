@@ -74,7 +74,7 @@ function renderSession(store: JournalStore, session: Session): string {
     : '_No summary._';
   const entries = store.listEntriesForSession(session.session_id);
   const entryLines = entries.length
-    ? entries.map((e) => `- \`${fmtTime(e.timestamp)}\` ${e.body}`).join('\n')
+    ? entries.map((e) => `- \`${fmtTime(e.timestamp)}\` (${e.created_by}) ${e.body}`).join('\n')
     : '_No entries._';
   return `${header}\n${summary}\n\n${entryLines}`;
 }
@@ -277,7 +277,7 @@ function renderSessionDoc(store: JournalStore, sessionId: string): string {
           const tagsSuffix = tags.length
             ? ` — ${tags.map(topicPill).join(' · ')}`
             : '';
-          return `- \`${fmtTime(e.timestamp)}\` ${e.body}${tagsSuffix}`;
+          return `- \`${fmtTime(e.timestamp)}\` (${e.created_by}) ${e.body}${tagsSuffix}`;
         })
         .join('\n')
     : '_No entries._';

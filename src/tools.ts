@@ -86,6 +86,7 @@ interface DeleteSessionInput {
 interface AppendEntryToolInput {
   session_id: string;
   body: string;
+  created_by: string;
   timestamp?: number;
 }
 interface SearchEntriesToolInput {
@@ -302,6 +303,7 @@ export function registerTools(
         const row = store.appendEntry({
           session_id: input.session_id,
           body: input.body,
+          created_by: input.created_by,
           timestamp: input.timestamp,
         });
         deps.refresh();
