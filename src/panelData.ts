@@ -259,7 +259,9 @@ function buildSessions(
   tab: PanelTab,
   ws: WorkstreamWithCount,
 ): PanelSessionsGroup {
-  const sessions = store.listSessionsForWorkstream(ws.id);
+  const allSessions = store.listSessionsForWorkstream(ws.id);
+  const sessions =
+    tab === 'active' ? allSessions.filter((s) => s.ended_at == null) : allSessions;
   const children: PanelSession[] = sessions.map((s) =>
     buildSessionRow(store, tab, ws.id, s),
   );
