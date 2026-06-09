@@ -109,8 +109,8 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
               });
               void vscode.commands.executeCommand('vscode.open', uri);
               return;
-            } catch {
-              // Fall through to the standard open path below.
+            } catch (err) {
+              console.warn('[working-memory] panel open URI parse failed:', err);
             }
           }
           void vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(msg.uri));
