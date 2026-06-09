@@ -49,6 +49,7 @@ export interface Entry {
   session_id: string;
   timestamp: number;
   body: string;
+  created_by: string;
   deleted_at: number | null;
 }
 
@@ -57,6 +58,7 @@ export interface SearchHit {
   session_id: string;
   timestamp: number;
   body: string;
+  created_by: string;
   snippet: string;
   workstream_id: number;
   workstream_slug: string;
@@ -180,6 +182,7 @@ const MIGRATIONS: Migration[] = [
   { version: 9, file: '009_topic_type_fk.sql', noWrap: true },
   { version: 10, file: '010_session_chat_ref.sql' },
   { version: 11, file: '011_workstream_topic_focus.sql' },
+  { version: 12, file: '012_entries_created_by.sql' },
 ];
 
 /**
@@ -308,6 +311,7 @@ export interface StartSessionInput {
 export interface AppendEntryInput {
   session_id: string;
   body: string;
+  created_by: string;
   timestamp?: number;
 }
 
@@ -922,7 +926,7 @@ export class JournalStore {
 
   listEntriesForSession(sessionId: string, includeDeleted = false): Entry[] {
     const sql = `
-      SELECT id, session_id, timestamp, body, deleted_at
+      SELECT id, session_id, timestamp, body, created_by, deleted_at
         FROM entries
         WHERE session_id = ?
           ${includeDeleted ? '' : 'AND deleted_at IS NULL'}
@@ -935,6 +939,14 @@ export class JournalStore {
     if (!input.body || !input.body.trim()) {
       throw new Error('body is required');
     }
+    if (!input.created_by || !input.created_by.trim()) {
+      throw new Error('created_by is required');
+    }
+    if (input.created_by.endsWith('*')) {
+      throw new Error(
+        'created_by must not end with "*" — that suffix is reserved for migrated rows',
+      );
+    }
     const session = this.getSession(input.session_id);
     if (!session) {
       throw new Error(`session not found: ${input.session_id}`);
@@ -942,16 +954,17 @@ export class JournalStore {
     const ts = input.timestamp ?? nowEpoch();
     const result = this.db
       .prepare(
-        `INSERT INTO entries (session_id, timestamp, body)
-         VALUES (?, ?, ?)`,
+        `INSERT INTO entries (session_id, timestamp, body, created_by)
+         VALUES (?, ?, ?, ?)`,
       )
-      .run(input.session_id, ts, input.body);
+      .run(input.session_id, ts, input.body, input.created_by);
     const id = Number(result.lastInsertRowid);
     return {
       id,
       session_id: input.session_id,
       timestamp: ts,
       body: input.body,
+      created_by: input.created_by,
       deleted_at: null,
     };
   }
@@ -971,7 +984,7 @@ export class JournalStore {
     }
     params.push(limit);
     const sql = `
-      SELECT e.id, e.session_id, e.timestamp, e.body,
+      SELECT e.id, e.session_id, e.timestamp, e.body, e.created_by,
              snippet(entries_fts, 0, '<<', '>>', '…', 16) AS snippet,
              w.id   AS workstream_id,
              w.slug AS workstream_slug,

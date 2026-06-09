@@ -399,7 +399,8 @@
           "type": "object",
           "required": [
             "session_id",
-            "body"
+            "body",
+            "created_by"
           ],
           "properties": {
             "session_id": {
@@ -409,6 +410,10 @@
             "body": {
               "type": "string",
               "description": "Entry text. One or two lines. Prefer prefixing with the entry type."
+            },
+            "created_by": {
+              "type": "string",
+              "description": "Actor that produced this entry. Use your agent name (e.g. 'orchestrator', 'executor'), 'system' for Working Memory itself, or 'human' for a direct user write. Must not be empty or end with '*'."
             },
             "timestamp": {
               "type": "number",

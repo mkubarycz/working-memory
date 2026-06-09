@@ -18,12 +18,13 @@ test('a workstream with a linked topic and entries appears correctly in panel da
   });
 
   const session = store.startSession({ workstream_slug: 'demo-ws' });
-  store.appendEntry({ session_id: session.session_id, body: 'chat: first' });
+  store.appendEntry({ session_id: session.session_id, body: 'chat: first', created_by: 'orchestrator' });
   store.appendEntry({
     session_id: session.session_id,
     body: 'decision: second',
+    created_by: 'orchestrator',
   });
-  store.appendEntry({ session_id: session.session_id, body: 'fact: third' });
+  store.appendEntry({ session_id: session.session_id, body: 'fact: third', created_by: 'orchestrator' });
 
   // act
   const { active } = getAllPanelData(store);

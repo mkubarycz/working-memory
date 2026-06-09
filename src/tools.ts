@@ -86,6 +86,7 @@ interface DeleteSessionInput {
 interface AppendEntryToolInput {
   session_id: string;
   body: string;
+  created_by: string;
   timestamp?: number;
 }
 interface SearchEntriesToolInput {
@@ -299,9 +300,18 @@ export function registerTools(
   subs.push(
     vscode.lm.registerTool<AppendEntryToolInput>('wm_append_entry', {
       invoke: safe<AppendEntryToolInput>((input) => {
+        if (!input.created_by || !input.created_by.trim()) {
+          throw new Error('created_by is required and must not be empty');
+        }
+        if (input.created_by.endsWith('*')) {
+          throw new Error(
+            'created_by must not end with "*" — that suffix is reserved for migrated rows',
+          );
+        }
         const row = store.appendEntry({
           session_id: input.session_id,
           body: input.body,
+          created_by: input.created_by,
           timestamp: input.timestamp,
         });
         deps.refresh();
