@@ -654,8 +654,8 @@
         "displayName": "Working Memory: Link Workstream ↔ Topic",
         "toolReferenceName": "wm_link_workstream_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Pin a topic to a workstream (M:N). Idempotent. If the topic slug doesn't exist yet, auto-creates a stub topic with title = humanized slug, empty body, status 'open' in the same transaction (topic_created: true in the result). If the link row exists but is soft-deleted, restores it (link_restored: true). The workstream must exist (and not be soft-deleted). Optional `focused` boolean (workstream-focus-mechanism): true marks the topic as currently focused in the workstream; false clears focus without removing the link; omitted preserves the existing focused value. The resolved focus value is returned as `focused` (0/1).",
-        "userDescription": "Link a topic to a workstream",
+        "modelDescription": "Pin a topic (and optionally its graph neighbourhood) to a workstream. Idempotent. When `traversal` is omitted or 'self' (default), behaves exactly as before: attaches only the seed topic. Pass a traversal mode to attach a wider set in one call:\n• 'self' — seed topic only (default).\n• 'childrenOf' — seed + direct children.\n• 'immediateFamilyOf' — seed + direct parents + direct children + siblings (children of those parents).\n• 'recursiveFamilyOf' — seed + full connected subgraph (all ancestors, descendants, siblings transitively).\nClosed topics are skipped during traversal unless `includeClosed` is true. Cycle-safe: a visited-set ensures termination even on diamond-shaped DAGs. If the topic slug doesn't exist yet, a stub topic is auto-created (topic_created: true). Soft-deleted link rows are restored (link_restored: true). `focused` applies only to the seed topic, never to traversed neighbours. Returns `linked` (array of newly created/restored links), `skipped_already_linked` (slugs that were already active), and the resolved `traversal` mode.",
+        "userDescription": "Link a topic (and optional neighbourhood) to a workstream",
         "tags": [
           "working-memory"
         ],
@@ -672,11 +672,25 @@
             },
             "topic_slug": {
               "type": "string",
-              "description": "Slug of the topic (auto-created if missing)."
+              "description": "Slug of the seed topic (auto-created if missing)."
             },
             "focused": {
               "type": "boolean",
-              "description": "Optional. true = mark this topic as focused in the workstream; false = clear focus (link itself stays); omitted = preserve existing focus state."
+              "description": "Optional. true = mark the seed topic as focused in the workstream; false = clear focus (link itself stays); omitted = preserve existing focus state. Never applied to traversed neighbours."
+            },
+            "traversal": {
+              "type": "string",
+              "enum": [
+                "self",
+                "childrenOf",
+                "immediateFamilyOf",
+                "recursiveFamilyOf"
+              ],
+              "description": "Graph-traversal mode. Defaults to 'self' (seed topic only). 'childrenOf' adds direct children. 'immediateFamilyOf' adds parents, children, and siblings. 'recursiveFamilyOf' adds the full connected subgraph."
+            },
+            "includeClosed": {
+              "type": "boolean",
+              "description": "When true, closed topics encountered during traversal are included. Defaults to false. Has no effect when traversal is 'self'."
             }
           }
         }
