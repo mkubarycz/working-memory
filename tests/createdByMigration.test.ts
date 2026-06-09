@@ -41,17 +41,6 @@ function buildPre012Db(): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
 
-  // Apply migrations 001–011 wrapped in individual transactions.
-  const migrations = [
-    '001_initial.sql',
-    '002_soft_delete.sql',
-    '003_topics.sql',
-    '004_topic_status_open_closed.sql',
-    '006_topic_parents.sql',
-    '007_topic_type.sql',
-    '008_topic_types_table.sql',
-    '011_workstream_topic_focus.sql',
-  ];
   // Migrations that require noWrap (manage their own transactions / PRAGMAs).
   const noWrap = new Set([
     '005_safe_topic_rebuild_template.sql',
