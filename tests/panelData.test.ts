@@ -83,16 +83,19 @@ test('entry-count chips use total journal entries per workstream/topic/session s
     session_id: s1.session_id,
     body: 'recent s1',
     timestamp: now - 60,
+    created_by: 'orchestrator',
   });
   const s1Old = store.appendEntry({
     session_id: s1.session_id,
     body: 'old s1',
     timestamp: now - 601,
+    created_by: 'orchestrator',
   });
   store.appendEntry({
     session_id: s2.session_id,
     body: 'recent s2',
     timestamp: now - 10,
+    created_by: 'orchestrator',
   });
 
   store.linkEntryTopic({ entry_id: s1Recent.id, topic_slug: 'top' });
