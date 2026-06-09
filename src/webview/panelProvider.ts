@@ -15,6 +15,7 @@ interface InvokeMessage {
 interface OpenMessage {
   type: 'open';
   uri: string;
+  revealSection?: 'sessions' | 'recent-entries' | 'entries';
 }
 
 interface ActionsMessage {
@@ -97,10 +98,22 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         return;
       case 'open':
         if (typeof msg.uri === 'string') {
-          vscode.commands.executeCommand(
-            'vscode.open',
-            vscode.Uri.parse(msg.uri),
-          );
+          if (
+            msg.revealSection === 'sessions' ||
+            msg.revealSection === 'recent-entries' ||
+            msg.revealSection === 'entries'
+          ) {
+            try {
+              const uri = vscode.Uri.parse(msg.uri).with({
+                fragment: msg.revealSection,
+              });
+              void vscode.commands.executeCommand('vscode.open', uri);
+              return;
+            } catch (err) {
+              console.warn('[working-memory] panel open URI parse failed:', err);
+            }
+          }
+          void vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(msg.uri));
         }
         return;
       case 'invoke':

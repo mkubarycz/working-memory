@@ -15,6 +15,33 @@ import { findLatestVsix } from './vsix';
 
 let activeStore: JournalStore | null = null;
 
+function revealHeading(
+  editor: vscode.TextEditor,
+  section: 'sessions' | 'recent-entries' | 'entries',
+): void {
+  const wanted =
+    section === 'sessions'
+      ? 'sessions'
+      : section === 'recent-entries'
+        ? 'recent entries'
+        : 'entries';
+  for (let i = 0; i < editor.document.lineCount; i++) {
+    const line = editor.document.lineAt(i).text.trim();
+    const match = /^##\s+(.+?)\s*$/.exec(line);
+    if (!match || !match[1]) {
+      continue;
+    }
+    if (match[1].toLocaleLowerCase('en-US') !== wanted) {
+      continue;
+    }
+    const pos = new vscode.Position(i, 0);
+    const range = new vscode.Range(pos, pos);
+    editor.selection = new vscode.Selection(pos, pos);
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+    return;
+  }
+}
+
 function runCommand(command: 'gh' | 'code', args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { shell: false });
@@ -140,17 +167,25 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       'working-memory.open',
       async (
-        arg?: { kind?: string; id?: string } | string,
+        arg?:
+          | {
+              kind?: string;
+              id?: string;
+              revealSection?: 'sessions' | 'recent-entries' | 'entries';
+            }
+          | string,
         maybeId?: string,
       ) => {
         let kind: string | undefined;
         let id: string | undefined;
+        let revealSection: 'sessions' | 'recent-entries' | 'entries' | undefined;
         if (typeof arg === 'string') {
           kind = arg;
           id = maybeId;
         } else if (arg && typeof arg === 'object') {
           kind = arg.kind;
           id = arg.id;
+          revealSection = arg.revealSection;
         }
         if (!kind || !id) {
           const pickedKind = await vscode.window.showQuickPick(
@@ -175,7 +210,14 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         const uri = vscode.Uri.parse(`working-memory:/${kind}/${id}.md`);
-        await vscode.commands.executeCommand('vscode.open', uri);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const editor = await vscode.window.showTextDocument(doc, {
+          preview: false,
+          preserveFocus: false,
+        });
+        if (revealSection) {
+          revealHeading(editor, revealSection);
+        }
       },
     ),
     vscode.commands.registerCommand(

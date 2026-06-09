@@ -33,6 +33,7 @@ export interface PanelTopic {
   icon: string;
   openUri: string;
   status: 'open' | 'closed';
+  recentEntryCount: number;
   /**
    * Whether this topic is currently focused in the parent workstream
    * (workstream-focus-mechanism). Plumbed through for the UI to render a
@@ -66,6 +67,7 @@ export interface PanelSession {
   /** Codicon id (default 'comment-discussion'). */
   icon: string;
   openUri: string;
+  recentEntryCount: number;
 }
 
 export interface PanelSessionsGroup {
@@ -86,6 +88,7 @@ export interface PanelWorkstream {
   tooltip: string;
   icon: 'repo';
   openUri: string;
+  recentEntryCount: number;
   actions: PanelAction[];
   /**
    * Focused topics for this workstream, in linked_at order (newest first).
@@ -107,6 +110,7 @@ export interface PanelTopicRow {
   icon: string;
   openUri: string;
   status: 'open' | 'closed';
+  recentEntryCount: number;
   children?: PanelTopicRow[];
 }
 
@@ -126,7 +130,7 @@ const FALLBACK_GROUP_ICON = 'symbol-keyword';
 const SESSION_ROW_ICON = 'comment-discussion';
 /** Codicon id used for the Sessions group header. */
 const SESSIONS_GROUP_ICON = 'history';
-
+const ALL_TIME_SINCE = 0;
 function describeTopic(t: WorkstreamTopicRow): string {
   const here = t.entry_count_in_workstream;
   const elsewhere = t.entry_count - here;
@@ -185,6 +189,7 @@ function buildTopics(
       openUri: `working-memory:/topic/${t.slug}.md`,
       status: t.status,
       focused: t.focused === 1,
+      recentEntryCount: t.entry_count_in_workstream,
     };
     panelBySlug.set(t.slug, panel);
     ordered.push(panel);
@@ -307,6 +312,7 @@ function buildSessionRow(
     tooltip: tooltipLines.join('\n'),
     icon: SESSION_ROW_ICON,
     openUri: `working-memory:/session/${s.session_id}.md`,
+    recentEntryCount: entryCount,
   };
 }
 
@@ -353,6 +359,11 @@ function buildWorkstream(
     ws,
     typeMap,
   );
+  const sessionsGroup = buildSessions(store, tab, ws);
+  const recentEntryCount = store.countRecentEntriesForWorkstream(
+    ws.id,
+    ALL_TIME_SINCE,
+  );
   const focusedTopics = orderedTopics.filter((t) => t.focused);
   return {
     kind: 'workstream',
@@ -362,11 +373,12 @@ function buildWorkstream(
     tooltip,
     icon: 'repo',
     openUri: `working-memory:/workstream/${ws.slug}.md`,
+    recentEntryCount,
     actions,
     focused_topics: focusedTopics,
     children: [
       topicsGroup,
-      buildSessions(store, tab, ws),
+      sessionsGroup,
     ],
   };
 }
@@ -394,6 +406,7 @@ function buildTopicRow(
     icon: iconForType(t.topic_type, typeMap),
     openUri: `working-memory:/topic/${t.slug}.md`,
     status: t.status,
+    recentEntryCount: counts?.entry_count ?? 0,
   };
 }
 
@@ -419,7 +432,12 @@ function attachChildren(
     return;
   }
   row.children = children.map((c) => {
-    const childRow = buildTopicRow(c, parentSlug, countsBySlug, typeMap);
+    const childRow = buildTopicRow(
+      c,
+      parentSlug,
+      countsBySlug,
+      typeMap,
+    );
     const nextPath = new Set(path);
     nextPath.add(c.slug);
     attachChildren(
@@ -447,7 +465,12 @@ export function getPanelTopicsData(store: JournalStore): PanelData {
   );
   const roots = open.filter((t) => store.listTopicParents(t.slug).length === 0);
   const items: PanelItem[] = roots.map((t) => {
-    const row = buildTopicRow(t, null, countsBySlug, typeMap);
+    const row = buildTopicRow(
+      t,
+      null,
+      countsBySlug,
+      typeMap,
+    );
     attachChildren(
       store,
       row,
