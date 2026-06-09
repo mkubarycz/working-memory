@@ -862,7 +862,12 @@
           }
         }
       }
-    ]
+    ],
+    "markdown": {
+      "previewStyles": [
+        "media/preview.css"
+      ]
+    }
   },
   "scripts": {
     "compile": "tsc -p .",
