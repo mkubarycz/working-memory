@@ -4,7 +4,13 @@ import {
   getPanelData,
   type PanelTab,
 } from './panelData';
-import { JournalStore, type Topic, type TopicStatus } from './db';
+import { JournalStore, type LinkWorkstreamTopicResult, type Topic, type TopicStatus } from './db';
+import {
+  getTopicNeighborhood,
+  makeGraphContext,
+  TRAVERSAL_MODES,
+  type TraversalModeId,
+} from './graphTraversals';
 
 interface ToolDeps {
   refresh: () => void;
@@ -130,9 +136,21 @@ interface LinkWorkstreamTopicToolInput {
   /**
    * Optional. true → mark this topic as focused in the workstream;
    * false → clear focus (link itself stays); omitted → preserve existing
-   * focus state.
+   * focus state. Focus is only applied to the seed topic, never to
+   * traversed neighbours.
    */
   focused?: boolean;
+  /**
+   * Graph-traversal mode. Determines which topics (relative to topic_slug)
+   * are attached in addition to the seed. Defaults to 'self' (only the seed,
+   * preserving the original single-topic behaviour).
+   */
+  traversal?: TraversalModeId;
+  /**
+   * When true, closed topics encountered during traversal are included.
+   * Defaults to false. Has no effect when traversal is 'self'.
+   */
+  includeClosed?: boolean;
 }
 interface LinkEntryTopicToolInput {
   entry_id: number;
@@ -412,13 +430,54 @@ export function registerTools(
       'wm_link_workstream_topic',
       {
         invoke: safe<LinkWorkstreamTopicToolInput>((input) => {
-          const result = store.linkWorkstreamTopic({
-            workstream_slug: input.workstream_slug,
-            topic_slug: input.topic_slug,
-            focused: input.focused,
-          });
+          const modeId: TraversalModeId = input.traversal ?? 'self';
+          if (!TRAVERSAL_MODES[modeId]) {
+            const valid = Object.keys(TRAVERSAL_MODES).join(', ');
+            throw new Error(
+              `unknown traversal mode: '${modeId}' (valid: ${valid})`,
+            );
+          }
+          const includeClosed = input.includeClosed ?? false;
+          const ctx = makeGraphContext(store);
+          const slugs = getTopicNeighborhood(
+            input.topic_slug,
+            modeId,
+            ctx,
+            { includeClosed },
+          );
+
+          const linked: Pick<
+            LinkWorkstreamTopicResult,
+            'topic_slug' | 'link_created' | 'link_restored' | 'topic_created'
+          >[] = [];
+          const skipped: string[] = [];
+
+          for (const slug of slugs) {
+            const result = store.linkWorkstreamTopic({
+              workstream_slug: input.workstream_slug,
+              topic_slug: slug,
+              // focused is only applied to the seed topic
+              focused: slug === input.topic_slug ? input.focused : undefined,
+            });
+            if (result.link_created || result.link_restored) {
+              linked.push({
+                topic_slug: slug,
+                link_created: result.link_created,
+                link_restored: result.link_restored,
+                topic_created: result.topic_created,
+              });
+            } else {
+              skipped.push(slug);
+            }
+          }
+
           deps.refresh();
-          return { ok: true, link: result };
+          return {
+            ok: true,
+            traversal: modeId,
+            linked,
+            skipped_already_linked: skipped,
+          };
         }),
       },
     ),
