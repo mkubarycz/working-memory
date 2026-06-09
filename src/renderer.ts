@@ -65,10 +65,10 @@ export function renderSession(store: JournalStore, session: Session): string {
     ? entries
         .map((e) => {
           const tags = store.listTopicsForEntry(e.id);
-          const tagLine = tags.length
-            ? `\n> — *${tags.map(topicPill).join(' · ')}*`
+          const tagsSuffix = tags.length
+            ? ` — <em>${tags.map(topicPill).join(' · ')}</em>`
             : '';
-          return `> \`${fmtDateTime(e.timestamp)}\` (${e.created_by}) ${e.body}${tagLine}`;
+          return `<div class="wm-entry"><code>${fmtDateTime(e.timestamp)}</code> (${e.created_by}) ${e.body}${tagsSuffix}</div>`;
         })
         .join('\n')
     : '_No entries._';
@@ -169,7 +169,7 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
           const lines = rows
             .map(
               (e) =>
-                `> \`${fmtDateTime(e.timestamp)}\` [#${e.entry_id}](${deepLink('workstream', wsSlug)}) ${e.snippet}`,
+                `<div class="wm-entry"><code>${fmtDateTime(e.timestamp)}</code> [#${e.entry_id}](${deepLink('workstream', wsSlug)}) ${e.snippet}</div>`,
             )
             .join('\n');
           return `### [${title}](${deepLink('workstream', wsSlug)}) \`${wsSlug}\`\n${lines}`;
@@ -271,10 +271,10 @@ export function renderSessionDoc(
         .reverse()
         .map((e) => {
           const tags = store.listTopicsForEntry(e.id);
-          const tagLine = tags.length
-            ? `\n> — *${tags.map(topicPill).join(' · ')}*`
+          const tagsSuffix = tags.length
+            ? ` — <em>${tags.map(topicPill).join(' · ')}</em>`
             : '';
-          return `> \`${fmtDateTime(e.timestamp)}\` (${e.created_by}) ${e.body}${tagLine}`;
+          return `<div class="wm-entry"><code>${fmtDateTime(e.timestamp)}</code> (${e.created_by}) ${e.body}${tagsSuffix}</div>`;
         })
         .join('\n')
     : '_No entries._';

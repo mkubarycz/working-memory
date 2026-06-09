@@ -12,11 +12,11 @@ const t1 = 1_700_000_000; // 2023-11-14 ...
 const t2 = 1_700_001_000; // t1 + 1000 s
 const t3 = 1_700_002_000; // t1 + 2000 s (newest)
 
-/** Extract every blockquote entry line (`> \`...\``) from a rendered doc. */
+/** Extract every wm-entry div line from a rendered doc. */
 function extractEntryLines(rendered: string): string[] {
   return rendered
     .split('\n')
-    .filter((line) => /^> `\d{4}-\d{2}-\d{2} \d{2}:\d{2}`/.test(line));
+    .filter((line) => /^<div class="wm-entry"><code>\d{4}-\d{2}-\d{2} \d{2}:\d{2}<\/code>/.test(line));
 }
 
 test('session doc: 3 entries render newest-first', () => {
@@ -139,7 +139,7 @@ test('topic doc: linked entries render newest-first', () => {
   store.close();
 });
 
-test('every rendered entry line begins with blockquote marker `> `', () => {
+test('every rendered entry line is wrapped in a wm-entry div', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
 
   store.createWorkstream({ slug: 'ws4', title: 'WS4', status: 'open' });
@@ -161,20 +161,20 @@ test('every rendered entry line begins with blockquote marker `> `', () => {
   const sessionRendered = renderSessionDoc(store, session.session_id);
   const wsRendered = renderWorkstreamDoc(store, 'ws4');
 
-  // All entry lines from session doc start with `> `
+  // All entry lines from session doc are wm-entry divs
   const sessionLines = sessionRendered
     .split('\n')
     .filter((l) => l.includes('chat:'));
   expect(sessionLines.length).toBeGreaterThan(0);
   for (const line of sessionLines) {
-    expect(line).toMatch(/^> /);
+    expect(line).toMatch(/^<div class="wm-entry">/);
   }
 
-  // All entry lines from workstream doc start with `> `
+  // All entry lines from workstream doc are wm-entry divs
   const wsLines = wsRendered.split('\n').filter((l) => l.includes('chat:'));
   expect(wsLines.length).toBeGreaterThan(0);
   for (const line of wsLines) {
-    expect(line).toMatch(/^> /);
+    expect(line).toMatch(/^<div class="wm-entry">/);
   }
 
   store.close();
@@ -195,11 +195,11 @@ test('entry timestamps use YYYY-MM-DD HH:MM format (full datetime)', () => {
 
   const rendered = renderSessionDoc(store, session.session_id);
 
-  // Each rendered entry line must match: > `YYYY-MM-DD HH:MM`
+  // Each rendered entry line must match: <div class="wm-entry"><code>YYYY-MM-DD HH:MM</code>
   const entryLines = extractEntryLines(rendered);
   expect(entryLines.length).toBeGreaterThan(0);
   for (const line of entryLines) {
-    expect(line).toMatch(/^> `\d{4}-\d{2}-\d{2} \d{2}:\d{2}`/);
+    expect(line).toMatch(/^<div class="wm-entry"><code>\d{4}-\d{2}-\d{2} \d{2}:\d{2}<\/code>/);
   }
 
   store.close();
