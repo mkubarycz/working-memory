@@ -4,12 +4,17 @@
 
   const vscode = acquireVsCodeApi();
 
-  /** @typedef {{ command: string, title: string, args?: unknown[] }} Action */
+  /** @typedef {{ command: string, title: string, description?: string, args?: unknown[], enabled?: boolean }} Action */
   /** @typedef {{ kind: string, id: string, label: string, description?: string,
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
-   *              status?: 'open'|'closed', recentEntryCount?: number }} Node */
-  /** @typedef {{ label: string, action: string, enabled: boolean, slug: string, topicSlug: string }} CardMenuItem */
+   *              status?: 'open'|'closed', recentEntryCount?: number,
+   *              focused?: boolean }} Node */
+  /** @typedef {{ type: 'card.unfocus', slug: string, topicSlug: string }} CardUnfocusMessage */
+  /** @typedef {{ type: 'card.focus', slug: string, topicSlug: string }} CardFocusMessage */
+  /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
+  /** @typedef {CardUnfocusMessage | CardFocusMessage | InvokeMessage} ContextMenuMessage */
+  /** @typedef {{ label: string, enabled: boolean, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -84,10 +89,11 @@
 
   const listEl = /** @type {HTMLElement} */ (document.getElementById('list'));
   const tabsEl = /** @type {HTMLElement} */ (document.querySelector('.tabs'));
-  const cardMenuEl = document.createElement('div');
-  cardMenuEl.className = 'card-context-menu';
-  cardMenuEl.hidden = true;
-  document.body.appendChild(cardMenuEl);
+  const CONTEXT_MENU_MARGIN = 6;
+  const contextMenuEl = document.createElement('div');
+  contextMenuEl.className = 'context-menu';
+  contextMenuEl.hidden = true;
+  document.body.appendChild(contextMenuEl);
 
   /**
    * @param {string | undefined} openUri
@@ -130,7 +136,7 @@
   /**
    * @param {Node & { focused_topics?: unknown[] }} card
    * @param {string | null} topicSlug
-   * @returns {CardMenuItem[]}
+   * @returns {ContextMenuItem[]}
    */
   function cardContextMenu(card, topicSlug) {
     const slug = workstreamSlugFromOpenUri(card.openUri);
@@ -140,12 +146,94 @@
     return [
       {
         label: 'Remove from Focus',
-        action: 'card.unfocus',
         enabled: true,
-        slug,
-        topicSlug,
+        message: {
+          type: 'card.unfocus',
+          slug,
+          topicSlug,
+        },
       },
     ];
+  }
+
+  /**
+   * @param {Node} node
+   * @param {HTMLElement} row
+   * @returns {ContextMenuItem[]}
+   */
+  function rowContextMenu(node, row) {
+    if (!Array.isArray(node.actions) || node.actions.length === 0) {
+      return [];
+    }
+    const updateItems = node.actions.map((action) => ({
+      label: action.title,
+      enabled: action.enabled !== false,
+      message: {
+        type: 'invoke',
+        command: action.command,
+        args: Array.isArray(action.args) ? action.args : [],
+      },
+    }));
+    const topicContext = workstreamTopicContext(node, row);
+    if (!topicContext) {
+      return updateItems;
+    }
+    const focusItem = topicContext.focused
+      ? {
+        label: 'Remove from Focus',
+        enabled: true,
+        message: {
+          type: 'card.unfocus',
+          slug: topicContext.workstreamSlug,
+          topicSlug: topicContext.topicSlug,
+        },
+      }
+      : {
+        label: 'Add to Focus',
+        enabled: true,
+        message: {
+          type: 'card.focus',
+          slug: topicContext.workstreamSlug,
+          topicSlug: topicContext.topicSlug,
+        },
+      };
+    return [
+      focusItem,
+      {
+        label: 'Update Workstream…',
+        enabled: true,
+        children: updateItems,
+      },
+    ];
+  }
+
+  /**
+   * Resolve the workstream topic context needed for focus actions.
+   * Returns null for rows without enough slug context.
+   * @param {Node} node
+   * @param {HTMLElement} row
+   * @returns {{ workstreamSlug: string, topicSlug: string, focused: boolean } | null}
+   */
+  function workstreamTopicContext(node, row) {
+    const card = row.closest('.ws-card');
+    const workstreamSlug =
+      row.dataset.workstreamSlug ?? card?.dataset.workstreamSlug ?? null;
+    if (!workstreamSlug) {
+      return null;
+    }
+    const topicSlugFromNode =
+      node.kind === 'topic' || node.kind === 'topic-row'
+        ? topicSlugFromOpenUri(node.openUri)
+        : null;
+    const topicSlug = row.dataset.topicSlug ?? topicSlugFromNode;
+    if (!topicSlug) {
+      return null;
+    }
+    const focused =
+      node.kind === 'topic' || node.kind === 'topic-row'
+        ? node.focused === true
+        : false;
+    return { workstreamSlug, topicSlug, focused };
   }
 
   /**
@@ -161,51 +249,162 @@
       ? pinnedRow.dataset.topicSlug ?? null
       : null;
     const items = cardContextMenu(card, topicSlug);
-    if (items.length === 0) {
-      closeCardContextMenu();
-      return;
-    }
-    cardMenuEl.replaceChildren();
-    for (const item of items) {
-      const btn = document.createElement('button');
-      btn.className = 'card-context-menu-item';
-      btn.type = 'button';
-      btn.textContent = item.label;
-      btn.disabled = !item.enabled;
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        closeCardContextMenu();
-        if (!item.enabled) {
-          return;
-        }
-        vscode.postMessage({
-          type: item.action,
-          slug: item.slug,
-          topicSlug: item.topicSlug,
-        });
-      });
-      cardMenuEl.appendChild(btn);
-    }
-    cardMenuEl.hidden = false;
-
-    const margin = 6;
-    const maxLeft = Math.max(
-      margin,
-      window.innerWidth - cardMenuEl.offsetWidth - margin,
-    );
-    const maxTop = Math.max(
-      margin,
-      window.innerHeight - cardMenuEl.offsetHeight - margin,
-    );
-    const left = Math.min(Math.max(event.clientX, margin), maxLeft);
-    const top = Math.min(Math.max(event.clientY, margin), maxTop);
-    cardMenuEl.style.left = left + 'px';
-    cardMenuEl.style.top = top + 'px';
+    openContextMenu(event, items);
   }
 
-  function closeCardContextMenu() {
-    cardMenuEl.hidden = true;
-    cardMenuEl.replaceChildren();
+  /**
+   * @param {MouseEvent} event
+   * @param {Node} node
+   * @param {HTMLElement} row
+   */
+  function openRowContextMenu(event, node, row) {
+    openContextMenu(event, rowContextMenu(node, row));
+  }
+
+  /**
+   * @param {ContextMenuItem} item
+   */
+  function runContextMenuItem(item) {
+    if (!item.enabled || !item.message) {
+      return;
+    }
+    closeContextMenu();
+    vscode.postMessage(item.message);
+  }
+
+  /**
+   * @param {MouseEvent} event
+   * @param {ContextMenuItem[]} items
+   */
+  function openContextMenu(event, items) {
+    if (items.length === 0) {
+      closeContextMenu();
+      return;
+    }
+    contextMenuEl.replaceChildren();
+    for (const item of items) {
+      const entry = document.createElement('div');
+      entry.className = 'context-menu-entry';
+      const btn = document.createElement('button');
+      btn.className = 'context-menu-item';
+      btn.type = 'button';
+      btn.disabled = !item.enabled;
+      btn.textContent = item.label;
+      const hasSubmenu = Array.isArray(item.children) && item.children.length > 0;
+      if (hasSubmenu) {
+        // Parent submenu rows are navigational only; executable actions live in
+        // leaf items (children) so no command message is posted from parent.
+        btn.classList.add('has-submenu');
+        btn.setAttribute('aria-haspopup', 'true');
+        const indicator = document.createElement('span');
+        indicator.className = 'context-submenu-indicator';
+        const chevron = makeCodicon('chevron-right');
+        if (chevron) {
+          indicator.appendChild(chevron);
+        }
+        btn.appendChild(indicator);
+        const submenu = document.createElement('div');
+        submenu.className = 'context-submenu';
+        for (const child of item.children) {
+          const childBtn = document.createElement('button');
+          childBtn.className = 'context-menu-item';
+          childBtn.type = 'button';
+          childBtn.disabled = !child.enabled;
+          childBtn.textContent = child.label;
+          childBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            runContextMenuItem(child);
+          });
+          submenu.appendChild(childBtn);
+        }
+        entry.appendChild(btn);
+        entry.appendChild(submenu);
+      } else {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          runContextMenuItem(item);
+        });
+        entry.appendChild(btn);
+      }
+      contextMenuEl.appendChild(entry);
+    }
+    contextMenuEl.hidden = false;
+
+    const maxLeft = Math.max(
+      CONTEXT_MENU_MARGIN,
+      window.innerWidth - contextMenuEl.offsetWidth - CONTEXT_MENU_MARGIN,
+    );
+    const maxTop = Math.max(
+      CONTEXT_MENU_MARGIN,
+      window.innerHeight - contextMenuEl.offsetHeight - CONTEXT_MENU_MARGIN,
+    );
+    const left = Math.min(Math.max(event.clientX, CONTEXT_MENU_MARGIN), maxLeft);
+    const top = Math.min(Math.max(event.clientY, CONTEXT_MENU_MARGIN), maxTop);
+    contextMenuEl.style.left = left + 'px';
+    contextMenuEl.style.top = top + 'px';
+    positionContextSubmenus();
+  }
+
+  function positionContextSubmenus() {
+    const entries = contextMenuEl.querySelectorAll('.context-menu-entry');
+    for (const entry of entries) {
+      if (!(entry instanceof HTMLElement)) {
+        continue;
+      }
+      const submenu = entry.querySelector(':scope > .context-submenu');
+      if (!(submenu instanceof HTMLElement)) {
+        continue;
+      }
+      submenu.classList.remove('context-submenu-left');
+      submenu.style.top = '-4px';
+      submenu.style.minWidth = '';
+      submenu.style.maxWidth = '';
+
+      // Submenus are display:none by default; temporarily expose for size
+      // measurement so we can keep them inside the viewport.
+      submenu.style.visibility = 'hidden';
+      submenu.style.display = 'flex';
+      const submenuWidth = submenu.offsetWidth;
+      const submenuHeight = submenu.offsetHeight;
+      submenu.style.display = '';
+      submenu.style.visibility = '';
+
+      const entryRect = entry.getBoundingClientRect();
+      const spaceRight = window.innerWidth - entryRect.right - CONTEXT_MENU_MARGIN;
+      const spaceLeft = entryRect.left - CONTEXT_MENU_MARGIN;
+      const fitsRight = spaceRight >= submenuWidth;
+      const fitsLeft = spaceLeft >= submenuWidth;
+
+      const openLeft = !fitsRight && (fitsLeft || spaceLeft > spaceRight);
+      if (openLeft) {
+        submenu.classList.add('context-submenu-left');
+      }
+      if (!fitsRight && !fitsLeft) {
+        const constrainedWidth = Math.max(
+          120,
+          Math.floor(Math.max(spaceLeft, spaceRight)),
+        );
+        submenu.style.minWidth = '0';
+        submenu.style.maxWidth = constrainedWidth + 'px';
+      }
+
+      let top = -4;
+      const overflowBottom =
+        entryRect.top + top + submenuHeight + CONTEXT_MENU_MARGIN - window.innerHeight;
+      if (overflowBottom > 0) {
+        top -= overflowBottom;
+      }
+      const overflowTop = CONTEXT_MENU_MARGIN - (entryRect.top + top);
+      if (overflowTop > 0) {
+        top += overflowTop;
+      }
+      submenu.style.top = Math.round(top) + 'px';
+    }
+  }
+
+  function closeContextMenu() {
+    contextMenuEl.hidden = true;
+    contextMenuEl.replaceChildren();
   }
 
   /**
@@ -334,11 +533,7 @@
       }
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        vscode.postMessage({
-          type: 'actions',
-          nodeId: node.id,
-          actions: node.actions,
-        });
+        openRowContextMenu(e, node, row);
       });
       actions.appendChild(btn);
       row.appendChild(actions);
@@ -355,6 +550,18 @@
         render();
       }
     });
+
+    if (
+      (node.kind === 'topic' || node.kind === 'topic-row') &&
+      Array.isArray(node.actions) &&
+      node.actions.length > 0
+    ) {
+      row.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openRowContextMenu(event, node, row);
+      });
+    }
 
     return row;
   }
@@ -392,9 +599,10 @@
    * normal topic row isn't shared, and leads with a pin codicon to mark
    * it as the focused / quick-access slot.
    * @param {Node} topic
+   * @param {Node & { openUri?: string }} workstream
    * @returns {HTMLElement}
    */
-  function renderPinnedFocusedTopic(topic) {
+  function renderPinnedFocusedTopic(topic, workstream) {
     const clone = /** @type {Node} */ ({
       ...topic,
       id: 'pinned:' + topic.id,
@@ -405,6 +613,10 @@
     const topicSlug = topicSlugFromOpenUri(topic.openUri);
     if (topicSlug) {
       row.dataset.topicSlug = topicSlug;
+    }
+    const workstreamSlug = workstreamSlugFromOpenUri(workstream.openUri);
+    if (workstreamSlug) {
+      row.dataset.workstreamSlug = workstreamSlug;
     }
     // Prepend a pin codicon before the existing icon so the marker is the
     // first thing the eye lands on. Insert after the twisty (first child)
@@ -451,6 +663,10 @@
       for (const item of data.items) {
         const card = document.createElement('div');
         card.className = 'ws-card ws-card-color-' + colorIndexForId(item.id);
+        const workstreamSlug = workstreamSlugFromOpenUri(item.openUri);
+        if (workstreamSlug) {
+          card.dataset.workstreamSlug = workstreamSlug;
+        }
         const expanded = state.expanded.has(item.id);
         if (expanded) {
           card.classList.add('expanded');
@@ -476,7 +692,7 @@
             // topics group / sessions. They're a duplicate quick-access
             // surface; the topic still appears in its regular slot below.
             for (const ft of focusedTopics) {
-              const pinned = renderPinnedFocusedTopic(ft);
+              const pinned = renderPinnedFocusedTopic(ft, item);
               body.appendChild(pinned);
             }
             for (const child of item.children) {
@@ -520,31 +736,31 @@
     }
     state.activeTab = t;
     state.focusedId = null;
-    closeCardContextMenu();
+    closeContextMenu();
     persist();
     render();
   });
 
   document.addEventListener('click', (e) => {
-    if (cardMenuEl.hidden) {
+    if (contextMenuEl.hidden) {
       return;
     }
     const target = e.target;
-    if (!(target instanceof Element) || !cardMenuEl.contains(target)) {
-      closeCardContextMenu();
+    if (!(target instanceof Element) || !contextMenuEl.contains(target)) {
+      closeContextMenu();
     }
   });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      closeCardContextMenu();
+      closeContextMenu();
     }
   });
 
   document.addEventListener(
     'scroll',
     () => {
-      closeCardContextMenu();
+      closeContextMenu();
     },
     true,
   );
@@ -613,7 +829,7 @@
       state.recentCounts = nextRecentCounts;
       state.flashChipIds = flashChipIds;
       state.data = msg.data || {};
-      closeCardContextMenu();
+      closeContextMenu();
       render();
     }
   });

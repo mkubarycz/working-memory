@@ -356,7 +356,7 @@ html, body {
   font-size: 13px;
 }
 
-.card-context-menu {
+.context-menu {
   position: fixed;
   z-index: 1000;
   min-width: 170px;
@@ -370,11 +370,15 @@ html, body {
   gap: 2px;
 }
 
-.card-context-menu[hidden] {
+.context-menu[hidden] {
   display: none;
 }
 
-.card-context-menu-item {
+.context-menu-entry {
+  position: relative;
+}
+
+.context-menu-item {
   border: none;
   border-radius: 4px;
   background: transparent;
@@ -383,13 +387,49 @@ html, body {
   font: inherit;
   padding: 6px 8px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
 }
 
-.card-context-menu-item:hover:not(:disabled) {
+.context-menu-item:hover:not(:disabled) {
   background: var(--vscode-list-hoverBackground);
 }
 
-.card-context-menu-item:disabled {
+.context-menu-item:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.context-submenu {
+  display: none;
+  position: absolute;
+  left: calc(100% - 2px);
+  top: -4px;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-menu-border, rgba(128, 128, 128, 0.4)));
+  border-radius: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, var(--vscode-sideBar-background)));
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.35);
+  flex-direction: column;
+  gap: 2px;
+  z-index: 1001;
+}
+
+.context-submenu.context-submenu-left {
+  left: auto;
+  right: calc(100% - 2px);
+}
+
+.context-menu-entry:hover > .context-submenu,
+.context-menu-entry:focus-within > .context-submenu {
+  display: flex;
+}
+
+.context-submenu-indicator {
+  display: inline-flex;
+  opacity: 0.8;
 }
