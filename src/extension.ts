@@ -297,14 +297,16 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         const uri = vscode.Uri.parse(`working-memory:/${kind}/${id}.md`);
-        const doc = await vscode.workspace.openTextDocument(uri);
-        const editor = await vscode.window.showTextDocument(doc, {
-          preview: false,
-          preserveFocus: false,
-        });
         if (revealSection) {
+          const doc = await vscode.workspace.openTextDocument(uri);
+          const editor = await vscode.window.showTextDocument(doc, {
+            preview: false,
+            preserveFocus: false,
+          });
           revealHeading(editor, revealSection);
+          return;
         }
+        await vscode.commands.executeCommand('vscode.open', uri);
       },
     ),
     vscode.commands.registerCommand(
