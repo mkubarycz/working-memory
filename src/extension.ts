@@ -7,11 +7,12 @@ import {
   JournalStore,
   openJournalStore,
 } from './db';
-import { resolveDbPath } from './paths';
+import { findHubWorkspace, resolveDbPath } from './paths';
 import { WorkstreamDocumentProvider } from './contentProvider';
 import { registerTools } from './tools';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
 import { findLatestVsix } from './vsix';
+import { deployTemplates } from './deployTemplates';
 
 let activeStore: JournalStore | null = null;
 
@@ -70,10 +71,32 @@ export function activate(context: vscode.ExtensionContext): void {
   // provider. Failures are non-fatal — the providers degrade gracefully
   // when `store` is null.
   let store: JournalStore | null = null;
+  const hub = findHubWorkspace();
+  if (hub) {
+    try {
+      const currentVersion = context.extension.packageJSON.version as string;
+      const deployedVersion = context.globalState.get<string>(
+        'working-memory.deployedVersion',
+      );
+      if (deployedVersion === currentVersion) {
+        console.log(
+          `[working-memory] templates already deployed for v${currentVersion}, skipping`,
+        );
+      } else {
+        deployTemplates(context, hub);
+        void context.globalState.update(
+          'working-memory.deployedVersion',
+          currentVersion,
+        );
+      }
+    } catch (err) {
+      console.error('[working-memory] deployTemplates failed:', err);
+    }
+  }
   const dbPath = resolveDbPath();
   if (!dbPath) {
     vscode.window.showWarningMessage(
-      'Working Memory: no hub workspace found (need a folder with AGENTS.md and a memory/ directory). The Workstreams panel will be empty.',
+      'Working Memory: no hub workspace found (need a folder containing a memory/ directory). The Workstreams panel will be empty.',
     );
   } else {
     try {
