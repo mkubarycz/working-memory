@@ -325,6 +325,52 @@
     const top = Math.min(Math.max(event.clientY, margin), maxTop);
     contextMenuEl.style.left = left + 'px';
     contextMenuEl.style.top = top + 'px';
+    positionContextSubmenus();
+  }
+
+  function positionContextSubmenus() {
+    const margin = 6;
+    const entries = contextMenuEl.querySelectorAll('.context-menu-entry');
+    for (const entry of entries) {
+      if (!(entry instanceof HTMLElement)) {
+        continue;
+      }
+      const submenu = entry.querySelector(':scope > .context-submenu');
+      if (!(submenu instanceof HTMLElement)) {
+        continue;
+      }
+      submenu.classList.remove('context-submenu-left');
+      submenu.style.top = '-4px';
+
+      // Submenus are display:none by default; temporarily expose for size
+      // measurement so we can keep them inside the viewport.
+      submenu.style.visibility = 'hidden';
+      submenu.style.display = 'flex';
+      const submenuWidth = submenu.offsetWidth;
+      const submenuHeight = submenu.offsetHeight;
+      submenu.style.display = '';
+      submenu.style.visibility = '';
+
+      const entryRect = entry.getBoundingClientRect();
+      const openLeft =
+        entryRect.right + submenuWidth + margin > window.innerWidth &&
+        entryRect.left - submenuWidth - margin >= 0;
+      if (openLeft) {
+        submenu.classList.add('context-submenu-left');
+      }
+
+      let top = -4;
+      const overflowBottom =
+        entryRect.top + top + submenuHeight + margin - window.innerHeight;
+      if (overflowBottom > 0) {
+        top -= overflowBottom;
+      }
+      const overflowTop = margin - (entryRect.top + top);
+      if (overflowTop > 0) {
+        top += overflowTop;
+      }
+      submenu.style.top = Math.round(top) + 'px';
+    }
   }
 
   function closeContextMenu() {

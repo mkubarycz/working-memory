@@ -419,6 +419,11 @@ html, body {
   z-index: 1001;
 }
 
+.context-submenu.context-submenu-left {
+  left: auto;
+  right: calc(100% - 2px);
+}
+
 .context-menu-entry:hover > .context-submenu,
 .context-menu-entry:focus-within > .context-submenu {
   display: flex;
