@@ -12,7 +12,7 @@
   /** @typedef {{ type: 'card.unfocus', slug: string, topicSlug: string }} CardUnfocusMessage */
   /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
   /** @typedef {CardUnfocusMessage | InvokeMessage} ContextMenuMessage */
-  /** @typedef {{ label: string, description?: string, enabled: boolean, message: ContextMenuMessage }} ContextMenuItem */
+  /** @typedef {{ label: string, enabled: boolean, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -155,15 +155,15 @@
 
   /**
    * @param {Node} node
+   * @param {HTMLElement} row
    * @returns {ContextMenuItem[]}
    */
-  function rowContextMenu(node) {
+  function rowContextMenu(node, row) {
     if (!Array.isArray(node.actions) || node.actions.length === 0) {
       return [];
     }
-    return node.actions.map((action) => ({
+    const updateItems = node.actions.map((action) => ({
       label: action.title,
-      description: action.description,
       enabled: action.enabled !== false,
       message: {
         type: 'invoke',
@@ -171,6 +171,51 @@
         args: Array.isArray(action.args) ? action.args : [],
       },
     }));
+    const focusedContext = focusedMenuContext(node, row);
+    if (!focusedContext) {
+      return updateItems;
+    }
+    return [
+      {
+        label: 'Remove from Focus',
+        enabled: true,
+        message: {
+          type: 'card.unfocus',
+          slug: focusedContext.workstreamSlug,
+          topicSlug: focusedContext.topicSlug,
+        },
+      },
+      {
+        label: 'Update Workstream…',
+        enabled: true,
+        children: updateItems,
+      },
+    ];
+  }
+
+  /**
+   * Resolve the focused-topic context needed for "Remove from Focus".
+   * Returns null for non-focused rows or rows without enough slug context.
+   * @param {Node} node
+   * @param {HTMLElement} row
+   * @returns {{ workstreamSlug: string, topicSlug: string } | null}
+   */
+  function focusedMenuContext(node, row) {
+    const card = row.closest('.ws-card');
+    const workstreamSlug =
+      row.dataset.workstreamSlug ?? card?.dataset.workstreamSlug ?? null;
+    if (!workstreamSlug) {
+      return null;
+    }
+    const topicSlugFromNode =
+      node.kind === 'topic' || node.kind === 'topic-row'
+        ? topicSlugFromOpenUri(node.openUri)
+        : null;
+    const topicSlug = row.dataset.topicSlug ?? topicSlugFromNode;
+    if (!topicSlug) {
+      return null;
+    }
+    return { workstreamSlug, topicSlug };
   }
 
   /**
@@ -192,9 +237,21 @@
   /**
    * @param {MouseEvent} event
    * @param {Node} node
+   * @param {HTMLElement} row
    */
-  function openRowContextMenu(event, node) {
-    openContextMenu(event, rowContextMenu(node));
+  function openRowContextMenu(event, node, row) {
+    openContextMenu(event, rowContextMenu(node, row));
+  }
+
+  /**
+   * @param {ContextMenuItem} item
+   */
+  function runContextMenuItem(item) {
+    if (!item.enabled || !item.message) {
+      return;
+    }
+    closeContextMenu();
+    vscode.postMessage(item.message);
   }
 
   /**
@@ -208,29 +265,50 @@
     }
     contextMenuEl.replaceChildren();
     for (const item of items) {
+      const entry = document.createElement('div');
+      entry.className = 'context-menu-entry';
       const btn = document.createElement('button');
       btn.className = 'context-menu-item';
       btn.type = 'button';
       btn.disabled = !item.enabled;
-      const label = document.createElement('span');
-      label.className = 'context-menu-item-label';
-      label.textContent = item.label;
-      btn.appendChild(label);
-      if (item.description) {
-        const desc = document.createElement('span');
-        desc.className = 'context-menu-item-description';
-        desc.textContent = item.description;
-        btn.appendChild(desc);
-      }
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        closeContextMenu();
-        if (!item.enabled) {
-          return;
+      btn.textContent = item.label;
+      const hasSubmenu = Array.isArray(item.children) && item.children.length > 0;
+      if (hasSubmenu) {
+        // Parent submenu rows are navigational only; executable actions live in
+        // leaf items (children) so no command message is posted from parent.
+        btn.classList.add('has-submenu');
+        btn.setAttribute('aria-haspopup', 'true');
+        const indicator = document.createElement('span');
+        indicator.className = 'context-submenu-indicator';
+        const chevron = makeCodicon('chevron-right');
+        if (chevron) {
+          indicator.appendChild(chevron);
         }
-        vscode.postMessage(item.message);
-      });
-      contextMenuEl.appendChild(btn);
+        btn.appendChild(indicator);
+        const submenu = document.createElement('div');
+        submenu.className = 'context-submenu';
+        for (const child of item.children) {
+          const childBtn = document.createElement('button');
+          childBtn.className = 'context-menu-item';
+          childBtn.type = 'button';
+          childBtn.disabled = !child.enabled;
+          childBtn.textContent = child.label;
+          childBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            runContextMenuItem(child);
+          });
+          submenu.appendChild(childBtn);
+        }
+        entry.appendChild(btn);
+        entry.appendChild(submenu);
+      } else {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          runContextMenuItem(item);
+        });
+        entry.appendChild(btn);
+      }
+      contextMenuEl.appendChild(entry);
     }
     contextMenuEl.hidden = false;
 
@@ -380,7 +458,7 @@
       }
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        openRowContextMenu(e, node);
+        openRowContextMenu(e, node, row);
       });
       actions.appendChild(btn);
       row.appendChild(actions);
@@ -406,7 +484,7 @@
       row.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        openRowContextMenu(event, node);
+        openRowContextMenu(event, node, row);
       });
     }
 
@@ -446,9 +524,10 @@
    * normal topic row isn't shared, and leads with a pin codicon to mark
    * it as the focused / quick-access slot.
    * @param {Node} topic
+   * @param {Node & { openUri?: string }} workstream
    * @returns {HTMLElement}
    */
-  function renderPinnedFocusedTopic(topic) {
+  function renderPinnedFocusedTopic(topic, workstream) {
     const clone = /** @type {Node} */ ({
       ...topic,
       id: 'pinned:' + topic.id,
@@ -459,6 +538,10 @@
     const topicSlug = topicSlugFromOpenUri(topic.openUri);
     if (topicSlug) {
       row.dataset.topicSlug = topicSlug;
+    }
+    const workstreamSlug = workstreamSlugFromOpenUri(workstream.openUri);
+    if (workstreamSlug) {
+      row.dataset.workstreamSlug = workstreamSlug;
     }
     // Prepend a pin codicon before the existing icon so the marker is the
     // first thing the eye lands on. Insert after the twisty (first child)
@@ -505,6 +588,10 @@
       for (const item of data.items) {
         const card = document.createElement('div');
         card.className = 'ws-card ws-card-color-' + colorIndexForId(item.id);
+        const workstreamSlug = workstreamSlugFromOpenUri(item.openUri);
+        if (workstreamSlug) {
+          card.dataset.workstreamSlug = workstreamSlug;
+        }
         const expanded = state.expanded.has(item.id);
         if (expanded) {
           card.classList.add('expanded');
@@ -530,7 +617,7 @@
             // topics group / sessions. They're a duplicate quick-access
             // surface; the topic still appears in its regular slot below.
             for (const ft of focusedTopics) {
-              const pinned = renderPinnedFocusedTopic(ft);
+              const pinned = renderPinnedFocusedTopic(ft, item);
               body.appendChild(pinned);
             }
             for (const child of item.children) {

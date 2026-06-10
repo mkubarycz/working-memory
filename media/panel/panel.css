@@ -374,6 +374,10 @@ html, body {
   display: none;
 }
 
+.context-menu-entry {
+  position: relative;
+}
+
 .context-menu-item {
   border: none;
   border-radius: 4px;
@@ -384,18 +388,10 @@ html, body {
   padding: 6px 8px;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.context-menu-item-label {
-  line-height: 1.2;
-}
-
-.context-menu-item-description {
-  color: var(--vscode-descriptionForeground);
-  font-size: 11px;
-  line-height: 1.25;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
 }
 
 .context-menu-item:hover:not(:disabled) {
@@ -405,4 +401,30 @@ html, body {
 .context-menu-item:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.context-submenu {
+  display: none;
+  position: absolute;
+  left: calc(100% - 2px);
+  top: -4px;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-menu-border, rgba(128, 128, 128, 0.4)));
+  border-radius: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, var(--vscode-sideBar-background)));
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.35);
+  flex-direction: column;
+  gap: 2px;
+  z-index: 1001;
+}
+
+.context-menu-entry:hover > .context-submenu,
+.context-menu-entry:focus-within > .context-submenu {
+  display: flex;
+}
+
+.context-submenu-indicator {
+  display: inline-flex;
+  opacity: 0.8;
 }
