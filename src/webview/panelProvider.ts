@@ -34,12 +34,19 @@ interface CardUnfocusMessage {
   topicSlug: string;
 }
 
+interface CardFocusMessage {
+  type: 'card.focus';
+  slug: string;
+  topicSlug: string;
+}
+
 type InboundMessage =
   | InvokeMessage
   | OpenMessage
   | ActionsMessage
   | ReadyMessage
-  | CardUnfocusMessage;
+  | CardUnfocusMessage
+  | CardFocusMessage;
 
 /**
  * `WebviewViewProvider` for the single Working Memory panel. Hosts a tab
@@ -135,6 +142,35 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           this.handleCardUnfocus(msg.slug, msg.topicSlug);
         }
         return;
+      case 'card.focus':
+        if (
+          typeof msg.slug === 'string' &&
+          msg.slug.trim().length > 0 &&
+          typeof msg.topicSlug === 'string' &&
+          msg.topicSlug.trim().length > 0
+        ) {
+          this.handleCardFocus(msg.slug, msg.topicSlug);
+        }
+        return;
+    }
+  }
+
+  private handleCardFocus(slug: string, topicSlug: string): void {
+    if (!this.store) {
+      return;
+    }
+    try {
+      this.store.linkWorkstreamTopic({
+        workstream_slug: slug,
+        topic_slug: topicSlug,
+        focused: true,
+      });
+      this.refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(
+        `Working Memory: failed to add topic to focus — ${message}`,
+      );
     }
   }
 

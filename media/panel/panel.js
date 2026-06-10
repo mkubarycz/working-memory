@@ -8,10 +8,12 @@
   /** @typedef {{ kind: string, id: string, label: string, description?: string,
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
-   *              status?: 'open'|'closed', recentEntryCount?: number }} Node */
+   *              status?: 'open'|'closed', recentEntryCount?: number,
+   *              focused?: boolean }} Node */
   /** @typedef {{ type: 'card.unfocus', slug: string, topicSlug: string }} CardUnfocusMessage */
+  /** @typedef {{ type: 'card.focus', slug: string, topicSlug: string }} CardFocusMessage */
   /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
-  /** @typedef {CardUnfocusMessage | InvokeMessage} ContextMenuMessage */
+  /** @typedef {CardUnfocusMessage | CardFocusMessage | InvokeMessage} ContextMenuMessage */
   /** @typedef {{ label: string, enabled: boolean, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
@@ -172,20 +174,31 @@
         args: Array.isArray(action.args) ? action.args : [],
       },
     }));
-    const focusedContext = focusedMenuContext(node, row);
-    if (!focusedContext) {
+    const topicContext = workstreamTopicContext(node, row);
+    if (!topicContext) {
       return updateItems;
     }
-    return [
-      {
+    const focusItem = topicContext.focused
+      ? {
         label: 'Remove from Focus',
         enabled: true,
         message: {
           type: 'card.unfocus',
-          slug: focusedContext.workstreamSlug,
-          topicSlug: focusedContext.topicSlug,
+          slug: topicContext.workstreamSlug,
+          topicSlug: topicContext.topicSlug,
         },
-      },
+      }
+      : {
+        label: 'Add to Focus',
+        enabled: true,
+        message: {
+          type: 'card.focus',
+          slug: topicContext.workstreamSlug,
+          topicSlug: topicContext.topicSlug,
+        },
+      };
+    return [
+      focusItem,
       {
         label: 'Update Workstream…',
         enabled: true,
@@ -195,13 +208,13 @@
   }
 
   /**
-   * Resolve the focused-topic context needed for "Remove from Focus".
-   * Returns null for non-focused rows or rows without enough slug context.
+   * Resolve the workstream topic context needed for focus actions.
+   * Returns null for rows without enough slug context.
    * @param {Node} node
    * @param {HTMLElement} row
-   * @returns {{ workstreamSlug: string, topicSlug: string } | null}
+   * @returns {{ workstreamSlug: string, topicSlug: string, focused: boolean } | null}
    */
-  function focusedMenuContext(node, row) {
+  function workstreamTopicContext(node, row) {
     const card = row.closest('.ws-card');
     const workstreamSlug =
       row.dataset.workstreamSlug ?? card?.dataset.workstreamSlug ?? null;
@@ -216,7 +229,11 @@
     if (!topicSlug) {
       return null;
     }
-    return { workstreamSlug, topicSlug };
+    const focused =
+      node.kind === 'topic' || node.kind === 'topic-row'
+        ? node.focused === true
+        : false;
+    return { workstreamSlug, topicSlug, focused };
   }
 
   /**

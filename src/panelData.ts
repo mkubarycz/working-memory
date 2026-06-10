@@ -174,10 +174,25 @@ function iconForType(
   return typeMap.get(typeId)?.icon ?? FALLBACK_TOPIC_ICON;
 }
 
+function traversalActionTitle(mode: (typeof TRAVERSAL_MODES)[keyof typeof TRAVERSAL_MODES]): string {
+  switch (mode.id) {
+    case 'self':
+      return 'Add this topic';
+    case 'immediateFamilyOf':
+      return 'Add immediate family';
+    case 'childrenOf':
+      return 'Add children only';
+    case 'recursiveFamilyOf':
+      return 'Add family tree';
+    default:
+      return `Add ${mode.label}`;
+  }
+}
+
 function topicActions(topicSlug: string, workstreamSlug?: string): PanelAction[] {
   const add = Object.values(TRAVERSAL_MODES).map((mode) => ({
     command: 'workingMemory.topic.addToWorkstream',
-    title: `Add to workstream ▸ ${mode.label}`,
+    title: traversalActionTitle(mode),
     description: mode.description,
     args: [{
       topicSlug,

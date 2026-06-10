@@ -195,7 +195,20 @@ test('topic rows expose graph-aware attach/remove actions', () => {
   const activeTopicsGroup = ws.children.find((c) => c.kind === 'topics-group');
   const activeTopic = activeTopicsGroup?.children[0];
   const traversalLabels = Object.values(TRAVERSAL_MODES).map(
-    (mode) => `Add to workstream ▸ ${mode.label}`,
+    (mode) => {
+      switch (mode.id) {
+        case 'self':
+          return 'Add this topic';
+        case 'immediateFamilyOf':
+          return 'Add immediate family';
+        case 'childrenOf':
+          return 'Add children only';
+        case 'recursiveFamilyOf':
+          return 'Add family tree';
+        default:
+          return `Add ${mode.label}`;
+      }
+    },
   );
   expect(activeTopic?.actions?.map((a) => a.title)).toEqual([
     ...traversalLabels,
