@@ -340,6 +340,8 @@
       }
       submenu.classList.remove('context-submenu-left');
       submenu.style.top = '-4px';
+      submenu.style.minWidth = '';
+      submenu.style.maxWidth = '';
 
       // Submenus are display:none by default; temporarily expose for size
       // measurement so we can keep them inside the viewport.
@@ -351,11 +353,22 @@
       submenu.style.visibility = '';
 
       const entryRect = entry.getBoundingClientRect();
-      const openLeft =
-        entryRect.right + submenuWidth + CONTEXT_MENU_MARGIN > window.innerWidth &&
-        entryRect.left - submenuWidth - CONTEXT_MENU_MARGIN >= 0;
+      const spaceRight = window.innerWidth - entryRect.right - CONTEXT_MENU_MARGIN;
+      const spaceLeft = entryRect.left - CONTEXT_MENU_MARGIN;
+      const fitsRight = spaceRight >= submenuWidth;
+      const fitsLeft = spaceLeft >= submenuWidth;
+
+      const openLeft = !fitsRight && (fitsLeft || spaceLeft > spaceRight);
       if (openLeft) {
         submenu.classList.add('context-submenu-left');
+      }
+      if (!fitsRight && !fitsLeft) {
+        const constrainedWidth = Math.max(
+          120,
+          Math.floor(Math.max(spaceLeft, spaceRight)),
+        );
+        submenu.style.minWidth = '0';
+        submenu.style.maxWidth = constrainedWidth + 'px';
       }
 
       let top = -4;
