@@ -7,6 +7,7 @@ import {
   type WorkstreamTopicRow,
   type WorkstreamWithCount,
 } from './db';
+import { TRAVERSAL_MODES } from './graphTraversals';
 
 /**
  * Plain-JSON shapes shipped to the webview. Keep these serializable —
@@ -19,6 +20,8 @@ export interface PanelAction {
   command: string;
   /** Human-readable label for the quick-pick / menu. */
   title: string;
+  /** Optional secondary text shown in the quick-pick. */
+  description?: string;
   /** Args to pass to the command. */
   args?: unknown[];
 }
@@ -34,6 +37,7 @@ export interface PanelTopic {
   openUri: string;
   status: 'open' | 'closed';
   recentEntryCount: number;
+  actions?: PanelAction[];
   /**
    * Whether this topic is currently focused in the parent workstream
    * (workstream-focus-mechanism). Plumbed through for the UI to render a
@@ -111,6 +115,7 @@ export interface PanelTopicRow {
   openUri: string;
   status: 'open' | 'closed';
   recentEntryCount: number;
+  actions?: PanelAction[];
   children?: PanelTopicRow[];
 }
 
@@ -169,6 +174,30 @@ function iconForType(
   return typeMap.get(typeId)?.icon ?? FALLBACK_TOPIC_ICON;
 }
 
+function topicActions(topicSlug: string, workstreamSlug?: string): PanelAction[] {
+  const add = Object.values(TRAVERSAL_MODES).map((mode) => ({
+    command: 'workingMemory.topic.addToWorkstream',
+    title: `Add to workstream ▸ ${mode.label}`,
+    description: mode.description,
+    args: [{
+      topicSlug,
+      traversalId: mode.id,
+      ...(workstreamSlug ? { workstreamSlug } : {}),
+    }],
+  }));
+  return [
+    ...add,
+    {
+      command: 'workingMemory.topic.removeFromWorkstream',
+      title: 'Remove from workstream',
+      args: [{
+        topicSlug,
+        ...(workstreamSlug ? { workstreamSlug } : {}),
+      }],
+    },
+  ];
+}
+
 function buildTopics(
   store: JournalStore,
   tab: PanelTab,
@@ -190,6 +219,7 @@ function buildTopics(
       status: t.status,
       focused: t.focused === 1,
       recentEntryCount: t.entry_count_in_workstream,
+      actions: topicActions(t.slug, ws.slug),
     };
     panelBySlug.set(t.slug, panel);
     ordered.push(panel);
@@ -409,6 +439,7 @@ function buildTopicRow(
     openUri: `working-memory:/topic/${t.slug}.md`,
     status: t.status,
     recentEntryCount: counts?.entry_count ?? 0,
+    actions: topicActions(t.slug),
   };
 }
 

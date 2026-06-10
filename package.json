@@ -12,6 +12,8 @@
   "main": "./out/src/extension.js",
   "activationEvents": [
     "onUri",
+    "onCommand:workingMemory.topic.addToWorkstream",
+    "onCommand:workingMemory.topic.removeFromWorkstream",
     "onLanguageModelTool:wm_list_workstreams",
     "onLanguageModelTool:wm_get_workstream",
     "onLanguageModelTool:wm_create_workstream",
@@ -95,6 +97,16 @@
       {
         "command": "working-memory.openWorkstream",
         "title": "Open Workstream",
+        "category": "Working Memory"
+      },
+      {
+        "command": "workingMemory.topic.addToWorkstream",
+        "title": "Topic: Add to Workstream",
+        "category": "Working Memory"
+      },
+      {
+        "command": "workingMemory.topic.removeFromWorkstream",
+        "title": "Topic: Remove from Workstream",
         "category": "Working Memory"
       }
     ],

@@ -4,7 +4,7 @@
 
   const vscode = acquireVsCodeApi();
 
-  /** @typedef {{ command: string, title: string, args?: unknown[] }} Action */
+  /** @typedef {{ command: string, title: string, description?: string, args?: unknown[] }} Action */
   /** @typedef {{ kind: string, id: string, label: string, description?: string,
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
@@ -355,6 +355,22 @@
         render();
       }
     });
+
+    if (
+      (node.kind === 'topic' || node.kind === 'topic-row') &&
+      Array.isArray(node.actions) &&
+      node.actions.length > 0
+    ) {
+      row.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        vscode.postMessage({
+          type: 'actions',
+          nodeId: node.id,
+          actions: node.actions,
+        });
+      });
+    }
 
     return row;
   }

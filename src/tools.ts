@@ -4,13 +4,11 @@ import {
   getPanelData,
   type PanelTab,
 } from './panelData';
-import { JournalStore, type LinkWorkstreamTopicResult, type Topic, type TopicStatus } from './db';
+import { JournalStore, type Topic, type TopicStatus } from './db';
 import {
-  getTopicNeighborhood,
-  makeGraphContext,
-  TRAVERSAL_MODES,
   type TraversalModeId,
 } from './graphTraversals';
+import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
 
 interface ToolDeps {
   refresh: () => void;
@@ -430,53 +428,11 @@ export function registerTools(
       'wm_link_workstream_topic',
       {
         invoke: safe<LinkWorkstreamTopicToolInput>((input) => {
-          const modeId: TraversalModeId = input.traversal ?? 'self';
-          if (!TRAVERSAL_MODES[modeId]) {
-            const valid = Object.keys(TRAVERSAL_MODES).join(', ');
-            throw new Error(
-              `unknown traversal mode: '${modeId}' (valid: ${valid})`,
-            );
-          }
-          const includeClosed = input.includeClosed ?? false;
-          const ctx = makeGraphContext(store);
-          const slugs = getTopicNeighborhood(
-            input.topic_slug,
-            modeId,
-            ctx,
-            { includeClosed },
-          );
-
-          const linked: Pick<
-            LinkWorkstreamTopicResult,
-            'topic_slug' | 'link_created' | 'link_restored' | 'topic_created'
-          >[] = [];
-          const skipped: string[] = [];
-
-          for (const slug of slugs) {
-            const result = store.linkWorkstreamTopic({
-              workstream_slug: input.workstream_slug,
-              topic_slug: slug,
-              // focused is only applied to the seed topic
-              focused: slug === input.topic_slug ? input.focused : undefined,
-            });
-            if (result.link_created || result.link_restored) {
-              linked.push({
-                topic_slug: slug,
-                link_created: result.link_created,
-                link_restored: result.link_restored,
-                topic_created: result.topic_created,
-              });
-            } else {
-              skipped.push(slug);
-            }
-          }
-
+          const result = linkWorkstreamTopicWithTraversal(store, input);
           deps.refresh();
           return {
             ok: true,
-            traversal: modeId,
-            linked,
-            skipped_already_linked: skipped,
+            ...result,
           };
         }),
       },

@@ -12,8 +12,21 @@ import { WorkstreamDocumentProvider } from './contentProvider';
 import { registerTools } from './tools';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
 import { findLatestVsix } from './vsix';
+import { TRAVERSAL_MODES, type TraversalModeId } from './graphTraversals';
+import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
 
 let activeStore: JournalStore | null = null;
+
+type TopicAddToWorkstreamCommandInput = {
+  topicSlug?: string;
+  traversalId?: TraversalModeId;
+  workstreamSlug?: string;
+};
+
+type TopicRemoveFromWorkstreamCommandInput = {
+  topicSlug?: string;
+  workstreamSlug?: string;
+};
 
 function revealHeading(
   editor: vscode.TextEditor,
@@ -98,6 +111,52 @@ export function activate(context: vscode.ExtensionContext): void {
   const refresh = (): void => {
     panelProvider.refresh();
     contentProvider.refresh();
+  };
+
+  const pickOpenWorkstreamSlug = async (): Promise<string | null> => {
+    if (!store) {
+      return null;
+    }
+    const rows = store.listWorkstreams({ status: 'open' });
+    if (rows.length === 0) {
+      vscode.window.showWarningMessage(
+        'Working Memory: no open workstreams available.',
+      );
+      return null;
+    }
+    const pick = await vscode.window.showQuickPick(
+      rows.map((ws) => ({
+        label: ws.title,
+        description: ws.slug,
+        slug: ws.slug,
+      })),
+      { placeHolder: 'Choose a workstream' },
+    );
+    return pick?.slug ?? null;
+  };
+
+  const pickLinkedWorkstreamSlug = async (
+    topicSlug: string,
+  ): Promise<string | null> => {
+    if (!store) {
+      return null;
+    }
+    const rows = store.listWorkstreamsForTopic(topicSlug);
+    if (rows.length === 0) {
+      vscode.window.showWarningMessage(
+        `Working Memory: topic "${topicSlug}" is not linked to any workstream.`,
+      );
+      return null;
+    }
+    const pick = await vscode.window.showQuickPick(
+      rows.map((ws) => ({
+        label: ws.workstream_title,
+        description: ws.workstream_slug,
+        slug: ws.workstream_slug,
+      })),
+      { placeHolder: 'Choose a workstream to remove this topic from' },
+    );
+    return pick?.slug ?? null;
   };
 
   context.subscriptions.push(
@@ -243,6 +302,100 @@ export function activate(context: vscode.ExtensionContext): void {
           kind: 'workstream',
           id,
         }),
+    ),
+    vscode.commands.registerCommand(
+      'workingMemory.topic.addToWorkstream',
+      async (arg?: TopicAddToWorkstreamCommandInput) => {
+        const topicSlug = arg?.topicSlug?.trim();
+        if (!topicSlug) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Add to workstream requires a topic slug.',
+          );
+          return;
+        }
+        if (!store) {
+          vscode.window.showErrorMessage(
+            'Working Memory: cannot add topic to workstream — DB is not available.',
+          );
+          return;
+        }
+        const traversalId = arg?.traversalId ?? 'self';
+        if (!TRAVERSAL_MODES[traversalId]) {
+          const valid = Object.keys(TRAVERSAL_MODES).join(', ');
+          vscode.window.showErrorMessage(
+            `Working Memory: unknown traversal mode '${traversalId}' (valid: ${valid}).`,
+          );
+          return;
+        }
+        const workstreamSlug =
+          arg?.workstreamSlug?.trim() || await pickOpenWorkstreamSlug();
+        if (!workstreamSlug) {
+          return;
+        }
+        try {
+          const result = linkWorkstreamTopicWithTraversal(store, {
+            workstream_slug: workstreamSlug,
+            topic_slug: topicSlug,
+            traversal: traversalId,
+            includeClosed: false,
+          });
+          refresh();
+          const changedCount = result.linked.length;
+          const mode = TRAVERSAL_MODES[result.traversal];
+          vscode.window.showInformationMessage(
+            `Working Memory: linked ${changedCount} topic${changedCount === 1 ? '' : 's'} to "${workstreamSlug}" (${mode.label}).`,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to add topic to workstream — ${message}`,
+          );
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      'workingMemory.topic.removeFromWorkstream',
+      async (arg?: TopicRemoveFromWorkstreamCommandInput) => {
+        const topicSlug = arg?.topicSlug?.trim();
+        if (!topicSlug) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Remove from workstream requires a topic slug.',
+          );
+          return;
+        }
+        if (!store) {
+          vscode.window.showErrorMessage(
+            'Working Memory: cannot remove topic from workstream — DB is not available.',
+          );
+          return;
+        }
+        const workstreamSlug =
+          arg?.workstreamSlug?.trim() || await pickLinkedWorkstreamSlug(topicSlug);
+        if (!workstreamSlug) {
+          return;
+        }
+        try {
+          const result = store.unlinkWorkstreamTopic({
+            workstream_slug: workstreamSlug,
+            topic_slug: topicSlug,
+          });
+          refresh();
+          if (result.removed > 0) {
+            vscode.window.showInformationMessage(
+              `Working Memory: removed "${topicSlug}" from "${workstreamSlug}".`,
+            );
+          } else {
+            vscode.window.showInformationMessage(
+              `Working Memory: "${topicSlug}" was not linked to "${workstreamSlug}".`,
+            );
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to remove topic from workstream — ${message}`,
+          );
+        }
+      },
     ),
     vscode.commands.registerCommand(
       'working-memory.reopenWorkstream',

@@ -1,6 +1,7 @@
 import { test, expect } from 'vitest';
 import { openJournalStore } from '../src/db';
 import { getAllPanelData } from '../src/panelData';
+import { TRAVERSAL_MODES } from '../src/graphTraversals';
 
 test('a workstream with a linked topic and entries appears correctly in panel data', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
@@ -168,6 +169,63 @@ test('active tab hides closed sessions; archive tab still shows them', () => {
   const sgArchive = wsArchive.children.find((c) => c.kind === 'sessions-group');
   expect(sgArchive?.children).toHaveLength(1);
   expect(sgArchive?.label).toBe('Sessions (1)');
+
+  store.close();
+});
+
+test('topic rows expose graph-aware attach/remove actions', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  store.createWorkstream({ slug: 'ws-actions', title: 'WS Actions', status: 'open' });
+  store.createTopic({
+    slug: 'topic-actions',
+    title: 'Topic Actions',
+    topic_type: 'feature',
+  });
+  store.linkWorkstreamTopic({
+    workstream_slug: 'ws-actions',
+    topic_slug: 'topic-actions',
+  });
+
+  const { active, topics } = getAllPanelData(store);
+  const ws = active.items[0];
+  expect(ws.kind).toBe('workstream');
+  if (ws.kind !== 'workstream') {
+    throw new Error('expected workstream');
+  }
+  const activeTopicsGroup = ws.children.find((c) => c.kind === 'topics-group');
+  const activeTopic = activeTopicsGroup?.children[0];
+  const traversalLabels = Object.values(TRAVERSAL_MODES).map(
+    (mode) => `Add to workstream ▸ ${mode.label}`,
+  );
+  expect(activeTopic?.actions?.map((a) => a.title)).toEqual([
+    ...traversalLabels,
+    'Remove from workstream',
+  ]);
+  expect(
+    activeTopic?.actions?.slice(0, traversalLabels.length).map((a) => a.description),
+  ).toEqual(Object.values(TRAVERSAL_MODES).map((mode) => mode.description));
+  expect(activeTopic?.actions?.[0]?.args).toEqual([{
+    topicSlug: 'topic-actions',
+    traversalId: Object.values(TRAVERSAL_MODES)[0]?.id,
+    workstreamSlug: 'ws-actions',
+  }]);
+  expect(activeTopic?.actions?.[traversalLabels.length]?.args).toEqual([{
+    topicSlug: 'topic-actions',
+    workstreamSlug: 'ws-actions',
+  }]);
+
+  const topicRow = topics.items[0];
+  expect(topicRow.kind).toBe('topic-row');
+  if (topicRow.kind !== 'topic-row') {
+    throw new Error('expected topic-row');
+  }
+  expect(topicRow.actions?.[0]?.args).toEqual([{
+    topicSlug: 'topic-actions',
+    traversalId: Object.values(TRAVERSAL_MODES)[0]?.id,
+  }]);
+  expect(topicRow.actions?.[traversalLabels.length]?.args).toEqual([{
+    topicSlug: 'topic-actions',
+  }]);
 
   store.close();
 });

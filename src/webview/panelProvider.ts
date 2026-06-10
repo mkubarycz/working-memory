@@ -160,7 +160,11 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     if (!Array.isArray(actions) || actions.length === 0) {
       return;
     }
-    const items = actions.map((a) => ({ label: a.title, action: a }));
+    const items = actions.map((a) => ({
+      label: a.title,
+      description: a.description,
+      action: a,
+    }));
     const pick = await vscode.window.showQuickPick(items, {
       placeHolder: 'Choose an action',
     });
