@@ -932,8 +932,8 @@
         "displayName": "Working Memory: Update Topic Type",
         "toolReferenceName": "wm_update_topic_type",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a topic-type row by id. Supports label, icon, and description. Bumps `updated_at`. Returns the updated row.",
-        "userDescription": "Update a topic type",
+        "modelDescription": "Partially update a topic-type row by id. Supports description only. Bumps `updated_at`. Returns the updated row.",
+        "userDescription": "Update a topic type description",
         "tags": [
           "working-memory"
         ],
@@ -947,17 +947,9 @@
               "type": "string",
               "description": "Topic-type id to update."
             },
-            "label": {
-              "type": "string",
-              "description": "Optional replacement label."
-            },
-            "icon": {
-              "type": "string",
-              "description": "Optional replacement codicon id."
-            },
             "description": {
               "type": "string",
-              "description": "Optional replacement description."
+              "description": "Description."
             }
           }
         }

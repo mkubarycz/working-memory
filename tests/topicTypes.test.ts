@@ -242,11 +242,13 @@ test('topic-type tools support happy path and key error paths', async () => {
 
   const updated = parseToolResult(
     await getTool('wm_update_topic_type').invoke({
-      input: { id: 'initiative', label: 'Initiative Updated' },
+      input: { id: 'initiative', description: 'Updated description.' },
     }),
   );
   expect(updated.ok).toBe(true);
-  expect((updated.topic_type as { label: string }).label).toBe('Initiative Updated');
+  expect((updated.topic_type as { description: string }).description).toBe(
+    'Updated description.',
+  );
 
   expect(refresh).toHaveBeenCalled();
   store.close();
