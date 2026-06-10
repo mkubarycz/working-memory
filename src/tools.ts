@@ -169,6 +169,7 @@ interface GetTopicTypeInput {
 }
 interface UpdateTopicTypeInput {
   id: string;
+  icon?: string;
   description?: string;
 }
 interface DeleteTopicTypeInput {
@@ -551,6 +552,7 @@ export function registerTools(
           throw new Error('id is required');
         }
         const row = store.updateTopicType(input.id, {
+          icon: input.icon,
           description: input.description,
         });
         deps.refresh();
