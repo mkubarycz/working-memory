@@ -38,6 +38,10 @@
     "onLanguageModelTool:wm_link_topic_parent",
     "onLanguageModelTool:wm_unlink_topic_parent",
     "onLanguageModelTool:wm_list_topic_types",
+    "onLanguageModelTool:wm_create_topic_type",
+    "onLanguageModelTool:wm_get_topic_type",
+    "onLanguageModelTool:wm_update_topic_type",
+    "onLanguageModelTool:wm_delete_topic_type",
     "onLanguageModelTool:wm_get_panel_data"
   ],
   "contributes": {
@@ -863,11 +867,130 @@
         }
       },
       {
+        "name": "wm_create_topic_type",
+        "displayName": "Working Memory: Create Topic Type",
+        "toolReferenceName": "wm_create_topic_type",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Create a topic-type row in `topic_types`. Requires id, label, icon, description. Rejects duplicate ids. Returns the created row.",
+        "userDescription": "Create a topic type",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "id",
+            "label",
+            "icon",
+            "description"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Unique topic-type id, e.g. 'initiative'."
+            },
+            "label": {
+              "type": "string",
+              "description": "Human label, e.g. 'Initiative'."
+            },
+            "icon": {
+              "type": "string",
+              "description": "VS Code codicon id, e.g. 'target'."
+            },
+            "description": {
+              "type": "string",
+              "description": "One-sentence semantics for the type."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_get_topic_type",
+        "displayName": "Working Memory: Get Topic Type",
+        "toolReferenceName": "wm_get_topic_type",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Fetch a topic-type row by id and include the count of topics that currently reference it.",
+        "userDescription": "Get one topic type by id",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Topic-type id."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_update_topic_type",
+        "displayName": "Working Memory: Update Topic Type",
+        "toolReferenceName": "wm_update_topic_type",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Partially update a topic-type row by id. Supports label, icon, and description. Bumps `updated_at`. Returns the updated row.",
+        "userDescription": "Update a topic type",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Topic-type id to update."
+            },
+            "label": {
+              "type": "string",
+              "description": "Optional replacement label."
+            },
+            "icon": {
+              "type": "string",
+              "description": "Optional replacement codicon id."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional replacement description."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_delete_topic_type",
+        "displayName": "Working Memory: Delete Topic Type",
+        "toolReferenceName": "wm_delete_topic_type",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Delete a topic-type row by id. Seeded ids (`topic`, `feature`, `task`) are protected and cannot be deleted. Deletion is refused when any topics still reference the type; error includes blocker count.",
+        "userDescription": "Delete a topic type",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Topic-type id to delete."
+            }
+          }
+        }
+      },
+      {
         "name": "wm_get_panel_data",
         "displayName": "Working Memory: Get Panel Data",
         "toolReferenceName": "wm_get_panel_data",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Returns the exact data the Working Memory panel UI is rendering — workstreams, sessions, topics, nested as the webview sees them. Use to verify what's visible in the panel, or to debug discrepancies between DB state and UI. Input is an optional `tab`: 'active' | 'archive' | 'topics' returns a single `PanelData` for that tab; 'all' (default, also used when input is omitted) returns `{ active, archive, topics }` — the full shape from getAllPanelData(). Output items use tagged-union shapes from src/panelData.ts (PanelWorkstream, PanelTopic, PanelSession, PanelTopicsGroup, etc.) and are fully JSON-serializable. Pure read, no side effects.",
+        "modelDescription": "Returns the exact data the Working Memory panel UI is rendering — workstreams, sessions, topics, and topic types as the webview sees them. Use to verify what's visible in the panel, or to debug discrepancies between DB state and UI. Input is an optional `tab`: 'active' | 'archive' | 'topics' | 'topic-types' returns a single `PanelData` for that tab; 'all' (default, also used when input is omitted) returns `{ active, archive, topics, topicTypes }` — the full shape from getAllPanelData(). Output items use tagged-union shapes from src/panelData.ts and are fully JSON-serializable. Pure read, no side effects.",
         "userDescription": "Get the data currently rendered by the Working Memory panel",
         "tags": [
           "working-memory"
@@ -881,9 +1004,10 @@
                 "active",
                 "archive",
                 "topics",
+                "topic-types",
                 "all"
               ],
-              "description": "Which panel tab to return. Defaults to 'all', which returns the full {active, archive, topics} shape."
+              "description": "Which panel tab to return. Defaults to 'all', which returns the full {active, archive, topics, topicTypes} shape."
             }
           }
         }

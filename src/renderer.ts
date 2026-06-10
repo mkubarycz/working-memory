@@ -8,7 +8,7 @@ import {
 const TZ = 'America/New_York';
 
 export function deepLink(
-  kind: 'topic' | 'session' | 'workstream',
+  kind: 'topic' | 'session' | 'workstream' | 'topic-type',
   id: string,
 ): string {
   return `vscode://kubarycz.working-memory/open/${kind}/${encodeURIComponent(id)}`;
@@ -147,6 +147,7 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
   const typeLabel =
     typeLabels.get(topic.topic_type) ??
     `${topic.topic_type} _(unknown type)_`;
+  const topicTypeUri = `working-memory:/topic-type/${encodeURIComponent(topic.topic_type)}.md`;
 
   const wsBlock = workstreams.length
     ? workstreams
@@ -183,7 +184,7 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
     `# ${topic.title}`,
     '',
     `- **Slug:** \`${topic.slug}\``,
-    `- **Type:** ${typeLabel}`,
+    `- **Type:** [${typeLabel}](${topicTypeUri})`,
     `- **Status:** ${topic.status}`,
     `- **Created:** ${fmtDateTime(topic.created_at)}`,
     `- **Updated:** ${fmtDateTime(topic.updated_at)}`,
@@ -203,6 +204,45 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
     '## Recent entries',
     '',
     entriesBlock,
+    '',
+  ].join('\n');
+}
+
+export function renderTopicTypeDoc(store: JournalStore, id: string): string {
+  const topicType = store.getTopicType(id);
+  if (!topicType) {
+    return `# Topic type not found\n\nNo topic type with id \`${id}\`.`;
+  }
+  const recentTopics = store
+    .listTopics({ status: 'open', topicType: id })
+    .slice()
+    .sort((a, b) => b.updated_at - a.updated_at || a.slug.localeCompare(b.slug))
+    .slice(0, 25);
+  const recentBlock = recentTopics.length
+    ? recentTopics
+        .map(
+          (topic) =>
+            `- [${topic.title}](working-memory:/topic/${encodeURIComponent(topic.slug)}.md) \`${topic.slug}\` — updated ${fmtDateTime(topic.updated_at)}`,
+        )
+        .join('\n')
+    : '_No open topics of this type._';
+
+  return [
+    `# ${topicType.label} \`${topicType.id}\``,
+    '',
+    `- **Icon:** \`${topicType.icon}\``,
+    `- **Id:** \`${topicType.id}\``,
+    `- **Created:** ${fmtDateTime(topicType.created_at)}`,
+    `- **Updated:** ${fmtDateTime(topicType.updated_at)}`,
+    `- **Topics using this type:** ${topicType.topic_count}`,
+    '',
+    '## Description',
+    '',
+    topicType.description.trim() || '—',
+    '',
+    '## Recent topics',
+    '',
+    recentBlock,
     '',
   ].join('\n');
 }
