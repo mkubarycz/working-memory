@@ -9,7 +9,7 @@
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
    *              status?: 'open'|'closed', recentEntryCount?: number }} Node */
-  /** @typedef {{ label: string, action: string, enabled: boolean, slug: string, topicSlug: string }} CardMenuItem */
+  /** @typedef {{ label: string, description?: string, enabled: boolean, message: object }} ContextMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -130,7 +130,7 @@
   /**
    * @param {Node & { focused_topics?: unknown[] }} card
    * @param {string | null} topicSlug
-   * @returns {CardMenuItem[]}
+   * @returns {ContextMenuItem[]}
    */
   function cardContextMenu(card, topicSlug) {
     const slug = workstreamSlugFromOpenUri(card.openUri);
@@ -140,12 +140,34 @@
     return [
       {
         label: 'Remove from Focus',
-        action: 'card.unfocus',
         enabled: true,
-        slug,
-        topicSlug,
+        message: {
+          type: 'card.unfocus',
+          slug,
+          topicSlug,
+        },
       },
     ];
+  }
+
+  /**
+   * @param {Node} node
+   * @returns {ContextMenuItem[]}
+   */
+  function rowContextMenu(node) {
+    if (!Array.isArray(node.actions) || node.actions.length === 0) {
+      return [];
+    }
+    return node.actions.map((action) => ({
+      label: action.title,
+      description: action.description,
+      enabled: true,
+      message: {
+        type: 'invoke',
+        command: action.command,
+        args: Array.isArray(action.args) ? action.args : [],
+      },
+    }));
   }
 
   /**
@@ -161,6 +183,22 @@
       ? pinnedRow.dataset.topicSlug ?? null
       : null;
     const items = cardContextMenu(card, topicSlug);
+    openContextMenu(event, items);
+  }
+
+  /**
+   * @param {MouseEvent} event
+   * @param {Node} node
+   */
+  function openRowContextMenu(event, node) {
+    openContextMenu(event, rowContextMenu(node));
+  }
+
+  /**
+   * @param {MouseEvent} event
+   * @param {ContextMenuItem[]} items
+   */
+  function openContextMenu(event, items) {
     if (items.length === 0) {
       closeCardContextMenu();
       return;
@@ -170,19 +208,24 @@
       const btn = document.createElement('button');
       btn.className = 'card-context-menu-item';
       btn.type = 'button';
-      btn.textContent = item.label;
       btn.disabled = !item.enabled;
+      const label = document.createElement('span');
+      label.className = 'card-context-menu-item-label';
+      label.textContent = item.label;
+      btn.appendChild(label);
+      if (item.description) {
+        const desc = document.createElement('span');
+        desc.className = 'card-context-menu-item-description';
+        desc.textContent = item.description;
+        btn.appendChild(desc);
+      }
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         closeCardContextMenu();
         if (!item.enabled) {
           return;
         }
-        vscode.postMessage({
-          type: item.action,
-          slug: item.slug,
-          topicSlug: item.topicSlug,
-        });
+        vscode.postMessage(item.message);
       });
       cardMenuEl.appendChild(btn);
     }
@@ -334,11 +377,7 @@
       }
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        vscode.postMessage({
-          type: 'actions',
-          nodeId: node.id,
-          actions: node.actions,
-        });
+        openRowContextMenu(e, node);
       });
       actions.appendChild(btn);
       row.appendChild(actions);
@@ -364,11 +403,7 @@
       row.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        vscode.postMessage({
-          type: 'actions',
-          nodeId: node.id,
-          actions: node.actions,
-        });
+        openRowContextMenu(event, node);
       });
     }
 

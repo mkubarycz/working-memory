@@ -383,6 +383,19 @@ html, body {
   font: inherit;
   padding: 6px 8px;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card-context-menu-item-label {
+  line-height: 1.2;
+}
+
+.card-context-menu-item-description {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 .card-context-menu-item:hover:not(:disabled) {
