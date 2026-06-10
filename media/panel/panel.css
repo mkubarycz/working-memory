@@ -356,7 +356,7 @@ html, body {
   font-size: 13px;
 }
 
-.card-context-menu {
+.context-menu {
   position: fixed;
   z-index: 1000;
   min-width: 170px;
@@ -370,11 +370,11 @@ html, body {
   gap: 2px;
 }
 
-.card-context-menu[hidden] {
+.context-menu[hidden] {
   display: none;
 }
 
-.card-context-menu-item {
+.context-menu-item {
   border: none;
   border-radius: 4px;
   background: transparent;
@@ -388,21 +388,21 @@ html, body {
   gap: 2px;
 }
 
-.card-context-menu-item-label {
+.context-menu-item-label {
   line-height: 1.2;
 }
 
-.card-context-menu-item-description {
+.context-menu-item-description {
   color: var(--vscode-descriptionForeground);
   font-size: 11px;
   line-height: 1.25;
 }
 
-.card-context-menu-item:hover:not(:disabled) {
+.context-menu-item:hover:not(:disabled) {
   background: var(--vscode-list-hoverBackground);
 }
 
-.card-context-menu-item:disabled {
+.context-menu-item:disabled {
   opacity: 0.5;
   cursor: default;
 }

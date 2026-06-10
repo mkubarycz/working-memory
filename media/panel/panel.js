@@ -4,12 +4,15 @@
 
   const vscode = acquireVsCodeApi();
 
-  /** @typedef {{ command: string, title: string, description?: string, args?: unknown[] }} Action */
+  /** @typedef {{ command: string, title: string, description?: string, args?: unknown[], enabled?: boolean }} Action */
   /** @typedef {{ kind: string, id: string, label: string, description?: string,
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
    *              status?: 'open'|'closed', recentEntryCount?: number }} Node */
-  /** @typedef {{ label: string, description?: string, enabled: boolean, message: object }} ContextMenuItem */
+  /** @typedef {{ type: 'card.unfocus', slug: string, topicSlug: string }} CardUnfocusMessage */
+  /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
+  /** @typedef {CardUnfocusMessage | InvokeMessage} ContextMenuMessage */
+  /** @typedef {{ label: string, description?: string, enabled: boolean, message: ContextMenuMessage }} ContextMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -84,10 +87,10 @@
 
   const listEl = /** @type {HTMLElement} */ (document.getElementById('list'));
   const tabsEl = /** @type {HTMLElement} */ (document.querySelector('.tabs'));
-  const cardMenuEl = document.createElement('div');
-  cardMenuEl.className = 'card-context-menu';
-  cardMenuEl.hidden = true;
-  document.body.appendChild(cardMenuEl);
+  const contextMenuEl = document.createElement('div');
+  contextMenuEl.className = 'context-menu';
+  contextMenuEl.hidden = true;
+  document.body.appendChild(contextMenuEl);
 
   /**
    * @param {string | undefined} openUri
@@ -161,7 +164,7 @@
     return node.actions.map((action) => ({
       label: action.title,
       description: action.description,
-      enabled: true,
+      enabled: action.enabled !== false,
       message: {
         type: 'invoke',
         command: action.command,
@@ -200,55 +203,55 @@
    */
   function openContextMenu(event, items) {
     if (items.length === 0) {
-      closeCardContextMenu();
+      closeContextMenu();
       return;
     }
-    cardMenuEl.replaceChildren();
+    contextMenuEl.replaceChildren();
     for (const item of items) {
       const btn = document.createElement('button');
-      btn.className = 'card-context-menu-item';
+      btn.className = 'context-menu-item';
       btn.type = 'button';
       btn.disabled = !item.enabled;
       const label = document.createElement('span');
-      label.className = 'card-context-menu-item-label';
+      label.className = 'context-menu-item-label';
       label.textContent = item.label;
       btn.appendChild(label);
       if (item.description) {
         const desc = document.createElement('span');
-        desc.className = 'card-context-menu-item-description';
+        desc.className = 'context-menu-item-description';
         desc.textContent = item.description;
         btn.appendChild(desc);
       }
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        closeCardContextMenu();
+        closeContextMenu();
         if (!item.enabled) {
           return;
         }
         vscode.postMessage(item.message);
       });
-      cardMenuEl.appendChild(btn);
+      contextMenuEl.appendChild(btn);
     }
-    cardMenuEl.hidden = false;
+    contextMenuEl.hidden = false;
 
     const margin = 6;
     const maxLeft = Math.max(
       margin,
-      window.innerWidth - cardMenuEl.offsetWidth - margin,
+      window.innerWidth - contextMenuEl.offsetWidth - margin,
     );
     const maxTop = Math.max(
       margin,
-      window.innerHeight - cardMenuEl.offsetHeight - margin,
+      window.innerHeight - contextMenuEl.offsetHeight - margin,
     );
     const left = Math.min(Math.max(event.clientX, margin), maxLeft);
     const top = Math.min(Math.max(event.clientY, margin), maxTop);
-    cardMenuEl.style.left = left + 'px';
-    cardMenuEl.style.top = top + 'px';
+    contextMenuEl.style.left = left + 'px';
+    contextMenuEl.style.top = top + 'px';
   }
 
-  function closeCardContextMenu() {
-    cardMenuEl.hidden = true;
-    cardMenuEl.replaceChildren();
+  function closeContextMenu() {
+    contextMenuEl.hidden = true;
+    contextMenuEl.replaceChildren();
   }
 
   /**
@@ -571,31 +574,31 @@
     }
     state.activeTab = t;
     state.focusedId = null;
-    closeCardContextMenu();
+    closeContextMenu();
     persist();
     render();
   });
 
   document.addEventListener('click', (e) => {
-    if (cardMenuEl.hidden) {
+    if (contextMenuEl.hidden) {
       return;
     }
     const target = e.target;
-    if (!(target instanceof Element) || !cardMenuEl.contains(target)) {
-      closeCardContextMenu();
+    if (!(target instanceof Element) || !contextMenuEl.contains(target)) {
+      closeContextMenu();
     }
   });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      closeCardContextMenu();
+      closeContextMenu();
     }
   });
 
   document.addEventListener(
     'scroll',
     () => {
-      closeCardContextMenu();
+      closeContextMenu();
     },
     true,
   );
@@ -664,7 +667,7 @@
       state.recentCounts = nextRecentCounts;
       state.flashChipIds = flashChipIds;
       state.data = msg.data || {};
-      closeCardContextMenu();
+      closeContextMenu();
       render();
     }
   });
