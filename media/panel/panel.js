@@ -87,6 +87,7 @@
 
   const listEl = /** @type {HTMLElement} */ (document.getElementById('list'));
   const tabsEl = /** @type {HTMLElement} */ (document.querySelector('.tabs'));
+  const CONTEXT_MENU_MARGIN = 6;
   const contextMenuEl = document.createElement('div');
   contextMenuEl.className = 'context-menu';
   contextMenuEl.hidden = true;
@@ -312,24 +313,22 @@
     }
     contextMenuEl.hidden = false;
 
-    const margin = 6;
     const maxLeft = Math.max(
-      margin,
-      window.innerWidth - contextMenuEl.offsetWidth - margin,
+      CONTEXT_MENU_MARGIN,
+      window.innerWidth - contextMenuEl.offsetWidth - CONTEXT_MENU_MARGIN,
     );
     const maxTop = Math.max(
-      margin,
-      window.innerHeight - contextMenuEl.offsetHeight - margin,
+      CONTEXT_MENU_MARGIN,
+      window.innerHeight - contextMenuEl.offsetHeight - CONTEXT_MENU_MARGIN,
     );
-    const left = Math.min(Math.max(event.clientX, margin), maxLeft);
-    const top = Math.min(Math.max(event.clientY, margin), maxTop);
+    const left = Math.min(Math.max(event.clientX, CONTEXT_MENU_MARGIN), maxLeft);
+    const top = Math.min(Math.max(event.clientY, CONTEXT_MENU_MARGIN), maxTop);
     contextMenuEl.style.left = left + 'px';
     contextMenuEl.style.top = top + 'px';
     positionContextSubmenus();
   }
 
   function positionContextSubmenus() {
-    const margin = 6;
     const entries = contextMenuEl.querySelectorAll('.context-menu-entry');
     for (const entry of entries) {
       if (!(entry instanceof HTMLElement)) {
@@ -353,19 +352,19 @@
 
       const entryRect = entry.getBoundingClientRect();
       const openLeft =
-        entryRect.right + submenuWidth + margin > window.innerWidth &&
-        entryRect.left - submenuWidth - margin >= 0;
+        entryRect.right + submenuWidth + CONTEXT_MENU_MARGIN > window.innerWidth &&
+        entryRect.left - submenuWidth - CONTEXT_MENU_MARGIN >= 0;
       if (openLeft) {
         submenu.classList.add('context-submenu-left');
       }
 
       let top = -4;
       const overflowBottom =
-        entryRect.top + top + submenuHeight + margin - window.innerHeight;
+        entryRect.top + top + submenuHeight + CONTEXT_MENU_MARGIN - window.innerHeight;
       if (overflowBottom > 0) {
         top -= overflowBottom;
       }
-      const overflowTop = margin - (entryRect.top + top);
+      const overflowTop = CONTEXT_MENU_MARGIN - (entryRect.top + top);
       if (overflowTop > 0) {
         top += overflowTop;
       }
