@@ -105,11 +105,13 @@ test('db createTopicType rejects duplicate ids', () => {
   store.close();
 });
 
-test('renderer topic doc links Type line to topic-type virtual doc', () => {
+test('renderer topic doc links Type line to topic-type deep link', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   store.createTopic({ slug: 'feat-1', title: 'Feat 1', topic_type: 'feature' });
   const doc = renderTopicDoc(store, 'feat-1');
-  expect(doc).toContain('- **Type:** [Feature](working-memory:/topic-type/feature.md)');
+  expect(doc).toContain(
+    '- **Type:** [Feature](vscode://kubarycz.working-memory/open/topic-type/feature)',
+  );
   store.close();
 });
 
@@ -142,7 +144,9 @@ test('renderer topic-type doc renders metadata and recent topic links', () => {
   expect(rendered).toContain('## Recent topics');
   const lines = rendered.split('\n').filter((line) => line.startsWith('- [Initiative '));
   expect(lines).toHaveLength(25);
-  expect(lines[0]).toContain('working-memory:/topic/initiative-29.md');
+  expect(lines[0]).toContain(
+    'vscode://kubarycz.working-memory/open/topic/initiative-29',
+  );
   store.close();
   vi.useRealTimers();
 });

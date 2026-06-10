@@ -147,7 +147,7 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
   const typeLabel =
     typeLabels.get(topic.topic_type) ??
     `${topic.topic_type} _(unknown type)_`;
-  const topicTypeUri = `working-memory:/topic-type/${encodeURIComponent(topic.topic_type)}.md`;
+  const topicTypeUri = deepLink('topic-type', topic.topic_type);
 
   const wsBlock = workstreams.length
     ? workstreams
@@ -222,7 +222,7 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     ? recentTopics
         .map(
           (topic) =>
-            `- [${topic.title}](working-memory:/topic/${encodeURIComponent(topic.slug)}.md) \`${topic.slug}\` — updated ${fmtDateTime(topic.updated_at)}`,
+            `- [${topic.title}](${deepLink('topic', topic.slug)}) \`${topic.slug}\` — updated ${fmtDateTime(topic.updated_at)}`,
         )
         .join('\n')
     : '_No open topics of this type._';
