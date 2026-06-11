@@ -156,7 +156,7 @@
     if (!openUri) {
       return null;
     }
-    const match = /^working-memory:\/(session|topic|workstream)\/(.+)\.md$/.exec(openUri);
+    const match = /^working-memory:\/(session|topic|workstream)\/(.+)\.md(?:[?#].*)?$/.exec(openUri);
     if (!match || !match[1] || !match[2]) {
       return null;
     }
