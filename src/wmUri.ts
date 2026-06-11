@@ -5,8 +5,7 @@ export interface PanelRevealTarget {
   id: string;
 }
 
-const PANEL_REVEAL_URI_RE =
-  /^working-memory:\/(session|topic|workstream)\/(.+)\.md(?:[?#].*)?$/;
+const PANEL_REVEAL_URI_RE = /^working-memory:\/(session|topic|workstream)\/(.+)\.md$/;
 
 export function parsePanelRevealTarget(
   uri: string | undefined | null,
