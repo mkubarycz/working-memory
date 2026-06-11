@@ -9,6 +9,7 @@ import {
   type TraversalModeId,
 } from './graphTraversals';
 import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
+import { reshapeTopicBody } from './topicReshape';
 
 interface ToolDeps {
   refresh: () => void;
@@ -36,6 +37,21 @@ function safe<TInput>(
   return async (options) => {
     try {
       const out = handler(options.input);
+      return jsonResult(out);
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err));
+    }
+  };
+}
+
+function safeAsync<TInput>(
+  handler: (input: TInput) => Promise<unknown>,
+): (
+  options: vscode.LanguageModelToolInvocationOptions<TInput>,
+) => Promise<vscode.LanguageModelToolResult> {
+  return async (options) => {
+    try {
+      const out = await handler(options.input);
       return jsonResult(out);
     } catch (err) {
       return errorResult(err instanceof Error ? err.message : String(err));
@@ -171,6 +187,7 @@ interface UpdateTopicTypeInput {
   id: string;
   icon?: string;
   description?: string;
+  body_template?: string;
 }
 interface DeleteTopicTypeInput {
   id: string;
@@ -410,16 +427,53 @@ export function registerTools(
       }),
     }),
     vscode.lm.registerTool<CreateTopicToolInput>('wm_create_topic', {
-      invoke: safe<CreateTopicToolInput>((input) => {
+      invoke: safeAsync<CreateTopicToolInput>(async (input) => {
+        let body = input.body ?? '';
+        let reshape_warning: string | undefined;
+
+        if (input.topic_type) {
+          const topicTypeRow = store.getTopicType(input.topic_type);
+          const template = topicTypeRow?.body_template ?? '';
+
+          if (template.trim()) {
+            if (body.trim()) {
+              // Reshape the caller's body into the template structure via LLM.
+              try {
+                body = await reshapeTopicBody({
+                  template,
+                  body,
+                  title: input.title ?? input.slug,
+                  typeLabel: topicTypeRow?.label ?? input.topic_type,
+                  typeDescription: topicTypeRow?.description ?? '',
+                });
+              } catch (reshapeErr) {
+                const msg =
+                  reshapeErr instanceof Error
+                    ? reshapeErr.message
+                    : String(reshapeErr);
+                reshape_warning = `Body reshape failed (${msg}). Falling back to template + original input.`;
+                body = `${template}\n\n## Original input\n\n${input.body ?? ''}`;
+              }
+            } else {
+              // No caller body supplied — store the template literally.
+              body = template;
+            }
+          }
+        }
+
         const row = store.createTopic({
           slug: input.slug,
           title: input.title,
-          body: input.body,
+          body,
           status: input.status,
           topic_type: input.topic_type,
         });
         deps.refresh();
-        return { ok: true, topic: row };
+        const result: Record<string, unknown> = { ok: true, topic: row };
+        if (reshape_warning !== undefined) {
+          result.reshape_warning = reshape_warning;
+        }
+        return result;
       }),
     }),
     vscode.lm.registerTool<UpdateTopicToolInput>('wm_update_topic', {
@@ -554,6 +608,7 @@ export function registerTools(
         const row = store.updateTopicType(input.id, {
           icon: input.icon,
           description: input.description,
+          body_template: input.body_template,
         });
         deps.refresh();
         return { ok: true, topic_type: row };

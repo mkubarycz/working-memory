@@ -83,6 +83,7 @@ export interface TopicType {
   label: string;
   icon: string;
   description: string;
+  body_template: string;
   created_at: number;
   updated_at: number;
 }
@@ -187,6 +188,7 @@ const MIGRATIONS: Migration[] = [
   { version: 10, file: '010_session_chat_ref.sql' },
   { version: 11, file: '011_workstream_topic_focus.sql' },
   { version: 12, file: '012_entries_created_by.sql' },
+  { version: 13, file: '013_topic_type_body_template.sql' },
 ];
 
 /**
@@ -358,6 +360,7 @@ export interface UpdateTopicTypeInput {
   label?: string;
   icon?: string;
   description?: string;
+  body_template?: string;
 }
 
 export interface SoftDeleteTopicResult {
@@ -1101,7 +1104,7 @@ export class JournalStore {
 
   listTopicTypes(): TopicType[] {
     const sql = `
-      SELECT id, label, icon, description, created_at, updated_at
+      SELECT id, label, icon, description, body_template, created_at, updated_at
         FROM topic_types
         ORDER BY id ASC
     `;
@@ -1125,7 +1128,7 @@ export class JournalStore {
   getTopicType(id: string): TopicTypeWithTopicCount | null {
     const row = this.db
       .prepare(
-        `SELECT tt.id, tt.label, tt.icon, tt.description, tt.created_at, tt.updated_at,
+        `SELECT tt.id, tt.label, tt.icon, tt.description, tt.body_template, tt.created_at, tt.updated_at,
                 (SELECT COUNT(*) FROM topics t WHERE t.topic_type = tt.id) AS topic_count
            FROM topic_types tt
           WHERE tt.id = ?`,
@@ -1199,6 +1202,11 @@ export class JournalStore {
       }
       sets.push('description = ?');
       params.push(patch.description.trim());
+    }
+    if (patch.body_template !== undefined) {
+      // Empty string is valid — it means "remove the template"
+      sets.push('body_template = ?');
+      params.push(patch.body_template);
     }
     if (sets.length === 0) {
       return current;

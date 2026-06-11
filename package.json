@@ -112,6 +112,11 @@
         "command": "workingMemory.topic.removeFromWorkstream",
         "title": "Topic: Remove from Workstream",
         "category": "Working Memory"
+      },
+      {
+        "command": "working-memory.editTopicTypeBodyTemplate",
+        "title": "Edit Body Template",
+        "category": "Working Memory"
       }
     ],
     "menus": {
@@ -561,7 +566,7 @@
         "displayName": "Working Memory: Create Topic",
         "toolReferenceName": "wm_create_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'open'. `topic_type` defaults to 'topic'. Valid topic_type values live in the `topic_types` table — call wm_list_topic_types to enumerate them. Unknown ids are rejected with a server-side error listing the current valid set.",
+        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'open'. `topic_type` defaults to 'topic'. Valid topic_type values live in the `topic_types` table — call wm_list_topic_types to enumerate them. Unknown ids are rejected with a server-side error listing the current valid set. When the topic type has a non-empty `body_template`, the supplied body is reshaped into the template's section structure by the LLM (fidelity-preserving reshape — no facts are invented). If body is empty, the template is stored verbatim. If the reshape fails, a `reshape_warning` field appears in the response and the raw body is preserved under `## Original input`.",
         "userDescription": "Create a new topic",
         "tags": [
           "working-memory"
@@ -932,7 +937,7 @@
         "displayName": "Working Memory: Update Topic Type",
         "toolReferenceName": "wm_update_topic_type",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a topic-type row by id. Supports icon and description fields. Bumps `updated_at`. Returns the updated row.",
+        "modelDescription": "Partially update a topic-type row by id. Supports icon, description, and body_template fields. Bumps `updated_at`. Returns the updated row.",
         "userDescription": "Update a topic type",
         "tags": [
           "working-memory"
@@ -954,6 +959,10 @@
             "description": {
               "type": "string",
               "description": "Description."
+            },
+            "body_template": {
+              "type": "string",
+              "description": "Markdown body template with ## section headers. Empty string removes the template. When non-empty, new topics of this type will have their body reshaped into this structure at creation time."
             }
           }
         }

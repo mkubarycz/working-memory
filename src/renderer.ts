@@ -240,6 +240,12 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     '',
     topicType.description.trim() || '—',
     '',
+    '## Body template',
+    '',
+    topicType.body_template.trim()
+      ? `\`\`\`markdown\n${topicType.body_template}\n\`\`\``
+      : `_No body template — [Edit](command:working-memory.editTopicTypeBodyTemplate?${encodeURIComponent(JSON.stringify(topicType.id))})._`,
+    '',
     '## Recent topics',
     '',
     recentBlock,

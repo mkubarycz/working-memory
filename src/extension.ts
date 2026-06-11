@@ -457,6 +457,52 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
     ),
+    vscode.commands.registerCommand(
+      'working-memory.editTopicTypeBodyTemplate',
+      async (id?: string) => {
+        if (!id) {
+          vscode.window.showWarningMessage(
+            'Working Memory: editTopicTypeBodyTemplate requires a topic-type id.',
+          );
+          return;
+        }
+        if (!store) {
+          vscode.window.showErrorMessage(
+            'Working Memory: cannot edit body template — DB is not available.',
+          );
+          return;
+        }
+        const current = store.getTopicType(id);
+        if (!current) {
+          vscode.window.showErrorMessage(
+            `Working Memory: topic type not found: ${id}`,
+          );
+          return;
+        }
+        const newTemplate = await vscode.window.showInputBox({
+          prompt: `Body template for topic type "${current.label}" (markdown with ## section headers)`,
+          value: current.body_template,
+          placeHolder: '## Section\n\nDescribe what goes here.',
+          ignoreFocusOut: true,
+        });
+        if (newTemplate === undefined) {
+          // User cancelled.
+          return;
+        }
+        try {
+          store.updateTopicType(id, { body_template: newTemplate });
+          refresh();
+          vscode.window.showInformationMessage(
+            `Working Memory: body template updated for "${current.label}".`,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to update body template — ${message}`,
+          );
+        }
+      },
+    ),
     vscode.window.registerWebviewViewProvider(
       WorkstreamPanelProvider.viewType,
       panelProvider,
