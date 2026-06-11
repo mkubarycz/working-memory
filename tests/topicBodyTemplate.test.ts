@@ -8,7 +8,7 @@
 
 import { beforeEach, expect, test, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { renderTopicTypeDoc, extractTopicTypeBodyTemplate } from '../src/renderer';
+import { renderTopicTypeDoc, extractTopicTypeBodyTemplate, EDITABLE_DIV_OPEN, EDITABLE_DIV_CLOSE } from '../src/renderer';
 
 // ---------------------------------------------------------------------------
 // Mock vscode — same shape as other test files
@@ -316,15 +316,15 @@ test('tools: wm_create_topic falls back when reshaped body drops too many templa
 // Content provider / renderer
 // ---------------------------------------------------------------------------
 
-test('renderer: renderTopicTypeDoc shows body_template between --- fences when set', () => {
+test('renderer: renderTopicTypeDoc shows body_template inside editable div when set', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   const template = '## User story\nWrite as "As Michael…".\n\n## Acceptance criteria\nBulleted list.';
   store.updateTopicType('task', { body_template: template });
 
   const doc = renderTopicTypeDoc(store, 'task');
-  // Template content should appear between the two --- fences
-  const fenceMatches = doc.match(/^---$/gm);
-  expect(fenceMatches).toHaveLength(2);
+  // Template content should appear inside the editable div
+  expect(doc).toContain(EDITABLE_DIV_OPEN);
+  expect(doc).toContain(EDITABLE_DIV_CLOSE);
   expect(doc).toContain(template);
   // No command: links or fenced code block
   expect(doc).not.toContain('command:working-memory.editTopicTypeBodyTemplate');
@@ -332,13 +332,13 @@ test('renderer: renderTopicTypeDoc shows body_template between --- fences when s
   store.close();
 });
 
-test('renderer: renderTopicTypeDoc shows placeholder between --- fences when body_template is empty', () => {
+test('renderer: renderTopicTypeDoc shows placeholder inside editable div when body_template is empty', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   // 'feature' has empty body_template by default
   const doc = renderTopicTypeDoc(store, 'feature');
-  // Placeholder should appear between the two --- fences
-  const fenceMatches = doc.match(/^---$/gm);
-  expect(fenceMatches).toHaveLength(2);
+  // Placeholder should appear inside the editable div
+  expect(doc).toContain(EDITABLE_DIV_OPEN);
+  expect(doc).toContain(EDITABLE_DIV_CLOSE);
   expect(doc).toContain('_No body template — add one here, then save (⌘S)._');
   expect(doc).not.toContain('command:working-memory.editTopicTypeBodyTemplate');
   expect(doc).not.toContain('```markdown');
@@ -368,8 +368,8 @@ test('extractTopicTypeBodyTemplate: placeholder → empty string', () => {
   store.close();
 });
 
-test('extractTopicTypeBodyTemplate: throws when fences are missing', () => {
+test('extractTopicTypeBodyTemplate: throws when editable div markers are missing', () => {
   expect(() => extractTopicTypeBodyTemplate('# Topic type\n\nNo fences here.')).toThrow(
-    /topic-type doc is missing the two `---` body fences/,
+    /topic-type doc is missing the editable div markers/,
   );
 });

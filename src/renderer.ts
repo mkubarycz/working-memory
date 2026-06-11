@@ -7,6 +7,10 @@ import {
 
 const TZ = 'America/New_York';
 
+export const EDITABLE_DIV_OPEN =
+  '<div style="margin-left: 20px; border-left: 5px solid green; padding-left: 15px;">';
+export const EDITABLE_DIV_CLOSE = '</div>';
+
 export function deepLink(
   kind: 'topic' | 'session' | 'workstream' | 'topic-type',
   id: string,
@@ -248,11 +252,11 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     '',
     '## Content Template',
     '',
-    '---',
+    EDITABLE_DIV_OPEN,
     '',
     bodyTemplateContent,
     '',
-    '---',
+    EDITABLE_DIV_CLOSE,
     '',
     '## Recent topics',
     '',
@@ -418,22 +422,23 @@ export function extractTopicBody(full: string): string {
 
 export function extractTopicTypeBodyTemplate(full: string): string {
   const lines = full.split(/\r?\n/);
-  const fenceIdxs: number[] = [];
+  let openIdx = -1;
+  let closeIdx = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() === '---') {
-      fenceIdxs.push(i);
-      if (fenceIdxs.length === 2) {
-        break;
-      }
+    if (openIdx === -1 && lines[i].trim() === EDITABLE_DIV_OPEN) {
+      openIdx = i;
+    } else if (openIdx !== -1 && lines[i].trim() === EDITABLE_DIV_CLOSE) {
+      closeIdx = i;
+      break;
     }
   }
-  if (fenceIdxs.length < 2) {
+  if (openIdx === -1 || closeIdx === -1) {
     throw new Error(
-      'topic-type doc is missing the two `---` body fences — refusing to save',
+      'topic-type doc is missing the editable div markers — refusing to save',
     );
   }
   const template = lines
-    .slice(fenceIdxs[0] + 1, fenceIdxs[1])
+    .slice(openIdx + 1, closeIdx)
     .join('\n')
     .replace(/^\s*\n+/, '')
     .replace(/\n+\s*$/, '');
