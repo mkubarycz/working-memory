@@ -82,9 +82,9 @@ export async function reshapeTopicBody(input: ReshapeInput): Promise<string> {
 export function extractH2Headers(markdown: string): string[] {
   const headers: string[] = [];
   for (const line of markdown.split(/\r?\n/)) {
-    const m = /^##\s+(.+?)\s*$/.exec(line);
+    const m = /^##\s+(.+)/.exec(line);
     if (m?.[1]) {
-      headers.push(m[1].toLowerCase());
+      headers.push(m[1].trim().toLowerCase());
     }
   }
   return headers;

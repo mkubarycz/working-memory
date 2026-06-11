@@ -440,7 +440,7 @@ export function registerTools(
                   const missing = templateHeaders.filter(
                     (h) => !reshapedHeaders.includes(h),
                   );
-                  if (missing.length > templateHeaders.length / 2) {
+                  if (missing.length * 2 > templateHeaders.length) {
                     reshapeWarning = `Body reshaping dropped ${missing.length}/${templateHeaders.length} template sections; stored original body with template prefix.`;
                     resolvedBody = `${template}\n\n## Original input\n\n${input.body}`;
                   } else {
