@@ -42,8 +42,7 @@
     "onLanguageModelTool:wm_get_topic_type",
     "onLanguageModelTool:wm_update_topic_type",
     "onLanguageModelTool:wm_delete_topic_type",
-    "onLanguageModelTool:wm_get_panel_data",
-    "onCommand:working-memory.editTopicTypeBodyTemplate"
+    "onLanguageModelTool:wm_get_panel_data"
   ],
   "contributes": {
     "viewsContainers": {
@@ -112,11 +111,6 @@
       {
         "command": "workingMemory.topic.removeFromWorkstream",
         "title": "Topic: Remove from Workstream",
-        "category": "Working Memory"
-      },
-      {
-        "command": "working-memory.editTopicTypeBodyTemplate",
-        "title": "Edit Body Template",
         "category": "Working Memory"
       }
     ],

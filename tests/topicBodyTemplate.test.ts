@@ -8,7 +8,7 @@
 
 import { beforeEach, expect, test, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { renderTopicTypeDoc } from '../src/renderer';
+import { renderTopicTypeDoc, extractTopicTypeBodyTemplate } from '../src/renderer';
 
 // ---------------------------------------------------------------------------
 // Mock vscode — same shape as other test files
@@ -316,27 +316,60 @@ test('tools: wm_create_topic falls back when reshaped body drops too many templa
 // Content provider / renderer
 // ---------------------------------------------------------------------------
 
-test('renderer: renderTopicTypeDoc shows body_template in fenced block when set', () => {
+test('renderer: renderTopicTypeDoc shows body_template between --- fences when set', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   const template = '## User story\nWrite as "As Michael…".\n\n## Acceptance criteria\nBulleted list.';
   store.updateTopicType('task', { body_template: template });
 
   const doc = renderTopicTypeDoc(store, 'task');
-  expect(doc).toContain('## Body template');
-  expect(doc).toContain('```markdown');
+  // Template content should appear between the two --- fences
+  const fenceMatches = doc.match(/^---$/gm);
+  expect(fenceMatches).toHaveLength(2);
   expect(doc).toContain(template);
-  expect(doc).toContain('```');
-  expect(doc).toContain('[Edit body template](command:working-memory.editTopicTypeBodyTemplate');
+  // No command: links or fenced code block
+  expect(doc).not.toContain('command:working-memory.editTopicTypeBodyTemplate');
+  expect(doc).not.toContain('```markdown');
   store.close();
 });
 
-test('renderer: renderTopicTypeDoc shows placeholder when body_template is empty', () => {
+test('renderer: renderTopicTypeDoc shows placeholder between --- fences when body_template is empty', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   // 'feature' has empty body_template by default
   const doc = renderTopicTypeDoc(store, 'feature');
-  expect(doc).toContain('## Body template');
-  expect(doc).toContain('_No body template —');
-  expect(doc).toContain('[Edit](command:working-memory.editTopicTypeBodyTemplate');
+  // Placeholder should appear between the two --- fences
+  const fenceMatches = doc.match(/^---$/gm);
+  expect(fenceMatches).toHaveLength(2);
+  expect(doc).toContain('_No body template — add one here, then save (⌘S)._');
+  expect(doc).not.toContain('command:working-memory.editTopicTypeBodyTemplate');
   expect(doc).not.toContain('```markdown');
   store.close();
+});
+
+// ---------------------------------------------------------------------------
+// extractTopicTypeBodyTemplate parser
+// ---------------------------------------------------------------------------
+
+test('extractTopicTypeBodyTemplate: returns template content between fences', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  const template = '## User story\nOne sentence.\n\n## Acceptance criteria\nBulleted list.';
+  store.updateTopicType('task', { body_template: template });
+  const doc = renderTopicTypeDoc(store, 'task');
+  const extracted = extractTopicTypeBodyTemplate(doc);
+  expect(extracted).toBe(template);
+  store.close();
+});
+
+test('extractTopicTypeBodyTemplate: placeholder → empty string', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  // 'feature' has empty body_template; doc contains placeholder between fences
+  const doc = renderTopicTypeDoc(store, 'feature');
+  const extracted = extractTopicTypeBodyTemplate(doc);
+  expect(extracted).toBe('');
+  store.close();
+});
+
+test('extractTopicTypeBodyTemplate: throws when fences are missing', () => {
+  expect(() => extractTopicTypeBodyTemplate('# Topic type\n\nNo fences here.')).toThrow(
+    /topic-type doc is missing the two `---` body fences/,
+  );
 });

@@ -428,48 +428,6 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.commands.registerCommand(
-      'working-memory.editTopicTypeBodyTemplate',
-      async (arg?: { id?: string }) => {
-        if (!store) {
-          vscode.window.showErrorMessage(
-            'Working Memory: cannot edit body template — DB is not available.',
-          );
-          return;
-        }
-        let id = arg?.id?.trim();
-        if (!id) {
-          id = await vscode.window.showInputBox({
-            prompt: 'Enter the topic type id to edit',
-            placeHolder: 'e.g. task',
-          });
-          if (!id) {
-            return;
-          }
-        }
-        const type = store.getTopicType(id);
-        if (!type) {
-          vscode.window.showErrorMessage(
-            `Working Memory: topic type not found: ${id}`,
-          );
-          return;
-        }
-        const newTemplate = await vscode.window.showInputBox({
-          prompt: `Body template for "${type.label}" (markdown with H2 section headers)`,
-          value: type.body_template,
-          placeHolder:
-            '## User story\nWrite as "As Michael, I want…". One sentence.\n\n## Acceptance criteria\nBulleted list of testable conditions.',
-        });
-        if (newTemplate === undefined) {
-          return;
-        }
-        store.updateTopicType(id, { body_template: newTemplate });
-        refresh();
-        vscode.window.showInformationMessage(
-          `Working Memory: body template updated for "${type.label}".`,
-        );
-      },
-    ),
-    vscode.commands.registerCommand(
       'working-memory.reopenWorkstream',
       async (arg?: { slug?: string; workstream?: { slug?: string } }) => {
         const slug = arg?.slug ?? arg?.workstream?.slug;

@@ -227,26 +227,11 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
         .join('\n')
     : '_No open topics of this type._';
 
-  const editBodyTemplateCmdArgs = encodeURIComponent(
-    JSON.stringify({ id: topicType.id }),
-  );
-  const editBodyTemplateCmd = `command:working-memory.editTopicTypeBodyTemplate?${editBodyTemplateCmdArgs}`;
-
-  const bodyTemplateBlock = topicType.body_template.trim()
-    ? [
-        '## Body template',
-        '',
-        `[Edit body template](${editBodyTemplateCmd})`,
-        '',
-        '```markdown',
-        topicType.body_template,
-        '```',
-      ].join('\n')
-    : [
-        '## Body template',
-        '',
-        `_No body template — [Edit](${editBodyTemplateCmd})._`,
-      ].join('\n');
+  const bodyTemplatePlaceholder =
+    '_No body template — add one here, then save (⌘S)._';
+  const bodyTemplateContent = topicType.body_template.trim()
+    ? topicType.body_template
+    : bodyTemplatePlaceholder;
 
   return [
     `# ${topicType.label} \`${topicType.id}\``,
@@ -261,7 +246,11 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     '',
     topicType.description.trim() || '—',
     '',
-    bodyTemplateBlock,
+    '---',
+    '',
+    bodyTemplateContent,
+    '',
+    '---',
     '',
     '## Recent topics',
     '',
@@ -423,4 +412,32 @@ export function extractTopicBody(full: string): string {
     return '';
   }
   return body;
+}
+
+export function extractTopicTypeBodyTemplate(full: string): string {
+  const lines = full.split(/\r?\n/);
+  const fenceIdxs: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === '---') {
+      fenceIdxs.push(i);
+      if (fenceIdxs.length === 2) {
+        break;
+      }
+    }
+  }
+  if (fenceIdxs.length < 2) {
+    throw new Error(
+      'topic-type doc is missing the two `---` body fences — refusing to save',
+    );
+  }
+  const template = lines
+    .slice(fenceIdxs[0] + 1, fenceIdxs[1])
+    .join('\n')
+    .replace(/^\s*\n+/, '')
+    .replace(/\n+\s*$/, '');
+  const placeholder = '_No body template — add one here, then save (⌘S)._';
+  if (template.trim() === placeholder) {
+    return '';
+  }
+  return template;
 }

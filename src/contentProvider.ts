@@ -6,6 +6,7 @@ import {
   renderTopicTypeDoc,
   renderSessionDoc,
   extractTopicBody,
+  extractTopicTypeBodyTemplate,
 } from './renderer';
 
 type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'unknown';
@@ -87,7 +88,7 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       mtime,
       size: Buffer.byteLength(text, 'utf8'),
       permissions:
-        kind === 'topic' && this.store
+        (kind === 'topic' || kind === 'topic-type') && this.store
           ? undefined
           : vscode.FilePermission.Readonly,
     };
@@ -117,19 +118,29 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     _options: { create: boolean; overwrite: boolean },
   ): void {
     const { kind, slug } = classifyUri(uri);
-    if (kind !== 'topic' || !slug) {
+    if ((kind !== 'topic' && kind !== 'topic-type') || !slug) {
       throw vscode.FileSystemError.NoPermissions(uri);
     }
     if (!this.store) {
       throw vscode.FileSystemError.NoPermissions(uri);
     }
-    const topic = this.store.getTopic(slug);
-    if (!topic) {
-      throw vscode.FileSystemError.FileNotFound(uri);
-    }
     const text = Buffer.from(content).toString('utf8');
-    const body = extractTopicBody(text);
-    this.store.updateTopic(slug, { body });
+    if (kind === 'topic') {
+      const topic = this.store.getTopic(slug);
+      if (!topic) {
+        throw vscode.FileSystemError.FileNotFound(uri);
+      }
+      const body = extractTopicBody(text);
+      this.store.updateTopic(slug, { body });
+    } else {
+      // kind === 'topic-type'
+      const topicType = this.store.getTopicType(slug);
+      if (!topicType) {
+        throw vscode.FileSystemError.FileNotFound(uri);
+      }
+      const body_template = extractTopicTypeBodyTemplate(text);
+      this.store.updateTopicType(slug, { body_template });
+    }
     this.markChanged(uri);
   }
 
