@@ -8,7 +8,7 @@
 
 import { beforeEach, expect, test, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { renderTopicTypeDoc, extractTopicTypeBodyTemplate, extractTopicTypeLabel, EDITABLE_DIV_OPEN, EDITABLE_DIV_CLOSE, EDITABLE_COMMENT_START, EDITABLE_COMMENT_END, EDITABLE_LABEL_COMMENT_START, EDITABLE_LABEL_COMMENT_END } from '../src/renderer';
+import { renderTopicTypeDoc, extractTopicTypeBodyTemplate, extractTopicTypeLabel, extractTopicTypeDescription, EDITABLE_DIV_OPEN, EDITABLE_DIV_CLOSE, EDITABLE_COMMENT_START, EDITABLE_COMMENT_END, EDITABLE_LABEL_COMMENT_START, EDITABLE_LABEL_COMMENT_END, EDITABLE_DESCRIPTION_COMMENT_START, EDITABLE_DESCRIPTION_COMMENT_END } from '../src/renderer';
 
 // ---------------------------------------------------------------------------
 // Mock vscode — same shape as other test files
@@ -433,5 +433,57 @@ test('extractTopicTypeLabel: round-trips updated label', () => {
 test('extractTopicTypeLabel: throws when label markers are missing', () => {
   expect(() => extractTopicTypeLabel('# Topic type\n\nNo label markers here.')).toThrow(
     /topic-type doc is missing the label editable comment markers/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Description editable region — renderer
+// ---------------------------------------------------------------------------
+
+test('renderer: renderTopicTypeDoc renders description inside description editable region markers', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  const doc = renderTopicTypeDoc(store, 'task');
+  expect(doc).toContain(EDITABLE_DESCRIPTION_COMMENT_START);
+  expect(doc).toContain(EDITABLE_DESCRIPTION_COMMENT_END);
+  // description markers appear after label markers and before body_template markers
+  expect(doc.indexOf(EDITABLE_LABEL_COMMENT_END)).toBeLessThan(doc.indexOf(EDITABLE_DESCRIPTION_COMMENT_START));
+  expect(doc.indexOf(EDITABLE_DESCRIPTION_COMMENT_END)).toBeLessThan(doc.indexOf(EDITABLE_COMMENT_START));
+  store.close();
+});
+
+test('renderer: renderTopicTypeDoc description region contains actual description text', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  store.updateTopicType('task', { description: 'A custom task description.' });
+  const doc = renderTopicTypeDoc(store, 'task');
+  const start = doc.indexOf(EDITABLE_DESCRIPTION_COMMENT_START);
+  const end = doc.indexOf(EDITABLE_DESCRIPTION_COMMENT_END);
+  const region = doc.slice(start, end);
+  expect(region).toContain('A custom task description.');
+  store.close();
+});
+
+// ---------------------------------------------------------------------------
+// extractTopicTypeDescription parser
+// ---------------------------------------------------------------------------
+
+test('extractTopicTypeDescription: returns description from rendered doc', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  store.updateTopicType('task', { description: 'Track tasks and action items.' });
+  const doc = renderTopicTypeDoc(store, 'task');
+  expect(extractTopicTypeDescription(doc)).toBe('Track tasks and action items.');
+  store.close();
+});
+
+test('extractTopicTypeDescription: round-trips updated description', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  store.updateTopicType('feature', { description: 'New feature description here.' });
+  const doc = renderTopicTypeDoc(store, 'feature');
+  expect(extractTopicTypeDescription(doc)).toBe('New feature description here.');
+  store.close();
+});
+
+test('extractTopicTypeDescription: throws when description markers are missing', () => {
+  expect(() => extractTopicTypeDescription('# Topic type\n\nNo markers here.')).toThrow(
+    /topic-type doc is missing the description editable comment markers/,
   );
 });

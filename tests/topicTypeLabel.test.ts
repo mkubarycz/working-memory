@@ -140,3 +140,47 @@ test('contentProvider: writeFile persists both label and body_template in a sing
   expect(updated?.body_template).toBe(newTemplate);
   store.close();
 });
+
+test('contentProvider: writeFile with modified description persists new description', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+
+  const originalDoc = renderTopicTypeDoc(store, 'task');
+  const existingDescription = store.getTopicType('task')!.description;
+  const modifiedDoc = originalDoc.replace(
+    `<!-- editable:description -->\n\n${existingDescription}\n`,
+    '<!-- editable:description -->\n\nUpdated description text.\n',
+  );
+
+  const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
+  provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
+
+  const updated = store.getTopicType('task');
+  expect(updated?.description).toBe('Updated description text.');
+  store.close();
+});
+
+test('contentProvider: writeFile with empty description shows error and does not update description', async () => {
+  mockShowErrorMessage.mockClear();
+  const store = openJournalStore({ dbPath: ':memory:' });
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+
+  const originalDoc = renderTopicTypeDoc(store, 'task');
+  const existingDescription = store.getTopicType('task')!.description;
+  const modifiedDoc = originalDoc.replace(
+    `<!-- editable:description -->\n\n${existingDescription}\n`,
+    '<!-- editable:description -->\n\n   \n',
+  );
+
+  const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
+  provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
+
+  const unchanged = store.getTopicType('task');
+  expect(unchanged?.description).toBe(existingDescription);
+
+  expect(mockShowErrorMessage).toHaveBeenCalledOnce();
+  expect(mockShowErrorMessage.mock.calls[0][0]).toMatch(/description must not be empty/i);
+  store.close();
+});

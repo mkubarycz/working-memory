@@ -8,6 +8,7 @@ import {
   extractTopicBody,
   extractTopicTypeBodyTemplate,
   extractTopicTypeLabel,
+  extractTopicTypeDescription,
 } from './renderer';
 
 type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'unknown';
@@ -141,6 +142,7 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       }
       const body_template = extractTopicTypeBodyTemplate(text);
       const label = extractTopicTypeLabel(text);
+      const description = extractTopicTypeDescription(text);
       if (!label.trim()) {
         vscode.window.showErrorMessage(
           'Working Memory: label must not be empty — save aborted.',
@@ -148,7 +150,14 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         this.markChanged(uri);
         return;
       }
-      this.store.updateTopicType(slug, { label, body_template });
+      if (!description.trim()) {
+        vscode.window.showErrorMessage(
+          'Working Memory: description must not be empty — save aborted.',
+        );
+        this.markChanged(uri);
+        return;
+      }
+      this.store.updateTopicType(slug, { label, description, body_template });
     }
     this.markChanged(uri);
   }
