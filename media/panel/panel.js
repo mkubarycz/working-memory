@@ -156,6 +156,7 @@
     if (!openUri) {
       return null;
     }
+    // Keep this parser aligned with src/wmUri.ts:parsePanelRevealTarget.
     const match = /^working-memory:\/(session|topic|workstream)\/(.+)\.md(?:[?#].*)?$/.exec(openUri);
     if (!match || !match[1] || !match[2]) {
       return null;
