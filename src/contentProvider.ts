@@ -3,11 +3,12 @@ import { JournalStore } from './db';
 import {
   renderWorkstreamDoc,
   renderTopicDoc,
+  renderTopicTypeDoc,
   renderSessionDoc,
   extractTopicBody,
 } from './renderer';
 
-type DocKind = 'workstream' | 'topic' | 'session' | 'unknown';
+type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'unknown';
 
 function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
   const p = uri.path;
@@ -18,6 +19,10 @@ function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
   if (p.startsWith('/topic/') && p.endsWith('.md')) {
     const slug = p.slice('/topic/'.length, p.length - '.md'.length);
     return { kind: 'topic', slug: slug || null };
+  }
+  if (p.startsWith('/topic-type/') && p.endsWith('.md')) {
+    const id = p.slice('/topic-type/'.length, p.length - '.md'.length);
+    return { kind: 'topic-type', slug: id || null };
   }
   if (p.startsWith('/session/') && p.endsWith('.md')) {
     const id = p.slice('/session/'.length, p.length - '.md'.length);
@@ -153,6 +158,9 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     }
     if (kind === 'topic') {
       return renderTopicDoc(this.store, slug);
+    }
+    if (kind === 'topic-type') {
+      return renderTopicTypeDoc(this.store, slug);
     }
     if (kind === 'session') {
       return renderSessionDoc(this.store, slug);

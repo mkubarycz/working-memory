@@ -158,8 +158,25 @@ interface TopicParentLinkInput {
   child_slug: string;
   parent_slug: string;
 }
+interface CreateTopicTypeInput {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+}
+interface GetTopicTypeInput {
+  id: string;
+}
+interface UpdateTopicTypeInput {
+  id: string;
+  icon?: string;
+  description?: string;
+}
+interface DeleteTopicTypeInput {
+  id: string;
+}
 interface GetPanelDataInput {
-  tab?: 'active' | 'archive' | 'topics' | 'all';
+  tab?: 'active' | 'archive' | 'topics' | 'topic-types' | 'all';
 }
 
 function topicSummary(
@@ -502,15 +519,75 @@ export function registerTools(
         return { ok: true, count: rows.length, topic_types: rows };
       }),
     }),
+    vscode.lm.registerTool<CreateTopicTypeInput>('wm_create_topic_type', {
+      invoke: safe<CreateTopicTypeInput>((input) => {
+        if (!input.id || !input.label || !input.icon || !input.description) {
+          throw new Error('id, label, icon, and description are required');
+        }
+        const row = store.createTopicType({
+          id: input.id,
+          label: input.label,
+          icon: input.icon,
+          description: input.description,
+        });
+        deps.refresh();
+        return { ok: true, topic_type: row };
+      }),
+    }),
+    vscode.lm.registerTool<GetTopicTypeInput>('wm_get_topic_type', {
+      invoke: safe<GetTopicTypeInput>((input) => {
+        if (!input.id) {
+          throw new Error('id is required');
+        }
+        const row = store.getTopicType(input.id);
+        if (!row) {
+          throw new Error(`topic type not found: ${input.id}`);
+        }
+        return { ok: true, topic_type: row, topic_count: row.topic_count };
+      }),
+    }),
+    vscode.lm.registerTool<UpdateTopicTypeInput>('wm_update_topic_type', {
+      invoke: safe<UpdateTopicTypeInput>((input) => {
+        if (!input.id) {
+          throw new Error('id is required');
+        }
+        const row = store.updateTopicType(input.id, {
+          icon: input.icon,
+          description: input.description,
+        });
+        deps.refresh();
+        return { ok: true, topic_type: row };
+      }),
+    }),
+    vscode.lm.registerTool<DeleteTopicTypeInput>('wm_delete_topic_type', {
+      invoke: safe<DeleteTopicTypeInput>((input) => {
+        if (!input.id) {
+          throw new Error('id is required');
+        }
+        if ((JournalStore.SEEDED_TOPIC_TYPE_IDS as readonly string[]).includes(input.id)) {
+          throw new Error(
+            `cannot delete seeded topic type: ${input.id} (protected: ${JournalStore.SEEDED_TOPIC_TYPE_IDS.join(', ')})`,
+          );
+        }
+        const deleted = store.deleteTopicType(input.id);
+        deps.refresh();
+        return { ok: true, id: input.id, ...deleted };
+      }),
+    }),
     vscode.lm.registerTool<GetPanelDataInput>('wm_get_panel_data', {
       invoke: safe<GetPanelDataInput>((input) => {
         const tab = input?.tab ?? 'all';
         if (tab === 'all') {
           return { ok: true, tab, data: getAllPanelData(store) };
         }
-        if (tab !== 'active' && tab !== 'archive' && tab !== 'topics') {
+        if (
+          tab !== 'active' &&
+          tab !== 'archive' &&
+          tab !== 'topics' &&
+          tab !== 'topic-types'
+        ) {
           throw new Error(
-            `invalid tab '${String(tab)}' — must be one of 'active' | 'archive' | 'topics' | 'all'`,
+            `invalid tab '${String(tab)}' — must be one of 'active' | 'archive' | 'topics' | 'topic-types' | 'all'`,
           );
         }
         return { ok: true, tab, data: getPanelData(store, tab as PanelTab) };

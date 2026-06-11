@@ -271,7 +271,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (!kind || !id) {
           const pickedKind = await vscode.window.showQuickPick(
-            ['session', 'topic', 'workstream'],
+            ['session', 'topic', 'topic-type', 'workstream'],
             { placeHolder: 'Kind of working-memory doc to open' },
           );
           if (!pickedKind) {
@@ -279,27 +279,34 @@ export function activate(context: vscode.ExtensionContext): void {
           }
           kind = pickedKind;
           id = await vscode.window.showInputBox({
-            prompt: `Enter ${kind} ${kind === 'session' ? 'uuid' : 'slug'}`,
+            prompt: `Enter ${kind} ${kind === 'session' ? 'uuid' : 'slug/id'}`,
           });
           if (!id) {
             return;
           }
         }
-        if (kind !== 'session' && kind !== 'topic' && kind !== 'workstream') {
+        if (
+          kind !== 'session' &&
+          kind !== 'topic' &&
+          kind !== 'topic-type' &&
+          kind !== 'workstream'
+        ) {
           vscode.window.showWarningMessage(
-            `Working Memory: unknown kind "${kind}" (expected session|topic|workstream).`,
+            `Working Memory: unknown kind "${kind}" (expected session|topic|topic-type|workstream).`,
           );
           return;
         }
         const uri = vscode.Uri.parse(`working-memory:/${kind}/${id}.md`);
-        const doc = await vscode.workspace.openTextDocument(uri);
-        const editor = await vscode.window.showTextDocument(doc, {
-          preview: false,
-          preserveFocus: false,
-        });
         if (revealSection) {
+          const doc = await vscode.workspace.openTextDocument(uri);
+          const editor = await vscode.window.showTextDocument(doc, {
+            preview: false,
+            preserveFocus: false,
+          });
           revealHeading(editor, revealSection);
+          return;
         }
+        await vscode.commands.executeCommand('vscode.open', uri);
       },
     ),
     vscode.commands.registerCommand(
@@ -469,7 +476,12 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         const kind = parts[1];
-        if (kind !== 'session' && kind !== 'topic' && kind !== 'workstream') {
+        if (
+          kind !== 'session' &&
+          kind !== 'topic' &&
+          kind !== 'topic-type' &&
+          kind !== 'workstream'
+        ) {
           vscode.window.showErrorMessage(
             `Working Memory: unrecognized deep link: ${uri.toString()}`,
           );

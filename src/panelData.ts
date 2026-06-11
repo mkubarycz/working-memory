@@ -13,7 +13,7 @@ import { TRAVERSAL_MODES } from './graphTraversals';
  * Plain-JSON shapes shipped to the webview. Keep these serializable —
  * nothing in here may reference `vscode.*` types or DB row objects directly.
  */
-export type PanelTab = 'active' | 'archive' | 'topics';
+export type PanelTab = 'active' | 'archive' | 'topics' | 'topic-types';
 
 export interface PanelAction {
   /** VS Code command id to invoke. */
@@ -119,7 +119,18 @@ export interface PanelTopicRow {
   children?: PanelTopicRow[];
 }
 
-export type PanelItem = PanelWorkstream | PanelTopicRow;
+export interface PanelTopicType {
+  kind: 'topic-type';
+  id: string;
+  label: string;
+  description: string;
+  tooltip: string;
+  icon: string;
+  openUri: string;
+  topicCount: number;
+}
+
+export type PanelItem = PanelWorkstream | PanelTopicRow | PanelTopicType;
 
 export interface PanelData {
   tab: PanelTab;
@@ -537,9 +548,34 @@ export function getPanelTopicsData(store: JournalStore): PanelData {
   };
 }
 
+export function getPanelTopicTypesData(store: JournalStore): PanelData {
+  const items: PanelItem[] = store.listTopicTypes().map((type) => {
+    const withCount = store.getTopicType(type.id);
+    const topicCount = withCount?.topic_count ?? 0;
+    return {
+      kind: 'topic-type',
+      id: `topic-types:type:${type.id}`,
+      label: type.label,
+      description: `${topicCount} topic${topicCount === 1 ? '' : 's'}`,
+      tooltip: `${type.label} (${type.id})`,
+      icon: type.icon,
+      openUri: `working-memory:/topic-type/${encodeURIComponent(type.id)}.md`,
+      topicCount,
+    };
+  });
+  return {
+    tab: 'topic-types',
+    items,
+    emptyMessage: 'No topic types.',
+  };
+}
+
 export function getPanelData(store: JournalStore, tab: PanelTab): PanelData {
   if (tab === 'topics') {
     return getPanelTopicsData(store);
+  }
+  if (tab === 'topic-types') {
+    return getPanelTopicTypesData(store);
   }
   const typeMap = loadTypeMap(store);
   const rows =
@@ -563,11 +599,13 @@ export function getAllPanelData(store: JournalStore): {
   active: PanelData;
   archive: PanelData;
   topics: PanelData;
+  topicTypes: PanelData;
 } {
   return {
     active: getPanelData(store, 'active'),
     archive: getPanelData(store, 'archive'),
     topics: getPanelTopicsData(store),
+    topicTypes: getPanelTopicTypesData(store),
   };
 }
 
@@ -576,11 +614,13 @@ export function emptyAllPanelData(): {
   active: PanelData;
   archive: PanelData;
   topics: PanelData;
+  topicTypes: PanelData;
 } {
   const noHub = 'No hub workspace open — open the folder containing AGENTS.md.';
   return {
     active: { tab: 'active', items: [], emptyMessage: noHub },
     archive: { tab: 'archive', items: [], emptyMessage: noHub },
     topics: { tab: 'topics', items: [], emptyMessage: noHub },
+    topicTypes: { tab: 'topic-types', items: [], emptyMessage: noHub },
   };
 }

@@ -87,6 +87,10 @@ export interface TopicType {
   updated_at: number;
 }
 
+export interface TopicTypeWithTopicCount extends TopicType {
+  topic_count: number;
+}
+
 export interface TopicWithCounts extends Topic {
   workstream_count: number;
   entry_count: number;
@@ -341,6 +345,19 @@ export interface UpdateTopicInput {
   body?: string;
   status?: TopicStatus;
   topic_type?: string;
+}
+
+export interface CreateTopicTypeInput {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+}
+
+export interface UpdateTopicTypeInput {
+  label?: string;
+  icon?: string;
+  description?: string;
 }
 
 export interface SoftDeleteTopicResult {
@@ -1080,6 +1097,8 @@ export class JournalStore {
   // Topic types
   // -------------------------------------------------------------------------
 
+  static readonly SEEDED_TOPIC_TYPE_IDS = ['topic', 'feature', 'task'] as const;
+
   listTopicTypes(): TopicType[] {
     const sql = `
       SELECT id, label, icon, description, created_at, updated_at
@@ -1101,6 +1120,115 @@ export class JournalStore {
       .prepare(`SELECT 1 AS x FROM topic_types WHERE id = ?`)
       .get(id);
     return Boolean(row);
+  }
+
+  getTopicType(id: string): TopicTypeWithTopicCount | null {
+    const row = this.db
+      .prepare(
+        `SELECT tt.id, tt.label, tt.icon, tt.description, tt.created_at, tt.updated_at,
+                (SELECT COUNT(*) FROM topics t WHERE t.topic_type = tt.id) AS topic_count
+           FROM topic_types tt
+          WHERE tt.id = ?`,
+      )
+      .get(id) as unknown as TopicTypeWithTopicCount | undefined;
+    return row ?? null;
+  }
+
+  createTopicType(input: CreateTopicTypeInput): TopicType {
+    if (!input.id?.trim()) {
+      throw new Error('id is required');
+    }
+    if (!input.label?.trim()) {
+      throw new Error('label is required');
+    }
+    if (!input.icon?.trim()) {
+      throw new Error('icon is required');
+    }
+    if (!input.description?.trim()) {
+      throw new Error('description is required');
+    }
+    const existing = this.topicTypeExists(input.id);
+    if (existing) {
+      throw new Error(`topic type id already exists: ${input.id}`);
+    }
+    const now = nowEpoch();
+    this.db
+      .prepare(
+        `INSERT INTO topic_types (id, label, icon, description, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.id.trim(),
+        input.label.trim(),
+        input.icon.trim(),
+        input.description.trim(),
+        now,
+        now,
+      );
+    const row = this.listTopicTypes().find((t) => t.id === input.id.trim());
+    if (!row) {
+      throw new Error('createTopicType: insert succeeded but row not found');
+    }
+    return row;
+  }
+
+  updateTopicType(id: string, patch: UpdateTopicTypeInput): TopicType {
+    const current = this.listTopicTypes().find((t) => t.id === id);
+    if (!current) {
+      throw new Error(`topic type not found: ${id}`);
+    }
+    const sets: string[] = [];
+    const params: (string | number)[] = [];
+    if (patch.label !== undefined) {
+      if (!patch.label.trim()) {
+        throw new Error('label must not be empty');
+      }
+      sets.push('label = ?');
+      params.push(patch.label.trim());
+    }
+    if (patch.icon !== undefined) {
+      if (!patch.icon.trim()) {
+        throw new Error('icon must not be empty');
+      }
+      sets.push('icon = ?');
+      params.push(patch.icon.trim());
+    }
+    if (patch.description !== undefined) {
+      if (!patch.description.trim()) {
+        throw new Error('description must not be empty');
+      }
+      sets.push('description = ?');
+      params.push(patch.description.trim());
+    }
+    if (sets.length === 0) {
+      return current;
+    }
+    sets.push('updated_at = ?');
+    params.push(nowEpoch());
+    params.push(id);
+    this.db
+      .prepare(`UPDATE topic_types SET ${sets.join(', ')} WHERE id = ?`)
+      .run(...params);
+    const updated = this.listTopicTypes().find((t) => t.id === id);
+    if (!updated) {
+      throw new Error('updateTopicType: row vanished after update');
+    }
+    return updated;
+  }
+
+  deleteTopicType(id: string): { deleted: number; blocking_topic_count: number } {
+    const row = this.getTopicType(id);
+    if (!row) {
+      throw new Error(`topic type not found: ${id}`);
+    }
+    const blocking = Number(row.topic_count);
+    if (blocking > 0) {
+      throw new Error(
+        `cannot delete topic type '${id}' — ${blocking} topic(s) still reference it`,
+      );
+    }
+    const res = this.db.prepare(`DELETE FROM topic_types WHERE id = ?`).run(id);
+    return { deleted: Number(res.changes), blocking_topic_count: blocking };
   }
 
   private assertValidTopicType(value: string): void {

@@ -15,7 +15,7 @@
   /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
   /** @typedef {CardUnfocusMessage | CardFocusMessage | InvokeMessage} ContextMenuMessage */
   /** @typedef {{ label: string, enabled: boolean, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
-  /** @typedef {{ tab: 'active'|'archive'|'topics', items: Node[],
+  /** @typedef {{ tab: 'active'|'archive'|'topics'|'topic-types', items: Node[],
    *              emptyMessage: string }} TabData */
 
   /**
@@ -58,17 +58,19 @@
   // --- State ------------------------------------------------------------
 
   const persisted =
-    /** @type {{ activeTab?: 'active'|'archive'|'topics', expanded?: string[] } | undefined} */ (
+    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types', expanded?: string[] } | undefined} */ (
       vscode.getState()
     );
 
-  /** @type {{ activeTab: 'active'|'archive'|'topics', expanded: Set<string>,
-   *           data: { active?: TabData, archive?: TabData, topics?: TabData },
+  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types', expanded: Set<string>,
+   *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData },
    *           focusedId: string | null, recentCounts: Map<string, number>,
    *           flashChipIds: Set<string> }} */
   const state = {
     activeTab:
-      persisted?.activeTab === 'archive' || persisted?.activeTab === 'topics'
+      persisted?.activeTab === 'archive' ||
+      persisted?.activeTab === 'topics' ||
+      persisted?.activeTab === 'topic-types'
         ? persisted.activeTab
         : 'active',
     expanded: new Set(Array.isArray(persisted?.expanded) ? persisted.expanded : []),
@@ -83,6 +85,17 @@
       activeTab: state.activeTab,
       expanded: Array.from(state.expanded),
     });
+  }
+
+  /**
+   * @param {'active'|'archive'|'topics'|'topic-types'} tab
+   * @returns {TabData | undefined}
+   */
+  function getTabData(tab) {
+    if (tab === 'topic-types') {
+      return state.data.topicTypes;
+    }
+    return state.data[tab];
   }
 
   // --- Rendering --------------------------------------------------------
@@ -648,7 +661,7 @@
     // List
     listEl.replaceChildren();
     listEl.classList.toggle('cards', state.activeTab === 'active');
-    const data = state.data[state.activeTab];
+    const data = getTabData(state.activeTab);
     if (!data || data.items.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'empty';
@@ -728,7 +741,7 @@
       return;
     }
     const t = btn.getAttribute('data-tab');
-    if (t !== 'active' && t !== 'archive' && t !== 'topics') {
+    if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types') {
       return;
     }
     if (state.activeTab === t) {
@@ -783,8 +796,8 @@
           }
         }
       };
-      for (const tab of /** @type {const} */ (['active', 'archive', 'topics'])) {
-        const td = msg.data?.[tab];
+      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types'])) {
+        const td = tab === 'topic-types' ? msg.data?.topicTypes : msg.data?.[tab];
         if (td?.items) {
           for (const w of td.items) {
             visit(w);
@@ -818,8 +831,8 @@
           }
         }
       };
-      for (const tab of /** @type {const} */ (['active', 'archive', 'topics'])) {
-        const td = msg.data?.[tab];
+      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types'])) {
+        const td = tab === 'topic-types' ? msg.data?.topicTypes : msg.data?.[tab];
         if (td?.items) {
           for (const n of td.items) {
             collectRecent(n);
