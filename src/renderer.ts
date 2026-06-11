@@ -7,6 +7,12 @@ import {
 
 const TZ = 'America/New_York';
 
+export const EDITABLE_DIV_OPEN =
+  '<div style="border-left: 5px solid green; padding-left: 15px;">';
+export const EDITABLE_DIV_CLOSE = '</div>';
+export const EDITABLE_COMMENT_START = '<!-- editable -->';
+export const EDITABLE_COMMENT_END = '<!-- /editable -->';
+
 export function deepLink(
   kind: 'topic' | 'session' | 'workstream' | 'topic-type',
   id: string,
@@ -227,6 +233,12 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
         .join('\n')
     : '_No open topics of this type._';
 
+  const bodyTemplatePlaceholder =
+    '_No body template — add one here, then save (⌘S)._';
+  const bodyTemplateContent = topicType.body_template.trim()
+    ? topicType.body_template
+    : bodyTemplatePlaceholder;
+
   return [
     `# ${topicType.label} \`${topicType.id}\``,
     '',
@@ -239,6 +251,16 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     '## Description',
     '',
     topicType.description.trim() || '—',
+    '',
+    '## Content Template',
+    '',
+    EDITABLE_DIV_OPEN,
+    EDITABLE_COMMENT_START,
+    '',
+    bodyTemplateContent,
+    '',
+    EDITABLE_COMMENT_END,
+    EDITABLE_DIV_CLOSE,
     '',
     '## Recent topics',
     '',
@@ -400,4 +422,33 @@ export function extractTopicBody(full: string): string {
     return '';
   }
   return body;
+}
+
+export function extractTopicTypeBodyTemplate(full: string): string {
+  const lines = full.split(/\r?\n/);
+  let openIdx = -1;
+  let closeIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (openIdx === -1 && lines[i].trim() === EDITABLE_COMMENT_START) {
+      openIdx = i;
+    } else if (openIdx !== -1 && lines[i].trim() === EDITABLE_COMMENT_END) {
+      closeIdx = i;
+      break;
+    }
+  }
+  if (openIdx === -1 || closeIdx === -1) {
+    throw new Error(
+      'topic-type doc is missing the editable comment markers — refusing to save',
+    );
+  }
+  const template = lines
+    .slice(openIdx + 1, closeIdx)
+    .join('\n')
+    .replace(/^\s*\n+/, '')
+    .replace(/\n+\s*$/, '');
+  const placeholder = '_No body template — add one here, then save (⌘S)._';
+  if (template.trim() === placeholder) {
+    return '';
+  }
+  return template;
 }
