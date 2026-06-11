@@ -932,7 +932,7 @@
         "displayName": "Working Memory: Update Topic Type",
         "toolReferenceName": "wm_update_topic_type",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a topic-type row by id. Supports icon, description, and body_template fields. body_template is a markdown blob with H2 section headers — when non-empty, wm_create_topic reshapes the caller's body into this structure via LLM. Pass an empty string to clear it. Bumps `updated_at`. Returns the updated row.",
+        "modelDescription": "Partially update a topic-type row by id. Supports label, icon, description, and body_template fields. body_template is a markdown blob with H2 section headers — when non-empty, wm_create_topic reshapes the caller's body into this structure via LLM. Pass an empty string to clear it. Bumps `updated_at`. Returns the updated row.",
         "userDescription": "Update a topic type",
         "tags": [
           "working-memory"
@@ -946,6 +946,10 @@
             "id": {
               "type": "string",
               "description": "Topic-type id to update."
+            },
+            "label": {
+              "type": "string",
+              "description": "Display label (must not be empty if provided)."
             },
             "icon": {
               "type": "string",

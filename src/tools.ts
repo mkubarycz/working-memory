@@ -170,6 +170,7 @@ interface GetTopicTypeInput {
 }
 interface UpdateTopicTypeInput {
   id: string;
+  label?: string;
   icon?: string;
   description?: string;
   body_template?: string;
@@ -600,6 +601,7 @@ export function registerTools(
           throw new Error('id is required');
         }
         const row = store.updateTopicType(input.id, {
+          label: input.label,
           icon: input.icon,
           description: input.description,
           body_template: input.body_template,
