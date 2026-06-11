@@ -42,7 +42,8 @@
     "onLanguageModelTool:wm_get_topic_type",
     "onLanguageModelTool:wm_update_topic_type",
     "onLanguageModelTool:wm_delete_topic_type",
-    "onLanguageModelTool:wm_get_panel_data"
+    "onLanguageModelTool:wm_get_panel_data",
+    "onCommand:working-memory.editTopicTypeBodyTemplate"
   ],
   "contributes": {
     "viewsContainers": {
@@ -111,6 +112,11 @@
       {
         "command": "workingMemory.topic.removeFromWorkstream",
         "title": "Topic: Remove from Workstream",
+        "category": "Working Memory"
+      },
+      {
+        "command": "working-memory.editTopicTypeBodyTemplate",
+        "title": "Edit Body Template",
         "category": "Working Memory"
       }
     ],
@@ -856,7 +862,7 @@
         "displayName": "Working Memory: List Topic Types",
         "toolReferenceName": "wm_list_topic_types",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "List the rows in the `topic_types` registry table. Each row returns id (the value stored in `topics.topic_type`), label (human-readable singular display name), icon (VS Code codicon id, see https://microsoft.github.io/vscode-codicons/), description (one-sentence semantics), created_at, and updated_at. Call this before passing `topic_type` to wm_create_topic / wm_update_topic / wm_list_topics to know which ids are valid — the topic-mutating tools reject unknown ids server-side with a clear error.",
+        "modelDescription": "List the rows in the `topic_types` registry table. Each row returns id (the value stored in `topics.topic_type`), label (human-readable singular display name), icon (VS Code codicon id, see https://microsoft.github.io/vscode-codicons/), description (one-sentence semantics), body_template (markdown scaffold with H2 section headers; empty string means no template), created_at, and updated_at. Call this before passing `topic_type` to wm_create_topic / wm_update_topic / wm_list_topics to know which ids are valid — the topic-mutating tools reject unknown ids server-side with a clear error.",
         "userDescription": "List available topic types",
         "tags": [
           "working-memory"
@@ -932,7 +938,7 @@
         "displayName": "Working Memory: Update Topic Type",
         "toolReferenceName": "wm_update_topic_type",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a topic-type row by id. Supports icon and description fields. Bumps `updated_at`. Returns the updated row.",
+        "modelDescription": "Partially update a topic-type row by id. Supports icon, description, and body_template fields. body_template is a markdown blob with H2 section headers — when non-empty, wm_create_topic reshapes the caller's body into this structure via LLM. Pass an empty string to clear it. Bumps `updated_at`. Returns the updated row.",
         "userDescription": "Update a topic type",
         "tags": [
           "working-memory"
@@ -954,6 +960,10 @@
             "description": {
               "type": "string",
               "description": "Description."
+            },
+            "body_template": {
+              "type": "string",
+              "description": "Markdown body template with H2 section headers. When non-empty, wm_create_topic reshapes the body via LLM to fit these sections. Pass an empty string to clear the template."
             }
           }
         }

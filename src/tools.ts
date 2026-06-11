@@ -9,6 +9,7 @@ import {
   type TraversalModeId,
 } from './graphTraversals';
 import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
+import { reshapeTopicBody, extractH2Headers } from './topicReshape';
 
 interface ToolDeps {
   refresh: () => void;
@@ -29,13 +30,13 @@ function errorResult(message: string): vscode.LanguageModelToolResult {
 }
 
 function safe<TInput>(
-  handler: (input: TInput) => unknown,
+  handler: (input: TInput) => unknown | Promise<unknown>,
 ): (
   options: vscode.LanguageModelToolInvocationOptions<TInput>,
 ) => Promise<vscode.LanguageModelToolResult> {
   return async (options) => {
     try {
-      const out = handler(options.input);
+      const out = await handler(options.input);
       return jsonResult(out);
     } catch (err) {
       return errorResult(err instanceof Error ? err.message : String(err));
@@ -171,6 +172,7 @@ interface UpdateTopicTypeInput {
   id: string;
   icon?: string;
   description?: string;
+  body_template?: string;
 }
 interface DeleteTopicTypeInput {
   id: string;
@@ -410,16 +412,62 @@ export function registerTools(
       }),
     }),
     vscode.lm.registerTool<CreateTopicToolInput>('wm_create_topic', {
-      invoke: safe<CreateTopicToolInput>((input) => {
+      invoke: safe<CreateTopicToolInput>(async (input) => {
+        let resolvedBody = input.body;
+        let reshapeWarning: string | undefined;
+
+        if (input.topic_type) {
+          const typeRow = store.getTopicType(input.topic_type);
+          if (typeRow && typeRow.body_template.trim()) {
+            const template = typeRow.body_template.trim();
+            if (!input.body?.trim()) {
+              // No body provided — store template literally; user edits later.
+              resolvedBody = template;
+            } else {
+              // Body provided — reshape via LLM.
+              try {
+                const reshaped = await reshapeTopicBody({
+                  template,
+                  body: input.body,
+                  title: input.title ?? input.slug,
+                  typeLabel: typeRow.label,
+                  typeDescription: typeRow.description,
+                });
+                // Validate: if LLM dropped more than half the template's H2 headers, fall back.
+                const templateHeaders = extractH2Headers(template);
+                if (templateHeaders.length > 0) {
+                  const reshapedHeaders = extractH2Headers(reshaped);
+                  const missing = templateHeaders.filter(
+                    (h) => !reshapedHeaders.includes(h),
+                  );
+                  if (missing.length > templateHeaders.length / 2) {
+                    reshapeWarning = `Body reshaping dropped ${missing.length}/${templateHeaders.length} template sections; stored original body with template prefix.`;
+                    resolvedBody = `${template}\n\n## Original input\n\n${input.body}`;
+                  } else {
+                    resolvedBody = reshaped;
+                  }
+                } else {
+                  resolvedBody = reshaped;
+                }
+              } catch (err) {
+                reshapeWarning = `Body reshaping failed: ${err instanceof Error ? err.message : String(err)}; stored original body with template prefix.`;
+                resolvedBody = `${template}\n\n## Original input\n\n${input.body}`;
+              }
+            }
+          }
+        }
+
         const row = store.createTopic({
           slug: input.slug,
           title: input.title,
-          body: input.body,
+          body: resolvedBody,
           status: input.status,
           topic_type: input.topic_type,
         });
         deps.refresh();
-        return { ok: true, topic: row };
+        return reshapeWarning
+          ? { ok: true, topic: row, reshape_warning: reshapeWarning }
+          : { ok: true, topic: row };
       }),
     }),
     vscode.lm.registerTool<UpdateTopicToolInput>('wm_update_topic', {
@@ -554,6 +602,7 @@ export function registerTools(
         const row = store.updateTopicType(input.id, {
           icon: input.icon,
           description: input.description,
+          body_template: input.body_template,
         });
         deps.refresh();
         return { ok: true, topic_type: row };

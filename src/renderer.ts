@@ -227,6 +227,27 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
         .join('\n')
     : '_No open topics of this type._';
 
+  const editBodyTemplateCmdArgs = encodeURIComponent(
+    JSON.stringify({ id: topicType.id }),
+  );
+  const editBodyTemplateCmd = `command:working-memory.editTopicTypeBodyTemplate?${editBodyTemplateCmdArgs}`;
+
+  const bodyTemplateBlock = topicType.body_template.trim()
+    ? [
+        '## Body template',
+        '',
+        `[Edit body template](${editBodyTemplateCmd})`,
+        '',
+        '```markdown',
+        topicType.body_template,
+        '```',
+      ].join('\n')
+    : [
+        '## Body template',
+        '',
+        `_No body template — [Edit](${editBodyTemplateCmd})._`,
+      ].join('\n');
+
   return [
     `# ${topicType.label} \`${topicType.id}\``,
     '',
@@ -239,6 +260,8 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     '## Description',
     '',
     topicType.description.trim() || '—',
+    '',
+    bodyTemplateBlock,
     '',
     '## Recent topics',
     '',
