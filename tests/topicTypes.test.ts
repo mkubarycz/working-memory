@@ -255,6 +255,22 @@ test('topic-type tools support happy path and key error paths', async () => {
     'Updated description.',
   );
 
+  const labelUpdated = parseToolResult(
+    await getTool('wm_update_topic_type').invoke({
+      input: { id: 'initiative', label: 'Defect Demo' },
+    }),
+  );
+  expect(labelUpdated.ok).toBe(true);
+  expect((labelUpdated.topic_type as { label: string }).label).toBe('Defect Demo');
+
+  const emptyLabel = parseToolResult(
+    await getTool('wm_update_topic_type').invoke({
+      input: { id: 'initiative', label: '' },
+    }),
+  );
+  expect(emptyLabel.ok).toBe(false);
+  expect(String(emptyLabel.error)).toMatch(/label must not be empty/i);
+
   expect(refresh).toHaveBeenCalled();
   store.close();
 });
