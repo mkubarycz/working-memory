@@ -3,6 +3,7 @@ import {
   type Session,
   type Topic,
   type TopicEntryLink,
+  type TopicStatus,
 } from './db';
 
 const TZ = 'America/New_York';
@@ -55,6 +56,83 @@ function fmtDuration(
   }
   parts.push(`${s}s`);
   return parts.join(' ');
+}
+
+type BreadcrumbNode = { slug: string; title: string; status: TopicStatus };
+
+function fmtBreadcrumbNode(node: BreadcrumbNode): string {
+  const link = deepLink('topic', node.slug);
+  if (node.status === 'closed') {
+    return `~~[${node.title}](${link})~~`;
+  }
+  return `[${node.title}](${link})`;
+}
+
+/**
+ * Build the breadcrumb family trail for a topic virtual doc.
+ *
+ * Walks up the first-parent chain to collect ancestors, then down the
+ * first-child chain to collect descendants.  Returns `'Orphan'` when the
+ * topic has no family.  A visited set guards against cycles in the DAG.
+ */
+export function buildTopicBreadcrumb(
+  store: JournalStore,
+  slug: string,
+): string {
+  const current = store.getTopic(slug);
+  if (!current) {
+    return 'Orphan';
+  }
+
+  // ── Ancestor walk (up via first parent at each level) ───────────────────
+  const ancestors: BreadcrumbNode[] = [];
+  let cursor = slug;
+  const visitedUp = new Set<string>([slug]);
+  while (true) {
+    const parents = store.listTopicParents(cursor);
+    if (parents.length === 0) {
+      break;
+    }
+    const parent = parents[0];
+    if (visitedUp.has(parent.slug)) {
+      break; // cycle guard
+    }
+    visitedUp.add(parent.slug);
+    ancestors.unshift({ slug: parent.slug, title: parent.title, status: parent.status });
+    cursor = parent.slug;
+  }
+
+  // ── Descendant walk (down via first child at each level) ─────────────────
+  const descendants: BreadcrumbNode[] = [];
+  cursor = slug;
+  const visitedDown = new Set<string>([slug]);
+  while (true) {
+    const children = store.listTopicChildren(cursor);
+    if (children.length === 0) {
+      break;
+    }
+    const child = children[0];
+    if (visitedDown.has(child.slug)) {
+      break; // cycle guard
+    }
+    visitedDown.add(child.slug);
+    descendants.push({ slug: child.slug, title: child.title, status: child.status });
+    cursor = child.slug;
+  }
+
+  if (ancestors.length === 0 && descendants.length === 0) {
+    return 'Orphan';
+  }
+
+  const currentLabel = `**${current.title}**`;
+
+  const parts = [
+    ...ancestors.map(fmtBreadcrumbNode),
+    currentLabel,
+    ...descendants.map(fmtBreadcrumbNode),
+  ];
+
+  return parts.join(' > ');
 }
 
 function topicPill(t: Topic): string {
@@ -186,12 +264,15 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
         .join('\n\n')
     : '_No entries linked yet._';
 
+  const breadcrumb = buildTopicBreadcrumb(store, slug);
+
   return [
     `# ${topic.title}`,
     '',
     `- **Slug:** \`${topic.slug}\``,
     `- **Type:** [${typeLabel}](${topicTypeUri})`,
     `- **Status:** ${topic.status}`,
+    `- **Family:** ${breadcrumb}`,
     `- **Created:** ${fmtDateTime(topic.created_at)}`,
     `- **Updated:** ${fmtDateTime(topic.updated_at)}`,
     '',
