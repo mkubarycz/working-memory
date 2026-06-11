@@ -3,6 +3,7 @@ import {
   type Session,
   type Topic,
   type TopicEntryLink,
+  type TopicStatus,
 } from './db';
 
 const TZ = 'America/New_York';
@@ -12,6 +13,11 @@ export const EDITABLE_DIV_OPEN =
 export const EDITABLE_DIV_CLOSE = '</div>';
 export const EDITABLE_COMMENT_START = '<!-- editable -->';
 export const EDITABLE_COMMENT_END = '<!-- /editable -->';
+export const EDITABLE_LABEL_COMMENT_START = '<!-- editable:label -->';
+export const EDITABLE_LABEL_COMMENT_END = '<!-- /editable:label -->';
+export const EDITABLE_DESCRIPTION_COMMENT_START = '<!-- editable:description -->';
+export const EDITABLE_DESCRIPTION_COMMENT_END = '<!-- /editable:description -->';
+export const DESCRIPTION_EMPTY_PLACEHOLDER = '—';
 
 export function deepLink(
   kind: 'topic' | 'session' | 'workstream' | 'topic-type',
@@ -55,6 +61,83 @@ function fmtDuration(
   }
   parts.push(`${s}s`);
   return parts.join(' ');
+}
+
+type BreadcrumbNode = { slug: string; title: string; status: TopicStatus };
+
+function fmtBreadcrumbNode(node: BreadcrumbNode): string {
+  const link = deepLink('topic', node.slug);
+  if (node.status === 'closed') {
+    return `~~[${node.title}](${link})~~`;
+  }
+  return `[${node.title}](${link})`;
+}
+
+/**
+ * Build the breadcrumb family trail for a topic virtual doc.
+ *
+ * Walks up the first-parent chain to collect ancestors, then down the
+ * first-child chain to collect descendants.  Returns `'Orphan'` when the
+ * topic has no family.  A visited set guards against cycles in the DAG.
+ */
+export function buildTopicBreadcrumb(
+  store: JournalStore,
+  slug: string,
+): string {
+  const current = store.getTopic(slug);
+  if (!current) {
+    return 'Orphan';
+  }
+
+  // ── Ancestor walk (up via first parent at each level) ───────────────────
+  const ancestors: BreadcrumbNode[] = [];
+  let cursor = slug;
+  const visitedUp = new Set<string>([slug]);
+  while (true) {
+    const parents = store.listTopicParents(cursor);
+    if (parents.length === 0) {
+      break;
+    }
+    const parent = parents[0];
+    if (visitedUp.has(parent.slug)) {
+      break; // cycle guard
+    }
+    visitedUp.add(parent.slug);
+    ancestors.unshift({ slug: parent.slug, title: parent.title, status: parent.status });
+    cursor = parent.slug;
+  }
+
+  // ── Descendant walk (down via first child at each level) ─────────────────
+  const descendants: BreadcrumbNode[] = [];
+  cursor = slug;
+  const visitedDown = new Set<string>([slug]);
+  while (true) {
+    const children = store.listTopicChildren(cursor);
+    if (children.length === 0) {
+      break;
+    }
+    const child = children[0];
+    if (visitedDown.has(child.slug)) {
+      break; // cycle guard
+    }
+    visitedDown.add(child.slug);
+    descendants.push({ slug: child.slug, title: child.title, status: child.status });
+    cursor = child.slug;
+  }
+
+  if (ancestors.length === 0 && descendants.length === 0) {
+    return 'Orphan';
+  }
+
+  const currentLabel = `**${current.title}**`;
+
+  const parts = [
+    ...ancestors.map(fmtBreadcrumbNode),
+    currentLabel,
+    ...descendants.map(fmtBreadcrumbNode),
+  ];
+
+  return parts.join(' > ');
 }
 
 function topicPill(t: Topic): string {
@@ -186,12 +269,15 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
         .join('\n\n')
     : '_No entries linked yet._';
 
+  const breadcrumb = buildTopicBreadcrumb(store, slug);
+
   return [
     `# ${topic.title}`,
     '',
     `- **Slug:** \`${topic.slug}\``,
     `- **Type:** [${typeLabel}](${topicTypeUri})`,
     `- **Status:** ${topic.status}`,
+    `- **Family:** ${breadcrumb}`,
     `- **Created:** ${fmtDateTime(topic.created_at)}`,
     `- **Updated:** ${fmtDateTime(topic.updated_at)}`,
     '',
@@ -248,9 +334,25 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     `- **Updated:** ${fmtDateTime(topicType.updated_at)}`,
     `- **Topics using this type:** ${topicType.topic_count}`,
     '',
+    '## Label',
+    '',
+    EDITABLE_DIV_OPEN,
+    EDITABLE_LABEL_COMMENT_START,
+    '',
+    topicType.label,
+    '',
+    EDITABLE_LABEL_COMMENT_END,
+    EDITABLE_DIV_CLOSE,
+    '',
     '## Description',
     '',
-    topicType.description.trim() || '—',
+    EDITABLE_DIV_OPEN,
+    EDITABLE_DESCRIPTION_COMMENT_START,
+    '',
+    topicType.description.trim() || DESCRIPTION_EMPTY_PLACEHOLDER,
+    '',
+    EDITABLE_DESCRIPTION_COMMENT_END,
+    EDITABLE_DIV_CLOSE,
     '',
     '## Content Template',
     '',
@@ -451,4 +553,57 @@ export function extractTopicTypeBodyTemplate(full: string): string {
     return '';
   }
   return template;
+}
+
+export function extractTopicTypeLabel(full: string): string {
+  const lines = full.split(/\r?\n/);
+  let openIdx = -1;
+  let closeIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (openIdx === -1 && lines[i].trim() === EDITABLE_LABEL_COMMENT_START) {
+      openIdx = i;
+    } else if (openIdx !== -1 && lines[i].trim() === EDITABLE_LABEL_COMMENT_END) {
+      closeIdx = i;
+      break;
+    }
+  }
+  if (openIdx === -1 || closeIdx === -1) {
+    throw new Error(
+      'topic-type doc is missing the label editable comment markers — refusing to save',
+    );
+  }
+  return lines
+    .slice(openIdx + 1, closeIdx)
+    .join('\n')
+    .replace(/^\s*\n+/, '')
+    .replace(/\n+\s*$/, '');
+}
+
+export function extractTopicTypeDescription(full: string): string {
+  const lines = full.split(/\r?\n/);
+  let openIdx = -1;
+  let closeIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (openIdx === -1 && lines[i].trim() === EDITABLE_DESCRIPTION_COMMENT_START) {
+      openIdx = i;
+    } else if (openIdx !== -1 && lines[i].trim() === EDITABLE_DESCRIPTION_COMMENT_END) {
+      closeIdx = i;
+      break;
+    }
+  }
+  if (openIdx === -1 || closeIdx === -1) {
+    throw new Error(
+      'topic-type doc is missing the description editable comment markers — refusing to save',
+    );
+  }
+  const value = lines
+    .slice(openIdx + 1, closeIdx)
+    .join('\n')
+    .replace(/^\s*\n+/, '')
+    .replace(/\n+\s*$/, '');
+  const placeholder = DESCRIPTION_EMPTY_PLACEHOLDER;
+  if (value.trim() === placeholder) {
+    return '';
+  }
+  return value;
 }
