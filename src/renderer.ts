@@ -8,8 +8,10 @@ import {
 const TZ = 'America/New_York';
 
 export const EDITABLE_DIV_OPEN =
-  '<div style="margin-left: 20px; border-left: 5px solid green; padding-left: 15px;">';
+  '<div style="border-left: 5px solid green; padding-left: 15px;">';
 export const EDITABLE_DIV_CLOSE = '</div>';
+export const EDITABLE_COMMENT_START = '<!-- editable -->';
+export const EDITABLE_COMMENT_END = '<!-- /editable -->';
 
 export function deepLink(
   kind: 'topic' | 'session' | 'workstream' | 'topic-type',
@@ -252,11 +254,13 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     '',
     '## Content Template',
     '',
+    EDITABLE_COMMENT_START,
     EDITABLE_DIV_OPEN,
     '',
     bodyTemplateContent,
     '',
     EDITABLE_DIV_CLOSE,
+    EDITABLE_COMMENT_END,
     '',
     '## Recent topics',
     '',

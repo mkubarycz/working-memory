@@ -8,7 +8,7 @@
 
 import { beforeEach, expect, test, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { renderTopicTypeDoc, extractTopicTypeBodyTemplate, EDITABLE_DIV_OPEN, EDITABLE_DIV_CLOSE } from '../src/renderer';
+import { renderTopicTypeDoc, extractTopicTypeBodyTemplate, EDITABLE_DIV_OPEN, EDITABLE_DIV_CLOSE, EDITABLE_COMMENT_START, EDITABLE_COMMENT_END } from '../src/renderer';
 
 // ---------------------------------------------------------------------------
 // Mock vscode — same shape as other test files
@@ -322,10 +322,15 @@ test('renderer: renderTopicTypeDoc shows body_template inside editable div when 
   store.updateTopicType('task', { body_template: template });
 
   const doc = renderTopicTypeDoc(store, 'task');
-  // Template content should appear inside the editable div
+  // Template content should appear inside the editable div with HTML comment markers
+  expect(doc).toContain(EDITABLE_COMMENT_START);
   expect(doc).toContain(EDITABLE_DIV_OPEN);
   expect(doc).toContain(EDITABLE_DIV_CLOSE);
+  expect(doc).toContain(EDITABLE_COMMENT_END);
   expect(doc).toContain(template);
+  // Comment markers should wrap the div
+  expect(doc.indexOf(EDITABLE_COMMENT_START)).toBeLessThan(doc.indexOf(EDITABLE_DIV_OPEN));
+  expect(doc.indexOf(EDITABLE_DIV_CLOSE)).toBeLessThan(doc.indexOf(EDITABLE_COMMENT_END));
   // No command: links or fenced code block
   expect(doc).not.toContain('command:working-memory.editTopicTypeBodyTemplate');
   expect(doc).not.toContain('```markdown');
@@ -336,9 +341,11 @@ test('renderer: renderTopicTypeDoc shows placeholder inside editable div when bo
   const store = openJournalStore({ dbPath: ':memory:' });
   // 'feature' has empty body_template by default
   const doc = renderTopicTypeDoc(store, 'feature');
-  // Placeholder should appear inside the editable div
+  // Placeholder should appear inside the editable div with HTML comment markers
+  expect(doc).toContain(EDITABLE_COMMENT_START);
   expect(doc).toContain(EDITABLE_DIV_OPEN);
   expect(doc).toContain(EDITABLE_DIV_CLOSE);
+  expect(doc).toContain(EDITABLE_COMMENT_END);
   expect(doc).toContain('_No body template — add one here, then save (⌘S)._');
   expect(doc).not.toContain('command:working-memory.editTopicTypeBodyTemplate');
   expect(doc).not.toContain('```markdown');
