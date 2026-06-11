@@ -7,6 +7,7 @@ import {
   renderSessionDoc,
   extractTopicBody,
   extractTopicTypeBodyTemplate,
+  extractTopicTypeLabel,
 } from './renderer';
 
 type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'unknown';
@@ -139,7 +140,15 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         throw vscode.FileSystemError.FileNotFound(uri);
       }
       const body_template = extractTopicTypeBodyTemplate(text);
-      this.store.updateTopicType(slug, { body_template });
+      const label = extractTopicTypeLabel(text);
+      if (!label.trim()) {
+        vscode.window.showErrorMessage(
+          'Working Memory: label must not be empty — save aborted.',
+        );
+        this.markChanged(uri);
+        return;
+      }
+      this.store.updateTopicType(slug, { label, body_template });
     }
     this.markChanged(uri);
   }

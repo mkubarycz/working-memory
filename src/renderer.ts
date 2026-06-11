@@ -12,6 +12,8 @@ export const EDITABLE_DIV_OPEN =
 export const EDITABLE_DIV_CLOSE = '</div>';
 export const EDITABLE_COMMENT_START = '<!-- editable -->';
 export const EDITABLE_COMMENT_END = '<!-- /editable -->';
+export const EDITABLE_LABEL_COMMENT_START = '<!-- editable:label -->';
+export const EDITABLE_LABEL_COMMENT_END = '<!-- /editable:label -->';
 
 export function deepLink(
   kind: 'topic' | 'session' | 'workstream' | 'topic-type',
@@ -248,6 +250,16 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     `- **Updated:** ${fmtDateTime(topicType.updated_at)}`,
     `- **Topics using this type:** ${topicType.topic_count}`,
     '',
+    '## Label',
+    '',
+    EDITABLE_DIV_OPEN,
+    EDITABLE_LABEL_COMMENT_START,
+    '',
+    topicType.label,
+    '',
+    EDITABLE_LABEL_COMMENT_END,
+    EDITABLE_DIV_CLOSE,
+    '',
     '## Description',
     '',
     topicType.description.trim() || '—',
@@ -451,4 +463,28 @@ export function extractTopicTypeBodyTemplate(full: string): string {
     return '';
   }
   return template;
+}
+
+export function extractTopicTypeLabel(full: string): string {
+  const lines = full.split(/\r?\n/);
+  let openIdx = -1;
+  let closeIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (openIdx === -1 && lines[i].trim() === EDITABLE_LABEL_COMMENT_START) {
+      openIdx = i;
+    } else if (openIdx !== -1 && lines[i].trim() === EDITABLE_LABEL_COMMENT_END) {
+      closeIdx = i;
+      break;
+    }
+  }
+  if (openIdx === -1 || closeIdx === -1) {
+    throw new Error(
+      'topic-type doc is missing the label editable comment markers — refusing to save',
+    );
+  }
+  return lines
+    .slice(openIdx + 1, closeIdx)
+    .join('\n')
+    .replace(/^\s*\n+/, '')
+    .replace(/\n+\s*$/, '');
 }
