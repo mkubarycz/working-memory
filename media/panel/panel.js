@@ -754,7 +754,7 @@
     render();
   });
 
-  document.addEventListener('click', (e) => {
+  document.addEventListener('pointerdown', (e) => {
     if (contextMenuEl.hidden) {
       return;
     }
@@ -762,7 +762,9 @@
     if (!(target instanceof Element) || !contextMenuEl.contains(target)) {
       closeContextMenu();
     }
-  });
+  }, true);
+
+  window.addEventListener('blur', closeContextMenu);
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
