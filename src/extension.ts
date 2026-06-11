@@ -15,6 +15,7 @@ import { findLatestVsix } from './vsix';
 import { deployTemplates } from './deployTemplates';
 import { TRAVERSAL_MODES, type TraversalModeId } from './graphTraversals';
 import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
+import { parsePanelRevealTarget } from './wmUri';
 
 let activeStore: JournalStore | null = null;
 
@@ -134,6 +135,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const refresh = (): void => {
     panelProvider.refresh();
     contentProvider.refresh();
+  };
+
+  const syncPanelToEditor = (editor: vscode.TextEditor | undefined): void => {
+    const target = parsePanelRevealTarget(editor?.document.uri.toString());
+    panelProvider.reveal(target);
   };
 
   const pickOpenWorkstreamSlug = async (): Promise<string | null> => {
@@ -461,6 +467,9 @@ export function activate(context: vscode.ExtensionContext): void {
       WorkstreamPanelProvider.viewType,
       panelProvider,
     ),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      syncPanelToEditor(editor);
+    }),
     vscode.workspace.registerFileSystemProvider(
       WorkstreamDocumentProvider.scheme,
       contentProvider,
@@ -511,6 +520,7 @@ export function activate(context: vscode.ExtensionContext): void {
     registerTools(context, store, { refresh });
     refresh();
   }
+  syncPanelToEditor(vscode.window.activeTextEditor);
 }
 
 export function deactivate(): void {

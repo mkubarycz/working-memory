@@ -5,6 +5,7 @@ import {
   type PanelAction,
 } from '../panelData';
 import { JournalStore } from '../db';
+import type { PanelRevealTarget } from '../wmUri';
 
 interface InvokeMessage {
   type: 'invoke';
@@ -59,6 +60,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'workingMemory.workstreams';
 
   private view: vscode.WebviewView | undefined;
+  private revealTarget: PanelRevealTarget | null = null;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -93,6 +95,23 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     }
     const data = this.store ? getAllPanelData(this.store) : emptyAllPanelData();
     this.view.webview.postMessage({ type: 'data', data });
+    this.postReveal();
+  }
+
+  reveal(target: PanelRevealTarget | null): void {
+    this.revealTarget = target;
+    this.postReveal();
+  }
+
+  private postReveal(): void {
+    if (!this.view) {
+      return;
+    }
+    this.view.webview.postMessage({
+      type: 'reveal',
+      kind: this.revealTarget?.kind ?? null,
+      id: this.revealTarget?.id ?? null,
+    });
   }
 
   private handleMessage(msg: InboundMessage): void {

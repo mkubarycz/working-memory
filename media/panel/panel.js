@@ -13,6 +13,7 @@
   /** @typedef {{ type: 'card.unfocus', slug: string, topicSlug: string }} CardUnfocusMessage */
   /** @typedef {{ type: 'card.focus', slug: string, topicSlug: string }} CardFocusMessage */
   /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
+  /** @typedef {{ kind: 'session'|'topic'|'workstream', id: string }} RevealTarget */
   /** @typedef {CardUnfocusMessage | CardFocusMessage | InvokeMessage} ContextMenuMessage */
   /** @typedef {{ label: string, enabled: boolean, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics'|'topic-types', items: Node[],
@@ -65,7 +66,7 @@
   /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types', expanded: Set<string>,
    *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData },
    *           focusedId: string | null, recentCounts: Map<string, number>,
-   *           flashChipIds: Set<string> }} */
+   *           flashChipIds: Set<string>, revealTarget: RevealTarget | null }} */
   const state = {
     activeTab:
       persisted?.activeTab === 'archive' ||
@@ -78,6 +79,7 @@
     focusedId: null,
     recentCounts: new Map(),
     flashChipIds: new Set(),
+    revealTarget: null,
   };
 
   function persist() {
@@ -143,6 +145,131 @@
       return decodeURIComponent(match[1]);
     } catch {
       return match[1];
+    }
+  }
+
+  /**
+   * @param {string | undefined} openUri
+   * @returns {RevealTarget | null}
+   */
+  function revealTargetFromOpenUri(openUri) {
+    if (!openUri) {
+      return null;
+    }
+    const match = /^working-memory:\/(session|topic|workstream)\/(.+)\.md$/.exec(openUri);
+    if (!match || !match[1] || !match[2]) {
+      return null;
+    }
+    const kind = match[1];
+    let id = match[2];
+    try {
+      id = decodeURIComponent(id);
+    } catch {
+      // Use best-effort raw id.
+    }
+    if (!id) {
+      return null;
+    }
+    return {
+      kind: /** @type {'session'|'topic'|'workstream'} */ (kind),
+      id,
+    };
+  }
+
+  /**
+   * @param {Node} node
+   * @param {RevealTarget} target
+   * @returns {boolean}
+   */
+  function nodeMatchesRevealTarget(node, target) {
+    const parsed = revealTargetFromOpenUri(node.openUri);
+    return parsed?.kind === target.kind && parsed.id === target.id;
+  }
+
+  /**
+   * @param {Node[]} nodes
+   * @param {RevealTarget} target
+   * @param {string[]} path
+   * @returns {{ nodeId: string, ancestors: string[] } | null}
+   */
+  function findRevealMatch(nodes, target, path) {
+    for (const node of nodes) {
+      const nextPath = path.concat(node.id);
+      if (nodeMatchesRevealTarget(node, target)) {
+        return {
+          nodeId: node.id,
+          ancestors: path,
+        };
+      }
+      if (Array.isArray(node.focused_topics)) {
+        const focusedMatch = findRevealMatch(node.focused_topics, target, nextPath);
+        if (focusedMatch) {
+          return focusedMatch;
+        }
+      }
+      if (Array.isArray(node.children)) {
+        const childMatch = findRevealMatch(node.children, target, nextPath);
+        if (childMatch) {
+          return childMatch;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * @param {RevealTarget} target
+   * @returns {Array<'active'|'archive'|'topics'>}
+   */
+  function tabOrderForRevealTarget(target) {
+    if (target.kind === 'topic') {
+      return ['topics', 'active', 'archive'];
+    }
+    return ['active', 'archive', 'topics'];
+  }
+
+  function applyRevealTarget() {
+    if (!state.revealTarget) {
+      state.focusedId = null;
+      return;
+    }
+    let matched = null;
+    for (const tab of tabOrderForRevealTarget(state.revealTarget)) {
+      const data = getTabData(tab);
+      if (!data || !Array.isArray(data.items) || data.items.length === 0) {
+        continue;
+      }
+      const match = findRevealMatch(data.items, state.revealTarget, []);
+      if (!match) {
+        continue;
+      }
+      matched = { tab, ...match };
+      break;
+    }
+    if (!matched) {
+      return;
+    }
+    state.activeTab = matched.tab;
+    state.focusedId = matched.nodeId;
+    for (const ancestorId of matched.ancestors) {
+      state.expanded.add(ancestorId);
+    }
+    persist();
+  }
+
+  function scrollFocusedRowIntoView() {
+    if (!state.focusedId) {
+      return;
+    }
+    const rows = listEl.querySelectorAll('.row');
+    for (const row of rows) {
+      if (!(row instanceof HTMLElement)) {
+        continue;
+      }
+      if (row.dataset.id === state.focusedId) {
+        row.scrollIntoView({ block: 'nearest' });
+        break;
+      }
     }
   }
 
@@ -730,6 +857,7 @@
     }
     listEl.appendChild(frag);
     state.flashChipIds.clear();
+    scrollFocusedRowIntoView();
   }
 
   // --- Event wiring -----------------------------------------------------
@@ -845,6 +973,24 @@
       state.flashChipIds = flashChipIds;
       state.data = msg.data || {};
       closeContextMenu();
+      applyRevealTarget();
+      render();
+      return;
+    }
+    if (msg.type === 'reveal') {
+      if (
+        (msg.kind === 'session' || msg.kind === 'topic' || msg.kind === 'workstream') &&
+        typeof msg.id === 'string' &&
+        msg.id.length > 0
+      ) {
+        state.revealTarget = {
+          kind: msg.kind,
+          id: msg.id,
+        };
+      } else {
+        state.revealTarget = null;
+      }
+      applyRevealTarget();
       render();
     }
   });
