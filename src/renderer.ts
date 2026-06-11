@@ -246,6 +246,8 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     '',
     topicType.description.trim() || '—',
     '',
+    '## Content Template',
+    '',
     '---',
     '',
     bodyTemplateContent,
