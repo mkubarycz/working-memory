@@ -61,6 +61,10 @@ interface CreateWorkstreamToolInput {
   slug: string;
   title: string;
   status?: 'open' | 'closed';
+  /** Optional: pin a topic to this workstream at creation (same as calling wm_link_workstream_topic after). Pair with focused: true to create a workstream that is immediately focused on a topic. */
+  topic_slug?: string;
+  /** Only meaningful with topic_slug. true → set focused = 1 on the link. */
+  focused?: boolean;
 }
 interface UpdateWorkstreamToolInput {
   slug: string;
@@ -118,6 +122,14 @@ interface CreateTopicToolInput {
   body?: string;
   status?: TopicStatus;
   topic_type?: string;
+  /** Optional: pin to a workstream at creation (same as calling wm_link_workstream_topic after). */
+  workstream_slug?: string;
+  /** Only meaningful with workstream_slug. true → set focused = 1 on the workstream link. */
+  focused?: boolean;
+  /** Optional: tag an entry with this topic at creation (also auto-creates the workstream link for that entry's workstream). */
+  entry_id?: number;
+  /** Optional: link to one or more parent topics at creation. Accepts a single slug or an array of slugs. */
+  parent_slug?: string | string[];
 }
 interface UpdateTopicToolInput {
   slug: string;
@@ -257,13 +269,15 @@ export function registerTools(
     }),
     vscode.lm.registerTool<CreateWorkstreamToolInput>('wm_create_workstream', {
       invoke: safe<CreateWorkstreamToolInput>((input) => {
-        const row = store.createWorkstream({
+        const result = store.createWorkstream({
           slug: input.slug,
           title: input.title,
           status: input.status,
+          topic_slug: input.topic_slug,
+          focused: input.focused,
         });
         deps.refresh();
-        return { ok: true, workstream: row };
+        return { ok: true, workstream: result.workstream, ...(result.topic_link ? { topic_link: result.topic_link } : {}) };
       }),
     }),
     vscode.lm.registerTool<UpdateWorkstreamToolInput>('wm_update_workstream', {
@@ -458,17 +472,22 @@ export function registerTools(
           }
         }
 
-        const row = store.createTopic({
+        const result = store.createTopic({
           slug: input.slug,
           title: input.title,
           body: resolvedBody,
           status: input.status,
           topic_type: input.topic_type,
+          workstream_slug: input.workstream_slug,
+          focused: input.focused,
+          entry_id: input.entry_id,
+          parent_slug: input.parent_slug,
         });
         deps.refresh();
+        const { topic, ...links } = result;
         return reshapeWarning
-          ? { ok: true, topic: row, reshape_warning: reshapeWarning }
-          : { ok: true, topic: row };
+          ? { ok: true, topic, ...links, reshape_warning: reshapeWarning }
+          : { ok: true, topic, ...links };
       }),
     }),
     vscode.lm.registerTool<UpdateTopicToolInput>('wm_update_topic', {

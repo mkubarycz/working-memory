@@ -85,7 +85,7 @@
       },
       {
         "command": "working-memory.open",
-        "title": "Open Doc…",
+        "title": "Open Doc\u2026",
         "category": "Working Memory"
       },
       {
@@ -168,7 +168,7 @@
         "displayName": "Working Memory: Get Workstream",
         "toolReferenceName": "wm_get_workstream",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Fetch a single workstream by slug or id, along with its sessions (session_id, started_at, ended_at, summary, entry_count, deleted_at), total_entries count, and `focused_topics` (subset of linked topics where the workstream→topic link is currently focused; each entry is { slug, title, status, linked_at }). Mirrors what the Working Memory virtual document shows but as structured JSON. Provide exactly one of `slug` or `id`. Soft-deleted children are hidden unless include_deleted is true.",
+        "modelDescription": "Fetch a single workstream by slug or id, along with its sessions (session_id, started_at, ended_at, summary, entry_count, deleted_at), total_entries count, and `focused_topics` (subset of linked topics where the workstream\u2192topic link is currently focused; each entry is { slug, title, status, linked_at }). Mirrors what the Working Memory virtual document shows but as structured JSON. Provide exactly one of `slug` or `id`. Soft-deleted children are hidden unless include_deleted is true.",
         "userDescription": "Get a workstream and its sessions",
         "tags": [
           "working-memory"
@@ -196,7 +196,7 @@
         "displayName": "Working Memory: Create Workstream",
         "toolReferenceName": "wm_create_workstream",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Create a new workstream. Slug must be unique across all workstreams (including soft-deleted ones). Title is the human-readable name. Status defaults to 'open'; if 'closed' is given, closed_at is set to now. Returns the created row.",
+        "modelDescription": "Create a new workstream. slug must be unique across all workstreams (including soft-deleted ones). title is the human-readable name. status defaults to 'open'; if 'closed' is given, closed_at is set to now. Optional: pass topic_slug to pin a topic to this workstream at birth (same effect as calling wm_link_workstream_topic after). Pair with focused: true to create a workstream that is already focused on a topic \u2014 this is the canonical one-call way to set up a topic-focused workstream. All operations are in a single transaction: if the topic link fails (e.g. topic not found), the workstream is not created. Returns the created workstream row plus an optional topic_link summary.",
         "userDescription": "Create a new workstream",
         "tags": [
           "working-memory"
@@ -223,6 +223,14 @@
                 "closed"
               ],
               "description": "Initial status. Defaults to 'open'."
+            },
+            "topic_slug": {
+              "type": "string",
+              "description": "Optional kebab-case slug of an existing topic to pin to this workstream at creation. Pair with focused: true to create a workstream that is immediately focused on that topic."
+            },
+            "focused": {
+              "type": "boolean",
+              "description": "Only meaningful when topic_slug is provided. true \u2192 set focused = 1 on the workstream-topic link (marks the topic as the workstream's current focus)."
             }
           }
         }
@@ -319,7 +327,7 @@
             },
             "chat_ref": {
               "type": "string",
-              "description": "Optional reference to the chat that produced this session — typically the value of the VSCODE_TARGET_SESSION_LOG env var (a path to the per-chat debug-logs folder) or any other stable per-chat identifier. Rendered on the session virtual doc; never fabricated."
+              "description": "Optional reference to the chat that produced this session \u2014 typically the value of the VSCODE_TARGET_SESSION_LOG env var (a path to the per-chat debug-logs folder) or any other stable per-chat identifier. Rendered on the session virtual doc; never fabricated."
             }
           }
         }
@@ -406,7 +414,7 @@
         "displayName": "Working Memory: Append Entry",
         "toolReferenceName": "wm_append_entry",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Append a single journal entry to a session. This is the workhorse tool — call it after every meaningful event (chat, command, decision, file change, system action, frustration, fact, idea, question). Body is the entry text — prefer a single line prefixed with the entry type, e.g. 'decision: chose option 2 because…'. Timestamp defaults to now (unix seconds). Returns the new entry's id and timestamp.",
+        "modelDescription": "Append a single journal entry to a session. This is the workhorse tool \u2014 call it after every meaningful event (chat, command, decision, file change, system action, frustration, fact, idea, question). Body is the entry text \u2014 prefer a single line prefixed with the entry type, e.g. 'decision: chose option 2 because\u2026'. Timestamp defaults to now (unix seconds). Returns the new entry's id and timestamp.",
         "userDescription": "Append an entry to a session journal",
         "tags": [
           "working-memory"
@@ -497,7 +505,7 @@
         "displayName": "Working Memory: List Topics",
         "toolReferenceName": "wm_list_topics",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "List topics (durable, evolving subjects) with link counts. Each topic returns slug, title, status (open|closed), topic_type (discriminator; defaults to 'topic' for legacy rows), body, created_at/updated_at/deleted_at, workstream_count (active workstream links), and entry_count (active entry links). Filter by status, optionally scope to one workstream via workstream_slug (returns only topics linked to that workstream), and optionally filter to a single topic_type. Soft-deleted topics are hidden unless include_deleted is true. Valid topic_type values live in the `topic_types` table — call wm_list_topic_types to enumerate them.",
+        "modelDescription": "List topics (durable, evolving subjects) with link counts. Each topic returns slug, title, status (open|closed), topic_type (discriminator; defaults to 'topic' for legacy rows), body, created_at/updated_at/deleted_at, workstream_count (active workstream links), and entry_count (active entry links). Filter by status, optionally scope to one workstream via workstream_slug (returns only topics linked to that workstream), and optionally filter to a single topic_type. Soft-deleted topics are hidden unless include_deleted is true. Valid topic_type values live in the `topic_types` table \u2014 call wm_list_topic_types to enumerate them.",
         "userDescription": "List topics from the journal",
         "tags": [
           "working-memory"
@@ -524,7 +532,7 @@
             },
             "topic_type": {
               "type": "string",
-              "description": "Optional: filter to a single topic_type id. Any id from the `topic_types` table — call wm_list_topic_types to see valid values."
+              "description": "Optional: filter to a single topic_type id. Any id from the `topic_types` table \u2014 call wm_list_topic_types to see valid values."
             }
           }
         }
@@ -561,7 +569,7 @@
         "displayName": "Working Memory: Create Topic",
         "toolReferenceName": "wm_create_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Create a topic. `slug` is required and must be unique across all topics (including soft-deleted ones). `title` is optional and defaults to a humanized version of the slug (e.g. 'soft-delete' -> 'Soft Delete'). `body` is freeform markdown stored as the topic's evolving notes. `status` defaults to 'open'. `topic_type` defaults to 'topic'. Valid topic_type values live in the `topic_types` table — call wm_list_topic_types to enumerate them. Unknown ids are rejected with a server-side error listing the current valid set.",
+        "modelDescription": "Create a topic. slug is required and must be unique across all topics (including soft-deleted ones). title is optional and defaults to a humanized version of the slug. body is freeform markdown. status defaults to 'open'. topic_type defaults to 'topic' \u2014 call wm_list_topic_types to enumerate valid ids. Optional auto-link parameters (all run in the same transaction as the insert; any failure rolls back the entire call): workstream_slug \u2014 pin the topic to a workstream (same as calling wm_link_workstream_topic after); focused \u2014 only meaningful with workstream_slug; marks the topic as focused in that workstream; entry_id \u2014 tag an entry with the new topic (same as wm_link_entry_topic, which also auto-creates the workstream link for the entry's workstream); parent_slug \u2014 link to one or more parent topics (string or array of strings; same as wm_link_topic_parent for each).",
         "userDescription": "Create a new topic",
         "tags": [
           "working-memory"
@@ -594,7 +602,33 @@
             },
             "topic_type": {
               "type": "string",
-              "description": "Any id from the `topic_types` table — call wm_list_topic_types to see valid values. Defaults to 'topic'."
+              "description": "Any id from the `topic_types` table \u2014 call wm_list_topic_types to see valid values. Defaults to 'topic'."
+            },
+            "workstream_slug": {
+              "type": "string",
+              "description": "Optional: pin the new topic to an existing workstream at creation. Same effect as calling wm_link_workstream_topic after, but atomic."
+            },
+            "focused": {
+              "type": "boolean",
+              "description": "Only meaningful when workstream_slug is provided. true \u2192 set focused = 1 on the workstream-topic link."
+            },
+            "entry_id": {
+              "type": "number",
+              "description": "Optional: tag an existing journal entry with the new topic at creation. Also auto-creates the workstream link for that entry's workstream."
+            },
+            "parent_slug": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "Optional: link the new topic to one or more parent topics at creation. Accepts a single slug string or an array of slug strings. Each link has the same effect as a wm_link_topic_parent call."
             }
           }
         }
@@ -604,7 +638,7 @@
         "displayName": "Working Memory: Update Topic",
         "toolReferenceName": "wm_update_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a topic by slug. Any of title, body, status, topic_type can be changed. Bumps `updated_at`. Returns the updated topic row. Valid topic_type values live in the `topic_types` table — call wm_list_topic_types to enumerate them.",
+        "modelDescription": "Partially update a topic by slug. Any of title, body, status, topic_type can be changed. Bumps `updated_at`. Returns the updated topic row. Valid topic_type values live in the `topic_types` table \u2014 call wm_list_topic_types to enumerate them.",
         "userDescription": "Update a topic's title, body, status, or type",
         "tags": [
           "working-memory"
@@ -637,7 +671,7 @@
             },
             "topic_type": {
               "type": "string",
-              "description": "Any id from the `topic_types` table — call wm_list_topic_types to see valid values."
+              "description": "Any id from the `topic_types` table \u2014 call wm_list_topic_types to see valid values."
             }
           }
         }
@@ -667,10 +701,10 @@
       },
       {
         "name": "wm_link_workstream_topic",
-        "displayName": "Working Memory: Link Workstream ↔ Topic",
+        "displayName": "Working Memory: Link Workstream \u2194 Topic",
         "toolReferenceName": "wm_link_workstream_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Pin a topic (and optionally its graph neighbourhood) to a workstream. Idempotent. When `traversal` is omitted or 'self' (default), behaves exactly as before: attaches only the seed topic. Pass a traversal mode to attach a wider set in one call:\n• 'self' — seed topic only (default).\n• 'childrenOf' — seed + direct children.\n• 'immediateFamilyOf' — seed + direct parents + direct children + siblings (children of those parents).\n• 'recursiveFamilyOf' — seed + full connected subgraph (all ancestors, descendants, siblings transitively).\nClosed topics are skipped during traversal unless `includeClosed` is true. Cycle-safe: a visited-set ensures termination even on diamond-shaped DAGs. If the topic slug doesn't exist yet, a stub topic is auto-created (topic_created: true). Soft-deleted link rows are restored (link_restored: true). `focused` applies only to the seed topic, never to traversed neighbours. Returns `linked` (array of newly created/restored links), `skipped_already_linked` (slugs that were already active), and the resolved `traversal` mode.",
+        "modelDescription": "Pin a topic (and optionally its graph neighbourhood) to a workstream. Idempotent. When `traversal` is omitted or 'self' (default), behaves exactly as before: attaches only the seed topic. Pass a traversal mode to attach a wider set in one call:\n\u2022 'self' \u2014 seed topic only (default).\n\u2022 'childrenOf' \u2014 seed + direct children.\n\u2022 'immediateFamilyOf' \u2014 seed + direct parents + direct children + siblings (children of those parents).\n\u2022 'recursiveFamilyOf' \u2014 seed + full connected subgraph (all ancestors, descendants, siblings transitively).\nClosed topics are skipped during traversal unless `includeClosed` is true. Cycle-safe: a visited-set ensures termination even on diamond-shaped DAGs. If the topic slug doesn't exist yet, a stub topic is auto-created (topic_created: true). Soft-deleted link rows are restored (link_restored: true). `focused` applies only to the seed topic, never to traversed neighbours. Returns `linked` (array of newly created/restored links), `skipped_already_linked` (slugs that were already active), and the resolved `traversal` mode.",
         "userDescription": "Link a topic (and optional neighbourhood) to a workstream",
         "tags": [
           "working-memory"
@@ -713,7 +747,7 @@
       },
       {
         "name": "wm_unlink_workstream_topic",
-        "displayName": "Working Memory: Unlink Workstream ↔ Topic",
+        "displayName": "Working Memory: Unlink Workstream \u2194 Topic",
         "toolReferenceName": "wm_unlink_workstream_topic",
         "canBeReferencedInPrompt": true,
         "modelDescription": "Soft-delete the workstream_topics link row between a workstream and a topic. The topic itself is untouched (it may still be linked to other workstreams via entries). Returns the count of removed link rows (0 if none was active).",
@@ -741,10 +775,10 @@
       },
       {
         "name": "wm_link_entry_topic",
-        "displayName": "Working Memory: Link Entry ↔ Topic",
+        "displayName": "Working Memory: Link Entry \u2194 Topic",
         "toolReferenceName": "wm_link_entry_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Tag a journal entry with a topic (M:N). Idempotent. Auto-creates a stub topic (title = humanized slug, status 'open', empty body) if topic_slug is unknown — flagged in the response as topic_created. ALSO auto-creates a workstream_topics row linking the topic to the entry's workstream if one doesn't exist; if such a row exists but is soft-deleted, it is restored. This is the bit of magic that makes the tree useful: any entry tagged with a topic causes that topic to appear under its workstream's Topics group without a separate wm_link_workstream_topic call. If the entry, its session, or its workstream is soft-deleted, the link is rejected. If the topic itself is soft-deleted, it is undeleted (so re-linking a 'restored' topic is implicit).",
+        "modelDescription": "Tag a journal entry with a topic (M:N). Idempotent. Auto-creates a stub topic (title = humanized slug, status 'open', empty body) if topic_slug is unknown \u2014 flagged in the response as topic_created. ALSO auto-creates a workstream_topics row linking the topic to the entry's workstream if one doesn't exist; if such a row exists but is soft-deleted, it is restored. This is the bit of magic that makes the tree useful: any entry tagged with a topic causes that topic to appear under its workstream's Topics group without a separate wm_link_workstream_topic call. If the entry, its session, or its workstream is soft-deleted, the link is rejected. If the topic itself is soft-deleted, it is undeleted (so re-linking a 'restored' topic is implicit).",
         "userDescription": "Tag an entry with a topic (auto-links workstream too)",
         "tags": [
           "working-memory"
@@ -769,10 +803,10 @@
       },
       {
         "name": "wm_unlink_entry_topic",
-        "displayName": "Working Memory: Unlink Entry ↔ Topic",
+        "displayName": "Working Memory: Unlink Entry \u2194 Topic",
         "toolReferenceName": "wm_unlink_entry_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Soft-delete the entry_topics link row between an entry and a topic. Does NOT touch the workstream_topics link — other entries in the same workstream may still link the topic. Use wm_unlink_workstream_topic if you also want to remove the workstream pin. Returns the count of removed link rows (0 if none was active).",
+        "modelDescription": "Soft-delete the entry_topics link row between an entry and a topic. Does NOT touch the workstream_topics link \u2014 other entries in the same workstream may still link the topic. Use wm_unlink_workstream_topic if you also want to remove the workstream pin. Returns the count of removed link rows (0 if none was active).",
         "userDescription": "Untag an entry from a topic",
         "tags": [
           "working-memory"
@@ -800,7 +834,7 @@
         "displayName": "Working Memory: Link Topic Parent (DAG)",
         "toolReferenceName": "wm_link_topic_parent",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Link a topic to a parent topic (DAG, M:N). A topic may have 0 or more parents and appears under each of them in the Topics tree. Idempotent: if an active link already exists, the existing row is returned unchanged; if a soft-deleted link exists for the same pair, it is restored (link_restored: true). Rejects self-links and cycles — a link is refused when child_slug is already in the ancestor closure walked upward from parent_slug. Both topics must exist and not be soft-deleted; topics are NOT auto-created (use wm_create_topic first if needed). Closing a parent has NO cascade effect on children.",
+        "modelDescription": "Link a topic to a parent topic (DAG, M:N). A topic may have 0 or more parents and appears under each of them in the Topics tree. Idempotent: if an active link already exists, the existing row is returned unchanged; if a soft-deleted link exists for the same pair, it is restored (link_restored: true). Rejects self-links and cycles \u2014 a link is refused when child_slug is already in the ancestor closure walked upward from parent_slug. Both topics must exist and not be soft-deleted; topics are NOT auto-created (use wm_create_topic first if needed). Closing a parent has NO cascade effect on children.",
         "userDescription": "Link a topic to a parent topic (DAG)",
         "tags": [
           "working-memory"
@@ -856,7 +890,7 @@
         "displayName": "Working Memory: List Topic Types",
         "toolReferenceName": "wm_list_topic_types",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "List the rows in the `topic_types` registry table. Each row returns id (the value stored in `topics.topic_type`), label (human-readable singular display name), icon (VS Code codicon id, see https://microsoft.github.io/vscode-codicons/), description (one-sentence semantics), body_template (markdown scaffold with H2 section headers; empty string means no template), created_at, and updated_at. Call this before passing `topic_type` to wm_create_topic / wm_update_topic / wm_list_topics to know which ids are valid — the topic-mutating tools reject unknown ids server-side with a clear error.",
+        "modelDescription": "List the rows in the `topic_types` registry table. Each row returns id (the value stored in `topics.topic_type`), label (human-readable singular display name), icon (VS Code codicon id, see https://microsoft.github.io/vscode-codicons/), description (one-sentence semantics), body_template (markdown scaffold with H2 section headers; empty string means no template), created_at, and updated_at. Call this before passing `topic_type` to wm_create_topic / wm_update_topic / wm_list_topics to know which ids are valid \u2014 the topic-mutating tools reject unknown ids server-side with a clear error.",
         "userDescription": "List available topic types",
         "tags": [
           "working-memory"
@@ -932,7 +966,7 @@
         "displayName": "Working Memory: Update Topic Type",
         "toolReferenceName": "wm_update_topic_type",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a topic-type row by id. Supports label, icon, description, and body_template fields. body_template is a markdown blob with H2 section headers — when non-empty, wm_create_topic reshapes the caller's body into this structure via LLM. Pass an empty string to clear it. Bumps `updated_at`. Returns the updated row.",
+        "modelDescription": "Partially update a topic-type row by id. Supports label, icon, description, and body_template fields. body_template is a markdown blob with H2 section headers \u2014 when non-empty, wm_create_topic reshapes the caller's body into this structure via LLM. Pass an empty string to clear it. Bumps `updated_at`. Returns the updated row.",
         "userDescription": "Update a topic type",
         "tags": [
           "working-memory"
@@ -994,7 +1028,7 @@
         "displayName": "Working Memory: Get Panel Data",
         "toolReferenceName": "wm_get_panel_data",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Returns the exact data the Working Memory panel UI is rendering — workstreams, sessions, topics, and topic types as the webview sees them. Use to verify what's visible in the panel, or to debug discrepancies between DB state and UI. Input is an optional `tab`: 'active' | 'archive' | 'topics' | 'topic-types' returns a single `PanelData` for that tab; 'all' (default, also used when input is omitted) returns `{ active, archive, topics, topicTypes }` — the full shape from getAllPanelData(). Output items use tagged-union shapes from src/panelData.ts and are fully JSON-serializable. Pure read, no side effects.",
+        "modelDescription": "Returns the exact data the Working Memory panel UI is rendering \u2014 workstreams, sessions, topics, and topic types as the webview sees them. Use to verify what's visible in the panel, or to debug discrepancies between DB state and UI. Input is an optional `tab`: 'active' | 'archive' | 'topics' | 'topic-types' returns a single `PanelData` for that tab; 'all' (default, also used when input is omitted) returns `{ active, archive, topics, topicTypes }` \u2014 the full shape from getAllPanelData(). Output items use tagged-union shapes from src/panelData.ts and are fully JSON-serializable. Pure read, no side effects.",
         "userDescription": "Get the data currently rendered by the Working Memory panel",
         "tags": [
           "working-memory"
