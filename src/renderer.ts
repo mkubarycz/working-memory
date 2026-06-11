@@ -254,13 +254,13 @@ export function renderTopicTypeDoc(store: JournalStore, id: string): string {
     '',
     '## Content Template',
     '',
-    EDITABLE_COMMENT_START,
     EDITABLE_DIV_OPEN,
+    EDITABLE_COMMENT_START,
     '',
     bodyTemplateContent,
     '',
-    EDITABLE_DIV_CLOSE,
     EDITABLE_COMMENT_END,
+    EDITABLE_DIV_CLOSE,
     '',
     '## Recent topics',
     '',
@@ -429,16 +429,16 @@ export function extractTopicTypeBodyTemplate(full: string): string {
   let openIdx = -1;
   let closeIdx = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (openIdx === -1 && lines[i].trim() === EDITABLE_DIV_OPEN) {
+    if (openIdx === -1 && lines[i].trim() === EDITABLE_COMMENT_START) {
       openIdx = i;
-    } else if (openIdx !== -1 && lines[i].trim() === EDITABLE_DIV_CLOSE) {
+    } else if (openIdx !== -1 && lines[i].trim() === EDITABLE_COMMENT_END) {
       closeIdx = i;
       break;
     }
   }
   if (openIdx === -1 || closeIdx === -1) {
     throw new Error(
-      'topic-type doc is missing the editable div markers — refusing to save',
+      'topic-type doc is missing the editable comment markers — refusing to save',
     );
   }
   const template = lines

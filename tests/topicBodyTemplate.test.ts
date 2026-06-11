@@ -328,9 +328,9 @@ test('renderer: renderTopicTypeDoc shows body_template inside editable div when 
   expect(doc).toContain(EDITABLE_DIV_CLOSE);
   expect(doc).toContain(EDITABLE_COMMENT_END);
   expect(doc).toContain(template);
-  // Comment markers should wrap the div
-  expect(doc.indexOf(EDITABLE_COMMENT_START)).toBeLessThan(doc.indexOf(EDITABLE_DIV_OPEN));
-  expect(doc.indexOf(EDITABLE_DIV_CLOSE)).toBeLessThan(doc.indexOf(EDITABLE_COMMENT_END));
+  // Div should wrap the comment markers
+  expect(doc.indexOf(EDITABLE_DIV_OPEN)).toBeLessThan(doc.indexOf(EDITABLE_COMMENT_START));
+  expect(doc.indexOf(EDITABLE_COMMENT_END)).toBeLessThan(doc.indexOf(EDITABLE_DIV_CLOSE));
   // No command: links or fenced code block
   expect(doc).not.toContain('command:working-memory.editTopicTypeBodyTemplate');
   expect(doc).not.toContain('```markdown');
@@ -375,8 +375,8 @@ test('extractTopicTypeBodyTemplate: placeholder → empty string', () => {
   store.close();
 });
 
-test('extractTopicTypeBodyTemplate: throws when editable div markers are missing', () => {
+test('extractTopicTypeBodyTemplate: throws when editable comment markers are missing', () => {
   expect(() => extractTopicTypeBodyTemplate('# Topic type\n\nNo fences here.')).toThrow(
-    /topic-type doc is missing the editable div markers/,
+    /topic-type doc is missing the editable comment markers/,
   );
 });
