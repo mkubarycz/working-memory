@@ -78,6 +78,8 @@
     focusedId: null,
     recentCounts: new Map(),
     flashChipIds: new Set(),
+    /** @type {{ kind: string, id: string } | null} Latest reveal target from the host. */
+    revealTarget: null,
   };
 
   function persist() {
@@ -439,6 +441,13 @@
     if (state.focusedId === node.id) {
       row.classList.add('focused');
     }
+    // Passive reveal highlight — bold + yellow text on the row whose WM doc is
+    // currently open in the editor. Re-applied on every render so it persists
+    // across manual tab switches and data refreshes, and lands on every
+    // occurrence (tree node + pinned/focused clone). Independent of `.focused`.
+    if (nodeMatchesReveal(node)) {
+      row.classList.add('revealed');
+    }
     // Mute closed topic rows so the eye skips past them. Children render as
     // sibling DOM rows (not nested), so this opacity does not bleed into
     // open child topics under a closed parent.
@@ -732,6 +741,68 @@
     state.flashChipIds.clear();
   }
 
+  // --- Reveal-in-panel --------------------------------------------------
+  //
+  // The extension host watches the active tab group and tells us which WM
+  // doc is currently visible via a `reveal` message ({ kind, id } | null).
+  // We do NOT switch tabs, expand ancestors, or scroll — those side effects
+  // were "too much". Instead the reveal is a passive style: every row whose
+  // openUri matches the target is given the `.revealed` class (bold + yellow
+  // text). Because the panel only renders the *active* tab's DOM at a time,
+  // the match is kept as STATE (`state.revealTarget`) and re-applied inside
+  // `renderRow` on every render — so manually switching tabs naturally
+  // re-highlights the same doc's rows wherever it appears, and a `data`
+  // refresh preserves it too. ALL occurrences are highlighted (a topic can
+  // appear both as a tree node and as a pinned/focused row under a
+  // workstream); this is independent of the click-selection `.focused` style.
+
+  /**
+   * Extract the slug/id segment from a node's `working-memory:/<kind>/<id>.md`
+   * openUri, regardless of kind. Used for kind-less reveal-by-slug matching.
+   * @param {string | undefined} openUri
+   * @returns {string | null}
+   */
+  function slugFromOpenUri(openUri) {
+    if (typeof openUri !== 'string') {
+      return null;
+    }
+    const m = /^working-memory:\/(?:session|topic|workstream|topic-type)\/(.+)\.md$/.exec(openUri);
+    if (!m) {
+      return null;
+    }
+    let id = m[1];
+    try {
+      id = decodeURIComponent(id);
+    } catch (_e) {
+      // Keep the raw segment if it isn't valid percent-encoding.
+    }
+    return id;
+  }
+
+  /**
+   * Predicate: does this node represent the WM doc currently revealed from the
+   * editor? Concrete-kind targets match the full
+   * `working-memory:/<kind>/<id>.md` openUri; kind-less targets (slug recovered
+   * from a tab label) match by slug/id alone. Pinned/focused clones preserve
+   * the underlying topic's openUri, so they match too.
+   * @param {Node} node
+   * @returns {boolean}
+   */
+  function nodeMatchesReveal(node) {
+    const target = state.revealTarget;
+    if (!target || typeof target.id !== 'string') {
+      return false;
+    }
+    if (!node || typeof node.openUri !== 'string') {
+      return false;
+    }
+    if (typeof target.kind === 'string') {
+      return node.openUri ===
+        'working-memory:/' + target.kind + '/' + target.id + '.md';
+    }
+    return slugFromOpenUri(node.openUri) === target.id;
+  }
+
   // --- Event wiring -----------------------------------------------------
 
   tabsEl.addEventListener('click', (e) => {
@@ -846,6 +917,18 @@
       state.data = msg.data || {};
       closeContextMenu();
       render();
+      // The reveal highlight is re-applied inside render() via renderRow, so
+      // it survives this data refresh automatically — no separate pass needed.
+      return;
+    }
+    if (msg.type === 'reveal') {
+      const target =
+        msg.target && typeof msg.target === 'object' ? msg.target : null;
+      state.revealTarget = target;
+      // Pure re-render: renderRow adds `.revealed` to every matching row in the
+      // active tab. No tab switch, no ancestor expand, no scroll.
+      render();
+      return;
     }
   });
 

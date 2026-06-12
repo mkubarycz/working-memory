@@ -97,6 +97,32 @@ html, body {
   color: var(--vscode-list-activeSelectionForeground);
 }
 
+/* Reveal highlight — bold yellow TEXT across the whole row for every row whose
+   WM doc is currently open in the editor (driven by the active tab group). No
+   background fill or scroll; distinct from .focused click selection.
+   `--vscode-charts-yellow` stays legible in both light and dark themes. */
+.row.revealed,
+.row.revealed .label,
+.row.revealed .description,
+.row.revealed .icon .codicon,
+.row.revealed .twisty .codicon {
+  color: var(--vscode-charts-yellow);
+  font-weight: 600;
+}
+
+/* When a revealed row is also click-selected, suppress the gray selection
+   background so the yellow text reads cleanly (Michael: "get rid of this gray
+   background"). Hover background is restored below so hovering still reads
+   normally — only the persistent active/focused selection box is removed. */
+.row.revealed.focused,
+.row.revealed.focused.active {
+  background: transparent;
+}
+
+.row.revealed:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
 /* Closed topic rows render muted so the eye skips past them when scanning.
    Applies only to the single row — child topics render as sibling DOM rows,
    so open children of a closed parent stay full-opacity. */
