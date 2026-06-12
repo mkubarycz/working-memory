@@ -5,6 +5,7 @@ import {
   type PanelAction,
 } from '../panelData';
 import { JournalStore } from '../db';
+import type { PanelRevealTarget } from '../panelReveal';
 
 interface InvokeMessage {
   type: 'invoke';
@@ -60,6 +61,13 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
 
   private view: vscode.WebviewView | undefined;
 
+  /**
+   * Latest reveal target pushed from the extension host (the WM doc currently
+   * visible in the active tab group, or null when none). Stored so we can
+   * replay it when the webview (re)sends `ready` after a reload.
+   */
+  private lastReveal: PanelRevealTarget | null = null;
+
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly store: JournalStore | null,
@@ -75,10 +83,14 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
     };
-    webviewView.webview.html = this.renderHtml(webviewView.webview);
+    // Wire the message listener BEFORE assigning `html`. Setting `html` is
+    // what boots the webview script, which posts `ready` immediately; if the
+    // listener isn't attached yet that first message (and its reveal replay)
+    // can be dropped.
     webviewView.webview.onDidReceiveMessage((msg: InboundMessage) =>
       this.handleMessage(msg),
     );
+    webviewView.webview.html = this.renderHtml(webviewView.webview);
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) {
         this.view = undefined;
@@ -95,6 +107,17 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     this.view.webview.postMessage({ type: 'data', data });
   }
 
+  /**
+   * Tell the webview to scroll the matching row into view and highlight it
+   * (switching tabs / expanding ancestors as needed). Pass null to clear any
+   * existing highlight. The target is remembered and replayed on `ready` so
+   * it survives webview reloads.
+   */
+  reveal(target: PanelRevealTarget | null): void {
+    this.lastReveal = target;
+    this.view?.webview.postMessage({ type: 'reveal', target });
+  }
+
   private handleMessage(msg: InboundMessage): void {
     if (!msg || typeof msg !== 'object') {
       return;
@@ -102,6 +125,12 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     switch (msg.type) {
       case 'ready':
         this.refresh();
+        // Replay the last reveal so a freshly (re)loaded webview restores the
+        // highlight for whatever WM doc is currently open.
+        this.view?.webview.postMessage({
+          type: 'reveal',
+          target: this.lastReveal,
+        });
         return;
       case 'open':
         if (typeof msg.uri === 'string') {
