@@ -62,7 +62,13 @@ html, body {
   flex: 1 1 auto;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: none;
   padding: 4px 0;
+}
+
+.list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .empty {
@@ -283,12 +289,14 @@ html, body {
    tinted header (the workstream row) and a body holding the nested tree. */
 
 .list.cards {
-  padding: 6px 6px 12px;
+  padding: 6px 0 12px;
 }
 
 .ws-card {
   border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, var(--vscode-sideBarSectionHeader-border, rgba(128, 128, 128, 0.25))));
-  border-radius: 5px;
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
   background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, transparent));
   margin-bottom: 8px;
   overflow: hidden;
