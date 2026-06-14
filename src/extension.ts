@@ -86,9 +86,27 @@ function runCommand(command: 'gh' | 'code', args: string[]): Promise<void> {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  // Try to open the store first so we can pass it (or null) into every
-  // provider. Failures are non-fatal — the providers degrade gracefully
-  // when `store` is null.
+  // Register the FileSystemProvider for the working-memory: scheme
+  // synchronously and first — before any DB access — so that restored
+  // Markdown Preview webview editors can resolve working-memory: URIs
+  // during the startup restore race.  The onFileSystem:working-memory
+  // activation event fires before onStartupFinished when a
+  // working-memory: URI is already open, giving the preview webview a
+  // live provider to call into.  The provider degrades gracefully while
+  // store is null (returns placeholder content) and is updated with the
+  // real store once the DB opens below.
+  const contentProvider = new WorkstreamDocumentProvider(null);
+  context.subscriptions.push(
+    vscode.workspace.registerFileSystemProvider(
+      WorkstreamDocumentProvider.scheme,
+      contentProvider,
+      { isCaseSensitive: true, isReadonly: false },
+    ),
+  );
+
+  // Try to open the store so we can wire it into every provider.
+  // Failures are non-fatal — the providers degrade gracefully when
+  // `store` is null.
   let store: JournalStore | null = null;
   const hub = findHubWorkspace();
   if (hub) {
@@ -127,11 +145,14 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   activeStore = store;
 
+  // Wire the real store into the already-registered FSP and create the
+  // remaining providers.
+  contentProvider.updateStore(store);
+
   const panelProvider = new WorkstreamPanelProvider(
     context.extensionUri,
     store,
   );
-  const contentProvider = new WorkstreamDocumentProvider(store);
 
   const refresh = (): void => {
     panelProvider.refresh();
@@ -511,11 +532,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider(
       WorkstreamPanelProvider.viewType,
       panelProvider,
-    ),
-    vscode.workspace.registerFileSystemProvider(
-      WorkstreamDocumentProvider.scheme,
-      contentProvider,
-      { isCaseSensitive: true, isReadonly: false },
     ),
     vscode.window.registerUriHandler({
       handleUri(uri: vscode.Uri): void {
