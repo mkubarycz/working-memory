@@ -21,18 +21,22 @@
     "onLanguageModelTool:wm_create_workstream",
     "onLanguageModelTool:wm_update_workstream",
     "onLanguageModelTool:wm_delete_workstream",
+    "onLanguageModelTool:wm_restore_workstream",
     "onLanguageModelTool:wm_start_session",
     "onLanguageModelTool:wm_end_session",
     "onLanguageModelTool:wm_get_session",
     "onLanguageModelTool:wm_delete_session",
+    "onLanguageModelTool:wm_restore_session",
     "onLanguageModelTool:wm_append_entry",
     "onLanguageModelTool:wm_search_entries",
     "onLanguageModelTool:wm_delete_entry",
+    "onLanguageModelTool:wm_restore_entry",
     "onLanguageModelTool:wm_list_topics",
     "onLanguageModelTool:wm_get_topic",
     "onLanguageModelTool:wm_create_topic",
     "onLanguageModelTool:wm_update_topic",
     "onLanguageModelTool:wm_delete_topic",
+    "onLanguageModelTool:wm_restore_topic",
     "onLanguageModelTool:wm_link_workstream_topic",
     "onLanguageModelTool:wm_unlink_workstream_topic",
     "onLanguageModelTool:wm_link_entry_topic",
@@ -292,6 +296,29 @@
         }
       },
       {
+        "name": "wm_restore_workstream",
+        "displayName": "Working Memory: Restore Workstream",
+        "toolReferenceName": "wm_restore_workstream",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Restore a soft-deleted workstream by clearing its deleted_at. Restores only the workstream row itself — sessions and entries remain soft-deleted and must be restored individually. Returns count of restored rows. No-op (returns zeros) if the workstream is not currently soft-deleted.",
+        "userDescription": "Restore a soft-deleted workstream",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Slug of the workstream to restore."
+            }
+          }
+        }
+      },
+      {
         "name": "wm_start_session",
         "displayName": "Working Memory: Start Session",
         "toolReferenceName": "wm_start_session",
@@ -404,6 +431,29 @@
         }
       },
       {
+        "name": "wm_restore_session",
+        "displayName": "Working Memory: Restore Session",
+        "toolReferenceName": "wm_restore_session",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Restore a soft-deleted session by clearing its deleted_at. Restores only the session row itself — entries remain soft-deleted and must be restored individually with wm_restore_entry. Returns count of restored rows. No-op (returns zeros) if the session is not currently soft-deleted.",
+        "userDescription": "Restore a soft-deleted session",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "description": "The session_id to restore."
+            }
+          }
+        }
+      },
+      {
         "name": "wm_append_entry",
         "displayName": "Working Memory: Append Entry",
         "toolReferenceName": "wm_append_entry",
@@ -490,6 +540,29 @@
             "entry_id": {
               "type": "number",
               "description": "Numeric id of the entry to soft-delete."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_restore_entry",
+        "displayName": "Working Memory: Restore Entry",
+        "toolReferenceName": "wm_restore_entry",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Restore a single soft-deleted entry by id. Clears deleted_at and re-inserts the entry into the FTS index in one transaction. Returns the count of restored rows. Throws if the entry does not exist or is not currently soft-deleted.",
+        "userDescription": "Restore a soft-deleted journal entry",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "entry_id"
+          ],
+          "properties": {
+            "entry_id": {
+              "type": "number",
+              "description": "Numeric id of the entry to restore."
             }
           }
         }
@@ -663,6 +736,29 @@
             "slug": {
               "type": "string",
               "description": "Slug of the topic to soft-delete."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_restore_topic",
+        "displayName": "Working Memory: Restore Topic",
+        "toolReferenceName": "wm_restore_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Restore a soft-deleted topic by clearing its deleted_at. Restores only the topic row itself — link rows in workstream_topics and entry_topics remain soft-deleted and can be re-activated individually via wm_link_workstream_topic or wm_link_entry_topic. Returns count of restored rows. No-op (returns zeros) if the topic is not currently soft-deleted.",
+        "userDescription": "Restore a soft-deleted topic",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Slug of the topic to restore."
             }
           }
         }

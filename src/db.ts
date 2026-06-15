@@ -369,6 +369,18 @@ export interface SoftDeleteTopicResult {
   entry_links: number;
 }
 
+export interface RestoreResult {
+  workstreams: number;
+  sessions: number;
+  entries: number;
+}
+
+export interface RestoreTopicResult {
+  topics: number;
+  workstream_links: number;
+  entry_links: number;
+}
+
 export interface LinkWorkstreamTopicInput {
   workstream_slug: string;
   topic_slug: string;
@@ -728,6 +740,27 @@ export class JournalStore {
     });
   }
 
+  restoreWorkstream(slug: string): RestoreResult {
+    const ws = this.getWorkstreamBySlug(slug, true);
+    if (!ws) {
+      throw new Error(`workstream not found: ${slug}`);
+    }
+    if (ws.deleted_at === null) {
+      return { workstreams: 0, sessions: 0, entries: 0 };
+    }
+
+    return this.withTransaction(() => {
+      const wsRes = this.db
+        .prepare(`UPDATE workstreams SET deleted_at = NULL WHERE id = ?`)
+        .run(ws.id);
+      return {
+        workstreams: Number(wsRes.changes),
+        sessions: 0,
+        entries: 0,
+      };
+    });
+  }
+
   // -------------------------------------------------------------------------
   // Sessions
   // -------------------------------------------------------------------------
@@ -940,6 +973,27 @@ export class JournalStore {
     });
   }
 
+  restoreSession(sessionId: string): RestoreResult {
+    const session = this.getSession(sessionId, true);
+    if (!session) {
+      throw new Error(`session not found: ${sessionId}`);
+    }
+    if (session.deleted_at === null) {
+      return { workstreams: 0, sessions: 0, entries: 0 };
+    }
+
+    return this.withTransaction(() => {
+      const sessionRes = this.db
+        .prepare(`UPDATE sessions SET deleted_at = NULL WHERE session_id = ?`)
+        .run(sessionId);
+      return {
+        workstreams: 0,
+        sessions: Number(sessionRes.changes),
+        entries: 0,
+      };
+    });
+  }
+
   // -------------------------------------------------------------------------
   // Entries
   // -------------------------------------------------------------------------
@@ -1088,6 +1142,31 @@ export class JournalStore {
       const res = this.db
         .prepare(`UPDATE entries SET deleted_at = ? WHERE id = ?`)
         .run(nowEpoch(), entryId);
+      return {
+        workstreams: 0,
+        sessions: 0,
+        entries: Number(res.changes),
+      };
+    });
+  }
+
+  restoreEntry(entryId: number): RestoreResult {
+    const row = this.db
+      .prepare(
+        `SELECT id, body FROM entries WHERE id = ? AND deleted_at IS NOT NULL`,
+      )
+      .get(entryId) as unknown as { id: number; body: string } | undefined;
+    if (!row) {
+      throw new Error(`entry not found (or not deleted): ${entryId}`);
+    }
+
+    return this.withTransaction(() => {
+      const res = this.db
+        .prepare(`UPDATE entries SET deleted_at = NULL WHERE id = ?`)
+        .run(entryId);
+      this.db
+        .prepare(`INSERT INTO entries_fts(rowid, body) VALUES(?, ?)`)
+        .run(row.id, row.body);
       return {
         workstreams: 0,
         sessions: 0,
@@ -1400,22 +1479,36 @@ export class JournalStore {
       const t = this.db
         .prepare(`UPDATE topics SET deleted_at = ? WHERE slug = ?`)
         .run(ts, slug);
-      const w = this.db
-        .prepare(
-          `UPDATE workstream_topics SET deleted_at = ?
-             WHERE topic_slug = ? AND deleted_at IS NULL`,
-        )
-        .run(ts, slug);
-      const e = this.db
-        .prepare(
-          `UPDATE entry_topics SET deleted_at = ?
-             WHERE topic_slug = ? AND deleted_at IS NULL`,
-        )
-        .run(ts, slug);
+      // Intentionally leave workstream_topics / entry_topics link rows intact.
+      // Soft-deleting a topic hides it everywhere (every read path filters on
+      // the topic's own deleted_at), so cascading to the cross-ref tables is
+      // redundant and destructive — it orphans relationships that restore can't
+      // recover. Keeping the links means a restored topic comes back whole.
       return {
         topics: Number(t.changes),
-        workstream_links: Number(w.changes),
-        entry_links: Number(e.changes),
+        workstream_links: 0,
+        entry_links: 0,
+      };
+    });
+  }
+
+  restoreTopic(slug: string): RestoreTopicResult {
+    const topic = this.getTopic(slug, true);
+    if (!topic) {
+      throw new Error(`topic not found: ${slug}`);
+    }
+    if (topic.deleted_at === null) {
+      return { topics: 0, workstream_links: 0, entry_links: 0 };
+    }
+
+    return this.withTransaction(() => {
+      const t = this.db
+        .prepare(`UPDATE topics SET deleted_at = NULL WHERE slug = ?`)
+        .run(slug);
+      return {
+        topics: Number(t.changes),
+        workstream_links: 0,
+        entry_links: 0,
       };
     });
   }
