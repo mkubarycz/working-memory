@@ -129,6 +129,21 @@ interface UpdateTopicToolInput {
 interface DeleteTopicInput {
   slug: string;
 }
+interface RestoreWorkstreamInput {
+  slug: string;
+  cascade?: boolean;
+}
+interface RestoreSessionInput {
+  session_id: string;
+  cascade?: boolean;
+}
+interface RestoreEntryInput {
+  entry_id: number;
+}
+interface RestoreTopicInput {
+  slug: string;
+  cascade_links?: boolean;
+}
 interface LinkWorkstreamTopicToolInput {
   workstream_slug: string;
   topic_slug: string;
@@ -284,6 +299,13 @@ export function registerTools(
         return { ok: true, soft_deleted: counts };
       }),
     }),
+    vscode.lm.registerTool<RestoreWorkstreamInput>('wm_restore_workstream', {
+      invoke: safe<RestoreWorkstreamInput>((input) => {
+        const counts = store.restoreWorkstream(input.slug, input.cascade ?? true);
+        deps.refresh();
+        return { ok: true, restored: counts };
+      }),
+    }),
   );
 
   // ----- sessions -----
@@ -329,6 +351,13 @@ export function registerTools(
         return { ok: true, soft_deleted: counts };
       }),
     }),
+    vscode.lm.registerTool<RestoreSessionInput>('wm_restore_session', {
+      invoke: safe<RestoreSessionInput>((input) => {
+        const counts = store.restoreSession(input.session_id, input.cascade ?? true);
+        deps.refresh();
+        return { ok: true, restored: counts };
+      }),
+    }),
   );
 
   // ----- entries -----
@@ -364,6 +393,13 @@ export function registerTools(
         const counts = store.softDeleteEntry(input.entry_id);
         deps.refresh();
         return { ok: true, soft_deleted: counts };
+      }),
+    }),
+    vscode.lm.registerTool<RestoreEntryInput>('wm_restore_entry', {
+      invoke: safe<RestoreEntryInput>((input) => {
+        const counts = store.restoreEntry(input.entry_id);
+        deps.refresh();
+        return { ok: true, restored: counts };
       }),
     }),
   );
@@ -488,6 +524,13 @@ export function registerTools(
         const counts = store.softDeleteTopic(input.slug);
         deps.refresh();
         return { ok: true, soft_deleted: counts };
+      }),
+    }),
+    vscode.lm.registerTool<RestoreTopicInput>('wm_restore_topic', {
+      invoke: safe<RestoreTopicInput>((input) => {
+        const counts = store.restoreTopic(input.slug, input.cascade_links ?? false);
+        deps.refresh();
+        return { ok: true, restored: counts };
       }),
     }),
     vscode.lm.registerTool<LinkWorkstreamTopicToolInput>(

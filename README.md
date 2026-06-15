@@ -15,7 +15,7 @@ directly.
   workstreams) and **Archive** (closed). Workstream nodes expand to a
   `Topics` group; clicking a workstream or topic opens its virtual
   markdown doc.
-- ~25 MCP tools (`wm_list_workstreams`, `wm_append_entry`,
+- ~29 MCP tools (`wm_list_workstreams`, `wm_append_entry`,
   `wm_search_entries`, `wm_link_entry_topic`, …) for agent-driven
   journaling.
 - FTS5 search over entry bodies, soft-delete across workstreams /
@@ -126,6 +126,56 @@ still use:
 The `?...` payload is `encodeURIComponent(JSON.stringify([id]))`. The
 deep-link form above is preferred for chat because it does not require
 trust.
+
+## Recovery
+
+If you (or an agent acting on your behalf) accidentally soft-deleted a
+workstream, session, entry, or topic, use the `wm_restore_*` tools to undo
+the delete **without writing SQL by hand**.
+
+| Soft-deleted | Restore tool | Cascade default |
+|---|---|---|
+| Workstream (+ sessions + entries) | `wm_restore_workstream` | `cascade = true` |
+| Session (+ entries) | `wm_restore_session` | `cascade = true` |
+| Single entry | `wm_restore_entry` | — |
+| Topic | `wm_restore_topic` | `cascade_links = false` |
+
+### Typical recovery flow
+
+```
+# Accidentally deleted a whole workstream and its children:
+wm_restore_workstream { "slug": "my-workstream" }
+# → restores workstream + all its sessions + all their entries (default cascade)
+# → re-inserts every restored entry into the FTS index
+
+# Only want the workstream row itself (leave sessions/entries deleted):
+wm_restore_workstream { "slug": "my-workstream", "cascade": false }
+
+# Recover a specific session and its entries:
+wm_restore_session { "session_id": "<uuid>" }
+
+# Recover a single entry:
+wm_restore_entry { "entry_id": 42 }
+
+# Restore a topic (links stay soft-deleted until re-linked):
+wm_restore_topic { "slug": "some-topic" }
+
+# Restore a topic and simultaneously restore all its link rows:
+wm_restore_topic { "slug": "some-topic", "cascade_links": true }
+```
+
+**Notes:**
+
+- Every restore is **idempotent** — calling it on a row that is already
+  active is a no-op (returns zero counts, no error).
+- `wm_restore_entry` throws if the entry is not currently soft-deleted.
+- Restored entries are automatically re-inserted into the FTS index so
+  `wm_search_entries` can find them again immediately.
+- `wm_restore_topic` with `cascade_links = false` (default) restores only
+  the topic row itself. Links in `workstream_topics` / `entry_topics` remain
+  soft-deleted; use `wm_link_workstream_topic` / `wm_link_entry_topic` to
+  re-activate them one by one, or set `cascade_links = true` to restore all
+  of them at once.
 
 ## Schema migrations
 

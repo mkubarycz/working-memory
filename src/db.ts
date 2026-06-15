@@ -369,6 +369,18 @@ export interface SoftDeleteTopicResult {
   entry_links: number;
 }
 
+export interface RestoreResult {
+  workstreams: number;
+  sessions: number;
+  entries: number;
+}
+
+export interface RestoreTopicResult {
+  topics: number;
+  workstream_links: number;
+  entry_links: number;
+}
+
 export interface LinkWorkstreamTopicInput {
   workstream_slug: string;
   topic_slug: string;
@@ -728,6 +740,70 @@ export class JournalStore {
     });
   }
 
+  restoreWorkstream(slug: string, cascade = true): RestoreResult {
+    const ws = this.getWorkstreamBySlug(slug, true);
+    if (!ws) {
+      throw new Error(`workstream not found: ${slug}`);
+    }
+    if (ws.deleted_at === null) {
+      return { workstreams: 0, sessions: 0, entries: 0 };
+    }
+
+    return this.withTransaction(() => {
+      const wsRes = this.db
+        .prepare(`UPDATE workstreams SET deleted_at = NULL WHERE id = ?`)
+        .run(ws.id);
+
+      if (!cascade) {
+        return {
+          workstreams: Number(wsRes.changes),
+          sessions: 0,
+          entries: 0,
+        };
+      }
+
+      const sessionRes = this.db
+        .prepare(
+          `UPDATE sessions SET deleted_at = NULL
+            WHERE workstream_id = ? AND deleted_at IS NOT NULL`,
+        )
+        .run(ws.id);
+
+      const affectedEntries = this.db
+        .prepare(
+          `SELECT e.id, e.body
+             FROM entries e
+             JOIN sessions s ON e.session_id = s.session_id
+             WHERE s.workstream_id = ?
+               AND e.deleted_at IS NOT NULL`,
+        )
+        .all(ws.id) as unknown as { id: number; body: string }[];
+
+      const entryRes = this.db
+        .prepare(
+          `UPDATE entries
+              SET deleted_at = NULL
+            WHERE deleted_at IS NOT NULL
+              AND session_id IN (SELECT session_id FROM sessions
+                                   WHERE workstream_id = ?)`,
+        )
+        .run(ws.id);
+
+      const ftsIns = this.db.prepare(
+        `INSERT INTO entries_fts(rowid, body) VALUES(?, ?)`,
+      );
+      for (const row of affectedEntries) {
+        ftsIns.run(row.id, row.body);
+      }
+
+      return {
+        workstreams: Number(wsRes.changes),
+        sessions: Number(sessionRes.changes),
+        entries: Number(entryRes.changes),
+      };
+    });
+  }
+
   // -------------------------------------------------------------------------
   // Sessions
   // -------------------------------------------------------------------------
@@ -940,6 +1016,57 @@ export class JournalStore {
     });
   }
 
+  restoreSession(sessionId: string, cascade = true): RestoreResult {
+    const session = this.getSession(sessionId, true);
+    if (!session) {
+      throw new Error(`session not found: ${sessionId}`);
+    }
+    if (session.deleted_at === null) {
+      return { workstreams: 0, sessions: 0, entries: 0 };
+    }
+
+    return this.withTransaction(() => {
+      const sessionRes = this.db
+        .prepare(`UPDATE sessions SET deleted_at = NULL WHERE session_id = ?`)
+        .run(sessionId);
+
+      if (!cascade) {
+        return {
+          workstreams: 0,
+          sessions: Number(sessionRes.changes),
+          entries: 0,
+        };
+      }
+
+      const affectedEntries = this.db
+        .prepare(
+          `SELECT id, body FROM entries
+            WHERE session_id = ? AND deleted_at IS NOT NULL`,
+        )
+        .all(sessionId) as unknown as { id: number; body: string }[];
+
+      const entryRes = this.db
+        .prepare(
+          `UPDATE entries SET deleted_at = NULL
+            WHERE session_id = ? AND deleted_at IS NOT NULL`,
+        )
+        .run(sessionId);
+
+      const ftsIns = this.db.prepare(
+        `INSERT INTO entries_fts(rowid, body) VALUES(?, ?)`,
+      );
+      for (const row of affectedEntries) {
+        ftsIns.run(row.id, row.body);
+      }
+
+      return {
+        workstreams: 0,
+        sessions: Number(sessionRes.changes),
+        entries: Number(entryRes.changes),
+      };
+    });
+  }
+
   // -------------------------------------------------------------------------
   // Entries
   // -------------------------------------------------------------------------
@@ -1088,6 +1215,31 @@ export class JournalStore {
       const res = this.db
         .prepare(`UPDATE entries SET deleted_at = ? WHERE id = ?`)
         .run(nowEpoch(), entryId);
+      return {
+        workstreams: 0,
+        sessions: 0,
+        entries: Number(res.changes),
+      };
+    });
+  }
+
+  restoreEntry(entryId: number): RestoreResult {
+    const row = this.db
+      .prepare(
+        `SELECT id, body FROM entries WHERE id = ? AND deleted_at IS NOT NULL`,
+      )
+      .get(entryId) as unknown as { id: number; body: string } | undefined;
+    if (!row) {
+      throw new Error(`entry not found (or not deleted): ${entryId}`);
+    }
+
+    return this.withTransaction(() => {
+      const res = this.db
+        .prepare(`UPDATE entries SET deleted_at = NULL WHERE id = ?`)
+        .run(entryId);
+      this.db
+        .prepare(`INSERT INTO entries_fts(rowid, body) VALUES(?, ?)`)
+        .run(row.id, row.body);
       return {
         workstreams: 0,
         sessions: 0,
@@ -1412,6 +1564,48 @@ export class JournalStore {
              WHERE topic_slug = ? AND deleted_at IS NULL`,
         )
         .run(ts, slug);
+      return {
+        topics: Number(t.changes),
+        workstream_links: Number(w.changes),
+        entry_links: Number(e.changes),
+      };
+    });
+  }
+
+  restoreTopic(slug: string, cascadeLinks = false): RestoreTopicResult {
+    const topic = this.getTopic(slug, true);
+    if (!topic) {
+      throw new Error(`topic not found: ${slug}`);
+    }
+    if (topic.deleted_at === null) {
+      return { topics: 0, workstream_links: 0, entry_links: 0 };
+    }
+
+    return this.withTransaction(() => {
+      const t = this.db
+        .prepare(`UPDATE topics SET deleted_at = NULL WHERE slug = ?`)
+        .run(slug);
+
+      if (!cascadeLinks) {
+        return {
+          topics: Number(t.changes),
+          workstream_links: 0,
+          entry_links: 0,
+        };
+      }
+
+      const w = this.db
+        .prepare(
+          `UPDATE workstream_topics SET deleted_at = NULL
+             WHERE topic_slug = ? AND deleted_at IS NOT NULL`,
+        )
+        .run(slug);
+      const e = this.db
+        .prepare(
+          `UPDATE entry_topics SET deleted_at = NULL
+             WHERE topic_slug = ? AND deleted_at IS NOT NULL`,
+        )
+        .run(slug);
       return {
         topics: Number(t.changes),
         workstream_links: Number(w.changes),
