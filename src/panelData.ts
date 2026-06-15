@@ -150,7 +150,7 @@ const ALL_TIME_SINCE = 0;
 function describeTopic(t: WorkstreamTopicRow): string {
   const here = t.entry_count_in_workstream;
   const elsewhere = t.entry_count - here;
-  const parts: string[] = [t.slug];
+  const parts: string[] = [];
   if (here > 0) {
     parts.push(`${here} entr${here === 1 ? 'y' : 'ies'} here`);
   }
@@ -164,7 +164,7 @@ function describeTopic(t: WorkstreamTopicRow): string {
 }
 
 function describeTopicRow(t: TopicWithCounts): string {
-  const parts: string[] = [t.slug];
+  const parts: string[] = [];
   if (t.workstream_count > 0) {
     parts.push(
       `${t.workstream_count} workstream${t.workstream_count === 1 ? '' : 's'}`,
@@ -400,7 +400,7 @@ function buildWorkstream(
     ? `${baseTooltip}\n\n${ws.closure.trim()}`
     : baseTooltip;
   const description =
-    tab === 'archive' && ws.closure?.trim() ? ws.closure.trim() : ws.slug;
+    tab === 'archive' && ws.closure?.trim() ? ws.closure.trim() : '';
   const actions: PanelAction[] =
     tab === 'archive'
       ? [

@@ -219,7 +219,7 @@
             },
             "title": {
               "type": "string",
-              "description": "Human-readable title, e.g. 'MCP Integration Work'."
+              "description": "Human-readable title, e.g. 'MCP Integration Work'. Keep it short and scannable (aim for ~6 words / ~48 chars). Lead with the task's common vernacular — the noun/verb you'd actually say out loud (e.g. 'Drag & drop topics', not 'Implement drag-and-drop reordering for topics in the panel'). Drop framing words ('Implement', 'Add support for', 'Feature to…'), trailing punctuation, and restated context. Prefer '<verb> <object>' or a bare noun phrase."
             },
             "status": {
               "type": "string",
@@ -254,7 +254,7 @@
             },
             "title": {
               "type": "string",
-              "description": "New title."
+              "description": "New title. Keep it short and scannable (aim for ~6 words / ~48 chars). Lead with the task's common vernacular — the noun/verb you'd actually say out loud (e.g. 'Drag & drop topics', not 'Implement drag-and-drop reordering for topics in the panel'). Drop framing words ('Implement', 'Add support for', 'Feature to…'), trailing punctuation, and restated context. Prefer '<verb> <object>' or a bare noun phrase."
             },
             "status": {
               "type": "string",
@@ -660,7 +660,7 @@
             },
             "title": {
               "type": "string",
-              "description": "Optional human-readable title. Defaults to humanized slug."
+              "description": "Optional human-readable title. Defaults to humanized slug. Keep it short and scannable (aim for ~6 words / ~48 chars). Lead with the task's common vernacular — the noun/verb you'd actually say out loud (e.g. 'Drag & drop topics', not 'Implement drag-and-drop reordering for topics in the panel'). Drop framing words ('Implement', 'Add support for', 'Feature to…'), trailing punctuation, and restated context. Prefer '<verb> <object>' or a bare noun phrase."
             },
             "body": {
               "type": "string",
@@ -703,7 +703,7 @@
             },
             "title": {
               "type": "string",
-              "description": "New title."
+              "description": "New title. Keep it short and scannable (aim for ~6 words / ~48 chars). Lead with the task's common vernacular — the noun/verb you'd actually say out loud (e.g. 'Drag & drop topics', not 'Implement drag-and-drop reordering for topics in the panel'). Drop framing words ('Implement', 'Add support for', 'Feature to…'), trailing punctuation, and restated context. Prefer '<verb> <object>' or a bare noun phrase."
             },
             "body": {
               "type": "string",
