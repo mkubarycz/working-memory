@@ -1479,22 +1479,15 @@ export class JournalStore {
       const t = this.db
         .prepare(`UPDATE topics SET deleted_at = ? WHERE slug = ?`)
         .run(ts, slug);
-      const w = this.db
-        .prepare(
-          `UPDATE workstream_topics SET deleted_at = ?
-             WHERE topic_slug = ? AND deleted_at IS NULL`,
-        )
-        .run(ts, slug);
-      const e = this.db
-        .prepare(
-          `UPDATE entry_topics SET deleted_at = ?
-             WHERE topic_slug = ? AND deleted_at IS NULL`,
-        )
-        .run(ts, slug);
+      // Intentionally leave workstream_topics / entry_topics link rows intact.
+      // Soft-deleting a topic hides it everywhere (every read path filters on
+      // the topic's own deleted_at), so cascading to the cross-ref tables is
+      // redundant and destructive — it orphans relationships that restore can't
+      // recover. Keeping the links means a restored topic comes back whole.
       return {
         topics: Number(t.changes),
-        workstream_links: Number(w.changes),
-        entry_links: Number(e.changes),
+        workstream_links: 0,
+        entry_links: 0,
       };
     });
   }
