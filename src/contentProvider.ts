@@ -53,7 +53,12 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
   private readonly knownUris = new Set<string>();
   private readonly mtimes = new Map<string, number>();
 
-  constructor(private readonly store: JournalStore | null) {}
+  constructor(private store: JournalStore | null) {}
+
+  /** Update the store reference after a late DB open (e.g. startup restore). */
+  updateStore(store: JournalStore | null): void {
+    this.store = store;
+  }
 
   refresh(uri?: vscode.Uri): void {
     if (uri) {

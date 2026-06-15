@@ -11,6 +11,7 @@
   },
   "main": "./out/src/extension.js",
   "activationEvents": [
+    "onFileSystem:working-memory",
     "onStartupFinished",
     "onUri",
     "onCommand:workingMemory.topic.addToWorkstream",
