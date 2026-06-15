@@ -131,18 +131,15 @@ interface DeleteTopicInput {
 }
 interface RestoreWorkstreamInput {
   slug: string;
-  cascade?: boolean;
 }
 interface RestoreSessionInput {
   session_id: string;
-  cascade?: boolean;
 }
 interface RestoreEntryInput {
   entry_id: number;
 }
 interface RestoreTopicInput {
   slug: string;
-  cascade_links?: boolean;
 }
 interface LinkWorkstreamTopicToolInput {
   workstream_slug: string;
@@ -301,7 +298,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<RestoreWorkstreamInput>('wm_restore_workstream', {
       invoke: safe<RestoreWorkstreamInput>((input) => {
-        const counts = store.restoreWorkstream(input.slug, input.cascade ?? true);
+        const counts = store.restoreWorkstream(input.slug);
         deps.refresh();
         return { ok: true, restored: counts };
       }),
@@ -353,7 +350,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<RestoreSessionInput>('wm_restore_session', {
       invoke: safe<RestoreSessionInput>((input) => {
-        const counts = store.restoreSession(input.session_id, input.cascade ?? true);
+        const counts = store.restoreSession(input.session_id);
         deps.refresh();
         return { ok: true, restored: counts };
       }),
@@ -528,7 +525,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<RestoreTopicInput>('wm_restore_topic', {
       invoke: safe<RestoreTopicInput>((input) => {
-        const counts = store.restoreTopic(input.slug, input.cascade_links ?? false);
+        const counts = store.restoreTopic(input.slug);
         deps.refresh();
         return { ok: true, restored: counts };
       }),

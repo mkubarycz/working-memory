@@ -299,7 +299,7 @@
         "displayName": "Working Memory: Restore Workstream",
         "toolReferenceName": "wm_restore_workstream",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Restore a soft-deleted workstream by clearing its deleted_at. By default (cascade = true) also restores all sessions and entries that were tombstoned under this workstream, and re-inserts restored entries into the FTS index. Set cascade = false to restore only the workstream row itself. Returns counts of restored rows per table. No-op (returns zeros) if the workstream is not currently soft-deleted.",
+        "modelDescription": "Restore a soft-deleted workstream by clearing its deleted_at. Restores only the workstream row itself — sessions and entries remain soft-deleted and must be restored individually. Returns count of restored rows. No-op (returns zeros) if the workstream is not currently soft-deleted.",
         "userDescription": "Restore a soft-deleted workstream",
         "tags": [
           "working-memory"
@@ -313,10 +313,6 @@
             "slug": {
               "type": "string",
               "description": "Slug of the workstream to restore."
-            },
-            "cascade": {
-              "type": "boolean",
-              "description": "When true (default), also restores all sessions and entries under this workstream. Set false to restore only the workstream row."
             }
           }
         }
@@ -438,7 +434,7 @@
         "displayName": "Working Memory: Restore Session",
         "toolReferenceName": "wm_restore_session",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Restore a soft-deleted session by clearing its deleted_at. By default (cascade = true) also restores all entries that were tombstoned under this session and re-inserts them into the FTS index. Set cascade = false to restore only the session row itself. Returns counts of restored rows per table. No-op (returns zeros) if the session is not currently soft-deleted.",
+        "modelDescription": "Restore a soft-deleted session by clearing its deleted_at. Restores only the session row itself — entries remain soft-deleted and must be restored individually with wm_restore_entry. Returns count of restored rows. No-op (returns zeros) if the session is not currently soft-deleted.",
         "userDescription": "Restore a soft-deleted session",
         "tags": [
           "working-memory"
@@ -452,10 +448,6 @@
             "session_id": {
               "type": "string",
               "description": "The session_id to restore."
-            },
-            "cascade": {
-              "type": "boolean",
-              "description": "When true (default), also restores all entries under this session. Set false to restore only the session row."
             }
           }
         }
@@ -752,7 +744,7 @@
         "displayName": "Working Memory: Restore Topic",
         "toolReferenceName": "wm_restore_topic",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Restore a soft-deleted topic by clearing its deleted_at. By default (cascade_links = false) only the topic row itself is restored; link rows in workstream_topics and entry_topics remain soft-deleted and can be re-activated individually via wm_link_workstream_topic or wm_link_entry_topic. Set cascade_links = true to also restore all soft-deleted link rows for this topic in one transaction. Returns counts of restored rows per table. No-op (returns zeros) if the topic is not currently soft-deleted.",
+        "modelDescription": "Restore a soft-deleted topic by clearing its deleted_at. Restores only the topic row itself — link rows in workstream_topics and entry_topics remain soft-deleted and can be re-activated individually via wm_link_workstream_topic or wm_link_entry_topic. Returns count of restored rows. No-op (returns zeros) if the topic is not currently soft-deleted.",
         "userDescription": "Restore a soft-deleted topic",
         "tags": [
           "working-memory"
@@ -766,10 +758,6 @@
             "slug": {
               "type": "string",
               "description": "Slug of the topic to restore."
-            },
-            "cascade_links": {
-              "type": "boolean",
-              "description": "When true, also restores all soft-deleted workstream_topics and entry_topics link rows for this topic. Defaults to false."
             }
           }
         }

@@ -133,35 +133,32 @@ If you (or an agent acting on your behalf) accidentally soft-deleted a
 workstream, session, entry, or topic, use the `wm_restore_*` tools to undo
 the delete **without writing SQL by hand**.
 
-| Soft-deleted | Restore tool | Cascade default |
-|---|---|---|
-| Workstream (+ sessions + entries) | `wm_restore_workstream` | `cascade = true` |
-| Session (+ entries) | `wm_restore_session` | `cascade = true` |
-| Single entry | `wm_restore_entry` | — |
-| Topic | `wm_restore_topic` | `cascade_links = false` |
+Each tool restores only the individual record — child records remain
+soft-deleted and must be restored individually.
+
+| Soft-deleted | Restore tool |
+|---|---|
+| Workstream | `wm_restore_workstream` |
+| Session | `wm_restore_session` |
+| Entry | `wm_restore_entry` |
+| Topic | `wm_restore_topic` |
 
 ### Typical recovery flow
 
 ```
-# Accidentally deleted a whole workstream and its children:
+# Restore a soft-deleted workstream:
 wm_restore_workstream { "slug": "my-workstream" }
-# → restores workstream + all its sessions + all their entries (default cascade)
-# → re-inserts every restored entry into the FTS index
 
-# Only want the workstream row itself (leave sessions/entries deleted):
-wm_restore_workstream { "slug": "my-workstream", "cascade": false }
-
-# Recover a specific session and its entries:
+# Restore a specific session:
 wm_restore_session { "session_id": "<uuid>" }
 
-# Recover a single entry:
+# Restore a single entry:
 wm_restore_entry { "entry_id": 42 }
 
-# Restore a topic (links stay soft-deleted until re-linked):
+# Restore a topic (link rows in workstream_topics / entry_topics remain
+# soft-deleted; use wm_link_workstream_topic / wm_link_entry_topic to
+# re-activate them):
 wm_restore_topic { "slug": "some-topic" }
-
-# Restore a topic and simultaneously restore all its link rows:
-wm_restore_topic { "slug": "some-topic", "cascade_links": true }
 ```
 
 **Notes:**
@@ -171,11 +168,6 @@ wm_restore_topic { "slug": "some-topic", "cascade_links": true }
 - `wm_restore_entry` throws if the entry is not currently soft-deleted.
 - Restored entries are automatically re-inserted into the FTS index so
   `wm_search_entries` can find them again immediately.
-- `wm_restore_topic` with `cascade_links = false` (default) restores only
-  the topic row itself. Links in `workstream_topics` / `entry_topics` remain
-  soft-deleted; use `wm_link_workstream_topic` / `wm_link_entry_topic` to
-  re-activate them one by one, or set `cascade_links = true` to restore all
-  of them at once.
 
 ## Schema migrations
 

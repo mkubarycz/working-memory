@@ -89,50 +89,21 @@ test('restoreEntry: throws when entry does not exist or is not deleted', () => {
 // restoreSession
 // ---------------------------------------------------------------------------
 
-test('restoreSession: restores session and (cascade=true) its entries with FTS', () => {
-  const store = openJournalStore({ dbPath: ':memory:' });
-  const { session, e1, e2 } = seedChain(store);
-
-  store.softDeleteSession(session.session_id);
-
-  // Entries hidden
-  expect(store.listEntriesForSession(session.session_id)).toHaveLength(0);
-  expect(store.searchEntries({ query: 'first' })).toHaveLength(0);
-
-  const result = store.restoreSession(session.session_id);
-  expect(result.sessions).toBe(1);
-  expect(result.entries).toBe(2);
-
-  // Session visible again
-  const restoredSession = store.getSession(session.session_id);
-  expect(restoredSession?.deleted_at).toBeNull();
-
-  // Entries visible again
-  const entries = store.listEntriesForSession(session.session_id);
-  expect(entries).toHaveLength(2);
-  expect(entries.find((e) => e.id === e1.id)?.deleted_at).toBeNull();
-  expect(entries.find((e) => e.id === e2.id)?.deleted_at).toBeNull();
-
-  // FTS visible again
-  expect(store.searchEntries({ query: 'first' })).toHaveLength(1);
-
-  store.close();
-});
-
-test('restoreSession: cascade=false leaves entries deleted', () => {
+test('restoreSession: restores only the session row (entries remain deleted)', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   const { session } = seedChain(store);
 
   store.softDeleteSession(session.session_id);
 
-  const result = store.restoreSession(session.session_id, false);
+  const result = store.restoreSession(session.session_id);
   expect(result.sessions).toBe(1);
   expect(result.entries).toBe(0);
 
-  // Session is back
-  expect(store.getSession(session.session_id)).toBeDefined();
+  // Session visible again
+  const restoredSession = store.getSession(session.session_id);
+  expect(restoredSession?.deleted_at).toBeNull();
 
-  // But entries remain deleted
+  // Entries remain deleted
   expect(store.listEntriesForSession(session.session_id)).toHaveLength(0);
 
   store.close();
@@ -161,41 +132,15 @@ test('restoreSession: throws when session does not exist', () => {
 // restoreWorkstream
 // ---------------------------------------------------------------------------
 
-test('restoreWorkstream: restores workstream, sessions, and entries (cascade=true)', () => {
-  const store = openJournalStore({ dbPath: ':memory:' });
-  const { ws, session, e1 } = seedChain(store);
-
-  store.softDeleteWorkstream(ws.slug);
-
-  expect(store.listWorkstreams()).toHaveLength(0);
-  expect(store.searchEntries({ query: 'first' })).toHaveLength(0);
-
-  const result = store.restoreWorkstream(ws.slug);
-  expect(result.workstreams).toBe(1);
-  expect(result.sessions).toBe(1);
-  expect(result.entries).toBe(2);
-
-  // Workstream visible
-  expect(store.listWorkstreams()).toHaveLength(1);
-
-  // Session visible
-  expect(store.getSession(session.session_id)).toBeDefined();
-
-  // Entry visible and FTS re-indexed
-  expect(store.listEntriesForSession(session.session_id)).toHaveLength(2);
-  const ftsHits = store.searchEntries({ query: 'first' });
-  expect(ftsHits.find((h) => h.id === e1.id)).toBeDefined();
-
-  store.close();
-});
-
-test('restoreWorkstream: cascade=false leaves sessions and entries deleted', () => {
+test('restoreWorkstream: restores only the workstream row (sessions and entries remain deleted)', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   const { ws, session } = seedChain(store);
 
   store.softDeleteWorkstream(ws.slug);
 
-  const result = store.restoreWorkstream(ws.slug, false);
+  expect(store.listWorkstreams()).toHaveLength(0);
+
+  const result = store.restoreWorkstream(ws.slug);
   expect(result.workstreams).toBe(1);
   expect(result.sessions).toBe(0);
   expect(result.entries).toBe(0);
@@ -232,7 +177,7 @@ test('restoreWorkstream: throws when workstream does not exist', () => {
 // restoreTopic
 // ---------------------------------------------------------------------------
 
-test('restoreTopic: restores soft-deleted topic (links stay deleted by default)', () => {
+test('restoreTopic: restores soft-deleted topic (link rows remain deleted)', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   const { ws } = seedChain(store);
 
@@ -247,40 +192,12 @@ test('restoreTopic: restores soft-deleted topic (links stay deleted by default)'
 
   const result = store.restoreTopic('alpha');
   expect(result.topics).toBe(1);
-  expect(result.workstream_links).toBe(0); // cascade_links defaults to false
+  expect(result.workstream_links).toBe(0);
   expect(result.entry_links).toBe(0);
 
   // Topic is visible again
   expect(store.getTopic('alpha')).toBeDefined();
   expect(store.listTopics()).toHaveLength(1);
-
-  store.close();
-});
-
-test('restoreTopic: cascade_links=true also restores link rows', () => {
-  const store = openJournalStore({ dbPath: ':memory:' });
-  const { ws, session } = seedChain(store);
-
-  store.createTopic({ slug: 'beta', title: 'Beta' });
-  store.linkWorkstreamTopic({ workstream_slug: ws.slug, topic_slug: 'beta' });
-
-  const entry = store.appendEntry({
-    session_id: session.session_id,
-    body: 'link entry',
-    created_by: 'test',
-  });
-  store.linkEntryTopic({ entry_id: entry.id, topic_slug: 'beta' });
-
-  store.softDeleteTopic('beta');
-
-  const result = store.restoreTopic('beta', true);
-  expect(result.topics).toBe(1);
-  expect(result.workstream_links).toBeGreaterThanOrEqual(1);
-  expect(result.entry_links).toBeGreaterThanOrEqual(1);
-
-  // Topic is linked to the workstream again
-  const topics = store.listTopicsForWorkstream(ws.id);
-  expect(topics.find((t) => t.slug === 'beta')).toBeDefined();
 
   store.close();
 });
@@ -304,3 +221,4 @@ test('restoreTopic: throws when topic does not exist', () => {
 
   store.close();
 });
+
