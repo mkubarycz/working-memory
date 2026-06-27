@@ -263,7 +263,7 @@ export function activate(context: vscode.ExtensionContext): void {
       'working-memory.updateToLatest',
       async () => {
         const choice = await vscode.window.showWarningMessage(
-          'This will download and install the latest build of Working Memory from GitHub Actions and reload the window. Continue?',
+          'This will download and install the latest tagged release of Working Memory from GitHub and reload the window. Continue?',
           { modal: true },
           'Continue',
         );
@@ -278,16 +278,16 @@ export function activate(context: vscode.ExtensionContext): void {
           await vscode.window.withProgress(
             {
               location: vscode.ProgressLocation.Notification,
-              title: 'Working Memory: updating to latest CI build…',
+              title: 'Working Memory: updating to latest tagged release…',
             },
             async () => {
               await runCommand('gh', [
-                'run',
+                'release',
                 'download',
                 '--repo',
                 'mkubarycz/working-memory',
-                '--name',
-                'working-memory-vsix',
+                '--pattern',
+                '*.vsix',
                 '--dir',
                 downloadDir,
               ]);
@@ -295,7 +295,7 @@ export function activate(context: vscode.ExtensionContext): void {
               const vsixPath = findLatestVsix(downloadDir);
               if (!vsixPath) {
                 throw new Error(
-                  'Downloaded artifact did not contain a .vsix file.',
+                  'Downloaded release did not contain a .vsix file.',
                 );
               }
 
@@ -307,11 +307,19 @@ export function activate(context: vscode.ExtensionContext): void {
             },
           );
 
-          await vscode.commands.executeCommand('workbench.action.reloadWindow');
+          const reloadChoice = await vscode.window.showInformationMessage(
+            'Working Memory updated to the latest release. Reload the window to activate it.',
+            'Reload Window',
+          );
+          if (reloadChoice === 'Reload Window') {
+            await vscode.commands.executeCommand(
+              'workbench.action.reloadWindow',
+            );
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           vscode.window.showErrorMessage(
-            `Working Memory: failed to update to latest build — ${message}`,
+            `Working Memory: failed to update to latest release — ${message}`,
           );
         } finally {
           rmSync(downloadDir, { recursive: true, force: true });
