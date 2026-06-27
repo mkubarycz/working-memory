@@ -307,7 +307,15 @@ export function activate(context: vscode.ExtensionContext): void {
             },
           );
 
-          await vscode.commands.executeCommand('workbench.action.reloadWindow');
+          const reloadChoice = await vscode.window.showInformationMessage(
+            'Working Memory updated to the latest release. Reload the window to activate it.',
+            'Reload Window',
+          );
+          if (reloadChoice === 'Reload Window') {
+            await vscode.commands.executeCommand(
+              'workbench.action.reloadWindow',
+            );
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           vscode.window.showErrorMessage(
