@@ -15,7 +15,7 @@ directly.
   workstreams) and **Archive** (closed). Workstream nodes expand to a
   `Topics` group; clicking a workstream or topic opens its virtual
   markdown doc.
-- ~25 MCP tools (`wm_list_workstreams`, `wm_append_entry`,
+- ~29 MCP tools (`wm_list_workstreams`, `wm_append_entry`,
   `wm_search_entries`, `wm_link_entry_topic`, …) for agent-driven
   journaling.
 - FTS5 search over entry bodies, soft-delete across workstreams /
@@ -126,6 +126,48 @@ still use:
 The `?...` payload is `encodeURIComponent(JSON.stringify([id]))`. The
 deep-link form above is preferred for chat because it does not require
 trust.
+
+## Recovery
+
+If you (or an agent acting on your behalf) accidentally soft-deleted a
+workstream, session, entry, or topic, use the `wm_restore_*` tools to undo
+the delete **without writing SQL by hand**.
+
+Each tool restores only the individual record — child records remain
+soft-deleted and must be restored individually.
+
+| Soft-deleted | Restore tool |
+|---|---|
+| Workstream | `wm_restore_workstream` |
+| Session | `wm_restore_session` |
+| Entry | `wm_restore_entry` |
+| Topic | `wm_restore_topic` |
+
+### Typical recovery flow
+
+```
+# Restore a soft-deleted workstream:
+wm_restore_workstream { "slug": "my-workstream" }
+
+# Restore a specific session:
+wm_restore_session { "session_id": "<uuid>" }
+
+# Restore a single entry:
+wm_restore_entry { "entry_id": 42 }
+
+# Restore a topic (link rows in workstream_topics / entry_topics remain
+# soft-deleted; use wm_link_workstream_topic / wm_link_entry_topic to
+# re-activate them):
+wm_restore_topic { "slug": "some-topic" }
+```
+
+**Notes:**
+
+- Every restore is **idempotent** — calling it on a row that is already
+  active is a no-op (returns zero counts, no error).
+- `wm_restore_entry` throws if the entry is not currently soft-deleted.
+- Restored entries are automatically re-inserted into the FTS index so
+  `wm_search_entries` can find them again immediately.
 
 ## Schema migrations
 

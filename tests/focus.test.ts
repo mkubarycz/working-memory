@@ -1,6 +1,7 @@
 import { test, expect } from 'vitest';
 import { openJournalStore } from '../src/db';
 import { getAllPanelData } from '../src/panelData';
+import { activeWorkstreams } from './helpers';
 
 function setup() {
   const store = openJournalStore({ dbPath: ':memory:' });
@@ -91,8 +92,8 @@ test('panel data surfaces focused on PanelTopic for focused links', () => {
   store.startSession({ workstream_slug: 'foc-ws' });
 
   const { active } = getAllPanelData(store);
-  const ws = active.items.find(
-    (i) => i.kind === 'workstream' && i.label === 'Focus WS',
+  const ws = activeWorkstreams(active).find(
+    (i) => i.label === 'Focus WS',
   );
   expect(ws).toBeDefined();
   if (!ws || ws.kind !== 'workstream') throw new Error('expected workstream');
@@ -113,8 +114,8 @@ test('panel data surfaces focused on PanelTopic for focused links', () => {
     focused: false,
   });
   const { active: again } = getAllPanelData(store);
-  const ws2 = again.items.find(
-    (i) => i.kind === 'workstream' && i.label === 'Focus WS',
+  const ws2 = activeWorkstreams(again).find(
+    (i) => i.label === 'Focus WS',
   );
   if (!ws2 || ws2.kind !== 'workstream') throw new Error('expected workstream');
   const tg2 = ws2.children.find((c) => c.kind === 'topics-group');
@@ -159,8 +160,8 @@ test('unfocusWorkstreamTopic clears only the selected focused topic link', () =>
   expect(bySlug.get('foc-topic-2')?.focused).toBe(1);
 
   const { active } = getAllPanelData(store);
-  const activeWs = active.items.find(
-    (i) => i.kind === 'workstream' && i.label === 'Focus WS',
+  const activeWs = activeWorkstreams(active).find(
+    (i) => i.label === 'Focus WS',
   );
   if (!activeWs || activeWs.kind !== 'workstream') {
     throw new Error('expected workstream');

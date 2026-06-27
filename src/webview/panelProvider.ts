@@ -3,8 +3,11 @@ import {
   emptyAllPanelData,
   getAllPanelData,
   type PanelAction,
+  type PanelData,
+  type PanelWorkstreamSection,
 } from '../panelData';
 import { JournalStore } from '../db';
+import type { PanelRevealTarget } from '../panelReveal';
 
 interface InvokeMessage {
   type: 'invoke';
@@ -60,6 +63,13 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
 
   private view: vscode.WebviewView | undefined;
 
+  /**
+   * Latest reveal target pushed from the extension host (the WM doc currently
+   * visible in the active tab group, or null when none). Stored so we can
+   * replay it when the webview (re)sends `ready` after a reload.
+   */
+  private lastReveal: PanelRevealTarget | null = null;
+
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly store: JournalStore | null,
@@ -75,10 +85,14 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
     };
-    webviewView.webview.html = this.renderHtml(webviewView.webview);
+    // Wire the message listener BEFORE assigning `html`. Setting `html` is
+    // what boots the webview script, which posts `ready` immediately; if the
+    // listener isn't attached yet that first message (and its reveal replay)
+    // can be dropped.
     webviewView.webview.onDidReceiveMessage((msg: InboundMessage) =>
       this.handleMessage(msg),
     );
+    webviewView.webview.html = this.renderHtml(webviewView.webview);
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) {
         this.view = undefined;
@@ -93,6 +107,40 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     }
     const data = this.store ? getAllPanelData(this.store) : emptyAllPanelData();
     this.view.webview.postMessage({ type: 'data', data });
+    this.updateBadge(data.active);
+  }
+
+  /**
+   * Mirror the In-Progress count onto the view-container icon in the activity
+   * bar as a numeric badge. The count is the number of active workstreams that
+   * resolve to the 'progress' section — read straight off the panel data we
+   * just posted so it stays perfectly in sync with the rendered cards. A count
+   * of 0 clears the badge (VS Code hides a zero-value badge anyway).
+   */
+  private updateBadge(active: PanelData): void {
+    if (!this.view) {
+      return;
+    }
+    const progress = active.items.find(
+      (item): item is PanelWorkstreamSection =>
+        item.kind === 'workstream-section' && item.section === 'progress',
+    );
+    const count = progress ? progress.workstreams.length : 0;
+    this.view.badge =
+      count > 0
+        ? { value: count, tooltip: `${count} in progress` }
+        : undefined;
+  }
+
+  /**
+   * Tell the webview to scroll the matching row into view and highlight it
+   * (switching tabs / expanding ancestors as needed). Pass null to clear any
+   * existing highlight. The target is remembered and replayed on `ready` so
+   * it survives webview reloads.
+   */
+  reveal(target: PanelRevealTarget | null): void {
+    this.lastReveal = target;
+    this.view?.webview.postMessage({ type: 'reveal', target });
   }
 
   private handleMessage(msg: InboundMessage): void {
@@ -102,6 +150,12 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     switch (msg.type) {
       case 'ready':
         this.refresh();
+        // Replay the last reveal so a freshly (re)loaded webview restores the
+        // highlight for whatever WM doc is currently open.
+        this.view?.webview.postMessage({
+          type: 'reveal',
+          target: this.lastReveal,
+        });
         return;
       case 'open':
         if (typeof msg.uri === 'string') {

@@ -1,0 +1,28 @@
+-- 014_workstream_lifecycle_status.sql
+-- Overload `workstreams.status` into a lifecycle enum for the Active-tab
+-- segmentation feature (active-tab-segments):
+--
+--     queue | progress | backlog | closed        (legacy value: 'open')
+--
+-- The Active tab now splits non-closed workstreams into three vertically
+-- stacked sections (Queue / Progress / Backlog). 'closed' continues to mean
+-- archived. The historical 'open' value is treated as 'progress' everywhere
+-- (see sectionForStatus in panelData.ts), so untouched legacy rows still show
+-- up in the middle section — but we also migrate them here so the stored value
+-- matches the new vocabulary.
+--
+-- Data migration: promote every legacy active row ('open') to 'progress',
+-- preserving today's behavior (new workstreams used to default to 'open' and
+-- appeared in the single active list; they now land in Progress).
+--
+-- Idempotent: after this runs no 'open' rows remain, so a re-run is a no-op.
+--
+-- NOTE on the column DEFAULT: SQLite cannot ALTER a column default in place,
+-- and `workstreams` is the parent of `sessions`/`entries` via ON DELETE
+-- CASCADE foreign keys. A table rebuild here would risk the cascade-wipe
+-- documented in 005_safe_topic_rebuild_template.sql. Per the repo guidance to
+-- prefer a simple UPDATE over a rebuild when no CHECK constraint is required,
+-- we leave the DDL default as 'open' and own the new default ('progress') in
+-- application code (createWorkstream in src/db.ts). No CHECK constraint is
+-- added — status stays free-form TEXT, exactly as before.
+UPDATE workstreams SET status = 'progress' WHERE status = 'open';

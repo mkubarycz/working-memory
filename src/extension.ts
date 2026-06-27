@@ -11,6 +11,12 @@ import { findHubWorkspace, resolveDbPath } from './paths';
 import { WorkstreamDocumentProvider } from './contentProvider';
 import { registerTools } from './tools';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
+import {
+  isMarkdownPreviewViewType,
+  resolveRevealFromTabs,
+  type TabDescriptor,
+  type PanelRevealTarget,
+} from './panelReveal';
 import { findLatestVsix } from './vsix';
 import { deployTemplates } from './deployTemplates';
 import { TRAVERSAL_MODES, type TraversalModeId } from './graphTraversals';
@@ -80,9 +86,27 @@ function runCommand(command: 'gh' | 'code', args: string[]): Promise<void> {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  // Try to open the store first so we can pass it (or null) into every
-  // provider. Failures are non-fatal — the providers degrade gracefully
-  // when `store` is null.
+  // Register the FileSystemProvider for the working-memory: scheme
+  // synchronously and first — before any DB access — so that restored
+  // Markdown Preview webview editors can resolve working-memory: URIs
+  // during the startup restore race.  The onFileSystem:working-memory
+  // activation event fires before onStartupFinished when a
+  // working-memory: URI is already open, giving the preview webview a
+  // live provider to call into.  The provider degrades gracefully while
+  // store is null (returns placeholder content) and is updated with the
+  // real store once the DB opens below.
+  const contentProvider = new WorkstreamDocumentProvider(null);
+  context.subscriptions.push(
+    vscode.workspace.registerFileSystemProvider(
+      WorkstreamDocumentProvider.scheme,
+      contentProvider,
+      { isCaseSensitive: true, isReadonly: false },
+    ),
+  );
+
+  // Try to open the store so we can wire it into every provider.
+  // Failures are non-fatal — the providers degrade gracefully when
+  // `store` is null.
   let store: JournalStore | null = null;
   const hub = findHubWorkspace();
   if (hub) {
@@ -91,11 +115,8 @@ export function activate(context: vscode.ExtensionContext): void {
       const deployedVersion = context.globalState.get<string>(
         'working-memory.deployedVersion',
       );
-      if (deployedVersion === currentVersion) {
-        console.log(
-          `[working-memory] templates already deployed for v${currentVersion}, skipping`,
-        );
-      } else {
+      // Skip redeploy when templates already match the installed version.
+      if (deployedVersion !== currentVersion) {
         deployTemplates(context, hub);
         void context.globalState.update(
           'working-memory.deployedVersion',
@@ -114,7 +135,6 @@ export function activate(context: vscode.ExtensionContext): void {
   } else {
     try {
       store = openJournalStore({ dbPath });
-      console.log(`[working-memory] DB opened at ${store.dbPath}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[working-memory] openJournalStore failed:', err);
@@ -125,15 +145,67 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   activeStore = store;
 
+  // Wire the real store into the already-registered FSP and create the
+  // remaining providers.
+  contentProvider.updateStore(store);
+
   const panelProvider = new WorkstreamPanelProvider(
     context.extensionUri,
     store,
   );
-  const contentProvider = new WorkstreamDocumentProvider(store);
 
   const refresh = (): void => {
     panelProvider.refresh();
     contentProvider.refresh();
+  };
+
+  // Derive the visible WM doc from tabGroups, not window.activeTextEditor:
+  // the latter goes undefined when the WM webview takes focus, and Markdown
+  // Preview tabs expose no source URI. lastWmRevealTarget is the fallback for
+  // when the source text tab has since been closed.
+  let lastWmRevealTarget: PanelRevealTarget | null = null;
+
+  const classifyTab = (tab: vscode.Tab | undefined): TabDescriptor => {
+    const input = tab?.input;
+    if (input instanceof vscode.TabInputText) {
+      // uri.path is already percent-decoded.
+      return {
+        kind: 'text',
+        scheme: input.uri.scheme,
+        path: input.uri.path,
+        label: tab?.label,
+      };
+    }
+    if (
+      input instanceof vscode.TabInputWebview &&
+      isMarkdownPreviewViewType(input.viewType)
+    ) {
+      return { kind: 'preview', label: tab?.label };
+    }
+    return { kind: 'other', label: tab?.label };
+  };
+
+  const pushActiveRevealTarget = (): void => {
+    const activeTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
+    const activeDesc = classifyTab(activeTab);
+
+    const allDescs: TabDescriptor[] = [];
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        allDescs.push(classifyTab(tab));
+      }
+    }
+
+    let target = resolveRevealFromTabs(allDescs, activeDesc);
+    if (!target && activeDesc.kind === 'preview' && lastWmRevealTarget) {
+      // Source text tab was closed but its preview is still active — replay.
+      target = lastWmRevealTarget;
+    }
+    if (target) {
+      lastWmRevealTarget = target;
+    }
+
+    panelProvider.reveal(target);
   };
 
   const pickOpenWorkstreamSlug = async (): Promise<string | null> => {
@@ -428,6 +500,44 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.commands.registerCommand(
+      'working-memory.setWorkstreamSection',
+      async (arg?: { slug?: string; section?: string }) => {
+        const slug = arg?.slug;
+        const section = arg?.section;
+        if (!slug || !section) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Move Workstream requires a slug and section.',
+          );
+          return;
+        }
+        if (
+          section !== 'queue' &&
+          section !== 'progress' &&
+          section !== 'backlog'
+        ) {
+          vscode.window.showWarningMessage(
+            `Working Memory: invalid section "${section}".`,
+          );
+          return;
+        }
+        if (!store) {
+          vscode.window.showErrorMessage(
+            'Working Memory: cannot move workstream — DB is not available.',
+          );
+          return;
+        }
+        try {
+          store.updateWorkstream(slug, { status: section });
+          refresh();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to move workstream — ${message}`,
+          );
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
       'working-memory.reopenWorkstream',
       async (arg?: { slug?: string; workstream?: { slug?: string } }) => {
         const slug = arg?.slug ?? arg?.workstream?.slug;
@@ -460,11 +570,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider(
       WorkstreamPanelProvider.viewType,
       panelProvider,
-    ),
-    vscode.workspace.registerFileSystemProvider(
-      WorkstreamDocumentProvider.scheme,
-      contentProvider,
-      { isCaseSensitive: true, isReadonly: false },
     ),
     vscode.window.registerUriHandler({
       handleUri(uri: vscode.Uri): void {
@@ -502,11 +607,15 @@ export function activate(context: vscode.ExtensionContext): void {
         });
       },
     }),
+    vscode.window.tabGroups.onDidChangeTabs(() => pushActiveRevealTarget()),
+    vscode.window.tabGroups.onDidChangeTabGroups(() => pushActiveRevealTarget()),
   );
 
-  // Tools only register when we have a live store. Without one, there's no
-  // useful work for them to do, and the safety branch they used to carry
-  // ("DB not open" error result) was removed by the JournalStore refactor.
+  // Seed the panel with whatever WM doc (if any) is already visible.
+  pushActiveRevealTarget();
+
+  // Tools only register when we have a live store — without one there's no
+  // useful work for them to do.
   if (store) {
     registerTools(context, store, { refresh });
     refresh();

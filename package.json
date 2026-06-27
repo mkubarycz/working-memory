@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.11.3",
+  "version": "0.11.4",
   "publisher": "kubarycz",
   "private": true,
   "engines": {
@@ -11,26 +11,33 @@
   },
   "main": "./out/src/extension.js",
   "activationEvents": [
+    "onFileSystem:working-memory",
+    "onStartupFinished",
     "onUri",
     "onCommand:workingMemory.topic.addToWorkstream",
     "onCommand:workingMemory.topic.removeFromWorkstream",
+    "onCommand:working-memory.setWorkstreamSection",
     "onLanguageModelTool:wm_list_workstreams",
     "onLanguageModelTool:wm_get_workstream",
     "onLanguageModelTool:wm_create_workstream",
     "onLanguageModelTool:wm_update_workstream",
     "onLanguageModelTool:wm_delete_workstream",
+    "onLanguageModelTool:wm_restore_workstream",
     "onLanguageModelTool:wm_start_session",
     "onLanguageModelTool:wm_end_session",
     "onLanguageModelTool:wm_get_session",
     "onLanguageModelTool:wm_delete_session",
+    "onLanguageModelTool:wm_restore_session",
     "onLanguageModelTool:wm_append_entry",
     "onLanguageModelTool:wm_search_entries",
     "onLanguageModelTool:wm_delete_entry",
+    "onLanguageModelTool:wm_restore_entry",
     "onLanguageModelTool:wm_list_topics",
     "onLanguageModelTool:wm_get_topic",
     "onLanguageModelTool:wm_create_topic",
     "onLanguageModelTool:wm_update_topic",
     "onLanguageModelTool:wm_delete_topic",
+    "onLanguageModelTool:wm_restore_topic",
     "onLanguageModelTool:wm_link_workstream_topic",
     "onLanguageModelTool:wm_unlink_workstream_topic",
     "onLanguageModelTool:wm_link_entry_topic",
@@ -111,6 +118,11 @@
       {
         "command": "workingMemory.topic.removeFromWorkstream",
         "title": "Topic: Remove from Workstream",
+        "category": "Working Memory"
+      },
+      {
+        "command": "working-memory.setWorkstreamSection",
+        "title": "Move Workstream to Section",
         "category": "Working Memory"
       }
     ],
@@ -196,7 +208,7 @@
         "displayName": "Working Memory: Create Workstream",
         "toolReferenceName": "wm_create_workstream",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Create a new workstream. slug must be unique across all workstreams (including soft-deleted ones). title is the human-readable name. status defaults to 'open'; if 'closed' is given, closed_at is set to now. Optional: pass topic_slug to pin a topic to this workstream at birth (same effect as calling wm_link_workstream_topic after). Pair with focused: true to create a workstream that is already focused on a topic \u2014 this is the canonical one-call way to set up a topic-focused workstream. All operations are in a single transaction: if the topic link fails (e.g. topic not found), the workstream is not created. Returns the created workstream row plus an optional topic_link summary.",
+        "modelDescription": "Create a new workstream. Slug must be unique across all workstreams (including soft-deleted ones). Title is the human-readable name. Status is a lifecycle value: 'queue', 'progress' (default), or 'backlog' place it in the matching Active-tab section; 'closed' archives it and stamps closed_at. Optional: pass topic_slug to pin a topic to this workstream at birth (same effect as calling wm_link_workstream_topic after). Pair with focused: true to create a workstream that is already focused on a topic \u2014 this is the canonical one-call way to set up a topic-focused workstream. All operations are in a single transaction: if the topic link fails (e.g. topic not found), the workstream is not created. Returns the created workstream row plus an optional topic_link summary.",
         "userDescription": "Create a new workstream",
         "tags": [
           "working-memory"
@@ -214,15 +226,17 @@
             },
             "title": {
               "type": "string",
-              "description": "Human-readable title, e.g. 'MCP Integration Work'."
+              "description": "Human-readable title, e.g. 'MCP Integration Work'. Keep it short and scannable (aim for ~6 words / ~48 chars). Lead with the task's common vernacular — the noun/verb you'd actually say out loud (e.g. 'Drag & drop topics', not 'Implement drag-and-drop reordering for topics in the panel'). Drop framing words ('Implement', 'Add support for', 'Feature to…'), trailing punctuation, and restated context. Prefer '<verb> <object>' or a bare noun phrase."
             },
             "status": {
               "type": "string",
               "enum": [
-                "open",
+                "queue",
+                "progress",
+                "backlog",
                 "closed"
               ],
-              "description": "Initial status. Defaults to 'open'."
+              "description": "Initial lifecycle status. One of 'queue' | 'progress' | 'backlog' (Active-tab sections) or 'closed' (archived). Defaults to 'progress'."
             },
             "topic_slug": {
               "type": "string",
@@ -240,7 +254,7 @@
         "displayName": "Working Memory: Update Workstream",
         "toolReferenceName": "wm_update_workstream",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a workstream identified by slug. Any of title, status, closure can be changed. If status transitions to 'closed' and closed_at is currently null, closed_at is set to now. Returns the updated row.",
+        "modelDescription": "Partially update a workstream identified by slug. Any of title, status, closure can be changed. Status is a lifecycle value: 'queue' | 'progress' | 'backlog' move it between Active-tab sections; 'closed' archives it (stamps closed_at if currently null). Moving from 'closed' back to an active section clears closed_at. Returns the updated row.",
         "userDescription": "Update a workstream's title, status, or closure note",
         "tags": [
           "working-memory"
@@ -257,15 +271,17 @@
             },
             "title": {
               "type": "string",
-              "description": "New title."
+              "description": "New title. Keep it short and scannable (aim for ~6 words / ~48 chars). Lead with the task's common vernacular — the noun/verb you'd actually say out loud (e.g. 'Drag & drop topics', not 'Implement drag-and-drop reordering for topics in the panel'). Drop framing words ('Implement', 'Add support for', 'Feature to…'), trailing punctuation, and restated context. Prefer '<verb> <object>' or a bare noun phrase."
             },
             "status": {
               "type": "string",
               "enum": [
-                "open",
+                "queue",
+                "progress",
+                "backlog",
                 "closed"
               ],
-              "description": "New status. Setting to 'closed' stamps closed_at to now if it was unset."
+              "description": "New lifecycle status. 'queue' | 'progress' | 'backlog' move it between Active-tab sections; 'closed' archives it and stamps closed_at if unset."
             },
             "closure": {
               "type": "string",
@@ -293,6 +309,29 @@
             "slug": {
               "type": "string",
               "description": "Slug of the workstream to soft-delete."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_restore_workstream",
+        "displayName": "Working Memory: Restore Workstream",
+        "toolReferenceName": "wm_restore_workstream",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Restore a soft-deleted workstream by clearing its deleted_at. Restores only the workstream row itself — sessions and entries remain soft-deleted and must be restored individually. Returns count of restored rows. No-op (returns zeros) if the workstream is not currently soft-deleted.",
+        "userDescription": "Restore a soft-deleted workstream",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Slug of the workstream to restore."
             }
           }
         }
@@ -410,6 +449,29 @@
         }
       },
       {
+        "name": "wm_restore_session",
+        "displayName": "Working Memory: Restore Session",
+        "toolReferenceName": "wm_restore_session",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Restore a soft-deleted session by clearing its deleted_at. Restores only the session row itself — entries remain soft-deleted and must be restored individually with wm_restore_entry. Returns count of restored rows. No-op (returns zeros) if the session is not currently soft-deleted.",
+        "userDescription": "Restore a soft-deleted session",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "description": "The session_id to restore."
+            }
+          }
+        }
+      },
+      {
         "name": "wm_append_entry",
         "displayName": "Working Memory: Append Entry",
         "toolReferenceName": "wm_append_entry",
@@ -501,6 +563,29 @@
         }
       },
       {
+        "name": "wm_restore_entry",
+        "displayName": "Working Memory: Restore Entry",
+        "toolReferenceName": "wm_restore_entry",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Restore a single soft-deleted entry by id. Clears deleted_at and re-inserts the entry into the FTS index in one transaction. Returns the count of restored rows. Throws if the entry does not exist or is not currently soft-deleted.",
+        "userDescription": "Restore a soft-deleted journal entry",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "entry_id"
+          ],
+          "properties": {
+            "entry_id": {
+              "type": "number",
+              "description": "Numeric id of the entry to restore."
+            }
+          }
+        }
+      },
+      {
         "name": "wm_list_topics",
         "displayName": "Working Memory: List Topics",
         "toolReferenceName": "wm_list_topics",
@@ -586,7 +671,7 @@
             },
             "title": {
               "type": "string",
-              "description": "Optional human-readable title. Defaults to humanized slug."
+              "description": "Optional human-readable title. Defaults to humanized slug. Keep it short and scannable (aim for ~6 words / ~48 chars). Lead with the task's common vernacular — the noun/verb you'd actually say out loud (e.g. 'Drag & drop topics', not 'Implement drag-and-drop reordering for topics in the panel'). Drop framing words ('Implement', 'Add support for', 'Feature to…'), trailing punctuation, and restated context. Prefer '<verb> <object>' or a bare noun phrase."
             },
             "body": {
               "type": "string",
@@ -655,7 +740,7 @@
             },
             "title": {
               "type": "string",
-              "description": "New title."
+              "description": "New title. Keep it short and scannable (aim for ~6 words / ~48 chars). Lead with the task's common vernacular — the noun/verb you'd actually say out loud (e.g. 'Drag & drop topics', not 'Implement drag-and-drop reordering for topics in the panel'). Drop framing words ('Implement', 'Add support for', 'Feature to…'), trailing punctuation, and restated context. Prefer '<verb> <object>' or a bare noun phrase."
             },
             "body": {
               "type": "string",
@@ -695,6 +780,29 @@
             "slug": {
               "type": "string",
               "description": "Slug of the topic to soft-delete."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_restore_topic",
+        "displayName": "Working Memory: Restore Topic",
+        "toolReferenceName": "wm_restore_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Restore a soft-deleted topic by clearing its deleted_at. Restores only the topic row itself — link rows in workstream_topics and entry_topics remain soft-deleted and can be re-activated individually via wm_link_workstream_topic or wm_link_entry_topic. Returns count of restored rows. No-op (returns zeros) if the topic is not currently soft-deleted.",
+        "userDescription": "Restore a soft-deleted topic",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "slug"
+          ],
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "Slug of the topic to restore."
             }
           }
         }

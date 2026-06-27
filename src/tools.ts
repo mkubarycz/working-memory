@@ -4,7 +4,7 @@ import {
   getPanelData,
   type PanelTab,
 } from './panelData';
-import { JournalStore, type Topic, type TopicStatus } from './db';
+import { JournalStore, type Topic, type TopicStatus, type WorkstreamStatus } from './db';
 import {
   type TraversalModeId,
 } from './graphTraversals';
@@ -60,7 +60,7 @@ interface GetWorkstreamInput {
 interface CreateWorkstreamToolInput {
   slug: string;
   title: string;
-  status?: 'open' | 'closed';
+  status?: WorkstreamStatus;
   /** Optional: pin a topic to this workstream at creation (same as calling wm_link_workstream_topic after). Pair with focused: true to create a workstream that is immediately focused on a topic. */
   topic_slug?: string;
   /** Only meaningful with topic_slug. true → set focused = 1 on the link. */
@@ -69,7 +69,7 @@ interface CreateWorkstreamToolInput {
 interface UpdateWorkstreamToolInput {
   slug: string;
   title?: string;
-  status?: 'open' | 'closed';
+  status?: WorkstreamStatus;
   closure?: string;
 }
 interface DeleteWorkstreamInput {
@@ -139,6 +139,18 @@ interface UpdateTopicToolInput {
   topic_type?: string;
 }
 interface DeleteTopicInput {
+  slug: string;
+}
+interface RestoreWorkstreamInput {
+  slug: string;
+}
+interface RestoreSessionInput {
+  session_id: string;
+}
+interface RestoreEntryInput {
+  entry_id: number;
+}
+interface RestoreTopicInput {
   slug: string;
 }
 interface LinkWorkstreamTopicToolInput {
@@ -298,6 +310,13 @@ export function registerTools(
         return { ok: true, soft_deleted: counts };
       }),
     }),
+    vscode.lm.registerTool<RestoreWorkstreamInput>('wm_restore_workstream', {
+      invoke: safe<RestoreWorkstreamInput>((input) => {
+        const counts = store.restoreWorkstream(input.slug);
+        deps.refresh();
+        return { ok: true, restored: counts };
+      }),
+    }),
   );
 
   // ----- sessions -----
@@ -343,6 +362,13 @@ export function registerTools(
         return { ok: true, soft_deleted: counts };
       }),
     }),
+    vscode.lm.registerTool<RestoreSessionInput>('wm_restore_session', {
+      invoke: safe<RestoreSessionInput>((input) => {
+        const counts = store.restoreSession(input.session_id);
+        deps.refresh();
+        return { ok: true, restored: counts };
+      }),
+    }),
   );
 
   // ----- entries -----
@@ -378,6 +404,13 @@ export function registerTools(
         const counts = store.softDeleteEntry(input.entry_id);
         deps.refresh();
         return { ok: true, soft_deleted: counts };
+      }),
+    }),
+    vscode.lm.registerTool<RestoreEntryInput>('wm_restore_entry', {
+      invoke: safe<RestoreEntryInput>((input) => {
+        const counts = store.restoreEntry(input.entry_id);
+        deps.refresh();
+        return { ok: true, restored: counts };
       }),
     }),
   );
@@ -507,6 +540,13 @@ export function registerTools(
         const counts = store.softDeleteTopic(input.slug);
         deps.refresh();
         return { ok: true, soft_deleted: counts };
+      }),
+    }),
+    vscode.lm.registerTool<RestoreTopicInput>('wm_restore_topic', {
+      invoke: safe<RestoreTopicInput>((input) => {
+        const counts = store.restoreTopic(input.slug);
+        deps.refresh();
+        return { ok: true, restored: counts };
       }),
     }),
     vscode.lm.registerTool<LinkWorkstreamTopicToolInput>(

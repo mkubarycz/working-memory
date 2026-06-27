@@ -14,7 +14,7 @@
   /** @typedef {{ type: 'card.focus', slug: string, topicSlug: string }} CardFocusMessage */
   /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
   /** @typedef {CardUnfocusMessage | CardFocusMessage | InvokeMessage} ContextMenuMessage */
-  /** @typedef {{ label: string, enabled: boolean, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
+  /** @typedef {{ label: string, enabled: boolean, icon?: string, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics'|'topic-types', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -55,6 +55,24 @@
     return el;
   }
 
+  /**
+   * Fill a context-menu button with an optional leading move-direction icon
+   * followed by its label. When no icon is set, the label is rendered alone.
+   * @param {HTMLElement} btn
+   * @param {ContextMenuItem} item
+   */
+  function fillContextMenuItem(btn, item) {
+    const icon = item.icon ? makeCodicon(item.icon) : null;
+    if (icon) {
+      icon.classList.add('context-menu-icon');
+      btn.appendChild(icon);
+    }
+    const label = document.createElement('span');
+    label.className = 'context-menu-label';
+    label.textContent = item.label;
+    btn.appendChild(label);
+  }
+
   // --- State ------------------------------------------------------------
 
   const persisted =
@@ -78,6 +96,8 @@
     focusedId: null,
     recentCounts: new Map(),
     flashChipIds: new Set(),
+    /** @type {{ kind: string, id: string } | null} Latest reveal target from the host. */
+    revealTarget: null,
   };
 
   function persist() {
@@ -153,11 +173,10 @@
    */
   function cardContextMenu(card, topicSlug) {
     const slug = workstreamSlugFromOpenUri(card.openUri);
-    if (!slug || !topicSlug) {
-      return [];
-    }
-    return [
-      {
+    /** @type {ContextMenuItem[]} */
+    const items = [];
+    if (slug && topicSlug) {
+      items.push({
         label: 'Remove from Focus',
         enabled: true,
         message: {
@@ -165,8 +184,12 @@
           slug,
           topicSlug,
         },
-      },
-    ];
+      });
+    }
+    // Section-move actions ("Send to Queue" / "Send to Backlog" / etc.) come
+    // from the host-populated node.actions for the active tab.
+    items.push(...workstreamActionsMenu(card));
+    return items;
   }
 
   /**
@@ -181,6 +204,7 @@
     const updateItems = node.actions.map((action) => ({
       label: action.title,
       enabled: action.enabled !== false,
+      icon: action.icon,
       message: {
         type: 'invoke',
         command: action.command,
@@ -302,7 +326,7 @@
       btn.className = 'context-menu-item';
       btn.type = 'button';
       btn.disabled = !item.enabled;
-      btn.textContent = item.label;
+      fillContextMenuItem(btn, item);
       const hasSubmenu = Array.isArray(item.children) && item.children.length > 0;
       if (hasSubmenu) {
         // Parent submenu rows are navigational only; executable actions live in
@@ -323,7 +347,7 @@
           childBtn.className = 'context-menu-item';
           childBtn.type = 'button';
           childBtn.disabled = !child.enabled;
-          childBtn.textContent = child.label;
+          fillContextMenuItem(childBtn, child);
           childBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             runContextMenuItem(child);
@@ -438,6 +462,13 @@
     row.style.paddingLeft = (depth * 12 + 4) + 'px';
     if (state.focusedId === node.id) {
       row.classList.add('focused');
+    }
+    // Passive reveal highlight — bold + yellow text on the row whose WM doc is
+    // currently open in the editor. Re-applied on every render so it persists
+    // across manual tab switches and data refreshes, and lands on every
+    // occurrence (tree node + pinned/focused clone). Independent of `.focused`.
+    if (nodeMatchesReveal(node)) {
+      row.classList.add('revealed');
     }
     // Mute closed topic rows so the eye skips past them. Children render as
     // sibling DOM rows (not nested), so this opacity does not bleed into
@@ -649,6 +680,373 @@
     return row;
   }
 
+  /**
+   * Build one full workstream card (Progress section + Archive-style detail).
+   * Extracted from the old inline active-tab loop so both the Progress section
+   * and any future card surface can reuse it.
+   * @param {Node & { focused_topics?: Node[] }} item
+   * @returns {HTMLElement}
+   */
+  function renderWorkstreamCard(item) {
+    const card = document.createElement('div');
+    card.className = 'ws-card ws-card-color-' + colorIndexForId(item.id);
+    const workstreamSlug = workstreamSlugFromOpenUri(item.openUri);
+    if (workstreamSlug) {
+      card.dataset.workstreamSlug = workstreamSlug;
+    }
+    const expanded = state.expanded.has(item.id);
+    if (expanded) {
+      card.classList.add('expanded');
+    }
+
+    const header = document.createElement('div');
+    header.className = 'ws-card-header';
+    header.appendChild(renderRow(item, 0));
+    card.appendChild(header);
+
+    const hasChildren =
+      Array.isArray(item.children) && item.children.length > 0;
+    const focusedTopics = Array.isArray(item.focused_topics)
+      ? item.focused_topics
+      : [];
+    if (hasChildren || focusedTopics.length > 0) {
+      const body = document.createElement('div');
+      body.className = 'ws-card-body';
+      if (!expanded) {
+        body.hidden = true;
+      } else {
+        // Pinned focused-topic row(s) render first, above the normal
+        // topics group / sessions. They're a duplicate quick-access
+        // surface; the topic still appears in its regular slot below.
+        for (const ft of focusedTopics) {
+          const pinned = renderPinnedFocusedTopic(ft, item);
+          body.appendChild(pinned);
+        }
+        for (const child of item.children) {
+          renderNode(child, 1, body);
+        }
+      }
+      card.appendChild(body);
+    }
+
+    card.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openCardContextMenu(event, item);
+    });
+    return card;
+  }
+
+  /**
+   * Build the ContextMenuItem[] for a workstream's "send to section" actions
+   * (sourced from node.actions, which the host populates for the active tab).
+   * @param {Node} ws
+   * @returns {ContextMenuItem[]}
+   */
+  function workstreamActionsMenu(ws) {
+    const actions = Array.isArray(ws.actions) ? ws.actions : [];
+    return actions.map((a) => ({
+      label: a.title,
+      enabled: a.enabled !== false,
+      icon: a.icon,
+      message: {
+        type: 'invoke',
+        command: a.command,
+        args: Array.isArray(a.args) ? a.args : [],
+      },
+    }));
+  }
+
+  /**
+   * Promote a workstream straight into the Progress section. Used by
+   * click-to-promote on Queue / Backlog shelf items.
+   * @param {Node} ws
+   */
+  function promoteWorkstream(ws) {
+    const slug = workstreamSlugFromOpenUri(ws.openUri);
+    if (!slug) {
+      return;
+    }
+    closeContextMenu();
+    vscode.postMessage({
+      type: 'invoke',
+      command: 'working-memory.setWorkstreamSection',
+      args: [{ slug, section: 'progress' }],
+    });
+  }
+
+  /**
+   * Build a compact single-line row for a Queue / Backlog shelf item.
+   * Clicking the row opens the workstream doc; a leading move-to button
+   * promotes it to Progress; right-click opens the section-move menu.
+   * @param {Node} ws
+   * @param {'up' | 'down'} [direction] Direction the move-to button promotes
+   *   the item toward the Progress stage. Queue sits above Progress → 'down';
+   *   Backlog sits below → 'up'. Controls which arrow codicon is shown.
+   * @returns {HTMLElement}
+   */
+  function renderShelfItem(ws, direction = 'down') {
+    const el = document.createElement('div');
+    el.className = 'ws-shelf-item';
+    const slug = workstreamSlugFromOpenUri(ws.openUri);
+    if (slug) {
+      el.dataset.workstreamSlug = slug;
+    }
+    if (nodeMatchesReveal(ws)) {
+      el.classList.add('revealed');
+    }
+
+    // Leading move-to button: promotes the item straight into Progress.
+    // Directional glyph — Queue is above Progress (move DOWN), Backlog below
+    // (move UP). Sits in front of the label, replacing the old leading icon.
+    const move = document.createElement('button');
+    move.className = 'ws-shelf-move';
+    move.type = 'button';
+    move.title = 'Send to In Progress';
+    move.setAttribute('aria-label', 'Send to In Progress');
+    const moveIcon = makeCodicon(
+      direction === 'up' ? 'arrow-circle-up' : 'arrow-circle-down'
+    );
+    if (moveIcon) {
+      move.appendChild(moveIcon);
+    }
+    move.addEventListener('click', (event) => {
+      event.stopPropagation();
+      promoteWorkstream(ws);
+    });
+    el.appendChild(move);
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = ws.label;
+    el.appendChild(label);
+
+    const recentEntryCount =
+      typeof ws.recentEntryCount === 'number' ? ws.recentEntryCount : 0;
+    if (recentEntryCount > 0) {
+      const chip = document.createElement('span');
+      chip.className = 'recent-chip';
+      chip.textContent = String(recentEntryCount);
+      el.appendChild(chip);
+    }
+
+    el.title = (ws.tooltip ? ws.tooltip + '\n' : '') + 'Click to open';
+    el.addEventListener('click', () => {
+      if (typeof ws.openUri === 'string' && ws.openUri) {
+        vscode.postMessage({ type: 'open', uri: ws.openUri });
+      }
+    });
+    el.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openContextMenu(event, workstreamActionsMenu(ws));
+    });
+    return el;
+  }
+
+  /**
+   * Build the thin pull-handle affordance for a shelf. A small grip pill that
+   * toggles the deck open/closed. Only rendered when there's more than one
+   * item to reveal. For Queue it sits at the bottom edge of the content
+   * column (nearest the In Progress stage below), for Backlog at the top edge
+   * (nearest the In Progress stage above).
+   * @param {Node & { id: string, label?: string }} section
+   * @returns {HTMLElement}
+   */
+  function makeShelfHandle(section) {
+    const pull = document.createElement('div');
+    pull.className = 'ws-shelf-pull';
+    pull.setAttribute('role', 'button');
+    const open = state.expanded.has(section.id);
+    pull.setAttribute('aria-expanded', open ? 'true' : 'false');
+    pull.title = (open ? 'Collapse ' : 'Expand ') + (section.label || '');
+    const grip = document.createElement('span');
+    grip.className = 'ws-shelf-grip';
+    pull.appendChild(grip);
+    pull.addEventListener('click', () => toggle(section.id));
+    return pull;
+  }
+
+  /**
+   * Build a Queue / Backlog peek shelf. The shelf is a horizontal flex row: a
+   * thin vertical label rail on the LEFT (the section label + count rotated
+   * to read along the left edge) and a content column on the RIGHT holding
+   * the deck/list plus a thin pull-handle. Collapsed renders the two newest
+   * workstreams as normal compact rows stacked in flow with up to two faded,
+   * offset decorative slivers fanning DOWN behind/below them to imply a stack
+   * (a "peek deck") — identical for both shelves. The pull-handle sits adjacent to the
+   * In Progress stage (bottom of Queue, top of Backlog) and is the
+   * expand/collapse toggle; the vertical rail also toggles. Expanding reveals
+   * the full list of compact rows: Queue newest-at-bottom (reversed), Backlog
+   * newest-at-top (normal).
+   * @param {Node & { workstreams?: Node[], emptyMessage?: string, label?: string, section?: string }} section
+   * @returns {HTMLElement}
+   */
+  function renderShelf(section) {
+    const shelf = document.createElement('div');
+    shelf.className = 'ws-shelf';
+    const items = Array.isArray(section.workstreams) ? section.workstreams : [];
+    const expanded = state.expanded.has(section.id);
+    // Backlog is the vertical mirror of Queue (flipped about the In Progress
+    // stage between them). Queue's handle sits at its BOTTOM (nearest the
+    // Progress stage below it) with the deck above; Backlog's handle sits at
+    // its TOP (nearest the Progress stage above it) with the deck below.
+    // The content column orders the handle relative to the body accordingly.
+    const isBacklog = section.section === 'backlog';
+
+    // The rail + handle are the expand/collapse affordance. They're only
+    // interactive when there's more than two items to reveal. With two or
+    // fewer items everything fits, so we render a plain full list with a
+    // static rail (no peek-deck, no collapse); zero items renders an empty
+    // notice.
+    const canToggle = items.length > 2;
+
+    // Vertical label rail pinned to the left edge of the shelf. The label
+    // text + count are rotated to read along the edge (see panel.css). The
+    // rail also toggles the deck when there's something to expand.
+    const rail = document.createElement('div');
+    rail.className = 'ws-shelf-rail' + (canToggle ? '' : ' ws-shelf-rail-static');
+    const railText = document.createElement('div');
+    railText.className = 'ws-shelf-rail-text';
+    const railLabel = document.createElement('span');
+    railLabel.className = 'ws-section-label';
+    railLabel.textContent = section.label || '';
+    railText.appendChild(railLabel);
+    const railCount = document.createElement('span');
+    railCount.className = 'ws-section-count';
+    railCount.textContent = String(items.length);
+    railText.appendChild(railCount);
+    rail.appendChild(railText);
+    if (canToggle) {
+      rail.addEventListener('click', () => toggle(section.id));
+    }
+
+    // Content column on the right of the rail — holds the deck/list/empty
+    // notice plus (when toggleable) the thin pull-handle.
+    const content = document.createElement('div');
+    content.className = 'ws-shelf-content';
+
+    // Build the shelf body (empty notice, expanded list, or collapsed deck)
+    // into `body`, then place it relative to the handle based on `isBacklog`.
+    /** @type {HTMLElement} */
+    let body;
+
+    if (items.length === 0) {
+      body = document.createElement('div');
+      body.className = 'ws-shelf-empty';
+      body.textContent = section.emptyMessage || '';
+      content.appendChild(body);
+      shelf.appendChild(rail);
+      shelf.appendChild(content);
+      return shelf;
+    }
+
+    if (!canToggle || expanded) {
+      // Full list: either too few items to bother collapsing (<=2, always
+      // shown regardless of `state.expanded`) or a 3+ shelf the user has
+      // expanded.
+      const list = document.createElement('div');
+      list.className = 'ws-shelf-list';
+      // `items` arrives newest-first (getActivePanelData sorts each shelf by
+      // last-activity-desc). Queue renders the list reversed so the newest
+      // sits at the BOTTOM (nearest the Progress stage below it); Backlog
+      // renders newest-first so the newest sits at the TOP.
+      const ordered = isBacklog ? items : items.slice().reverse();
+      const moveDir = section.section === 'backlog' ? 'up' : 'down';
+      for (const ws of ordered) {
+        list.appendChild(renderShelfItem(ws, moveDir));
+      }
+      body = list;
+    } else {
+      // Collapsed = peek deck. The TWO newest workstreams render as normal,
+      // clickable compact shelf rows stacked in flow (newest on top); behind
+      // and below the lower row, up to two faded/offset decorative slivers
+      // imply the remaining items. Both shelves fan the slivers DOWN (peek
+      // below the rows) — Queue and Backlog collapsed decks look identical.
+      // Slivers cover the rest: 1 sliver at exactly 3 items, 2 at 4+.
+      const extraLayers = Math.min(items.length - 2, 2);
+
+      const deck = document.createElement('div');
+      deck.className = 'ws-shelf-deck ws-shelf-deck-down';
+
+      const fan = document.createElement('div');
+      fan.className = 'ws-shelf-fan';
+      if (extraLayers > 0) {
+        fan.classList.add('ws-layers-' + extraLayers);
+      }
+      // Depth slivers are decorative only: aria-hidden + pointer-events:none
+      // (see panel.css) so they never intercept clicks or reach a screen
+      // reader. Appended first (behind), farthest layer first so DOM order
+      // matches paint order; the real rows below sit above them via z-index.
+      for (let i = extraLayers; i >= 1; i--) {
+        const layer = document.createElement('div');
+        layer.className = 'ws-shelf-layer ws-shelf-layer-' + i;
+        layer.setAttribute('aria-hidden', 'true');
+        fan.appendChild(layer);
+      }
+      // The two newest workstreams as real, clickable rows (newest on top).
+      // Each is a full renderShelfItem row, so click-to-open and the
+      // right-click context menu work automatically.
+      const moveDir = section.section === 'backlog' ? 'up' : 'down';
+      for (const ws of items.slice(0, 2)) {
+        const row = renderShelfItem(ws, moveDir);
+        row.classList.add('ws-shelf-deck-row');
+        fan.appendChild(row);
+      }
+
+      deck.appendChild(fan);
+      body = deck;
+    }
+    // Assemble the content column: a thin pull-handle adjacent to the In
+    // Progress stage (top for Backlog, bottom for Queue) plus the body. The
+    // handle is only present when the deck can actually be toggled.
+    const handle = canToggle ? makeShelfHandle(section) : null;
+    if (isBacklog) {
+      if (handle) {
+        content.appendChild(handle);
+      }
+      content.appendChild(body);
+    } else {
+      content.appendChild(body);
+      if (handle) {
+        content.appendChild(handle);
+      }
+    }
+    shelf.appendChild(rail);
+    shelf.appendChild(content);
+    return shelf;
+  }
+
+  /**
+   * Render one Active-tab section (Queue / In Progress / Backlog).
+   * @param {Node & { display?: string, workstreams?: Node[], emptyMessage?: string, label?: string }} section
+   * @returns {HTMLElement}
+   */
+  function renderWorkstreamSection(section) {
+    if (section.display === 'shelf') {
+      return renderShelf(section);
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'ws-section ws-section-cards';
+    // No section header for the Progress (cards) region — the "In Progress"
+    // label + count chip was intentionally removed; the in-progress count is
+    // surfaced as a badge on the activity-bar icon instead. The Queue/Backlog
+    // shelf headers (renderShelf) are unaffected.
+    const items = Array.isArray(section.workstreams) ? section.workstreams : [];
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'ws-section-empty';
+      empty.textContent = section.emptyMessage || '';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+    for (const ws of items) {
+      wrap.appendChild(renderWorkstreamCard(ws));
+    }
+    return wrap;
+  }
+
   function render() {
     // Tabs
     const tabButtons = tabsEl.querySelectorAll('.tab');
@@ -671,58 +1069,20 @@
     }
     const frag = document.createDocumentFragment();
     if (state.activeTab === 'active') {
-      // Each top-level workstream renders as its own collapsible card.
-      // Header is the workstream row itself; body holds the nested subtree.
-      for (const item of data.items) {
-        const card = document.createElement('div');
-        card.className = 'ws-card ws-card-color-' + colorIndexForId(item.id);
-        const workstreamSlug = workstreamSlugFromOpenUri(item.openUri);
-        if (workstreamSlug) {
-          card.dataset.workstreamSlug = workstreamSlug;
-        }
-        const expanded = state.expanded.has(item.id);
-        if (expanded) {
-          card.classList.add('expanded');
-        }
-
-        const header = document.createElement('div');
-        header.className = 'ws-card-header';
-        header.appendChild(renderRow(item, 0));
-        card.appendChild(header);
-
-        const hasChildren =
-          Array.isArray(item.children) && item.children.length > 0;
-        const focusedTopics = Array.isArray(item.focused_topics)
-          ? item.focused_topics
-          : [];
-        if (hasChildren || focusedTopics.length > 0) {
-          const body = document.createElement('div');
-          body.className = 'ws-card-body';
-          if (!expanded) {
-            body.hidden = true;
-          } else {
-            // Pinned focused-topic row(s) render first, above the normal
-            // topics group / sessions. They're a duplicate quick-access
-            // surface; the topic still appears in its regular slot below.
-            for (const ft of focusedTopics) {
-              const pinned = renderPinnedFocusedTopic(ft, item);
-              body.appendChild(pinned);
-            }
-            for (const child of item.children) {
-              renderNode(child, 1, body);
-            }
-          }
-          card.appendChild(body);
-        }
-
-        card.addEventListener('contextmenu', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          openCardContextMenu(event, item);
-        });
-
-        frag.appendChild(card);
+      // Active tab is grouped into Queue / In Progress / Backlog sections.
+      // Progress renders full cards; Queue & Backlog render compact peek
+      // shelves. Each top-level item is a section, not a workstream.
+      //
+      // The sections live in a full-height flex column so Queue stays pinned
+      // at the top, Backlog stays glued to the bottom edge, and the In
+      // Progress card list (flex:1) takes all remaining space and scrolls
+      // internally (see `.active-sections` in panel.css).
+      const sections = document.createElement('div');
+      sections.className = 'active-sections';
+      for (const section of data.items) {
+        sections.appendChild(renderWorkstreamSection(section));
       }
+      frag.appendChild(sections);
     } else {
       for (const item of data.items) {
         renderNode(item, 0, frag);
@@ -730,6 +1090,68 @@
     }
     listEl.appendChild(frag);
     state.flashChipIds.clear();
+  }
+
+  // --- Reveal-in-panel --------------------------------------------------
+  //
+  // The extension host watches the active tab group and tells us which WM
+  // doc is currently visible via a `reveal` message ({ kind, id } | null).
+  // We do NOT switch tabs, expand ancestors, or scroll — those side effects
+  // were "too much". Instead the reveal is a passive style: every row whose
+  // openUri matches the target is given the `.revealed` class (bold + yellow
+  // text). Because the panel only renders the *active* tab's DOM at a time,
+  // the match is kept as STATE (`state.revealTarget`) and re-applied inside
+  // `renderRow` on every render — so manually switching tabs naturally
+  // re-highlights the same doc's rows wherever it appears, and a `data`
+  // refresh preserves it too. ALL occurrences are highlighted (a topic can
+  // appear both as a tree node and as a pinned/focused row under a
+  // workstream); this is independent of the click-selection `.focused` style.
+
+  /**
+   * Extract the slug/id segment from a node's `working-memory:/<kind>/<id>.md`
+   * openUri, regardless of kind. Used for kind-less reveal-by-slug matching.
+   * @param {string | undefined} openUri
+   * @returns {string | null}
+   */
+  function slugFromOpenUri(openUri) {
+    if (typeof openUri !== 'string') {
+      return null;
+    }
+    const m = /^working-memory:\/(?:session|topic|workstream|topic-type)\/(.+)\.md$/.exec(openUri);
+    if (!m) {
+      return null;
+    }
+    let id = m[1];
+    try {
+      id = decodeURIComponent(id);
+    } catch (_e) {
+      // Keep the raw segment if it isn't valid percent-encoding.
+    }
+    return id;
+  }
+
+  /**
+   * Predicate: does this node represent the WM doc currently revealed from the
+   * editor? Concrete-kind targets match the full
+   * `working-memory:/<kind>/<id>.md` openUri; kind-less targets (slug recovered
+   * from a tab label) match by slug/id alone. Pinned/focused clones preserve
+   * the underlying topic's openUri, so they match too.
+   * @param {Node} node
+   * @returns {boolean}
+   */
+  function nodeMatchesReveal(node) {
+    const target = state.revealTarget;
+    if (!target || typeof target.id !== 'string') {
+      return false;
+    }
+    if (!node || typeof node.openUri !== 'string') {
+      return false;
+    }
+    if (typeof target.kind === 'string') {
+      return node.openUri ===
+        'working-memory:/' + target.kind + '/' + target.id + '.md';
+    }
+    return slugFromOpenUri(node.openUri) === target.id;
   }
 
   // --- Event wiring -----------------------------------------------------
@@ -792,6 +1214,11 @@
       const liveIds = new Set();
       const visit = (n) => {
         liveIds.add(n.id);
+        if (Array.isArray(n.workstreams)) {
+          for (const w of n.workstreams) {
+            visit(w);
+          }
+        }
         if (Array.isArray(n.children)) {
           for (const c of n.children) {
             visit(c);
@@ -822,6 +1249,11 @@
         if (count > previous) {
           flashChipIds.add(n.id);
         }
+        if (Array.isArray(n.workstreams)) {
+          for (const w of n.workstreams) {
+            collectRecent(w);
+          }
+        }
         if (Array.isArray(n.focused_topics)) {
           for (const ft of n.focused_topics) {
             collectRecent(ft);
@@ -846,6 +1278,18 @@
       state.data = msg.data || {};
       closeContextMenu();
       render();
+      // The reveal highlight is re-applied inside render() via renderRow, so
+      // it survives this data refresh automatically — no separate pass needed.
+      return;
+    }
+    if (msg.type === 'reveal') {
+      const target =
+        msg.target && typeof msg.target === 'object' ? msg.target : null;
+      state.revealTarget = target;
+      // Pure re-render: renderRow adds `.revealed` to every matching row in the
+      // active tab. No tab switch, no ancestor expand, no scroll.
+      render();
+      return;
     }
   });
 
