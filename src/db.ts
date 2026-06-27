@@ -318,6 +318,22 @@ export interface CreateWorkstreamInput {
   slug: string;
   title: string;
   status?: WorkstreamStatus;
+  /** Optional: pin a topic to this workstream on creation (same effect as wm_link_workstream_topic). */
+  topic_slug?: string;
+  /** Only meaningful with topic_slug. true → set focused = 1 on the link. */
+  focused?: boolean;
+}
+
+export interface CreateWorkstreamTopicLinkResult {
+  topic_slug: string;
+  link_created: boolean;
+  link_restored: boolean;
+  focused: number;
+}
+
+export interface CreateWorkstreamResult {
+  workstream: Workstream;
+  topic_link?: CreateWorkstreamTopicLinkResult;
 }
 
 export interface UpdateWorkstreamInput {
@@ -365,6 +381,42 @@ export interface CreateTopicInput {
   body?: string;
   status?: TopicStatus;
   topic_type?: string;
+  /** Optional: pin to a workstream on creation (same effect as wm_link_workstream_topic). */
+  workstream_slug?: string;
+  /** Only meaningful with workstream_slug. true → set focused = 1 on the link. */
+  focused?: boolean;
+  /** Optional: tag an entry with this topic on creation (same effect as wm_link_entry_topic, which also auto-creates the workstream link). */
+  entry_id?: number;
+  /** Optional: link to one or more parent topics on creation. Accepts a single slug or an array of slugs. */
+  parent_slug?: string | string[];
+}
+
+export interface CreateTopicWorkstreamLinkResult {
+  workstream_slug: string;
+  link_created: boolean;
+  link_restored: boolean;
+  focused: number;
+}
+
+export interface CreateTopicEntryLinkResult {
+  entry_id: number;
+  entry_link_created: boolean;
+  workstream_slug: string;
+  workstream_link_created: boolean;
+  workstream_link_restored: boolean;
+}
+
+export interface CreateTopicParentLinkResult {
+  parent_slug: string;
+  link_created: boolean;
+  link_restored: boolean;
+}
+
+export interface CreateTopicResult {
+  topic: Topic;
+  workstream_link?: CreateTopicWorkstreamLinkResult;
+  entry_link?: CreateTopicEntryLinkResult;
+  parent_links?: CreateTopicParentLinkResult[];
 }
 
 export interface UpdateTopicInput {
@@ -637,7 +689,7 @@ export class JournalStore {
     return row ?? null;
   }
 
-  createWorkstream(input: CreateWorkstreamInput): Workstream {
+  createWorkstream(input: CreateWorkstreamInput): CreateWorkstreamResult {
     if (!input.slug || !input.title) {
       throw new Error('slug and title are required');
     }
@@ -646,21 +698,71 @@ export class JournalStore {
       const tag = existing.deleted_at ? ' (soft-deleted)' : '';
       throw new Error(`workstream slug already exists${tag}: ${input.slug}`);
     }
-    const status = input.status ?? 'progress';
-    const opened = nowEpoch();
-    const closed = status === 'closed' ? opened : null;
-    this.db
-      .prepare(
-        `INSERT INTO workstreams
-           (slug, title, status, opened_at, closed_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(input.slug, input.title, status, opened, closed, opened);
-    const row = this.getWorkstreamBySlug(input.slug);
-    if (!row) {
-      throw new Error('createWorkstream: insert succeeded but row not found');
+
+    // Pre-validate topic link if requested
+    let topicRow: Topic | null = null;
+    if (input.topic_slug !== undefined) {
+      topicRow = this.getTopic(input.topic_slug);
+      if (!topicRow) {
+        throw new Error(
+          `topic not found (or soft-deleted): ${input.topic_slug}`,
+        );
+      }
     }
-    return row;
+
+    return this.withTransaction(() => {
+      const status = input.status ?? 'progress';
+      const opened = nowEpoch();
+      const closed = status === 'closed' ? opened : null;
+      this.db
+        .prepare(
+          `INSERT INTO workstreams
+             (slug, title, status, opened_at, closed_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(input.slug, input.title, status, opened, closed, opened);
+      const workstream = this.getWorkstreamBySlug(input.slug);
+      if (!workstream) {
+        throw new Error('createWorkstream: insert succeeded but row not found');
+      }
+
+      let topicLink: CreateWorkstreamTopicLinkResult | undefined;
+      if (topicRow) {
+        const link = this.ensureWorkstreamTopicLink(
+          workstream.id,
+          topicRow.slug,
+          opened,
+        );
+        let focused: number;
+        if (input.focused !== undefined) {
+          focused = input.focused ? 1 : 0;
+          this.db
+            .prepare(
+              `UPDATE workstream_topics SET focused = ?
+                 WHERE workstream_id = ? AND topic_slug = ?`,
+            )
+            .run(focused, workstream.id, topicRow.slug);
+        } else {
+          const row = this.db
+            .prepare(
+              `SELECT focused FROM workstream_topics
+                WHERE workstream_id = ? AND topic_slug = ?`,
+            )
+            .get(workstream.id, topicRow.slug) as
+            | { focused: number }
+            | undefined;
+          focused = row?.focused ?? 0;
+        }
+        topicLink = {
+          topic_slug: topicRow.slug,
+          link_created: link.link_created,
+          link_restored: link.link_restored,
+          focused,
+        };
+      }
+
+      return { workstream, ...(topicLink ? { topic_link: topicLink } : {}) };
+    });
   }
 
   updateWorkstream(slug: string, patch: UpdateWorkstreamInput): Workstream {
@@ -1449,7 +1551,7 @@ export class JournalStore {
     return row ?? null;
   }
 
-  createTopic(input: CreateTopicInput): Topic {
+  createTopic(input: CreateTopicInput): CreateTopicResult {
     if (!input.slug || !input.slug.trim()) {
       throw new Error('slug is required');
     }
@@ -1463,20 +1565,150 @@ export class JournalStore {
       this.assertValidTopicType(input.topic_type);
       topicType = input.topic_type;
     }
-    const now = nowEpoch();
-    const title = input.title?.trim() || humanizeSlug(input.slug);
-    const status = input.status ?? 'open';
-    this.db
-      .prepare(
-        `INSERT INTO topics (slug, title, status, topic_type, body, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(input.slug, title, status, topicType, input.body ?? '', now, now);
-    const row = this.getTopic(input.slug);
-    if (!row) {
-      throw new Error('createTopic: insert succeeded but row not found');
+
+    // Pre-validate workstream link
+    let ws: Workstream | null = null;
+    if (input.workstream_slug !== undefined) {
+      ws = this.getWorkstreamBySlug(input.workstream_slug);
+      if (!ws) {
+        throw new Error(
+          `workstream not found (or soft-deleted): ${input.workstream_slug}`,
+        );
+      }
     }
-    return row;
+
+    // Pre-validate entry link
+    let entryMeta: { workstream_id: number; workstream_slug: string } | null =
+      null;
+    if (input.entry_id !== undefined) {
+      const entryRow = this.db
+        .prepare(
+          `SELECT e.id AS entry_id, w.id AS workstream_id, w.slug AS workstream_slug
+             FROM entries e
+             JOIN sessions s ON s.session_id = e.session_id
+             JOIN workstreams w ON w.id = s.workstream_id
+            WHERE e.id = ?
+              AND e.deleted_at IS NULL
+              AND s.deleted_at IS NULL
+              AND w.deleted_at IS NULL`,
+        )
+        .get(input.entry_id) as unknown as
+        | { entry_id: number; workstream_id: number; workstream_slug: string }
+        | undefined;
+      if (!entryRow) {
+        throw new Error(
+          `entry not found (or its session/workstream is soft-deleted): ${input.entry_id}`,
+        );
+      }
+      entryMeta = {
+        workstream_id: entryRow.workstream_id,
+        workstream_slug: entryRow.workstream_slug,
+      };
+    }
+
+    // Pre-validate parent slugs
+    const rawParents = input.parent_slug;
+    const parentSlugs: string[] = rawParents
+      ? [...new Set(Array.isArray(rawParents) ? rawParents : [rawParents])]
+      : [];
+    for (const pSlug of parentSlugs) {
+      if (pSlug === input.slug) {
+        throw new Error(`cannot link a topic to itself: ${pSlug}`);
+      }
+      const parent = this.getTopic(pSlug);
+      if (!parent) {
+        throw new Error(`parent topic not found (or soft-deleted): ${pSlug}`);
+      }
+    }
+
+    return this.withTransaction(() => {
+      const now = nowEpoch();
+      const title = input.title?.trim() || humanizeSlug(input.slug);
+      const status = input.status ?? 'open';
+      this.db
+        .prepare(
+          `INSERT INTO topics (slug, title, status, topic_type, body, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(input.slug, title, status, topicType, input.body ?? '', now, now);
+      const topic = this.getTopic(input.slug);
+      if (!topic) {
+        throw new Error('createTopic: insert succeeded but row not found');
+      }
+
+      // Link workstream
+      let workstreamLink: CreateTopicWorkstreamLinkResult | undefined;
+      if (ws) {
+        const link = this.ensureWorkstreamTopicLink(ws.id, input.slug, now);
+        let focused: number;
+        if (input.focused !== undefined) {
+          focused = input.focused ? 1 : 0;
+          this.db
+            .prepare(
+              `UPDATE workstream_topics SET focused = ?
+                 WHERE workstream_id = ? AND topic_slug = ?`,
+            )
+            .run(focused, ws.id, input.slug);
+        } else {
+          const row = this.db
+            .prepare(
+              `SELECT focused FROM workstream_topics
+                WHERE workstream_id = ? AND topic_slug = ?`,
+            )
+            .get(ws.id, input.slug) as { focused: number } | undefined;
+          focused = row?.focused ?? 0;
+        }
+        workstreamLink = {
+          workstream_slug: ws.slug,
+          link_created: link.link_created,
+          link_restored: link.link_restored,
+          focused,
+        };
+      }
+
+      // Link entry (and auto-create the entry's workstream link)
+      let entryLink: CreateTopicEntryLinkResult | undefined;
+      if (entryMeta !== null && input.entry_id !== undefined) {
+        this.db
+          .prepare(
+            `INSERT INTO entry_topics (entry_id, topic_slug, created_at)
+             VALUES (?, ?, ?)`,
+          )
+          .run(input.entry_id, input.slug, now);
+        const wsLink = this.ensureWorkstreamTopicLink(
+          entryMeta.workstream_id,
+          input.slug,
+          now,
+        );
+        entryLink = {
+          entry_id: input.entry_id,
+          entry_link_created: true,
+          workstream_slug: entryMeta.workstream_slug,
+          workstream_link_created: wsLink.link_created,
+          workstream_link_restored: wsLink.link_restored,
+        };
+      }
+
+      // Link parents — brand-new topic has no descendants, so no cycle is possible
+      // (self-links were already rejected above)
+      const parentLinks: CreateTopicParentLinkResult[] = [];
+      for (const pSlug of parentSlugs) {
+        this.db
+          .prepare(
+            `INSERT INTO topic_parents (child_slug, parent_slug, created_at)
+             VALUES (?, ?, ?)`,
+          )
+          .run(input.slug, pSlug, now);
+        parentLinks.push({ parent_slug: pSlug, link_created: true, link_restored: false });
+      }
+
+      return {
+        topic,
+        ...(workstreamLink ? { workstream_link: workstreamLink } : {}),
+        ...(entryLink ? { entry_link: entryLink } : {}),
+        ...(parentLinks.length > 0 ? { parent_links: parentLinks } : {}),
+      };
+    });
   }
 
   updateTopic(slug: string, patch: UpdateTopicInput): Topic {

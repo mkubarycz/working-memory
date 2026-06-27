@@ -24,7 +24,7 @@ function tick(seconds: number) {
 
 test('createWorkstream: updated_at == opened_at at creation', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
-  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' });
+  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' }).workstream;
 
   expect(ws.updated_at).toBe(ws.opened_at);
 
@@ -33,7 +33,7 @@ test('createWorkstream: updated_at == opened_at at creation', () => {
 
 test('updateWorkstream: title change bumps updated_at', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
-  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' });
+  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' }).workstream;
   const before = ws.updated_at;
 
   tick(5);
@@ -46,7 +46,7 @@ test('updateWorkstream: title change bumps updated_at', () => {
 
 test('updateWorkstream: status change bumps updated_at', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
-  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' });
+  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' }).workstream;
   const before = ws.updated_at;
 
   tick(5);
@@ -59,7 +59,7 @@ test('updateWorkstream: status change bumps updated_at', () => {
 
 test('updateWorkstream: closure (status -> closed) bumps updated_at and stamps closed_at', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
-  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' });
+  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' }).workstream;
   const before = ws.updated_at;
 
   tick(5);
@@ -76,7 +76,7 @@ test('updateWorkstream: closure (status -> closed) bumps updated_at and stamps c
 
 test('updateWorkstream: true no-op patch does NOT bump updated_at', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
-  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' });
+  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' }).workstream;
   const before = ws.updated_at;
 
   tick(5);
@@ -103,7 +103,7 @@ test('reopenWorkstream: bumps updated_at', () => {
 
 test('softDeleteWorkstream: bumps updated_at alongside deleted_at', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
-  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' });
+  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' }).workstream;
   const before = ws.updated_at;
 
   tick(5);
@@ -118,7 +118,7 @@ test('softDeleteWorkstream: bumps updated_at alongside deleted_at', () => {
 
 test('restoreWorkstream: bumps updated_at', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
-  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' });
+  const ws = store.createWorkstream({ slug: 'demo', title: 'Demo' }).workstream;
 
   tick(5);
   store.softDeleteWorkstream('demo');

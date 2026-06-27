@@ -10,7 +10,7 @@ function seedChain(store: ReturnType<typeof openJournalStore>) {
     slug: 'demo',
     title: 'Demo',
     status: 'open',
-  });
+  }).workstream;
   const session = store.startSession({ workstream_slug: 'demo' });
   const e1 = store.appendEntry({
     session_id: session.session_id,
