@@ -18,6 +18,14 @@ export interface Workstream {
   opened_at: number;
   closed_at: number | null;
   closure: string | null;
+  /**
+   * Generic last-modified stamp (unix seconds). Set to `opened_at` on insert
+   * and re-stamped on any mutation (title/status/closure change, reopen).
+   * Folded into the Active-tab recency sort so a section move — which only
+   * flips `status` and writes no journal entry — still floats the workstream
+   * to the top of its new section. Added in migration 015.
+   */
+  updated_at: number;
   deleted_at: number | null;
 }
 
@@ -190,6 +198,7 @@ const MIGRATIONS: Migration[] = [
   { version: 12, file: '012_entries_created_by.sql' },
   { version: 13, file: '013_topic_type_body_template.sql' },
   { version: 14, file: '014_workstream_lifecycle_status.sql' },
+  { version: 15, file: '015_workstream_updated_at.sql' },
 ];
 
 /**
@@ -567,20 +576,24 @@ export class JournalStore {
     const lastActivitySelect =
       orderBy === 'last-activity-desc'
         ? `,
-             COALESCE(
-               (SELECT MAX(e.timestamp)
-                  FROM entries e
-                  JOIN sessions s ON s.session_id = e.session_id
-                 WHERE s.workstream_id = w.id
-                   AND s.deleted_at IS NULL
-                   AND e.deleted_at IS NULL),
+             MAX(
+               COALESCE(
+                 (SELECT MAX(e.timestamp)
+                    FROM entries e
+                    JOIN sessions s ON s.session_id = e.session_id
+                   WHERE s.workstream_id = w.id
+                     AND s.deleted_at IS NULL
+                     AND e.deleted_at IS NULL),
+                 0
+               ),
+               w.updated_at,
                w.opened_at
              ) AS last_activity_at`
         : '';
 
     const sql = `
       SELECT w.id, w.slug, w.title, w.status, w.opened_at, w.closed_at,
-             w.closure, w.deleted_at,
+             w.closure, w.updated_at, w.deleted_at,
              (SELECT COUNT(*) FROM sessions s
                 WHERE s.workstream_id = w.id AND s.deleted_at IS NULL)
                AS session_count${lastActivitySelect}
@@ -598,7 +611,8 @@ export class JournalStore {
     includeDeleted = false,
   ): Workstream | null {
     const sql = `
-      SELECT id, slug, title, status, opened_at, closed_at, closure, deleted_at
+      SELECT id, slug, title, status, opened_at, closed_at, closure,
+             updated_at, deleted_at
         FROM workstreams
         WHERE slug = ?
           ${includeDeleted ? '' : 'AND deleted_at IS NULL'}
@@ -611,7 +625,8 @@ export class JournalStore {
 
   getWorkstreamById(id: number, includeDeleted = false): Workstream | null {
     const sql = `
-      SELECT id, slug, title, status, opened_at, closed_at, closure, deleted_at
+      SELECT id, slug, title, status, opened_at, closed_at, closure,
+             updated_at, deleted_at
         FROM workstreams
         WHERE id = ?
           ${includeDeleted ? '' : 'AND deleted_at IS NULL'}
@@ -636,10 +651,11 @@ export class JournalStore {
     const closed = status === 'closed' ? opened : null;
     this.db
       .prepare(
-        `INSERT INTO workstreams (slug, title, status, opened_at, closed_at)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO workstreams
+           (slug, title, status, opened_at, closed_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(input.slug, input.title, status, opened, closed);
+      .run(input.slug, input.title, status, opened, closed, opened);
     const row = this.getWorkstreamBySlug(input.slug);
     if (!row) {
       throw new Error('createWorkstream: insert succeeded but row not found');
@@ -678,6 +694,11 @@ export class JournalStore {
     if (!sets.length) {
       return current;
     }
+    // Any mutation re-stamps updated_at so the Active-tab recency sort treats
+    // this workstream as the most-recently-touched item (e.g. a section move
+    // that only changes `status`).
+    sets.push('updated_at = ?');
+    params.push(nowEpoch());
     params.push(slug);
     this.db
       .prepare(`UPDATE workstreams SET ${sets.join(', ')} WHERE slug = ?`)
@@ -700,10 +721,10 @@ export class JournalStore {
     this.db
       .prepare(
         `UPDATE workstreams
-            SET status = 'progress', closed_at = NULL
+            SET status = 'progress', closed_at = NULL, updated_at = ?
           WHERE slug = ?`,
       )
-      .run(slug);
+      .run(nowEpoch(), slug);
     const updated = this.getWorkstreamBySlug(slug);
     if (!updated) {
       throw new Error('reopenWorkstream: row vanished after update');
@@ -751,11 +772,13 @@ export class JournalStore {
             WHERE workstream_id = ? AND deleted_at IS NULL`,
         )
         .run(ts, ws.id);
+      // Soft-deleting is itself a mutation, so re-stamp updated_at alongside
+      // deleted_at to keep recency ordering honest.
       const wsRes = this.db
         .prepare(
-          `UPDATE workstreams SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`,
+          `UPDATE workstreams SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
         )
-        .run(ts, ws.id);
+        .run(ts, ts, ws.id);
 
       return {
         workstreams: Number(wsRes.changes),
@@ -775,9 +798,11 @@ export class JournalStore {
     }
 
     return this.withTransaction(() => {
+      // Restoring is a mutation too — bump updated_at so the restored
+      // workstream floats to the top of the Active-tab recency sort.
       const wsRes = this.db
-        .prepare(`UPDATE workstreams SET deleted_at = NULL WHERE id = ?`)
-        .run(ws.id);
+        .prepare(`UPDATE workstreams SET deleted_at = NULL, updated_at = ? WHERE id = ?`)
+        .run(nowEpoch(), ws.id);
       return {
         workstreams: Number(wsRes.changes),
         sessions: 0,

@@ -289,7 +289,46 @@ html, body {
    tinted header (the workstream row) and a body holding the nested tree. */
 
 .list.cards {
-  padding: 6px 0 12px;
+  padding: 6px 0 0;
+  /* Active tab fills the full panel height as a flex column. The list itself
+     no longer scrolls in cards mode; the In Progress region inside
+     `.active-sections` is the scroll container so the Queue/Backlog shelves
+     stay pinned top and bottom. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Active-tab flex column: Queue pinned top, In Progress flexible + scrolling
+   in the middle, Backlog pinned to the bottom edge. */
+.active-sections {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Queue + Backlog shelves are compact and keep their natural height so they
+   stay pinned at the top and bottom of the column. */
+.active-sections > .ws-shelf {
+  flex: 0 0 auto;
+}
+
+/* In Progress is the priority region: it takes all remaining space and
+   scrolls internally rather than pushing Backlog off-screen. */
+.active-sections > .ws-section-cards {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  padding-bottom: 12px;
+}
+
+.active-sections > .ws-section-cards::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .ws-card {
@@ -466,4 +505,232 @@ html, body {
 .context-submenu-indicator {
   display: inline-flex;
   opacity: 0.8;
+}
+
+/* -- Queue / Backlog peek shelf (Active tab) ----------------------------- */
+
+/* These styles cover ONLY the `display:'shelf'` sections (Queue + Backlog).
+   The Progress section (`display:'cards'`) renders through a different path
+   and is intentionally left untouched. Everything here is scoped under
+   `.ws-shelf*` so the cards section's header/labels are unaffected. */
+
+.ws-shelf {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  margin: 2px 0 6px;
+  /* Slightly lighter container than the panel background so each shelf reads
+     as a distinct layer. Subtle white overlay works across light/dark themes. */
+  background: rgba(255, 255, 255, 0.035);
+  border-radius: 6px;
+  padding: 2px 0;
+}
+
+/* Vertical label rail pinned to the left edge of the shelf. Fixed narrow
+   width; the label text + count are rotated 90° to read along the edge. Also
+   acts as a toggle when the deck can be expanded. */
+.ws-shelf-rail {
+  flex: 0 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 6px 0 0 6px;
+}
+
+.ws-shelf-rail:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+/* Single-item / empty shelves: the rail is not a toggle, so don't imply
+   interactivity. */
+.ws-shelf-rail.ws-shelf-rail-static {
+  cursor: default;
+}
+
+.ws-shelf-rail.ws-shelf-rail-static:hover {
+  background: none;
+}
+
+/* Rotate the label+count so they read bottom-to-top along the left edge.
+   vertical-rl + rotate(180deg) gives an upward-reading rail with the label
+   above the count. */
+.ws-shelf-rail-text {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.ws-shelf-rail .ws-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.ws-shelf-rail .ws-section-count {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+}
+
+/* Content column to the right of the rail — holds the deck/list/empty notice
+   plus the thin pull-handle. Takes all remaining width. */
+.ws-shelf-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Thin pull-handle: the expand/collapse affordance. A small grip pill that
+   widens + brightens on hover. Queue places it at the bottom edge of the
+   content column, Backlog at the top edge. */
+.ws-shelf-pull {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ws-shelf-grip {
+  width: 28px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--vscode-descriptionForeground);
+  opacity: 0.35;
+  transition: opacity 0.12s ease, width 0.12s ease;
+}
+
+.ws-shelf-pull:hover .ws-shelf-grip {
+  opacity: 0.7;
+  width: 36px;
+}
+
+.ws-shelf-empty {
+  padding: 2px 8px;
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  font-size: 0.9em;
+}
+
+/* Compact shelf row. Reuses the same inner .icon/.label/.recent-chip markup
+   as .row but reads as a small bordered card so the peek-deck slivers behind
+   it look like a stack of the same object. */
+.ws-shelf-item {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.25)));
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, transparent));
+}
+
+.ws-shelf-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.ws-shelf-item.revealed,
+.ws-shelf-item.revealed .label,
+.ws-shelf-item.revealed .icon .codicon {
+  color: var(--vscode-charts-yellow);
+  font-weight: 600;
+}
+
+/* Expanded state: plain vertical list of shelf rows. */
+.ws-shelf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 8px;
+}
+
+/* Collapsed state: peek deck. The front row sits above absolutely-positioned
+   decorative slivers offset by a few px with reduced opacity + scaleX. */
+.ws-shelf-deck {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 8px;
+}
+
+.ws-shelf-fan {
+  position: relative;
+  height: 22px;
+}
+
+.ws-shelf-fan.ws-layers-1 {
+  height: 29px;
+}
+
+.ws-shelf-fan.ws-layers-2 {
+  height: 36px;
+}
+
+.ws-shelf-fan .ws-shelf-front {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 3;
+}
+
+.ws-shelf-deck-down .ws-shelf-front {
+  top: 0;
+}
+
+.ws-shelf-deck-up .ws-shelf-front {
+  bottom: 0;
+}
+
+.ws-shelf-layer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.25)));
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, transparent));
+  pointer-events: none;
+}
+
+/* Queue: slivers peek DOWNWARD (stack below the front item). */
+.ws-shelf-deck-down .ws-shelf-layer-1 {
+  top: 7px;
+  transform: scaleX(0.97);
+  opacity: 0.55;
+  z-index: 2;
+}
+
+.ws-shelf-deck-down .ws-shelf-layer-2 {
+  top: 14px;
+  transform: scaleX(0.94);
+  opacity: 0.3;
+  z-index: 1;
+}
+
+/* Backlog: slivers peek UPWARD (stack above the front item). */
+.ws-shelf-deck-up .ws-shelf-layer-1 {
+  bottom: 7px;
+  transform: scaleX(0.97);
+  opacity: 0.55;
+  z-index: 2;
+}
+
+.ws-shelf-deck-up .ws-shelf-layer-2 {
+  bottom: 14px;
+  transform: scaleX(0.94);
+  opacity: 0.3;
+  z-index: 1;
 }

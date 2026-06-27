@@ -1,6 +1,6 @@
-import { test, expect } from 'vitest';
+import { test, expect, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { getAllPanelData } from '../src/panelData';
+import { getAllPanelData, getPanelData } from '../src/panelData';
 import { TRAVERSAL_MODES } from '../src/graphTraversals';
 import { activeWorkstreams } from './helpers';
 
@@ -173,6 +173,48 @@ test('active tab hides closed sessions; archive tab still shows them', () => {
   expect(sgArchive?.label).toBe('Sessions (1)');
 
   store.close();
+});
+
+test('moving a workstream re-stamps updated_at so it sorts newest in the Active recency order', () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const store = openJournalStore({ dbPath: ':memory:' });
+
+    // An older, untouched workstream already sitting in the Queue section.
+    store.createWorkstream({
+      slug: 'ws-stale',
+      title: 'Stale WS',
+      status: 'queue',
+    });
+
+    // A workstream created LATER (higher id, newer opened_at) that lives in
+    // Progress — by creation order it is the newer of the two.
+    vi.advanceTimersByTime(60_000);
+    store.createWorkstream({
+      slug: 'ws-moved',
+      title: 'Moved WS',
+      status: 'progress',
+    });
+
+    // Move it into Queue. This changes only `status` and writes no journal
+    // entry, but updateWorkstream re-stamps updated_at = now (the latest of
+    // the three workstreams), so it must sort ahead of the older untouched
+    // Stale WS within the Queue section.
+    vi.advanceTimersByTime(60_000);
+    store.updateWorkstream('ws-moved', { status: 'queue' });
+
+    const flattened = activeWorkstreams(getPanelData(store, 'active'));
+    const movedIdx = flattened.findIndex((w) => w.label === 'Moved WS');
+    const staleIdx = flattened.findIndex((w) => w.label === 'Stale WS');
+    expect(movedIdx).toBeGreaterThanOrEqual(0);
+    expect(staleIdx).toBeGreaterThanOrEqual(0);
+    expect(movedIdx).toBeLessThan(staleIdx);
+
+    store.close();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test('topic rows expose graph-aware attach/remove actions', () => {

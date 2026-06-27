@@ -803,10 +803,41 @@
   }
 
   /**
-   * Build a Queue / Backlog peek shelf: collapsed shows the first workstream
-   * prominently plus a faded hint of the second; expanding reveals the rest.
-   * Rough first pass — functional over polished.
-   * @param {Node & { workstreams?: Node[], emptyMessage?: string, label?: string }} section
+   * Build the thin pull-handle affordance for a shelf. A small grip pill that
+   * toggles the deck open/closed. Only rendered when there's more than one
+   * item to reveal. For Queue it sits at the bottom edge of the content
+   * column (nearest the In Progress stage below), for Backlog at the top edge
+   * (nearest the In Progress stage above).
+   * @param {Node & { id: string, label?: string }} section
+   * @returns {HTMLElement}
+   */
+  function makeShelfHandle(section) {
+    const pull = document.createElement('div');
+    pull.className = 'ws-shelf-pull';
+    pull.setAttribute('role', 'button');
+    const open = state.expanded.has(section.id);
+    pull.setAttribute('aria-expanded', open ? 'true' : 'false');
+    pull.title = (open ? 'Collapse ' : 'Expand ') + (section.label || '');
+    const grip = document.createElement('span');
+    grip.className = 'ws-shelf-grip';
+    pull.appendChild(grip);
+    pull.addEventListener('click', () => toggle(section.id));
+    return pull;
+  }
+
+  /**
+   * Build a Queue / Backlog peek shelf. The shelf is a horizontal flex row: a
+   * thin vertical label rail on the LEFT (the section label + count rotated
+   * to read along the left edge) and a content column on the RIGHT holding
+   * the deck/list plus a thin pull-handle. Collapsed renders the newest
+   * workstream as a normal compact front row with up to two faded, offset
+   * decorative slivers fanning DOWN behind it to imply a stack (a "peek
+   * deck") — identical for both shelves. The pull-handle sits adjacent to the
+   * In Progress stage (bottom of Queue, top of Backlog) and is the
+   * expand/collapse toggle; the vertical rail also toggles. Expanding reveals
+   * the full list of compact rows: Queue newest-at-bottom (reversed), Backlog
+   * newest-at-top (normal).
+   * @param {Node & { workstreams?: Node[], emptyMessage?: string, label?: string, section?: string }} section
    * @returns {HTMLElement}
    */
   function renderShelf(section) {
@@ -814,63 +845,119 @@
     shelf.className = 'ws-shelf';
     const items = Array.isArray(section.workstreams) ? section.workstreams : [];
     const expanded = state.expanded.has(section.id);
+    // Backlog is the vertical mirror of Queue (flipped about the In Progress
+    // stage between them). Queue's handle sits at its BOTTOM (nearest the
+    // Progress stage below it) with the deck above; Backlog's handle sits at
+    // its TOP (nearest the Progress stage above it) with the deck below.
+    // The content column orders the handle relative to the body accordingly.
+    const isBacklog = section.section === 'backlog';
 
-    const header = document.createElement('div');
-    header.className = 'ws-section-header ws-shelf-header';
-    const twisty = document.createElement('span');
-    twisty.className = 'twisty' + (items.length > 0 ? ' collapsible' : ' leaf') +
-      (expanded ? ' expanded' : '');
-    const tIcon = makeCodicon('chevron-right');
-    if (tIcon) {
-      twisty.appendChild(tIcon);
+    // The rail + handle are the expand/collapse affordance. They're only
+    // interactive when there's more than one item to reveal (a single item
+    // has nothing to expand; zero items renders an empty notice).
+    const canToggle = items.length > 1;
+
+    // Vertical label rail pinned to the left edge of the shelf. The label
+    // text + count are rotated to read along the edge (see panel.css). The
+    // rail also toggles the deck when there's something to expand.
+    const rail = document.createElement('div');
+    rail.className = 'ws-shelf-rail' + (canToggle ? '' : ' ws-shelf-rail-static');
+    const railText = document.createElement('div');
+    railText.className = 'ws-shelf-rail-text';
+    const railLabel = document.createElement('span');
+    railLabel.className = 'ws-section-label';
+    railLabel.textContent = section.label || '';
+    railText.appendChild(railLabel);
+    const railCount = document.createElement('span');
+    railCount.className = 'ws-section-count';
+    railCount.textContent = String(items.length);
+    railText.appendChild(railCount);
+    rail.appendChild(railText);
+    if (canToggle) {
+      rail.addEventListener('click', () => toggle(section.id));
     }
-    header.appendChild(twisty);
-    const hLabel = document.createElement('span');
-    hLabel.className = 'ws-section-label';
-    hLabel.textContent = section.label || '';
-    header.appendChild(hLabel);
-    const count = document.createElement('span');
-    count.className = 'ws-section-count';
-    count.textContent = String(items.length);
-    header.appendChild(count);
-    if (items.length > 0) {
-      header.addEventListener('click', () => toggle(section.id));
-    }
-    shelf.appendChild(header);
+
+    // Content column on the right of the rail — holds the deck/list/empty
+    // notice plus (when toggleable) the thin pull-handle.
+    const content = document.createElement('div');
+    content.className = 'ws-shelf-content';
+
+    // Build the shelf body (empty notice, expanded list, or collapsed deck)
+    // into `body`, then place it relative to the handle based on `isBacklog`.
+    /** @type {HTMLElement} */
+    let body;
 
     if (items.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'ws-shelf-empty';
-      empty.textContent = section.emptyMessage || '';
-      shelf.appendChild(empty);
+      body = document.createElement('div');
+      body.className = 'ws-shelf-empty';
+      body.textContent = section.emptyMessage || '';
+      content.appendChild(body);
+      shelf.appendChild(rail);
+      shelf.appendChild(content);
       return shelf;
     }
 
     if (expanded) {
       const list = document.createElement('div');
       list.className = 'ws-shelf-list';
-      for (const ws of items) {
+      // `items` arrives newest-first (getActivePanelData sorts each shelf by
+      // last-activity-desc). Queue renders the list reversed so the newest
+      // sits at the BOTTOM (nearest the Progress stage below it); Backlog
+      // renders newest-first so the newest sits at the TOP.
+      const ordered = isBacklog ? items : items.slice().reverse();
+      for (const ws of ordered) {
         list.appendChild(renderShelfItem(ws));
       }
-      shelf.appendChild(list);
+      body = list;
     } else {
-      const peek = document.createElement('div');
-      peek.className = 'ws-shelf-peek';
-      const primary = renderShelfItem(items[0]);
-      primary.classList.add('ws-shelf-primary');
-      peek.appendChild(primary);
-      if (items[1]) {
-        const hint = document.createElement('div');
-        hint.className = 'ws-shelf-hint';
-        hint.textContent = items[1].label;
-        if (items.length > 2) {
-          hint.textContent += '  +' + (items.length - 1) + ' more';
-        }
-        hint.addEventListener('click', () => toggle(section.id));
-        peek.appendChild(hint);
+      // Collapsed = peek deck. The front workstream renders as a normal
+      // compact shelf row; behind it, up to two faded/offset decorative
+      // slivers imply a stack of more items. Both shelves fan the slivers
+      // DOWN (stack below the front) with the newest item as the front on
+      // top — Queue and Backlog collapsed decks look identical.
+      const extraLayers = Math.min(items.length - 1, 2);
+
+      const deck = document.createElement('div');
+      deck.className = 'ws-shelf-deck ws-shelf-deck-down';
+
+      const fan = document.createElement('div');
+      fan.className = 'ws-shelf-fan';
+      if (extraLayers > 0) {
+        fan.classList.add('ws-layers-' + extraLayers);
       }
-      shelf.appendChild(peek);
+      // Depth layers are decorative only: aria-hidden + pointer-events:none
+      // (see panel.css) so they never intercept clicks or reach a screen
+      // reader. Farthest layer first so DOM order matches paint order.
+      for (let i = extraLayers; i >= 1; i--) {
+        const layer = document.createElement('div');
+        layer.className = 'ws-shelf-layer ws-shelf-layer-' + i;
+        layer.setAttribute('aria-hidden', 'true');
+        fan.appendChild(layer);
+      }
+      const front = renderShelfItem(items[0]);
+      front.classList.add('ws-shelf-front');
+      fan.appendChild(front);
+
+      deck.appendChild(fan);
+      body = deck;
     }
+    // Assemble the content column: a thin pull-handle adjacent to the In
+    // Progress stage (top for Backlog, bottom for Queue) plus the body. The
+    // handle is only present when the deck can actually be toggled.
+    const handle = canToggle ? makeShelfHandle(section) : null;
+    if (isBacklog) {
+      if (handle) {
+        content.appendChild(handle);
+      }
+      content.appendChild(body);
+    } else {
+      content.appendChild(body);
+      if (handle) {
+        content.appendChild(handle);
+      }
+    }
+    shelf.appendChild(rail);
+    shelf.appendChild(content);
     return shelf;
   }
 
@@ -885,18 +972,11 @@
     }
     const wrap = document.createElement('div');
     wrap.className = 'ws-section ws-section-cards';
-    const header = document.createElement('div');
-    header.className = 'ws-section-header';
-    const hLabel = document.createElement('span');
-    hLabel.className = 'ws-section-label';
-    hLabel.textContent = section.label || '';
-    header.appendChild(hLabel);
+    // No section header for the Progress (cards) region — the "In Progress"
+    // label + count chip was intentionally removed; the in-progress count is
+    // surfaced as a badge on the activity-bar icon instead. The Queue/Backlog
+    // shelf headers (renderShelf) are unaffected.
     const items = Array.isArray(section.workstreams) ? section.workstreams : [];
-    const count = document.createElement('span');
-    count.className = 'ws-section-count';
-    count.textContent = String(items.length);
-    header.appendChild(count);
-    wrap.appendChild(header);
 
     if (items.length === 0) {
       const empty = document.createElement('div');
@@ -936,9 +1016,17 @@
       // Active tab is grouped into Queue / In Progress / Backlog sections.
       // Progress renders full cards; Queue & Backlog render compact peek
       // shelves. Each top-level item is a section, not a workstream.
+      //
+      // The sections live in a full-height flex column so Queue stays pinned
+      // at the top, Backlog stays glued to the bottom edge, and the In
+      // Progress card list (flex:1) takes all remaining space and scrolls
+      // internally (see `.active-sections` in panel.css).
+      const sections = document.createElement('div');
+      sections.className = 'active-sections';
       for (const section of data.items) {
-        frag.appendChild(renderWorkstreamSection(section));
+        sections.appendChild(renderWorkstreamSection(section));
       }
+      frag.appendChild(sections);
     } else {
       for (const item of data.items) {
         renderNode(item, 0, frag);
