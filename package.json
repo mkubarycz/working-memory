@@ -85,7 +85,7 @@
       },
       {
         "command": "working-memory.updateToLatest",
-        "title": "Download and install the latest CI build of Working Memory",
+        "title": "Download and install the latest release of Working Memory",
         "shortTitle": "Update to Latest",
         "category": "Working Memory",
         "icon": "$(cloud-download)"
