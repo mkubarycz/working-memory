@@ -3,6 +3,8 @@ import {
   emptyAllPanelData,
   getAllPanelData,
   type PanelAction,
+  type PanelData,
+  type PanelWorkstreamSection,
 } from '../panelData';
 import { JournalStore } from '../db';
 import type { PanelRevealTarget } from '../panelReveal';
@@ -105,6 +107,29 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     }
     const data = this.store ? getAllPanelData(this.store) : emptyAllPanelData();
     this.view.webview.postMessage({ type: 'data', data });
+    this.updateBadge(data.active);
+  }
+
+  /**
+   * Mirror the In-Progress count onto the view-container icon in the activity
+   * bar as a numeric badge. The count is the number of active workstreams that
+   * resolve to the 'progress' section — read straight off the panel data we
+   * just posted so it stays perfectly in sync with the rendered cards. A count
+   * of 0 clears the badge (VS Code hides a zero-value badge anyway).
+   */
+  private updateBadge(active: PanelData): void {
+    if (!this.view) {
+      return;
+    }
+    const progress = active.items.find(
+      (item): item is PanelWorkstreamSection =>
+        item.kind === 'workstream-section' && item.section === 'progress',
+    );
+    const count = progress ? progress.workstreams.length : 0;
+    this.view.badge =
+      count > 0
+        ? { value: count, tooltip: `${count} in progress` }
+        : undefined;
   }
 
   /**

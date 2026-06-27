@@ -4,7 +4,7 @@ import {
   getPanelData,
   type PanelTab,
 } from './panelData';
-import { JournalStore, type Topic, type TopicStatus } from './db';
+import { JournalStore, type Topic, type TopicStatus, type WorkstreamStatus } from './db';
 import {
   type TraversalModeId,
 } from './graphTraversals';
@@ -60,12 +60,12 @@ interface GetWorkstreamInput {
 interface CreateWorkstreamToolInput {
   slug: string;
   title: string;
-  status?: 'open' | 'closed';
+  status?: WorkstreamStatus;
 }
 interface UpdateWorkstreamToolInput {
   slug: string;
   title?: string;
-  status?: 'open' | 'closed';
+  status?: WorkstreamStatus;
   closure?: string;
 }
 interface DeleteWorkstreamInput {

@@ -207,9 +207,11 @@ html, body {
   flex: 0 0 auto;
   margin-left: auto;
   margin-right: 4px;
-  min-width: 20px;
+  min-width: 18px;
   height: 18px;
-  padding: 0 6px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  text-align: center;
   border: none;
   border-radius: 999px;
   background: color-mix(in srgb, var(--vscode-descriptionForeground) 18%, transparent);
@@ -289,7 +291,46 @@ html, body {
    tinted header (the workstream row) and a body holding the nested tree. */
 
 .list.cards {
-  padding: 6px 0 12px;
+  padding: 6px 0 0;
+  /* Active tab fills the full panel height as a flex column. The list itself
+     no longer scrolls in cards mode; the In Progress region inside
+     `.active-sections` is the scroll container so the Queue/Backlog shelves
+     stay pinned top and bottom. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Active-tab flex column: Queue pinned top, In Progress flexible + scrolling
+   in the middle, Backlog pinned to the bottom edge. */
+.active-sections {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Queue + Backlog shelves are compact and keep their natural height so they
+   stay pinned at the top and bottom of the column. */
+.active-sections > .ws-shelf {
+  flex: 0 0 auto;
+}
+
+/* In Progress is the priority region: it takes all remaining space and
+   scrolls internally rather than pushing Backlog off-screen. */
+.active-sections > .ws-section-cards {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  padding-bottom: 12px;
+}
+
+.active-sections > .ws-section-cards::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .ws-card {
@@ -430,6 +471,9 @@ html, body {
 
 .context-menu-item:hover:not(:disabled) {
   background: var(--vscode-list-hoverBackground);
+  /* Brighten the row text on hover to reinforce the hover state — the list
+     hover foreground reads brighter than the rest --vscode-menu-foreground. */
+  color: var(--vscode-list-hoverForeground, var(--vscode-foreground));
 }
 
 .context-menu-item:disabled {
@@ -466,4 +510,427 @@ html, body {
 .context-submenu-indicator {
   display: inline-flex;
   opacity: 0.8;
+}
+
+/* Label text fills the row so the submenu chevron is pushed to the right edge
+   while a leading move-direction icon (if any) stays next to the label. */
+.context-menu-label {
+  margin-right: auto;
+}
+
+/* Leading move-direction arrow (arrow-circle-up / -down) shown beside
+   "Send to <section>" items. Mirrors the shelf move button (.ws-shelf-move):
+   a transparent circular box with a blue glyph at rest, scoped to this
+   dedicated class so the submenu chevron indicator stays untinted. */
+.context-menu-item .context-menu-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  margin-right: 4px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--vscode-charts-blue, var(--vscode-button-background));
+}
+
+/* Keep the glyph above the icon's hover shine sweep so the white gradient
+   never washes it out (mirrors .ws-shelf-move .codicon). */
+.context-menu-item .context-menu-icon .codicon {
+  position: relative;
+  z-index: 1;
+}
+
+/* Inverted hover, triggered by ROW hover and confined to the ICON: the
+   transparent circle fills with solid blue and the glyph flips to near-black,
+   exactly like .ws-shelf-move:hover. overflow:hidden only on hover so the rest
+   glyph isn't cropped; it also masks the shine sweep to the circle. The label
+   gets NO shine here — its only hover change is the text-brighten above. */
+.context-menu-item:hover:not(:disabled) .context-menu-icon {
+  background: var(--vscode-charts-blue, var(--vscode-button-background));
+  color: #0a0a0a;
+  overflow: hidden;
+}
+
+/* Wipe leading-edge band: identical treatment to .ws-shelf-move::after. The
+   icon's solid-blue hover background (above) is the steady end state; this
+   layer only paints the bright near-white / light-blue sliver that leads the
+   directional wipe across the circle once. Masked via border-radius:inherit +
+   the hover overflow:hidden, sits behind the glyph, hidden at rest. */
+.context-menu-item .context-menu-icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.85) 48%,
+    rgba(180, 215, 255, 0.6) 56%,
+    transparent 72%
+  );
+}
+
+/* One-shot wipe sweeping off the right edge to opacity:0, held there by
+   animation-fill-mode:forwards so the icon settles cleanly on solid blue +
+   black glyph with no centered band left over. Reuses the shared ws-move-wipe
+   keyframe (defined once near .ws-shelf-move). */
+.context-menu-item:hover:not(:disabled) .context-menu-icon::after {
+  opacity: 1;
+  animation: ws-move-wipe 0.5s ease-out 1;
+  animation-fill-mode: forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-menu-item:hover:not(:disabled) .context-menu-icon::after {
+    /* No wipe: jump straight to the solid-blue + black-glyph end state. */
+    animation: none;
+    opacity: 0;
+    transform: none;
+  }
+}
+
+/* -- Queue / Backlog peek shelf (Active tab) ----------------------------- */
+
+/* These styles cover ONLY the `display:'shelf'` sections (Queue + Backlog).
+   The Progress section (`display:'cards'`) renders through a different path
+   and is intentionally left untouched. Everything here is scoped under
+   `.ws-shelf*` so the cards section's header/labels are unaffected. */
+
+.ws-shelf {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  margin: 2px 0 6px;
+  /* Slightly lighter container than the panel background so each shelf reads
+     as a distinct layer. Subtle white overlay works across light/dark themes. */
+  background: rgba(255, 255, 255, 0.035);
+  border-radius: 6px;
+  padding: 2px 0;
+}
+
+/* Vertical label rail pinned to the left edge of the shelf. Fixed narrow
+   width; the label text + count are rotated 90° to read along the edge. Also
+   acts as a toggle when the deck can be expanded. */
+.ws-shelf-rail {
+  flex: 0 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 6px 0 0 6px;
+}
+
+.ws-shelf-rail:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+/* Single-item / empty shelves: the rail is not a toggle, so don't imply
+   interactivity. */
+.ws-shelf-rail.ws-shelf-rail-static {
+  cursor: default;
+}
+
+.ws-shelf-rail.ws-shelf-rail-static:hover {
+  background: none;
+}
+
+/* Rotate the label+count so they read bottom-to-top along the left edge.
+   vertical-rl + rotate(180deg) gives an upward-reading rail with the label
+   above the count. */
+.ws-shelf-rail-text {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.ws-shelf-rail .ws-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.ws-shelf-rail .ws-section-count {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+}
+
+/* Content column to the right of the rail — holds the deck/list/empty notice
+   plus the thin pull-handle. Takes all remaining width. */
+.ws-shelf-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Thin pull-handle: the expand/collapse affordance. A small grip pill that
+   widens + brightens on hover. Queue places it at the bottom edge of the
+   content column, Backlog at the top edge. */
+.ws-shelf-pull {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ws-shelf-grip {
+  width: 28px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--vscode-descriptionForeground);
+  opacity: 0.35;
+  transition: opacity 0.12s ease, width 0.12s ease;
+}
+
+.ws-shelf-pull:hover .ws-shelf-grip {
+  opacity: 0.7;
+  width: 36px;
+}
+
+.ws-shelf-empty {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 2px 8px;
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  font-size: 0.9em;
+}
+
+/* Compact shelf row. Reuses the same inner .icon/.label/.recent-chip markup
+   as .row but reads as a small bordered card so the peek-deck slivers behind
+   it look like a stack of the same object. */
+.ws-shelf-item {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.25)));
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, transparent));
+}
+
+.ws-shelf-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+/* In a shelf row the label grows so the trailing recent-chip pins to the
+   right edge while the leading move button stays at the left. */
+.ws-shelf-item .label {
+  flex: 1 1 auto;
+}
+
+/* Leading "send to In Progress" move-to button. Footprint matches the
+   .recent-chip number bubble (18×18) but the visible circle is the codicon
+   glyph's own drawn ring, not a button background — the arrow-circle glyph is
+   enlarged to nearly fill the 18px box so there's no wasted ring behind it.
+   Sits in front of the label with a small right gap. */
+.ws-shelf-move {
+  flex: 0 0 auto;
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--vscode-charts-blue, var(--vscode-button-background));
+  cursor: pointer;
+}
+
+.ws-shelf-move .codicon {
+  font-size: 17px;
+  line-height: 1;
+  overflow: visible;
+  /* Keep the glyph above the hover shine sweep. */
+  position: relative;
+  z-index: 1;
+}
+
+/* Inverted hover: the transparent circle fills with solid blue and the glyph
+   (arrow-circle ring + arrow) flips to near-black, reading as a black arrow on
+   a solid blue button. Clip enabled here so the shine sweep is masked to the
+   circle; rest state keeps overflow:visible so the 17px glyph isn't cropped. */
+.ws-shelf-move:hover {
+  background: var(--vscode-charts-blue, var(--vscode-button-background));
+  color: #0a0a0a;
+  overflow: hidden;
+}
+
+/* Wipe leading-edge band: the steady hover background (above) is already the
+   solid blue end state, so this layer ONLY paints the bright sliver that leads
+   the wipe. A narrow near-white / light-blue diagonal band that sweeps in from
+   the left, crosses the circle once, and exits off the right edge — giving the
+   illusion that the blue fill wipes in directionally. Masked to the circle via
+   border-radius:inherit + the parent's hover overflow:hidden. Sits behind the
+   glyph (glyph is z-index:1). Hidden at rest. */
+.ws-shelf-move::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.85) 48%,
+    rgba(180, 215, 255, 0.6) 56%,
+    transparent 72%
+  );
+}
+
+/* One-shot wipe: the bright band sweeps fully across and OFF the right edge,
+   fading to opacity:0. animation-fill-mode:forwards holds that final
+   off-canvas/invisible state, so nothing snaps back to center — the icon
+   settles on the clean solid-blue + black-glyph hover state and stays put. */
+.ws-shelf-move:hover::after {
+  opacity: 1;
+  animation: ws-move-wipe 0.5s ease-out 1;
+  animation-fill-mode: forwards;
+}
+
+@keyframes ws-move-wipe {
+  from {
+    transform: translateX(-110%);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(110%);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-shelf-move:hover::after {
+    /* No wipe: jump straight to the solid-blue + black-glyph end state with no
+       moving band. */
+    animation: none;
+    opacity: 0;
+    transform: none;
+  }
+}
+
+.ws-shelf-move:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.ws-shelf-item.revealed,
+.ws-shelf-item.revealed .label,
+.ws-shelf-item.revealed .icon .codicon {
+  color: var(--vscode-charts-yellow);
+  font-weight: 600;
+}
+
+/* Expanded state: plain vertical list of shelf rows. */
+.ws-shelf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 8px;
+}
+
+/* Collapsed state: peek deck. The two newest rows render as real, clickable
+   shelf rows stacked in normal flow (3px gap, matching .ws-shelf-list); behind
+   and below the lower row sit absolutely-positioned decorative slivers, offset
+   downward with reduced opacity + scaleX. */
+.ws-shelf-deck {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 8px;
+}
+
+/* Two real rows in flow (22px each + 3px gap = 47px). ws-layers-N adds
+   padding-bottom to reserve room for the slivers peeking below the bottom row
+   so nothing clips. */
+.ws-shelf-fan {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ws-shelf-fan.ws-layers-1 {
+  padding-bottom: 7px;
+}
+
+.ws-shelf-fan.ws-layers-2 {
+  padding-bottom: 14px;
+}
+
+/* Real rows sit above the decorative slivers. */
+.ws-shelf-fan .ws-shelf-deck-row {
+  position: relative;
+  z-index: 3;
+}
+
+.ws-shelf-layer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.25)));
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, transparent));
+  pointer-events: none;
+}
+
+/* Slivers peek DOWNWARD, fanning out from under the lower real row. The two
+   rows span 0–47px; sliver-1 starts at 32px (peeks 7px below the 47px bottom)
+   and sliver-2 at 39px (peeks a further 7px). */
+.ws-shelf-deck-down .ws-shelf-layer-1 {
+  top: 32px;
+  transform: scaleX(0.97);
+  opacity: 0.55;
+  z-index: 2;
+}
+
+.ws-shelf-deck-down .ws-shelf-layer-2 {
+  top: 39px;
+  transform: scaleX(0.94);
+  opacity: 0.3;
+  z-index: 1;
+}
+
+/* Backlog: slivers peek UPWARD (stack above the front item). */
+.ws-shelf-deck-up .ws-shelf-layer-1 {
+  bottom: 7px;
+  transform: scaleX(0.97);
+  opacity: 0.55;
+  z-index: 2;
+}
+
+.ws-shelf-deck-up .ws-shelf-layer-2 {
+  bottom: 14px;
+  transform: scaleX(0.94);
+  opacity: 0.3;
+  z-index: 1;
 }

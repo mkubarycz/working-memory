@@ -1,6 +1,7 @@
 import { test, expect } from 'vitest';
 import { openJournalStore } from '../src/db';
 import { getAllPanelData, type PanelTopic } from '../src/panelData';
+import { activeWorkstreams } from './helpers';
 
 test('Active tab nests child topics under their parent within a workstream', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
@@ -21,8 +22,9 @@ test('Active tab nests child topics under their parent within a workstream', () 
   const { active } = getAllPanelData(store);
 
   // assert
-  expect(active.items).toHaveLength(1);
-  const ws = active.items[0];
+  const workstreams = activeWorkstreams(active);
+  expect(workstreams).toHaveLength(1);
+  const ws = workstreams[0];
   if (ws.kind !== 'workstream') {
     throw new Error('expected workstream item');
   }
@@ -80,7 +82,7 @@ test('Active tab nests grandchildren (A → C → D) within a workstream', () =>
   const { active } = getAllPanelData(store);
 
   // assert: walk top-level → A
-  const ws = active.items[0];
+  const ws = activeWorkstreams(active)[0];
   if (ws.kind !== 'workstream') {
     throw new Error('expected workstream item');
   }

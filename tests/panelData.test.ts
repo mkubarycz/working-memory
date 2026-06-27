@@ -1,7 +1,8 @@
-import { test, expect } from 'vitest';
+import { test, expect, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { getAllPanelData } from '../src/panelData';
+import { getAllPanelData, getPanelData } from '../src/panelData';
 import { TRAVERSAL_MODES } from '../src/graphTraversals';
+import { activeWorkstreams } from './helpers';
 
 test('a workstream with a linked topic and entries appears correctly in panel data', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
@@ -31,14 +32,17 @@ test('a workstream with a linked topic and entries appears correctly in panel da
   const { active } = getAllPanelData(store);
 
   // assert
-  expect(active.items).toHaveLength(1);
+  const workstreams = activeWorkstreams(active);
+  expect(workstreams).toHaveLength(1);
 
-  const ws = active.items[0];
+  const ws = workstreams[0];
   expect(ws.kind).toBe('workstream');
   expect(ws.label).toBe('Demo WS');
   if (ws.kind !== 'workstream') {
     throw new Error('expected workstream item');
   }
+  // Workstream rows no longer carry an icon (reclaimed for real estate).
+  expect(ws.icon).toBeUndefined();
   expect(ws.recentEntryCount).toBeGreaterThanOrEqual(0);
 
   const topicsGroup = ws.children.find((c) => c.kind === 'topics-group');
@@ -103,7 +107,7 @@ test('entry-count chips use total journal entries per workstream/topic/session s
   store.linkEntryTopic({ entry_id: s1Old.id, topic_slug: 'top' });
 
   const all = getAllPanelData(store);
-  const activeWs = all.active.items[0];
+  const activeWs = activeWorkstreams(all.active)[0];
   expect(activeWs.kind).toBe('workstream');
   if (activeWs.kind !== 'workstream') {
     throw new Error('expected workstream item');
@@ -136,7 +140,7 @@ test('active tab hides closed sessions; archive tab still shows them', () => {
 
   // session is open → should appear on active tab
   const activeBefore = getAllPanelData(store).active;
-  const wsBefore = activeBefore.items[0];
+  const wsBefore = activeWorkstreams(activeBefore)[0];
   expect(wsBefore.kind).toBe('workstream');
   if (wsBefore.kind !== 'workstream') { throw new Error('expected workstream'); }
   const sgBefore = wsBefore.children.find((c) => c.kind === 'sessions-group');
@@ -149,7 +153,7 @@ test('active tab hides closed sessions; archive tab still shows them', () => {
 
   // closed session → must NOT appear on active tab
   const activeAfter = getAllPanelData(store).active;
-  const wsAfter = activeAfter.items[0];
+  const wsAfter = activeWorkstreams(activeAfter)[0];
   expect(wsAfter.kind).toBe('workstream');
   if (wsAfter.kind !== 'workstream') { throw new Error('expected workstream'); }
   const sgAfter = wsAfter.children.find((c) => c.kind === 'sessions-group');
@@ -173,6 +177,48 @@ test('active tab hides closed sessions; archive tab still shows them', () => {
   store.close();
 });
 
+test('moving a workstream re-stamps updated_at so it sorts newest in the Active recency order', () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const store = openJournalStore({ dbPath: ':memory:' });
+
+    // An older, untouched workstream already sitting in the Queue section.
+    store.createWorkstream({
+      slug: 'ws-stale',
+      title: 'Stale WS',
+      status: 'queue',
+    });
+
+    // A workstream created LATER (higher id, newer opened_at) that lives in
+    // Progress — by creation order it is the newer of the two.
+    vi.advanceTimersByTime(60_000);
+    store.createWorkstream({
+      slug: 'ws-moved',
+      title: 'Moved WS',
+      status: 'progress',
+    });
+
+    // Move it into Queue. This changes only `status` and writes no journal
+    // entry, but updateWorkstream re-stamps updated_at = now (the latest of
+    // the three workstreams), so it must sort ahead of the older untouched
+    // Stale WS within the Queue section.
+    vi.advanceTimersByTime(60_000);
+    store.updateWorkstream('ws-moved', { status: 'queue' });
+
+    const flattened = activeWorkstreams(getPanelData(store, 'active'));
+    const movedIdx = flattened.findIndex((w) => w.label === 'Moved WS');
+    const staleIdx = flattened.findIndex((w) => w.label === 'Stale WS');
+    expect(movedIdx).toBeGreaterThanOrEqual(0);
+    expect(staleIdx).toBeGreaterThanOrEqual(0);
+    expect(movedIdx).toBeLessThan(staleIdx);
+
+    store.close();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test('topic rows expose graph-aware attach/remove actions', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
   store.createWorkstream({ slug: 'ws-actions', title: 'WS Actions', status: 'open' });
@@ -187,7 +233,7 @@ test('topic rows expose graph-aware attach/remove actions', () => {
   });
 
   const { active, topics } = getAllPanelData(store);
-  const ws = active.items[0];
+  const ws = activeWorkstreams(active)[0];
   expect(ws.kind).toBe('workstream');
   if (ws.kind !== 'workstream') {
     throw new Error('expected workstream');
@@ -239,6 +285,45 @@ test('topic rows expose graph-aware attach/remove actions', () => {
   expect(topicRow.actions?.[traversalLabels.length]?.args).toEqual([{
     topicSlug: 'topic-actions',
   }]);
+
+  store.close();
+});
+
+test('sectionMoveActions tag each "Send to" action with a direction-relative arrow icon', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  store.createWorkstream({ slug: 'ws-queue', title: 'Queue WS', status: 'queue' });
+  store.createWorkstream({ slug: 'ws-progress', title: 'Progress WS', status: 'progress' });
+  store.createWorkstream({ slug: 'ws-backlog', title: 'Backlog WS', status: 'backlog' });
+
+  const all = activeWorkstreams(getPanelData(store, 'active'));
+  /** @param {string} slug */
+  const iconsByTitle = (slug: string) => {
+    const ws = all.find((w) => w.openUri.endsWith(`/${slug}.md`));
+    if (!ws) {
+      throw new Error(`missing workstream ${slug}`);
+    }
+    return Object.fromEntries(
+      (ws.actions ?? []).map((a) => [a.title, a.icon]),
+    );
+  };
+
+  // Queue is top (index 0): every other section is below → down arrows.
+  expect(iconsByTitle('ws-queue')).toEqual({
+    'Send to In Progress': 'arrow-circle-down',
+    'Send to Backlog': 'arrow-circle-down',
+  });
+
+  // Progress is middle (index 1): Queue is up, Backlog is down.
+  expect(iconsByTitle('ws-progress')).toEqual({
+    'Send to Queue': 'arrow-circle-up',
+    'Send to Backlog': 'arrow-circle-down',
+  });
+
+  // Backlog is bottom (index 2): every other section is above → up arrows.
+  expect(iconsByTitle('ws-backlog')).toEqual({
+    'Send to Queue': 'arrow-circle-up',
+    'Send to In Progress': 'arrow-circle-up',
+  });
 
   store.close();
 });
