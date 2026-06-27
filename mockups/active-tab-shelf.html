@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Active Tab — Shelf/Stage Mockups</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --panel: #181818;
+    --rail: #141414;
+    --stage: #1f1f24;
+    --fg: #cccccc;
+    --fg-dim: #8a8a8a;
+    --fg-faint: #5a5a5a;
+    --border: #2b2b2b;
+    --accent: #3794ff;
+    --chip: #2d2d2d;
+    --purple: #6b3f8f;
+    --shelf-wood: #3a2c22;
+    --shelf-wood-edge: #241a14;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #121212;
+    color: var(--fg);
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 13px;
+    padding: 28px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--fg-dim); margin: 0 0 24px; font-size: 13px; }
+  .gallery {
+    display: flex;
+    gap: 28px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .option {
+    width: 340px;
+  }
+  .option > .caption {
+    margin-bottom: 10px;
+  }
+  .caption .name { font-weight: 600; font-size: 14px; }
+  .caption .desc { color: var(--fg-dim); font-size: 12px; margin-top: 2px; line-height: 1.4; }
+
+  /* Fake VS Code side panel frame */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 8px 30px rgba(0,0,0,.45);
+  }
+  .panel-tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--border);
+    background: #1b1b1b;
+    height: 34px;
+    align-items: stretch;
+  }
+  .panel-tabs .t {
+    display: flex; align-items: center;
+    padding: 0 10px;
+    color: var(--fg-dim);
+    font-size: 12px;
+    border-bottom: 2px solid transparent;
+  }
+  .panel-tabs .t.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+  .codicon { display:inline-block; width:14px; height:14px; opacity:.85; }
+  .repo-ico {
+    width: 13px; height: 13px; display:inline-block; flex: 0 0 auto;
+    border: 1.4px solid currentColor; border-radius: 2px; position: relative; opacity:.8;
+  }
+  .repo-ico::after{
+    content:""; position:absolute; left:2px; right:2px; top:3px; height:1.4px;
+    background: currentColor;
+  }
+  .chip {
+    margin-left: auto;
+    background: var(--chip);
+    color: var(--fg-dim);
+    border-radius: 9px;
+    padding: 0 7px;
+    font-size: 11px;
+    line-height: 17px;
+    min-width: 17px;
+    text-align: center;
+  }
+
+  .section-label {
+    display:flex; align-items:center; gap:6px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    font-size: 11px;
+    color: var(--fg-dim);
+    padding: 8px 12px 6px;
+  }
+  .section-label .count { color: var(--fg-faint); }
+
+  /* ---- Shared: progress card (the "stage") ---- */
+  .stage { padding: 4px 8px 8px; }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 6px 0;
+    background: #1c1c1c;
+    overflow: hidden;
+  }
+  .card.purple { border-color: #573a6e; box-shadow: inset 3px 0 0 var(--purple); }
+  .card-head { display:flex; align-items:center; gap:7px; padding: 8px 10px; font-weight:600; }
+  .card-body { padding: 2px 10px 8px 22px; color: var(--fg-dim); font-size:12px; }
+  .row { display:flex; align-items:center; gap:6px; padding:3px 0; }
+  .row .muted { color: var(--fg-faint); }
+  .tree-ico { width:12px; height:12px; opacity:.6; display:inline-block; }
+
+  /* =========================================================
+     OPTION A — Bookshelf rail (spines standing like books)
+     ========================================================= */
+  .rail {
+    background: linear-gradient(180deg, var(--rail), #101010);
+    padding: 10px 12px 6px;
+    position: relative;
+  }
+  .rail.bottom { border-top: 1px solid var(--border); }
+  .rail .plank {
+    height: 6px;
+    margin: 0 -12px;
+    background: linear-gradient(180deg, var(--shelf-wood), var(--shelf-wood-edge));
+    box-shadow: 0 3px 6px rgba(0,0,0,.5);
+  }
+  .spines { display:flex; gap:6px; padding: 4px 0 0; min-height: 60px; align-items:flex-end; }
+  .spine {
+    flex: 0 0 auto;
+    width: 38px; height: 64px;
+    background: linear-gradient(180deg,#2a2a30,#202024);
+    border: 1px solid #34343c;
+    border-radius: 3px 3px 1px 1px;
+    box-shadow: 0 2px 4px rgba(0,0,0,.4), inset 0 0 0 1px rgba(255,255,255,.02);
+    display:flex; align-items:flex-end; justify-content:center;
+    position: relative;
+    cursor: grab;
+  }
+  .spine .vtxt {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-size: 11px; color: var(--fg);
+    padding: 6px 0 8px; white-space: nowrap;
+    max-height: 58px; overflow:hidden;
+  }
+  .spine .grab { position:absolute; top:4px; left:0; right:0; text-align:center; color: var(--fg-faint); font-size:9px; }
+  .spine.ghost { opacity:.4; }
+  .spine .badge {
+    position:absolute; top:-6px; right:-6px;
+    background: var(--accent); color:#fff; font-size:10px;
+    border-radius:9px; padding:0 5px; line-height:16px;
+  }
+
+  /* =========================================================
+     OPTION B — Drawers / trays
+     ========================================================= */
+  .drawer {
+    background: #161616;
+    border: 1px solid var(--border);
+    margin: 8px;
+    border-radius: 6px;
+    overflow:hidden;
+  }
+  .drawer-head {
+    display:flex; align-items:center; gap:8px;
+    padding: 7px 10px;
+    background: linear-gradient(180deg,#222,#1a1a1a);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .drawer-head .handle {
+    width: 26px; height:4px; border-radius:3px; background:#3a3a3a; margin-left:auto;
+  }
+  .tray { padding: 6px 8px; display:flex; flex-direction:column; gap:5px; }
+  .tile {
+    display:flex; align-items:center; gap:8px;
+    padding: 7px 9px;
+    background: #1f1f22;
+    border: 1px solid #2c2c30;
+    border-radius: 5px;
+    cursor: grab;
+  }
+  .tile .pull { margin-left:auto; color: var(--fg-faint); }
+  .drawer.stage-drawer { border-color:#3a3a44; background:#1f1f24; }
+  .drawer.stage-drawer .drawer-head { background: linear-gradient(180deg,#26262e,#1f1f26); }
+
+  /* =========================================================
+     OPTION C — Peek deck (fanned cards from top/bottom)
+     ========================================================= */
+  .deck-top, .deck-bottom { padding: 12px 14px 4px; background: var(--rail); }
+  .deck-bottom { padding: 4px 14px 14px; border-top:1px solid var(--border); }
+  .deck-label { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--fg-dim); margin-bottom:6px; display:flex; gap:6px; }
+  .fan { position: relative; height: 46px; }
+  .fan .pk {
+    position:absolute; left:0; right:0;
+    background:#26262b; border:1px solid #33333a; border-radius:6px;
+    padding:7px 10px; display:flex; align-items:center; gap:7px;
+    box-shadow: 0 -2px 6px rgba(0,0,0,.3);
+  }
+  .deck-bottom .fan .pk { box-shadow: 0 2px 6px rgba(0,0,0,.3); }
+  .pk.l0 { top:0; z-index:3; }
+  .pk.l1 { top:9px; z-index:2; transform: scale(.97); opacity:.6; }
+  .pk.l2 { top:18px; z-index:1; transform: scale(.94); opacity:.32; }
+  .deck-bottom .pk.l0{ bottom:0; top:auto; }
+  .deck-bottom .pk.l1{ bottom:9px; top:auto; }
+  .pull-tab {
+    width:34px; height:4px; border-radius:3px; background:#3a3a3a;
+    margin: 4px auto 0;
+  }
+
+  .legend { margin-top: 26px; color: var(--fg-dim); font-size:12px; line-height:1.5; max-width:760px; }
+  .legend b { color: var(--fg); }
+</style>
+</head>
+<body>
+  <h1>Active tab — “pull off the shelf onto the stage”</h1>
+  <p class="sub">Three looks, same data — Queue: <i>pee</i> · In&nbsp;Progress: <i>fart</i>, <i>Turd&nbsp;Farting&nbsp;Test</i> · Backlog: <i>Shit&nbsp;Brains</i>. Layout only; ignore interaction/animation for now.</p>
+
+  <div class="gallery">
+
+    <!-- ============ OPTION A ============ -->
+    <div class="option">
+      <div class="caption">
+        <div class="name">A · Bookshelf rail</div>
+        <div class="desc">Queue & Backlog are literal shelves of book-spines up top and bottom; the lit Progress “stage” sits between. You grab a spine and pull it down.</div>
+      </div>
+      <div class="panel">
+        <div class="panel-tabs">
+          <div class="t active">Active</div><div class="t">Archive</div><div class="t">Topics</div>
+        </div>
+
+        <div class="rail">
+          <div class="section-label">Queue <span class="count">· 1</span></div>
+          <div class="spines">
+            <div class="spine"><span class="grab">⠿</span><span class="vtxt">pee</span></div>
+          </div>
+          <div class="plank"></div>
+        </div>
+
+        <div class="stage">
+          <div class="section-label">In&nbsp;Progress <span class="count">· 2</span></div>
+          <div class="card">
+            <div class="card-head"><span class="repo-ico"></span> fart</div>
+            <div class="card-body">
+              <div class="row"><span class="tree-ico">▦</span> Topics <span class="muted">none linked</span></div>
+              <div class="row"><span class="tree-ico">◷</span> Sessions (1)</div>
+            </div>
+          </div>
+          <div class="card purple">
+            <div class="card-head"><span class="repo-ico"></span> Turd Farting Test <span class="chip">1</span></div>
+            <div class="card-body">
+              <div class="row"><span class="tree-ico">▦</span> Topics (1) — <span>Turd Farting</span></div>
+              <div class="row"><span class="tree-ico">◷</span> Sessions (1)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rail bottom">
+          <div class="plank"></div>
+          <div class="section-label">Backlog <span class="count">· 1</span></div>
+          <div class="spines">
+            <div class="spine"><span class="grab">⠿</span><span class="vtxt">Shit Brains</span><span class="badge">2</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ OPTION B ============ -->
+    <div class="option">
+      <div class="caption">
+        <div class="name">B · Drawers / trays</div>
+        <div class="desc">Queue and Backlog are slide-open drawers with item tiles; Progress is the open work surface. Pull a tile out of a drawer onto the surface.</div>
+      </div>
+      <div class="panel">
+        <div class="panel-tabs">
+          <div class="t active">Active</div><div class="t">Archive</div><div class="t">Topics</div>
+        </div>
+
+        <div class="drawer">
+          <div class="drawer-head"><span class="codicon">▾</span> <b>Queue</b> <span class="chip">1</span><span class="handle"></span></div>
+          <div class="tray">
+            <div class="tile"><span class="repo-ico"></span> pee <span class="pull">⤓</span></div>
+          </div>
+        </div>
+
+        <div class="drawer stage-drawer">
+          <div class="drawer-head"><span class="codicon">▾</span> <b>In Progress</b> <span class="chip">2</span></div>
+          <div class="stage" style="padding:6px 8px;">
+            <div class="card">
+              <div class="card-head"><span class="repo-ico"></span> fart</div>
+              <div class="card-body">
+                <div class="row"><span class="tree-ico">▦</span> Topics <span class="muted">none linked</span></div>
+                <div class="row"><span class="tree-ico">◷</span> Sessions (1)</div>
+              </div>
+            </div>
+            <div class="card purple">
+              <div class="card-head"><span class="repo-ico"></span> Turd Farting Test <span class="chip">1</span></div>
+              <div class="card-body">
+                <div class="row"><span class="tree-ico">▦</span> Topics (1) — <span>Turd Farting</span></div>
+                <div class="row"><span class="tree-ico">◷</span> Sessions (1)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="drawer">
+          <div class="drawer-head"><span class="codicon">▸</span> <b>Backlog</b> <span class="chip">1</span><span class="handle"></span></div>
+          <div class="tray">
+            <div class="tile"><span class="repo-ico"></span> Shit Brains <span class="chip" style="margin-left:auto">2</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ OPTION C ============ -->
+    <div class="option">
+      <div class="caption">
+        <div class="name">C · Peek deck</div>
+        <div class="desc">Queue fans down from the top edge, Backlog fans up from the bottom — only the front item is fully readable, the rest fade behind. A pull-tab drags the deck open.</div>
+      </div>
+      <div class="panel">
+        <div class="panel-tabs">
+          <div class="t active">Active</div><div class="t">Archive</div><div class="t">Topics</div>
+        </div>
+
+        <div class="deck-top">
+          <div class="deck-label"><b style="color:var(--fg)">QUEUE</b> · 1</div>
+          <div class="fan">
+            <div class="pk l0"><span class="repo-ico"></span> pee</div>
+            <div class="pk l1"><span class="repo-ico"></span> &nbsp;</div>
+          </div>
+          <div class="pull-tab"></div>
+        </div>
+
+        <div class="stage">
+          <div class="section-label">In&nbsp;Progress <span class="count">· 2</span></div>
+          <div class="card">
+            <div class="card-head"><span class="repo-ico"></span> fart</div>
+            <div class="card-body">
+              <div class="row"><span class="tree-ico">▦</span> Topics <span class="muted">none linked</span></div>
+              <div class="row"><span class="tree-ico">◷</span> Sessions (1)</div>
+            </div>
+          </div>
+          <div class="card purple">
+            <div class="card-head"><span class="repo-ico"></span> Turd Farting Test <span class="chip">1</span></div>
+            <div class="card-body">
+              <div class="row"><span class="tree-ico">▦</span> Topics (1) — <span>Turd Farting</span></div>
+              <div class="row"><span class="tree-ico">◷</span> Sessions (1)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="deck-bottom">
+          <div class="pull-tab"></div>
+          <div class="deck-label"><b style="color:var(--fg)">BACKLOG</b> · 1</div>
+          <div class="fan">
+            <div class="pk l0"><span class="repo-ico"></span> Shit Brains <span class="chip">2</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="legend">
+    <p><b>How to read these:</b> all three keep Progress as today’s full cards in the middle (“the stage”). They differ in how Queue/Backlog signal “stuff waiting on a shelf”:
+    <b>A</b> is the most literal shelf metaphor (vertical spines, wooden plank), great for a strong pull-down feel but spines fit fewer characters.
+    <b>B</b> reads as familiar collapsible drawers — most conventional, scales to many items, least “physical.”
+    <b>C</b> is a compact middle ground: a fanned peek deck that hints at depth and invites a pull-tab drag without eating much vertical space.</p>
+  </div>
+</body>
+</html>

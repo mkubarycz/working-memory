@@ -2,6 +2,7 @@ import { test, expect } from 'vitest';
 import { openJournalStore } from '../src/db';
 import { getAllPanelData } from '../src/panelData';
 import { TRAVERSAL_MODES } from '../src/graphTraversals';
+import { activeWorkstreams } from './helpers';
 
 test('a workstream with a linked topic and entries appears correctly in panel data', () => {
   const store = openJournalStore({ dbPath: ':memory:' });
@@ -31,9 +32,10 @@ test('a workstream with a linked topic and entries appears correctly in panel da
   const { active } = getAllPanelData(store);
 
   // assert
-  expect(active.items).toHaveLength(1);
+  const workstreams = activeWorkstreams(active);
+  expect(workstreams).toHaveLength(1);
 
-  const ws = active.items[0];
+  const ws = workstreams[0];
   expect(ws.kind).toBe('workstream');
   expect(ws.label).toBe('Demo WS');
   if (ws.kind !== 'workstream') {
@@ -103,7 +105,7 @@ test('entry-count chips use total journal entries per workstream/topic/session s
   store.linkEntryTopic({ entry_id: s1Old.id, topic_slug: 'top' });
 
   const all = getAllPanelData(store);
-  const activeWs = all.active.items[0];
+  const activeWs = activeWorkstreams(all.active)[0];
   expect(activeWs.kind).toBe('workstream');
   if (activeWs.kind !== 'workstream') {
     throw new Error('expected workstream item');
@@ -136,7 +138,7 @@ test('active tab hides closed sessions; archive tab still shows them', () => {
 
   // session is open → should appear on active tab
   const activeBefore = getAllPanelData(store).active;
-  const wsBefore = activeBefore.items[0];
+  const wsBefore = activeWorkstreams(activeBefore)[0];
   expect(wsBefore.kind).toBe('workstream');
   if (wsBefore.kind !== 'workstream') { throw new Error('expected workstream'); }
   const sgBefore = wsBefore.children.find((c) => c.kind === 'sessions-group');
@@ -149,7 +151,7 @@ test('active tab hides closed sessions; archive tab still shows them', () => {
 
   // closed session → must NOT appear on active tab
   const activeAfter = getAllPanelData(store).active;
-  const wsAfter = activeAfter.items[0];
+  const wsAfter = activeWorkstreams(activeAfter)[0];
   expect(wsAfter.kind).toBe('workstream');
   if (wsAfter.kind !== 'workstream') { throw new Error('expected workstream'); }
   const sgAfter = wsAfter.children.find((c) => c.kind === 'sessions-group');
@@ -187,7 +189,7 @@ test('topic rows expose graph-aware attach/remove actions', () => {
   });
 
   const { active, topics } = getAllPanelData(store);
-  const ws = active.items[0];
+  const ws = activeWorkstreams(active)[0];
   expect(ws.kind).toBe('workstream');
   if (ws.kind !== 'workstream') {
     throw new Error('expected workstream');

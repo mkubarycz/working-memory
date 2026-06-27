@@ -155,11 +155,10 @@
    */
   function cardContextMenu(card, topicSlug) {
     const slug = workstreamSlugFromOpenUri(card.openUri);
-    if (!slug || !topicSlug) {
-      return [];
-    }
-    return [
-      {
+    /** @type {ContextMenuItem[]} */
+    const items = [];
+    if (slug && topicSlug) {
+      items.push({
         label: 'Remove from Focus',
         enabled: true,
         message: {
@@ -167,8 +166,12 @@
           slug,
           topicSlug,
         },
-      },
-    ];
+      });
+    }
+    // Section-move actions ("Send to Queue" / "Send to Backlog" / etc.) come
+    // from the host-populated node.actions for the active tab.
+    items.push(...workstreamActionsMenu(card));
+    return items;
   }
 
   /**
@@ -658,6 +661,256 @@
     return row;
   }
 
+  /**
+   * Build one full workstream card (Progress section + Archive-style detail).
+   * Extracted from the old inline active-tab loop so both the Progress section
+   * and any future card surface can reuse it.
+   * @param {Node & { focused_topics?: Node[] }} item
+   * @returns {HTMLElement}
+   */
+  function renderWorkstreamCard(item) {
+    const card = document.createElement('div');
+    card.className = 'ws-card ws-card-color-' + colorIndexForId(item.id);
+    const workstreamSlug = workstreamSlugFromOpenUri(item.openUri);
+    if (workstreamSlug) {
+      card.dataset.workstreamSlug = workstreamSlug;
+    }
+    const expanded = state.expanded.has(item.id);
+    if (expanded) {
+      card.classList.add('expanded');
+    }
+
+    const header = document.createElement('div');
+    header.className = 'ws-card-header';
+    header.appendChild(renderRow(item, 0));
+    card.appendChild(header);
+
+    const hasChildren =
+      Array.isArray(item.children) && item.children.length > 0;
+    const focusedTopics = Array.isArray(item.focused_topics)
+      ? item.focused_topics
+      : [];
+    if (hasChildren || focusedTopics.length > 0) {
+      const body = document.createElement('div');
+      body.className = 'ws-card-body';
+      if (!expanded) {
+        body.hidden = true;
+      } else {
+        // Pinned focused-topic row(s) render first, above the normal
+        // topics group / sessions. They're a duplicate quick-access
+        // surface; the topic still appears in its regular slot below.
+        for (const ft of focusedTopics) {
+          const pinned = renderPinnedFocusedTopic(ft, item);
+          body.appendChild(pinned);
+        }
+        for (const child of item.children) {
+          renderNode(child, 1, body);
+        }
+      }
+      card.appendChild(body);
+    }
+
+    card.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openCardContextMenu(event, item);
+    });
+    return card;
+  }
+
+  /**
+   * Build the ContextMenuItem[] for a workstream's "send to section" actions
+   * (sourced from node.actions, which the host populates for the active tab).
+   * @param {Node} ws
+   * @returns {ContextMenuItem[]}
+   */
+  function workstreamActionsMenu(ws) {
+    const actions = Array.isArray(ws.actions) ? ws.actions : [];
+    return actions.map((a) => ({
+      label: a.title,
+      enabled: a.enabled !== false,
+      message: {
+        type: 'invoke',
+        command: a.command,
+        args: Array.isArray(a.args) ? a.args : [],
+      },
+    }));
+  }
+
+  /**
+   * Promote a workstream straight into the Progress section. Used by
+   * click-to-promote on Queue / Backlog shelf items.
+   * @param {Node} ws
+   */
+  function promoteWorkstream(ws) {
+    const slug = workstreamSlugFromOpenUri(ws.openUri);
+    if (!slug) {
+      return;
+    }
+    closeContextMenu();
+    vscode.postMessage({
+      type: 'invoke',
+      command: 'working-memory.setWorkstreamSection',
+      args: [{ slug, section: 'progress' }],
+    });
+  }
+
+  /**
+   * Build a compact single-line row for a Queue / Backlog shelf item.
+   * Click promotes to Progress; right-click opens the section-move menu.
+   * @param {Node} ws
+   * @returns {HTMLElement}
+   */
+  function renderShelfItem(ws) {
+    const el = document.createElement('div');
+    el.className = 'ws-shelf-item';
+    const slug = workstreamSlugFromOpenUri(ws.openUri);
+    if (slug) {
+      el.dataset.workstreamSlug = slug;
+    }
+    if (nodeMatchesReveal(ws)) {
+      el.classList.add('revealed');
+    }
+    const icon = makeCodicon(typeof ws.icon === 'string' ? ws.icon : 'repo');
+    if (icon) {
+      const wrap = document.createElement('span');
+      wrap.className = 'icon';
+      wrap.appendChild(icon);
+      el.appendChild(wrap);
+    }
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = ws.label;
+    el.appendChild(label);
+
+    const recentEntryCount =
+      typeof ws.recentEntryCount === 'number' ? ws.recentEntryCount : 0;
+    if (recentEntryCount > 0) {
+      const chip = document.createElement('span');
+      chip.className = 'recent-chip';
+      chip.textContent = String(recentEntryCount);
+      el.appendChild(chip);
+    }
+
+    el.title = (ws.tooltip ? ws.tooltip + '\n' : '') + 'Click to move to In Progress';
+    el.addEventListener('click', () => promoteWorkstream(ws));
+    el.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openContextMenu(event, workstreamActionsMenu(ws));
+    });
+    return el;
+  }
+
+  /**
+   * Build a Queue / Backlog peek shelf: collapsed shows the first workstream
+   * prominently plus a faded hint of the second; expanding reveals the rest.
+   * Rough first pass — functional over polished.
+   * @param {Node & { workstreams?: Node[], emptyMessage?: string, label?: string }} section
+   * @returns {HTMLElement}
+   */
+  function renderShelf(section) {
+    const shelf = document.createElement('div');
+    shelf.className = 'ws-shelf';
+    const items = Array.isArray(section.workstreams) ? section.workstreams : [];
+    const expanded = state.expanded.has(section.id);
+
+    const header = document.createElement('div');
+    header.className = 'ws-section-header ws-shelf-header';
+    const twisty = document.createElement('span');
+    twisty.className = 'twisty' + (items.length > 0 ? ' collapsible' : ' leaf') +
+      (expanded ? ' expanded' : '');
+    const tIcon = makeCodicon('chevron-right');
+    if (tIcon) {
+      twisty.appendChild(tIcon);
+    }
+    header.appendChild(twisty);
+    const hLabel = document.createElement('span');
+    hLabel.className = 'ws-section-label';
+    hLabel.textContent = section.label || '';
+    header.appendChild(hLabel);
+    const count = document.createElement('span');
+    count.className = 'ws-section-count';
+    count.textContent = String(items.length);
+    header.appendChild(count);
+    if (items.length > 0) {
+      header.addEventListener('click', () => toggle(section.id));
+    }
+    shelf.appendChild(header);
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'ws-shelf-empty';
+      empty.textContent = section.emptyMessage || '';
+      shelf.appendChild(empty);
+      return shelf;
+    }
+
+    if (expanded) {
+      const list = document.createElement('div');
+      list.className = 'ws-shelf-list';
+      for (const ws of items) {
+        list.appendChild(renderShelfItem(ws));
+      }
+      shelf.appendChild(list);
+    } else {
+      const peek = document.createElement('div');
+      peek.className = 'ws-shelf-peek';
+      const primary = renderShelfItem(items[0]);
+      primary.classList.add('ws-shelf-primary');
+      peek.appendChild(primary);
+      if (items[1]) {
+        const hint = document.createElement('div');
+        hint.className = 'ws-shelf-hint';
+        hint.textContent = items[1].label;
+        if (items.length > 2) {
+          hint.textContent += '  +' + (items.length - 1) + ' more';
+        }
+        hint.addEventListener('click', () => toggle(section.id));
+        peek.appendChild(hint);
+      }
+      shelf.appendChild(peek);
+    }
+    return shelf;
+  }
+
+  /**
+   * Render one Active-tab section (Queue / In Progress / Backlog).
+   * @param {Node & { display?: string, workstreams?: Node[], emptyMessage?: string, label?: string }} section
+   * @returns {HTMLElement}
+   */
+  function renderWorkstreamSection(section) {
+    if (section.display === 'shelf') {
+      return renderShelf(section);
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'ws-section ws-section-cards';
+    const header = document.createElement('div');
+    header.className = 'ws-section-header';
+    const hLabel = document.createElement('span');
+    hLabel.className = 'ws-section-label';
+    hLabel.textContent = section.label || '';
+    header.appendChild(hLabel);
+    const items = Array.isArray(section.workstreams) ? section.workstreams : [];
+    const count = document.createElement('span');
+    count.className = 'ws-section-count';
+    count.textContent = String(items.length);
+    header.appendChild(count);
+    wrap.appendChild(header);
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'ws-section-empty';
+      empty.textContent = section.emptyMessage || '';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+    for (const ws of items) {
+      wrap.appendChild(renderWorkstreamCard(ws));
+    }
+    return wrap;
+  }
+
   function render() {
     // Tabs
     const tabButtons = tabsEl.querySelectorAll('.tab');
@@ -680,57 +933,11 @@
     }
     const frag = document.createDocumentFragment();
     if (state.activeTab === 'active') {
-      // Each top-level workstream renders as its own collapsible card.
-      // Header is the workstream row itself; body holds the nested subtree.
-      for (const item of data.items) {
-        const card = document.createElement('div');
-        card.className = 'ws-card ws-card-color-' + colorIndexForId(item.id);
-        const workstreamSlug = workstreamSlugFromOpenUri(item.openUri);
-        if (workstreamSlug) {
-          card.dataset.workstreamSlug = workstreamSlug;
-        }
-        const expanded = state.expanded.has(item.id);
-        if (expanded) {
-          card.classList.add('expanded');
-        }
-
-        const header = document.createElement('div');
-        header.className = 'ws-card-header';
-        header.appendChild(renderRow(item, 0));
-        card.appendChild(header);
-
-        const hasChildren =
-          Array.isArray(item.children) && item.children.length > 0;
-        const focusedTopics = Array.isArray(item.focused_topics)
-          ? item.focused_topics
-          : [];
-        if (hasChildren || focusedTopics.length > 0) {
-          const body = document.createElement('div');
-          body.className = 'ws-card-body';
-          if (!expanded) {
-            body.hidden = true;
-          } else {
-            // Pinned focused-topic row(s) render first, above the normal
-            // topics group / sessions. They're a duplicate quick-access
-            // surface; the topic still appears in its regular slot below.
-            for (const ft of focusedTopics) {
-              const pinned = renderPinnedFocusedTopic(ft, item);
-              body.appendChild(pinned);
-            }
-            for (const child of item.children) {
-              renderNode(child, 1, body);
-            }
-          }
-          card.appendChild(body);
-        }
-
-        card.addEventListener('contextmenu', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          openCardContextMenu(event, item);
-        });
-
-        frag.appendChild(card);
+      // Active tab is grouped into Queue / In Progress / Backlog sections.
+      // Progress renders full cards; Queue & Backlog render compact peek
+      // shelves. Each top-level item is a section, not a workstream.
+      for (const section of data.items) {
+        frag.appendChild(renderWorkstreamSection(section));
       }
     } else {
       for (const item of data.items) {
@@ -863,6 +1070,11 @@
       const liveIds = new Set();
       const visit = (n) => {
         liveIds.add(n.id);
+        if (Array.isArray(n.workstreams)) {
+          for (const w of n.workstreams) {
+            visit(w);
+          }
+        }
         if (Array.isArray(n.children)) {
           for (const c of n.children) {
             visit(c);
@@ -892,6 +1104,11 @@
         const previous = state.recentCounts.get(n.id) ?? 0;
         if (count > previous) {
           flashChipIds.add(n.id);
+        }
+        if (Array.isArray(n.workstreams)) {
+          for (const w of n.workstreams) {
+            collectRecent(w);
+          }
         }
         if (Array.isArray(n.focused_topics)) {
           for (const ft of n.focused_topics) {

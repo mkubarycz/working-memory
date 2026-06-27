@@ -16,6 +16,7 @@
     "onUri",
     "onCommand:workingMemory.topic.addToWorkstream",
     "onCommand:workingMemory.topic.removeFromWorkstream",
+    "onCommand:working-memory.setWorkstreamSection",
     "onLanguageModelTool:wm_list_workstreams",
     "onLanguageModelTool:wm_get_workstream",
     "onLanguageModelTool:wm_create_workstream",
@@ -118,6 +119,11 @@
         "command": "workingMemory.topic.removeFromWorkstream",
         "title": "Topic: Remove from Workstream",
         "category": "Working Memory"
+      },
+      {
+        "command": "working-memory.setWorkstreamSection",
+        "title": "Move Workstream to Section",
+        "category": "Working Memory"
       }
     ],
     "menus": {
@@ -202,7 +208,7 @@
         "displayName": "Working Memory: Create Workstream",
         "toolReferenceName": "wm_create_workstream",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Create a new workstream. Slug must be unique across all workstreams (including soft-deleted ones). Title is the human-readable name. Status defaults to 'open'; if 'closed' is given, closed_at is set to now. Returns the created row.",
+        "modelDescription": "Create a new workstream. Slug must be unique across all workstreams (including soft-deleted ones). Title is the human-readable name. Status is a lifecycle value: 'queue', 'progress' (default), or 'backlog' place it in the matching Active-tab section; 'closed' archives it and stamps closed_at. Returns the created row.",
         "userDescription": "Create a new workstream",
         "tags": [
           "working-memory"
@@ -225,10 +231,12 @@
             "status": {
               "type": "string",
               "enum": [
-                "open",
+                "queue",
+                "progress",
+                "backlog",
                 "closed"
               ],
-              "description": "Initial status. Defaults to 'open'."
+              "description": "Initial lifecycle status. One of 'queue' | 'progress' | 'backlog' (Active-tab sections) or 'closed' (archived). Defaults to 'progress'."
             }
           }
         }
@@ -238,7 +246,7 @@
         "displayName": "Working Memory: Update Workstream",
         "toolReferenceName": "wm_update_workstream",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partially update a workstream identified by slug. Any of title, status, closure can be changed. If status transitions to 'closed' and closed_at is currently null, closed_at is set to now. Returns the updated row.",
+        "modelDescription": "Partially update a workstream identified by slug. Any of title, status, closure can be changed. Status is a lifecycle value: 'queue' | 'progress' | 'backlog' move it between Active-tab sections; 'closed' archives it (stamps closed_at if currently null). Moving from 'closed' back to an active section clears closed_at. Returns the updated row.",
         "userDescription": "Update a workstream's title, status, or closure note",
         "tags": [
           "working-memory"
@@ -260,10 +268,12 @@
             "status": {
               "type": "string",
               "enum": [
-                "open",
+                "queue",
+                "progress",
+                "backlog",
                 "closed"
               ],
-              "description": "New status. Setting to 'closed' stamps closed_at to now if it was unset."
+              "description": "New lifecycle status. 'queue' | 'progress' | 'backlog' move it between Active-tab sections; 'closed' archives it and stamps closed_at if unset."
             },
             "closure": {
               "type": "string",

@@ -500,6 +500,44 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.commands.registerCommand(
+      'working-memory.setWorkstreamSection',
+      async (arg?: { slug?: string; section?: string }) => {
+        const slug = arg?.slug;
+        const section = arg?.section;
+        if (!slug || !section) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Move Workstream requires a slug and section.',
+          );
+          return;
+        }
+        if (
+          section !== 'queue' &&
+          section !== 'progress' &&
+          section !== 'backlog'
+        ) {
+          vscode.window.showWarningMessage(
+            `Working Memory: invalid section "${section}".`,
+          );
+          return;
+        }
+        if (!store) {
+          vscode.window.showErrorMessage(
+            'Working Memory: cannot move workstream — DB is not available.',
+          );
+          return;
+        }
+        try {
+          store.updateWorkstream(slug, { status: section });
+          refresh();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to move workstream — ${message}`,
+          );
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
       'working-memory.reopenWorkstream',
       async (arg?: { slug?: string; workstream?: { slug?: string } }) => {
         const slug = arg?.slug ?? arg?.workstream?.slug;

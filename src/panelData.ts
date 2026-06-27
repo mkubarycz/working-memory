@@ -4,6 +4,7 @@ import {
   type Topic,
   type TopicType,
   type TopicWithCounts,
+  type WorkstreamSection,
   type WorkstreamTopicRow,
   type WorkstreamWithCount,
 } from './db';
@@ -104,6 +105,24 @@ export interface PanelWorkstream {
   children: (PanelTopicsGroup | PanelSessionsGroup)[];
 }
 
+/**
+ * One of the three vertically-stacked groups on the Active tab. `progress`
+ * renders its workstreams as full cards (today's behavior); `queue` and
+ * `backlog` render as a compact "peek shelf". The webview keys expand-state
+ * off `id`. Display mode is derived from `section` but shipped explicitly so
+ * the renderer doesn't have to branch on the section name.
+ */
+export interface PanelWorkstreamSection {
+  kind: 'workstream-section';
+  id: string;
+  section: WorkstreamSection;
+  label: string;
+  display: 'cards' | 'shelf';
+  workstreams: PanelWorkstream[];
+  /** Shown when this section has no workstreams. */
+  emptyMessage: string;
+}
+
 export interface PanelTopicRow {
   kind: 'topic-row';
   id: string;
@@ -130,7 +149,11 @@ export interface PanelTopicType {
   topicCount: number;
 }
 
-export type PanelItem = PanelWorkstream | PanelTopicRow | PanelTopicType;
+export type PanelItem =
+  | PanelWorkstream
+  | PanelWorkstreamSection
+  | PanelTopicRow
+  | PanelTopicType;
 
 export interface PanelData {
   tab: PanelTab;
@@ -389,6 +412,28 @@ function formatStarted(unixSeconds: number | null | undefined): string {
   return `${date} ${time}`;
 }
 
+/**
+ * Active-tab "send to section" actions for a workstream's context menu.
+ * Omits the section the workstream is already in. Each invokes the
+ * `working-memory.setWorkstreamSection` command (registered in extension.ts),
+ * which patches `status` via `store.updateWorkstream` and refreshes the panel.
+ */
+function sectionMoveActions(ws: WorkstreamWithCount): PanelAction[] {
+  const current = sectionForStatus(ws.status);
+  const targets: { section: WorkstreamSection; title: string }[] = [
+    { section: 'queue', title: 'Send to Queue' },
+    { section: 'progress', title: 'Send to In Progress' },
+    { section: 'backlog', title: 'Send to Backlog' },
+  ];
+  return targets
+    .filter((t) => t.section !== current)
+    .map((t) => ({
+      command: 'working-memory.setWorkstreamSection',
+      title: t.title,
+      args: [{ slug: ws.slug, section: t.section }],
+    }));
+}
+
 function buildWorkstream(
   store: JournalStore,
   tab: PanelTab,
@@ -410,7 +455,7 @@ function buildWorkstream(
             args: [{ slug: ws.slug }],
           },
         ]
-      : [];
+      : sectionMoveActions(ws);
   const { group: topicsGroup, orderedTopics } = buildTopics(
     store,
     tab,
@@ -578,20 +623,75 @@ export function getPanelData(store: JournalStore, tab: PanelTab): PanelData {
     return getPanelTopicTypesData(store);
   }
   const typeMap = loadTypeMap(store);
-  const rows =
-    tab === 'active'
-      ? store.listWorkstreams({
-          status: 'open',
-          orderBy: 'last-activity-desc',
-        })
-      : store.listWorkstreams({ status: 'closed', orderBy: 'closed-desc' });
+  if (tab === 'active') {
+    return getActivePanelData(store, typeMap);
+  }
+  const rows = store.listWorkstreams({
+    status: 'closed',
+    orderBy: 'closed-desc',
+  });
   return {
     tab,
     items: rows.map((w) => buildWorkstream(store, tab, w, typeMap)),
-    emptyMessage:
-      tab === 'active'
-        ? 'No active workstreams.'
-        : 'No archived workstreams.',
+    emptyMessage: 'No archived workstreams.',
+  };
+}
+
+/** Section order (top → bottom) on the Active tab. */
+const ACTIVE_SECTIONS: {
+  section: WorkstreamSection;
+  label: string;
+  display: 'cards' | 'shelf';
+  emptyMessage: string;
+}[] = [
+  { section: 'queue', label: 'Queue', display: 'shelf', emptyMessage: 'Queue is empty.' },
+  { section: 'progress', label: 'In Progress', display: 'cards', emptyMessage: 'Nothing in progress.' },
+  { section: 'backlog', label: 'Backlog', display: 'shelf', emptyMessage: 'Backlog is empty.' },
+];
+
+/**
+ * Map a stored workstream status to its Active-tab section. Exact section
+ * values pass through; everything else non-closed (notably the legacy 'open'
+ * value) lands in Progress so nothing silently disappears.
+ */
+export function sectionForStatus(status: string): WorkstreamSection {
+  if (status === 'queue' || status === 'backlog') {
+    return status;
+  }
+  return 'progress';
+}
+
+function getActivePanelData(
+  store: JournalStore,
+  typeMap: Map<string, TopicType>,
+): PanelData {
+  const rows = store.listWorkstreams({
+    status: 'active',
+    orderBy: 'last-activity-desc',
+  });
+  const buckets: Record<WorkstreamSection, PanelWorkstream[]> = {
+    queue: [],
+    progress: [],
+    backlog: [],
+  };
+  for (const w of rows) {
+    buckets[sectionForStatus(w.status)].push(
+      buildWorkstream(store, 'active', w, typeMap),
+    );
+  }
+  const items: PanelItem[] = ACTIVE_SECTIONS.map((s) => ({
+    kind: 'workstream-section',
+    id: `active:section:${s.section}`,
+    section: s.section,
+    label: s.label,
+    display: s.display,
+    workstreams: buckets[s.section],
+    emptyMessage: s.emptyMessage,
+  }));
+  return {
+    tab: 'active',
+    items,
+    emptyMessage: 'No active workstreams.',
   };
 }
 

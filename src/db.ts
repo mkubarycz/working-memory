@@ -189,6 +189,7 @@ const MIGRATIONS: Migration[] = [
   { version: 11, file: '011_workstream_topic_focus.sql' },
   { version: 12, file: '012_entries_created_by.sql' },
   { version: 13, file: '013_topic_type_body_template.sql' },
+  { version: 14, file: '014_workstream_lifecycle_status.sql' },
 ];
 
 /**
@@ -283,8 +284,23 @@ function runMigrations(instance: DatabaseSyncT, schemaDir: string): void {
 // Inputs / option shapes
 // ---------------------------------------------------------------------------
 
+/**
+ * The three live sections of the Active tab. A workstream's `status` column is
+ * overloaded into a lifecycle enum (migration 014): one of these three values,
+ * or 'closed' (archived). The legacy value 'open' is treated as 'progress'.
+ */
+export type WorkstreamSection = 'queue' | 'progress' | 'backlog';
+
+/** Every accepted `status` value, including the legacy 'open' alias. */
+export type WorkstreamStatus = WorkstreamSection | 'closed' | 'open';
+
 export interface ListWorkstreamsOptions {
-  status?: 'open' | 'closed' | 'all';
+  /**
+   * Status filter. In addition to exact-match values, 'all' returns every
+   * workstream and 'active' returns every non-closed workstream (any of
+   * queue/progress/backlog, plus any legacy 'open' rows).
+   */
+  status?: WorkstreamStatus | 'all' | 'active';
   includeDeleted?: boolean;
   orderBy?: 'opened-asc' | 'closed-desc' | 'last-activity-desc';
 }
@@ -292,12 +308,12 @@ export interface ListWorkstreamsOptions {
 export interface CreateWorkstreamInput {
   slug: string;
   title: string;
-  status?: 'open' | 'closed';
+  status?: WorkstreamStatus;
 }
 
 export interface UpdateWorkstreamInput {
   title?: string;
-  status?: 'open' | 'closed';
+  status?: WorkstreamStatus;
   closure?: string;
 }
 
@@ -529,7 +545,11 @@ export class JournalStore {
     if (!includeDeleted) {
       clauses.push('w.deleted_at IS NULL');
     }
-    if (status !== 'all') {
+    if (status === 'active') {
+      // Every non-closed workstream: queue / progress / backlog, plus any
+      // legacy 'open' rows that predate migration 014.
+      clauses.push("w.status != 'closed'");
+    } else if (status !== 'all') {
       clauses.push('w.status = ?');
       params.push(status);
     }
@@ -611,7 +631,7 @@ export class JournalStore {
       const tag = existing.deleted_at ? ' (soft-deleted)' : '';
       throw new Error(`workstream slug already exists${tag}: ${input.slug}`);
     }
-    const status = input.status ?? 'open';
+    const status = input.status ?? 'progress';
     const opened = nowEpoch();
     const closed = status === 'closed' ? opened : null;
     this.db
@@ -644,6 +664,11 @@ export class JournalStore {
       if (patch.status === 'closed' && current.closed_at === null) {
         sets.push('closed_at = ?');
         params.push(nowEpoch());
+      } else if (patch.status !== 'closed' && current.closed_at !== null) {
+        // Moving back to an active lifecycle section (queue/progress/backlog)
+        // un-archives the workstream — clear the closed stamp so it no longer
+        // reads as closed.
+        sets.push('closed_at = NULL');
       }
     }
     if (patch.closure !== undefined) {
@@ -669,13 +694,13 @@ export class JournalStore {
     if (!current) {
       throw new Error(`workstream not found: ${slug}`);
     }
-    if (current.status === 'open' && current.closed_at === null) {
+    if (current.status !== 'closed' && current.closed_at === null) {
       return current;
     }
     this.db
       .prepare(
         `UPDATE workstreams
-            SET status = 'open', closed_at = NULL
+            SET status = 'progress', closed_at = NULL
           WHERE slug = ?`,
       )
       .run(slug);
