@@ -15,6 +15,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        run: |
+          git fetch --no-tags origin main
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tag commit is on main — proceeding with release."
+          else
+            echo "::error::Tag $GITHUB_REF_NAME ($GITHUB_SHA) is not on main; refusing to release a feature-branch tag." >&2
+            exit 1
+          fi
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v4

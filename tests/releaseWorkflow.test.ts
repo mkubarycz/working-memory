@@ -17,6 +17,21 @@ test('release workflow triggers on v* tag pushes', () => {
   expect(yml).toMatch(/tags:\s*[\s\S]*-\s*['"]v\*['"]/);
 });
 
+test('release workflow checks out full history for ancestry checks', () => {
+  const yml = readFileSync(releaseYmlPath, 'utf8');
+
+  expect(yml).toMatch(/fetch-depth:\s*0/);
+});
+
+test('release workflow refuses tags whose commit is not on main', () => {
+  const yml = readFileSync(releaseYmlPath, 'utf8');
+
+  expect(yml).toMatch(/git\s+merge-base\s+--is-ancestor/);
+  expect(yml).toContain('origin/main');
+  expect(yml).toMatch(/refusing to release|::error::/);
+  expect(yml).toMatch(/exit\s+1/);
+});
+
 test('release workflow stamps the version from the tag', () => {
   const yml = readFileSync(releaseYmlPath, 'utf8');
 
