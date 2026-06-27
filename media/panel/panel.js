@@ -14,7 +14,7 @@
   /** @typedef {{ type: 'card.focus', slug: string, topicSlug: string }} CardFocusMessage */
   /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
   /** @typedef {CardUnfocusMessage | CardFocusMessage | InvokeMessage} ContextMenuMessage */
-  /** @typedef {{ label: string, enabled: boolean, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
+  /** @typedef {{ label: string, enabled: boolean, icon?: string, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
   /** @typedef {{ tab: 'active'|'archive'|'topics'|'topic-types', items: Node[],
    *              emptyMessage: string }} TabData */
 
@@ -53,6 +53,24 @@
     const el = document.createElement('span');
     el.className = 'codicon codicon-' + name;
     return el;
+  }
+
+  /**
+   * Fill a context-menu button with an optional leading move-direction icon
+   * followed by its label. When no icon is set, the label is rendered alone.
+   * @param {HTMLElement} btn
+   * @param {ContextMenuItem} item
+   */
+  function fillContextMenuItem(btn, item) {
+    const icon = item.icon ? makeCodicon(item.icon) : null;
+    if (icon) {
+      icon.classList.add('context-menu-icon');
+      btn.appendChild(icon);
+    }
+    const label = document.createElement('span');
+    label.className = 'context-menu-label';
+    label.textContent = item.label;
+    btn.appendChild(label);
   }
 
   // --- State ------------------------------------------------------------
@@ -186,6 +204,7 @@
     const updateItems = node.actions.map((action) => ({
       label: action.title,
       enabled: action.enabled !== false,
+      icon: action.icon,
       message: {
         type: 'invoke',
         command: action.command,
@@ -307,7 +326,7 @@
       btn.className = 'context-menu-item';
       btn.type = 'button';
       btn.disabled = !item.enabled;
-      btn.textContent = item.label;
+      fillContextMenuItem(btn, item);
       const hasSubmenu = Array.isArray(item.children) && item.children.length > 0;
       if (hasSubmenu) {
         // Parent submenu rows are navigational only; executable actions live in
@@ -328,7 +347,7 @@
           childBtn.className = 'context-menu-item';
           childBtn.type = 'button';
           childBtn.disabled = !child.enabled;
-          childBtn.textContent = child.label;
+          fillContextMenuItem(childBtn, child);
           childBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             runContextMenuItem(child);
@@ -729,6 +748,7 @@
     return actions.map((a) => ({
       label: a.title,
       enabled: a.enabled !== false,
+      icon: a.icon,
       message: {
         type: 'invoke',
         command: a.command,
@@ -757,11 +777,15 @@
 
   /**
    * Build a compact single-line row for a Queue / Backlog shelf item.
-   * Click promotes to Progress; right-click opens the section-move menu.
+   * Clicking the row opens the workstream doc; a leading move-to button
+   * promotes it to Progress; right-click opens the section-move menu.
    * @param {Node} ws
+   * @param {'up' | 'down'} [direction] Direction the move-to button promotes
+   *   the item toward the Progress stage. Queue sits above Progress → 'down';
+   *   Backlog sits below → 'up'. Controls which arrow codicon is shown.
    * @returns {HTMLElement}
    */
-  function renderShelfItem(ws) {
+  function renderShelfItem(ws, direction = 'down') {
     const el = document.createElement('div');
     el.className = 'ws-shelf-item';
     const slug = workstreamSlugFromOpenUri(ws.openUri);
@@ -771,13 +795,27 @@
     if (nodeMatchesReveal(ws)) {
       el.classList.add('revealed');
     }
-    const icon = makeCodicon(typeof ws.icon === 'string' ? ws.icon : 'repo');
-    if (icon) {
-      const wrap = document.createElement('span');
-      wrap.className = 'icon';
-      wrap.appendChild(icon);
-      el.appendChild(wrap);
+
+    // Leading move-to button: promotes the item straight into Progress.
+    // Directional glyph — Queue is above Progress (move DOWN), Backlog below
+    // (move UP). Sits in front of the label, replacing the old leading icon.
+    const move = document.createElement('button');
+    move.className = 'ws-shelf-move';
+    move.type = 'button';
+    move.title = 'Send to In Progress';
+    move.setAttribute('aria-label', 'Send to In Progress');
+    const moveIcon = makeCodicon(
+      direction === 'up' ? 'arrow-circle-up' : 'arrow-circle-down'
+    );
+    if (moveIcon) {
+      move.appendChild(moveIcon);
     }
+    move.addEventListener('click', (event) => {
+      event.stopPropagation();
+      promoteWorkstream(ws);
+    });
+    el.appendChild(move);
+
     const label = document.createElement('span');
     label.className = 'label';
     label.textContent = ws.label;
@@ -792,8 +830,12 @@
       el.appendChild(chip);
     }
 
-    el.title = (ws.tooltip ? ws.tooltip + '\n' : '') + 'Click to move to In Progress';
-    el.addEventListener('click', () => promoteWorkstream(ws));
+    el.title = (ws.tooltip ? ws.tooltip + '\n' : '') + 'Click to open';
+    el.addEventListener('click', () => {
+      if (typeof ws.openUri === 'string' && ws.openUri) {
+        vscode.postMessage({ type: 'open', uri: ws.openUri });
+      }
+    });
     el.addEventListener('contextmenu', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -829,10 +871,10 @@
    * Build a Queue / Backlog peek shelf. The shelf is a horizontal flex row: a
    * thin vertical label rail on the LEFT (the section label + count rotated
    * to read along the left edge) and a content column on the RIGHT holding
-   * the deck/list plus a thin pull-handle. Collapsed renders the newest
-   * workstream as a normal compact front row with up to two faded, offset
-   * decorative slivers fanning DOWN behind it to imply a stack (a "peek
-   * deck") — identical for both shelves. The pull-handle sits adjacent to the
+   * the deck/list plus a thin pull-handle. Collapsed renders the two newest
+   * workstreams as normal compact rows stacked in flow with up to two faded,
+   * offset decorative slivers fanning DOWN behind/below them to imply a stack
+   * (a "peek deck") — identical for both shelves. The pull-handle sits adjacent to the
    * In Progress stage (bottom of Queue, top of Backlog) and is the
    * expand/collapse toggle; the vertical rail also toggles. Expanding reveals
    * the full list of compact rows: Queue newest-at-bottom (reversed), Backlog
@@ -853,9 +895,11 @@
     const isBacklog = section.section === 'backlog';
 
     // The rail + handle are the expand/collapse affordance. They're only
-    // interactive when there's more than one item to reveal (a single item
-    // has nothing to expand; zero items renders an empty notice).
-    const canToggle = items.length > 1;
+    // interactive when there's more than two items to reveal. With two or
+    // fewer items everything fits, so we render a plain full list with a
+    // static rail (no peek-deck, no collapse); zero items renders an empty
+    // notice.
+    const canToggle = items.length > 2;
 
     // Vertical label rail pinned to the left edge of the shelf. The label
     // text + count are rotated to read along the edge (see panel.css). The
@@ -897,7 +941,10 @@
       return shelf;
     }
 
-    if (expanded) {
+    if (!canToggle || expanded) {
+      // Full list: either too few items to bother collapsing (<=2, always
+      // shown regardless of `state.expanded`) or a 3+ shelf the user has
+      // expanded.
       const list = document.createElement('div');
       list.className = 'ws-shelf-list';
       // `items` arrives newest-first (getActivePanelData sorts each shelf by
@@ -905,17 +952,19 @@
       // sits at the BOTTOM (nearest the Progress stage below it); Backlog
       // renders newest-first so the newest sits at the TOP.
       const ordered = isBacklog ? items : items.slice().reverse();
+      const moveDir = section.section === 'backlog' ? 'up' : 'down';
       for (const ws of ordered) {
-        list.appendChild(renderShelfItem(ws));
+        list.appendChild(renderShelfItem(ws, moveDir));
       }
       body = list;
     } else {
-      // Collapsed = peek deck. The front workstream renders as a normal
-      // compact shelf row; behind it, up to two faded/offset decorative
-      // slivers imply a stack of more items. Both shelves fan the slivers
-      // DOWN (stack below the front) with the newest item as the front on
-      // top — Queue and Backlog collapsed decks look identical.
-      const extraLayers = Math.min(items.length - 1, 2);
+      // Collapsed = peek deck. The TWO newest workstreams render as normal,
+      // clickable compact shelf rows stacked in flow (newest on top); behind
+      // and below the lower row, up to two faded/offset decorative slivers
+      // imply the remaining items. Both shelves fan the slivers DOWN (peek
+      // below the rows) — Queue and Backlog collapsed decks look identical.
+      // Slivers cover the rest: 1 sliver at exactly 3 items, 2 at 4+.
+      const extraLayers = Math.min(items.length - 2, 2);
 
       const deck = document.createElement('div');
       deck.className = 'ws-shelf-deck ws-shelf-deck-down';
@@ -925,18 +974,25 @@
       if (extraLayers > 0) {
         fan.classList.add('ws-layers-' + extraLayers);
       }
-      // Depth layers are decorative only: aria-hidden + pointer-events:none
+      // Depth slivers are decorative only: aria-hidden + pointer-events:none
       // (see panel.css) so they never intercept clicks or reach a screen
-      // reader. Farthest layer first so DOM order matches paint order.
+      // reader. Appended first (behind), farthest layer first so DOM order
+      // matches paint order; the real rows below sit above them via z-index.
       for (let i = extraLayers; i >= 1; i--) {
         const layer = document.createElement('div');
         layer.className = 'ws-shelf-layer ws-shelf-layer-' + i;
         layer.setAttribute('aria-hidden', 'true');
         fan.appendChild(layer);
       }
-      const front = renderShelfItem(items[0]);
-      front.classList.add('ws-shelf-front');
-      fan.appendChild(front);
+      // The two newest workstreams as real, clickable rows (newest on top).
+      // Each is a full renderShelfItem row, so click-to-open and the
+      // right-click context menu work automatically.
+      const moveDir = section.section === 'backlog' ? 'up' : 'down';
+      for (const ws of items.slice(0, 2)) {
+        const row = renderShelfItem(ws, moveDir);
+        row.classList.add('ws-shelf-deck-row');
+        fan.appendChild(row);
+      }
 
       deck.appendChild(fan);
       body = deck;

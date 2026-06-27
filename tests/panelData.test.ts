@@ -41,6 +41,8 @@ test('a workstream with a linked topic and entries appears correctly in panel da
   if (ws.kind !== 'workstream') {
     throw new Error('expected workstream item');
   }
+  // Workstream rows no longer carry an icon (reclaimed for real estate).
+  expect(ws.icon).toBeUndefined();
   expect(ws.recentEntryCount).toBeGreaterThanOrEqual(0);
 
   const topicsGroup = ws.children.find((c) => c.kind === 'topics-group');
@@ -283,6 +285,45 @@ test('topic rows expose graph-aware attach/remove actions', () => {
   expect(topicRow.actions?.[traversalLabels.length]?.args).toEqual([{
     topicSlug: 'topic-actions',
   }]);
+
+  store.close();
+});
+
+test('sectionMoveActions tag each "Send to" action with a direction-relative arrow icon', () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+  store.createWorkstream({ slug: 'ws-queue', title: 'Queue WS', status: 'queue' });
+  store.createWorkstream({ slug: 'ws-progress', title: 'Progress WS', status: 'progress' });
+  store.createWorkstream({ slug: 'ws-backlog', title: 'Backlog WS', status: 'backlog' });
+
+  const all = activeWorkstreams(getPanelData(store, 'active'));
+  /** @param {string} slug */
+  const iconsByTitle = (slug: string) => {
+    const ws = all.find((w) => w.openUri.endsWith(`/${slug}.md`));
+    if (!ws) {
+      throw new Error(`missing workstream ${slug}`);
+    }
+    return Object.fromEntries(
+      (ws.actions ?? []).map((a) => [a.title, a.icon]),
+    );
+  };
+
+  // Queue is top (index 0): every other section is below → down arrows.
+  expect(iconsByTitle('ws-queue')).toEqual({
+    'Send to In Progress': 'arrow-circle-down',
+    'Send to Backlog': 'arrow-circle-down',
+  });
+
+  // Progress is middle (index 1): Queue is up, Backlog is down.
+  expect(iconsByTitle('ws-progress')).toEqual({
+    'Send to Queue': 'arrow-circle-up',
+    'Send to Backlog': 'arrow-circle-down',
+  });
+
+  // Backlog is bottom (index 2): every other section is above → up arrows.
+  expect(iconsByTitle('ws-backlog')).toEqual({
+    'Send to Queue': 'arrow-circle-up',
+    'Send to In Progress': 'arrow-circle-up',
+  });
 
   store.close();
 });

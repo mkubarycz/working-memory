@@ -25,6 +25,8 @@ export interface PanelAction {
   description?: string;
   /** Args to pass to the command. */
   args?: unknown[];
+  /** Optional codicon id rendered beside the menu label (e.g. 'arrow-circle-up'). */
+  icon?: string;
 }
 
 export interface PanelTopic {
@@ -91,7 +93,6 @@ export interface PanelWorkstream {
   label: string;
   description: string;
   tooltip: string;
-  icon: 'repo';
   openUri: string;
   recentEntryCount: number;
   actions: PanelAction[];
@@ -420,6 +421,14 @@ function formatStarted(unixSeconds: number | null | undefined): string {
  */
 function sectionMoveActions(ws: WorkstreamWithCount): PanelAction[] {
   const current = sectionForStatus(ws.status);
+  // Vertical order of the sections, top → bottom. A move to a smaller index is
+  // "up", a larger index is "down" — picks the matching arrow-circle glyph.
+  const orderIndex: Record<WorkstreamSection, number> = {
+    queue: 0,
+    progress: 1,
+    backlog: 2,
+  };
+  const currentIndex = orderIndex[current];
   const targets: { section: WorkstreamSection; title: string }[] = [
     { section: 'queue', title: 'Send to Queue' },
     { section: 'progress', title: 'Send to In Progress' },
@@ -431,6 +440,10 @@ function sectionMoveActions(ws: WorkstreamWithCount): PanelAction[] {
       command: 'working-memory.setWorkstreamSection',
       title: t.title,
       args: [{ slug: ws.slug, section: t.section }],
+      icon:
+        orderIndex[t.section] < currentIndex
+          ? 'arrow-circle-up'
+          : 'arrow-circle-down',
     }));
 }
 
@@ -474,7 +487,6 @@ function buildWorkstream(
     label: ws.title,
     description,
     tooltip,
-    icon: 'repo',
     openUri: `working-memory:/workstream/${ws.slug}.md`,
     recentEntryCount,
     actions,
