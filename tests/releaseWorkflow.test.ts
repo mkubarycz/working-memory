@@ -53,7 +53,8 @@ test('release workflow publishes a GitHub Release with the vsix attached', () =>
   const yml = readFileSync(releaseYmlPath, 'utf8');
 
   expect(yml).toContain('softprops/action-gh-release');
-  expect(yml).toMatch(/files:\s*['"]\*\.vsix['"]/);
+  expect(yml).toContain('working-memory-*.vsix');
+  expect(yml).toContain('working-memory.vsix');
 });
 
 test('release workflow grants contents: write permission', () => {
