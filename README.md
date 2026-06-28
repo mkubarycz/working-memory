@@ -1,59 +1,68 @@
 # working-memory
 
-A VS Code extension that surfaces Michael's journal database as a left-rail
-tree view inside the hub workspace, and exposes the journal as MCP
-language-model tools (`wm_*`) so agents can read and append entries
-directly.
+**Working Memory is a context-storage and workflow engine for VS Code that
+treats agentic workflows as a first-class citizen.** It gives AI agents (and
+you) a durable, structured place to record what's happening, why decisions
+were made, and what's left to do — so context survives across sessions instead
+of evaporating when a chat ends.
 
-**What's in the box (current):**
+It does two things at once:
 
-- Opens / creates a SQLite DB at `<hub-workspace>/memory/journal.sqlite`
-  (via Node 22's built-in `node:sqlite`).
-- Applies tracked schema migrations from `schema/NNN_*.sql` on activation
-  (see *Schema migrations* below).
-- Activity-bar container with two tree views: **Active** (open
-  workstreams) and **Archive** (closed). Workstream nodes expand to a
-  `Topics` group; clicking a workstream or topic opens its virtual
-  markdown doc.
-- ~29 MCP tools (`wm_list_workstreams`, `wm_append_entry`,
-  `wm_search_entries`, `wm_link_entry_topic`, …) for agent-driven
-  journaling.
-- FTS5 search over entry bodies, soft-delete across workstreams /
-  sessions / entries / topics / link rows, and topic M:N links to both
-  workstreams and entries.
+- **Context storage** — a SQLite database that captures work as a simple
+  hierarchy: **workstreams** (long-running threads) contain **sessions**
+  (individual work blocks) which contain **entries** (timestamped log lines).
+  Durable **topics** cut across workstreams to track subjects that outlive any
+  one session, and full-text search makes all of it retrievable.
+- **Workflow engine** — agents drive the whole thing through ~29 MCP
+  language-model tools (`wm_*`). They open sessions, append journal entries,
+  open and close topics, and link everything together as they work. A panel UI
+  surfaces the live state so you can watch and steer.
+
+## How it works
+
+- **Storage:** a SQLite DB at `<hub-workspace>/memory/journal.sqlite`, opened
+  via Node 22's built-in `node:sqlite` — no native modules, no build step.
+  Schema lives in tracked, append-only migrations under `schema/NNN_*.sql`,
+  applied automatically on activation.
+- **Agent access:** the journal is exposed directly as MCP tools
+  (`wm_start_session`, `wm_append_entry`, `wm_search_entries`,
+  `wm_create_topic`, `wm_link_entry_topic`, …). Agents read and write the
+  database without ever touching SQL by hand — the tools are the API.
+- **You see it:** an activity-bar container with two tree views — **Active**
+  (open workstreams) and **Archive** (closed) — plus a webview panel with
+  Active / Archive / Topics tabs. Workstreams expand to a `Topics` group;
+  clicking a workstream, topic, or session opens its virtual markdown doc.
+- **Built for recovery:** FTS5 search over entry bodies, soft-delete (and
+  `wm_restore_*` undo) across workstreams / sessions / entries / topics / link
+  rows, and topic M:N links to both workstreams and entries.
+
+## Install the latest prebuilt build
+
+Tagging a release (`git tag v<version> && git push --tags`) runs the
+[`Release VSIX`](.github/workflows/release.yml) workflow, which builds, tests,
+packages, and attaches the `.vsix` to a GitHub Release. A stable
+`working-memory.vsix` asset always points at the latest release, so this
+one-liner installs the newest build without cloning:
+
+```bash
+curl -sL https://github.com/mkubarycz/working-memory/releases/latest/download/working-memory.vsix -o /tmp/working-memory.vsix && code --install-extension /tmp/working-memory.vsix --force
+# then reload the VS Code window
+```
 
 ---
 
 ## Build
 
 ```bash
+git clone https://github.com/mkubarycz/working-memory.git
+cd working-memory
 npm install
-npm run compile           # tsc -p .  →  out/src/extension.js, out/scripts/seed.js
+npm run compile           # tsc -p .  →  out/src/extension.js
+./scripts/release.sh      # build, package, and install the .vsix; then reload the window
 ```
 
-Watch mode while iterating:
-
-```bash
-npm run watch
-```
-
-## Seed the DB
-
-```bash
-npm run seed              # idempotent; only inserts when workstreams is empty
-```
-
-To re-seed from scratch, delete the DB first:
-
-```bash
-rm ../../memory/journal.sqlite*   # .sqlite, -wal, -shm
-npm run seed
-```
-
-The script resolves the DB path **relative to its own location**:
-`<hub>/projects/working-memory/scripts/seed.ts` → `<hub>/memory/journal.sqlite`.
-That makes it safe to run from any cwd as long as the project lives at
-`<hub>/projects/working-memory/`.
+`./scripts/release.sh` is the local deploy step — it builds, packages, and
+installs the `.vsix` into your running VS Code in one shot.
 
 ## DB path resolution (extension)
 
@@ -65,25 +74,17 @@ workspace and run **Working Memory: Refresh** (or reload the window).
 
 ## Run the extension locally
 
-Two options.
+For iterating on the extension itself, use the **Extension Development Host**:
 
-### A. Extension Development Host (recommended while iterating)
-
-1. Open `/Users/mkubarycz/Documents/kubarycz-agentic-workspace/projects/working-memory/`
-   in VS Code.
+1. Open the `working-memory/` project folder in VS Code.
 2. Press `F5` (or **Run → Start Debugging**). A second VS Code window opens
    with the extension loaded.
 3. In that window, open the multi-root workspace
    `kubarycz-agentic-workspace.code-workspace` so the hub folder is present.
-4. Click the brain icon in the activity bar → see the seeded workstreams.
+4. Click the brain icon in the activity bar → see your workstreams.
 
-### B. Install the packaged `.vsix`
-
-```bash
-npm run package                                    # produces working-memory-0.1.0.vsix
-code --install-extension working-memory-0.1.0.vsix
-# then reload the window
-```
+To install a build instead of debugging, use the prebuilt one-liner above or
+`./scripts/release.sh` for a local build-and-install.
 
 ## Chat link patterns
 
@@ -127,48 +128,6 @@ The `?...` payload is `encodeURIComponent(JSON.stringify([id]))`. The
 deep-link form above is preferred for chat because it does not require
 trust.
 
-## Recovery
-
-If you (or an agent acting on your behalf) accidentally soft-deleted a
-workstream, session, entry, or topic, use the `wm_restore_*` tools to undo
-the delete **without writing SQL by hand**.
-
-Each tool restores only the individual record — child records remain
-soft-deleted and must be restored individually.
-
-| Soft-deleted | Restore tool |
-|---|---|
-| Workstream | `wm_restore_workstream` |
-| Session | `wm_restore_session` |
-| Entry | `wm_restore_entry` |
-| Topic | `wm_restore_topic` |
-
-### Typical recovery flow
-
-```
-# Restore a soft-deleted workstream:
-wm_restore_workstream { "slug": "my-workstream" }
-
-# Restore a specific session:
-wm_restore_session { "session_id": "<uuid>" }
-
-# Restore a single entry:
-wm_restore_entry { "entry_id": 42 }
-
-# Restore a topic (link rows in workstream_topics / entry_topics remain
-# soft-deleted; use wm_link_workstream_topic / wm_link_entry_topic to
-# re-activate them):
-wm_restore_topic { "slug": "some-topic" }
-```
-
-**Notes:**
-
-- Every restore is **idempotent** — calling it on a row that is already
-  active is a no-op (returns zero counts, no error).
-- `wm_restore_entry` throws if the entry is not currently soft-deleted.
-- Restored entries are automatically re-inserted into the FTS index so
-  `wm_search_entries` can find them again immediately.
-
 ## Schema migrations
 
 New migrations go in `schema/NNN_<name>.sql` and are registered in the
@@ -191,42 +150,26 @@ Rules:
 
 ## Releasing
 
-**Don't run these scripts directly.** Ask the `working-memory-developer`
-agent to ship a build, check it in, or roll one back. The scripts below
-are the agent's tools; the rules for *when* to run each one live in the
-agent's spec at
-`~/Library/Application Support/Code/User/prompts/working-memory-developer.agent.md`.
-
-### Flow (test-then-commit)
-
-1. **Build & install** — `./scripts/release.sh`
-   - Snapshots the journal DB to `<hub>/memory/.backups/` (gitignored,
-     last 10 kept).
-   - Compiles, packages `dist/working-memory-<version>.vsix`, installs it.
-   - Does **no git work**. The working tree is expected to be dirty —
-     the in-flight change is what's being released.
-2. **Reload + test** — human-in-the-loop step. Reload the VS Code window
-   and exercise the change.
-3. **Commit + tag** — only after testing passes. The agent does this with
-   normal git commands:
-   ```
-   git add -A
-   git commit -m "Release working-memory v<version>: <one-line summary>"
-   git tag working-memory-v<version> -m "Release working-memory v<version>"
-   ```
-   No sibling script wraps this — it's intentionally a deliberate step.
-
-### Rollback (if testing fails)
+Releases are cut by tagging `main`. Bump the version, push the commit, and push
+a `v<version>` tag — the [`Release VSIX`](.github/workflows/release.yml)
+workflow does the rest: build, test, package, and publish the `.vsix` to a
+GitHub Release (including the stable `working-memory.vsix` asset the install
+one-liner points at).
 
 ```bash
-./scripts/rollback.sh <version>
+# from an up-to-date main, with the change already merged:
+npm version <version>                 # bumps package.json, commits, creates the v<version> tag
+git push origin main --follow-tags    # pushes the commit and the tag
 ```
 
-Restores the snapshot over the live DB and reinstalls the previous
-`.vsix` from `dist/`. Requires VS Code to be fully quit first (the live
-DB is opened with WAL — restoring it under a live extension host can
-corrupt state). Because commit + tag only happen after testing passes,
-rollback normally has no git state to clean up.
+**Tags must be on `main`.** The workflow's first step verifies the tagged
+commit is an ancestor of `origin/main` and refuses to release a feature-branch
+tag.
+
+For ad-hoc local testing before a release, `./scripts/release.sh` builds,
+packages, and installs the `.vsix` into your running VS Code. It is a
+local-only convenience script and does no git work — it is not part of the
+release flow.
 
 ### Migration safety
 
@@ -236,51 +179,8 @@ children. Migration 004 wiped two join tables by using a naïve
 create-copy-drop-rename pattern with `foreign_keys = ON` globally enabled;
 that template is the documented cure.
 
-## SQLite runtime (`node:sqlite`)
-
-The extension uses Node 22's built-in `node:sqlite` module — **no native
-module build step, no `better-sqlite3`, no `@electron/rebuild` dance**.
-`src/db.ts` requires it lazily so any load-time failure surfaces as an
-error toast instead of a silent activation crash. VS Code 1.95+ ships
-with a Node runtime new enough to support it.
-
-## Layout
-
-```
-working-memory/
-├── package.json
-├── tsconfig.json
-├── media/
-│   └── brain.svg              # activity-bar icon
-├── schema/
-│   ├── 001_initial.sql        # baseline (workstreams, sessions, entries, FTS5)
-│   ├── 002_soft_delete.sql    # deleted_at on workstreams/sessions/entries
-│   ├── 003_topics.sql         # topics + workstream/entry join tables
-│   ├── 004_topic_status_open_closed.sql
-│   ├── 005_safe_topic_rebuild_template.sql  # cure for the 004 cascade bug
-│   ├── 006_topic_parents.sql  # topic-to-topic DAG (parent/child links)
-│   ├── 007_topic_type.sql     # topic_type discriminator (default 'topic')
-│   ├── 008_topic_types_table.sql  # `topic_types` registry table + seed
-│   └── 009_topic_type_fk.sql      # FK topics.topic_type -> topic_types.id
-├── src/
-│   ├── extension.ts           # activate/deactivate, registers views + commands
-│   ├── db.ts                  # hub lookup, open + migrate, all queries
-│   ├── tools.ts               # MCP language-model tool registrations (wm_*)
-│   ├── tree.ts                # WorkstreamTreeProvider (Active + Archive tabs)
-│   └── contentProvider.ts     # virtual docs on the working-memory: URI scheme
-├── scripts/
-│   ├── seed.ts                # standalone seeder (npm run seed)
-│   ├── release.sh             # snapshot + compile + package + install
-│   └── rollback.sh            # restore snapshot + reinstall previous vsix
-└── dist/                      # built .vsix artifacts (gitignored)
-```
-
 ## Release history
 
-- **v0.7.2** — `topic_types` DB table with FK from `topics.topic_type`. Removed the TS registry + build-time sync script in favor of server-side validation; new `wm_list_topic_types` tool exposes the registry.
-- **v0.7.1** — TopicType registry; Feature type registered.
-- **v0.7.0** — add `topic_type` discriminator on topics (default `'topic'`, registry in `src/topicTypes.ts`); surfaced on `wm_create_topic`, `wm_update_topic`, `wm_list_topics`.
-- **v0.6.1** — topic parents DAG + muted closed topic rows.
-- **v0.5.1** — Topics tab in the panel.
-- **v0.5.0** — webview panel with Active/Archive tabs.
-- **v0.4.2** — archive tab + topic status open/closed + last-activity sort.
+See the [GitHub Releases](https://github.com/mkubarycz/working-memory/releases)
+page — each tagged `v<version>` release carries its notes and the published
+`.vsix`.

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { buildTopicBreadcrumb, renderTopicDoc } from '../src/renderer';
+import { buildTopicBreadcrumb, renderTopicDoc } from '../src/virtualFileRenderer';
 
 // ---------------------------------------------------------------------------
 // buildTopicBreadcrumb unit tests

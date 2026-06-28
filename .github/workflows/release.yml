@@ -53,9 +53,13 @@ jobs:
         run: npm test
 
       - name: Package VSIX
-        run: npx vsce package --allow-missing-repository --no-dependencies
+        run: |
+          npx vsce package --allow-missing-repository --no-dependencies
+          cp working-memory-*.vsix working-memory.vsix
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: '*.vsix'
+          files: |
+            working-memory-*.vsix
+            working-memory.vsix

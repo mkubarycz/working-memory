@@ -5,11 +5,12 @@ import {
   renderTopicDoc,
   renderTopicTypeDoc,
   renderSessionDoc,
+  enrichDeepLinks,
   extractTopicBody,
   extractTopicTypeBodyTemplate,
   extractTopicTypeLabel,
   extractTopicTypeDescription,
-} from './renderer';
+} from './virtualFileRenderer';
 
 type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'unknown';
 
@@ -188,16 +189,16 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       ].join('\n');
     }
     if (kind === 'workstream') {
-      return renderWorkstreamDoc(this.store, slug);
+      return enrichDeepLinks(this.store, renderWorkstreamDoc(this.store, slug));
     }
     if (kind === 'topic') {
-      return renderTopicDoc(this.store, slug);
+      return enrichDeepLinks(this.store, renderTopicDoc(this.store, slug));
     }
     if (kind === 'topic-type') {
-      return renderTopicTypeDoc(this.store, slug);
+      return enrichDeepLinks(this.store, renderTopicTypeDoc(this.store, slug));
     }
     if (kind === 'session') {
-      return renderSessionDoc(this.store, slug);
+      return enrichDeepLinks(this.store, renderSessionDoc(this.store, slug));
     }
     return `# Unknown working-memory URI\n\n\`${uri.toString()}\``;
   }

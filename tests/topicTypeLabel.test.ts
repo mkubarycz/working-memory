@@ -7,7 +7,7 @@
 
 import { test, expect, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { renderTopicTypeDoc } from '../src/renderer';
+import { renderTopicTypeDoc } from '../src/virtualFileRenderer';
 
 // ---------------------------------------------------------------------------
 // Mock vscode — full shape needed for WorkstreamDocumentProvider
