@@ -17,3 +17,23 @@
   margin: 2px 0;
   line-height: 1.5;
 }
+
+/* Inline type codicons prepended to Working Memory deep-links by the renderer's
+   enrichDeepLinks() pass. The span is emitted INSIDE the link's `[...]` label so
+   the glyph is part of the anchor: it inherits the link colour (hyperlink blue)
+   and — via font-size:inherit — the link's font-size, so it scales correctly in
+   both heading-sized session links and inline body references. The base
+   codicon.css rule otherwise hard-codes the glyph to 16px.
+
+   Vertical centring: baseline-align the glyph, then push it down with a
+   font-relative `top` (em). Because the nudge is in em it scales with the
+   link's font-size (~2px at body text, ~3px at heading-sized links), so a
+   single value reads centred across both contexts. */
+.codicon[class*='codicon-'] {
+  font-size: inherit;
+  color: inherit;
+  vertical-align: baseline;
+  position: relative;
+  top: 0.15em;
+  margin-right: 0.2em;
+}
