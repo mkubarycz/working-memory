@@ -91,6 +91,13 @@
         "icon": "$(cloud-download)"
       },
       {
+        "command": "working-memory.backupNow",
+        "title": "Back up journal database now",
+        "shortTitle": "Back Up Now",
+        "category": "Working Memory",
+        "icon": "$(save)"
+      },
+      {
         "command": "working-memory.open",
         "title": "Open Doc\u2026",
         "category": "Working Memory"
@@ -140,6 +147,11 @@
         },
         {
           "command": "working-memory.updateToLatest",
+          "when": "view == workingMemory.workstreams",
+          "group": "navigation"
+        },
+        {
+          "command": "working-memory.backupNow",
           "when": "view == workingMemory.workstreams",
           "group": "navigation"
         }

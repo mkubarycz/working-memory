@@ -1,8 +1,14 @@
 import * as vscode from 'vscode';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   JournalStore,
   openJournalStore,
@@ -60,6 +66,54 @@ function revealHeading(
     editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
     return;
   }
+}
+
+function backupTimestamp(date = new Date()): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const ymd = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
+  const hms = `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  return `${ymd}-${hms}`;
+}
+
+/**
+ * Snapshot the live journal DB (and its `-wal`/`-shm` sidecars) into
+ * `<hub>/memory/.backups/`. Shared by the pre-upgrade path and the on-demand
+ * "Back up journal database now" button.
+ *
+ * `label` is the marker embedded between the `journal-` prefix and the
+ * timestamp, distinguishing snapshot kinds:
+ *   - pre-upgrade: `pre-v<version>`  → journal-pre-v0.11.4-<YYYYMMDD>-<HHMMSS>.sqlite
+ *   - manual:      `manual`          → journal-manual-<YYYYMMDD>-<HHMMSS>.sqlite
+ *
+ * Throws on any failure so callers can abort the operation. Returns the path of
+ * the main `.sqlite` snapshot, or `null` when there is no live DB to back up
+ * (e.g. first run) — that is not an error.
+ */
+function backupJournalDb(label: string): string | null {
+  const dbPath = resolveDbPath();
+  if (!dbPath) {
+    throw new Error(
+      'could not locate the hub workspace journal database (no memory/ folder among open workspace folders).',
+    );
+  }
+  if (!existsSync(dbPath)) {
+    // No live DB yet — nothing at risk, nothing to snapshot.
+    return null;
+  }
+
+  const backupDir = join(dirname(dbPath), '.backups');
+  mkdirSync(backupDir, { recursive: true });
+
+  const snapBase = join(backupDir, `journal-${label}-${backupTimestamp()}`);
+  const mainSnapshot = `${snapBase}.sqlite`;
+  copyFileSync(dbPath, mainSnapshot);
+  for (const suffix of ['-wal', '-shm']) {
+    const sidecar = `${dbPath}${suffix}`;
+    if (existsSync(sidecar)) {
+      copyFileSync(sidecar, `${snapBase}.sqlite${suffix}`);
+    }
+  }
+  return mainSnapshot;
 }
 
 function runCommand(command: 'gh' | 'code', args: string[]): Promise<void> {
@@ -274,6 +328,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const downloadDir = mkdtempSync(
           join(tmpdir(), 'working-memory-update-latest-'),
         );
+        let backupPath: string | null = null;
         try {
           await vscode.window.withProgress(
             {
@@ -299,6 +354,21 @@ export function activate(context: vscode.ExtensionContext): void {
                 );
               }
 
+              // Always snapshot the live journal DB BEFORE installing. A failed
+              // backup must abort the upgrade so we never install over an
+              // un-snapshotted DB.
+              try {
+                backupPath = backupJournalDb(
+                  `pre-v${context.extension.packageJSON.version as string}`,
+                );
+              } catch (backupErr) {
+                const detail =
+                  backupErr instanceof Error
+                    ? backupErr.message
+                    : String(backupErr);
+                throw new Error(`pre-upgrade DB backup failed — ${detail}`);
+              }
+
               await runCommand('code', [
                 '--install-extension',
                 vsixPath,
@@ -307,8 +377,11 @@ export function activate(context: vscode.ExtensionContext): void {
             },
           );
 
+          const backupNote = backupPath
+            ? ` DB backed up to ${backupPath}.`
+            : '';
           const reloadChoice = await vscode.window.showInformationMessage(
-            'Working Memory updated to the latest release. Reload the window to activate it.',
+            `Working Memory updated to the latest release.${backupNote} Reload the window to activate it.`,
             'Reload Window',
           );
           if (reloadChoice === 'Reload Window') {
@@ -326,6 +399,27 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
     ),
+    vscode.commands.registerCommand('working-memory.backupNow', () => {
+      let snapshotPath: string | null;
+      try {
+        snapshotPath = backupJournalDb('manual');
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(
+          `Working Memory: backup failed — ${message}`,
+        );
+        return;
+      }
+      if (!snapshotPath) {
+        vscode.window.showInformationMessage(
+          'Working Memory: nothing to back up — no live journal database found yet.',
+        );
+        return;
+      }
+      vscode.window.showInformationMessage(
+        `Working Memory: journal database backed up to ${snapshotPath}.`,
+      );
+    }),
     vscode.commands.registerCommand(
       'working-memory.open',
       async (
