@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { deepLink, enrichDeepLinks } from '../src/renderer';
+import { deepLink, enrichDeepLinks } from '../src/virtualFileRenderer';
 
 // ---------------------------------------------------------------------------
 // enrichDeepLinks: leading type codicon + meaningful child count

@@ -4,7 +4,7 @@ import {
   renderSessionDoc,
   renderWorkstreamDoc,
   renderTopicDoc,
-} from '../src/renderer';
+} from '../src/virtualFileRenderer';
 
 // Fixed timestamps (Unix seconds) with clear ordering:
 // t1 = oldest, t2 = middle, t3 = newest

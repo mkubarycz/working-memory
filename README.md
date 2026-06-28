@@ -1,59 +1,55 @@
 # working-memory
 
-A VS Code extension that surfaces Michael's journal database as a left-rail
-tree view inside the hub workspace, and exposes the journal as MCP
-language-model tools (`wm_*`) so agents can read and append entries
-directly.
+**Working Memory is a context-storage and workflow engine for VS Code that
+treats agentic workflows as a first-class citizen.** It gives AI agents (and
+you) a durable, structured place to record what's happening, why decisions
+were made, and what's left to do — so context survives across sessions instead
+of evaporating when a chat ends.
 
-**What's in the box (current):**
+It does two things at once:
 
-- Opens / creates a SQLite DB at `<hub-workspace>/memory/journal.sqlite`
-  (via Node 22's built-in `node:sqlite`).
-- Applies tracked schema migrations from `schema/NNN_*.sql` on activation
-  (see *Schema migrations* below).
-- Activity-bar container with two tree views: **Active** (open
-  workstreams) and **Archive** (closed). Workstream nodes expand to a
-  `Topics` group; clicking a workstream or topic opens its virtual
-  markdown doc.
-- ~29 MCP tools (`wm_list_workstreams`, `wm_append_entry`,
-  `wm_search_entries`, `wm_link_entry_topic`, …) for agent-driven
-  journaling.
-- FTS5 search over entry bodies, soft-delete across workstreams /
-  sessions / entries / topics / link rows, and topic M:N links to both
-  workstreams and entries.
+- **Context storage** — a SQLite database that captures work as a simple
+  hierarchy: **workstreams** (long-running threads) contain **sessions**
+  (individual work blocks) which contain **entries** (timestamped log lines).
+  Durable **topics** cut across workstreams to track subjects that outlive any
+  one session, and full-text search makes all of it retrievable.
+- **Workflow engine** — agents drive the whole thing through ~29 MCP
+  language-model tools (`wm_*`). They open sessions, append journal entries,
+  open and close topics, and link everything together as they work. A panel UI
+  surfaces the live state so you can watch and steer.
+
+## How it works
+
+- **Storage:** a SQLite DB at `<hub-workspace>/memory/journal.sqlite`, opened
+  via Node 22's built-in `node:sqlite` — no native modules, no build step.
+  Schema lives in tracked, append-only migrations under `schema/NNN_*.sql`,
+  applied automatically on activation.
+- **Agent access:** the journal is exposed directly as MCP tools
+  (`wm_start_session`, `wm_append_entry`, `wm_search_entries`,
+  `wm_create_topic`, `wm_link_entry_topic`, …). Agents read and write the
+  database without ever touching SQL by hand — the tools are the API.
+- **You see it:** an activity-bar container with two tree views — **Active**
+  (open workstreams) and **Archive** (closed) — plus a webview panel with
+  Active / Archive / Topics tabs. Workstreams expand to a `Topics` group;
+  clicking a workstream, topic, or session opens its virtual markdown doc.
+- **Built for recovery:** FTS5 search over entry bodies, soft-delete (and
+  `wm_restore_*` undo) across workstreams / sessions / entries / topics / link
+  rows, and topic M:N links to both workstreams and entries.
 
 ---
 
 ## Build
 
 ```bash
+git clone https://github.com/mkubarycz/working-memory.git
+cd working-memory
 npm install
 npm run compile           # tsc -p .  →  out/src/extension.js, out/scripts/seed.js
+./scripts/release.sh      # snapshot DB + compile + package + install; then reload the window
 ```
 
-Watch mode while iterating:
-
-```bash
-npm run watch
-```
-
-## Seed the DB
-
-```bash
-npm run seed              # idempotent; only inserts when workstreams is empty
-```
-
-To re-seed from scratch, delete the DB first:
-
-```bash
-rm ../../memory/journal.sqlite*   # .sqlite, -wal, -shm
-npm run seed
-```
-
-The script resolves the DB path **relative to its own location**:
-`<hub>/projects/working-memory/scripts/seed.ts` → `<hub>/memory/journal.sqlite`.
-That makes it safe to run from any cwd as long as the project lives at
-`<hub>/projects/working-memory/`.
+`./scripts/release.sh` is the local deploy step — it builds, packages, and
+installs the `.vsix` into your running VS Code in one shot.
 
 ## DB path resolution (extension)
 

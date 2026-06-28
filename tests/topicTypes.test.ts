@@ -1,7 +1,7 @@
 import { beforeEach, expect, test, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
 import { getAllPanelData, getPanelData } from '../src/panelData';
-import { renderTopicDoc, renderTopicTypeDoc } from '../src/renderer';
+import { renderTopicDoc, renderTopicTypeDoc } from '../src/virtualFileRenderer';
 
 vi.mock('vscode', () => {
   const tools = new Map<string, { invoke: (options: unknown) => Promise<unknown> }>();

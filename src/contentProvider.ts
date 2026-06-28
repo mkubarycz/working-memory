@@ -10,7 +10,7 @@ import {
   extractTopicTypeBodyTemplate,
   extractTopicTypeLabel,
   extractTopicTypeDescription,
-} from './renderer';
+} from './virtualFileRenderer';
 
 type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'unknown';
 

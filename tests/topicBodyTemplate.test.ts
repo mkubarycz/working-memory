@@ -8,7 +8,7 @@
 
 import { beforeEach, expect, test, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
-import { renderTopicTypeDoc, extractTopicTypeBodyTemplate, extractTopicTypeLabel, extractTopicTypeDescription, EDITABLE_DIV_OPEN, EDITABLE_DIV_CLOSE, EDITABLE_COMMENT_START, EDITABLE_COMMENT_END, EDITABLE_LABEL_COMMENT_START, EDITABLE_LABEL_COMMENT_END, EDITABLE_DESCRIPTION_COMMENT_START, EDITABLE_DESCRIPTION_COMMENT_END } from '../src/renderer';
+import { renderTopicTypeDoc, extractTopicTypeBodyTemplate, extractTopicTypeLabel, extractTopicTypeDescription, EDITABLE_DIV_OPEN, EDITABLE_DIV_CLOSE, EDITABLE_COMMENT_START, EDITABLE_COMMENT_END, EDITABLE_LABEL_COMMENT_START, EDITABLE_LABEL_COMMENT_END, EDITABLE_DESCRIPTION_COMMENT_START, EDITABLE_DESCRIPTION_COMMENT_END } from '../src/virtualFileRenderer';
 
 // ---------------------------------------------------------------------------
 // Mock vscode — same shape as other test files
