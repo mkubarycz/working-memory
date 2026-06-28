@@ -5,6 +5,14 @@
   "version": "0.11.4",
   "publisher": "kubarycz",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mkubarycz/working-memory.git"
+  },
+  "homepage": "https://github.com/mkubarycz/working-memory#readme",
+  "bugs": {
+    "url": "https://github.com/mkubarycz/working-memory/issues"
+  },
   "engines": {
     "vscode": "^1.95.0",
     "node": ">=18"
