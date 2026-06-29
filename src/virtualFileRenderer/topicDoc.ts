@@ -1,4 +1,5 @@
 import { JournalStore, type TopicEntryLink } from '../db';
+import { AlertsStore } from '../alerts/store';
 import { buildTopicBreadcrumb, deepLink, fmtDateTime } from './shared';
 
 export function renderTopicDoc(store: JournalStore, slug: string): string {
@@ -50,6 +51,22 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
 
   const breadcrumb = buildTopicBreadcrumb(store, slug);
 
+  const alerts = new AlertsStore(store.connection).topicAlertsWithRecentClosed(slug);
+  const alertsBlock = alerts.length
+    ? alerts
+        .map((a) => {
+          const badge =
+            a.status === 'alert'
+              ? '🔴'
+              : a.status === 'informational'
+                ? '⚪'
+                : '✔️';
+          const desc = a.description.split('\n')[0];
+          return `- ${badge} [#${a.id}](${deepLink('alert', String(a.id))}) ${desc} — ${a.status}, updated ${fmtDateTime(a.updated_at)}`;
+        })
+        .join('\n')
+    : '_No active alerts._';
+
   return [
     `# ${topic.title}`,
     '',
@@ -59,6 +76,12 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
     `- **Family:** ${breadcrumb}`,
     `- **Created:** ${fmtDateTime(topic.created_at)}`,
     `- **Updated:** ${fmtDateTime(topic.updated_at)}`,
+    '',
+    '---',
+    '',
+    '## Alerts',
+    '',
+    alertsBlock,
     '',
     '---',
     '',

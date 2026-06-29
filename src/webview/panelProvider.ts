@@ -322,6 +322,12 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           data-tab="topic-types"
           aria-selected="false"
         >Topic Types</button>
+        <button
+          class="tab"
+          role="tab"
+          data-tab="alerts"
+          aria-selected="false"
+        >Alerts</button>
       </div>
       <div id="list" class="list" role="tree" aria-label="Workstreams"></div>
     </div>

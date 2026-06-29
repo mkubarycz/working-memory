@@ -15,7 +15,7 @@ export const EDITABLE_DESCRIPTION_COMMENT_END = '<!-- /editable:description -->'
 export const DESCRIPTION_EMPTY_PLACEHOLDER = '—';
 
 export function deepLink(
-  kind: 'topic' | 'session' | 'workstream' | 'topic-type',
+  kind: 'topic' | 'session' | 'workstream' | 'topic-type' | 'alert',
   id: string,
 ): string {
   return `vscode://kubarycz.working-memory/open/${kind}/${encodeURIComponent(id)}`;

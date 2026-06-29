@@ -1,15 +1,7 @@
 import type * as vscode from 'vscode';
 import type { JournalStore } from '../db';
-import { AlertsStore } from './store';
+import { AlertsStore, ALERTS_ENABLED } from './store';
 import { registerAlertTools, type AlertToolDeps } from './tools';
-
-/**
- * Single on/off switch for the entire alerts feature. Flip to `false` and the
- * whole feature — every `wm_*alert*` tool — stops registering. (The migration
- * and the static `package.json` tool declarations are inert manifest data and
- * stay put; nothing wires up at runtime when this is off.)
- */
-export const ALERTS_ENABLED = true;
 
 export interface RegisterAlertsFeatureArgs {
   context: vscode.ExtensionContext;
@@ -35,5 +27,5 @@ export function registerAlertsFeature(args: RegisterAlertsFeatureArgs): void {
   context.subscriptions.push(...subs);
 }
 
-export { AlertsStore } from './store';
+export { AlertsStore, ALERTS_ENABLED } from './store';
 export * from './types';

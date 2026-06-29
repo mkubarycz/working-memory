@@ -263,6 +263,91 @@ describe('AlertsStore CRUD', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Per-topic rollup helpers (panel bubble + topic-doc section)
+// ---------------------------------------------------------------------------
+
+describe('AlertsStore.openCountForTopic', () => {
+  test('zero open alerts => count 0, severity null', () => {
+    const { alerts } = freshStore(['t']);
+    expect(alerts.openCountForTopic('t')).toEqual({ count: 0, severity: null });
+  });
+
+  test('max severity is alert when any open alert is loud', () => {
+    const { alerts } = freshStore(['t']);
+    const info = alerts.createAlert({
+      description: 'quiet',
+      topic_slugs: ['t'],
+      dedupe_key: 'i',
+    }).alert;
+    alerts.updateAlert(info.id, { status: 'informational' });
+    alerts.createAlert({ description: 'loud', topic_slugs: ['t'], dedupe_key: 'a' });
+    expect(alerts.openCountForTopic('t')).toEqual({ count: 2, severity: 'alert' });
+  });
+
+  test('severity informational when only quiet alerts are open', () => {
+    const { alerts } = freshStore(['t']);
+    const a = alerts.createAlert({ description: 'q1', topic_slugs: ['t'], dedupe_key: '1' }).alert;
+    const b = alerts.createAlert({ description: 'q2', topic_slugs: ['t'], dedupe_key: '2' }).alert;
+    alerts.updateAlert(a.id, { status: 'informational' });
+    alerts.updateAlert(b.id, { status: 'informational' });
+    expect(alerts.openCountForTopic('t')).toEqual({ count: 2, severity: 'informational' });
+  });
+
+  test('closed alerts are excluded from the count', () => {
+    const { alerts } = freshStore(['t']);
+    const a = alerts.createAlert({ description: 'open', topic_slugs: ['t'], dedupe_key: '1' }).alert;
+    const b = alerts.createAlert({ description: 'gone', topic_slugs: ['t'], dedupe_key: '2' }).alert;
+    alerts.updateAlert(b.id, { status: 'closed' });
+    expect(alerts.openCountForTopic('t')).toEqual({ count: 1, severity: 'alert' });
+    expect(a.id).toBeGreaterThan(0);
+  });
+
+  test('missing DB handle => count 0, severity null', () => {
+    expect(new AlertsStore(null).openCountForTopic('t')).toEqual({ count: 0, severity: null });
+  });
+});
+
+describe('AlertsStore.topicAlertsWithRecentClosed', () => {
+  test('includes active alerts and excludes long-closed ones', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-06-28T12:00:00Z'));
+      const { alerts } = freshStore(['t']);
+      const open = alerts.createAlert({ description: 'open', topic_slugs: ['t'], dedupe_key: '1' }).alert;
+      const stale = alerts.createAlert({ description: 'stale', topic_slugs: ['t'], dedupe_key: '2' }).alert;
+      alerts.updateAlert(stale.id, { status: 'closed' });
+      // Move clock 2h forward: stale closed alert ages out of the 1h window.
+      vi.setSystemTime(new Date('2026-06-28T14:00:00Z'));
+      const ids = alerts.topicAlertsWithRecentClosed('t').map((a) => a.id);
+      expect(ids).toEqual([open.id]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('includes a just-closed alert within the 1h window', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-06-28T12:00:00Z'));
+      const { alerts } = freshStore(['t']);
+      const open = alerts.createAlert({ description: 'open', topic_slugs: ['t'], dedupe_key: '1' }).alert;
+      const recent = alerts.createAlert({ description: 'recent', topic_slugs: ['t'], dedupe_key: '2' }).alert;
+      alerts.updateAlert(recent.id, { status: 'closed' });
+      // 30 minutes later: closed alert still lingers.
+      vi.setSystemTime(new Date('2026-06-28T12:30:00Z'));
+      const ids = alerts.topicAlertsWithRecentClosed('t').map((a) => a.id).sort();
+      expect(ids).toEqual([open.id, recent.id].sort());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('missing DB handle => empty list', () => {
+    expect(new AlertsStore(null).topicAlertsWithRecentClosed('t')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Workflow tests mapped to the user stories
 // ---------------------------------------------------------------------------
 

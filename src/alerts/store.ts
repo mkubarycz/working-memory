@@ -16,6 +16,14 @@ function nowEpoch(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+/**
+ * Single on/off switch for the entire alerts feature. Flip to `false` and the
+ * whole feature — every `wm_*alert*` tool — stops registering. (The migration
+ * and the static `package.json` tool declarations are inert manifest data and
+ * stay put; nothing wires up at runtime when this is off.)
+ */
+export const ALERTS_ENABLED = true;
+
 /** Severity order for the active queue: alert first, then informational, then closed. */
 const STATUS_ORDER_SQL = `CASE status
     WHEN 'alert' THEN 0
@@ -225,6 +233,61 @@ export class AlertsStore {
                     a.created_at DESC, a.id DESC`,
       )
       .all(...params) as unknown as Alert[];
+    return rows.map((a) => this.withTopics(this.db!, a));
+  }
+
+  /**
+   * Per-topic rollup for the panel bubble (A/C): how many OPEN alerts
+   * (`alert` + `informational`) flag this topic, and the highest severity
+   * among them. `severity` is `'alert'` if any open alert is loud, else
+   * `'informational'` if there are quiet ones, else `null` (zero open).
+   */
+  openCountForTopic(slug: string): { count: number; severity: 'alert' | 'informational' | null } {
+    if (!this.db) {
+      return { count: 0, severity: null };
+    }
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n,
+                SUM(CASE WHEN a.status = 'alert' THEN 1 ELSE 0 END) AS loud
+           FROM alerts a
+           JOIN alert_topics t ON t.alert_id = a.id
+          WHERE t.topic_slug = ? AND a.status != 'closed'`,
+      )
+      .get(slug) as unknown as { n: number; loud: number } | undefined;
+    const count = Number(row?.n ?? 0);
+    if (count === 0) {
+      return { count: 0, severity: null };
+    }
+    return { count, severity: Number(row?.loud ?? 0) > 0 ? 'alert' : 'informational' };
+  }
+
+  /**
+   * Alerts to show on a topic page (B): all active alerts plus any `closed`
+   * alert whose `updated_at` is within `withinSeconds` of now (default 1h) so
+   * a just-resolved alert lingers briefly. Ordered alert → informational →
+   * (recent) closed, newest first within a band.
+   */
+  topicAlertsWithRecentClosed(
+    slug: string,
+    withinSeconds = 3600,
+  ): AlertWithTopics[] {
+    if (!this.db) {
+      return [];
+    }
+    const cutoff = nowEpoch() - withinSeconds;
+    const rows = this.db
+      .prepare(
+        `SELECT a.id, a.description, a.recommended_action, a.status,
+                a.dedupe_key, a.created_by, a.created_at, a.updated_at
+           FROM alerts a
+           JOIN alert_topics t ON t.alert_id = a.id
+          WHERE t.topic_slug = ?
+            AND (a.status != 'closed' OR a.updated_at >= ?)
+          ORDER BY ${STATUS_ORDER_SQL.replace(/status/g, 'a.status')},
+                   a.updated_at DESC, a.id DESC`,
+      )
+      .all(slug, cutoff) as unknown as Alert[];
     return rows.map((a) => this.withTopics(this.db!, a));
   }
 

@@ -76,19 +76,20 @@
   // --- State ------------------------------------------------------------
 
   const persisted =
-    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types', expanded?: string[] } | undefined} */ (
+    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types'|'alerts', expanded?: string[] } | undefined} */ (
       vscode.getState()
     );
 
-  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types', expanded: Set<string>,
-   *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData },
+  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts', expanded: Set<string>,
+   *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData },
    *           focusedId: string | null, recentCounts: Map<string, number>,
    *           flashChipIds: Set<string> }} */
   const state = {
     activeTab:
       persisted?.activeTab === 'archive' ||
       persisted?.activeTab === 'topics' ||
-      persisted?.activeTab === 'topic-types'
+      persisted?.activeTab === 'topic-types' ||
+      persisted?.activeTab === 'alerts'
         ? persisted.activeTab
         : 'active',
     expanded: new Set(Array.isArray(persisted?.expanded) ? persisted.expanded : []),
@@ -523,6 +524,21 @@
       desc.className = 'description';
       desc.textContent = node.description;
       row.appendChild(desc);
+    }
+
+    // Alert count bubble (A/C) — reddish if any alert-status, default if all
+    // informational, hidden when zero open.
+    const alertCount =
+      typeof node.alertCount === 'number' ? node.alertCount : 0;
+    if (alertCount > 0) {
+      const bubble = document.createElement('span');
+      bubble.className =
+        'alert-bubble' +
+        (node.alertSeverity === 'alert' ? ' severe' : ' info');
+      bubble.textContent = String(alertCount);
+      bubble.title =
+        `${alertCount} open alert${alertCount === 1 ? '' : 's'}`;
+      row.appendChild(bubble);
     }
 
     // Recent entries chip
@@ -1163,7 +1179,7 @@
       return;
     }
     const t = btn.getAttribute('data-tab');
-    if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types') {
+    if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types' && t !== 'alerts') {
       return;
     }
     if (state.activeTab === t) {

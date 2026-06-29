@@ -5,6 +5,7 @@ import {
   renderTopicDoc,
   renderTopicTypeDoc,
   renderSessionDoc,
+  renderAlertDoc,
   enrichDeepLinks,
   extractTopicBody,
   extractTopicTypeBodyTemplate,
@@ -12,7 +13,7 @@ import {
   extractTopicTypeDescription,
 } from './virtualFileRenderer';
 
-type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'unknown';
+type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'alert' | 'unknown';
 
 function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
   const p = uri.path;
@@ -31,6 +32,10 @@ function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
   if (p.startsWith('/session/') && p.endsWith('.md')) {
     const id = p.slice('/session/'.length, p.length - '.md'.length);
     return { kind: 'session', slug: id || null };
+  }
+  if (p.startsWith('/alert/') && p.endsWith('.md')) {
+    const id = p.slice('/alert/'.length, p.length - '.md'.length);
+    return { kind: 'alert', slug: id || null };
   }
   return { kind: 'unknown', slug: null };
 }
@@ -199,6 +204,9 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     }
     if (kind === 'session') {
       return enrichDeepLinks(this.store, renderSessionDoc(this.store, slug));
+    }
+    if (kind === 'alert') {
+      return enrichDeepLinks(this.store, renderAlertDoc(this.store, slug));
     }
     return `# Unknown working-memory URI\n\n\`${uri.toString()}\``;
   }

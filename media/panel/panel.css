@@ -235,6 +235,38 @@ html, body {
   animation: recent-chip-flash 600ms ease-out;
 }
 
+/* Alert count bubble next to a topic. Reddish for any alert-status, neutral
+   when all open alerts are informational. */
+.alert-bubble {
+  flex: 0 0 auto;
+  margin-left: auto;
+  margin-right: 4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  text-align: center;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.alert-bubble.severe {
+  background: var(--vscode-errorForeground, #f14c4c);
+  color: var(--vscode-editor-background, #fff);
+}
+
+.alert-bubble.info {
+  background: color-mix(in srgb, var(--vscode-foreground) 70%, transparent);
+  color: var(--vscode-editor-background, #1e1e1e);
+}
+
+/* When a bubble already pushed right, the trailing recent-chip shouldn't. */
+.alert-bubble + .recent-chip {
+  margin-left: 4px;
+}
+
 @keyframes recent-chip-flash {
   from {
     background: color-mix(in srgb, var(--vscode-editor-findMatchHighlightBackground, var(--vscode-charts-blue)) 92%, transparent);
