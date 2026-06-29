@@ -45,12 +45,15 @@ test('updateToLatest prompts to reload instead of reloading automatically', () =
   );
 });
 
-test('runCommand resolves the .cmd shim on Windows so gh/code spawn works', () => {
+test('runCommand spawns the bare command via shell:true on Windows', () => {
   const src = readFileSync(extensionTsPath, 'utf8');
 
-  // Windows ships `gh`/`code` as `.cmd` shims; bare spawn(shell:false)
-  // can't resolve them. Pick the platform binary and keep shell off so
-  // vsix paths with spaces aren't subject to quoting/injection.
-  expect(src).toMatch(/win32['"]\s*\?\s*`\$\{command\}\.cmd`/);
-  expect(src).toContain('shell: false');
+  // Node's CVE-2024-27980 fix makes spawn(.cmd, shell:false) throw EINVAL,
+  // so on win32 we run the bare command through a shell (PATH resolves the
+  // .cmd shim) and quote args ourselves. The `.cmd` suffix approach is gone.
+  expect(src).not.toContain('${command}.cmd');
+  expect(src).toContain('shell: isWin');
+  // Args are double-quoted with embedded quotes escaped to handle spaces
+  // and prevent injection.
+  expect(src).toMatch(/args\.map\([\s\S]*replace\(\/"\/g/);
 });
