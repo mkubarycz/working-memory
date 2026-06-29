@@ -1189,7 +1189,7 @@
         "displayName": "Working Memory: Create Alert",
         "toolReferenceName": "wm_create_alert",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Raise a durable, structured 'needs attention' alert against one or more topics. `description` is required; `recommended_action` optional. `topic_slugs` are the M:N targets and MUST already exist (an unknown or soft-deleted slug is rejected — no stub creation). The alert is created with status 'alert'. Dedupe: `dedupe_key` is always populated — caller-supplied if given, otherwise derived from hash(created_by + description + sorted topic_slugs). If an OPEN alert (status != 'closed') already holds that key, it is upserted (description/recommended_action refreshed, re-raised to 'alert') instead of inserting a duplicate; the response's `deduped` flag says which happened. Returns the alert row, its linked topics, and `deduped`.",
+        "modelDescription": "Raise a durable, structured 'needs attention' alert against one or more topics. `description` is required; `title` (optional, friendly short label) defaults to the first ~60 chars of description; `recommended_action` optional. `topic_slugs` are the M:N targets and are REQUIRED — at least one must be supplied. Each MUST already exist (an unknown or soft-deleted slug is rejected — no stub creation). The alert is created with status 'alert'. Dedupe: `dedupe_key` is always populated — caller-supplied if given, otherwise derived from hash(created_by + description + sorted topic_slugs). If an OPEN alert (status != 'closed') already holds that key, it is upserted (description/recommended_action refreshed, re-raised to 'alert') instead of inserting a duplicate; the response's `deduped` flag says which happened. Returns the alert row, its linked topics, and `deduped`.",
         "userDescription": "Raise an alert against one or more topics",
         "tags": [
           "working-memory"
@@ -1197,12 +1197,17 @@
         "inputSchema": {
           "type": "object",
           "required": [
-            "description"
+            "description",
+            "topic_slugs"
           ],
           "properties": {
             "description": {
               "type": "string",
               "description": "What needs attention. Required, non-empty."
+            },
+            "title": {
+              "type": "string",
+              "description": "Short, friendly title. Optional; defaults to the first ~60 chars of description."
             },
             "recommended_action": {
               "type": "string",
@@ -1210,10 +1215,11 @@
             },
             "topic_slugs": {
               "type": "array",
+              "minItems": 1,
               "items": {
                 "type": "string"
               },
-              "description": "Slugs of the topics this alert flags. Each must already exist and not be soft-deleted."
+              "description": "Slugs of the topics this alert flags. Required — at least one. Each must already exist and not be soft-deleted."
             },
             "created_by": {
               "type": "string",
@@ -1285,7 +1291,7 @@
         "displayName": "Working Memory: Update Alert",
         "toolReferenceName": "wm_update_alert",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Partial-update a single alert (mirrors wm_update_workstream / wm_update_topic). Edit `description` and/or `recommended_action`, and drive the status lifecycle via the `status` arg: 'alert' (active, rings bells) -> 'informational' (downgraded, quiet, stays in the active queue) -> 'closed' (terminal, leaves the queue and frees its dedupe_key). Any change bumps updated_at. Returns the updated alert with its topics.",
+        "modelDescription": "Partial-update a single alert (mirrors wm_update_workstream / wm_update_topic). Edit `title`, `description` and/or `recommended_action`, and drive the status lifecycle via the `status` arg: 'alert' (active, rings bells) -> 'informational' (downgraded, quiet, stays in the active queue) -> 'closed' (terminal, leaves the queue and frees its dedupe_key). Any change bumps updated_at. Returns the updated alert with its topics.",
         "userDescription": "Update an alert or change its status",
         "tags": [
           "working-memory"
@@ -1299,6 +1305,10 @@
             "id": {
               "type": "number",
               "description": "The alert's numeric id."
+            },
+            "title": {
+              "type": "string",
+              "description": "New short, friendly title."
             },
             "description": {
               "type": "string",
@@ -1379,8 +1389,7 @@
     ],
     "markdown": {
       "previewStyles": [
-        "media/codicons/codicon.css",
-        "media/preview.css"
+        "media/codicons/codicon.css"
       ]
     }
   },

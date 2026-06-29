@@ -48,6 +48,7 @@ interface GetAlertInput {
 }
 interface UpdateAlertToolInput {
   id: number;
+  title?: string;
   description?: string;
   recommended_action?: string;
   status?: AlertStatus;
@@ -68,6 +69,9 @@ export function registerAlertTools(
   return [
     vscode.lm.registerTool<CreateAlertInput>('wm_create_alert', {
       invoke: safe<CreateAlertInput>((input) => {
+        if (!input.topic_slugs || input.topic_slugs.length === 0) {
+          throw new Error('at least one topic is required');
+        }
         const result = store.createAlert(input);
         deps.refresh();
         return { ok: true, ...result };
@@ -100,6 +104,7 @@ export function registerAlertTools(
           throw new Error('id is required');
         }
         const alert = store.updateAlert(input.id, {
+          title: input.title,
           description: input.description,
           recommended_action: input.recommended_action,
           status: input.status,

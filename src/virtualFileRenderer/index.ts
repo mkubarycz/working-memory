@@ -23,4 +23,8 @@ export {
   extractTopicTypeBodyTemplate,
   extractTopicTypeLabel,
   extractTopicTypeDescription,
+  extractAlertTitle,
+  extractAlertStatus,
+  extractAlertDescription,
+  extractAlertRecommendedAction,
 } from './extract';

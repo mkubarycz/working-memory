@@ -15,7 +15,7 @@ import {
 } from './db';
 import { findHubWorkspace, resolveDbPath } from './paths';
 import { WorkstreamDocumentProvider } from './contentProvider';
-import { AlertsStore, ALERTS_ENABLED } from './alerts';
+import { AlertsStore, ALERTS_ENABLED, type AlertStatus } from './alerts';
 import { registerTools } from './tools';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
 import {
@@ -212,6 +212,27 @@ export function activate(context: vscode.ExtensionContext): void {
   const refresh = (): void => {
     panelProvider.refresh();
     contentProvider.refresh();
+  };
+
+  const setAlertStatus = (
+    arg: number | { id?: number } | undefined,
+    status: AlertStatus,
+  ): void => {
+    const id = typeof arg === 'number' ? arg : arg?.id;
+    if (!id) {
+      return;
+    }
+    if (!store || !ALERTS_ENABLED) {
+      vscode.window.showErrorMessage('Working Memory: alerts unavailable.');
+      return;
+    }
+    try {
+      new AlertsStore(store.connection).updateAlert(id, { status });
+      refresh();
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Working Memory: ${m}`);
+    }
   };
 
   const editAlertField = async (
@@ -741,6 +762,31 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerUriHandler({
       handleUri(uri: vscode.Uri): void {
         const parts = uri.path.split('/').filter((p) => p.length > 0);
+        // Alert action deep links: alert/<id>/<acknowledge|close>. The built-in
+        // markdown preview strips command: links, so the alert cards' buttons
+        // route through here instead.
+        if (parts.length === 3 && parts[0] === 'alert') {
+          const id = Number(parts[1]);
+          const action = parts[2];
+          if (!Number.isInteger(id) || id <= 0) {
+            vscode.window.showErrorMessage(
+              `Working Memory: unrecognized deep link: ${uri.toString()}`,
+            );
+            return;
+          }
+          if (action === 'acknowledge') {
+            setAlertStatus(id, 'informational');
+          } else if (action === 'close') {
+            setAlertStatus(id, 'closed');
+          } else if (action === 'reopen') {
+            setAlertStatus(id, 'alert');
+          } else {
+            vscode.window.showErrorMessage(
+              `Working Memory: unrecognized deep link: ${uri.toString()}`,
+            );
+          }
+          return;
+        }
         if (parts.length !== 3 || parts[0] !== 'open') {
           vscode.window.showErrorMessage(
             `Working Memory: unrecognized deep link: ${uri.toString()}`,

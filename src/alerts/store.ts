@@ -16,6 +16,12 @@ function nowEpoch(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+/** First ~60 chars of the (single-line) description, used when no title given. */
+function defaultTitleFrom(description: string): string {
+  const firstLine = description.trim().split('\n')[0].trim();
+  return firstLine.length > 60 ? firstLine.slice(0, 60) : firstLine;
+}
+
 /**
  * Single on/off switch for the entire alerts feature. Flip to `false` and the
  * whole feature — every `wm_*alert*` tool — stops registering. (The migration
@@ -93,7 +99,7 @@ export class AlertsStore {
   private alertRow(db: DatabaseSyncT, id: number): Alert | null {
     const row = db
       .prepare(
-        `SELECT id, description, recommended_action, status, dedupe_key,
+        `SELECT id, title, description, recommended_action, status, dedupe_key,
                 created_by, created_at, updated_at
            FROM alerts WHERE id = ?`,
       )
@@ -138,8 +144,12 @@ export class AlertsStore {
       throw new Error('description is required');
     }
     const createdBy = input.created_by?.trim() || 'system';
+    const title = input.title?.trim() || defaultTitleFrom(description);
     const recommendedAction = input.recommended_action ?? '';
     const topicSlugs = Array.from(new Set(input.topic_slugs ?? []));
+    if (topicSlugs.length === 0) {
+      throw new Error('at least one topic is required');
+    }
 
     return this.withTransaction((db) => {
       this.assertTopicsExist(db, topicSlugs);
@@ -175,11 +185,11 @@ export class AlertsStore {
       const info = db
         .prepare(
           `INSERT INTO alerts
-             (description, recommended_action, status, dedupe_key,
+             (title, description, recommended_action, status, dedupe_key,
               created_by, created_at, updated_at)
-           VALUES (?, ?, 'alert', ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, 'alert', ?, ?, ?, ?)`,
         )
-        .run(description, recommendedAction, dedupeKey, createdBy, now, now);
+        .run(title, description, recommendedAction, dedupeKey, createdBy, now, now);
       const alertId = Number(info.lastInsertRowid);
       for (const slug of topicSlugs) {
         this.ensureLink(db, alertId, slug, now);
@@ -225,7 +235,7 @@ export class AlertsStore {
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const rows = this.db
       .prepare(
-        `SELECT a.id, a.description, a.recommended_action, a.status,
+        `SELECT a.id, a.title, a.description, a.recommended_action, a.status,
                 a.dedupe_key, a.created_by, a.created_at, a.updated_at
            FROM alerts a
            ${where}
@@ -278,7 +288,7 @@ export class AlertsStore {
     const cutoff = nowEpoch() - withinSeconds;
     const rows = this.db
       .prepare(
-        `SELECT a.id, a.description, a.recommended_action, a.status,
+        `SELECT a.id, a.title, a.description, a.recommended_action, a.status,
                 a.dedupe_key, a.created_by, a.created_at, a.updated_at
            FROM alerts a
            JOIN alert_topics t ON t.alert_id = a.id
@@ -301,6 +311,10 @@ export class AlertsStore {
       const sets: string[] = [];
       const params: (string | number)[] = [];
 
+      if (input.title !== undefined) {
+        sets.push('title = ?');
+        params.push(input.title.trim());
+      }
       if (input.description !== undefined) {
         const desc = input.description.trim();
         if (!desc) {

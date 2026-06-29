@@ -174,7 +174,8 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
               console.warn('[working-memory] panel open URI parse failed:', err);
             }
           }
-          void vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(msg.uri));
+          const parsed = vscode.Uri.parse(msg.uri);
+          void vscode.commands.executeCommand('vscode.open', parsed);
         }
         return;
       case 'invoke':

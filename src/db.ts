@@ -202,6 +202,8 @@ const MIGRATIONS: Migration[] = [
   // 016 adds the first-class `alerts` + `alert_topics` tables. All new
   // tables (no rebuild), so the runner's default BEGIN/COMMIT is fine.
   { version: 16, file: '016_alerts.sql' },
+  // 017 adds an editable `title` column to alerts (plain ADD COLUMN).
+  { version: 17, file: '017_alert_title.sql' },
 ];
 
 /**

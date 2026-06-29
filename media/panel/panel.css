@@ -236,35 +236,50 @@ html, body {
 }
 
 /* Alert count bubble next to a topic. Reddish for any alert-status, neutral
-   when all open alerts are informational. */
+   badge when all open alerts are informational; hidden at zero (host omits). */
 .alert-bubble {
   flex: 0 0 auto;
   margin-left: auto;
   margin-right: 4px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 6px;
   box-sizing: border-box;
-  text-align: center;
-  border-radius: 999px;
-  font: inherit;
-  font-size: 11px;
-  line-height: 18px;
+  border-radius: 8px;
+  font-family: var(--vscode-font-family);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.2px;
 }
 
 .alert-bubble.severe {
-  background: var(--vscode-errorForeground, #f14c4c);
-  color: var(--vscode-editor-background, #fff);
+  background: var(--vscode-charts-red, var(--vscode-errorForeground, #f14c4c));
+  color: var(--vscode-badge-foreground, #fff);
 }
 
 .alert-bubble.info {
-  background: color-mix(in srgb, var(--vscode-foreground) 70%, transparent);
-  color: var(--vscode-editor-background, #1e1e1e);
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
 }
 
-/* When a bubble already pushed right, the trailing recent-chip shouldn't. */
-.alert-bubble + .recent-chip {
-  margin-left: 4px;
+/* Alert rows: clamp the label to a single line so it shrinks to fit the panel
+   and shows an ellipsis instead of pushing past the edge. */
+.row[data-kind="alert"] .label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Alert-status rows lead with a red bell; informational/closed icons stay
+   neutral. Mirrors the bell/info/pass set in the virtual docs. */
+.row[data-kind="alert"][data-status="alert"] .icon .codicon {
+  color: var(--vscode-errorForeground, #f14c4c);
 }
 
 @keyframes recent-chip-flash {

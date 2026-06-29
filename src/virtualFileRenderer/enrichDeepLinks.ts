@@ -104,7 +104,13 @@ export function enrichDeepLinks(store: JournalStore, markdown: string): string {
     }
     lines[i] = lines[i].replace(
       DEEP_LINK_RE,
-      (_match, label: string, url: string, kind: DeepLinkKind, rawId: string) => {
+      (match, label: string, url: string, kind: DeepLinkKind, rawId: string) => {
+        // Alert links carry their own status icon (bell/info/pass) emitted at
+        // the render site, and labels that already contain a codicon span are
+        // pre-iconned — don't double up.
+        if (kind === 'alert' || label.includes('codicon-')) {
+          return match;
+        }
         const id = safeDecode(rawId);
         const icon = iconForDeepLink(store, kind, id);
         const count = countForDeepLink(

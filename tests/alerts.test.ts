@@ -90,6 +90,28 @@ describe('AlertsStore CRUD', () => {
     expect(alert.topics.sort()).toEqual(['topic-a', 'topic-b']);
   });
 
+  test('createAlert: title defaults to first ~60 chars of description', () => {
+    const { alerts } = freshStore(['topic-a']);
+    const short = alerts.createAlert({ description: 'Disk almost full', topic_slugs: ['topic-a'], dedupe_key: 's' }).alert;
+    expect(short.title).toBe('Disk almost full');
+    const long = alerts.createAlert({
+      description: 'x'.repeat(120),
+      topic_slugs: ['topic-a'],
+      dedupe_key: 'l',
+    }).alert;
+    expect(long.title).toBe('x'.repeat(60));
+  });
+
+  test('createAlert: explicit title is kept', () => {
+    const { alerts } = freshStore(['topic-a']);
+    const { alert } = alerts.createAlert({
+      description: 'a long description that would otherwise win',
+      title: 'Friendly name',
+      topic_slugs: ['topic-a'],
+    });
+    expect(alert.title).toBe('Friendly name');
+  });
+
   test('createAlert: defaults created_by to system and recommended_action to empty', () => {
     const { alerts } = freshStore(['topic-a']);
     const { alert } = alerts.createAlert({
@@ -105,6 +127,16 @@ describe('AlertsStore CRUD', () => {
     expect(() => alerts.createAlert({ description: '   ' })).toThrow(
       /description is required/,
     );
+  });
+
+  test('createAlert: missing or empty topics rejected', () => {
+    const { alerts } = freshStore(['topic-a']);
+    expect(() => alerts.createAlert({ description: 'No topic' })).toThrow(
+      /at least one topic is required/,
+    );
+    expect(() =>
+      alerts.createAlert({ description: 'No topic', topic_slugs: [] }),
+    ).toThrow(/at least one topic is required/);
   });
 
   test('getAlert: returns null for unknown id', () => {
@@ -194,6 +226,14 @@ describe('AlertsStore CRUD', () => {
     expect(updated.updated_at).toBeGreaterThanOrEqual(alert.updated_at);
   });
 
+  test('updateAlert: edits title', () => {
+    const { alerts } = freshStore(['t']);
+    const { alert } = alerts.createAlert({ description: 'x', topic_slugs: ['t'] });
+    const updated = alerts.updateAlert(alert.id, { title: 'Renamed alert' });
+    expect(updated.title).toBe('Renamed alert');
+    expect(alerts.getAlert(alert.id)?.title).toBe('Renamed alert');
+  });
+
   test('updateAlert: every status transition', () => {
     const { alerts } = freshStore(['t']);
     const { alert } = alerts.createAlert({
@@ -256,7 +296,7 @@ describe('AlertsStore CRUD', () => {
     const detached = new AlertsStore(null);
     expect(detached.getAlert(1)).toBeNull();
     expect(detached.listAlerts()).toEqual([]);
-    expect(() => detached.createAlert({ description: 'x' })).toThrow(
+    expect(() => detached.createAlert({ description: 'x', topic_slugs: ['t'] })).toThrow(
       /no database handle/,
     );
   });

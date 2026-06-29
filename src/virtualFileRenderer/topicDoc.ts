@@ -1,6 +1,14 @@
 import { JournalStore, type TopicEntryLink } from '../db';
 import { AlertsStore } from '../alerts/store';
-import { buildTopicBreadcrumb, deepLink, fmtDateTime } from './shared';
+import {
+  alertActionLink,
+  buildTopicBreadcrumb,
+  deepLink,
+  EDITABLE_DESCRIPTION_COMMENT_END,
+  EDITABLE_DESCRIPTION_COMMENT_START,
+  fmtDateTime,
+  fmtRelative,
+} from './shared';
 
 export function renderTopicDoc(store: JournalStore, slug: string): string {
   const topic = store.getTopic(slug);
@@ -55,16 +63,61 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
   const alertsBlock = alerts.length
     ? alerts
         .map((a) => {
-          const badge =
+          const link = deepLink('alert', String(a.id));
+          const iconName =
             a.status === 'alert'
-              ? '🔴'
+              ? 'bell'
               : a.status === 'informational'
-                ? '⚪'
-                : '✔️';
-          const desc = a.description.split('\n')[0];
-          return `- ${badge} [#${a.id}](${deepLink('alert', String(a.id))}) ${desc} — ${a.status}, updated ${fmtDateTime(a.updated_at)}`;
+                ? 'info'
+                : 'pass';
+          // Colored codicon via inline style only — the markdown preview keeps
+          // the glyph and color but strips any CSS class styling, so no wrapper
+          // divs / .wm-alert rules. Red bell for active alerts; text-bottom keeps
+          // it on the text baseline instead of riding high.
+          const color = a.status === 'alert' ? 'color:#f14c4c;' : '';
+          const icon = `<span class="codicon codicon-${iconName}" style="${color}vertical-align:text-bottom"></span>`;
+          const title = a.title.trim() || a.description.split('\n')[0] || `Alert #${a.id}`;
+          const desc = a.description.trim();
+          const next = a.recommended_action.trim();
+          const lines = [
+            `[${icon}](${link}) **[${title}](${link})** — ${fmtDateTime(a.updated_at)} (${fmtRelative(a.updated_at)})`,
+          ];
+          if (desc) {
+            lines.push(desc);
+          }
+          if (next) {
+            lines.push(`Next: ${next}`);
+          }
+          if (a.topics.length) {
+            const others = a.topics.filter((t) => t !== slug);
+            if (others.length) {
+              const shown = others
+                .slice(0, 3)
+                .map((t) => `[${t}](${deepLink('topic', t)})`);
+              const more = others.length > 3 ? ' …' : '';
+              lines.push(`Other topics: ${shown.join(', ')}${more}`);
+            }
+          }
+          if (a.status !== 'closed') {
+            const actions: string[] = [];
+            if (a.status !== 'informational') {
+              actions.push(`[Acknowledge](${alertActionLink(a.id, 'acknowledge')})`);
+            } else {
+              actions.push(`[Escalate](${alertActionLink(a.id, 'reopen')})`);
+            }
+            actions.push(`[Close](${alertActionLink(a.id, 'close')})`);
+            lines.push(actions.join(' · '));
+          } else {
+            lines.push(
+              [
+                `[Reopen (Alert)](${alertActionLink(a.id, 'reopen')})`,
+                `[Reopen (Information)](${alertActionLink(a.id, 'acknowledge')})`,
+              ].join(' · '),
+            );
+          }
+          return lines.join('  \n');
         })
-        .join('\n')
+        .join('\n\n')
     : '_No active alerts._';
 
   return [
@@ -77,19 +130,17 @@ export function renderTopicDoc(store: JournalStore, slug: string): string {
     `- **Created:** ${fmtDateTime(topic.created_at)}`,
     `- **Updated:** ${fmtDateTime(topic.updated_at)}`,
     '',
-    '---',
-    '',
     '## Alerts',
     '',
     alertsBlock,
     '',
-    '---',
+    '## Description',
     '',
+    EDITABLE_DESCRIPTION_COMMENT_START,
     topic.body.trim().length
       ? topic.body
       : '_Empty body — write something here, then save (⌘S)._',
-    '',
-    '---',
+    EDITABLE_DESCRIPTION_COMMENT_END,
     '',
     '## Linked workstreams',
     '',

@@ -164,7 +164,7 @@ export interface PanelAlert {
   label: string;
   description: string;
   tooltip: string;
-  icon: string;
+  icon?: string;
   openUri: string;
   status: AlertStatus;
   /** Topic slugs this alert is linked to. */
@@ -795,8 +795,6 @@ export function getPanelAlertsData(store: JournalStore): PanelData {
   }
   const all = new AlertsStore(store.connection).listAlerts({ status: 'all' });
   const items: PanelItem[] = all.map((a) => {
-    const icon =
-      a.status === 'alert' ? 'warning' : a.status === 'informational' ? 'info' : 'check';
     const descParts: string[] = [a.status];
     if (a.topics.length) {
       descParts.push(a.topics.join(', '));
@@ -804,11 +802,16 @@ export function getPanelAlertsData(store: JournalStore): PanelData {
     return {
       kind: 'alert',
       id: `alerts:alert:${a.id}`,
-      label: a.description.split('\n')[0] || `Alert #${a.id}`,
+      label: a.title.trim() || a.description.split('\n')[0] || `Alert #${a.id}`,
       description: descParts.join(' • '),
       tooltip: `Alert #${a.id} — ${a.status}\nby ${a.created_by}\n${a.recommended_action || '(no action)'}`,
-      icon,
       openUri: `working-memory:/alert/${a.id}.md`,
+      icon:
+        a.status === 'alert'
+          ? 'bell'
+          : a.status === 'informational'
+            ? 'info'
+            : 'pass',
       status: a.status,
       topics: a.topics,
       actions: alertActions(a.id, a.status),

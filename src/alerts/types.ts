@@ -11,6 +11,8 @@ export const OPEN_ALERT_STATUSES: readonly AlertStatus[] = ['alert', 'informatio
 
 export interface Alert {
   id: number;
+  /** Friendly, short, editable label. Derived from description when blank. */
+  title: string;
   description: string;
   recommended_action: string;
   status: AlertStatus;
@@ -32,6 +34,8 @@ export interface AlertWithTopics extends Alert {
 
 export interface CreateAlertInput {
   description: string;
+  /** Optional friendly title; defaults to first ~60 chars of description. */
+  title?: string;
   recommended_action?: string;
   /** The M:N targets. Must already exist (no stub creation). */
   topic_slugs?: string[];
@@ -57,6 +61,7 @@ export interface ListAlertsInput {
 }
 
 export interface UpdateAlertInput {
+  title?: string;
   description?: string;
   recommended_action?: string;
   status?: AlertStatus;

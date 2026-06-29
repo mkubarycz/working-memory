@@ -12,6 +12,10 @@ export const EDITABLE_LABEL_COMMENT_START = '<!-- editable:label -->';
 export const EDITABLE_LABEL_COMMENT_END = '<!-- /editable:label -->';
 export const EDITABLE_DESCRIPTION_COMMENT_START = '<!-- editable:description -->';
 export const EDITABLE_DESCRIPTION_COMMENT_END = '<!-- /editable:description -->';
+export const EDITABLE_STATUS_COMMENT_START = '<!-- editable:status -->';
+export const EDITABLE_STATUS_COMMENT_END = '<!-- /editable:status -->';
+export const EDITABLE_ACTION_COMMENT_START = '<!-- editable:action -->';
+export const EDITABLE_ACTION_COMMENT_END = '<!-- /editable:action -->';
 export const DESCRIPTION_EMPTY_PLACEHOLDER = '—';
 
 export function deepLink(
@@ -19,6 +23,19 @@ export function deepLink(
   id: string,
 ): string {
   return `vscode://kubarycz.working-memory/open/${kind}/${encodeURIComponent(id)}`;
+}
+
+/**
+ * Deep link to mutate an alert via the extension URI handler. Routed as
+ * `vscode://kubarycz.working-memory/alert/<id>/<action>`. Used by the alert
+ * cards' Acknowledge / Close pills because `command:` links are stripped by the
+ * built-in markdown preview.
+ */
+export function alertActionLink(
+  id: number,
+  action: 'acknowledge' | 'close' | 'reopen',
+): string {
+  return `vscode://kubarycz.working-memory/alert/${id}/${action}`;
 }
 
 export function fmtDateTime(unixSeconds: number | null | undefined): string {
@@ -34,6 +51,32 @@ export function fmtDateTime(unixSeconds: number | null | undefined): string {
     hour12: false,
   });
   return `${date} ${time}`;
+}
+
+/** Friendly relative time, e.g. "just now", "25 minutes ago", "1 day ago". */
+export function fmtRelative(unixSeconds: number | null | undefined): string {
+  if (!unixSeconds) {
+    return '—';
+  }
+  const diff = Math.floor(Date.now() / 1000) - unixSeconds;
+  if (diff < 0) {
+    return 'just now';
+  }
+  const units: [number, string][] = [
+    [31536000, 'year'],
+    [2592000, 'month'],
+    [604800, 'week'],
+    [86400, 'day'],
+    [3600, 'hour'],
+    [60, 'minute'],
+  ];
+  for (const [secs, label] of units) {
+    const n = Math.floor(diff / secs);
+    if (n >= 1) {
+      return `${n} ${label}${n === 1 ? '' : 's'} ago`;
+    }
+  }
+  return 'just now';
 }
 
 export function fmtDuration(

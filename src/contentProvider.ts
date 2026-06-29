@@ -11,7 +11,13 @@ import {
   extractTopicTypeBodyTemplate,
   extractTopicTypeLabel,
   extractTopicTypeDescription,
+  extractAlertTitle,
+  extractAlertStatus,
+  extractAlertDescription,
+  extractAlertRecommendedAction,
 } from './virtualFileRenderer';
+import { AlertsStore } from './alerts/store';
+import type { AlertStatus } from './alerts/types';
 
 type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'alert' | 'unknown';
 
@@ -43,10 +49,10 @@ function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
 /**
  * `FileSystemProvider` for the `working-memory:` scheme. Workstream and
  * session docs are read-only (rendered fresh from the DB every read);
- * topic docs are writable — on save we parse the body fence region and
- * persist it via `store.updateTopic()`. When `store` is null (no hub
- * workspace) every doc renders a "DB not available" body and writes
- * are rejected.
+ * topic, topic-type, and alert docs are writable — on save we parse the
+ * editable regions and persist via the matching store update. When `store`
+ * is null (no hub workspace) every doc renders a "DB not available" body
+ * and writes are rejected.
  */
 export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
   public static readonly scheme = 'working-memory';
@@ -101,7 +107,8 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       mtime,
       size: Buffer.byteLength(text, 'utf8'),
       permissions:
-        (kind === 'topic' || kind === 'topic-type') && this.store
+        (kind === 'topic' || kind === 'topic-type' || kind === 'alert') &&
+        this.store
           ? undefined
           : vscode.FilePermission.Readonly,
     };
@@ -131,13 +138,50 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     _options: { create: boolean; overwrite: boolean },
   ): void {
     const { kind, slug } = classifyUri(uri);
-    if ((kind !== 'topic' && kind !== 'topic-type') || !slug) {
+    if (
+      (kind !== 'topic' && kind !== 'topic-type' && kind !== 'alert') ||
+      !slug
+    ) {
       throw vscode.FileSystemError.NoPermissions(uri);
     }
     if (!this.store) {
       throw vscode.FileSystemError.NoPermissions(uri);
     }
     const text = Buffer.from(content).toString('utf8');
+    if (kind === 'alert') {
+      const id = Number(slug);
+      const alerts = new AlertsStore(this.store.connection);
+      if (!Number.isInteger(id) || id <= 0 || !alerts.getAlert(id)) {
+        throw vscode.FileSystemError.FileNotFound(uri);
+      }
+      const status = extractAlertStatus(text);
+      const title = extractAlertTitle(text);
+      const description = extractAlertDescription(text);
+      const recommended_action = extractAlertRecommendedAction(text);
+      const valid: AlertStatus[] = ['alert', 'informational', 'closed'];
+      if (!valid.includes(status as AlertStatus)) {
+        vscode.window.showErrorMessage(
+          `Working Memory: status must be one of ${valid.join(', ')} — save aborted.`,
+        );
+        this.markChanged(uri);
+        return;
+      }
+      if (!description.trim()) {
+        vscode.window.showErrorMessage(
+          'Working Memory: description must not be empty — save aborted.',
+        );
+        this.markChanged(uri);
+        return;
+      }
+      alerts.updateAlert(id, {
+        status: status as AlertStatus,
+        title,
+        description,
+        recommended_action,
+      });
+      this.markChanged(uri);
+      return;
+    }
     if (kind === 'topic') {
       const topic = this.store.getTopic(slug);
       if (!topic) {

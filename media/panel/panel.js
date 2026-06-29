@@ -457,6 +457,10 @@
     row.className = 'row';
     row.setAttribute('role', 'treeitem');
     row.dataset.id = node.id;
+    row.dataset.kind = node.kind;
+    if (node.kind === 'alert' && node.status) {
+      row.dataset.status = node.status;
+    }
     if (node.tooltip) {
       row.title = node.tooltip;
     }
@@ -541,10 +545,12 @@
       row.appendChild(bubble);
     }
 
-    // Recent entries chip
+    // Recent entries chip — topics no longer carry an entry-count bubble
+    // (Michael's call); only workstream/session rows show it.
+    const isTopicRow = node.kind === 'topic' || node.kind === 'topic-row';
     const recentEntryCount =
       typeof node.recentEntryCount === 'number' ? node.recentEntryCount : 0;
-    if (recentEntryCount > 0) {
+    if (recentEntryCount > 0 && !isTopicRow) {
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'recent-chip' +
@@ -578,8 +584,16 @@
       row.appendChild(chip);
     }
 
-    // Actions
-    if (Array.isArray(node.actions) && node.actions.length > 0) {
+    // Actions — the "…" overflow menu. Suppressed on alert rows (every row is
+    // already an alert; the kebab is noise) and on topic rows (right-click menu
+    // is sufficient). Other rows keep the overflow button.
+    if (
+      node.kind !== 'alert' &&
+      node.kind !== 'topic' &&
+      node.kind !== 'topic-row' &&
+      Array.isArray(node.actions) &&
+      node.actions.length > 0
+    ) {
       const actions = document.createElement('span');
       actions.className = 'actions';
       const btn = document.createElement('button');
