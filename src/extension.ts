@@ -15,6 +15,7 @@ import {
 } from './db';
 import { findHubWorkspace, resolveDbPath } from './paths';
 import { WorkstreamDocumentProvider } from './contentProvider';
+import { AlertsStore, ALERTS_ENABLED, type AlertStatus } from './alerts';
 import { registerTools } from './tools';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
 import {
@@ -211,6 +212,57 @@ export function activate(context: vscode.ExtensionContext): void {
   const refresh = (): void => {
     panelProvider.refresh();
     contentProvider.refresh();
+  };
+
+  const setAlertStatus = (
+    arg: number | { id?: number } | undefined,
+    status: AlertStatus,
+  ): void => {
+    const id = typeof arg === 'number' ? arg : arg?.id;
+    if (!id) {
+      return;
+    }
+    if (!store || !ALERTS_ENABLED) {
+      vscode.window.showErrorMessage('Working Memory: alerts unavailable.');
+      return;
+    }
+    try {
+      new AlertsStore(store.connection).updateAlert(id, { status });
+      refresh();
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Working Memory: ${m}`);
+    }
+  };
+
+  const editAlertField = async (
+    id: number | undefined,
+    field: 'description' | 'recommended_action',
+  ): Promise<void> => {
+    if (!id || !store || !ALERTS_ENABLED) {
+      vscode.window.showErrorMessage('Working Memory: alerts unavailable.');
+      return;
+    }
+    const alerts = new AlertsStore(store.connection);
+    const current = alerts.getAlert(id);
+    if (!current) {
+      vscode.window.showWarningMessage(`Working Memory: alert #${id} not found.`);
+      return;
+    }
+    const value = await vscode.window.showInputBox({
+      prompt: field === 'description' ? 'Alert description' : 'Recommended action',
+      value: current[field],
+    });
+    if (value === undefined) {
+      return;
+    }
+    try {
+      alerts.updateAlert(id, { [field]: value });
+      refresh();
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Working Memory: ${m}`);
+    }
   };
 
   // Derive the visible WM doc from tabGroups, not window.activeTextEditor:
@@ -445,7 +497,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (!kind || !id) {
           const pickedKind = await vscode.window.showQuickPick(
-            ['session', 'topic', 'topic-type', 'workstream'],
+            ['session', 'topic', 'topic-type', 'workstream', 'alert'],
             { placeHolder: 'Kind of working-memory doc to open' },
           );
           if (!pickedKind) {
@@ -463,10 +515,11 @@ export function activate(context: vscode.ExtensionContext): void {
           kind !== 'session' &&
           kind !== 'topic' &&
           kind !== 'topic-type' &&
-          kind !== 'workstream'
+          kind !== 'workstream' &&
+          kind !== 'alert'
         ) {
           vscode.window.showWarningMessage(
-            `Working Memory: unknown kind "${kind}" (expected session|topic|topic-type|workstream).`,
+            `Working Memory: unknown kind "${kind}" (expected session|topic|topic-type|workstream|alert).`,
           );
           return;
         }
@@ -669,6 +722,39 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
     ),
+    vscode.commands.registerCommand(
+      'working-memory.alert.editDescription',
+      async (arg?: { id?: number }) => {
+        await editAlertField(arg?.id, 'description');
+      },
+    ),
+    vscode.commands.registerCommand(
+      'working-memory.alert.editAction',
+      async (arg?: { id?: number }) => {
+        await editAlertField(arg?.id, 'recommended_action');
+      },
+    ),
+    vscode.commands.registerCommand(
+      'working-memory.alert.setStatus',
+      (arg?: { id?: number; status?: string }) => {
+        const id = arg?.id;
+        const status = arg?.status;
+        if (!id || (status !== 'alert' && status !== 'informational' && status !== 'closed')) {
+          return;
+        }
+        if (!store || !ALERTS_ENABLED) {
+          vscode.window.showErrorMessage('Working Memory: alerts unavailable.');
+          return;
+        }
+        try {
+          new AlertsStore(store.connection).updateAlert(id, { status });
+          refresh();
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(`Working Memory: ${m}`);
+        }
+      },
+    ),
     vscode.window.registerWebviewViewProvider(
       WorkstreamPanelProvider.viewType,
       panelProvider,
@@ -676,6 +762,31 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerUriHandler({
       handleUri(uri: vscode.Uri): void {
         const parts = uri.path.split('/').filter((p) => p.length > 0);
+        // Alert action deep links: alert/<id>/<acknowledge|close>. The built-in
+        // markdown preview strips command: links, so the alert cards' buttons
+        // route through here instead.
+        if (parts.length === 3 && parts[0] === 'alert') {
+          const id = Number(parts[1]);
+          const action = parts[2];
+          if (!Number.isInteger(id) || id <= 0) {
+            vscode.window.showErrorMessage(
+              `Working Memory: unrecognized deep link: ${uri.toString()}`,
+            );
+            return;
+          }
+          if (action === 'acknowledge') {
+            setAlertStatus(id, 'informational');
+          } else if (action === 'close') {
+            setAlertStatus(id, 'closed');
+          } else if (action === 'reopen') {
+            setAlertStatus(id, 'alert');
+          } else {
+            vscode.window.showErrorMessage(
+              `Working Memory: unrecognized deep link: ${uri.toString()}`,
+            );
+          }
+          return;
+        }
         if (parts.length !== 3 || parts[0] !== 'open') {
           vscode.window.showErrorMessage(
             `Working Memory: unrecognized deep link: ${uri.toString()}`,
@@ -687,7 +798,8 @@ export function activate(context: vscode.ExtensionContext): void {
           kind !== 'session' &&
           kind !== 'topic' &&
           kind !== 'topic-type' &&
-          kind !== 'workstream'
+          kind !== 'workstream' &&
+          kind !== 'alert'
         ) {
           vscode.window.showErrorMessage(
             `Working Memory: unrecognized deep link: ${uri.toString()}`,

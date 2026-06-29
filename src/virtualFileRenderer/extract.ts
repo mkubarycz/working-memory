@@ -1,34 +1,54 @@
 import {
   DESCRIPTION_EMPTY_PLACEHOLDER,
+  EDITABLE_ACTION_COMMENT_END,
+  EDITABLE_ACTION_COMMENT_START,
   EDITABLE_COMMENT_END,
   EDITABLE_COMMENT_START,
   EDITABLE_DESCRIPTION_COMMENT_END,
   EDITABLE_DESCRIPTION_COMMENT_START,
   EDITABLE_LABEL_COMMENT_END,
   EDITABLE_LABEL_COMMENT_START,
+  EDITABLE_STATUS_COMMENT_END,
+  EDITABLE_STATUS_COMMENT_START,
 } from './shared';
 
-export function extractTopicBody(full: string): string {
+/** Slice the text between a comment-marker pair, trimming blank edges. */
+function extractBetween(
+  full: string,
+  startMarker: string,
+  endMarker: string,
+  errLabel: string,
+): string {
   const lines = full.split(/\r?\n/);
-  const fenceIdxs: number[] = [];
+  let openIdx = -1;
+  let closeIdx = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() === '---') {
-      fenceIdxs.push(i);
-      if (fenceIdxs.length === 2) {
-        break;
-      }
+    if (openIdx === -1 && lines[i].trim() === startMarker) {
+      openIdx = i;
+    } else if (openIdx !== -1 && lines[i].trim() === endMarker) {
+      closeIdx = i;
+      break;
     }
   }
-  if (fenceIdxs.length < 2) {
+  if (openIdx === -1 || closeIdx === -1) {
     throw new Error(
-      'topic doc is missing the two `---` body fences — refusing to save',
+      `${errLabel} doc is missing the editable comment markers — refusing to save`,
     );
   }
-  const body = lines
-    .slice(fenceIdxs[0] + 1, fenceIdxs[1])
+  return lines
+    .slice(openIdx + 1, closeIdx)
     .join('\n')
     .replace(/^\s*\n+/, '')
     .replace(/\n+\s*$/, '');
+}
+
+export function extractTopicBody(full: string): string {
+  const body = extractBetween(
+    full,
+    EDITABLE_DESCRIPTION_COMMENT_START,
+    EDITABLE_DESCRIPTION_COMMENT_END,
+    'topic',
+  );
   const placeholder = '_Empty body — write something here, then save (⌘S)._';
   if (body.trim() === placeholder) {
     return '';
@@ -116,4 +136,47 @@ export function extractTopicTypeDescription(full: string): string {
     return '';
   }
   return value;
+}
+
+/** Pull the alert title; placeholder collapses to empty (H1 falls back to id). */
+export function extractAlertTitle(full: string): string {
+  const value = extractBetween(
+    full,
+    EDITABLE_LABEL_COMMENT_START,
+    EDITABLE_LABEL_COMMENT_END,
+    'alert',
+  );
+  return value.trim() === DESCRIPTION_EMPTY_PLACEHOLDER ? '' : value;
+}
+
+/** Pull the alert status token from its editable region. */
+export function extractAlertStatus(full: string): string {
+  return extractBetween(
+    full,
+    EDITABLE_STATUS_COMMENT_START,
+    EDITABLE_STATUS_COMMENT_END,
+    'alert',
+  ).trim();
+}
+
+/** Pull the alert description; placeholder collapses to empty. */
+export function extractAlertDescription(full: string): string {
+  const value = extractBetween(
+    full,
+    EDITABLE_DESCRIPTION_COMMENT_START,
+    EDITABLE_DESCRIPTION_COMMENT_END,
+    'alert',
+  );
+  return value.trim() === DESCRIPTION_EMPTY_PLACEHOLDER ? '' : value;
+}
+
+/** Pull the alert recommended action; placeholder collapses to empty. */
+export function extractAlertRecommendedAction(full: string): string {
+  const value = extractBetween(
+    full,
+    EDITABLE_ACTION_COMMENT_START,
+    EDITABLE_ACTION_COMMENT_END,
+    'alert',
+  );
+  return value.trim() === DESCRIPTION_EMPTY_PLACEHOLDER ? '' : value;
 }

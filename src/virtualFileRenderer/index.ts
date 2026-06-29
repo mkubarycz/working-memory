@@ -16,10 +16,15 @@ export { enrichDeepLinks } from './enrichDeepLinks';
 export { renderWorkstreamDoc } from './workstreamDoc';
 export { renderTopicDoc } from './topicDoc';
 export { renderTopicTypeDoc } from './topicTypeDoc';
+export { renderAlertDoc } from './alertDoc';
 export { renderSession, renderSessionDoc } from './sessionDoc';
 export {
   extractTopicBody,
   extractTopicTypeBodyTemplate,
   extractTopicTypeLabel,
   extractTopicTypeDescription,
+  extractAlertTitle,
+  extractAlertStatus,
+  extractAlertDescription,
+  extractAlertRecommendedAction,
 } from './extract';

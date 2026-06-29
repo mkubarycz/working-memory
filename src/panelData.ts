@@ -9,12 +9,14 @@ import {
   type WorkstreamWithCount,
 } from './db';
 import { TRAVERSAL_MODES } from './graphTraversals';
+import { AlertsStore, ALERTS_ENABLED } from './alerts/store';
+import type { AlertStatus } from './alerts/types';
 
 /**
  * Plain-JSON shapes shipped to the webview. Keep these serializable —
  * nothing in here may reference `vscode.*` types or DB row objects directly.
  */
-export type PanelTab = 'active' | 'archive' | 'topics' | 'topic-types';
+export type PanelTab = 'active' | 'archive' | 'topics' | 'topic-types' | 'alerts';
 
 export interface PanelAction {
   /** VS Code command id to invoke. */
@@ -47,6 +49,10 @@ export interface PanelTopic {
    * marker; the panel doesn't render it yet (follow-up task).
    */
   focused: boolean;
+  /** Open-alert count for the bubble (A); 0 hides it. */
+  alertCount?: number;
+  /** Max severity among open alerts: 'alert' reddish, 'informational' default (C). */
+  alertSeverity?: 'alert' | 'informational' | null;
   /**
    * Nested child topics — populated when a workstream's linked topics have
    * parent/child relationships among themselves. Only set when non-empty.
@@ -136,6 +142,8 @@ export interface PanelTopicRow {
   status: 'open' | 'closed';
   recentEntryCount: number;
   actions?: PanelAction[];
+  alertCount?: number;
+  alertSeverity?: 'alert' | 'informational' | null;
   children?: PanelTopicRow[];
 }
 
@@ -150,11 +158,26 @@ export interface PanelTopicType {
   topicCount: number;
 }
 
+export interface PanelAlert {
+  kind: 'alert';
+  id: string;
+  label: string;
+  description: string;
+  tooltip: string;
+  icon?: string;
+  openUri: string;
+  status: AlertStatus;
+  /** Topic slugs this alert is linked to. */
+  topics: string[];
+  actions?: PanelAction[];
+}
+
 export type PanelItem =
   | PanelWorkstream
   | PanelWorkstreamSection
   | PanelTopicRow
-  | PanelTopicType;
+  | PanelTopicType
+  | PanelAlert;
 
 export interface PanelData {
   tab: PanelTab;
@@ -209,6 +232,36 @@ function iconForType(
   return typeMap.get(typeId)?.icon ?? FALLBACK_TOPIC_ICON;
 }
 
+/** Open-alert bubble (count + max severity) for a topic, or null when off. */
+function alertBubble(
+  store: JournalStore,
+  slug: string,
+): { count: number; severity: 'alert' | 'informational' | null } | null {
+  if (!ALERTS_ENABLED) {
+    return null;
+  }
+  const roll = new AlertsStore(store.connection).openCountForTopic(slug);
+  return roll.count > 0 ? roll : null;
+}
+
+/** Per-alert context-menu actions for the Alerts tab / virtual doc. */
+function alertActions(id: number, status: AlertStatus): PanelAction[] {
+  const actions: PanelAction[] = [
+    { command: 'working-memory.alert.editDescription', title: 'Edit description', args: [{ id }] },
+    { command: 'working-memory.alert.editAction', title: 'Edit recommended action', args: [{ id }] },
+  ];
+  if (status !== 'alert') {
+    actions.push({ command: 'working-memory.alert.setStatus', title: 'Raise to Alert', args: [{ id, status: 'alert' }], icon: 'arrow-circle-up' });
+  }
+  if (status !== 'informational') {
+    actions.push({ command: 'working-memory.alert.setStatus', title: 'Mark Informational', args: [{ id, status: 'informational' }] });
+  }
+  if (status !== 'closed') {
+    actions.push({ command: 'working-memory.alert.setStatus', title: 'Close', args: [{ id, status: 'closed' }], icon: 'check' });
+  }
+  return actions;
+}
+
 function traversalActionTitle(mode: (typeof TRAVERSAL_MODES)[keyof typeof TRAVERSAL_MODES]): string {
   switch (mode.id) {
     case 'self':
@@ -258,6 +311,7 @@ function buildTopics(
   const panelBySlug = new Map<string, PanelTopic>();
   const ordered: PanelTopic[] = [];
   for (const t of topics) {
+    const bubble = alertBubble(store, t.slug);
     const panel: PanelTopic = {
       kind: 'topic',
       id: `${tab}:topic:${ws.id}:${t.slug}`,
@@ -270,6 +324,8 @@ function buildTopics(
       focused: t.focused === 1,
       recentEntryCount: t.entry_count_in_workstream,
       actions: topicActions(t.slug, ws.slug),
+      alertCount: bubble?.count ?? 0,
+      alertSeverity: bubble?.severity ?? null,
     };
     panelBySlug.set(t.slug, panel);
     ordered.push(panel);
@@ -503,6 +559,7 @@ function buildTopicRow(
   parentSlug: string | null,
   countsBySlug: Map<string, TopicWithCounts>,
   typeMap: Map<string, TopicType>,
+  store: JournalStore,
 ): PanelTopicRow {
   const counts = countsBySlug.get(t.slug);
   const description = counts
@@ -512,6 +569,7 @@ function buildTopicRow(
         workstream_count: 0,
         entry_count: 0,
       } as TopicWithCounts);
+  const bubble = alertBubble(store, t.slug);
   return {
     kind: 'topic-row',
     id: `topics:topic:${parentSlug ?? 'root'}:${t.slug}`,
@@ -523,6 +581,8 @@ function buildTopicRow(
     status: t.status,
     recentEntryCount: counts?.entry_count ?? 0,
     actions: topicActions(t.slug),
+    alertCount: bubble?.count ?? 0,
+    alertSeverity: bubble?.severity ?? null,
   };
 }
 
@@ -553,6 +613,7 @@ function attachChildren(
       parentSlug,
       countsBySlug,
       typeMap,
+      store,
     );
     const nextPath = new Set(path);
     nextPath.add(c.slug);
@@ -586,6 +647,7 @@ export function getPanelTopicsData(store: JournalStore): PanelData {
       null,
       countsBySlug,
       typeMap,
+      store,
     );
     attachChildren(
       store,
@@ -633,6 +695,9 @@ export function getPanelData(store: JournalStore, tab: PanelTab): PanelData {
   }
   if (tab === 'topic-types') {
     return getPanelTopicTypesData(store);
+  }
+  if (tab === 'alerts') {
+    return getPanelAlertsData(store);
   }
   const typeMap = loadTypeMap(store);
   if (tab === 'active') {
@@ -712,13 +777,47 @@ export function getAllPanelData(store: JournalStore): {
   archive: PanelData;
   topics: PanelData;
   topicTypes: PanelData;
+  alerts: PanelData;
 } {
   return {
     active: getPanelData(store, 'active'),
     archive: getPanelData(store, 'archive'),
     topics: getPanelTopicsData(store),
     topicTypes: getPanelTopicTypesData(store),
+    alerts: getPanelAlertsData(store),
   };
+}
+
+/** All alerts (active + closed) for the Alerts tab (D). */
+export function getPanelAlertsData(store: JournalStore): PanelData {
+  if (!ALERTS_ENABLED) {
+    return { tab: 'alerts', items: [], emptyMessage: 'Alerts are disabled.' };
+  }
+  const all = new AlertsStore(store.connection).listAlerts({ status: 'all' });
+  const items: PanelItem[] = all.map((a) => {
+    const descParts: string[] = [a.status];
+    if (a.topics.length) {
+      descParts.push(a.topics.join(', '));
+    }
+    return {
+      kind: 'alert',
+      id: `alerts:alert:${a.id}`,
+      label: a.title.trim() || a.description.split('\n')[0] || `Alert #${a.id}`,
+      description: descParts.join(' • '),
+      tooltip: `Alert #${a.id} — ${a.status}\nby ${a.created_by}\n${a.recommended_action || '(no action)'}`,
+      openUri: `working-memory:/alert/${a.id}.md`,
+      icon:
+        a.status === 'alert'
+          ? 'bell'
+          : a.status === 'informational'
+            ? 'info'
+            : 'pass',
+      status: a.status,
+      topics: a.topics,
+      actions: alertActions(a.id, a.status),
+    };
+  });
+  return { tab: 'alerts', items, emptyMessage: 'No alerts.' };
 }
 
 /** Empty-data fallback used when no store is available (no hub workspace). */
@@ -727,6 +826,7 @@ export function emptyAllPanelData(): {
   archive: PanelData;
   topics: PanelData;
   topicTypes: PanelData;
+  alerts: PanelData;
 } {
   const noHub = 'No hub workspace open — open the folder containing AGENTS.md.';
   return {
@@ -734,5 +834,6 @@ export function emptyAllPanelData(): {
     archive: { tab: 'archive', items: [], emptyMessage: noHub },
     topics: { tab: 'topics', items: [], emptyMessage: noHub },
     topicTypes: { tab: 'topic-types', items: [], emptyMessage: noHub },
+    alerts: { tab: 'alerts', items: [], emptyMessage: noHub },
   };
 }

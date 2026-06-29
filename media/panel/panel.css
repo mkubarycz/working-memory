@@ -56,6 +56,79 @@ html, body {
   outline-offset: -1px;
 }
 
+/* Gear group: hosts collapsed Archive / Types views behind a settings icon,
+   with the active one surfaced as a label chip beside the gear. */
+.gear-tab {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.gear-chip {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: none;
+  border-bottom: 1px solid transparent;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  outline: none;
+  opacity: 0.7;
+}
+
+.gear-chip:hover {
+  background: var(--vscode-toolbar-hoverBackground, transparent);
+  opacity: 1;
+}
+
+.gear-chip[aria-selected="true"] {
+  opacity: 1;
+  border-bottom-color: var(--vscode-focusBorder, var(--vscode-foreground));
+}
+
+.gear-chip:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.gear-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: none;
+  border-bottom: 1px solid transparent;
+  padding: 6px 8px;
+  cursor: pointer;
+  outline: none;
+  opacity: 0.7;
+}
+
+.gear-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, transparent);
+  opacity: 1;
+}
+
+.gear-btn.selected {
+  opacity: 1;
+  border-bottom-color: var(--vscode-focusBorder, var(--vscode-foreground));
+}
+
+.gear-btn:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.gear-menu {
+  position: fixed;
+}
+
 /* -- List ---------------------------------------------------------------- */
 
 .list {
@@ -233,6 +306,53 @@ html, body {
 
 .recent-chip.flash {
   animation: recent-chip-flash 600ms ease-out;
+}
+
+/* Alert count bubble next to a topic. Reddish for any alert-status, neutral
+   badge when all open alerts are informational; hidden at zero (host omits). */
+.alert-bubble {
+  flex: 0 0 auto;
+  margin-left: auto;
+  margin-right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  font-family: var(--vscode-font-family);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.2px;
+}
+
+.alert-bubble.severe {
+  background: var(--vscode-charts-red, var(--vscode-errorForeground, #f14c4c));
+  color: var(--vscode-badge-foreground, #fff);
+}
+
+.alert-bubble.info {
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+}
+
+/* Alert rows: clamp the label to a single line so it shrinks to fit the panel
+   and shows an ellipsis instead of pushing past the edge. */
+.row[data-kind="alert"] .label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Alert-status rows lead with a red bell; informational/closed icons stay
+   neutral. Mirrors the bell/info/pass set in the virtual docs. */
+.row[data-kind="alert"][data-status="alert"] .icon .codicon {
+  color: var(--vscode-errorForeground, #f14c4c);
 }
 
 @keyframes recent-chip-flash {

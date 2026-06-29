@@ -9,19 +9,20 @@ import { JournalStore } from '../db';
 // every emission site. The codicon font is loaded into the preview sandbox via
 // `contributes.markdown.previewStyles` (media/codicons/codicon.css).
 
-type DeepLinkKind = 'topic' | 'session' | 'workstream' | 'topic-type';
+type DeepLinkKind = 'topic' | 'session' | 'workstream' | 'topic-type' | 'alert';
 
 const DEEP_LINK_FIXED_ICON: Record<Exclude<DeepLinkKind, 'topic'>, string> = {
   session: 'comment-discussion',
   workstream: 'repo',
   'topic-type': 'tag',
+  alert: 'warning',
 };
 
 const DEEP_LINK_FALLBACK_ICON = 'symbol-misc';
 
 // [label](vscode://kubarycz.working-memory/open/<kind>/<id>)
 const DEEP_LINK_RE =
-  /\[([^\]]+)\]\((vscode:\/\/kubarycz\.working-memory\/open\/(topic|session|workstream|topic-type)\/([^)\s]+))\)/g;
+  /\[([^\]]+)\]\((vscode:\/\/kubarycz\.working-memory\/open\/(topic|session|workstream|topic-type|alert)\/([^)\s]+))\)/g;
 
 function safeDecode(s: string): string {
   try {
@@ -103,7 +104,13 @@ export function enrichDeepLinks(store: JournalStore, markdown: string): string {
     }
     lines[i] = lines[i].replace(
       DEEP_LINK_RE,
-      (_match, label: string, url: string, kind: DeepLinkKind, rawId: string) => {
+      (match, label: string, url: string, kind: DeepLinkKind, rawId: string) => {
+        // Alert links carry their own status icon (bell/info/pass) emitted at
+        // the render site, and labels that already contain a codicon span are
+        // pre-iconned — don't double up.
+        if (kind === 'alert' || label.includes('codicon-')) {
+          return match;
+        }
         const id = safeDecode(rawId);
         const icon = iconForDeepLink(store, kind, id);
         const count = countForDeepLink(
