@@ -44,3 +44,13 @@ test('updateToLatest prompts to reload instead of reloading automatically', () =
     /reloadChoice\s*===\s*['"]Reload Window['"][\s\S]*?reloadWindow/,
   );
 });
+
+test('runCommand resolves the .cmd shim on Windows so gh/code spawn works', () => {
+  const src = readFileSync(extensionTsPath, 'utf8');
+
+  // Windows ships `gh`/`code` as `.cmd` shims; bare spawn(shell:false)
+  // can't resolve them. Pick the platform binary and keep shell off so
+  // vsix paths with spaces aren't subject to quoting/injection.
+  expect(src).toMatch(/win32['"]\s*\?\s*`\$\{command\}\.cmd`/);
+  expect(src).toContain('shell: false');
+});

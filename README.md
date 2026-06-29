@@ -42,10 +42,20 @@ Tagging a release (`git tag v<version> && git push --tags`) runs the
 [`Release VSIX`](.github/workflows/release.yml) workflow, which builds, tests,
 packages, and attaches the `.vsix` to a GitHub Release. A stable
 `working-memory.vsix` asset always points at the latest release, so this
-one-liner installs the newest build without cloning:
+downloads the newest build to the current directory and installs it without
+cloning:
+
+**macOS / Linux (bash):**
 
 ```bash
-curl -sL https://github.com/mkubarycz/working-memory/releases/latest/download/working-memory.vsix -o /tmp/working-memory.vsix && code --install-extension /tmp/working-memory.vsix --force
+curl -sL https://github.com/mkubarycz/working-memory/releases/latest/download/working-memory.vsix -o working-memory.vsix && code --install-extension working-memory.vsix --force
+# then reload the VS Code window
+```
+
+**Windows (PowerShell):**
+
+```powershell
+Invoke-WebRequest https://github.com/mkubarycz/working-memory/releases/latest/download/working-memory.vsix -OutFile working-memory.vsix; code --install-extension working-memory.vsix --force
 # then reload the VS Code window
 ```
 

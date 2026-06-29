@@ -119,7 +119,12 @@ function backupJournalDb(label: string): string | null {
 
 function runCommand(command: 'gh' | 'code', args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { shell: false });
+    // On Windows, `gh` and `code` ship as `.cmd` shims. Bare `spawn` with
+    // shell:false can't resolve them (→ "spawn code ENOENT"). Use the
+    // `.cmd` name and keep shell:false so args (e.g. a vsix path with
+    // spaces) are passed verbatim — no quoting or injection risk.
+    const bin = process.platform === 'win32' ? `${command}.cmd` : command;
+    const child = spawn(bin, args, { shell: false });
     let stderr = '';
     let stdout = '';
     child.stdout.on('data', (chunk: Buffer) => {
