@@ -10,6 +10,7 @@ import {
 } from './graphTraversals';
 import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
 import { reshapeTopicBody, extractH2Headers } from './topicReshape';
+import { registerAlertsFeature } from './alerts';
 
 interface ToolDeps {
   refresh: () => void;
@@ -704,6 +705,9 @@ export function registerTools(
       }),
     }),
   );
+
+  // ----- alerts (self-contained feature; single toggle in src/alerts) -----
+  registerAlertsFeature({ context, store, deps: { refresh: deps.refresh } });
 
   context.subscriptions.push(...subs);
 }

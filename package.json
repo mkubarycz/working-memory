@@ -57,7 +57,13 @@
     "onLanguageModelTool:wm_get_topic_type",
     "onLanguageModelTool:wm_update_topic_type",
     "onLanguageModelTool:wm_delete_topic_type",
-    "onLanguageModelTool:wm_get_panel_data"
+    "onLanguageModelTool:wm_get_panel_data",
+    "onLanguageModelTool:wm_create_alert",
+    "onLanguageModelTool:wm_get_alert",
+    "onLanguageModelTool:wm_list_alerts",
+    "onLanguageModelTool:wm_update_alert",
+    "onLanguageModelTool:wm_link_alert_topic",
+    "onLanguageModelTool:wm_unlink_alert_topic"
   ],
   "contributes": {
     "viewsContainers": {
@@ -1174,6 +1180,198 @@
                 "all"
               ],
               "description": "Which panel tab to return. Defaults to 'all', which returns the full {active, archive, topics, topicTypes} shape."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_create_alert",
+        "displayName": "Working Memory: Create Alert",
+        "toolReferenceName": "wm_create_alert",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Raise a durable, structured 'needs attention' alert against one or more topics. `description` is required; `recommended_action` optional. `topic_slugs` are the M:N targets and MUST already exist (an unknown or soft-deleted slug is rejected — no stub creation). The alert is created with status 'alert'. Dedupe: `dedupe_key` is always populated — caller-supplied if given, otherwise derived from hash(created_by + description + sorted topic_slugs). If an OPEN alert (status != 'closed') already holds that key, it is upserted (description/recommended_action refreshed, re-raised to 'alert') instead of inserting a duplicate; the response's `deduped` flag says which happened. Returns the alert row, its linked topics, and `deduped`.",
+        "userDescription": "Raise an alert against one or more topics",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "description"
+          ],
+          "properties": {
+            "description": {
+              "type": "string",
+              "description": "What needs attention. Required, non-empty."
+            },
+            "recommended_action": {
+              "type": "string",
+              "description": "Suggested next step. Optional; defaults to empty."
+            },
+            "topic_slugs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Slugs of the topics this alert flags. Each must already exist and not be soft-deleted."
+            },
+            "created_by": {
+              "type": "string",
+              "description": "Source agent/task. Defaults to 'system'."
+            },
+            "dedupe_key": {
+              "type": "string",
+              "description": "Optional caller-supplied dedupe identity. Derived from created_by + description + sorted topic_slugs when omitted."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_get_alert",
+        "displayName": "Working Memory: Get Alert",
+        "toolReferenceName": "wm_get_alert",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Fetch a single alert by numeric id, including its linked topic slugs. Mirrors wm_get_topic / wm_get_workstream. Errors if the alert does not exist.",
+        "userDescription": "Get an alert and its linked topics",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "number",
+              "description": "The alert's numeric id."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_list_alerts",
+        "displayName": "Working Memory: List Alerts",
+        "toolReferenceName": "wm_list_alerts",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "List alerts, ordered by severity (alert, then informational, then closed) and recency. By default returns the active queue (alert + informational); pass status to filter. Optionally scope to one topic with topic_slug. Each alert includes its linked topic slugs.",
+        "userDescription": "List alerts (active queue by default)",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "alert",
+                "informational",
+                "closed",
+                "active",
+                "all"
+              ],
+              "description": "Filter by status. Defaults to 'active' (alert + informational). 'all' includes closed."
+            },
+            "topic_slug": {
+              "type": "string",
+              "description": "Only return alerts linked to this topic."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_update_alert",
+        "displayName": "Working Memory: Update Alert",
+        "toolReferenceName": "wm_update_alert",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Partial-update a single alert (mirrors wm_update_workstream / wm_update_topic). Edit `description` and/or `recommended_action`, and drive the status lifecycle via the `status` arg: 'alert' (active, rings bells) -> 'informational' (downgraded, quiet, stays in the active queue) -> 'closed' (terminal, leaves the queue and frees its dedupe_key). Any change bumps updated_at. Returns the updated alert with its topics.",
+        "userDescription": "Update an alert or change its status",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "number",
+              "description": "The alert's numeric id."
+            },
+            "description": {
+              "type": "string",
+              "description": "New description. Cannot be empty if provided."
+            },
+            "recommended_action": {
+              "type": "string",
+              "description": "New recommended action."
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "alert",
+                "informational",
+                "closed"
+              ],
+              "description": "New status. 'alert' = active, 'informational' = downgraded but still in queue, 'closed' = terminal."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_link_alert_topic",
+        "displayName": "Working Memory: Link Alert to Topic",
+        "toolReferenceName": "wm_link_alert_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Link an existing alert to an existing topic (M:N). Idempotent. The topic must already exist and not be soft-deleted — no stub creation (unlike wm_link_entry_topic).",
+        "userDescription": "Link an alert to a topic",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "alert_id",
+            "topic_slug"
+          ],
+          "properties": {
+            "alert_id": {
+              "type": "number",
+              "description": "The alert's numeric id."
+            },
+            "topic_slug": {
+              "type": "string",
+              "description": "Slug of the topic to link. Must already exist."
+            }
+          }
+        }
+      },
+      {
+        "name": "wm_unlink_alert_topic",
+        "displayName": "Working Memory: Unlink Alert from Topic",
+        "toolReferenceName": "wm_unlink_alert_topic",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Remove the link between an alert and a topic. Idempotent — `unlinked` is false when there was nothing to remove.",
+        "userDescription": "Unlink an alert from a topic",
+        "tags": [
+          "working-memory"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "alert_id",
+            "topic_slug"
+          ],
+          "properties": {
+            "alert_id": {
+              "type": "number",
+              "description": "The alert's numeric id."
+            },
+            "topic_slug": {
+              "type": "string",
+              "description": "Slug of the topic to unlink."
             }
           }
         }

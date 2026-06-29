@@ -199,6 +199,9 @@ const MIGRATIONS: Migration[] = [
   { version: 13, file: '013_topic_type_body_template.sql' },
   { version: 14, file: '014_workstream_lifecycle_status.sql' },
   { version: 15, file: '015_workstream_updated_at.sql' },
+  // 016 adds the first-class `alerts` + `alert_topics` tables. All new
+  // tables (no rebuild), so the runner's default BEGIN/COMMIT is fine.
+  { version: 16, file: '016_alerts.sql' },
 ];
 
 /**
@@ -574,6 +577,16 @@ export class JournalStore {
 
   close(): void {
     this.db.close();
+  }
+
+  /**
+   * The underlying SQLite handle. Exposed narrowly so self-contained feature
+   * modules (e.g. the alerts feature in `src/alerts/`) can own their own
+   * tables and queries without bloating this class. db.ts itself stays
+   * unaware of those features — no import, no coupling.
+   */
+  get connection(): DatabaseSyncT {
+    return this.db;
   }
 
   // -------------------------------------------------------------------------
