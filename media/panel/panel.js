@@ -76,11 +76,11 @@
   // --- State ------------------------------------------------------------
 
   const persisted =
-    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types'|'alerts', expanded?: string[] } | undefined} */ (
+    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types'|'alerts', gearView?: 'archive'|'topic-types', expanded?: string[] } | undefined} */ (
       vscode.getState()
     );
 
-  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts', expanded: Set<string>,
+  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts', gearView: 'archive'|'topic-types', expanded: Set<string>,
    *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData },
    *           focusedId: string | null, recentCounts: Map<string, number>,
    *           flashChipIds: Set<string> }} */
@@ -92,6 +92,9 @@
       persisted?.activeTab === 'alerts'
         ? persisted.activeTab
         : 'active',
+    // Which gear-hosted view the always-visible 4th tab slot represents.
+    // Defaults to Archive; swapped via the gear dropdown.
+    gearView: persisted?.gearView === 'topic-types' ? 'topic-types' : 'archive',
     expanded: new Set(Array.isArray(persisted?.expanded) ? persisted.expanded : []),
     data: {},
     focusedId: null,
@@ -104,6 +107,7 @@
   function persist() {
     vscode.setState({
       activeTab: state.activeTab,
+      gearView: state.gearView,
       expanded: Array.from(state.expanded),
     });
   }
@@ -123,6 +127,36 @@
 
   const listEl = /** @type {HTMLElement} */ (document.getElementById('list'));
   const tabsEl = /** @type {HTMLElement} */ (document.querySelector('.tabs'));
+  const gearTabEl = /** @type {HTMLElement | null} */ (document.querySelector('.gear-tab'));
+  const gearBtnEl = /** @type {HTMLElement | null} */ (document.querySelector('.gear-btn'));
+  const gearChipEl = /** @type {HTMLButtonElement | null} */ (document.querySelector('.gear-chip'));
+
+  // Views collapsed behind the gear: rendered as a dropdown, with the active
+  // one surfaced as a label chip beside the gear icon.
+  /** @type {{ tab: 'archive'|'topic-types', label: string }[]} */
+  const GEAR_VIEWS = [
+    { tab: 'archive', label: 'Archive' },
+    { tab: 'topic-types', label: 'Types' },
+  ];
+
+  /**
+   * Reflect the always-visible 4th tab: its label tracks the currently selected
+   * gear view (default Archive) and it shows as selected when that view is the
+   * active tab.
+   */
+  function renderGearStrip() {
+    const view = GEAR_VIEWS.find((v) => v.tab === state.gearView) ?? GEAR_VIEWS[0];
+    const selected = state.activeTab === view.tab;
+    if (gearChipEl) {
+      gearChipEl.textContent = view.label;
+      gearChipEl.dataset.tab = view.tab;
+      gearChipEl.setAttribute('aria-selected', selected ? 'true' : 'false');
+    }
+    if (gearBtnEl) {
+      gearBtnEl.classList.toggle('selected', selected);
+    }
+  }
+
   const CONTEXT_MENU_MARGIN = 6;
   const contextMenuEl = document.createElement('div');
   contextMenuEl.className = 'context-menu';
@@ -1085,6 +1119,7 @@
       const selected = t === state.activeTab;
       btn.setAttribute('aria-selected', selected ? 'true' : 'false');
     });
+    renderGearStrip();
 
     // List
     listEl.replaceChildren();
@@ -1196,31 +1231,113 @@
     if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types' && t !== 'alerts') {
       return;
     }
+    selectTab(t);
+  });
+
+  /** @param {'active'|'archive'|'topics'|'topic-types'|'alerts'} t */
+  function selectTab(t) {
     if (state.activeTab === t) {
       return;
     }
     state.activeTab = t;
     state.focusedId = null;
     closeContextMenu();
+    closeGearMenu();
     persist();
     render();
-  });
+  }
+
+  // --- Gear dropdown (Archive / Types) ----------------------------------
+  const gearMenuEl = document.createElement('div');
+  gearMenuEl.className = 'context-menu gear-menu';
+  gearMenuEl.hidden = true;
+  document.body.appendChild(gearMenuEl);
+
+  function closeGearMenu() {
+    gearMenuEl.hidden = true;
+    if (gearBtnEl) {
+      gearBtnEl.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function openGearMenu() {
+    if (!gearBtnEl || !gearTabEl) {
+      return;
+    }
+    gearMenuEl.replaceChildren();
+    for (const view of GEAR_VIEWS) {
+      const entry = document.createElement('div');
+      entry.className = 'context-menu-entry';
+      const item = document.createElement('button');
+      item.className = 'context-menu-item';
+      item.setAttribute('role', 'menuitem');
+      const label = document.createElement('span');
+      label.className = 'context-menu-label';
+      label.textContent = view.label;
+      item.appendChild(label);
+      if (view.tab === state.activeTab) {
+        item.setAttribute('aria-current', 'true');
+      }
+      item.addEventListener('click', () => {
+        closeGearMenu();
+        state.gearView = view.tab;
+        persist();
+        selectTab(view.tab);
+      });
+      entry.appendChild(item);
+      gearMenuEl.appendChild(entry);
+    }
+    gearMenuEl.hidden = false;
+    const rect = gearTabEl.getBoundingClientRect();
+    gearMenuEl.style.right = `${Math.max(CONTEXT_MENU_MARGIN, window.innerWidth - rect.right)}px`;
+    gearMenuEl.style.left = 'auto';
+    gearMenuEl.style.top = `${rect.bottom + 2}px`;
+    gearBtnEl.setAttribute('aria-expanded', 'true');
+  }
+
+  if (gearBtnEl) {
+    gearBtnEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (gearMenuEl.hidden) {
+        closeContextMenu();
+        openGearMenu();
+      } else {
+        closeGearMenu();
+      }
+    });
+  }
+  if (gearChipEl) {
+    gearChipEl.addEventListener('click', () => {
+      selectTab(state.gearView);
+    });
+  }
+
 
   document.addEventListener('pointerdown', (e) => {
+    const target = e.target;
+    const inGear =
+      target instanceof Element &&
+      (gearMenuEl.contains(target) || (gearTabEl ? gearTabEl.contains(target) : false));
+    if (!gearMenuEl.hidden && !inGear) {
+      closeGearMenu();
+    }
     if (contextMenuEl.hidden) {
       return;
     }
-    const target = e.target;
     if (!(target instanceof Element) || !contextMenuEl.contains(target)) {
       closeContextMenu();
     }
   }, true);
 
-  window.addEventListener('blur', closeContextMenu);
+  window.addEventListener('blur', () => {
+    closeContextMenu();
+    closeGearMenu();
+  });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeContextMenu();
+      closeGearMenu();
     }
   });
 
@@ -1228,6 +1345,7 @@
     'scroll',
     () => {
       closeContextMenu();
+      closeGearMenu();
     },
     true,
   );

@@ -53,7 +53,8 @@ type InboundMessage =
 
 /**
  * `WebviewViewProvider` for the single Working Memory panel. Hosts a tab
- * strip (Active / Archive / Topics / Topic Types) + tree-like list. Data is shaped by
+ * strip (Active / Topics / Alerts + gear-hosted Archive / Types) + tree-like
+ * list. Data is shaped by
  * `panelData.ts`; rendering and expand/collapse state live in
  * `media/panel/panel.js`. When `store` is null (no hub workspace) the
  * panel renders an empty state with a hint to open the hub folder.
@@ -308,27 +309,30 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         <button
           class="tab"
           role="tab"
-          data-tab="archive"
-          aria-selected="false"
-        >Archive</button>
-        <button
-          class="tab"
-          role="tab"
           data-tab="topics"
           aria-selected="false"
         >Topics</button>
         <button
           class="tab"
           role="tab"
-          data-tab="topic-types"
-          aria-selected="false"
-        >Topic Types</button>
-        <button
-          class="tab"
-          role="tab"
           data-tab="alerts"
           aria-selected="false"
         >Alerts</button>
+        <div class="gear-tab" role="presentation">
+          <button
+            class="gear-chip"
+            role="tab"
+            data-tab="archive"
+            aria-selected="false"
+          >Archive</button>
+          <button
+            class="gear-btn"
+            aria-label="More views"
+            aria-haspopup="true"
+            aria-expanded="false"
+            title="More views"
+          ><span class="codicon codicon-settings-gear"></span></button>
+        </div>
       </div>
       <div id="list" class="list" role="tree" aria-label="Workstreams"></div>
     </div>
