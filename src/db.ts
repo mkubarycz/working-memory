@@ -26,6 +26,14 @@ export interface Workstream {
    * to the top of its new section. Added in migration 015.
    */
   updated_at: number;
+  /**
+   * Manual sort key within an Active-tab section (fractional index). Lower =
+   * higher in the section (position ASC = top). Set on create/section-move per
+   * the per-section default rule (queue/progress → top, backlog → bottom) and
+   * rewritten on a drag-reorder. Added in migration 020. Closed rows keep the
+   * DEFAULT 0 — they don't participate in Active-tab ordering.
+   */
+  position: number;
   deleted_at: number | null;
 }
 
@@ -211,6 +219,10 @@ const MIGRATIONS: Migration[] = [
   // 019 adds acceptance-criteria validation to nanites: two additive
   // ADD COLUMN statements (no rebuild → no cascade hazard).
   { version: 19, file: '019_nanite_acceptance.sql' },
+  // 020 adds a `position` REAL sort key to `workstreams` for manual
+  // drag-and-drop ordering of the Active tab. Single ADD COLUMN + a
+  // window-function backfill (no rebuild → no cascade hazard).
+  { version: 20, file: '020_workstream_position.sql' },
 ];
 
 /**
@@ -323,7 +335,7 @@ export interface ListWorkstreamsOptions {
    */
   status?: WorkstreamStatus | 'all' | 'active';
   includeDeleted?: boolean;
-  orderBy?: 'opened-asc' | 'closed-desc' | 'last-activity-desc';
+  orderBy?: 'opened-asc' | 'closed-desc' | 'last-activity-desc' | 'position-asc';
 }
 
 export interface CreateWorkstreamInput {
@@ -352,6 +364,22 @@ export interface UpdateWorkstreamInput {
   title?: string;
   status?: WorkstreamStatus;
   closure?: string;
+}
+
+/**
+ * A within-section drag-reorder of the Active tab. `prevSlug` is the item that
+ * ends up immediately ABOVE the dropped item (smaller position) or null when
+ * dropped at the top; `nextSlug` is immediately BELOW (larger position) or null
+ * at the bottom. Neighbors are the *other* items (never the moved one). If
+ * `section` differs from the workstream's current section the move also flips
+ * its status (so a future cross-section drag works), but the webview currently
+ * only sends within-section drops.
+ */
+export interface ReorderWorkstreamInput {
+  slug: string;
+  section: WorkstreamSection;
+  prevSlug?: string | null;
+  nextSlug?: string | null;
 }
 
 export interface SoftDeleteResult {
@@ -643,6 +671,8 @@ export class JournalStore {
       orderSql = 'ORDER BY w.closed_at IS NULL, w.closed_at DESC, w.id DESC';
     } else if (orderBy === 'last-activity-desc') {
       orderSql = 'ORDER BY last_activity_at DESC, w.id DESC';
+    } else if (orderBy === 'position-asc') {
+      orderSql = 'ORDER BY w.position ASC, w.id ASC';
     } else {
       orderSql = 'ORDER BY w.opened_at ASC, w.id ASC';
     }
@@ -667,7 +697,7 @@ export class JournalStore {
 
     const sql = `
       SELECT w.id, w.slug, w.title, w.status, w.opened_at, w.closed_at,
-             w.closure, w.updated_at, w.deleted_at,
+             w.closure, w.updated_at, w.position, w.deleted_at,
              (SELECT COUNT(*) FROM sessions s
                 WHERE s.workstream_id = w.id AND s.deleted_at IS NULL)
                AS session_count${lastActivitySelect}
@@ -686,7 +716,7 @@ export class JournalStore {
   ): Workstream | null {
     const sql = `
       SELECT id, slug, title, status, opened_at, closed_at, closure,
-             updated_at, deleted_at
+             updated_at, position, deleted_at
         FROM workstreams
         WHERE slug = ?
           ${includeDeleted ? '' : 'AND deleted_at IS NULL'}
@@ -700,7 +730,7 @@ export class JournalStore {
   getWorkstreamById(id: number, includeDeleted = false): Workstream | null {
     const sql = `
       SELECT id, slug, title, status, opened_at, closed_at, closure,
-             updated_at, deleted_at
+             updated_at, position, deleted_at
         FROM workstreams
         WHERE id = ?
           ${includeDeleted ? '' : 'AND deleted_at IS NULL'}
@@ -709,6 +739,76 @@ export class JournalStore {
       .prepare(sql)
       .get(id) as unknown as Workstream | undefined;
     return row ?? null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Active-tab manual ordering (feature active-tab-drag-drop-ordering).
+  //
+  // `position` is a fractional index within an Active-tab section. Position
+  // ASC = top of the section. New items get a default position at the top or
+  // bottom of their section; a drag-reorder rewrites position via averaging
+  // (see `reorderWorkstream`). All position math filters to the same section
+  // grouping the Active tab uses (queue/backlog exact, everything else
+  // non-closed = progress) and ignores closed / soft-deleted rows.
+  // -------------------------------------------------------------------------
+
+  /** Map a stored status to its Active-tab section (mirror of sectionForStatus). */
+  private sectionForStatus(status: string): WorkstreamSection {
+    if (status === 'queue' || status === 'backlog') {
+      return status;
+    }
+    return 'progress';
+  }
+
+  /**
+   * MIN(position) - 1 among the non-deleted, non-closed workstreams in
+   * `section` (i.e. a position that sorts above every current member). Returns
+   * 0 when the section is empty.
+   */
+  private topPositionForSection(section: WorkstreamSection): number {
+    const row = this.db
+      .prepare(
+        `SELECT MIN(position) AS m
+           FROM workstreams
+          WHERE deleted_at IS NULL
+            AND status != 'closed'
+            AND CASE WHEN status IN ('queue','backlog') THEN status
+                     ELSE 'progress' END = ?`,
+      )
+      .get(section) as unknown as { m: number | null } | undefined;
+    const min = row?.m;
+    return min === null || min === undefined ? 0 : min - 1;
+  }
+
+  /**
+   * MAX(position) + 1 among the non-deleted, non-closed workstreams in
+   * `section` (a position that sorts below every current member). Returns 0
+   * when the section is empty.
+   */
+  private bottomPositionForSection(section: WorkstreamSection): number {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(position) AS m
+           FROM workstreams
+          WHERE deleted_at IS NULL
+            AND status != 'closed'
+            AND CASE WHEN status IN ('queue','backlog') THEN status
+                     ELSE 'progress' END = ?`,
+      )
+      .get(section) as unknown as { m: number | null } | undefined;
+    const max = row?.m;
+    return max === null || max === undefined ? 0 : max + 1;
+  }
+
+  /**
+   * Default insertion position for a workstream entering `section`: Queue and
+   * In Progress land at the TOP, Backlog lands at the BOTTOM. Used on create
+   * and on a section-move.
+   */
+  private defaultPositionForSection(section: WorkstreamSection): number {
+    return section === 'backlog'
+      ? this.bottomPositionForSection(section)
+      : this.topPositionForSection(section);
   }
 
   createWorkstream(input: CreateWorkstreamInput): CreateWorkstreamResult {
@@ -736,13 +836,20 @@ export class JournalStore {
       const status = input.status ?? 'progress';
       const opened = nowEpoch();
       const closed = status === 'closed' ? opened : null;
+      // Position the new workstream at its section's default slot (queue /
+      // progress → top, backlog → bottom). Closed rows keep 0 (they don't
+      // participate in Active-tab ordering).
+      const position =
+        status === 'closed'
+          ? 0
+          : this.defaultPositionForSection(this.sectionForStatus(status));
       this.db
         .prepare(
           `INSERT INTO workstreams
-             (slug, title, status, opened_at, closed_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+             (slug, title, status, opened_at, closed_at, updated_at, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(input.slug, input.title, status, opened, closed, opened);
+        .run(input.slug, input.title, status, opened, closed, opened, position);
       const workstream = this.getWorkstreamBySlug(input.slug);
       if (!workstream) {
         throw new Error('createWorkstream: insert succeeded but row not found');
@@ -810,6 +917,25 @@ export class JournalStore {
         // reads as closed.
         sets.push('closed_at = NULL');
       }
+      // A move into a *different* Active section re-slots the workstream.
+      // Normally it lands at that section's default position (queue/progress →
+      // top, backlog → bottom), matching a freshly-created item. Exception:
+      // promoting a Backlog item straight to In Progress lands it at the
+      // BOTTOM of In Progress (it was deprioritized, so it queues behind the
+      // active work rather than jumping to the top). Same-section status
+      // changes and moves to 'closed' leave `position` untouched.
+      if (patch.status !== 'closed') {
+        const from = this.sectionForStatus(current.status);
+        const to = this.sectionForStatus(patch.status);
+        if (from !== to) {
+          const position =
+            from === 'backlog' && to === 'progress'
+              ? this.bottomPositionForSection('progress')
+              : this.defaultPositionForSection(to);
+          sets.push('position = ?');
+          params.push(position);
+        }
+      }
     }
     if (patch.closure !== undefined) {
       sets.push('closure = ?');
@@ -832,6 +958,66 @@ export class JournalStore {
       throw new Error('updateWorkstream: row vanished after update');
     }
     return updated;
+  }
+
+  /**
+   * Re-slot a workstream within (or into) an Active-tab section via fractional
+   * indexing. The new position is derived from the drop-slot neighbours:
+   *
+   *   both prev & next → midpoint (prev.position + next.position) / 2
+   *   only next (top)  → next.position - 1
+   *   only prev (bottom) → prev.position + 1
+   *   neither (empty)  → 0
+   *
+   * If the workstream's current section differs from `section`, its status is
+   * also updated to `section` so the move sticks. Defensive: returns null when
+   * the moved slug doesn't resolve (no-op).
+   */
+  reorderWorkstream(input: ReorderWorkstreamInput): Workstream | null {
+    const current = this.getWorkstreamBySlug(input.slug);
+    if (!current) {
+      return null;
+    }
+
+    // Resolve neighbour positions. A neighbour that doesn't resolve (or is the
+    // moved item itself) is treated as absent.
+    const neighbourPosition = (
+      slug: string | null | undefined,
+    ): number | null => {
+      if (!slug || slug === input.slug) {
+        return null;
+      }
+      const ws = this.getWorkstreamBySlug(slug);
+      return ws ? ws.position : null;
+    };
+    const prevPos = neighbourPosition(input.prevSlug);
+    const nextPos = neighbourPosition(input.nextSlug);
+
+    let newPosition: number;
+    if (prevPos !== null && nextPos !== null) {
+      newPosition = (prevPos + nextPos) / 2;
+    } else if (nextPos !== null) {
+      newPosition = nextPos - 1;
+    } else if (prevPos !== null) {
+      newPosition = prevPos + 1;
+    } else {
+      newPosition = 0;
+    }
+
+    const sets: string[] = ['position = ?'];
+    const params: (string | number)[] = [newPosition];
+    // Cross-section drag: also flip status so the item lands in `section`.
+    if (this.sectionForStatus(current.status) !== input.section) {
+      sets.push('status = ?');
+      params.push(input.section);
+    }
+    sets.push('updated_at = ?');
+    params.push(nowEpoch());
+    params.push(input.slug);
+    this.db
+      .prepare(`UPDATE workstreams SET ${sets.join(', ')} WHERE slug = ?`)
+      .run(...params);
+    return this.getWorkstreamBySlug(input.slug);
   }
 
   reopenWorkstream(slug: string): Workstream {
