@@ -103,6 +103,13 @@ export interface PanelWorkstream {
   openUri: string;
   recentEntryCount: number;
   /**
+   * The Active-tab section this workstream currently lives in
+   * (queue/progress/backlog). Plumbed to the webview so a drag-reorder can tag
+   * the dragged row and target the correct section (cross-section drops
+   * included). Only meaningful on the Active tab; omitted on Archive.
+   */
+  section?: WorkstreamSection;
+  /**
    * Open-alert count aggregated across the workstream's linked topics; 0
    * hides the bubble. Replaces the entry-count chip on workstream rows.
    */
@@ -588,6 +595,7 @@ function buildWorkstream(
     tooltip,
     openUri: `working-memory:/workstream/${ws.slug}.md`,
     recentEntryCount,
+    section: sectionForStatus(ws.status),
     alertCount: wsBubble?.count ?? 0,
     alertSeverity: wsBubble?.severity ?? null,
     actions,
@@ -868,7 +876,7 @@ function getActivePanelData(
 ): PanelData {
   const rows = store.listWorkstreams({
     status: 'active',
-    orderBy: 'last-activity-desc',
+    orderBy: 'position-asc',
   });
   const buckets: Record<WorkstreamSection, PanelWorkstream[]> = {
     queue: [],

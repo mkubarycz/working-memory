@@ -473,6 +473,32 @@ html, body {
   margin-bottom: 0;
 }
 
+/* --- Active-tab drag-and-drop reordering ------------------------------ */
+
+/* Draggable workstream rows (Progress cards + expanded shelf items). */
+.ws-draggable {
+  cursor: grab;
+}
+
+.ws-draggable:active {
+  cursor: grabbing;
+}
+
+/* The row currently being dragged fades so the live drop position reads. */
+.ws-draggable.dragging {
+  opacity: 0.4;
+}
+
+/* Thin marker showing where the dragged row will land. It replaces the old
+   live-move behaviour so a Progress card never renders inside a shelf. */
+.ws-drop-indicator {
+  height: 0;
+  margin: 3px 6px;
+  border-top: 2px solid var(--vscode-focusBorder, #007acc);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
 .ws-card-header {
   background: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorGroupHeader-tabsBackground, transparent));
   border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-sideBarSectionHeader-border, transparent));

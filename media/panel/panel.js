@@ -758,11 +758,185 @@
     return row;
   }
 
+  // --- Active-tab drag-and-drop reordering ------------------------------
+  //
+  // Workstream rows (Progress cards + expanded Queue/Backlog shelf items) are
+  // draggable. Dropping a row reorders it WITHIN its section or moves it to a
+  // DIFFERENT section (cross-section drag) — the target is whichever section
+  // container the pointer is over on drop. The host persists the new order via
+  // a `reorderWorkstream` message (fractional indexing in db.ts); we then get
+  // a fresh `data` push and re-render. We NEVER relocate the real dragged
+  // node mid-drag — a colored Progress card physically moved into a shelf
+  // would render as an expanded card in the wrong section and could "stick"
+  // if the refresh raced. Instead a thin drop-indicator line marks the target
+  // slot, and the drop's new neighbours are read from the indicator's
+  // siblings. Collapsed peek-deck rows are tagged (so they can serve as drop
+  // neighbours) but are not themselves draggable.
+
+  /** @type {{ slug: string, section: string, el: HTMLElement } | null} */
+  let dragState = null;
+
+  /** @type {HTMLElement | null} Shared drop-slot marker, reused across drags. */
+  let dropIndicator = null;
+
+  /**
+   * Tag a workstream row with the slug/section metadata the drop math reads.
+   * Does NOT make the row draggable — see makeWorkstreamDraggable.
+   * @param {HTMLElement} el
+   * @param {string} slug
+   * @param {string} section
+   */
+  function tagWorkstreamRow(el, slug, section) {
+    el.dataset.dragSlug = slug;
+    el.dataset.dragSection = section;
+  }
+
+  /**
+   * Make a workstream row draggable and wire dragstart/dragend.
+   * @param {HTMLElement} el
+   * @param {string} slug
+   * @param {string} section
+   */
+  function makeWorkstreamDraggable(el, slug, section) {
+    tagWorkstreamRow(el, slug, section);
+    el.classList.add('ws-draggable');
+    el.setAttribute('draggable', 'true');
+    el.addEventListener('dragstart', (event) => {
+      dragState = { slug, section, el };
+      el.classList.add('dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        try {
+          event.dataTransfer.setData('text/plain', slug);
+        } catch (err) {
+          /* some hosts disallow setData; drag still works */
+        }
+      }
+      event.stopPropagation();
+    });
+    el.addEventListener('dragend', () => {
+      el.classList.remove('dragging');
+      removeDropIndicator();
+      dragState = null;
+    });
+  }
+
+  /** Lazily create the reusable drop-indicator line. */
+  function ensureDropIndicator() {
+    if (!dropIndicator) {
+      dropIndicator = document.createElement('div');
+      dropIndicator.className = 'ws-drop-indicator';
+    }
+    return dropIndicator;
+  }
+
+  /** Detach the drop indicator from the DOM if it's currently mounted. */
+  function removeDropIndicator() {
+    if (dropIndicator && dropIndicator.parentElement) {
+      dropIndicator.parentElement.removeChild(dropIndicator);
+    }
+  }
+
+  /**
+   * The tagged row the dragged item should be inserted BEFORE for a pointer Y,
+   * or null to append at the end of the container.
+   * @param {HTMLElement} container
+   * @param {number} y
+   * @returns {HTMLElement | null}
+   */
+  function getDragAfterElement(container, y) {
+    const rows = Array.from(
+      container.querySelectorAll('[data-drag-slug]:not(.dragging)')
+    );
+    /** @type {HTMLElement | null} */
+    let closest = null;
+    let closestOffset = -Infinity;
+    for (const row of rows) {
+      const box = row.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closestOffset) {
+        closestOffset = offset;
+        closest = /** @type {HTMLElement} */ (row);
+      }
+    }
+    return closest;
+  }
+
+  /**
+   * Slug of the given node's previous/next tagged sibling, skipping the dragged
+   * row itself and any untagged element (indicator, decorative slivers).
+   * @param {HTMLElement} el
+   * @param {'prev' | 'next'} dir
+   * @returns {string | null}
+   */
+  function siblingSlug(el, dir) {
+    const dragged = dragState ? dragState.el : null;
+    let sib = dir === 'prev' ? el.previousElementSibling : el.nextElementSibling;
+    while (sib) {
+      if (sib !== dragged) {
+        const slug = /** @type {HTMLElement} */ (sib).dataset?.dragSlug;
+        if (slug) {
+          return slug;
+        }
+      }
+      sib = dir === 'prev' ? sib.previousElementSibling : sib.nextElementSibling;
+    }
+    return null;
+  }
+
+  /**
+   * Wire `container` as a drop zone for `section`. Accepts drops from ANY
+   * section (cross-section drag). Shows a thin drop-indicator line at the
+   * target slot without moving the real dragged node; on drop, reads the new
+   * neighbours from the indicator's siblings and posts them.
+   * @param {HTMLElement} container
+   * @param {string} section  Target: 'queue' | 'progress' | 'backlog'.
+   */
+  function enableSectionDrop(container, section) {
+    container.addEventListener('dragover', (event) => {
+      if (!dragState) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+      const indicator = ensureDropIndicator();
+      const after = getDragAfterElement(container, event.clientY);
+      if (after == null) {
+        container.appendChild(indicator);
+      } else if (after !== indicator) {
+        container.insertBefore(indicator, after);
+      }
+    });
+    container.addEventListener('drop', (event) => {
+      if (!dragState) {
+        return;
+      }
+      event.preventDefault();
+      let prevSlug = null;
+      let nextSlug = null;
+      if (dropIndicator && dropIndicator.parentElement === container) {
+        prevSlug = siblingSlug(dropIndicator, 'prev');
+        nextSlug = siblingSlug(dropIndicator, 'next');
+      }
+      const slug = dragState.slug;
+      removeDropIndicator();
+      vscode.postMessage({
+        type: 'reorderWorkstream',
+        slug,
+        section,
+        prevSlug,
+        nextSlug,
+      });
+    });
+  }
+
   /**
    * Build one full workstream card (Progress section + Archive-style detail).
    * Extracted from the old inline active-tab loop so both the Progress section
    * and any future card surface can reuse it.
-   * @param {Node & { focused_topics?: Node[] }} item
+   * @param {Node & { focused_topics?: Node[], section?: string }} item
    * @returns {HTMLElement}
    */
   function renderWorkstreamCard(item) {
@@ -771,6 +945,7 @@
     const workstreamSlug = workstreamSlugFromOpenUri(item.openUri);
     if (workstreamSlug) {
       card.dataset.workstreamSlug = workstreamSlug;
+      makeWorkstreamDraggable(card, workstreamSlug, item.section || 'progress');
     }
     const expanded = state.expanded.has(item.id);
     if (expanded) {
@@ -861,14 +1036,25 @@
    * @param {'up' | 'down'} [direction] Direction the move-to button promotes
    *   the item toward the Progress stage. Queue sits above Progress → 'down';
    *   Backlog sits below → 'up'. Controls which arrow codicon is shown.
+   * @param {boolean} [draggable] When true the row is draggable for manual
+   *   reordering (expanded shelves only); collapsed peek rows pass false so
+   *   they act as drop-neighbours without being draggable themselves.
    * @returns {HTMLElement}
    */
-  function renderShelfItem(ws, direction = 'down') {
+  function renderShelfItem(ws, direction = 'down', draggable = false) {
     const el = document.createElement('div');
     el.className = 'ws-shelf-item';
     const slug = workstreamSlugFromOpenUri(ws.openUri);
     if (slug) {
       el.dataset.workstreamSlug = slug;
+      const sec =
+        /** @type {any} */ (ws).section ||
+        (direction === 'up' ? 'backlog' : 'queue');
+      if (draggable) {
+        makeWorkstreamDraggable(el, slug, sec);
+      } else {
+        tagWorkstreamRow(el, slug, sec);
+      }
     }
     if (nodeMatchesReveal(ws)) {
       el.classList.add('revealed');
@@ -1020,6 +1206,7 @@
       body = document.createElement('div');
       body.className = 'ws-shelf-empty';
       body.textContent = section.emptyMessage || '';
+      enableSectionDrop(body, section.section);
       content.appendChild(body);
       shelf.appendChild(rail);
       shelf.appendChild(content);
@@ -1032,15 +1219,15 @@
       // expanded.
       const list = document.createElement('div');
       list.className = 'ws-shelf-list';
-      // `items` arrives newest-first (getActivePanelData sorts each shelf by
-      // last-activity-desc). Queue renders the list reversed so the newest
-      // sits at the BOTTOM (nearest the Progress stage below it); Backlog
-      // renders newest-first so the newest sits at the TOP.
-      const ordered = isBacklog ? items : items.slice().reverse();
+      // `items` arrives in manual `position` order (getActivePanelData sorts
+      // each section by position ASC = top→bottom), so render as-is: item[0]
+      // is the top of the shelf for both Queue and Backlog.
+      const ordered = items;
       const moveDir = section.section === 'backlog' ? 'up' : 'down';
       for (const ws of ordered) {
-        list.appendChild(renderShelfItem(ws, moveDir));
+        list.appendChild(renderShelfItem(ws, moveDir, true));
       }
+      enableSectionDrop(list, section.section);
       body = list;
     } else {
       // Collapsed = peek deck. The TWO newest workstreams render as normal,
@@ -1078,6 +1265,9 @@
         row.classList.add('ws-shelf-deck-row');
         fan.appendChild(row);
       }
+      // A collapsed shelf still accepts cross-section drops: the two peek rows
+      // are tagged (drop-neighbours) so a dropped item lands relative to them.
+      enableSectionDrop(fan, section.section);
 
       deck.appendChild(fan);
       body = deck;
@@ -1118,6 +1308,10 @@
     // surfaced as a badge on the activity-bar icon instead. The Queue/Backlog
     // shelf headers (renderShelf) are unaffected.
     const items = Array.isArray(section.workstreams) ? section.workstreams : [];
+
+    // Progress is always a drop target — including when empty — so items can be
+    // dragged in from Queue/Backlog (cross-section) as well as reordered.
+    enableSectionDrop(wrap, 'progress');
 
     if (items.length === 0) {
       const empty = document.createElement('div');
