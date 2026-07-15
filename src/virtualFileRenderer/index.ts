@@ -17,6 +17,8 @@ export { renderWorkstreamDoc } from './workstreamDoc';
 export { renderTopicDoc } from './topicDoc';
 export { renderTopicTypeDoc } from './topicTypeDoc';
 export { renderAlertDoc } from './alertDoc';
+export { renderNaniteDoc } from './naniteDoc';
+export { renderNaniteRunDoc } from './naniteRunDoc';
 export { renderSession, renderSessionDoc } from './sessionDoc';
 export {
   extractTopicBody,
@@ -27,4 +29,5 @@ export {
   extractAlertStatus,
   extractAlertDescription,
   extractAlertRecommendedAction,
+  extractNaniteInstructions,
 } from './extract';

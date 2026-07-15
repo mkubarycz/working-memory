@@ -204,6 +204,13 @@ const MIGRATIONS: Migration[] = [
   { version: 16, file: '016_alerts.sql' },
   // 017 adds an editable `title` column to alerts (plain ADD COLUMN).
   { version: 17, file: '017_alert_title.sql' },
+  // 018 adds the `nanites` + `nanite_runs` tables (background-tasks engine,
+  // roadmap 12.2). All new tables (no rebuild), so the default BEGIN/COMMIT
+  // wrap is fine.
+  { version: 18, file: '018_nanites.sql' },
+  // 019 adds acceptance-criteria validation to nanites: two additive
+  // ADD COLUMN statements (no rebuild → no cascade hazard).
+  { version: 19, file: '019_nanite_acceptance.sql' },
 ];
 
 /**

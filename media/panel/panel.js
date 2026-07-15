@@ -9,13 +9,13 @@
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
    *              status?: 'open'|'closed', recentEntryCount?: number,
-   *              focused?: boolean }} Node */
+   *              focused?: boolean, deleted?: boolean }} Node */
   /** @typedef {{ type: 'card.unfocus', slug: string, topicSlug: string }} CardUnfocusMessage */
   /** @typedef {{ type: 'card.focus', slug: string, topicSlug: string }} CardFocusMessage */
   /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
   /** @typedef {CardUnfocusMessage | CardFocusMessage | InvokeMessage} ContextMenuMessage */
   /** @typedef {{ label: string, enabled: boolean, icon?: string, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
-  /** @typedef {{ tab: 'active'|'archive'|'topics'|'topic-types', items: Node[],
+  /** @typedef {{ tab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites', items: Node[],
    *              emptyMessage: string }} TabData */
 
   /**
@@ -76,12 +76,12 @@
   // --- State ------------------------------------------------------------
 
   const persisted =
-    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types'|'alerts', gearView?: 'archive'|'topic-types', expanded?: string[] } | undefined} */ (
+    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites', gearView?: 'archive'|'topic-types'|'topics', expanded?: string[] } | undefined} */ (
       vscode.getState()
     );
 
-  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts', gearView: 'archive'|'topic-types', expanded: Set<string>,
-   *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData },
+  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites', gearView: 'archive'|'topic-types'|'topics', expanded: Set<string>,
+   *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData, nanites?: TabData },
    *           focusedId: string | null, recentCounts: Map<string, number>,
    *           flashChipIds: Set<string> }} */
   const state = {
@@ -89,12 +89,16 @@
       persisted?.activeTab === 'archive' ||
       persisted?.activeTab === 'topics' ||
       persisted?.activeTab === 'topic-types' ||
-      persisted?.activeTab === 'alerts'
+      persisted?.activeTab === 'alerts' ||
+      persisted?.activeTab === 'nanites'
         ? persisted.activeTab
         : 'active',
     // Which gear-hosted view the always-visible 4th tab slot represents.
     // Defaults to Archive; swapped via the gear dropdown.
-    gearView: persisted?.gearView === 'topic-types' ? 'topic-types' : 'archive',
+    gearView:
+      persisted?.gearView === 'topic-types' || persisted?.gearView === 'topics'
+        ? persisted.gearView
+        : 'archive',
     expanded: new Set(Array.isArray(persisted?.expanded) ? persisted.expanded : []),
     data: {},
     focusedId: null,
@@ -113,7 +117,7 @@
   }
 
   /**
-   * @param {'active'|'archive'|'topics'|'topic-types'} tab
+   * @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'} tab
    * @returns {TabData | undefined}
    */
   function getTabData(tab) {
@@ -133,10 +137,11 @@
 
   // Views collapsed behind the gear: rendered as a dropdown, with the active
   // one surfaced as a label chip beside the gear icon.
-  /** @type {{ tab: 'archive'|'topic-types', label: string }[]} */
+  /** @type {{ tab: 'archive'|'topic-types'|'topics', label: string }[]} */
   const GEAR_VIEWS = [
     { tab: 'archive', label: 'Archive' },
     { tab: 'topic-types', label: 'Types' },
+    { tab: 'topics', label: 'Topics' },
   ];
 
   /**
@@ -158,6 +163,9 @@
   }
 
   const CONTEXT_MENU_MARGIN = 6;
+  // Kinds whose host-provided `node.actions` are exposed via a right-click
+  // context menu (like the Active tab) rather than the "…" overflow kebab.
+  const RIGHT_CLICK_ACTION_KINDS = new Set(['topic', 'topic-row', 'nanite']);
   const contextMenuEl = document.createElement('div');
   contextMenuEl.className = 'context-menu';
   contextMenuEl.hidden = true;
@@ -518,6 +526,11 @@
     ) {
       row.classList.add('is-closed');
     }
+    // Mute soft-deleted nanite rows the same way closed topics are muted, so
+    // the deleted list reads as "archived" while still offering Restore.
+    if (node.kind === 'nanite' && node.deleted === true) {
+      row.classList.add('is-deleted');
+    }
 
     const hasChildren =
       Array.isArray(node.children) && node.children.length > 0;
@@ -619,12 +632,11 @@
     }
 
     // Actions — the "…" overflow menu. Suppressed on alert rows (every row is
-    // already an alert; the kebab is noise) and on topic rows (right-click menu
-    // is sufficient). Other rows keep the overflow button.
+    // already an alert; the kebab is noise) and on right-click kinds (their
+    // context menu is sufficient). Other rows keep the overflow button.
     if (
       node.kind !== 'alert' &&
-      node.kind !== 'topic' &&
-      node.kind !== 'topic-row' &&
+      !RIGHT_CLICK_ACTION_KINDS.has(node.kind) &&
       Array.isArray(node.actions) &&
       node.actions.length > 0
     ) {
@@ -660,7 +672,7 @@
     });
 
     if (
-      (node.kind === 'topic' || node.kind === 'topic-row') &&
+      RIGHT_CLICK_ACTION_KINDS.has(node.kind) &&
       Array.isArray(node.actions) &&
       node.actions.length > 0
     ) {
@@ -1228,13 +1240,13 @@
       return;
     }
     const t = btn.getAttribute('data-tab');
-    if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types' && t !== 'alerts') {
+    if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types' && t !== 'alerts' && t !== 'nanites') {
       return;
     }
     selectTab(t);
   });
 
-  /** @param {'active'|'archive'|'topics'|'topic-types'|'alerts'} t */
+  /** @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'} t */
   function selectTab(t) {
     if (state.activeTab === t) {
       return;
@@ -1373,7 +1385,7 @@
           }
         }
       };
-      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types'])) {
+      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types', 'nanites'])) {
         const td = tab === 'topic-types' ? msg.data?.topicTypes : msg.data?.[tab];
         if (td?.items) {
           for (const w of td.items) {
@@ -1413,7 +1425,7 @@
           }
         }
       };
-      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types'])) {
+      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types', 'nanites'])) {
         const td = tab === 'topic-types' ? msg.data?.topicTypes : msg.data?.[tab];
         if (td?.items) {
           for (const n of td.items) {

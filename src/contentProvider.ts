@@ -6,6 +6,8 @@ import {
   renderTopicTypeDoc,
   renderSessionDoc,
   renderAlertDoc,
+  renderNaniteDoc,
+  renderNaniteRunDoc,
   enrichDeepLinks,
   extractTopicBody,
   extractTopicTypeBodyTemplate,
@@ -15,11 +17,21 @@ import {
   extractAlertStatus,
   extractAlertDescription,
   extractAlertRecommendedAction,
+  extractNaniteInstructions,
 } from './virtualFileRenderer';
 import { AlertsStore } from './alerts/store';
+import { NanitesStore } from './nanites/store';
 import type { AlertStatus } from './alerts/types';
 
-type DocKind = 'workstream' | 'topic' | 'topic-type' | 'session' | 'alert' | 'unknown';
+type DocKind =
+  | 'workstream'
+  | 'topic'
+  | 'topic-type'
+  | 'session'
+  | 'alert'
+  | 'nanite'
+  | 'nanite-run'
+  | 'unknown';
 
 function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
   const p = uri.path;
@@ -42,6 +54,14 @@ function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
   if (p.startsWith('/alert/') && p.endsWith('.md')) {
     const id = p.slice('/alert/'.length, p.length - '.md'.length);
     return { kind: 'alert', slug: id || null };
+  }
+  if (p.startsWith('/nanite-run/') && p.endsWith('.md')) {
+    const id = p.slice('/nanite-run/'.length, p.length - '.md'.length);
+    return { kind: 'nanite-run', slug: id || null };
+  }
+  if (p.startsWith('/nanite/') && p.endsWith('.md')) {
+    const slug = p.slice('/nanite/'.length, p.length - '.md'.length);
+    return { kind: 'nanite', slug: slug || null };
   }
   return { kind: 'unknown', slug: null };
 }
@@ -107,7 +127,8 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       mtime,
       size: Buffer.byteLength(text, 'utf8'),
       permissions:
-        (kind === 'topic' || kind === 'topic-type' || kind === 'alert') &&
+        (kind === 'topic' || kind === 'topic-type' || kind === 'alert' ||
+          kind === 'nanite') &&
         this.store
           ? undefined
           : vscode.FilePermission.Readonly,
@@ -139,7 +160,8 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
   ): void {
     const { kind, slug } = classifyUri(uri);
     if (
-      (kind !== 'topic' && kind !== 'topic-type' && kind !== 'alert') ||
+      (kind !== 'topic' && kind !== 'topic-type' && kind !== 'alert' &&
+        kind !== 'nanite') ||
       !slug
     ) {
       throw vscode.FileSystemError.NoPermissions(uri);
@@ -179,6 +201,23 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         description,
         recommended_action,
       });
+      this.markChanged(uri);
+      return;
+    }
+    if (kind === 'nanite') {
+      const nanites = new NanitesStore(this.store.connection);
+      if (!nanites.getNaniteBySlug(slug, true)) {
+        throw vscode.FileSystemError.FileNotFound(uri);
+      }
+      const instructions = extractNaniteInstructions(text);
+      if (!instructions.trim()) {
+        vscode.window.showErrorMessage(
+          'Working Memory: instructions must not be empty — save aborted.',
+        );
+        this.markChanged(uri);
+        return;
+      }
+      nanites.updateNanite(slug, { instructions });
       this.markChanged(uri);
       return;
     }
@@ -251,6 +290,12 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     }
     if (kind === 'alert') {
       return enrichDeepLinks(this.store, renderAlertDoc(this.store, slug));
+    }
+    if (kind === 'nanite') {
+      return enrichDeepLinks(this.store, renderNaniteDoc(this.store, slug));
+    }
+    if (kind === 'nanite-run') {
+      return enrichDeepLinks(this.store, renderNaniteRunDoc(this.store, slug));
     }
     return `# Unknown working-memory URI\n\n\`${uri.toString()}\``;
   }

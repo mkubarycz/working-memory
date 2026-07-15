@@ -53,8 +53,8 @@ type InboundMessage =
 
 /**
  * `WebviewViewProvider` for the single Working Memory panel. Hosts a tab
- * strip (Active / Topics / Alerts + gear-hosted Archive / Types) + tree-like
- * list. Data is shaped by
+ * strip (Active / Alerts / Nanites + gear-hosted Archive / Types / Topics) +
+ * tree-like list. Data is shaped by
  * `panelData.ts`; rendering and expand/collapse state live in
  * `media/panel/panel.js`. When `store` is null (no hub workspace) the
  * panel renders an empty state with a hint to open the hub folder.
@@ -309,15 +309,15 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         <button
           class="tab"
           role="tab"
-          data-tab="topics"
-          aria-selected="false"
-        >Topics</button>
-        <button
-          class="tab"
-          role="tab"
           data-tab="alerts"
           aria-selected="false"
         >Alerts</button>
+        <button
+          class="tab"
+          role="tab"
+          data-tab="nanites"
+          aria-selected="false"
+        >Nanites</button>
         <div class="gear-tab" role="presentation">
           <button
             class="gear-chip"

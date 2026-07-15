@@ -16,6 +16,7 @@ import {
 import { findHubWorkspace, resolveDbPath } from './paths';
 import { WorkstreamDocumentProvider } from './contentProvider';
 import { AlertsStore, ALERTS_ENABLED, type AlertStatus } from './alerts';
+import { NanitesStore, NANITES_ENABLED } from './nanites';
 import { registerTools } from './tools';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
 import {
@@ -508,7 +509,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (!kind || !id) {
           const pickedKind = await vscode.window.showQuickPick(
-            ['session', 'topic', 'topic-type', 'workstream', 'alert'],
+            ['session', 'topic', 'topic-type', 'workstream', 'alert', 'nanite'],
             { placeHolder: 'Kind of working-memory doc to open' },
           );
           if (!pickedKind) {
@@ -527,10 +528,12 @@ export function activate(context: vscode.ExtensionContext): void {
           kind !== 'topic' &&
           kind !== 'topic-type' &&
           kind !== 'workstream' &&
-          kind !== 'alert'
+          kind !== 'alert' &&
+          kind !== 'nanite' &&
+          kind !== 'nanite-run'
         ) {
           vscode.window.showWarningMessage(
-            `Working Memory: unknown kind "${kind}" (expected session|topic|topic-type|workstream|alert).`,
+            `Working Memory: unknown kind "${kind}" (expected session|topic|topic-type|workstream|alert|nanite|nanite-run).`,
           );
           return;
         }
@@ -766,6 +769,56 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
     ),
+    vscode.commands.registerCommand(
+      'working-memory.nanite.delete',
+      (arg?: { slug?: string }) => {
+        const slug = arg?.slug?.trim();
+        if (!slug) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Delete Nanite requires a slug.',
+          );
+          return;
+        }
+        if (!store || !NANITES_ENABLED) {
+          vscode.window.showErrorMessage('Working Memory: nanites unavailable.');
+          return;
+        }
+        try {
+          new NanitesStore(store.connection).deleteNanite(slug);
+          refresh();
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to delete nanite — ${m}`,
+          );
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      'working-memory.nanite.restore',
+      (arg?: { slug?: string }) => {
+        const slug = arg?.slug?.trim();
+        if (!slug) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Restore Nanite requires a slug.',
+          );
+          return;
+        }
+        if (!store || !NANITES_ENABLED) {
+          vscode.window.showErrorMessage('Working Memory: nanites unavailable.');
+          return;
+        }
+        try {
+          new NanitesStore(store.connection).restoreNanite(slug);
+          refresh();
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to restore nanite — ${m}`,
+          );
+        }
+      },
+    ),
     vscode.window.registerWebviewViewProvider(
       WorkstreamPanelProvider.viewType,
       panelProvider,
@@ -810,7 +863,9 @@ export function activate(context: vscode.ExtensionContext): void {
           kind !== 'topic' &&
           kind !== 'topic-type' &&
           kind !== 'workstream' &&
-          kind !== 'alert'
+          kind !== 'alert' &&
+          kind !== 'nanite' &&
+          kind !== 'nanite-run'
         ) {
           vscode.window.showErrorMessage(
             `Working Memory: unrecognized deep link: ${uri.toString()}`,

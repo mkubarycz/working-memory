@@ -16,10 +16,19 @@ export const EDITABLE_STATUS_COMMENT_START = '<!-- editable:status -->';
 export const EDITABLE_STATUS_COMMENT_END = '<!-- /editable:status -->';
 export const EDITABLE_ACTION_COMMENT_START = '<!-- editable:action -->';
 export const EDITABLE_ACTION_COMMENT_END = '<!-- /editable:action -->';
+export const EDITABLE_INSTRUCTIONS_COMMENT_START = '<!-- editable:instructions -->';
+export const EDITABLE_INSTRUCTIONS_COMMENT_END = '<!-- /editable:instructions -->';
 export const DESCRIPTION_EMPTY_PLACEHOLDER = '—';
 
 export function deepLink(
-  kind: 'topic' | 'session' | 'workstream' | 'topic-type' | 'alert',
+  kind:
+    | 'topic'
+    | 'session'
+    | 'workstream'
+    | 'topic-type'
+    | 'alert'
+    | 'nanite'
+    | 'nanite-run',
   id: string,
 ): string {
   return `vscode://kubarycz.working-memory/open/${kind}/${encodeURIComponent(id)}`;

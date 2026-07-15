@@ -6,6 +6,8 @@ import {
   EDITABLE_COMMENT_START,
   EDITABLE_DESCRIPTION_COMMENT_END,
   EDITABLE_DESCRIPTION_COMMENT_START,
+  EDITABLE_INSTRUCTIONS_COMMENT_END,
+  EDITABLE_INSTRUCTIONS_COMMENT_START,
   EDITABLE_LABEL_COMMENT_END,
   EDITABLE_LABEL_COMMENT_START,
   EDITABLE_STATUS_COMMENT_END,
@@ -179,4 +181,17 @@ export function extractAlertRecommendedAction(full: string): string {
     'alert',
   );
   return value.trim() === DESCRIPTION_EMPTY_PLACEHOLDER ? '' : value;
+}
+
+/** Pull the nanite instructions from its editable region. */
+export function extractNaniteInstructions(full: string): string {
+  const value = extractBetween(
+    full,
+    EDITABLE_INSTRUCTIONS_COMMENT_START,
+    EDITABLE_INSTRUCTIONS_COMMENT_END,
+    'nanite',
+  );
+  const placeholder =
+    '_No instructions yet — write the nanite playbook here, then save (⌘S)._';
+  return value.trim() === placeholder ? '' : value;
 }

@@ -209,6 +209,12 @@ html, body {
   opacity: 0.6;
 }
 
+/* Soft-deleted nanite rows render muted (a touch dimmer than closed topics)
+   so the deleted list reads as archived while still offering Restore. */
+.row.is-deleted {
+  opacity: 0.5;
+}
+
 .twisty {
   flex: 0 0 16px;
   width: 16px;
