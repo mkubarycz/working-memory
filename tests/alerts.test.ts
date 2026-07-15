@@ -347,6 +347,61 @@ describe('AlertsStore.openCountForTopic', () => {
   });
 });
 
+describe('AlertsStore.openCountForWorkstream', () => {
+  /** Seed a workstream `ws` linked to the given topic slugs. */
+  function freshWorkstream(topicSlugs: string[]): {
+    store: JournalStore;
+    alerts: AlertsStore;
+    wsId: number;
+  } {
+    const { store, alerts } = freshStore(topicSlugs);
+    store.createWorkstream({ slug: 'ws', title: 'WS' });
+    for (const topic_slug of topicSlugs) {
+      store.linkWorkstreamTopic({ workstream_slug: 'ws', topic_slug });
+    }
+    const wsId = store.getWorkstreamBySlug('ws')!.id;
+    return { store, alerts, wsId };
+  }
+
+  test('zero open alerts => count 0, severity null', () => {
+    const { alerts, wsId } = freshWorkstream(['a', 'b']);
+    expect(alerts.openCountForWorkstream(wsId)).toEqual({ count: 0, severity: null });
+  });
+
+  test('aggregates distinct open alerts across linked topics', () => {
+    const { alerts, wsId } = freshWorkstream(['a', 'b']);
+    alerts.createAlert({ description: 'on a', topic_slugs: ['a'], dedupe_key: '1' });
+    alerts.createAlert({ description: 'on b', topic_slugs: ['b'], dedupe_key: '2' });
+    expect(alerts.openCountForWorkstream(wsId)).toEqual({ count: 2, severity: 'alert' });
+  });
+
+  test('an alert shared by two linked topics is counted once', () => {
+    const { alerts, wsId } = freshWorkstream(['a', 'b']);
+    alerts.createAlert({ description: 'shared', topic_slugs: ['a', 'b'], dedupe_key: '1' });
+    expect(alerts.openCountForWorkstream(wsId)).toEqual({ count: 1, severity: 'alert' });
+  });
+
+  test('severity informational when only quiet alerts are open', () => {
+    const { alerts, wsId } = freshWorkstream(['a']);
+    const q = alerts.createAlert({ description: 'q', topic_slugs: ['a'], dedupe_key: '1' }).alert;
+    alerts.updateAlert(q.id, { status: 'informational' });
+    expect(alerts.openCountForWorkstream(wsId)).toEqual({ count: 1, severity: 'informational' });
+  });
+
+  test('closed alerts and alerts on unlinked topics are excluded', () => {
+    const { store, alerts, wsId } = freshWorkstream(['a']);
+    store.createTopic({ slug: 'other' });
+    const gone = alerts.createAlert({ description: 'gone', topic_slugs: ['a'], dedupe_key: '1' }).alert;
+    alerts.updateAlert(gone.id, { status: 'closed' });
+    alerts.createAlert({ description: 'elsewhere', topic_slugs: ['other'], dedupe_key: '2' });
+    expect(alerts.openCountForWorkstream(wsId)).toEqual({ count: 0, severity: null });
+  });
+
+  test('missing DB handle => count 0, severity null', () => {
+    expect(new AlertsStore(null).openCountForWorkstream(1)).toEqual({ count: 0, severity: null });
+  });
+});
+
 describe('AlertsStore.topicAlertsWithRecentClosed', () => {
   test('includes active alerts and excludes long-closed ones', () => {
     vi.useFakeTimers();
