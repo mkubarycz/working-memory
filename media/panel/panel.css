@@ -862,7 +862,7 @@ html, body {
   background: var(--vscode-list-hoverBackground);
 }
 
-/* In a shelf row the label grows so the trailing recent-chip pins to the
+/* In a shelf row the label grows so the trailing alert bubble pins to the
    right edge while the leading move button stays at the left. */
 .ws-shelf-item .label {
   flex: 1 1 auto;

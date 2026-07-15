@@ -9,6 +9,7 @@
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
    *              status?: 'open'|'closed', recentEntryCount?: number,
+   *              alertCount?: number, alertSeverity?: 'alert'|'informational'|null,
    *              focused?: boolean, deleted?: boolean }} Node */
   /** @typedef {{ type: 'card.unfocus', slug: string, topicSlug: string }} CardUnfocusMessage */
   /** @typedef {{ type: 'card.focus', slug: string, topicSlug: string }} CardFocusMessage */
@@ -593,11 +594,12 @@
     }
 
     // Recent entries chip — topics no longer carry an entry-count bubble
-    // (Michael's call); only workstream/session rows show it.
-    const isTopicRow = node.kind === 'topic' || node.kind === 'topic-row';
+    // (Michael's call), and workstream rows now show an aggregated alert
+    // bubble (above) instead of the entry count. Only session rows show it.
+    const showEntryChip = node.kind === 'session';
     const recentEntryCount =
       typeof node.recentEntryCount === 'number' ? node.recentEntryCount : 0;
-    if (recentEntryCount > 0 && !isTopicRow) {
+    if (recentEntryCount > 0 && showEntryChip) {
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'recent-chip' +
@@ -897,13 +899,20 @@
     label.textContent = ws.label;
     el.appendChild(label);
 
-    const recentEntryCount =
-      typeof ws.recentEntryCount === 'number' ? ws.recentEntryCount : 0;
-    if (recentEntryCount > 0) {
-      const chip = document.createElement('span');
-      chip.className = 'recent-chip';
-      chip.textContent = String(recentEntryCount);
-      el.appendChild(chip);
+    // Aggregated open-alert bubble — mirrors the per-topic bubble (reddish
+    // 'severe' if any loud alert, neutral 'info' otherwise), hidden at zero.
+    // Replaces the old entry-count chip on shelf rows.
+    const alertCount =
+      typeof ws.alertCount === 'number' ? ws.alertCount : 0;
+    if (alertCount > 0) {
+      const bubble = document.createElement('span');
+      bubble.className =
+        'alert-bubble' +
+        (ws.alertSeverity === 'alert' ? ' severe' : ' info');
+      bubble.textContent = String(alertCount);
+      bubble.title =
+        `${alertCount} open alert${alertCount === 1 ? '' : 's'}`;
+      el.appendChild(bubble);
     }
 
     el.title = (ws.tooltip ? ws.tooltip + '\n' : '') + 'Click to open';
