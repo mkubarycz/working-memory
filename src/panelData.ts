@@ -11,12 +11,13 @@ import {
 import { TRAVERSAL_MODES } from './graphTraversals';
 import { AlertsStore, ALERTS_ENABLED } from './alerts/store';
 import type { AlertStatus } from './alerts/types';
+import { NanitesStore, NANITES_ENABLED } from './nanites/store';
 
 /**
  * Plain-JSON shapes shipped to the webview. Keep these serializable —
  * nothing in here may reference `vscode.*` types or DB row objects directly.
  */
-export type PanelTab = 'active' | 'archive' | 'topics' | 'topic-types' | 'alerts';
+export type PanelTab = 'active' | 'archive' | 'topics' | 'topic-types' | 'alerts' | 'nanites';
 
 export interface PanelAction {
   /** VS Code command id to invoke. */
@@ -172,12 +173,28 @@ export interface PanelAlert {
   actions?: PanelAction[];
 }
 
+export interface PanelNanite {
+  kind: 'nanite';
+  id: string;
+  label: string;
+  description: string;
+  tooltip: string;
+  icon: string;
+  openUri: string;
+  /** Whether the nanite is runnable. Muted in the UI when false. */
+  enabled: boolean;
+  /** Whether the nanite is soft-deleted. Muted + offers Restore when true. */
+  deleted: boolean;
+  actions?: PanelAction[];
+}
+
 export type PanelItem =
   | PanelWorkstream
   | PanelWorkstreamSection
   | PanelTopicRow
   | PanelTopicType
-  | PanelAlert;
+  | PanelAlert
+  | PanelNanite;
 
 export interface PanelData {
   tab: PanelTab;
@@ -689,12 +706,91 @@ export function getPanelTopicTypesData(store: JournalStore): PanelData {
   };
 }
 
+/** Codicon for a nanite row; enabled shows a running-bot glyph, disabled dims. */
+const NANITE_ICON = 'zap';
+/** Codicon for a soft-deleted nanite row surfaced in the deleted list. */
+const NANITE_DELETED_ICON = 'trash';
+
+/**
+ * Delete / restore context-menu actions for a nanite row. A live nanite offers
+ * Delete; a soft-deleted one offers Restore. Mirrors the topic delete/restore
+ * mechanism: the panel invokes the command, which calls the store + refreshes.
+ */
+function naniteActions(slug: string, deleted: boolean): PanelAction[] {
+  if (deleted) {
+    return [
+      {
+        command: 'working-memory.nanite.restore',
+        title: 'Restore Nanite',
+        args: [{ slug }],
+        icon: 'history',
+      },
+    ];
+  }
+  return [
+    {
+      command: 'working-memory.nanite.delete',
+      title: 'Delete Nanite',
+      args: [{ slug }],
+      icon: 'trash',
+    },
+  ];
+}
+
+/**
+ * All nanites for the top-level Nanites tab — including disabled and
+ * soft-deleted rows, so the tab doubles as the deleted list (deleted rows are
+ * muted and offer Restore). Mirrors how topics expose delete/restore.
+ */
+export function getPanelNanitesData(store: JournalStore): PanelData {
+  if (!NANITES_ENABLED) {
+    return { tab: 'nanites', items: [], emptyMessage: 'Nanites are disabled.' };
+  }
+  const nanites = new NanitesStore(store.connection).listNanites({
+    include_disabled: true,
+    include_deleted: true,
+  });
+  const items: PanelItem[] = nanites.map((n) => {
+    const deleted = n.deleted_at !== null;
+    const trigger = n.trigger_phrase.trim();
+    const descParts: string[] = [
+      deleted ? 'deleted' : n.enabled ? 'enabled' : 'disabled',
+    ];
+    if (trigger) {
+      descParts.push(trigger);
+    }
+    const stateNote = deleted
+      ? 'deleted'
+      : n.enabled
+        ? 'enabled'
+        : 'disabled';
+    return {
+      kind: 'nanite',
+      id: `nanites:nanite:${n.slug}`,
+      label: n.title.trim() || n.slug,
+      description: descParts.join(' • '),
+      tooltip: `${n.title} (${n.slug}) — ${stateNote}${
+        trigger ? `\ntrigger: ${trigger}` : ''
+      }`,
+      icon: deleted ? NANITE_DELETED_ICON : NANITE_ICON,
+      openUri: `working-memory:/nanite/${encodeURIComponent(n.slug)}.md`,
+      enabled: n.enabled,
+      deleted,
+      actions: naniteActions(n.slug, deleted),
+    };
+  });
+  return { tab: 'nanites', items, emptyMessage: 'No nanites.' };
+}
+
 export function getPanelData(store: JournalStore, tab: PanelTab): PanelData {
   if (tab === 'topics') {
     return getPanelTopicsData(store);
   }
   if (tab === 'topic-types') {
     return getPanelTopicTypesData(store);
+  }
+  if (tab === 'nanites') {
+    return getPanelNanitesData(store);
   }
   if (tab === 'alerts') {
     return getPanelAlertsData(store);
@@ -778,6 +874,7 @@ export function getAllPanelData(store: JournalStore): {
   topics: PanelData;
   topicTypes: PanelData;
   alerts: PanelData;
+  nanites: PanelData;
 } {
   return {
     active: getPanelData(store, 'active'),
@@ -785,6 +882,7 @@ export function getAllPanelData(store: JournalStore): {
     topics: getPanelTopicsData(store),
     topicTypes: getPanelTopicTypesData(store),
     alerts: getPanelAlertsData(store),
+    nanites: getPanelNanitesData(store),
   };
 }
 
@@ -827,6 +925,7 @@ export function emptyAllPanelData(): {
   topics: PanelData;
   topicTypes: PanelData;
   alerts: PanelData;
+  nanites: PanelData;
 } {
   const noHub = 'No hub workspace open — open the folder containing AGENTS.md.';
   return {
@@ -835,5 +934,6 @@ export function emptyAllPanelData(): {
     topics: { tab: 'topics', items: [], emptyMessage: noHub },
     topicTypes: { tab: 'topic-types', items: [], emptyMessage: noHub },
     alerts: { tab: 'alerts', items: [], emptyMessage: noHub },
+    nanites: { tab: 'nanites', items: [], emptyMessage: noHub },
   };
 }

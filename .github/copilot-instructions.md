@@ -9,7 +9,7 @@ tools (`wm_*`) backed by a SQLite journal database.
 ```
 working-memory/
 ├── package.json              # extension manifest + scripts; version lives here
-├── tsconfig.json             # tsc → out/src/extension.js, out/scripts/seed.js
+├── tsconfig.json             # tsc → out/src/extension.js
 ├── vitest.config.ts          # unit tests (vitest)
 ├── schema/NNN_*.sql          # append-only migrations, registered in src/db.ts
 ├── src/
@@ -19,7 +19,6 @@ working-memory/
 │   ├── tree.ts               # webview tree provider (Active + Archive tabs)
 │   └── contentProvider.ts    # virtual docs for `working-memory:` URI scheme
 ├── scripts/
-│   ├── seed.ts               # idempotent seeder (npm run seed)
 │   ├── release.sh            # snapshot DB + compile + package + install
 │   └── rollback.sh           # restore snapshot + reinstall previous vsix
 ├── tests/                    # vitest specs
@@ -39,7 +38,6 @@ npm install
 npm run compile        # tsc -p .
 npm run watch          # tsc --watch
 npm run test           # vitest run
-npm run seed           # populate empty DB
 npm run package        # npx vsce package --allow-missing-repository
 ```
 
@@ -59,7 +57,7 @@ belong in CI or cloud-agent workflows.
 - API quirks vs `better-sqlite3`:
   - No `.pragma()` helper → use `db.exec('PRAGMA journal_mode = WAL')`.
   - No `db.transaction(fn)` → write `db.exec('BEGIN')` / `COMMIT` / `ROLLBACK`
-    manually (see `scripts/seed.ts`).
+    manually (see the migration runner in `src/db.ts`).
   - `.all()` / `.get()` return `unknown` to TS → cast `as unknown as MyRow[]`.
   - Close with `db.close()`; guard with a module-level handle.
 - **Defensive activation:** `activate()` must register commands, the tree
