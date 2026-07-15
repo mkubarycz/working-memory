@@ -6,7 +6,7 @@ import {
   type PanelData,
   type PanelWorkstreamSection,
 } from '../panelData';
-import { JournalStore } from '../db';
+import { JournalStore, type WorkstreamSection } from '../db';
 import type { PanelRevealTarget } from '../panelReveal';
 
 interface InvokeMessage {
@@ -43,13 +43,22 @@ interface CardFocusMessage {
   topicSlug: string;
 }
 
+interface ReorderWorkstreamMessage {
+  type: 'reorderWorkstream';
+  slug: string;
+  section: WorkstreamSection;
+  prevSlug: string | null;
+  nextSlug: string | null;
+}
+
 type InboundMessage =
   | InvokeMessage
   | OpenMessage
   | ActionsMessage
   | ReadyMessage
   | CardUnfocusMessage
-  | CardFocusMessage;
+  | CardFocusMessage
+  | ReorderWorkstreamMessage;
 
 /**
  * `WebviewViewProvider` for the single Working Memory panel. Hosts a tab
@@ -208,6 +217,42 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           this.handleCardFocus(msg.slug, msg.topicSlug);
         }
         return;
+      case 'reorderWorkstream':
+        if (
+          typeof msg.slug === 'string' &&
+          msg.slug.trim().length > 0 &&
+          (msg.section === 'queue' ||
+            msg.section === 'progress' ||
+            msg.section === 'backlog')
+        ) {
+          this.handleReorderWorkstream(
+            msg.slug,
+            msg.section,
+            typeof msg.prevSlug === 'string' ? msg.prevSlug : null,
+            typeof msg.nextSlug === 'string' ? msg.nextSlug : null,
+          );
+        }
+        return;
+    }
+  }
+
+  private handleReorderWorkstream(
+    slug: string,
+    section: WorkstreamSection,
+    prevSlug: string | null,
+    nextSlug: string | null,
+  ): void {
+    if (!this.store) {
+      return;
+    }
+    try {
+      this.store.reorderWorkstream({ slug, section, prevSlug, nextSlug });
+      this.refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(
+        `Working Memory: failed to reorder workstream — ${message}`,
+      );
     }
   }
 

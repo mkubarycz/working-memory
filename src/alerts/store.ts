@@ -273,6 +273,40 @@ export class AlertsStore {
   }
 
   /**
+   * Per-workstream rollup for the workstream-card / shelf bubble: how many
+   * DISTINCT open alerts (`alert` + `informational`) flag any topic linked to
+   * the workstream, and the highest severity among them. Mirrors
+   * `openCountForTopic` but aggregates across the workstream's linked topics
+   * (deduping alerts shared by multiple topics). `severity` is `'alert'` if any
+   * open alert is loud, else `'informational'` if there are quiet ones, else
+   * `null` (zero open).
+   */
+  openCountForWorkstream(
+    workstreamId: number,
+  ): { count: number; severity: 'alert' | 'informational' | null } {
+    if (!this.db) {
+      return { count: 0, severity: null };
+    }
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(DISTINCT a.id) AS n,
+                SUM(CASE WHEN a.status = 'alert' THEN 1 ELSE 0 END) AS loud
+           FROM alerts a
+           JOIN alert_topics at ON at.alert_id = a.id
+           JOIN workstream_topics wt ON wt.topic_slug = at.topic_slug
+          WHERE wt.workstream_id = ?
+            AND wt.deleted_at IS NULL
+            AND a.status != 'closed'`,
+      )
+      .get(workstreamId) as unknown as { n: number; loud: number } | undefined;
+    const count = Number(row?.n ?? 0);
+    if (count === 0) {
+      return { count: 0, severity: null };
+    }
+    return { count, severity: Number(row?.loud ?? 0) > 0 ? 'alert' : 'informational' };
+  }
+
+  /**
    * Alerts to show on a topic page (B): all active alerts plus any `closed`
    * alert whose `updated_at` is within `withinSeconds` of now (default 1h) so
    * a just-resolved alert lingers briefly. Ordered alert → informational →

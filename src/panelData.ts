@@ -102,6 +102,20 @@ export interface PanelWorkstream {
   tooltip: string;
   openUri: string;
   recentEntryCount: number;
+  /**
+   * The Active-tab section this workstream currently lives in
+   * (queue/progress/backlog). Plumbed to the webview so a drag-reorder can tag
+   * the dragged row and target the correct section (cross-section drops
+   * included). Only meaningful on the Active tab; omitted on Archive.
+   */
+  section?: WorkstreamSection;
+  /**
+   * Open-alert count aggregated across the workstream's linked topics; 0
+   * hides the bubble. Replaces the entry-count chip on workstream rows.
+   */
+  alertCount?: number;
+  /** Max severity among open alerts: 'alert' reddish, 'informational' default. */
+  alertSeverity?: 'alert' | 'informational' | null;
   actions: PanelAction[];
   /**
    * Focused topics for this workstream, in linked_at order (newest first).
@@ -258,6 +272,24 @@ function alertBubble(
     return null;
   }
   const roll = new AlertsStore(store.connection).openCountForTopic(slug);
+  return roll.count > 0 ? roll : null;
+}
+
+/**
+ * Open-alert bubble (count + max severity) aggregated across a workstream's
+ * linked topics, or null when off / zero. Mirrors `alertBubble` but for a
+ * whole workstream row.
+ */
+function workstreamAlertBubble(
+  store: JournalStore,
+  workstreamId: number,
+): { count: number; severity: 'alert' | 'informational' | null } | null {
+  if (!ALERTS_ENABLED) {
+    return null;
+  }
+  const roll = new AlertsStore(store.connection).openCountForWorkstream(
+    workstreamId,
+  );
   return roll.count > 0 ? roll : null;
 }
 
@@ -554,6 +586,7 @@ function buildWorkstream(
     ALL_TIME_SINCE,
   );
   const focusedTopics = orderedTopics.filter((t) => t.focused);
+  const wsBubble = workstreamAlertBubble(store, ws.id);
   return {
     kind: 'workstream',
     id: `${tab}:workstream:${ws.id}`,
@@ -562,6 +595,9 @@ function buildWorkstream(
     tooltip,
     openUri: `working-memory:/workstream/${ws.slug}.md`,
     recentEntryCount,
+    section: sectionForStatus(ws.status),
+    alertCount: wsBubble?.count ?? 0,
+    alertSeverity: wsBubble?.severity ?? null,
     actions,
     focused_topics: focusedTopics,
     children: [
@@ -840,7 +876,7 @@ function getActivePanelData(
 ): PanelData {
   const rows = store.listWorkstreams({
     status: 'active',
-    orderBy: 'last-activity-desc',
+    orderBy: 'position-asc',
   });
   const buckets: Record<WorkstreamSection, PanelWorkstream[]> = {
     queue: [],
