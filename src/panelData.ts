@@ -12,12 +12,20 @@ import { TRAVERSAL_MODES } from './graphTraversals';
 import { AlertsStore, ALERTS_ENABLED } from './alerts/store';
 import type { AlertStatus } from './alerts/types';
 import { NanitesStore, NANITES_ENABLED } from './nanites/store';
+import type { DocumentEnvelope, ListDocumentsResult } from './controlPlaneClient';
 
 /**
  * Plain-JSON shapes shipped to the webview. Keep these serializable —
  * nothing in here may reference `vscode.*` types or DB row objects directly.
  */
-export type PanelTab = 'active' | 'archive' | 'topics' | 'topic-types' | 'alerts' | 'nanites';
+export type PanelTab =
+  | 'active'
+  | 'archive'
+  | 'topics'
+  | 'topic-types'
+  | 'alerts'
+  | 'nanites'
+  | 'blackboard';
 
 export interface PanelAction {
   /** VS Code command id to invoke. */
@@ -202,13 +210,31 @@ export interface PanelNanite {
   actions?: PanelAction[];
 }
 
+/**
+ * A Blackboard-tab row: one control-plane document envelope, sourced through
+ * the MCP `wm_list_documents` tool (not the journal DB). Mirrors the visual
+ * shape of `PanelTopicRow` so the webview renders it with the same row path.
+ */
+export interface PanelDocumentRow {
+  kind: 'document-row';
+  id: string;
+  label: string;
+  description: string;
+  tooltip: string;
+  /** Codicon id. */
+  icon: string;
+  /** `working-memory:/document/<id>.md` virtual-doc URI. */
+  openUri: string;
+}
+
 export type PanelItem =
   | PanelWorkstream
   | PanelWorkstreamSection
   | PanelTopicRow
   | PanelTopicType
   | PanelAlert
-  | PanelNanite;
+  | PanelNanite
+  | PanelDocumentRow;
 
 export interface PanelData {
   tab: PanelTab;
@@ -816,6 +842,48 @@ export function getPanelNanitesData(store: JournalStore): PanelData {
     };
   });
   return { tab: 'nanites', items, emptyMessage: 'No nanites.' };
+}
+
+/** Codicon id for a Blackboard document row. */
+const DOCUMENT_ROW_ICON = 'file';
+
+/** Build one Blackboard row from a control-plane document envelope. */
+function buildDocumentRow(doc: DocumentEnvelope): PanelDocumentRow {
+  const id = doc.metadata.id;
+  const slug = doc.metadata.slug;
+  const idShort = id.slice(0, 8);
+  const rv = doc.metadata.resourceVersion;
+  return {
+    kind: 'document-row',
+    id: `blackboard:document:${id}`,
+    label: `${doc.kind}: ${slug ?? idShort}`,
+    description: `v${rv} • ${idShort}`,
+    tooltip: `${doc.kind} ${id}${slug ? ` (${slug})` : ''} — resourceVersion ${rv}`,
+    icon: DOCUMENT_ROW_ICON,
+    openUri: `working-memory:/document/${encodeURIComponent(id)}.md`,
+  };
+}
+
+/**
+ * Build the Blackboard tab from a `wm_list_documents` result. Sourced through
+ * the control-plane MCP client (not the journal DB), so the empty state reflects
+ * the daemon's reachability: unavailable → "Control plane not running";
+ * reachable-but-empty → "No documents yet".
+ */
+export function buildBlackboardPanelData(result: ListDocumentsResult): PanelData {
+  if (!result.available) {
+    return {
+      tab: 'blackboard',
+      items: [],
+      emptyMessage: 'Control plane not running.',
+    };
+  }
+  const items: PanelItem[] = result.documents.map(buildDocumentRow);
+  return {
+    tab: 'blackboard',
+    items,
+    emptyMessage: 'No documents yet.',
+  };
 }
 
 export function getPanelData(store: JournalStore, tab: PanelTab): PanelData {

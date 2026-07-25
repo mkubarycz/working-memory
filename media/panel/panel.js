@@ -81,19 +81,21 @@
       vscode.getState()
     );
 
-  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites', gearView: 'archive'|'topic-types'|'topics', expanded: Set<string>,
-   *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData, nanites?: TabData },
+  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'|'blackboard', gearView: 'archive'|'topic-types'|'topics', expanded: Set<string>,
+   *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData, nanites?: TabData, blackboard?: TabData },
    *           focusedId: string | null, recentCounts: Map<string, number>,
    *           flashChipIds: Set<string> }} */
   const state = {
     activeTab:
+      persisted?.activeTab === 'active' ||
       persisted?.activeTab === 'archive' ||
       persisted?.activeTab === 'topics' ||
       persisted?.activeTab === 'topic-types' ||
       persisted?.activeTab === 'alerts' ||
-      persisted?.activeTab === 'nanites'
+      persisted?.activeTab === 'nanites' ||
+      persisted?.activeTab === 'blackboard'
         ? persisted.activeTab
-        : 'active',
+        : 'blackboard',
     // Which gear-hosted view the always-visible 4th tab slot represents.
     // Defaults to Archive; swapped via the gear dropdown.
     gearView:
@@ -1443,15 +1445,20 @@
       return;
     }
     const t = btn.getAttribute('data-tab');
-    if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types' && t !== 'alerts' && t !== 'nanites') {
+    if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types' && t !== 'alerts' && t !== 'nanites' && t !== 'blackboard') {
       return;
     }
     selectTab(t);
   });
 
-  /** @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'} t */
+  /** @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'|'blackboard'} t */
   function selectTab(t) {
     if (state.activeTab === t) {
+      // Even when already selected, a click on Blackboard re-fetches — docs
+      // change out-of-band via the wm2 chat agent.
+      if (t === 'blackboard') {
+        vscode.postMessage({ type: 'blackboard.refresh' });
+      }
       return;
     }
     state.activeTab = t;
@@ -1460,6 +1467,10 @@
     closeGearMenu();
     persist();
     render();
+    if (t === 'blackboard') {
+      // Refresh Blackboard on tab focus.
+      vscode.postMessage({ type: 'blackboard.refresh' });
+    }
   }
 
   // --- Gear dropdown (Archive / Types) ----------------------------------
@@ -1638,7 +1649,14 @@
       }
       state.recentCounts = nextRecentCounts;
       state.flashChipIds = flashChipIds;
+      // Blackboard rows arrive via a dedicated `blackboard` message (sourced
+      // from the control-plane MCP server, not the journal DB). Preserve them
+      // across a journal-data refresh so switching tabs doesn't blank them.
+      const preservedBlackboard = state.data.blackboard;
       state.data = msg.data || {};
+      if (preservedBlackboard && !state.data.blackboard) {
+        state.data.blackboard = preservedBlackboard;
+      }
       closeContextMenu();
       render();
       // The reveal highlight is re-applied inside render() via renderRow, so
@@ -1651,6 +1669,12 @@
       state.revealTarget = target;
       // Pure re-render: renderRow adds `.revealed` to every matching row in the
       // active tab. No tab switch, no ancestor expand, no scroll.
+      render();
+      return;
+    }
+    if (msg.type === 'blackboard') {
+      // Dedicated channel for control-plane document rows (MCP-sourced).
+      state.data.blackboard = msg.data;
       render();
       return;
     }

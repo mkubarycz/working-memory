@@ -7,6 +7,13 @@
       "script": "compile",
       "problemMatcher": ["$tsc"],
       "presentation": { "reveal": "silent" }
+    },
+    {
+      "label": "npm: compile:control-plane",
+      "type": "npm",
+      "script": "compile:control-plane",
+      "problemMatcher": ["$tsc"],
+      "presentation": { "reveal": "silent" }
     }
   ]
 }

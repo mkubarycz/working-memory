@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import {
+  buildBlackboardPanelData,
   emptyAllPanelData,
   getAllPanelData,
   type PanelAction,
@@ -7,6 +8,7 @@ import {
   type PanelWorkstreamSection,
 } from '../panelData';
 import { JournalStore, type WorkstreamSection } from '../db';
+import type { ControlPlaneClient } from '../controlPlaneClient';
 import type { PanelRevealTarget } from '../panelReveal';
 
 interface InvokeMessage {
@@ -29,6 +31,10 @@ interface ActionsMessage {
 
 interface ReadyMessage {
   type: 'ready';
+}
+
+interface BlackboardRefreshMessage {
+  type: 'blackboard.refresh';
 }
 
 interface CardUnfocusMessage {
@@ -56,6 +62,7 @@ type InboundMessage =
   | OpenMessage
   | ActionsMessage
   | ReadyMessage
+  | BlackboardRefreshMessage
   | CardUnfocusMessage
   | CardFocusMessage
   | ReorderWorkstreamMessage;
@@ -83,6 +90,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly store: JournalStore | null,
+    private readonly controlPlaneClient: ControlPlaneClient | null = null,
   ) {}
 
   resolveWebviewView(
@@ -118,6 +126,38 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     const data = this.store ? getAllPanelData(this.store) : emptyAllPanelData();
     this.view.webview.postMessage({ type: 'data', data });
     this.updateBadge(data.active);
+    // Blackboard rows come from the control-plane MCP server, not the journal
+    // DB, so they're fetched async and posted separately.
+    void this.refreshBlackboard();
+  }
+
+  /**
+   * Fetch Blackboard rows from the control-plane via the MCP client and post
+   * them to the webview as a dedicated `blackboard` message (so a journal-data
+   * refresh never clobbers them, and vice-versa). Documents change out-of-band
+   * (via the wm2 chat agent), so this is also called when the tab gains focus.
+   */
+  async refreshBlackboard(): Promise<void> {
+    if (!this.view) {
+      return;
+    }
+    if (!this.controlPlaneClient) {
+      this.view.webview.postMessage({
+        type: 'blackboard',
+        data: buildBlackboardPanelData({
+          available: false,
+          documents: [],
+          error: 'Control plane not running',
+        }),
+      });
+      return;
+    }
+    const result = await this.controlPlaneClient.listDocuments();
+    // The view may have been disposed while awaiting; re-check.
+    this.view?.webview.postMessage({
+      type: 'blackboard',
+      data: buildBlackboardPanelData(result),
+    });
   }
 
   /**
@@ -193,6 +233,9 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           const args = Array.isArray(msg.args) ? msg.args : [];
           vscode.commands.executeCommand(msg.command, ...args);
         }
+        return;
+      case 'blackboard.refresh':
+        void this.refreshBlackboard();
         return;
       case 'actions':
         void this.showActionsQuickPick(msg.actions);
@@ -345,6 +388,12 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
   <body>
     <div id="root">
       <div class="tabs" role="tablist">
+        <button
+          class="tab"
+          role="tab"
+          data-tab="blackboard"
+          aria-selected="false"
+        >Blackboard</button>
         <button
           class="tab"
           role="tab"

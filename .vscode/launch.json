@@ -13,10 +13,42 @@
         "--extensionDevelopmentPath=${workspaceFolder}",
         "${env:HOME}/wm-sandbox"
       ],
+      "env": {
+        "WM_CONTROL_PLANE_HOME": "${env:HOME}/wm-control-plane-sandbox"
+      },
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
       ],
       "preLaunchTask": "npm: compile"
+    },
+    {
+      // Standalone control-plane daemon (WM 13.0 Phase 1). F5 compiles the
+      // service, then runs it as a plain Node process bound to 127.0.0.1. It
+      // uses a dedicated sandbox app-data home so it never touches the real
+      // per-user store. Verify with:
+      //   PORT=$(python3 -c "import json;print(json.load(open('$HOME/wm-control-plane-sandbox/run/control-plane.port.json'))['port'])")
+      //   curl http://127.0.0.1:$PORT/health
+      "name": "Run Control Plane Service",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/out/control-plane/index.js",
+      "runtimeArgs": ["--experimental-sqlite"],
+      "env": {
+        "WM_CONTROL_PLANE_HOME": "${env:HOME}/wm-control-plane-sandbox"
+      },
+      "console": "integratedTerminal",
+      "outFiles": [
+        "${workspaceFolder}/out/control-plane/**/*.js"
+      ],
+      "skipFiles": ["<node_internals>/**"],
+      "preLaunchTask": "npm: compile:control-plane"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Run WM 13.0 Sandbox (extension + control plane)",
+      "configurations": ["Run Control Plane Service", "Run Extension (sandbox hub)"],
+      "stopAll": true
     }
   ]
 }

@@ -29,8 +29,11 @@ import { findLatestVsix } from './vsix';
 import { deployTemplates } from './deployTemplates';
 import { TRAVERSAL_MODES, type TraversalModeId } from './graphTraversals';
 import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
+import { initControlPlaneIntegration } from './controlPlane';
+import { ControlPlaneClient } from './controlPlaneClient';
 
 let activeStore: JournalStore | null = null;
+let controlPlaneClient: ControlPlaneClient | null = null;
 
 type TopicAddToWorkstreamCommandInput = {
   topicSlug?: string;
@@ -171,6 +174,19 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
+  // MCP client for the control-plane document store (WM 13.0 "blackboard-tab").
+  // Reads documents through the same `/mcp` surface an agent uses, so the
+  // Blackboard tab + `working-memory:/document/<id>.md` virtual docs exercise
+  // the real tool path. Best-effort: no-ops when the daemon isn't running.
+  controlPlaneClient = new ControlPlaneClient();
+  contentProvider.setControlPlaneClient(controlPlaneClient);
+
+  // Wire the WM 13.0 control-plane: register its MCP server with Copilot once
+  // the daemon's port file appears, and install the wm2 chat mode in the
+  // sandbox. Independent of the journal DB and self-guarding, so it runs here
+  // regardless of hub/DB state.
+  initControlPlaneIntegration(context);
+
   // Try to open the store so we can wire it into every provider.
   // Failures are non-fatal — the providers degrade gracefully when
   // `store` is null.
@@ -219,6 +235,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const panelProvider = new WorkstreamPanelProvider(
     context.extensionUri,
     store,
+    controlPlaneClient,
   );
 
   const refresh = (): void => {
@@ -903,6 +920,14 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  try {
+    if (controlPlaneClient) {
+      void controlPlaneClient.dispose();
+      controlPlaneClient = null;
+    }
+  } catch (err) {
+    console.error('[working-memory] control-plane client dispose failed:', err);
+  }
   try {
     if (activeStore) {
       activeStore.close();

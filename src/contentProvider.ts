@@ -22,6 +22,12 @@ import {
 import { AlertsStore } from './alerts/store';
 import { NanitesStore } from './nanites/store';
 import type { AlertStatus } from './alerts/types';
+import type { ControlPlaneClient } from './controlPlaneClient';
+import {
+  renderControlPlaneUnavailableDoc,
+  renderDocumentEnvelopeDoc,
+  renderDocumentNotFoundDoc,
+} from './documentRenderer';
 
 type DocKind =
   | 'workstream'
@@ -31,6 +37,7 @@ type DocKind =
   | 'alert'
   | 'nanite'
   | 'nanite-run'
+  | 'document'
   | 'unknown';
 
 function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
@@ -63,7 +70,20 @@ function classifyUri(uri: vscode.Uri): { kind: DocKind; slug: string | null } {
     const slug = p.slice('/nanite/'.length, p.length - '.md'.length);
     return { kind: 'nanite', slug: slug || null };
   }
+  if (p.startsWith('/document/') && p.endsWith('.md')) {
+    const id = p.slice('/document/'.length, p.length - '.md'.length);
+    return { kind: 'document', slug: id ? decodeSegment(id) : null };
+  }
   return { kind: 'unknown', slug: null };
+}
+
+/** Best-effort percent-decode of a URI path segment (falls back to raw). */
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
 }
 
 /**
@@ -87,9 +107,21 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
 
   constructor(private store: JournalStore | null) {}
 
+  /**
+   * Control-plane MCP client used to render `working-memory:/document/<id>.md`
+   * virtual docs (WM 13.0 "blackboard-tab"). Optional: when null, document
+   * URIs render an "unavailable" body.
+   */
+  private controlPlaneClient: ControlPlaneClient | null = null;
+
   /** Update the store reference after a late DB open (e.g. startup restore). */
   updateStore(store: JournalStore | null): void {
     this.store = store;
+  }
+
+  /** Inject the control-plane MCP client (for `/document/<id>` rendering). */
+  setControlPlaneClient(client: ControlPlaneClient | null): void {
+    this.controlPlaneClient = client;
   }
 
   refresh(uri?: vscode.Uri): void {
@@ -113,14 +145,24 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     return new vscode.Disposable(() => undefined);
   }
 
-  stat(uri: vscode.Uri): vscode.FileStat {
+  stat(uri: vscode.Uri): vscode.FileStat | Thenable<vscode.FileStat> {
     const { kind, slug } = classifyUri(uri);
     if (!slug) {
       throw vscode.FileSystemError.FileNotFound(uri);
     }
     this.knownUris.add(uri.toString());
-    const text = this.render(kind, slug, uri);
     const mtime = this.mtimes.get(uri.toString()) ?? Date.now();
+    if (kind === 'document') {
+      // Document bodies are fetched async over MCP; they're always read-only.
+      return this.renderDocument(slug).then((text) => ({
+        type: vscode.FileType.File,
+        ctime: mtime,
+        mtime,
+        size: Buffer.byteLength(text, 'utf8'),
+        permissions: vscode.FilePermission.Readonly,
+      }));
+    }
+    const text = this.render(kind, slug, uri);
     return {
       type: vscode.FileType.File,
       ctime: mtime,
@@ -143,14 +185,38 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     // no-op
   }
 
-  readFile(uri: vscode.Uri): Uint8Array {
+  readFile(uri: vscode.Uri): Uint8Array | Thenable<Uint8Array> {
     const { kind, slug } = classifyUri(uri);
     if (!slug) {
       throw vscode.FileSystemError.FileNotFound(uri);
     }
     this.knownUris.add(uri.toString());
+    if (kind === 'document') {
+      return this.renderDocument(slug).then((text) =>
+        Buffer.from(text, 'utf8'),
+      );
+    }
     const text = this.render(kind, slug, uri);
     return Buffer.from(text, 'utf8');
+  }
+
+  /**
+   * Render a `working-memory:/document/<id>.md` body by fetching the envelope
+   * through the control-plane MCP client (`wm_get_document`). Distinguishes
+   * daemon-unavailable from unknown-id so the reader gets an actionable body.
+   */
+  private async renderDocument(id: string): Promise<string> {
+    if (!this.controlPlaneClient) {
+      return renderControlPlaneUnavailableDoc(id);
+    }
+    const result = await this.controlPlaneClient.getDocument({ id });
+    if (!result.available) {
+      return renderControlPlaneUnavailableDoc(id);
+    }
+    if (!result.document) {
+      return renderDocumentNotFoundDoc(id);
+    }
+    return renderDocumentEnvelopeDoc(result.document);
   }
 
   writeFile(

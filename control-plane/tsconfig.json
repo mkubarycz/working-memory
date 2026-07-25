@@ -1,0 +1,24 @@
+{
+  // Standalone build for the control-plane service. Kept separate from the
+  // extension's root tsconfig because the MCP SDK ships an `exports` map that
+  // only Node16-style module resolution understands. Emits CommonJS (the repo
+  // root package.json has no "type": "module") so `node out/control-plane/
+  // index.js` runs as-is. The extension build (`tsc -p .`) is untouched.
+  "compilerOptions": {
+    "module": "node16",
+    "moduleResolution": "node16",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "rootDir": "src",
+    "outDir": "../out/control-plane",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "declaration": false,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "tests", "../out"]
+}

@@ -1,0 +1,280 @@
+/**
+ * SQLite store owner for the control-plane service.
+ *
+ * The service — not the extension — owns the database handle. On open it puts
+ * the database in WAL mode and ensures the resource schema (v1): a single
+ * unified `resources` table (k8s-style envelope: kind + spec + status) plus a
+ * `store_meta` counter that mints a global, monotonic `resource_version`.
+ * Edges / events / FTS and update/delete are later phases.
+ *
+ * Follows the repo convention (see src/db.ts): `node:sqlite` is required
+ * **lazily inside the open function** so a runtime that lacks it surfaces as a
+ * caught, explanatory error here instead of crashing at import time. The
+ * DatabaseSync API has no `.pragma()` / `.transaction()` helpers, so we use
+ * `db.exec('PRAGMA ...')` and hand-rolled `BEGIN IMMEDIATE` / `COMMIT` /
+ * `ROLLBACK`. `.all()` / `.get()` type as `unknown`, so results are cast.
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
+
+/** The parsed, caller-facing document envelope. */
+export interface DocumentEnvelope {
+  kind: string;
+  metadata: {
+    id: string;
+    slug: string | null;
+    labels: Record<string, string>;
+    createdAt: number;
+    updatedAt: number;
+    deletedAt: number | null;
+    resourceVersion: number;
+  };
+  spec: Record<string, unknown>;
+  status: Record<string, unknown>;
+}
+
+export interface CreateDocumentInput {
+  kind: string;
+  slug?: string | null;
+  labels?: Record<string, string>;
+  spec?: Record<string, unknown>;
+}
+
+export interface ListDocumentsInput {
+  kind?: string;
+}
+
+export interface GetDocumentInput {
+  id?: string;
+  slug?: string;
+  kind?: string;
+}
+
+export interface Store {
+  readonly db: DatabaseSync;
+  readonly path: string;
+  /** Insert a new document; bumps the global `resource_version`. */
+  createDocument(input: CreateDocumentInput): DocumentEnvelope;
+  /** List non-deleted documents (newest first), optionally filtered by kind. */
+  listDocuments(input?: ListDocumentsInput): DocumentEnvelope[];
+  /** Fetch one non-deleted document by id, or by slug (optionally scoped by kind). */
+  getDocument(input: GetDocumentInput): DocumentEnvelope | null;
+  close(): void;
+}
+
+/** Raw row shape as stored in the `resources` table. */
+interface ResourceRow {
+  id: string;
+  kind: string;
+  slug: string | null;
+  labels: string;
+  spec: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+  resource_version: number;
+}
+
+function loadSqlite(): typeof import('node:sqlite') {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('node:sqlite');
+  } catch (err) {
+    throw new Error(
+      'node:sqlite is unavailable in this runtime (need Node >= 22.5, ' +
+        'possibly launched with --experimental-sqlite). ' +
+        `Original error: ${(err as Error).message}`,
+    );
+  }
+}
+
+/** Current unix time in whole seconds (the store's timestamp unit). */
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+/** Idempotently create the resource schema (safe to run on every open). */
+function ensureSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS resources (
+      id               TEXT PRIMARY KEY,
+      kind             TEXT NOT NULL,
+      slug             TEXT,
+      labels           TEXT NOT NULL DEFAULT '{}',
+      spec             TEXT NOT NULL DEFAULT '{}',
+      status           TEXT NOT NULL DEFAULT '{}',
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL,
+      deleted_at       INTEGER,
+      resource_version INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS store_meta (
+      key   TEXT PRIMARY KEY,
+      value INTEGER NOT NULL
+    );
+
+    INSERT OR IGNORE INTO store_meta (key, value) VALUES ('resource_version', 0);
+
+    CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources (kind);
+  `);
+}
+
+/** Safely JSON-parse a stored object column, defaulting to `{}` on any error. */
+function parseObject(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function rowToEnvelope(row: ResourceRow): DocumentEnvelope {
+  return {
+    kind: row.kind,
+    metadata: {
+      id: row.id,
+      slug: row.slug ?? null,
+      labels: parseObject(row.labels) as Record<string, string>,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      deletedAt: row.deleted_at ?? null,
+      resourceVersion: row.resource_version,
+    },
+    spec: parseObject(row.spec),
+    status: parseObject(row.status),
+  };
+}
+
+/**
+ * Open (creating if needed) the control-plane SQLite store, enable WAL, and
+ * ensure the resource schema. Pass `':memory:'` for an ephemeral database.
+ */
+export function openStore(dbFilePath: string): Store {
+  const sqlite = loadSqlite();
+
+  if (dbFilePath !== ':memory:') {
+    fs.mkdirSync(path.dirname(dbFilePath), { recursive: true });
+  }
+
+  const db = new sqlite.DatabaseSync(dbFilePath);
+  // No `.pragma()` helper on DatabaseSync — use exec (repo convention).
+  db.exec('PRAGMA journal_mode = WAL');
+  ensureSchema(db);
+
+  function createDocument(input: CreateDocumentInput): DocumentEnvelope {
+    const now = nowSeconds();
+    const id = randomUUID();
+    const slug = input.slug ?? null;
+    const labels = input.labels ?? {};
+    const spec = input.spec ?? {};
+    const labelsJson = JSON.stringify(labels);
+    const specJson = JSON.stringify(spec);
+
+    // BEGIN IMMEDIATE so the version bump + insert are one atomic unit and take
+    // the write lock up front (single-writer model).
+    db.exec('BEGIN IMMEDIATE');
+    let resourceVersion: number;
+    try {
+      db.prepare(
+        "UPDATE store_meta SET value = value + 1 WHERE key = 'resource_version'",
+      ).run();
+      const counter = db
+        .prepare("SELECT value FROM store_meta WHERE key = 'resource_version'")
+        .get() as unknown as { value: number } | undefined;
+      resourceVersion = counter?.value ?? 0;
+
+      db.prepare(
+        `INSERT INTO resources
+           (id, kind, slug, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
+         VALUES (?, ?, ?, ?, ?, '{}', ?, ?, NULL, ?)`,
+      ).run(id, input.kind, slug, labelsJson, specJson, now, now, resourceVersion);
+
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+
+    return {
+      kind: input.kind,
+      metadata: {
+        id,
+        slug,
+        labels: labels as Record<string, string>,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+        resourceVersion,
+      },
+      spec,
+      status: {},
+    };
+  }
+
+  function listDocuments(input: ListDocumentsInput = {}): DocumentEnvelope[] {
+    const rows = (
+      input.kind
+        ? db
+            .prepare(
+              `SELECT * FROM resources
+               WHERE deleted_at IS NULL AND kind = ?
+               ORDER BY updated_at DESC, rowid DESC`,
+            )
+            .all(input.kind)
+        : db
+            .prepare(
+              `SELECT * FROM resources
+               WHERE deleted_at IS NULL
+               ORDER BY updated_at DESC, rowid DESC`,
+            )
+            .all()
+    ) as unknown as ResourceRow[];
+    return rows.map(rowToEnvelope);
+  }
+
+  function getDocument(input: GetDocumentInput): DocumentEnvelope | null {
+    let row: ResourceRow | undefined;
+    if (input.id) {
+      row = db
+        .prepare('SELECT * FROM resources WHERE id = ? AND deleted_at IS NULL')
+        .get(input.id) as unknown as ResourceRow | undefined;
+    } else if (input.slug !== undefined) {
+      row = (
+        input.kind
+          ? db
+              .prepare(
+                'SELECT * FROM resources WHERE slug = ? AND kind = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1',
+              )
+              .get(input.slug, input.kind)
+          : db
+              .prepare(
+                'SELECT * FROM resources WHERE slug = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1',
+              )
+              .get(input.slug)
+      ) as unknown as ResourceRow | undefined;
+    }
+    return row ? rowToEnvelope(row) : null;
+  }
+
+  return {
+    db,
+    path: dbFilePath,
+    createDocument,
+    listDocuments,
+    getDocument,
+    close(): void {
+      db.close();
+    },
+  };
+}
