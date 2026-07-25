@@ -111,12 +111,19 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
       this.handleMessage(msg),
     );
     webviewView.webview.html = this.renderHtml(webviewView.webview);
+    // When the view becomes visible again (expanded / tab re-selected), pull
+    // fresh Blackboard rows so a doc created while it was hidden shows up. The
+    // in-webview poll only runs while visible; this covers the show edge.
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
+        void this.refreshBlackboard();
+      }
+    });
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) {
         this.view = undefined;
       }
-    });
-  }
+    });  }
 
   /** Push fresh data to the webview. Safe to call when the view is hidden. */
   refresh(): void {

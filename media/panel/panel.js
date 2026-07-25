@@ -1471,7 +1471,62 @@
       // Refresh Blackboard on tab focus.
       vscode.postMessage({ type: 'blackboard.refresh' });
     }
+    updateBlackboardPoll();
   }
+
+  // --- Blackboard auto-refresh poll -------------------------------------
+  // Interim fix: while the Blackboard tab is the active tab AND the webview is
+  // visible, poll the control-plane for fresh documents on an interval so docs
+  // created out-of-band (e.g. via the wm2 chat agent's own MCP connection to
+  // the same control-plane) appear without a manual tab click. The proper
+  // long-term fix is a control-plane events-outbox/watch push channel; this
+  // poll is the stopgap.
+  const BLACKBOARD_POLL_MS = 3000;
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let blackboardPollTimer = null;
+
+  function startBlackboardPoll() {
+    if (blackboardPollTimer !== null) {
+      return;
+    }
+    blackboardPollTimer = setInterval(() => {
+      // Self-guard: if we've drifted off the tab or the view went hidden
+      // between ticks, stop rather than keep firing.
+      if (state.activeTab === 'blackboard' && !document.hidden) {
+        vscode.postMessage({ type: 'blackboard.refresh' });
+      } else {
+        stopBlackboardPoll();
+      }
+    }, BLACKBOARD_POLL_MS);
+  }
+
+  function stopBlackboardPoll() {
+    if (blackboardPollTimer !== null) {
+      clearInterval(blackboardPollTimer);
+      blackboardPollTimer = null;
+    }
+  }
+
+  /** Start/stop the poll based on active tab + webview visibility. */
+  function updateBlackboardPoll() {
+    if (state.activeTab === 'blackboard' && !document.hidden) {
+      startBlackboardPoll();
+    } else {
+      stopBlackboardPoll();
+    }
+  }
+
+  // Webview visibility changes (view collapsed/hidden → document.hidden). Also
+  // re-fetch immediately when the view becomes visible again so a stale
+  // Blackboard doesn't linger until the next tick.
+  document.addEventListener('visibilitychange', () => {
+    if (state.activeTab === 'blackboard' && !document.hidden) {
+      vscode.postMessage({ type: 'blackboard.refresh' });
+    }
+    updateBlackboardPoll();
+  });
+  // Clear the timer if the webview document is torn down (leak-free).
+  window.addEventListener('unload', stopBlackboardPoll);
 
   // --- Gear dropdown (Archive / Types) ----------------------------------
   const gearMenuEl = document.createElement('div');
@@ -1682,4 +1737,6 @@
 
   // Request initial data.
   vscode.postMessage({ type: 'ready' });
+  // Kick off the Blackboard poll if we launched on that tab (the default).
+  updateBlackboardPoll();
 })();

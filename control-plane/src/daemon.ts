@@ -20,6 +20,7 @@ import { acquireLock, type Lock } from './lockfile.js';
 import { removePortFile, writePortFile } from './portfile.js';
 import { openStore, type Store } from './store.js';
 import { startServer, type RunningServer } from './server.js';
+import { loadKinds } from './kinds/loader.js';
 import { DEFAULT_PORT, HOST, PORT_ENV, SERVICE_VERSION } from './config.js';
 
 export interface Daemon {
@@ -90,6 +91,8 @@ export async function runDaemon(): Promise<Daemon> {
 
   try {
     store = openStore(dbPath());
+    const kinds = await loadKinds();
+    log(`registered kinds: ${kinds.length ? kinds.join(', ') : '(none)'}`);
     server = await startWithFallback(resolvePreferredPort(), store);
     writePortFile(portFilePath(), { port: server.port, pid: process.pid });
 

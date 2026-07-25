@@ -15,7 +15,7 @@ describe('controlPlaneShared', () => {
       expect(md.startsWith('---\n')).toBe(true);
       expect(md).toContain('description:');
       expect(md).toContain(
-        "tools: ['wm_ping', 'wm_create_document', 'wm_list_documents', 'wm_get_document']",
+        "tools: ['wm_ping', 'wm_create_document', 'wm_update_document', 'wm_list_kinds', 'wm_list_documents', 'wm_get_document']",
       );
     });
 
@@ -24,6 +24,7 @@ describe('controlPlaneShared', () => {
       expect(md).toContain('wm_list_documents');
       expect(md).toContain('wm_create_document');
       expect(md).toContain('wm_get_document');
+      expect(md).toContain('wm_update_document');
     });
   });
 

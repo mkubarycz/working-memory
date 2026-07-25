@@ -1,5 +1,7 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { startServer, type RunningServer } from '../control-plane/src/server';
+import { clearKinds } from '../control-plane/src/kinds/registry';
+import { loadKinds } from '../control-plane/src/kinds/loader';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
@@ -39,6 +41,11 @@ async function seedDocument(
 describe('ControlPlaneClient (Blackboard MCP path)', () => {
   let server: RunningServer | null = null;
 
+  beforeAll(async () => {
+    clearKinds();
+    await loadKinds();
+  });
+
   afterEach(async () => {
     await server?.close();
     server = null;
@@ -48,7 +55,7 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;
     const created = await seedDocument(mcpUrl, {
-      kind: 'topic',
+      kind: 'Topic',
       slug: 'hello-blackboard',
       spec: { title: 'Hello Blackboard' },
     });
@@ -64,9 +71,16 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
       const one = await client.getDocument({ id: created.metadata.id });
       expect(one.available).toBe(true);
       expect(one.document?.metadata.id).toBe(created.metadata.id);
-      expect(one.document?.kind).toBe('topic');
+      expect(one.document?.kind).toBe('Topic');
       expect(one.document?.metadata.slug).toBe('hello-blackboard');
-      expect(one.document?.spec).toEqual({ title: 'Hello Blackboard' });
+      // The persisted spec is the parsed Topic spec (defaults applied).
+      expect(one.document?.spec).toEqual({
+        title: 'Hello Blackboard',
+        body: '',
+        status: 'open',
+        topicType: 'topic',
+        parents: [],
+      });
     } finally {
       await client.dispose();
     }
@@ -75,14 +89,17 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
   it('filters list by kind', async () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;
-    await seedDocument(mcpUrl, { kind: 'topic', slug: 't1' });
-    await seedDocument(mcpUrl, { kind: 'note', slug: 'n1' });
+    await seedDocument(mcpUrl, { kind: 'Topic', slug: 't1', spec: { title: 'T1' } });
+    await seedDocument(mcpUrl, { kind: 'Topic', slug: 't2', spec: { title: 'T2' } });
 
     const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
     try {
-      const notes = await client.listDocuments('note');
-      expect(notes.available).toBe(true);
-      expect(notes.documents.map((d) => d.kind)).toEqual(['note']);
+      const topics = await client.listDocuments('Topic');
+      expect(topics.available).toBe(true);
+      expect(topics.documents.map((d) => d.kind)).toEqual(['Topic', 'Topic']);
+      // A kind with no documents filters down to nothing.
+      const none = await client.listDocuments('Workstream');
+      expect(none.documents).toEqual([]);
     } finally {
       await client.dispose();
     }

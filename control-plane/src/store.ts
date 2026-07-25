@@ -41,6 +41,8 @@ export interface CreateDocumentInput {
   slug?: string | null;
   labels?: Record<string, string>;
   spec?: Record<string, unknown>;
+  /** Optional initial status (controller-owned). Defaults to `{}`. */
+  status?: Record<string, unknown>;
 }
 
 export interface ListDocumentsInput {
@@ -53,6 +55,50 @@ export interface GetDocumentInput {
   kind?: string;
 }
 
+export interface UpdateDocumentInput {
+  id: string;
+  /** The resource_version the caller believes is current (CAS guard). */
+  expectedResourceVersion: number;
+  /** The already-parsed spec to persist (full replace). */
+  spec: Record<string, unknown>;
+  /**
+   * Optional new status (controller-owned). The human `wm_update_document` tool
+   * never passes this; it's reserved for controllers doing status writes.
+   */
+  status?: Record<string, unknown>;
+}
+
+/**
+ * Thrown when a live row with the given id exists but its `resource_version`
+ * doesn't match the caller's `expected` (a stale writer). Carries the current
+ * version so the caller can report it and prompt a re-fetch + retry.
+ */
+export class ConflictError extends Error {
+  readonly id: string;
+  readonly expectedResourceVersion: number;
+  readonly currentResourceVersion: number;
+  constructor(id: string, expectedResourceVersion: number, currentResourceVersion: number) {
+    super(
+      `Conflict updating document ${id}: expected resourceVersion ` +
+        `${expectedResourceVersion} but current is ${currentResourceVersion}.`,
+    );
+    this.name = 'ConflictError';
+    this.id = id;
+    this.expectedResourceVersion = expectedResourceVersion;
+    this.currentResourceVersion = currentResourceVersion;
+  }
+}
+
+/** Thrown when no live (non-deleted) row exists for the given id. */
+export class NotFoundError extends Error {
+  readonly id: string;
+  constructor(id: string) {
+    super(`No live document with id ${id}.`);
+    this.name = 'NotFoundError';
+    this.id = id;
+  }
+}
+
 export interface Store {
   readonly db: DatabaseSync;
   readonly path: string;
@@ -62,6 +108,13 @@ export interface Store {
   listDocuments(input?: ListDocumentsInput): DocumentEnvelope[];
   /** Fetch one non-deleted document by id, or by slug (optionally scoped by kind). */
   getDocument(input: GetDocumentInput): DocumentEnvelope | null;
+  /**
+   * Compare-and-swap update of a document's spec (and optionally status). Bumps
+   * the global `resource_version` and conditionally writes only when the row's
+   * current version matches `expectedResourceVersion`. Throws `ConflictError`
+   * on a version mismatch and `NotFoundError` when no live row exists.
+   */
+  updateDocument(input: UpdateDocumentInput): DocumentEnvelope;
   close(): void;
 }
 
@@ -178,8 +231,10 @@ export function openStore(dbFilePath: string): Store {
     const slug = input.slug ?? null;
     const labels = input.labels ?? {};
     const spec = input.spec ?? {};
+    const status = input.status ?? {};
     const labelsJson = JSON.stringify(labels);
     const specJson = JSON.stringify(spec);
+    const statusJson = JSON.stringify(status);
 
     // BEGIN IMMEDIATE so the version bump + insert are one atomic unit and take
     // the write lock up front (single-writer model).
@@ -197,8 +252,8 @@ export function openStore(dbFilePath: string): Store {
       db.prepare(
         `INSERT INTO resources
            (id, kind, slug, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
-         VALUES (?, ?, ?, ?, ?, '{}', ?, ?, NULL, ?)`,
-      ).run(id, input.kind, slug, labelsJson, specJson, now, now, resourceVersion);
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      ).run(id, input.kind, slug, labelsJson, specJson, statusJson, now, now, resourceVersion);
 
       db.exec('COMMIT');
     } catch (err) {
@@ -218,7 +273,7 @@ export function openStore(dbFilePath: string): Store {
         resourceVersion,
       },
       spec,
-      status: {},
+      status,
     };
   }
 
@@ -267,12 +322,72 @@ export function openStore(dbFilePath: string): Store {
     return row ? rowToEnvelope(row) : null;
   }
 
+  function updateDocument(input: UpdateDocumentInput): DocumentEnvelope {
+    const now = nowSeconds();
+    const specJson = JSON.stringify(input.spec);
+    const hasStatus = input.status !== undefined;
+    const statusJson = hasStatus ? JSON.stringify(input.status) : null;
+
+    // BEGIN IMMEDIATE so the version bump + conditional update are one atomic
+    // unit under the write lock (single-writer model).
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(
+        "UPDATE store_meta SET value = value + 1 WHERE key = 'resource_version'",
+      ).run();
+      const counter = db
+        .prepare("SELECT value FROM store_meta WHERE key = 'resource_version'")
+        .get() as unknown as { value: number } | undefined;
+      const next = counter?.value ?? 0;
+
+      // The CAS: only write when the live row still carries the expected
+      // version. `changes === 0` means either a version mismatch or no live row.
+      const sql = hasStatus
+        ? `UPDATE resources
+             SET spec = ?, status = ?, updated_at = ?, resource_version = ?
+           WHERE id = ? AND resource_version = ? AND deleted_at IS NULL`
+        : `UPDATE resources
+             SET spec = ?, updated_at = ?, resource_version = ?
+           WHERE id = ? AND resource_version = ? AND deleted_at IS NULL`;
+      const result = hasStatus
+        ? db
+            .prepare(sql)
+            .run(specJson, statusJson, now, next, input.id, input.expectedResourceVersion)
+        : db.prepare(sql).run(specJson, now, next, input.id, input.expectedResourceVersion);
+
+      if (Number(result.changes) === 0) {
+        // Distinguish not-found from version-mismatch by reading the live row.
+        const live = db
+          .prepare('SELECT resource_version FROM resources WHERE id = ? AND deleted_at IS NULL')
+          .get(input.id) as unknown as { resource_version: number } | undefined;
+        db.exec('ROLLBACK');
+        if (!live) {
+          throw new NotFoundError(input.id);
+        }
+        throw new ConflictError(input.id, input.expectedResourceVersion, live.resource_version);
+      }
+
+      const updated = db
+        .prepare('SELECT * FROM resources WHERE id = ?')
+        .get(input.id) as unknown as ResourceRow;
+      db.exec('COMMIT');
+      return rowToEnvelope(updated);
+    } catch (err) {
+      // ConflictError/NotFoundError already rolled back above; guard the rest.
+      if (!(err instanceof ConflictError) && !(err instanceof NotFoundError)) {
+        db.exec('ROLLBACK');
+      }
+      throw err;
+    }
+  }
+
   return {
     db,
     path: dbFilePath,
     createDocument,
     listDocuments,
     getDocument,
+    updateDocument,
     close(): void {
       db.close();
     },

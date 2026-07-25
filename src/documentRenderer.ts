@@ -40,9 +40,6 @@ export function renderDocumentEnvelopeDoc(env: DocumentEnvelope): string {
   const lines: string[] = [
     `# ${kind}: ${metadata.slug ?? metadata.id}`,
     '',
-    `> Live view of a Working Memory control-plane document, fetched through`,
-    `> the \`wm_get_document\` MCP tool.`,
-    '',
     '## Kind',
     '',
     `\`${kind}\``,
