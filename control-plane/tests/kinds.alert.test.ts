@@ -141,7 +141,7 @@ describe('Alert kind loader', () => {
     await loadKinds();
   });
 
-  it('wm_list_kinds includes Alert with its spec fields', async () => {
+  it('wm-list-kinds includes Alert with its spec fields', async () => {
     const store = openStore(':memory:');
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'wm-cp-alert-1', version: '0.0.0' });
@@ -149,7 +149,7 @@ describe('Alert kind loader', () => {
     try {
       await client.connect(transport);
       const result = jsonOf<{ count: number; kinds: { name: string; specFields: string[] }[] }>(
-        await client.callTool({ name: 'wm_list_kinds', arguments: {} }),
+        await client.callTool({ name: 'wm-list-kinds', arguments: {} }),
       );
       const alertKind = result.kinds.find((k) => k.name === 'Alert');
       expect(alertKind).toBeDefined();
@@ -179,7 +179,7 @@ describe('Alert kind loader', () => {
       await client.connect(transport);
       const created = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_create_document',
+          name: 'wm-document-create',
           arguments: {
             kind: 'Alert',
             slug: 'disk-space',
@@ -198,7 +198,7 @@ describe('Alert kind loader', () => {
       expect(created.status).toEqual({});
 
       const list = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm_list_documents', arguments: { kind: 'Alert' } }),
+        await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Alert' } }),
       );
       expect(list.count).toBe(1);
     } finally {
@@ -216,7 +216,7 @@ describe('Alert kind loader', () => {
     try {
       await client.connect(transport);
       const res = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: { kind: 'Alert', slug: 'bad', spec: { description: 'D', status: 'open' } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);

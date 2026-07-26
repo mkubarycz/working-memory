@@ -18,17 +18,16 @@ describe('controlPlaneShared', () => {
       expect(md.startsWith('---\n')).toBe(true);
       expect(md).toContain('description:');
       expect(md).toContain(
-        "tools: ['wm_ping', 'wm_create_document', 'wm_update_document', 'wm_delete_document', 'wm_list_kinds', 'wm_list_documents', 'wm_get_document']",
+        "tools: ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'wm-list-kinds']",
       );
     });
 
     it('describes the wm2 persona and names the tools in the body', () => {
       expect(md).toContain('You are wm2');
-      expect(md).toContain('wm_list_documents');
-      expect(md).toContain('wm_create_document');
-      expect(md).toContain('wm_get_document');
-      expect(md).toContain('wm_update_document');
-      expect(md).toContain('wm_delete_document');
+      expect(md).toContain('wm-document-read');
+      expect(md).toContain('wm-document-create');
+      expect(md).toContain('wm-document-update');
+      expect(md).toContain('wm-document-delete');
     });
   });
 

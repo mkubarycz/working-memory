@@ -12,12 +12,12 @@ import {
 /**
  * The Blackboard tab reads documents through the SAME MCP surface an agent
  * uses. These tests stand up an ephemeral in-process control-plane server
- * (port 0, `:memory:` store), seed a document via the real `wm_create_document`
+ * (port 0, `:memory:` store), seed a document via the real `wm-document-create`
  * tool, then assert `ControlPlaneClient` round-trips it back through the actual
  * MCP client + Streamable-HTTP transport.
  */
 
-/** Seed a document by calling `wm_create_document` over a throwaway MCP client. */
+/** Seed a document by calling `wm-document-create` over a throwaway MCP client. */
 async function seedDocument(
   url: string,
   args: Record<string, unknown>,
@@ -27,7 +27,7 @@ async function seedDocument(
   try {
     await client.connect(transport);
     const result = await client.callTool({
-      name: 'wm_create_document',
+      name: 'wm-document-create',
       arguments: args,
     });
     const content = result.content as Array<{ type: string; text?: string }>;

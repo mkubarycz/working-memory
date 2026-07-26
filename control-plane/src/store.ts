@@ -61,7 +61,7 @@ export interface UpdateDocumentInput {
   expectedResourceVersion: number;
   /**
    * The already-parsed, already-merged full spec to persist. The
-   * `wm_update_document` tool computes this by shallow-merging the caller's
+   * `wm-document-update` tool computes this by shallow-merging the caller's
    * partial patch onto the current spec and validating the result; the store
    * always writes the full spec it's handed.
    */
@@ -77,7 +77,7 @@ export interface UpdateDocumentInput {
    */
   labels?: Record<string, string>;
   /**
-   * Optional new status (controller-owned). The human `wm_update_document` tool
+   * Optional new status (controller-owned). The human `wm-document-update` tool
    * never passes this; it's reserved for controllers doing status writes.
    */
   status?: Record<string, unknown>;

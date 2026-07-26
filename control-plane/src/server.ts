@@ -10,7 +10,7 @@
  * subsequent requests are routed to that client's transport. This is what lets
  * 3+ independent clients share one authoritative process.
  *
- * Phase 1 registers a single smoke tool, `wm_ping`. The resource layer and the
+ * Phase 1 registers a single smoke tool, `wm-ping`. The resource layer and the
  * real `wm_*` surface are later phases. The transport's SSE push channel
  * (server-initiated messages / watch-notify) is reserved but unused here.
  */
@@ -55,9 +55,10 @@ export interface RunningServer {
 
 /**
  * Build a fresh MCP server wired to `store`, registering the smoke tool
- * (`wm_ping`) plus the document CRUD surface (`wm_create_document`,
- * `wm_list_documents`, `wm_get_document`). Called once per MCP session; every
- * session shares the one injected store (single-writer, multi-reader).
+ * (`wm-ping`) plus the document CRUD surface (`wm-document-create`,
+ * `wm-document-read`, `wm-document-update`, `wm-document-delete`). Called once
+ * per MCP session; every session shares the one injected store (single-writer,
+ * multi-reader).
  */
 export function createMcpServer(
   store: Store,
@@ -76,7 +77,7 @@ export function createMcpServer(
   });
 
   server.registerTool(
-    'wm_ping',
+    'wm-ping',
     {
       title: 'Working Memory: Ping',
       description:
@@ -89,19 +90,19 @@ export function createMcpServer(
   );
 
   server.registerTool(
-    'wm_create_document',
+    'wm-document-create',
     {
       title: 'Working Memory: Create Document',
       description:
         'Create a new document (resource) in the Working Memory store. Provide a `kind`, ' +
         'an optional `slug`, optional `labels`, and an optional `spec` object holding the ' +
-        "document body/fields. The `kind` MUST be a registered kind (see `wm_list_kinds`); " +
+        "document body/fields. The `kind` MUST be a registered kind (see `wm-list-kinds`); " +
         'unknown kinds are rejected. The `spec` MUST match the kind\'s schema exactly — ' +
         'required fields must be present and unknown fields are rejected (e.g. "Topic" ' +
         'requires a `title`, ≤120 chars). The parsed spec (defaults applied) is what gets ' +
         'persisted. Returns the created document envelope.',
       inputSchema: {
-        kind: z.string().describe('The document kind. Must be registered (see wm_list_kinds), e.g. "Topic".'),
+        kind: z.string().describe('The document kind. Must be registered (see wm-list-kinds), e.g. "Topic".'),
         slug: z.string().optional().describe('Optional human-friendly slug.'),
         labels: z
           .record(z.string(), z.string())
@@ -119,7 +120,7 @@ export function createMcpServer(
       if (!getKind(kind)) {
         return asError(
           `Unknown kind: "${kind}". Registered kinds: ${listKinds().join(', ') || '(none)'}. ` +
-            'Use wm_list_kinds to see allowed kinds and their spec fields.',
+            'Use wm-list-kinds to see allowed kinds and their spec fields.',
         );
       }
       let validatedSpec: Record<string, unknown>;
@@ -138,12 +139,12 @@ export function createMcpServer(
   );
 
   server.registerTool(
-    'wm_update_document',
+    'wm-document-update',
     {
       title: 'Working Memory: Update Document',
       description:
         'Patch an existing document (a versioned compare-and-swap write). You MUST pass ' +
-        '`expectedResourceVersion` — the `resourceVersion` you just read via `wm_get_document`. ' +
+        '`expectedResourceVersion` — the `resourceVersion` you just read via `wm-document-read`. ' +
         'Provide at least one of `spec`, `slug`, or `labels`. `spec` is a PARTIAL: the fields you ' +
         'pass are shallow-merged onto the current spec, then the MERGED spec is validated against ' +
         "the document's kind schema (unknown fields rejected); the parsed merged spec is what gets " +
@@ -151,7 +152,7 @@ export function createMcpServer(
         'whole labels object; omitting a field leaves it unchanged. To clear/reset a field send it ' +
         'explicitly (e.g. `spec: { parents: [] }`). If the document changed since you read it ' +
         '(version mismatch), the update is rejected as a conflict and the current version is ' +
-        'returned — re-fetch with `wm_get_document`, re-apply, and retry. The controller-owned ' +
+        'returned — re-fetch with `wm-document-read`, re-apply, and retry. The controller-owned ' +
         'envelope `status` is not editable here. Returns the updated document envelope (with a ' +
         'bumped `updatedAt` and `resourceVersion`).',
       inputSchema: {
@@ -159,7 +160,7 @@ export function createMcpServer(
         expectedResourceVersion: z
           .number()
           .int()
-          .describe('The resourceVersion you read via wm_get_document (CAS guard).'),
+          .describe('The resourceVersion you read via wm-document-read (CAS guard).'),
         spec: z
           .record(z.string(), z.unknown())
           .optional()
@@ -183,14 +184,14 @@ export function createMcpServer(
       // validate, and to give a clear "unknown id" error before any write work.
       const existing = store.getDocument({ id });
       if (!existing) {
-        return asError(`Unknown id: "${id}". No live document with that id (use wm_get_document to confirm).`);
+        return asError(`Unknown id: "${id}". No live document with that id (use wm-document-read to confirm).`);
       }
       // The kind must still be registered to validate against — a stored doc
       // whose kind was unregistered can't be safely edited here.
       if (!getKind(existing.kind)) {
         return asError(
           `Cannot update document ${id}: its kind "${existing.kind}" is not registered, so its spec ` +
-            'cannot be validated. Register the kind (see wm_list_kinds) first.',
+            'cannot be validated. Register the kind (see wm-list-kinds) first.',
         );
       }
       let validatedSpec: Record<string, unknown>;
@@ -221,7 +222,7 @@ export function createMcpServer(
           return asError(
             `Conflict: document ${id} was expected at resourceVersion ${expectedResourceVersion} ` +
               `but its current resourceVersion is ${err.currentResourceVersion}. Re-fetch it with ` +
-              'wm_get_document, re-apply your change to the latest spec, and retry.',
+              'wm-document-read, re-apply your change to the latest spec, and retry.',
           );
         }
         if (err instanceof NotFoundError) {
@@ -233,15 +234,15 @@ export function createMcpServer(
   );
 
   server.registerTool(
-    'wm_delete_document',
+    'wm-document-delete',
     {
       title: 'Working Memory: Delete Document',
       description:
         'Soft-delete a document by `id` (stamps `deleted_at`; the row is kept so it can be ' +
         'undeleted). This is **kind-agnostic** — it does NOT look up the kind or validate the ' +
         'spec, so it works on ANY document including legacy / unregistered-kind junk (e.g. old ' +
-        'lowercase `topic` docs). After deletion the document drops out of `wm_list_documents` ' +
-        'and `wm_get_document`. To **undelete** a previously soft-deleted document, call this ' +
+        'lowercase `topic` docs). After deletion the document drops out of `wm-document-read` ' +
+        '(both list and single-read modes). To **undelete** a previously soft-deleted document, call this ' +
         'same tool with `restore: true` (clears `deleted_at`, bumps its version). ' +
         '`expectedResourceVersion` is OPTIONAL and only applies to deletes: when provided it ' +
         'acts as a compare-and-swap guard (the delete is rejected as a conflict if the document ' +
@@ -258,7 +259,7 @@ export function createMcpServer(
           .number()
           .int()
           .optional()
-          .describe('Optional CAS guard for deletes: the resourceVersion you read via wm_get_document.'),
+          .describe('Optional CAS guard for deletes: the resourceVersion you read via wm-document-read.'),
       },
     },
     async ({ id, restore, expectedResourceVersion }) => {
@@ -274,7 +275,7 @@ export function createMcpServer(
           return asError(
             `Conflict: document ${id} was expected at resourceVersion ${expectedResourceVersion} ` +
               `but its current resourceVersion is ${err.currentResourceVersion}. Re-fetch it with ` +
-              'wm_get_document and retry the delete (or omit expectedResourceVersion to force it).',
+              'wm-document-read and retry the delete (or omit expectedResourceVersion to force it).',
           );
         }
         if (err instanceof NotFoundError) {
@@ -282,7 +283,7 @@ export function createMcpServer(
             restore === true
               ? `Unknown or already-live id: "${id}". No soft-deleted document with that id to restore.`
               : `Unknown or already-deleted id: "${id}". No live document with that id ` +
-                  '(use wm_list_documents / wm_get_document to confirm).',
+                  '(use wm-document-read to confirm).',
           );
         }
         throw err;
@@ -291,13 +292,13 @@ export function createMcpServer(
   );
 
   server.registerTool(
-    'wm_list_kinds',
+    'wm-list-kinds',
     {
       title: 'Working Memory: List Kinds',
       description:
         'List the registered document kinds (those with a typed descriptor: validated spec, ' +
         'optional status, FTS projection). Only these kinds can be created via ' +
-        'wm_create_document; unknown kinds are rejected. Returns { count, kinds } where each ' +
+        'wm-document-create; unknown kinds are rejected. Returns { count, kinds } where each ' +
         'entry is { name, specFields } — `specFields` are the allowed top-level `spec` field ' +
         'names (the spec is strict, so anything else is rejected).',
       inputSchema: {},
@@ -309,38 +310,57 @@ export function createMcpServer(
   );
 
   server.registerTool(
-    'wm_list_documents',
+    'wm-document-read',
     {
-      title: 'Working Memory: List Documents',
+      title: 'Working Memory: Read Documents',
       description:
-        'List all documents (resources) in the Working Memory store, optionally filtered by kind. ' +
-        'Returns { count, documents } with the newest documents first.',
+        'Read one document or many. Read ONE by passing `id`, or by `slug` (optionally scoped by ' +
+        '`kind`). Otherwise LIST non-deleted documents newest-first: `kind` filters by kind, and ' +
+        '`query` does a BASIC case-insensitive substring match over each document\'s text ' +
+        '(slug + spec JSON, i.e. title/body/etc.); `limit` caps how many are returned. This ' +
+        '`query` is a simple placeholder text filter, NOT full-text or agentic search. ALWAYS ' +
+        'returns { count, documents } \u2014 a by-id/slug read yields a 0-or-1 element list, so ' +
+        'callers get one uniform shape.',
       inputSchema: {
-        kind: z.string().optional().describe('Optional kind filter, e.g. "topic".'),
+        id: z.string().optional().describe('Read a single document by id (uuid).'),
+        slug: z
+          .string()
+          .optional()
+          .describe('Read a single document by slug (optionally scoped by kind).'),
+        kind: z.string().optional().describe('Kind filter for a slug lookup or a list, e.g. "Topic".'),
+        query: z
+          .string()
+          .optional()
+          .describe('Basic case-insensitive substring filter over document text (list mode only).'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Max number of documents to return (list mode only).'),
       },
     },
-    async ({ kind }) => {
-      const documents = store.listDocuments({ kind });
+    async ({ id, slug, kind, query, limit }) => {
+      // Single-document read: by id, or by slug (optionally kind-scoped). Return
+      // a 0-or-1 element list so the shape matches the list case exactly.
+      if (id !== undefined || slug !== undefined) {
+        const doc = store.getDocument({ id, slug, kind });
+        const documents = doc ? [doc] : [];
+        return asText({ count: documents.length, documents });
+      }
+      // List mode: non-deleted docs, newest-first, optional kind + query + limit.
+      let documents = store.listDocuments({ kind });
+      if (query !== undefined && query.trim() !== '') {
+        // Basic placeholder search: case-insensitive substring over the whole
+        // envelope's JSON (covers slug, spec title/body, labels). Real FTS is a
+        // separate story and deliberately not built here.
+        const needle = query.toLowerCase();
+        documents = documents.filter((doc) => JSON.stringify(doc).toLowerCase().includes(needle));
+      }
+      if (limit !== undefined) {
+        documents = documents.slice(0, limit);
+      }
       return asText({ count: documents.length, documents });
-    },
-  );
-
-  server.registerTool(
-    'wm_get_document',
-    {
-      title: 'Working Memory: Get Document',
-      description:
-        'Fetch a single document (resource) by `id`, or by `slug` (optionally scoped by `kind`). ' +
-        'Returns the document envelope, or { found: false } when nothing matches.',
-      inputSchema: {
-        id: z.string().optional().describe('The document id (uuid).'),
-        slug: z.string().optional().describe('The document slug.'),
-        kind: z.string().optional().describe('Optional kind to scope a slug lookup.'),
-      },
-    },
-    async ({ id, slug, kind }) => {
-      const doc = store.getDocument({ id, slug, kind });
-      return asText(doc ?? { found: false });
     },
   );
 

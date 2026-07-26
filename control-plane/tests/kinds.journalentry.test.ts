@@ -143,7 +143,7 @@ describe('JournalEntry kind loader', () => {
     await loadKinds();
   });
 
-  it('wm_list_kinds includes all five kinds (JournalEntry alongside Topic/Workstream/TopicType/Alert)', async () => {
+  it('wm-list-kinds includes all five kinds (JournalEntry alongside Topic/Workstream/TopicType/Alert)', async () => {
     const store = openStore(':memory:');
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'wm-cp-entry-1', version: '0.0.0' });
@@ -151,7 +151,7 @@ describe('JournalEntry kind loader', () => {
     try {
       await client.connect(transport);
       const result = jsonOf<{ count: number; kinds: { name: string; specFields: string[] }[] }>(
-        await client.callTool({ name: 'wm_list_kinds', arguments: {} }),
+        await client.callTool({ name: 'wm-list-kinds', arguments: {} }),
       );
       const names = result.kinds.map((k) => k.name);
       expect(names).toEqual(
@@ -177,7 +177,7 @@ describe('JournalEntry kind loader', () => {
       await client.connect(transport);
       const created = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_create_document',
+          name: 'wm-document-create',
           arguments: { kind: 'JournalEntry', spec: { body: 'shipped the JournalEntry kind', workstream: 'ws' } },
         }),
       );
@@ -191,7 +191,7 @@ describe('JournalEntry kind loader', () => {
       expect(created.status).toEqual({});
 
       const list = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm_list_documents', arguments: { kind: 'JournalEntry' } }),
+        await client.callTool({ name: 'wm-document-read', arguments: { kind: 'JournalEntry' } }),
       );
       expect(list.count).toBe(1);
       expect(list.documents[0]?.spec.body).toBe('shipped the JournalEntry kind');
@@ -210,7 +210,7 @@ describe('JournalEntry kind loader', () => {
     try {
       await client.connect(transport);
       const res = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: { kind: 'JournalEntry', spec: { workstream: 'ws' } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);

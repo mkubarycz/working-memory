@@ -202,7 +202,7 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
 
   /**
    * Render a `working-memory:/document/<id>.md` body by fetching the envelope
-   * through the control-plane MCP client (`wm_get_document`). Distinguishes
+   * through the control-plane MCP client (`wm-document-read`). Distinguishes
    * daemon-unavailable from unknown-id so the reader gets an actionable body.
    */
   private async renderDocument(id: string): Promise<string> {

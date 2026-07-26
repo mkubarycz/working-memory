@@ -44,7 +44,7 @@ describe('control-plane server bootstrap', () => {
     }
   });
 
-  it('completes an MCP initialize handshake and answers wm_ping', async () => {
+  it('completes an MCP initialize handshake and answers wm-ping', async () => {
     const server = await startServer({ port: 0 });
     const client = new Client({ name: 'wm-cp-test-client', version: '0.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
@@ -53,9 +53,9 @@ describe('control-plane server bootstrap', () => {
       await client.connect(transport);
 
       const listed = await client.listTools();
-      expect(listed.tools.map((t) => t.name)).toContain('wm_ping');
+      expect(listed.tools.map((t) => t.name)).toContain('wm-ping');
 
-      const result = await client.callTool({ name: 'wm_ping', arguments: {} });
+      const result = await client.callTool({ name: 'wm-ping', arguments: {} });
       const content = result.content as TextContent[];
       const text = content.find((c) => c.type === 'text')?.text ?? '';
       const payload = JSON.parse(text) as { ok: boolean; version: string };
@@ -79,8 +79,8 @@ describe('control-plane server bootstrap', () => {
     const b = await makeClient();
     try {
       const [ra, rb] = await Promise.all([
-        a.callTool({ name: 'wm_ping', arguments: {} }),
-        b.callTool({ name: 'wm_ping', arguments: {} }),
+        a.callTool({ name: 'wm-ping', arguments: {} }),
+        b.callTool({ name: 'wm-ping', arguments: {} }),
       ]);
       for (const r of [ra, rb]) {
         const text = (r.content as TextContent[]).find((c) => c.type === 'text')?.text ?? '';

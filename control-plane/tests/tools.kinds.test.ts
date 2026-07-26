@@ -40,7 +40,7 @@ interface Envelope {
     await loadKinds();
   });
 
-  it('wm_list_kinds includes the registered Topic kind', async () => {
+  it('wm-list-kinds includes the registered Topic kind', async () => {
     const store = openStore(':memory:');
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'wm-cp-kinds', version: '0.0.0' });
@@ -48,10 +48,10 @@ interface Envelope {
     try {
       await client.connect(transport);
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toContain('wm_list_kinds');
+      expect(names).toContain('wm-list-kinds');
 
       const result = jsonOf<{ count: number; kinds: { name: string; specFields: string[] }[] }>(
-        await client.callTool({ name: 'wm_list_kinds', arguments: {} }),
+        await client.callTool({ name: 'wm-list-kinds', arguments: {} }),
       );
       const topic = result.kinds.find((k) => k.name === 'Topic');
       expect(topic).toBeDefined();
@@ -75,7 +75,7 @@ interface Envelope {
       await client.connect(transport);
       const created = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_create_document',
+          name: 'wm-document-create',
           arguments: { kind: 'Topic', slug: 'demo', spec: { title: 'Demo Topic' } },
         }),
       );
@@ -93,7 +93,7 @@ interface Envelope {
 
       // It persisted.
       const list = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm_list_documents', arguments: { kind: 'Topic' } }),
+        await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Topic' } }),
       );
       expect(list.count).toBe(1);
       expect(list.documents[0]?.metadata.slug).toBe('demo');
@@ -112,7 +112,7 @@ interface Envelope {
     try {
       await client.connect(transport);
       const res = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: { kind: 'Topic', slug: 'bad', spec: {} },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);
@@ -135,7 +135,7 @@ interface Envelope {
     try {
       await client.connect(transport);
       const res = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: { kind: 'Topic', slug: 'toolong', spec: { title: 'x'.repeat(200) } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);
@@ -155,7 +155,7 @@ interface Envelope {
     try {
       await client.connect(transport);
       const res = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         // 'note' is not registered → hard error (unknown kind), nothing stored.
         arguments: { kind: 'note', slug: 'n1', spec: { anything: 'goes' } },
       });
@@ -177,7 +177,7 @@ interface Envelope {
     try {
       await client.connect(transport);
       const res = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: {
           kind: 'Topic',
           slug: 'extra',

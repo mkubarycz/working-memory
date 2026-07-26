@@ -10,7 +10,7 @@ export const SERVICE_NAME = 'working-memory-control-plane';
 /**
  * Semantic version of the control-plane service. Deliberately independent of
  * the VS Code extension's version in the repo-root package.json — this is a
- * brand-new standalone app starting at 0.1.0. Reported by `wm_ping` and
+ * brand-new standalone app starting at 0.1.0. Reported by `wm-ping` and
  * `GET /health`.
  */
 export const SERVICE_VERSION = '0.1.0';

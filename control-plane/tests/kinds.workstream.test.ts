@@ -119,7 +119,7 @@ describe('Workstream kind loader', () => {
     await loadKinds();
   });
 
-  it('wm_list_kinds includes Workstream and Topic', async () => {
+  it('wm-list-kinds includes Workstream and Topic', async () => {
     const store = openStore(':memory:');
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'wm-cp-ws-1', version: '0.0.0' });
@@ -127,7 +127,7 @@ describe('Workstream kind loader', () => {
     try {
       await client.connect(transport);
       const result = jsonOf<{ count: number; kinds: { name: string; specFields: string[] }[] }>(
-        await client.callTool({ name: 'wm_list_kinds', arguments: {} }),
+        await client.callTool({ name: 'wm-list-kinds', arguments: {} }),
       );
       const names = result.kinds.map((k) => k.name);
       expect(names).toContain('Workstream');
@@ -150,7 +150,7 @@ describe('Workstream kind loader', () => {
       await client.connect(transport);
       const created = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_create_document',
+          name: 'wm-document-create',
           arguments: { kind: 'Workstream', slug: 'cp', spec: { title: 'Control Plane' } },
         }),
       );
@@ -159,7 +159,7 @@ describe('Workstream kind loader', () => {
       expect(created.status).toEqual({});
 
       const list = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm_list_documents', arguments: { kind: 'Workstream' } }),
+        await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Workstream' } }),
       );
       expect(list.count).toBe(1);
       expect(list.documents[0]?.metadata.slug).toBe('cp');
@@ -178,7 +178,7 @@ describe('Workstream kind loader', () => {
     try {
       await client.connect(transport);
       const res = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: { kind: 'Workstream', slug: 'bad', spec: { title: 'T', status: 'open' } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);

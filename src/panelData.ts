@@ -212,7 +212,7 @@ export interface PanelNanite {
 
 /**
  * A Blackboard-tab row: one control-plane document envelope, sourced through
- * the MCP `wm_list_documents` tool (not the journal DB). Mirrors the visual
+ * the MCP `wm-document-read` tool (not the journal DB). Mirrors the visual
  * shape of `PanelTopicRow` so the webview renders it with the same row path.
  */
 export interface PanelDocumentRow {
@@ -865,7 +865,7 @@ function buildDocumentRow(doc: DocumentEnvelope): PanelDocumentRow {
 }
 
 /**
- * Build the Blackboard tab from a `wm_list_documents` result. Sourced through
+ * Build the Blackboard tab from a `wm-document-read` result. Sourced through
  * the control-plane MCP client (not the journal DB), so the empty state reflects
  * the daemon's reachability: unavailable → "Control plane not running";
  * reachable-but-empty → "No documents yet".

@@ -6,7 +6,7 @@
  * it reads documents through the SAME MCP surface an agent uses — the
  * control-plane's Streamable-HTTP `/mcp` endpoint — rather than the journal DB,
  * a REST side-channel, or VS Code's `lm.invokeTool` plumbing. Reading through
- * the real `wm_list_documents` / `wm_get_document` tools means a bug in the
+ * the real `wm-document-read` tool means a bug in the
  * tool handler, its Zod schema, or the transport shows up HERE instead of being
  * masked. Using our own SDK `Client` (not VS Code's MCP client) isolates our
  * server so a broken Blackboard points at our code, not the editor's.
@@ -163,7 +163,7 @@ export class ControlPlaneClient {
     this.resolveUrl = options.resolveUrl ?? defaultResolveUrl;
   }
 
-  /** List documents via `wm_list_documents`, optionally filtered by `kind`. */
+  /** List documents via `wm-document-read` (list mode), optionally filtered by `kind`. */
   async listDocuments(kind?: string): Promise<ListDocumentsResult> {
     const client = await this.ensureConnected();
     if (!client) {
@@ -171,7 +171,7 @@ export class ControlPlaneClient {
     }
     try {
       const result = await client.callTool({
-        name: 'wm_list_documents',
+        name: 'wm-document-read',
         arguments: kind ? { kind } : {},
       });
       const parsed = parseToolText(result) as { documents?: unknown } | null;
@@ -185,7 +185,7 @@ export class ControlPlaneClient {
     }
   }
 
-  /** Fetch one document via `wm_get_document` (by id, or slug + optional kind). */
+  /** Fetch one document via `wm-document-read` (by id, or slug + optional kind). */
   async getDocument(input: GetDocumentInput): Promise<GetDocumentResult> {
     const client = await this.ensureConnected();
     if (!client) {
@@ -193,16 +193,18 @@ export class ControlPlaneClient {
     }
     try {
       const result = await client.callTool({
-        name: 'wm_get_document',
+        name: 'wm-document-read',
         arguments: { ...input },
       });
-      const parsed = parseToolText(result) as
-        | (Partial<DocumentEnvelope> & { found?: boolean })
-        | null;
-      if (!parsed || parsed.found === false || !parsed.metadata || !parsed.kind) {
+      const parsed = parseToolText(result) as { documents?: unknown } | null;
+      const documents = Array.isArray(parsed?.documents)
+        ? (parsed!.documents as DocumentEnvelope[])
+        : [];
+      const document = documents[0] ?? null;
+      if (!document || !document.metadata || !document.kind) {
         return { available: true, document: null };
       }
-      return { available: true, document: parsed as DocumentEnvelope };
+      return { available: true, document };
     } catch (err) {
       this.resetConnection();
       return { available: false, document: null, error: messageOf(err) };

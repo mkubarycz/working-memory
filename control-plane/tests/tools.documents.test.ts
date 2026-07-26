@@ -48,7 +48,7 @@ function textOf(res: unknown): string {
     await loadKinds();
   });
 
-  it('exposes the document tools and round-trips create → list → get', async () => {
+  it('exposes the document tools and round-trips create → read (list) → read (by id)', async () => {
     const store = openStore(':memory:');
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'wm-cp-doc-test', version: '0.0.0' });
@@ -57,14 +57,16 @@ function textOf(res: unknown): string {
       await client.connect(transport);
 
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toContain('wm_ping');
-      expect(names).toContain('wm_create_document');
-      expect(names).toContain('wm_list_documents');
-      expect(names).toContain('wm_get_document');
+      expect(names).toContain('wm-ping');
+      expect(names).toContain('wm-document-create');
+      expect(names).toContain('wm-document-read');
+      // The old get/list tools were collapsed into wm-document-read.
+      expect(names).not.toContain('wm_list_documents');
+      expect(names).not.toContain('wm_get_document');
 
       const created = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_create_document',
+          name: 'wm-document-create',
           arguments: { kind: 'Topic', slug: 'demo', spec: { title: 'Demo' } },
         }),
       );
@@ -82,23 +84,26 @@ function textOf(res: unknown): string {
       });
 
       const list = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm_list_documents', arguments: {} }),
+        await client.callTool({ name: 'wm-document-read', arguments: {} }),
       );
       expect(list.count).toBe(1);
       expect(list.documents[0]?.metadata.slug).toBe('demo');
 
-      const got = jsonOf<Envelope>(
+      // Read by id → uniform { count, documents } shape with a single element.
+      const got = jsonOf<{ count: number; documents: Envelope[] }>(
         await client.callTool({
-          name: 'wm_get_document',
+          name: 'wm-document-read',
           arguments: { id: created.metadata.id },
         }),
       );
-      expect(got.metadata.slug).toBe('demo');
+      expect(got.count).toBe(1);
+      expect(got.documents[0]?.metadata.slug).toBe('demo');
 
-      const miss = jsonOf<{ found: boolean }>(
-        await client.callTool({ name: 'wm_get_document', arguments: { slug: 'nope' } }),
+      // A miss (unknown slug) is an empty list, not a special { found: false }.
+      const miss = jsonOf<{ count: number; documents: Envelope[] }>(
+        await client.callTool({ name: 'wm-document-read', arguments: { slug: 'nope' } }),
       );
-      expect(miss).toEqual({ found: false });
+      expect(miss).toEqual({ count: 0, documents: [] });
     } finally {
       await client.close();
       await server.close();
@@ -116,21 +121,21 @@ function textOf(res: unknown): string {
 
       // Unregistered kind (lowercase 'topic', 'note') → hard error, no doc.
       const unknownKind = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: { kind: 'note', slug: 'nope', spec: { title: 'x' } },
       });
       expect(isErrorResult(unknownKind)).toBe(true);
       expect(textOf(unknownKind)).toMatch(/unknown kind/i);
 
       const lowercaseTopic = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: { kind: 'topic', slug: 'nope2', spec: { title: 'x' } },
       });
       expect(isErrorResult(lowercaseTopic)).toBe(true);
 
       // Registered kind but extra spec fields → validation error, no doc.
       const extraFields = await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: {
           kind: 'Topic',
           slug: 'demo',
@@ -142,7 +147,7 @@ function textOf(res: unknown): string {
 
       // Nothing above should have persisted.
       const list = jsonOf<{ count: number }>(
-        await client.callTool({ name: 'wm_list_documents', arguments: {} }),
+        await client.callTool({ name: 'wm-document-read', arguments: {} }),
       );
       expect(list.count).toBe(0);
     } finally {
@@ -161,7 +166,7 @@ function textOf(res: unknown): string {
       await client.connect(transport);
 
       await client.callTool({
-        name: 'wm_create_document',
+        name: 'wm-document-create',
         arguments: { kind: 'Topic', slug: 'a', spec: { title: 'A' } },
       });
       // A non-Topic doc seeded directly through the (kind-agnostic) store, so
@@ -169,17 +174,89 @@ function textOf(res: unknown): string {
       store.createDocument({ kind: 'note', slug: 'b', spec: {}, status: {} });
       const c = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_create_document',
+          name: 'wm-document-create',
           arguments: { kind: 'Topic', slug: 'c', spec: { title: 'C' } },
         }),
       );
       expect(c.metadata.resourceVersion).toBe(3);
 
       const topics = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm_list_documents', arguments: { kind: 'Topic' } }),
+        await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Topic' } }),
       );
       expect(topics.count).toBe(2);
       expect(topics.documents.map((d) => d.metadata.slug)).toEqual(['c', 'a']);
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
+    }
+  });
+
+  it('wm-document-read: reads by id, by kind-filtered list, and by query substring', async () => {
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-cp-doc-read', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      await client.connect(transport);
+
+      const alpha = jsonOf<Envelope>(
+        await client.callTool({
+          name: 'wm-document-create',
+          arguments: { kind: 'Topic', slug: 'alpha', spec: { title: 'Alpha Widget' } },
+        }),
+      );
+      await client.callTool({
+        name: 'wm-document-create',
+        arguments: { kind: 'Topic', slug: 'beta', spec: { title: 'Beta Gadget' } },
+      });
+      // A non-Topic doc so the kind filter has something to exclude.
+      store.createDocument({ kind: 'note', slug: 'gamma', spec: {}, status: {} });
+
+      // Mode 1: read one by id → uniform { count, documents } with a single element.
+      const byId = jsonOf<{ count: number; documents: Envelope[] }>(
+        await client.callTool({ name: 'wm-document-read', arguments: { id: alpha.metadata.id } }),
+      );
+      expect(byId.count).toBe(1);
+      expect(byId.documents).toHaveLength(1);
+      expect(byId.documents[0]?.metadata.slug).toBe('alpha');
+
+      // Read one by slug too.
+      const bySlug = jsonOf<{ count: number; documents: Envelope[] }>(
+        await client.callTool({ name: 'wm-document-read', arguments: { slug: 'beta' } }),
+      );
+      expect(bySlug.count).toBe(1);
+      expect(bySlug.documents[0]?.metadata.slug).toBe('beta');
+
+      // Mode 2: list filtered by kind → only the two Topics, newest-first.
+      const topics = jsonOf<{ count: number; documents: Envelope[] }>(
+        await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Topic' } }),
+      );
+      expect(topics.count).toBe(2);
+      expect(topics.documents.map((d) => d.metadata.slug)).toEqual(['beta', 'alpha']);
+
+      // Mode 3: basic case-insensitive substring query over document text.
+      const gadget = jsonOf<{ count: number; documents: Envelope[] }>(
+        await client.callTool({ name: 'wm-document-read', arguments: { query: 'gadget' } }),
+      );
+      expect(gadget.count).toBe(1);
+      expect(gadget.documents[0]?.metadata.slug).toBe('beta');
+
+      // query combines with kind, and limit caps the result set.
+      const limited = jsonOf<{ count: number; documents: Envelope[] }>(
+        await client.callTool({
+          name: 'wm-document-read',
+          arguments: { kind: 'Topic', limit: 1 },
+        }),
+      );
+      expect(limited.count).toBe(1);
+      expect(limited.documents[0]?.metadata.slug).toBe('beta');
+
+      // A query that matches nothing → empty uniform shape.
+      const none = jsonOf<{ count: number; documents: Envelope[] }>(
+        await client.callTool({ name: 'wm-document-read', arguments: { query: 'zzz-no-match' } }),
+      );
+      expect(none).toEqual({ count: 0, documents: [] });
     } finally {
       await client.close();
       await server.close();
@@ -195,11 +272,11 @@ function textOf(res: unknown): string {
     try {
       await client.connect(transport);
 
-      expect((await client.listTools()).tools.map((t) => t.name)).toContain('wm_update_document');
+      expect((await client.listTools()).tools.map((t) => t.name)).toContain('wm-document-update');
 
       const created = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_create_document',
+          name: 'wm-document-create',
           arguments: { kind: 'Topic', slug: 'edit-me', spec: { title: 'Before' } },
         }),
       );
@@ -208,7 +285,7 @@ function textOf(res: unknown): string {
       // Happy path: change status + body with the correct expected version.
       const updated = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_update_document',
+          name: 'wm-document-update',
           arguments: {
             id: created.metadata.id,
             expectedResourceVersion: created.metadata.resourceVersion,
@@ -227,7 +304,7 @@ function textOf(res: unknown): string {
 
       // Stale version → conflict error that mentions the current version.
       const stale = await client.callTool({
-        name: 'wm_update_document',
+        name: 'wm-document-update',
         arguments: {
           id: created.metadata.id,
           expectedResourceVersion: 1,
@@ -240,7 +317,7 @@ function textOf(res: unknown): string {
 
       // Invalid / unknown-field spec → rejected, nothing persisted.
       const bad = await client.callTool({
-        name: 'wm_update_document',
+        name: 'wm-document-update',
         arguments: {
           id: created.metadata.id,
           expectedResourceVersion: 2,
@@ -251,18 +328,18 @@ function textOf(res: unknown): string {
       expect(textOf(bad)).toMatch(/invalid spec/i);
 
       // Row is unchanged after both failures (still version 2, 'After').
-      const after = jsonOf<Envelope>(
+      const after = jsonOf<{ count: number; documents: Envelope[] }>(
         await client.callTool({
-          name: 'wm_get_document',
+          name: 'wm-document-read',
           arguments: { id: created.metadata.id },
         }),
       );
-      expect(after.metadata.resourceVersion).toBe(2);
-      expect(after.spec.title).toBe('After');
+      expect(after.documents[0]?.metadata.resourceVersion).toBe(2);
+      expect(after.documents[0]?.spec.title).toBe('After');
 
       // Unknown id → error.
       const unknown = await client.callTool({
-        name: 'wm_update_document',
+        name: 'wm-document-update',
         arguments: {
           id: '00000000-0000-0000-0000-000000000000',
           expectedResourceVersion: 1,
@@ -288,7 +365,7 @@ function textOf(res: unknown): string {
 
       const created = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_create_document',
+          name: 'wm-document-create',
           arguments: {
             kind: 'Topic',
             slug: 'patch-me',
@@ -302,7 +379,7 @@ function textOf(res: unknown): string {
       // Partial spec patch: only `status` provided → title/body preserved.
       const closed = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_update_document',
+          name: 'wm-document-update',
           arguments: {
             id: created.metadata.id,
             expectedResourceVersion: created.metadata.resourceVersion,
@@ -324,7 +401,7 @@ function textOf(res: unknown): string {
 
       // Unknown field in the patch → merged spec is strict-invalid → rejected.
       const bogus = await client.callTool({
-        name: 'wm_update_document',
+        name: 'wm-document-update',
         arguments: {
           id: created.metadata.id,
           expectedResourceVersion: 2,
@@ -334,15 +411,15 @@ function textOf(res: unknown): string {
       expect(isErrorResult(bogus)).toBe(true);
       expect(textOf(bogus)).toMatch(/invalid spec/i);
       // Not persisted — still version 2.
-      const afterBogus = jsonOf<Envelope>(
-        await client.callTool({ name: 'wm_get_document', arguments: { id: created.metadata.id } }),
+      const afterBogus = jsonOf<{ count: number; documents: Envelope[] }>(
+        await client.callTool({ name: 'wm-document-read', arguments: { id: created.metadata.id } }),
       );
-      expect(afterBogus.metadata.resourceVersion).toBe(2);
+      expect(afterBogus.documents[0]?.metadata.resourceVersion).toBe(2);
 
       // slug-only patch → slug changes, spec unchanged.
       const reslugged = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_update_document',
+          name: 'wm-document-update',
           arguments: {
             id: created.metadata.id,
             expectedResourceVersion: 2,
@@ -357,7 +434,7 @@ function textOf(res: unknown): string {
       // labels-only patch → whole labels object replaced.
       const relabeled = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_update_document',
+          name: 'wm-document-update',
           arguments: {
             id: created.metadata.id,
             expectedResourceVersion: 3,
@@ -371,7 +448,7 @@ function textOf(res: unknown): string {
       // Clear a field explicitly: parents already []; set a parent then clear it.
       const withParent = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_update_document',
+          name: 'wm-document-update',
           arguments: {
             id: created.metadata.id,
             expectedResourceVersion: 4,
@@ -382,7 +459,7 @@ function textOf(res: unknown): string {
       expect(withParent.spec.parents).toEqual(['p1']);
       const cleared = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_update_document',
+          name: 'wm-document-update',
           arguments: {
             id: created.metadata.id,
             expectedResourceVersion: withParent.metadata.resourceVersion,
@@ -394,7 +471,7 @@ function textOf(res: unknown): string {
 
       // No fields provided → error, nothing persisted.
       const empty = await client.callTool({
-        name: 'wm_update_document',
+        name: 'wm-document-update',
         arguments: {
           id: created.metadata.id,
           expectedResourceVersion: cleared.metadata.resourceVersion,
@@ -405,7 +482,7 @@ function textOf(res: unknown): string {
 
       // Stale version → conflict mentioning the current version.
       const stale = await client.callTool({
-        name: 'wm_update_document',
+        name: 'wm-document-update',
         arguments: {
           id: created.metadata.id,
           expectedResourceVersion: 2,
@@ -418,7 +495,7 @@ function textOf(res: unknown): string {
 
       // Unknown id → error.
       const unknown = await client.callTool({
-        name: 'wm_update_document',
+        name: 'wm-document-update',
         arguments: {
           id: '00000000-0000-0000-0000-000000000000',
           expectedResourceVersion: 1,

@@ -42,7 +42,7 @@ interface Envelope {
     await loadKinds();
   });
 
-  it('exposes wm_delete_document but not wm_restore_document', async () => {
+  it('exposes wm-document-delete but not wm_restore_document', async () => {
     const store = openStore(':memory:');
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'wm-cp-del-names', version: '0.0.0' });
@@ -50,7 +50,7 @@ interface Envelope {
     try {
       await client.connect(transport);
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toContain('wm_delete_document');
+      expect(names).toContain('wm-document-delete');
       expect(names).not.toContain('wm_restore_document');
     } finally {
       await client.close();
@@ -59,7 +59,7 @@ interface Envelope {
     }
   });
 
-  it('deletes a Topic by id → gone from wm_list_documents, then restores it', async () => {
+  it('deletes a Topic by id → gone from wm-document-read, then restores it', async () => {
     const store = openStore(':memory:');
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'wm-cp-del-roundtrip', version: '0.0.0' });
@@ -69,35 +69,35 @@ interface Envelope {
 
       const created = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_create_document',
+          name: 'wm-document-create',
           arguments: { kind: 'Topic', slug: 'to-delete', spec: { title: 'Delete me' } },
         }),
       );
 
       const deleted = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_delete_document',
+          name: 'wm-document-delete',
           arguments: { id: created.metadata.id },
         }),
       );
       expect(deleted.metadata.deletedAt).not.toBeNull();
 
       const afterDelete = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm_list_documents', arguments: {} }),
+        await client.callTool({ name: 'wm-document-read', arguments: {} }),
       );
       expect(afterDelete.count).toBe(0);
 
       // Restore brings it back via the same tool with restore: true.
       const restored = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_delete_document',
+          name: 'wm-document-delete',
           arguments: { id: created.metadata.id, restore: true },
         }),
       );
       expect(restored.metadata.deletedAt).toBeNull();
 
       const afterRestore = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm_list_documents', arguments: {} }),
+        await client.callTool({ name: 'wm-document-read', arguments: {} }),
       );
       expect(afterRestore.count).toBe(1);
       expect(afterRestore.documents[0]?.metadata.slug).toBe('to-delete');
@@ -117,7 +117,7 @@ interface Envelope {
       await client.connect(transport);
 
       // Seed a junk doc directly through the injected store: unregistered kind,
-      // hallucinated fields — the sort of thing wm_create_document would reject.
+      // hallucinated fields — the sort of thing wm-document-create would reject.
       const junk = store.createDocument({
         kind: 'topic',
         slug: 'legacy-junk',
@@ -126,7 +126,7 @@ interface Envelope {
 
       const deleted = jsonOf<Envelope>(
         await client.callTool({
-          name: 'wm_delete_document',
+          name: 'wm-document-delete',
           arguments: { id: junk.metadata.id },
         }),
       );
@@ -149,13 +149,13 @@ interface Envelope {
       await client.connect(transport);
 
       const delMiss = await client.callTool({
-        name: 'wm_delete_document',
+        name: 'wm-document-delete',
         arguments: { id: 'nope-not-real' },
       });
       expect(isErrorResult(delMiss)).toBe(true);
 
       const restoreMiss = await client.callTool({
-        name: 'wm_delete_document',
+        name: 'wm-document-delete',
         arguments: { id: 'nope-not-real', restore: true },
       });
       expect(isErrorResult(restoreMiss)).toBe(true);

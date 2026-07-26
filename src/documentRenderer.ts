@@ -6,7 +6,7 @@
  * The envelope is the k8s-resource-style shape returned by the control-plane
  * store: `{ kind, metadata, spec, status }`. We render a section per field
  * plus a fenced ```json block of the whole envelope, so what the reader sees
- * is exactly what an agent gets from `wm_get_document`.
+ * is exactly what an agent gets from `wm-document-read`.
  */
 
 import type { DocumentEnvelope } from './controlPlaneClient';
