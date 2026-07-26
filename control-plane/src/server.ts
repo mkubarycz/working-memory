@@ -328,6 +328,12 @@ export function createMcpServer(
           .optional()
           .describe('Read a single document by slug (optionally scoped by kind).'),
         kind: z.string().optional().describe('Kind filter for a slug lookup or a list, e.g. "Topic".'),
+        includeDeleted: z
+          .boolean()
+          .optional()
+          .describe(
+            'When true, a by-id/slug read also returns a soft-deleted document (used to locate a document for undelete). List mode is unaffected.',
+          ),
         query: z
           .string()
           .optional()
@@ -340,11 +346,11 @@ export function createMcpServer(
           .describe('Max number of documents to return (list mode only).'),
       },
     },
-    async ({ id, slug, kind, query, limit }) => {
+    async ({ id, slug, kind, includeDeleted, query, limit }) => {
       // Single-document read: by id, or by slug (optionally kind-scoped). Return
       // a 0-or-1 element list so the shape matches the list case exactly.
       if (id !== undefined || slug !== undefined) {
-        const doc = store.getDocument({ id, slug, kind });
+        const doc = store.getDocument({ id, slug, kind, includeDeleted });
         const documents = doc ? [doc] : [];
         return asText({ count: documents.length, documents });
       }

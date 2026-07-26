@@ -31,6 +31,7 @@ import { TRAVERSAL_MODES, type TraversalModeId } from './graphTraversals';
 import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
 import { initControlPlaneIntegration } from './controlPlane';
 import { ControlPlaneClient } from './controlPlaneClient';
+import { updateWorkstream as cpUpdateWorkstream } from './domain/workstreams';
 import { ControlPlaneHost } from './controlPlaneHost';
 
 let activeStore: JournalStore | null = null;
@@ -717,14 +718,16 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        if (!store) {
+        // Repointed onto the control-plane workstream domain layer (WM 13.0
+        // "rehome-wm-tools"): a section move is a lifecycle-status patch.
+        if (!controlPlaneClient) {
           vscode.window.showErrorMessage(
-            'Working Memory: cannot move workstream — DB is not available.',
+            'Working Memory: cannot move workstream — control plane is not running.',
           );
           return;
         }
         try {
-          store.updateWorkstream(slug, { status: section });
+          await cpUpdateWorkstream(controlPlaneClient, { slug, status: section });
           refresh();
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -744,14 +747,20 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        if (!store) {
+        // Repointed onto the control-plane workstream domain layer (WM 13.0
+        // "rehome-wm-tools"): reopen = move the workstream back to an active
+        // lifecycle section (progress).
+        if (!controlPlaneClient) {
           vscode.window.showErrorMessage(
-            'Working Memory: cannot reopen — DB is not available.',
+            'Working Memory: cannot reopen — control plane is not running.',
           );
           return;
         }
         try {
-          const updated = store.reopenWorkstream(slug);
+          const updated = await cpUpdateWorkstream(controlPlaneClient, {
+            slug,
+            status: 'progress',
+          });
           refresh();
           vscode.window.showInformationMessage(
             `Working Memory: reopened "${updated.title}".`,
@@ -925,7 +934,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Tools only register when we have a live store — without one there's no
   // useful work for them to do.
   if (store) {
-    registerTools(context, store, { refresh });
+    registerTools(context, store, controlPlaneClient, { refresh });
     refresh();
   }
 }

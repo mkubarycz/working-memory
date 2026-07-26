@@ -77,6 +77,51 @@ export interface GetDocumentInput {
   id?: string;
   slug?: string;
   kind?: string;
+  /**
+   * When true, a by-id/slug read also returns a soft-deleted document. Used to
+   * locate a workstream document by slug in order to undelete it (restore is by
+   * id, but callers only know the slug). Defaults to false (live rows only).
+   */
+  includeDeleted?: boolean;
+}
+
+/**
+ * Result of a write (`createDocument`/`updateDocument`/`deleteDocument`).
+ *
+ * Mirrors the read-result pattern's `available` flag but adds a third state so
+ * callers can tell a dead daemon apart from a tool-level rejection:
+ *   - `available:false`               → daemon unreachable / transport failed
+ *     (same meaning as the read results). `error` carries the transport error.
+ *   - `available:true`, `document:null`, `error` set → the tool ran but
+ *     REJECTED the write (unknown id, version conflict, spec validation, …).
+ *     The control-plane's `asError` returns a plain-text message, surfaced here.
+ *   - `available:true`, `document` set → success; `document` is the envelope.
+ */
+export interface WriteDocumentResult {
+  available: boolean;
+  document: DocumentEnvelope | null;
+  error?: string;
+}
+
+export interface CreateDocumentInput {
+  kind: string;
+  slug?: string;
+  labels?: Record<string, string>;
+  spec?: Record<string, unknown>;
+}
+
+export interface UpdateDocumentInput {
+  id: string;
+  expectedResourceVersion: number;
+  spec?: Record<string, unknown>;
+  slug?: string;
+  labels?: Record<string, string>;
+}
+
+export interface DeleteDocumentInput {
+  id: string;
+  restore?: boolean;
+  expectedResourceVersion?: number;
 }
 
 export interface ControlPlaneClientOptions {
@@ -120,6 +165,42 @@ function parseToolText(result: unknown): unknown {
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+/**
+ * Extract the plain-text message from a tool result flagged `isError`. The
+ * control-plane's `asError` returns `{ isError:true, content:[{type:'text',
+ * text:<message>}] }` where `text` is a RAW message string (not JSON), unlike
+ * the success path which JSON-encodes the envelope.
+ */
+function errorTextOf(result: unknown): string {
+  const content = (result as { content?: unknown }).content;
+  if (Array.isArray(content)) {
+    const block = (content as TextContentLike[]).find(
+      (c) => c && c.type === 'text' && typeof c.text === 'string',
+    );
+    if (block && typeof block.text === 'string' && block.text.length > 0) {
+      return block.text;
+    }
+  }
+  return 'Control plane returned an error';
+}
+
+/**
+ * Interpret a document write tool result into a {@link WriteDocumentResult}.
+ * `isError` results become an available-but-rejected result carrying the
+ * message; a success result is parsed as the envelope JSON.
+ */
+function interpretWriteResult(result: unknown): WriteDocumentResult {
+  if ((result as { isError?: unknown }).isError === true) {
+    return { available: true, document: null, error: errorTextOf(result) };
+  }
+  const parsed = parseToolText(result) as DocumentEnvelope | null;
+  if (!parsed || !parsed.metadata || !parsed.kind) {
+    return { available: true, document: null, error: 'Malformed control-plane response' };
+  }
+  return { available: true, document: parsed };
+}
+
 
 /**
  * Default URL resolver: read the discovery port file (`{ port, pid }`) under
@@ -205,6 +286,87 @@ export class ControlPlaneClient {
         return { available: true, document: null };
       }
       return { available: true, document };
+    } catch (err) {
+      this.resetConnection();
+      return { available: false, document: null, error: messageOf(err) };
+    }
+  }
+
+  /** Create a document via `wm-document-create`. Returns the created envelope. */
+  async createDocument(input: CreateDocumentInput): Promise<WriteDocumentResult> {
+    const client = await this.ensureConnected();
+    if (!client) {
+      return { available: false, document: null, error: 'Control plane not running' };
+    }
+    try {
+      const args: Record<string, unknown> = { kind: input.kind };
+      if (input.slug !== undefined) {
+        args.slug = input.slug;
+      }
+      if (input.labels !== undefined) {
+        args.labels = input.labels;
+      }
+      if (input.spec !== undefined) {
+        args.spec = input.spec;
+      }
+      const result = await client.callTool({ name: 'wm-document-create', arguments: args });
+      return interpretWriteResult(result);
+    } catch (err) {
+      this.resetConnection();
+      return { available: false, document: null, error: messageOf(err) };
+    }
+  }
+
+  /**
+   * Update a document via `wm-document-update` (versioned compare-and-swap).
+   * `spec` is a PARTIAL patch shallow-merged onto the current spec server-side.
+   */
+  async updateDocument(input: UpdateDocumentInput): Promise<WriteDocumentResult> {
+    const client = await this.ensureConnected();
+    if (!client) {
+      return { available: false, document: null, error: 'Control plane not running' };
+    }
+    try {
+      const args: Record<string, unknown> = {
+        id: input.id,
+        expectedResourceVersion: input.expectedResourceVersion,
+      };
+      if (input.spec !== undefined) {
+        args.spec = input.spec;
+      }
+      if (input.slug !== undefined) {
+        args.slug = input.slug;
+      }
+      if (input.labels !== undefined) {
+        args.labels = input.labels;
+      }
+      const result = await client.callTool({ name: 'wm-document-update', arguments: args });
+      return interpretWriteResult(result);
+    } catch (err) {
+      this.resetConnection();
+      return { available: false, document: null, error: messageOf(err) };
+    }
+  }
+
+  /**
+   * Soft-delete (or, with `restore:true`, undelete) a document via
+   * `wm-document-delete`. `expectedResourceVersion` is an optional CAS guard.
+   */
+  async deleteDocument(input: DeleteDocumentInput): Promise<WriteDocumentResult> {
+    const client = await this.ensureConnected();
+    if (!client) {
+      return { available: false, document: null, error: 'Control plane not running' };
+    }
+    try {
+      const args: Record<string, unknown> = { id: input.id };
+      if (input.restore !== undefined) {
+        args.restore = input.restore;
+      }
+      if (input.expectedResourceVersion !== undefined) {
+        args.expectedResourceVersion = input.expectedResourceVersion;
+      }
+      const result = await client.callTool({ name: 'wm-document-delete', arguments: args });
+      return interpretWriteResult(result);
     } catch (err) {
       this.resetConnection();
       return { available: false, document: null, error: messageOf(err) };

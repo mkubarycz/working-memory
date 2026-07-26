@@ -53,6 +53,12 @@ export interface GetDocumentInput {
   id?: string;
   slug?: string;
   kind?: string;
+  /**
+   * When true, a by-id / by-slug read also matches a soft-deleted row. Used to
+   * locate a document by slug in order to undelete it (restore is by id, but
+   * the caller only knows the slug). Defaults to false (live rows only).
+   */
+  includeDeleted?: boolean;
 }
 
 export interface UpdateDocumentInput {
@@ -151,7 +157,8 @@ export interface Store {
   createDocument(input: CreateDocumentInput): DocumentEnvelope;
   /** List non-deleted documents (newest first), optionally filtered by kind. */
   listDocuments(input?: ListDocumentsInput): DocumentEnvelope[];
-  /** Fetch one non-deleted document by id, or by slug (optionally scoped by kind). */
+  /** Fetch one document by id, or by slug (optionally scoped by kind). Live rows
+   * only unless `includeDeleted` is set (used to locate a doc for undelete). */
   getDocument(input: GetDocumentInput): DocumentEnvelope | null;
   /**
    * Compare-and-swap update of a document's spec (and optionally slug, labels,
@@ -346,22 +353,25 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function getDocument(input: GetDocumentInput): DocumentEnvelope | null {
+    // `includeDeleted` drops the live-only filter so a soft-deleted row can be
+    // located (e.g. to undelete it by slug). Defaults to live-only.
+    const deletedClause = input.includeDeleted === true ? '' : ' AND deleted_at IS NULL';
     let row: ResourceRow | undefined;
     if (input.id) {
       row = db
-        .prepare('SELECT * FROM resources WHERE id = ? AND deleted_at IS NULL')
+        .prepare(`SELECT * FROM resources WHERE id = ?${deletedClause}`)
         .get(input.id) as unknown as ResourceRow | undefined;
     } else if (input.slug !== undefined) {
       row = (
         input.kind
           ? db
               .prepare(
-                'SELECT * FROM resources WHERE slug = ? AND kind = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1',
+                `SELECT * FROM resources WHERE slug = ? AND kind = ?${deletedClause} ORDER BY updated_at DESC LIMIT 1`,
               )
               .get(input.slug, input.kind)
           : db
               .prepare(
-                'SELECT * FROM resources WHERE slug = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1',
+                `SELECT * FROM resources WHERE slug = ?${deletedClause} ORDER BY updated_at DESC LIMIT 1`,
               )
               .get(input.slug)
       ) as unknown as ResourceRow | undefined;

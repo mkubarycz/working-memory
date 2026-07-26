@@ -12,6 +12,16 @@ import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
 import { reshapeTopicBody, extractH2Headers } from './topicReshape';
 import { registerAlertsFeature } from './alerts';
 import { registerNanitesFeature } from './nanites';
+import type { ControlPlaneClient } from './controlPlaneClient';
+import {
+  listWorkstreams,
+  getWorkstream,
+  createWorkstream,
+  updateWorkstream,
+  deleteWorkstream,
+  restoreWorkstream,
+  type WorkstreamLifecycleStatus,
+} from './domain/workstreams';
 
 interface ToolDeps {
   refresh: () => void;
@@ -214,109 +224,137 @@ function topicSummary(
   return { slug: t.slug, title: t.title, status: t.status };
 }
 
+/**
+ * Map the tool-facing WorkstreamStatus (which still carries the legacy 'open'
+ * alias) onto the control-plane lifecycle enum. 'open' → 'progress' (matching
+ * migration 014); undefined passes through so the kind's default applies.
+ */
+function normalizeLifecycleStatus(
+  status: WorkstreamStatus | undefined,
+): WorkstreamLifecycleStatus | undefined {
+  if (status === undefined) {
+    return undefined;
+  }
+  return status === 'open' ? 'progress' : status;
+}
+
 export function registerTools(
   context: vscode.ExtensionContext,
   store: JournalStore,
+  client: ControlPlaneClient | null,
   deps: ToolDeps,
 ): void {
   const subs: vscode.Disposable[] = [];
 
-  // ----- workstreams -----
+  // The workstream tools are backed by the control-plane document store (WM
+  // 13.0 "rehome-wm-tools"). Fail clearly if the client is missing rather than
+  // silently falling back to the journal DB.
+  const requireClient = (): ControlPlaneClient => {
+    if (!client) {
+      throw new Error(
+        'Working Memory control-plane client is unavailable; the daemon may not be running.',
+      );
+    }
+    return client;
+  };
+
+  // ----- workstreams (WM 13.0 "rehome-wm-tools": backed by the control-plane
+  // document store via the workstream domain layer, NOT the journal DB) -----
 
   subs.push(
     vscode.lm.registerTool<ListWorkstreamsInput>('wm_list_workstreams', {
-      invoke: safe<ListWorkstreamsInput>((input) => {
-        const rows = store.listWorkstreams({
-          status: input.status,
-          includeDeleted: input.include_deleted ?? false,
+      invoke: safe<ListWorkstreamsInput>(async (input) => {
+        const all = await listWorkstreams(requireClient());
+        // Preserve the legacy status filter: 'open' means any non-closed
+        // lifecycle status; 'closed' means closed; 'all'/undefined means all.
+        const rows = all.filter((w) => {
+          if (input.status === 'closed') {
+            return w.status === 'closed';
+          }
+          if (input.status === 'open') {
+            return w.status !== 'closed';
+          }
+          return true;
         });
+        // NOTE: include_deleted is accepted for shape-compat but is a no-op —
+        // the control-plane list returns live documents only.
+        // TODO: needs a list-with-deleted path in the document store.
         return { ok: true, count: rows.length, workstreams: rows };
       }),
     }),
     vscode.lm.registerTool<GetWorkstreamInput>('wm_get_workstream', {
-      invoke: safe<GetWorkstreamInput>((input) => {
-        const includeDeleted = input.include_deleted ?? false;
-        let ws = null;
-        if (input.slug) {
-          ws = store.getWorkstreamBySlug(input.slug, includeDeleted);
-        } else if (typeof input.id === 'number') {
-          ws = store.getWorkstreamById(input.id, includeDeleted);
-        } else {
-          throw new Error('one of `slug` or `id` is required');
-        }
-        if (!ws) {
+      invoke: safe<GetWorkstreamInput>(async (input) => {
+        if (!input.slug) {
+          // The legacy numeric `id` was the journal rowid; control-plane
+          // documents are keyed by uuid + slug, so only slug lookups work now.
           throw new Error(
-            `workstream not found (slug=${input.slug ?? '∅'}, id=${input.id ?? '∅'})`,
+            input.id !== undefined
+              ? 'wm_get_workstream by numeric id is not supported after the control-plane move; pass `slug` instead.'
+              : 'one of `slug` or `id` is required',
           );
         }
-        const sessions = store
-          .listSessionsForWorkstream(ws.id, includeDeleted)
-          .map((s) => ({
-            session_id: s.session_id,
-            started_at: s.started_at,
-            ended_at: s.ended_at,
-            summary: s.summary,
-            entry_count: store.listEntriesForSession(
-              s.session_id,
-              includeDeleted,
-            ).length,
-            deleted_at: s.deleted_at,
-          }));
-        const total_entries = sessions.reduce((n, s) => n + s.entry_count, 0);
-        const focused_topics = store
-          .listTopicsForWorkstream(ws.id)
-          .filter((t) => t.focused === 1)
-          .map((t) => ({
-            slug: t.slug,
-            title: t.title,
-            status: t.status,
-            linked_at: t.linked_at,
-          }));
+        const ws = await getWorkstream(requireClient(), input.slug);
+        if (!ws) {
+          throw new Error(`workstream not found (slug=${input.slug})`);
+        }
+        // TODO: needs the session/entry/topic domain layers — sessions,
+        // total_entries and focused_topics aren't migrated yet, so they're
+        // stubbed to preserve the tool's output shape.
         return {
           ok: true,
           workstream: ws,
-          sessions,
-          total_entries,
-          focused_topics,
+          sessions: [],
+          total_entries: 0,
+          focused_topics: [],
         };
       }),
     }),
     vscode.lm.registerTool<CreateWorkstreamToolInput>('wm_create_workstream', {
-      invoke: safe<CreateWorkstreamToolInput>((input) => {
-        const result = store.createWorkstream({
+      invoke: safe<CreateWorkstreamToolInput>(async (input) => {
+        const ws = await createWorkstream(requireClient(), {
           slug: input.slug,
           title: input.title,
-          status: input.status,
-          topic_slug: input.topic_slug,
-          focused: input.focused,
+          status: normalizeLifecycleStatus(input.status),
         });
+        // TODO: topic_slug / focused pin a topic to the workstream at creation —
+        // needs the topic domain layer; ignored for now (documented no-op), so
+        // no topic_link is returned.
         deps.refresh();
-        return { ok: true, workstream: result.workstream, ...(result.topic_link ? { topic_link: result.topic_link } : {}) };
+        return { ok: true, workstream: ws };
       }),
     }),
     vscode.lm.registerTool<UpdateWorkstreamToolInput>('wm_update_workstream', {
-      invoke: safe<UpdateWorkstreamToolInput>((input) => {
-        const row = store.updateWorkstream(input.slug, {
+      invoke: safe<UpdateWorkstreamToolInput>(async (input) => {
+        const ws = await updateWorkstream(requireClient(), {
+          slug: input.slug,
           title: input.title,
-          status: input.status,
+          status: normalizeLifecycleStatus(input.status),
           closure: input.closure,
         });
         deps.refresh();
-        return { ok: true, workstream: row };
+        return { ok: true, workstream: ws };
       }),
     }),
     vscode.lm.registerTool<DeleteWorkstreamInput>('wm_delete_workstream', {
-      invoke: safe<DeleteWorkstreamInput>((input) => {
-        const counts = store.softDeleteWorkstream(input.slug);
+      invoke: safe<DeleteWorkstreamInput>(async (input) => {
+        await deleteWorkstream(requireClient(), input.slug);
         deps.refresh();
-        return { ok: true, soft_deleted: counts };
+        // TODO: needs the session/entry domain layers to report a real cascade
+        // count. The control-plane delete soft-deletes the workstream document
+        // only, so the count is stubbed to preserve the tool's output shape.
+        return {
+          ok: true,
+          soft_deleted: { workstreams: 1, sessions: 0, entries: 0 },
+        };
       }),
     }),
     vscode.lm.registerTool<RestoreWorkstreamInput>('wm_restore_workstream', {
-      invoke: safe<RestoreWorkstreamInput>((input) => {
-        const counts = store.restoreWorkstream(input.slug);
+      invoke: safe<RestoreWorkstreamInput>(async (input) => {
+        await restoreWorkstream(requireClient(), input.slug);
         deps.refresh();
-        return { ok: true, restored: counts };
+        // TODO: mirrors wm_delete_workstream — a real cascade count needs the
+        // session/entry domain layers; stubbed to the workstream row only.
+        return { ok: true, restored: { workstreams: 1 } };
       }),
     }),
   );

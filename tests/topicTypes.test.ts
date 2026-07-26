@@ -189,6 +189,9 @@ test('topic-type tools support happy path and key error paths', async () => {
   registerTools(
     { subscriptions: [] } as unknown as { subscriptions: Array<{ dispose: () => void }> },
     store,
+    // Workstream tools are control-plane-backed now; these tests exercise only
+    // topic-type tools, so a null client is fine (workstream tools unused here).
+    null,
     { refresh },
   );
   const getTool = (name: string) =>

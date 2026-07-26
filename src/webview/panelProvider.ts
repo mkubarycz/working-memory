@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import {
   buildBlackboardPanelData,
+  buildWorkstreamPanels,
   emptyAllPanelData,
   getAllPanelData,
   type PanelAction,
@@ -9,6 +10,7 @@ import {
 } from '../panelData';
 import { JournalStore, type WorkstreamSection } from '../db';
 import type { ControlPlaneClient } from '../controlPlaneClient';
+import { listWorkstreams } from '../domain/workstreams';
 import type { PanelRevealTarget } from '../panelReveal';
 
 interface InvokeMessage {
@@ -127,15 +129,71 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
 
   /** Push fresh data to the webview. Safe to call when the view is hidden. */
   refresh(): void {
+    // Public entry point stays synchronous so the many call sites (tools,
+    // commands, message handlers) are unchanged; the control-plane fetch for
+    // the Active/Archive tabs happens inside.
+    void this.refreshInternal();
+  }
+
+  /**
+   * Assemble the `data` message: topics / topic-types / alerts / nanites come
+   * from the journal store (unchanged), while the Active + Archive (workstream)
+   * tabs are sourced ASYNC from the control-plane document store via the
+   * workstream domain layer (WM 13.0 "rehome-wm-tools"). Awaiting the
+   * control-plane here is cheap: a down daemon fails fast (no port file), a live
+   * one is a localhost round-trip. Blackboard keeps its own dedicated channel.
+   */
+  private async refreshInternal(): Promise<void> {
     if (!this.view) {
       return;
     }
-    const data = this.store ? getAllPanelData(this.store) : emptyAllPanelData();
+    const journal = this.store
+      ? getAllPanelData(this.store)
+      : emptyAllPanelData();
+    const workstreams = await this.loadWorkstreamPanels();
+    // The view may have been disposed while awaiting the control-plane.
+    if (!this.view) {
+      return;
+    }
+    const data = {
+      ...journal,
+      active: workstreams.active,
+      archive: workstreams.archive,
+    };
     this.view.webview.postMessage({ type: 'data', data });
-    this.updateBadge(data.active);
+    this.updateBadge(workstreams.active);
     // Blackboard rows come from the control-plane MCP server, not the journal
     // DB, so they're fetched async and posted separately.
     void this.refreshBlackboard();
+  }
+
+  /**
+   * Fetch the Active + Archive tabs from the control-plane workstream domain
+   * layer, degrading to the "control plane not running" empty state when the
+   * client is absent or the daemon is unreachable (mirrors refreshBlackboard's
+   * unavailable handling).
+   */
+  private async loadWorkstreamPanels(): Promise<{
+    active: PanelData;
+    archive: PanelData;
+  }> {
+    if (!this.controlPlaneClient) {
+      return buildWorkstreamPanels({
+        available: false,
+        workstreams: [],
+        error: 'Control plane not running',
+      });
+    }
+    try {
+      const workstreams = await listWorkstreams(this.controlPlaneClient);
+      return buildWorkstreamPanels({ available: true, workstreams });
+    } catch (err) {
+      return buildWorkstreamPanels({
+        available: false,
+        workstreams: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
@@ -289,21 +347,18 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
   private handleReorderWorkstream(
     slug: string,
     section: WorkstreamSection,
-    prevSlug: string | null,
-    nextSlug: string | null,
+    _prevSlug: string | null,
+    _nextSlug: string | null,
   ): void {
-    if (!this.store) {
-      return;
-    }
-    try {
-      this.store.reorderWorkstream({ slug, section, prevSlug, nextSlug });
-      this.refresh();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      vscode.window.showErrorMessage(
-        `Working Memory: failed to reorder workstream — ${message}`,
-      );
-    }
+    // TODO: the workstream domain layer has no manual `position` field yet, so a
+    // control-plane workstream can't be reordered (WM 13.0 "rehome-wm-tools").
+    // Ignore the drop and snap the row back to the authoritative control-plane
+    // order via a refresh, rather than mutate the (now non-authoritative)
+    // journal store.
+    console.info(
+      `[working-memory] reorder ignored (no position field yet): ${slug} → ${section}`,
+    );
+    this.refresh();
   }
 
   private handleCardFocus(slug: string, topicSlug: string): void {

@@ -145,6 +145,9 @@ async function setupTools() {
   registerTools(
     { subscriptions: [] } as unknown as { subscriptions: Array<{ dispose: () => void }> },
     store,
+    // Workstream tools are control-plane-backed now; these tests exercise only
+    // topic tools, so a null client is fine (workstream tools go unused here).
+    null,
     { refresh },
   );
   const getTool = (name: string) =>

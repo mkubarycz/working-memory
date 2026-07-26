@@ -13,6 +13,7 @@ import { AlertsStore, ALERTS_ENABLED } from './alerts/store';
 import type { AlertStatus } from './alerts/types';
 import { NanitesStore, NANITES_ENABLED } from './nanites/store';
 import type { DocumentEnvelope, ListDocumentsResult } from './controlPlaneClient';
+import type { DomainWorkstream } from './domain/workstreams';
 
 /**
  * Plain-JSON shapes shipped to the webview. Keep these serializable —
@@ -548,9 +549,10 @@ function formatStarted(unixSeconds: number | null | undefined): string {
  * Active-tab "send to section" actions for a workstream's context menu.
  * Omits the section the workstream is already in. Each invokes the
  * `working-memory.setWorkstreamSection` command (registered in extension.ts),
- * which patches `status` via `store.updateWorkstream` and refreshes the panel.
+ * which patches the lifecycle `status` via the control-plane workstream domain
+ * layer (WM 13.0 "rehome-wm-tools") and refreshes the panel.
  */
-function sectionMoveActions(ws: WorkstreamWithCount): PanelAction[] {
+function sectionMoveActions(ws: { slug: string; status: string }): PanelAction[] {
   const current = sectionForStatus(ws.status);
   // Vertical order of the sections, top → bottom. A move to a smaller index is
   // "up", a larger index is "down" — picks the matching arrow-circle glyph.
@@ -1039,5 +1041,137 @@ export function emptyAllPanelData(): {
     topicTypes: { tab: 'topic-types', items: [], emptyMessage: noHub },
     alerts: { tab: 'alerts', items: [], emptyMessage: noHub },
     nanites: { tab: 'nanites', items: [], emptyMessage: noHub },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Control-plane-sourced Active / Archive tabs (WM 13.0 "rehome-wm-tools").
+//
+// The workstream tabs are being repointed from the journal DB onto the
+// control-plane document store. These builders take the already-fetched domain
+// workstreams (see src/domain/workstreams.ts) and shape them into the SAME
+// PanelWorkstream / PanelWorkstreamSection structures the journal path emits, so
+// the webview renderer is unchanged. Per-workstream extras that need the
+// topic/entry/session domain layers (still journal-only) are stubbed — see
+// buildDomainWorkstreamCard.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a simplified Active/Archive workstream CARD from a control-plane
+ * Workstream document. Extras that require the not-yet-migrated topic / entry /
+ * session domain layers — focused topics, the per-workstream topic + session
+ * groups, alert bubbles, and recent-entry counts — are stubbed to empty/zero.
+ * Only the fields a Workstream document actually carries (title, slug, lifecycle
+ * status/section, closure) drive the card.
+ */
+function buildDomainWorkstreamCard(
+  ws: DomainWorkstream,
+  tab: 'active' | 'archive',
+): PanelWorkstream {
+  const slug = ws.slug ?? '';
+  const status = ws.status;
+  const baseTooltip = `${ws.title} (${slug || '∅'}) — ${status}`;
+  const tooltip = ws.closure?.trim()
+    ? `${baseTooltip}\n\n${ws.closure.trim()}`
+    : baseTooltip;
+  const description =
+    tab === 'archive' && ws.closure?.trim() ? ws.closure.trim() : '';
+  // Section-move (active) / reopen (archive) actions target a command by slug;
+  // omit them for the (unexpected) slugless document rather than emit a broken
+  // command.
+  const actions: PanelAction[] =
+    slug.length === 0
+      ? []
+      : tab === 'archive'
+        ? [
+            {
+              command: 'working-memory.reopenWorkstream',
+              title: 'Reopen Workstream',
+              args: [{ slug }],
+            },
+          ]
+        : sectionMoveActions({ slug, status });
+  return {
+    kind: 'workstream',
+    // Document uuid keeps the id stable across refreshes (webview expand key).
+    id: `${tab}:workstream:${ws.id}`,
+    label: ws.title,
+    description,
+    tooltip,
+    // Opens the raw envelope via the same control-plane-backed virtual doc the
+    // Blackboard tab uses, so a card is clickable pre-migration.
+    // TODO: point at a dedicated workstream virtual doc once the content
+    // provider is repointed onto the control-plane.
+    openUri: `working-memory:/document/${encodeURIComponent(ws.id)}.md`,
+    // TODO: needs topic/entry domain layer — no recent-activity count yet.
+    recentEntryCount: 0,
+    ...(tab === 'active' ? { section: sectionForStatus(status) } : {}),
+    // TODO: needs alert domain layer — no alert bubble yet.
+    alertCount: 0,
+    alertSeverity: null,
+    actions,
+    // TODO: needs topic domain layer — no focused topics yet.
+    focused_topics: [],
+    // TODO: needs topic/entry/session domain layers — no topic/session groups.
+    children: [],
+  };
+}
+
+export interface WorkstreamPanels {
+  active: PanelData;
+  archive: PanelData;
+}
+
+/**
+ * Build the Active + Archive tabs from the control-plane workstream domain
+ * layer. Mirrors {@link buildBlackboardPanelData} for the other
+ * control-plane-sourced tab: `available:false` (daemon down) renders both tabs
+ * with the same "control plane not running" empty state; otherwise workstreams
+ * are grouped by lifecycle status — queue/progress/backlog → the three Active
+ * sections, closed → Archive. Ordering within a group follows the store's
+ * newest-first list order (manual position isn't migrated yet).
+ */
+export function buildWorkstreamPanels(input: {
+  available: boolean;
+  workstreams: DomainWorkstream[];
+  error?: string;
+}): WorkstreamPanels {
+  if (!input.available) {
+    return {
+      active: { tab: 'active', items: [], emptyMessage: 'Control plane not running.' },
+      archive: { tab: 'archive', items: [], emptyMessage: 'Control plane not running.' },
+    };
+  }
+  const buckets: Record<WorkstreamSection, PanelWorkstream[]> = {
+    queue: [],
+    progress: [],
+    backlog: [],
+  };
+  const archived: PanelWorkstream[] = [];
+  for (const ws of input.workstreams) {
+    if (ws.status === 'closed') {
+      archived.push(buildDomainWorkstreamCard(ws, 'archive'));
+    } else {
+      buckets[sectionForStatus(ws.status)].push(
+        buildDomainWorkstreamCard(ws, 'active'),
+      );
+    }
+  }
+  const activeItems: PanelItem[] = ACTIVE_SECTIONS.map((s) => ({
+    kind: 'workstream-section',
+    id: `active:section:${s.section}`,
+    section: s.section,
+    label: s.label,
+    display: s.display,
+    workstreams: buckets[s.section],
+    emptyMessage: s.emptyMessage,
+  }));
+  return {
+    active: { tab: 'active', items: activeItems, emptyMessage: 'No active workstreams.' },
+    archive: {
+      tab: 'archive',
+      items: archived,
+      emptyMessage: 'No archived workstreams.',
+    },
   };
 }
