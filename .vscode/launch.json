@@ -14,7 +14,8 @@
         "${env:HOME}/wm-sandbox"
       ],
       "env": {
-        "WM_CONTROL_PLANE_HOME": "${env:HOME}/wm-control-plane-sandbox"
+        "WM_CONTROL_PLANE_HOME": "${env:HOME}/wm-control-plane-sandbox",
+        "WM_CONTROL_PLANE_HOSTING": "embedded"
       },
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
@@ -41,7 +42,7 @@
         "${workspaceFolder}/out/control-plane/**/*.js"
       ],
       "skipFiles": ["<node_internals>/**"],
-      "preLaunchTask": "npm: compile:control-plane"
+      "preLaunchTask": "prep-control-plane"
     }
   ],
   "compounds": [

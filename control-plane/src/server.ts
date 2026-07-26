@@ -142,15 +142,18 @@ export function createMcpServer(
     {
       title: 'Working Memory: Update Document',
       description:
-        'Edit an existing document by replacing its `spec` (a versioned compare-and-swap write). ' +
-        'You MUST pass `expectedResourceVersion` — the `resourceVersion` you just read via ' +
-        '`wm_get_document`. The full `spec` you provide REPLACES the current spec and MUST match ' +
-        "the document's kind schema exactly (required fields present, unknown fields rejected); " +
-        'the parsed spec (defaults applied) is what gets persisted. If the document has changed ' +
-        'since you read it (version mismatch), the update is rejected as a conflict and the ' +
-        'current version is returned — re-fetch with `wm_get_document`, re-apply your change, and ' +
-        'retry. The controller-owned envelope `status`, slug, and labels are not editable here. ' +
-        'Returns the updated document envelope (with a bumped `updatedAt` and `resourceVersion`).',
+        'Patch an existing document (a versioned compare-and-swap write). You MUST pass ' +
+        '`expectedResourceVersion` — the `resourceVersion` you just read via `wm_get_document`. ' +
+        'Provide at least one of `spec`, `slug`, or `labels`. `spec` is a PARTIAL: the fields you ' +
+        'pass are shallow-merged onto the current spec, then the MERGED spec is validated against ' +
+        "the document's kind schema (unknown fields rejected); the parsed merged spec is what gets " +
+        'persisted. `slug` and `labels` are replace-if-provided — passing `labels` replaces the ' +
+        'whole labels object; omitting a field leaves it unchanged. To clear/reset a field send it ' +
+        'explicitly (e.g. `spec: { parents: [] }`). If the document changed since you read it ' +
+        '(version mismatch), the update is rejected as a conflict and the current version is ' +
+        'returned — re-fetch with `wm_get_document`, re-apply, and retry. The controller-owned ' +
+        'envelope `status` is not editable here. Returns the updated document envelope (with a ' +
+        'bumped `updatedAt` and `resourceVersion`).',
       inputSchema: {
         id: z.string().describe('The id (uuid) of the document to update.'),
         expectedResourceVersion: z
@@ -159,12 +162,25 @@ export function createMcpServer(
           .describe('The resourceVersion you read via wm_get_document (CAS guard).'),
         spec: z
           .record(z.string(), z.unknown())
-          .describe("The full replacement spec; must match the kind's schema (unknown fields rejected)."),
+          .optional()
+          .describe(
+            'Partial spec fields to merge onto the current spec; the merged spec must match the ' +
+              "kind's schema (unknown fields rejected). Send a field explicitly to clear it (e.g. parents: []).",
+          ),
+        slug: z.string().optional().describe('Optional new slug (replaces if provided).'),
+        labels: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe('Optional new labels; replaces the whole labels object if provided.'),
       },
     },
-    async ({ id, expectedResourceVersion, spec }) => {
-      // Fetch the live doc first: we need its kind to validate, and to give a
-      // clear "unknown id" error before doing any write work.
+    async ({ id, expectedResourceVersion, spec, slug, labels }) => {
+      // Require at least one editable field so a no-op patch is an explicit error.
+      if (spec === undefined && slug === undefined && labels === undefined) {
+        return asError('Nothing to update: provide at least one of `spec`, `slug`, or `labels`.');
+      }
+      // Fetch the live doc first: we need its kind + current spec to merge and
+      // validate, and to give a clear "unknown id" error before any write work.
       const existing = store.getDocument({ id });
       if (!existing) {
         return asError(`Unknown id: "${id}". No live document with that id (use wm_get_document to confirm).`);
@@ -179,14 +195,27 @@ export function createMcpServer(
       }
       let validatedSpec: Record<string, unknown>;
       try {
-        // Persist the PARSED spec (defaults applied, unknown fields rejected).
-        // On validation failure nothing is written.
-        validatedSpec = validateSpec(existing.kind, spec);
+        // Shallow-merge the partial patch onto the current spec, then validate
+        // the MERGED spec (strict → an unknown field in the patch is rejected).
+        // Persist the PARSED merged spec. On validation failure nothing is written.
+        const mergedSpec = { ...existing.spec, ...(spec ?? {}) };
+        validatedSpec = validateSpec(existing.kind, mergedSpec);
       } catch (err) {
         return asError((err as Error).message);
       }
+      // slug / labels are replace-if-provided: fall back to current when omitted.
+      const newSlug = slug ?? existing.metadata.slug;
+      const newLabels = labels ?? existing.metadata.labels;
       try {
-        return asText(store.updateDocument({ id, expectedResourceVersion, spec: validatedSpec }));
+        return asText(
+          store.updateDocument({
+            id,
+            expectedResourceVersion,
+            spec: validatedSpec,
+            slug: newSlug,
+            labels: newLabels,
+          }),
+        );
       } catch (err) {
         if (err instanceof ConflictError) {
           return asError(
@@ -197,6 +226,64 @@ export function createMcpServer(
         }
         if (err instanceof NotFoundError) {
           return asError(`Unknown id: "${id}". The document no longer exists (it may have been deleted).`);
+        }
+        throw err;
+      }
+    },
+  );
+
+  server.registerTool(
+    'wm_delete_document',
+    {
+      title: 'Working Memory: Delete Document',
+      description:
+        'Soft-delete a document by `id` (stamps `deleted_at`; the row is kept so it can be ' +
+        'undeleted). This is **kind-agnostic** — it does NOT look up the kind or validate the ' +
+        'spec, so it works on ANY document including legacy / unregistered-kind junk (e.g. old ' +
+        'lowercase `topic` docs). After deletion the document drops out of `wm_list_documents` ' +
+        'and `wm_get_document`. To **undelete** a previously soft-deleted document, call this ' +
+        'same tool with `restore: true` (clears `deleted_at`, bumps its version). ' +
+        '`expectedResourceVersion` is OPTIONAL and only applies to deletes: when provided it ' +
+        'acts as a compare-and-swap guard (the delete is rejected as a conflict if the document ' +
+        'changed since you read it); when omitted the current live row is deleted ' +
+        'unconditionally. Unknown or already-deleted ids (or already-live ids on restore) are ' +
+        'rejected. Returns the affected document envelope.',
+      inputSchema: {
+        id: z.string().describe('The id (uuid) of the document to delete (or restore).'),
+        restore: z
+          .boolean()
+          .optional()
+          .describe('When true, undelete a previously soft-deleted document instead of deleting.'),
+        expectedResourceVersion: z
+          .number()
+          .int()
+          .optional()
+          .describe('Optional CAS guard for deletes: the resourceVersion you read via wm_get_document.'),
+      },
+    },
+    async ({ id, restore, expectedResourceVersion }) => {
+      // No kind lookup / spec validation here — delete/restore is deliberately
+      // kind-agnostic so unregistered-kind documents remain manageable.
+      try {
+        if (restore === true) {
+          return asText(store.restoreDocument({ id }));
+        }
+        return asText(store.deleteDocument({ id, expectedResourceVersion }));
+      } catch (err) {
+        if (err instanceof ConflictError) {
+          return asError(
+            `Conflict: document ${id} was expected at resourceVersion ${expectedResourceVersion} ` +
+              `but its current resourceVersion is ${err.currentResourceVersion}. Re-fetch it with ` +
+              'wm_get_document and retry the delete (or omit expectedResourceVersion to force it).',
+          );
+        }
+        if (err instanceof NotFoundError) {
+          return asError(
+            restore === true
+              ? `Unknown or already-live id: "${id}". No soft-deleted document with that id to restore.`
+              : `Unknown or already-deleted id: "${id}". No live document with that id ` +
+                  '(use wm_list_documents / wm_get_document to confirm).',
+          );
         }
         throw err;
       }

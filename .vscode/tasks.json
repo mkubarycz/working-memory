@@ -14,6 +14,24 @@
       "script": "compile:control-plane",
       "problemMatcher": ["$tsc"],
       "presentation": { "reveal": "silent" }
+    },
+    {
+      // Kill any stale DEV control-plane daemon (out/control-plane/index.js) and
+      // free the sandbox port (7717), then clear the lock/port runtime files.
+      // Always exits 0 so "nothing to kill" never blocks the F5 launch.
+      "label": "kill-stale-control-plane",
+      "type": "shell",
+      "command": "pkill -f 'out/control-plane/index.js' 2>/dev/null; lsof -ti tcp:7717 | xargs kill -9 2>/dev/null; rm -f \"$HOME/wm-control-plane-sandbox/run/control-plane.lock\" \"$HOME/wm-control-plane-sandbox/run/control-plane.port.json\"; true",
+      "presentation": { "reveal": "silent" },
+      "problemMatcher": []
+    },
+    {
+      // Composite prep for the control-plane F5: kill stale daemons first, then
+      // compile. Used as the preLaunchTask so every F5 starts from a clean slate.
+      "label": "prep-control-plane",
+      "dependsOrder": "sequence",
+      "dependsOn": ["kill-stale-control-plane", "npm: compile:control-plane"],
+      "problemMatcher": []
     }
   ]
 }

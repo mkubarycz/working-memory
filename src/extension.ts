@@ -31,9 +31,11 @@ import { TRAVERSAL_MODES, type TraversalModeId } from './graphTraversals';
 import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
 import { initControlPlaneIntegration } from './controlPlane';
 import { ControlPlaneClient } from './controlPlaneClient';
+import { ControlPlaneHost } from './controlPlaneHost';
 
 let activeStore: JournalStore | null = null;
 let controlPlaneClient: ControlPlaneClient | null = null;
+let controlPlaneHost: ControlPlaneHost | null = null;
 
 type TopicAddToWorkstreamCommandInput = {
   topicSlug?: string;
@@ -180,6 +182,15 @@ export function activate(context: vscode.ExtensionContext): void {
   // the real tool path. Best-effort: no-ops when the daemon isn't running.
   controlPlaneClient = new ControlPlaneClient();
   contentProvider.setControlPlaneClient(controlPlaneClient);
+
+  // Own the control-plane PROCESS (WM 13.0 "control-plane-hosting-modes").
+  // Depending on the resolved hosting mode (auto/embedded/service) this either
+  // spawns + supervises the daemon (embedded / auto-with-no-service) or stays a
+  // pure client (service / auto-with-running-service). Started before the MCP
+  // registration below so the port file is more likely to exist when discovery
+  // polls. Best-effort: start() never throws into activation.
+  controlPlaneHost = new ControlPlaneHost(context);
+  void controlPlaneHost.start();
 
   // Wire the WM 13.0 control-plane: register its MCP server with Copilot once
   // the daemon's port file appears, and install the wm2 chat mode in the
@@ -920,6 +931,14 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  try {
+    if (controlPlaneHost) {
+      controlPlaneHost.dispose();
+      controlPlaneHost = null;
+    }
+  } catch (err) {
+    console.error('[working-memory] control-plane host dispose failed:', err);
+  }
   try {
     if (controlPlaneClient) {
       void controlPlaneClient.dispose();

@@ -59,6 +59,56 @@ try {
     }
   });
 
+  it('sets slug and labels when provided and bumps the version', () => {
+    const store = openStore(':memory:');
+    try {
+      const created = store.createDocument({
+        kind: 'topic',
+        slug: 'old-slug',
+        labels: { keep: 'me' },
+        spec: { title: 'X' },
+      });
+      const updated = store.updateDocument({
+        id: created.metadata.id,
+        expectedResourceVersion: created.metadata.resourceVersion,
+        spec: { title: 'X' },
+        slug: 'new-slug',
+        labels: { a: 'b' },
+      });
+      expect(updated.metadata.slug).toBe('new-slug');
+      expect(updated.metadata.labels).toEqual({ a: 'b' });
+      expect(updated.metadata.resourceVersion).toBe(2);
+
+      const fetched = store.getDocument({ id: created.metadata.id });
+      expect(fetched?.metadata.slug).toBe('new-slug');
+      expect(fetched?.metadata.labels).toEqual({ a: 'b' });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('leaves slug and labels unchanged when omitted (spec-only update)', () => {
+    const store = openStore(':memory:');
+    try {
+      const created = store.createDocument({
+        kind: 'topic',
+        slug: 'keep-slug',
+        labels: { keep: 'me' },
+        spec: { title: 'Before' },
+      });
+      const updated = store.updateDocument({
+        id: created.metadata.id,
+        expectedResourceVersion: created.metadata.resourceVersion,
+        spec: { title: 'After' },
+      });
+      expect(updated.spec).toEqual({ title: 'After' });
+      expect(updated.metadata.slug).toBe('keep-slug');
+      expect(updated.metadata.labels).toEqual({ keep: 'me' });
+    } finally {
+      store.close();
+    }
+  });
+
   it('rejects a stale expected version with ConflictError and does not change the row', () => {
     const store = openStore(':memory:');
     try {

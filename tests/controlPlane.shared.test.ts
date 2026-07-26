@@ -5,6 +5,9 @@ import {
   parsePortInfo,
   resolveControlPlaneHome,
   controlPlanePortFilePath,
+  resolveHostingMode,
+  resolveControlPlaneStoreHome,
+  controlPlaneHealthUrl,
 } from '../src/controlPlaneShared';
 
 describe('controlPlaneShared', () => {
@@ -15,7 +18,7 @@ describe('controlPlaneShared', () => {
       expect(md.startsWith('---\n')).toBe(true);
       expect(md).toContain('description:');
       expect(md).toContain(
-        "tools: ['wm_ping', 'wm_create_document', 'wm_update_document', 'wm_list_kinds', 'wm_list_documents', 'wm_get_document']",
+        "tools: ['wm_ping', 'wm_create_document', 'wm_update_document', 'wm_delete_document', 'wm_list_kinds', 'wm_list_documents', 'wm_get_document']",
       );
     });
 
@@ -25,6 +28,7 @@ describe('controlPlaneShared', () => {
       expect(md).toContain('wm_create_document');
       expect(md).toContain('wm_get_document');
       expect(md).toContain('wm_update_document');
+      expect(md).toContain('wm_delete_document');
     });
   });
 
@@ -85,6 +89,70 @@ describe('controlPlaneShared', () => {
           homedir: 'C:/Users/x',
         }),
       ).toBe(path.join('C:/Users/x/AppData/Local', 'WorkingMemory'));
+    });
+  });
+
+  describe('resolveHostingMode', () => {
+    it('honors the env override above the setting', () => {
+      expect(resolveHostingMode({ envValue: 'embedded', settingValue: 'service' })).toBe(
+        'embedded',
+      );
+      expect(resolveHostingMode({ envValue: 'SERVICE', settingValue: 'auto' })).toBe('service');
+      expect(resolveHostingMode({ envValue: '  Auto  ', settingValue: 'embedded' })).toBe('auto');
+    });
+
+    it('falls back to the setting when the env is absent or unrecognized', () => {
+      expect(resolveHostingMode({ settingValue: 'service' })).toBe('service');
+      expect(resolveHostingMode({ envValue: '', settingValue: 'embedded' })).toBe('embedded');
+      expect(resolveHostingMode({ envValue: 'bogus', settingValue: 'service' })).toBe('service');
+    });
+
+    it('defaults to auto when neither layer resolves to a valid mode', () => {
+      expect(resolveHostingMode({})).toBe('auto');
+      expect(resolveHostingMode({ envValue: 'nope', settingValue: 'also-nope' })).toBe('auto');
+      expect(resolveHostingMode({ envValue: null, settingValue: null })).toBe('auto');
+    });
+  });
+
+  describe('resolveControlPlaneStoreHome', () => {
+    const homeEnv = (env: NodeJS.ProcessEnv = {}) => ({
+      platform: 'linux' as NodeJS.Platform,
+      env,
+      homedir: '/home/x',
+    });
+
+    it('prefers the WM_CONTROL_PLANE_HOME env override above everything', () => {
+      expect(
+        resolveControlPlaneStoreHome({
+          homeEnv: homeEnv({ WM_CONTROL_PLANE_HOME: '/tmp/cp' }),
+          settingPath: '/some/setting',
+        }),
+      ).toBe(path.resolve('/tmp/cp'));
+    });
+
+    it('uses the setting path when the env is unset and the setting is non-empty', () => {
+      expect(
+        resolveControlPlaneStoreHome({ homeEnv: homeEnv(), settingPath: '/opt/wm' }),
+      ).toBe(path.resolve('/opt/wm'));
+    });
+
+    it('falls back to the per-OS default when env and setting are both empty', () => {
+      expect(resolveControlPlaneStoreHome({ homeEnv: homeEnv(), settingPath: '' })).toBe(
+        path.join('/home/x', '.local', 'share', 'working-memory'),
+      );
+      expect(resolveControlPlaneStoreHome({ homeEnv: homeEnv(), settingPath: '   ' })).toBe(
+        path.join('/home/x', '.local', 'share', 'working-memory'),
+      );
+      expect(resolveControlPlaneStoreHome({ homeEnv: homeEnv() })).toBe(
+        path.join('/home/x', '.local', 'share', 'working-memory'),
+      );
+    });
+  });
+
+  describe('controlPlaneHealthUrl', () => {
+    it('builds a loopback /health URL for the given port', () => {
+      expect(controlPlaneHealthUrl(7717)).toBe('http://127.0.0.1:7717/health');
+      expect(controlPlaneHealthUrl(0)).toBe('http://127.0.0.1:0/health');
     });
   });
 });

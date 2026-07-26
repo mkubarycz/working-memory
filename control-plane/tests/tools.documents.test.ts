@@ -27,7 +27,7 @@ function jsonOf<T>(res: unknown): T {
 
 interface Envelope {
   kind: string;
-  metadata: { id: string; slug: string | null; resourceVersion: number };
+  metadata: { id: string; slug: string | null; labels: Record<string, string>; resourceVersion: number };
   spec: Record<string, unknown>;
 }
 
@@ -259,6 +259,162 @@ function textOf(res: unknown): string {
       );
       expect(after.metadata.resourceVersion).toBe(2);
       expect(after.spec.title).toBe('After');
+
+      // Unknown id → error.
+      const unknown = await client.callTool({
+        name: 'wm_update_document',
+        arguments: {
+          id: '00000000-0000-0000-0000-000000000000',
+          expectedResourceVersion: 1,
+          spec: { title: 'x' },
+        },
+      });
+      expect(isErrorResult(unknown)).toBe(true);
+      expect(textOf(unknown)).toMatch(/unknown id/i);
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
+    }
+  });
+
+  it('patches spec (partial merge), slug, and labels; requires at least one field', async () => {
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-cp-doc-patch', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      await client.connect(transport);
+
+      const created = jsonOf<Envelope>(
+        await client.callTool({
+          name: 'wm_create_document',
+          arguments: {
+            kind: 'Topic',
+            slug: 'patch-me',
+            labels: { keep: 'me' },
+            spec: { title: 'Title', body: 'Body' },
+          },
+        }),
+      );
+      expect(created.metadata.resourceVersion).toBe(1);
+
+      // Partial spec patch: only `status` provided → title/body preserved.
+      const closed = jsonOf<Envelope>(
+        await client.callTool({
+          name: 'wm_update_document',
+          arguments: {
+            id: created.metadata.id,
+            expectedResourceVersion: created.metadata.resourceVersion,
+            spec: { status: 'closed' },
+          },
+        }),
+      );
+      expect(closed.metadata.resourceVersion).toBe(2);
+      expect(closed.spec).toEqual({
+        title: 'Title',
+        body: 'Body',
+        status: 'closed',
+        topicType: 'topic',
+        parents: [],
+      });
+      // slug/labels untouched by a spec-only patch.
+      expect(closed.metadata.slug).toBe('patch-me');
+      expect(closed.metadata.labels).toEqual({ keep: 'me' });
+
+      // Unknown field in the patch → merged spec is strict-invalid → rejected.
+      const bogus = await client.callTool({
+        name: 'wm_update_document',
+        arguments: {
+          id: created.metadata.id,
+          expectedResourceVersion: 2,
+          spec: { bogus: 1 },
+        },
+      });
+      expect(isErrorResult(bogus)).toBe(true);
+      expect(textOf(bogus)).toMatch(/invalid spec/i);
+      // Not persisted — still version 2.
+      const afterBogus = jsonOf<Envelope>(
+        await client.callTool({ name: 'wm_get_document', arguments: { id: created.metadata.id } }),
+      );
+      expect(afterBogus.metadata.resourceVersion).toBe(2);
+
+      // slug-only patch → slug changes, spec unchanged.
+      const reslugged = jsonOf<Envelope>(
+        await client.callTool({
+          name: 'wm_update_document',
+          arguments: {
+            id: created.metadata.id,
+            expectedResourceVersion: 2,
+            slug: 'new-slug',
+          },
+        }),
+      );
+      expect(reslugged.metadata.slug).toBe('new-slug');
+      expect(reslugged.metadata.resourceVersion).toBe(3);
+      expect(reslugged.spec).toEqual(closed.spec);
+
+      // labels-only patch → whole labels object replaced.
+      const relabeled = jsonOf<Envelope>(
+        await client.callTool({
+          name: 'wm_update_document',
+          arguments: {
+            id: created.metadata.id,
+            expectedResourceVersion: 3,
+            labels: { a: 'b' },
+          },
+        }),
+      );
+      expect(relabeled.metadata.labels).toEqual({ a: 'b' });
+      expect(relabeled.metadata.resourceVersion).toBe(4);
+
+      // Clear a field explicitly: parents already []; set a parent then clear it.
+      const withParent = jsonOf<Envelope>(
+        await client.callTool({
+          name: 'wm_update_document',
+          arguments: {
+            id: created.metadata.id,
+            expectedResourceVersion: 4,
+            spec: { parents: ['p1'] },
+          },
+        }),
+      );
+      expect(withParent.spec.parents).toEqual(['p1']);
+      const cleared = jsonOf<Envelope>(
+        await client.callTool({
+          name: 'wm_update_document',
+          arguments: {
+            id: created.metadata.id,
+            expectedResourceVersion: withParent.metadata.resourceVersion,
+            spec: { parents: [] },
+          },
+        }),
+      );
+      expect(cleared.spec.parents).toEqual([]);
+
+      // No fields provided → error, nothing persisted.
+      const empty = await client.callTool({
+        name: 'wm_update_document',
+        arguments: {
+          id: created.metadata.id,
+          expectedResourceVersion: cleared.metadata.resourceVersion,
+        },
+      });
+      expect(isErrorResult(empty)).toBe(true);
+      expect(textOf(empty)).toMatch(/nothing to update/i);
+
+      // Stale version → conflict mentioning the current version.
+      const stale = await client.callTool({
+        name: 'wm_update_document',
+        arguments: {
+          id: created.metadata.id,
+          expectedResourceVersion: 2,
+          slug: 'whatever',
+        },
+      });
+      expect(isErrorResult(stale)).toBe(true);
+      expect(textOf(stale)).toMatch(/conflict/i);
+      expect(textOf(stale)).toMatch(new RegExp(`\\b${cleared.metadata.resourceVersion}\\b`));
 
       // Unknown id → error.
       const unknown = await client.callTool({

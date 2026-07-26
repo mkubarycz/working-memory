@@ -73,6 +73,31 @@
     "onLanguageModelTool:wm_restore_nanite"
   ],
   "contributes": {
+    "configuration": {
+      "title": "Working Memory",
+      "properties": {
+        "workingMemory.controlPlane.hosting": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "embedded",
+            "service"
+          ],
+          "enumDescriptions": [
+            "Use a running control-plane service if one is reachable, otherwise self-host (spawn + supervise) it.",
+            "The extension always spawns and supervises the control-plane process itself.",
+            "An external OS service owns the control-plane process; the extension is a pure client and never spawns it."
+          ],
+          "default": "auto",
+          "markdownDescription": "Who runs the control-plane process: **auto** (use a running service if reachable, else self-host), **embedded** (extension spawns + supervises it), or **service** (external OS service; extension is a pure client)."
+        },
+        "workingMemory.controlPlane.storePath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Filesystem directory for the control-plane's SQLite files. Empty = per-OS app-data default. Maps to the `WM_CONTROL_PLANE_HOME` environment variable."
+        }
+      }
+    },
     "mcpServerDefinitionProviders": [
       {
         "id": "workingMemoryControlPlane",

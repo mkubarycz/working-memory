@@ -14,6 +14,13 @@ import * as path from 'node:path';
 /** Env var: overrides the resolved control-plane app-data home. */
 export const CONTROL_PLANE_HOME_ENV = 'WM_CONTROL_PLANE_HOME';
 
+/**
+ * Env var: overrides the `workingMemory.controlPlane.hosting` setting. Used by
+ * the F5 sandbox launch config so the ext host self-hosts the daemon without
+ * touching Michael's user settings.
+ */
+export const CONTROL_PLANE_HOSTING_ENV = 'WM_CONTROL_PLANE_HOSTING';
+
 /** Runtime-dir filename for the discovery port file (`{ port, pid }`). */
 export const CONTROL_PLANE_PORT_FILE = 'control-plane.port.json';
 
@@ -72,6 +79,74 @@ export function controlPlanePortFilePath(home: string): string {
   return path.join(home, 'run', CONTROL_PLANE_PORT_FILE);
 }
 
+/**
+ * Who runs the control-plane process:
+ *  - `auto`     — use a running service if one is reachable, else self-host.
+ *  - `embedded` — the extension spawns + supervises the process itself.
+ *  - `service`  — an external OS service owns it; the extension is a pure client.
+ */
+export type ControlPlaneHostingMode = 'auto' | 'embedded' | 'service';
+
+/** The default hosting mode when neither env nor setting resolves to a valid value. */
+export const DEFAULT_CONTROL_PLANE_HOSTING: ControlPlaneHostingMode = 'auto';
+
+function isHostingMode(value: string): value is ControlPlaneHostingMode {
+  return value === 'auto' || value === 'embedded' || value === 'service';
+}
+
+/**
+ * Resolve the effective hosting mode. Precedence:
+ *  1. `WM_CONTROL_PLANE_HOSTING` env override (used by the F5 sandbox).
+ *  2. The `workingMemory.controlPlane.hosting` setting value.
+ *  3. Default (`auto`).
+ *
+ * Values are trimmed + lower-cased; anything unrecognized is ignored so a typo
+ * in one layer falls through to the next rather than breaking hosting.
+ */
+export function resolveHostingMode(input: {
+  envValue?: string | null;
+  settingValue?: string | null;
+}): ControlPlaneHostingMode {
+  const env = (input.envValue ?? '').trim().toLowerCase();
+  if (isHostingMode(env)) {
+    return env;
+  }
+  const setting = (input.settingValue ?? '').trim().toLowerCase();
+  if (isHostingMode(setting)) {
+    return setting;
+  }
+  return DEFAULT_CONTROL_PLANE_HOSTING;
+}
+
+/**
+ * Resolve the control-plane store home directory. Precedence:
+ *  1. `WM_CONTROL_PLANE_HOME` env override (F5 sandbox + tests).
+ *  2. The `workingMemory.controlPlane.storePath` setting, when non-empty.
+ *  3. The per-OS app-data default (`resolveControlPlaneHome`).
+ *
+ * This maps the store-path setting onto `WM_CONTROL_PLANE_HOME` — the same var
+ * the daemon reads — while keeping the env override authoritative.
+ */
+export function resolveControlPlaneStoreHome(input: {
+  homeEnv: HomeEnv;
+  settingPath?: string | null;
+}): string {
+  const override = input.homeEnv.env[CONTROL_PLANE_HOME_ENV];
+  if (override && override.trim()) {
+    return path.resolve(override.trim());
+  }
+  const setting = (input.settingPath ?? '').trim();
+  if (setting) {
+    return path.resolve(setting);
+  }
+  return resolveControlPlaneHome(input.homeEnv);
+}
+
+/** Loopback health-probe URL for a control-plane bound to `port`. */
+export function controlPlaneHealthUrl(port: number): string {
+  return `http://127.0.0.1:${port}/health`;
+}
+
 function isValidPort(port: unknown): port is number {
   return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535;
 }
@@ -113,7 +188,7 @@ export function parsePortInfo(raw: string | null | undefined): PortInfo | null {
 export function renderWm2Chatmode(): string {
   return `---
 description: 'wm2 — operator of the Working Memory document store (control-plane MCP).'
-tools: ['wm_ping', 'wm_create_document', 'wm_update_document', 'wm_list_kinds', 'wm_list_documents', 'wm_get_document']
+tools: ['wm_ping', 'wm_create_document', 'wm_update_document', 'wm_delete_document', 'wm_list_kinds', 'wm_list_documents', 'wm_get_document']
 ---
 You are wm2, operator of the Working Memory document store.
 
@@ -128,7 +203,8 @@ Use the wm_* MCP tools (served by the Working Memory control-plane) to list, cre
   - \`topicType\` (string, optional)
   - \`parents\` (array of parent topic slugs, optional)
 - To fetch one, call \`wm_get_document\` with an \`id\` or \`slug\`.
-- To edit a document: \`wm_get_document\` to read its \`resourceVersion\`, modify the spec, then \`wm_update_document\` with \`{ id, expectedResourceVersion, spec }\`. If you get a conflict, re-fetch and retry.
+- To edit a document: \`wm_get_document\` to read its \`resourceVersion\`, then \`wm_update_document\` with \`{ id, expectedResourceVersion }\` plus ONLY the fields you're changing — \`spec\` is a partial (merged onto the current doc), and \`slug\`/\`labels\` replace if provided. To clear a field send it explicitly (e.g. \`parents: []\`). If you get a conflict, re-fetch and retry.
+- To delete a document: \`wm_delete_document\` with its \`id\` (works on any document). To undelete: \`wm_delete_document\` with \`restore: true\`.
 
 Keep replies short. After each action, show the key fields of the result (id, kind, slug, resourceVersion).
 `;

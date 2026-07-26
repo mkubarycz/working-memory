@@ -101,7 +101,14 @@ function registerControlPlaneMcpServer(context: vscode.ExtensionContext): void {
         return [];
       }
       const uri = vscode.Uri.parse(`http://127.0.0.1:${discovered.port}/mcp`);
-      return [new HttpServerDefinition(CONTROL_PLANE_PROVIDER_LABEL, uri)];
+      // VS Code caches an MCP server's tool manifest and only re-fetches
+      // `tools/list` when the server definition's `version` changes. Derive the
+      // version from the discovered daemon's port + pid so a fresh daemon (new
+      // build → new pid) always busts the cache and VS Code re-indexes the
+      // tools. A long-lived production daemon keeps a stable pid, so it won't
+      // needlessly re-index.
+      const version = `${discovered.port}-${discovered.pid}`;
+      return [new HttpServerDefinition(CONTROL_PLANE_PROVIDER_LABEL, uri, undefined, version)];
     },
   };
 

@@ -59,13 +59,43 @@ export interface UpdateDocumentInput {
   id: string;
   /** The resource_version the caller believes is current (CAS guard). */
   expectedResourceVersion: number;
-  /** The already-parsed spec to persist (full replace). */
+  /**
+   * The already-parsed, already-merged full spec to persist. The
+   * `wm_update_document` tool computes this by shallow-merging the caller's
+   * partial patch onto the current spec and validating the result; the store
+   * always writes the full spec it's handed.
+   */
   spec: Record<string, unknown>;
+  /**
+   * Optional new slug (replace-if-provided). When omitted the `slug` column is
+   * left unchanged; when provided (including `null`) it overwrites.
+   */
+  slug?: string | null;
+  /**
+   * Optional new labels (replace-if-provided). When omitted the `labels` column
+   * is left unchanged; when provided it replaces the whole labels object.
+   */
+  labels?: Record<string, string>;
   /**
    * Optional new status (controller-owned). The human `wm_update_document` tool
    * never passes this; it's reserved for controllers doing status writes.
    */
   status?: Record<string, unknown>;
+}
+
+export interface DeleteDocumentInput {
+  id: string;
+  /**
+   * Optional CAS guard. When provided, the soft-delete only happens if the live
+   * row still carries this version (a mismatch throws `ConflictError`). When
+   * omitted, the current live row is soft-deleted unconditionally. Delete is a
+   * terminal op with low lost-update risk, so the guard is opt-in.
+   */
+  expectedResourceVersion?: number;
+}
+
+export interface RestoreDocumentInput {
+  id: string;
 }
 
 /**
@@ -100,6 +130,21 @@ export class NotFoundError extends Error {
 }
 
 export interface Store {
+  /**
+   * Soft-delete a document by stamping `deleted_at` (bumps the global
+   * `resource_version`). **Kind-agnostic** — no kind lookup / spec validation,
+   * so legacy or unregistered-kind documents are deletable. `expectedResourceVersion`
+   * is optional: when provided it CAS-guards (throws `ConflictError` on a version
+   * mismatch), when omitted the current live row is soft-deleted unconditionally.
+   * Throws `NotFoundError` when no live row exists (unknown or already-deleted id).
+   */
+  deleteDocument(input: DeleteDocumentInput): DocumentEnvelope;
+  /**
+   * Restore a soft-deleted document by clearing `deleted_at` (bumps the global
+   * `resource_version`). Kind-agnostic. Throws `NotFoundError` when no
+   * soft-deleted row exists for the id (unknown or already-live).
+   */
+  restoreDocument(input: RestoreDocumentInput): DocumentEnvelope;
   readonly db: DatabaseSync;
   readonly path: string;
   /** Insert a new document; bumps the global `resource_version`. */
@@ -109,10 +154,12 @@ export interface Store {
   /** Fetch one non-deleted document by id, or by slug (optionally scoped by kind). */
   getDocument(input: GetDocumentInput): DocumentEnvelope | null;
   /**
-   * Compare-and-swap update of a document's spec (and optionally status). Bumps
-   * the global `resource_version` and conditionally writes only when the row's
-   * current version matches `expectedResourceVersion`. Throws `ConflictError`
-   * on a version mismatch and `NotFoundError` when no live row exists.
+   * Compare-and-swap update of a document's spec (and optionally slug, labels,
+   * status). Bumps the global `resource_version` and conditionally writes only
+   * when the row's current version matches `expectedResourceVersion`. `slug` and
+   * `labels` are replace-if-provided (omitted → column unchanged). Throws
+   * `ConflictError` on a version mismatch and `NotFoundError` when no live row
+   * exists.
    */
   updateDocument(input: UpdateDocumentInput): DocumentEnvelope;
   close(): void;
@@ -326,7 +373,8 @@ export function openStore(dbFilePath: string): Store {
     const now = nowSeconds();
     const specJson = JSON.stringify(input.spec);
     const hasStatus = input.status !== undefined;
-    const statusJson = hasStatus ? JSON.stringify(input.status) : null;
+    const hasSlug = input.slug !== undefined;
+    const hasLabels = input.labels !== undefined;
 
     // BEGIN IMMEDIATE so the version bump + conditional update are one atomic
     // unit under the write lock (single-writer model).
@@ -340,20 +388,30 @@ export function openStore(dbFilePath: string): Store {
         .get() as unknown as { value: number } | undefined;
       const next = counter?.value ?? 0;
 
-      // The CAS: only write when the live row still carries the expected
-      // version. `changes === 0` means either a version mismatch or no live row.
-      const sql = hasStatus
-        ? `UPDATE resources
-             SET spec = ?, status = ?, updated_at = ?, resource_version = ?
-           WHERE id = ? AND resource_version = ? AND deleted_at IS NULL`
-        : `UPDATE resources
-             SET spec = ?, updated_at = ?, resource_version = ?
+      // Build the SET clause from the always-written columns plus any optional
+      // replace-if-provided columns (slug / labels / status). Params are pushed
+      // in the same order as the `?` placeholders, followed by the CAS WHERE
+      // params. `changes === 0` means either a version mismatch or no live row.
+      const setCols = ['spec = ?', 'updated_at = ?', 'resource_version = ?'];
+      const params: unknown[] = [specJson, now, next];
+      if (hasSlug) {
+        setCols.push('slug = ?');
+        params.push(input.slug ?? null);
+      }
+      if (hasLabels) {
+        setCols.push('labels = ?');
+        params.push(JSON.stringify(input.labels));
+      }
+      if (hasStatus) {
+        setCols.push('status = ?');
+        params.push(JSON.stringify(input.status));
+      }
+      params.push(input.id, input.expectedResourceVersion);
+
+      const sql = `UPDATE resources
+             SET ${setCols.join(', ')}
            WHERE id = ? AND resource_version = ? AND deleted_at IS NULL`;
-      const result = hasStatus
-        ? db
-            .prepare(sql)
-            .run(specJson, statusJson, now, next, input.id, input.expectedResourceVersion)
-        : db.prepare(sql).run(specJson, now, next, input.id, input.expectedResourceVersion);
+      const result = db.prepare(sql).run(...(params as never[]));
 
       if (Number(result.changes) === 0) {
         // Distinguish not-found from version-mismatch by reading the live row.
@@ -381,6 +439,115 @@ export function openStore(dbFilePath: string): Store {
     }
   }
 
+  function deleteDocument(input: DeleteDocumentInput): DocumentEnvelope {
+    const now = nowSeconds();
+    const hasExpected = input.expectedResourceVersion !== undefined;
+
+    // BEGIN IMMEDIATE so the version bump + conditional soft-delete are one
+    // atomic unit under the write lock (single-writer model). No kind lookup or
+    // spec validation here — delete is deliberately kind-agnostic so legacy /
+    // unregistered-kind documents remain deletable.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(
+        "UPDATE store_meta SET value = value + 1 WHERE key = 'resource_version'",
+      ).run();
+      const counter = db
+        .prepare("SELECT value FROM store_meta WHERE key = 'resource_version'")
+        .get() as unknown as { value: number } | undefined;
+      const next = counter?.value ?? 0;
+
+      // Stamp deleted_at only on a live row. When an expected version is given,
+      // it's part of the WHERE (CAS); otherwise we soft-delete unconditionally.
+      const sql = hasExpected
+        ? `UPDATE resources
+             SET deleted_at = ?, updated_at = ?, resource_version = ?
+           WHERE id = ? AND deleted_at IS NULL AND resource_version = ?`
+        : `UPDATE resources
+             SET deleted_at = ?, updated_at = ?, resource_version = ?
+           WHERE id = ? AND deleted_at IS NULL`;
+      const result = hasExpected
+        ? db
+            .prepare(sql)
+            .run(now, now, next, input.id, input.expectedResourceVersion as number)
+        : db.prepare(sql).run(now, now, next, input.id);
+
+      if (Number(result.changes) === 0) {
+        // Distinguish not-found from version-mismatch by reading the live row.
+        // A mismatch is only possible when an expected version was supplied.
+        const live = db
+          .prepare('SELECT resource_version FROM resources WHERE id = ? AND deleted_at IS NULL')
+          .get(input.id) as unknown as { resource_version: number } | undefined;
+        db.exec('ROLLBACK');
+        if (!live) {
+          throw new NotFoundError(input.id);
+        }
+        throw new ConflictError(
+          input.id,
+          input.expectedResourceVersion as number,
+          live.resource_version,
+        );
+      }
+
+      const deleted = db
+        .prepare('SELECT * FROM resources WHERE id = ?')
+        .get(input.id) as unknown as ResourceRow;
+      db.exec('COMMIT');
+      return rowToEnvelope(deleted);
+    } catch (err) {
+      // ConflictError/NotFoundError already rolled back above; guard the rest.
+      if (!(err instanceof ConflictError) && !(err instanceof NotFoundError)) {
+        db.exec('ROLLBACK');
+      }
+      throw err;
+    }
+  }
+
+  function restoreDocument(input: RestoreDocumentInput): DocumentEnvelope {
+    const now = nowSeconds();
+
+    // BEGIN IMMEDIATE so the version bump + conditional restore are one atomic
+    // unit under the write lock. Kind-agnostic, mirroring deleteDocument.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(
+        "UPDATE store_meta SET value = value + 1 WHERE key = 'resource_version'",
+      ).run();
+      const counter = db
+        .prepare("SELECT value FROM store_meta WHERE key = 'resource_version'")
+        .get() as unknown as { value: number } | undefined;
+      const next = counter?.value ?? 0;
+
+      // Clear deleted_at only on a currently soft-deleted row.
+      const result = db
+        .prepare(
+          `UPDATE resources
+             SET deleted_at = NULL, updated_at = ?, resource_version = ?
+           WHERE id = ? AND deleted_at IS NOT NULL`,
+        )
+        .run(now, next, input.id);
+
+      if (Number(result.changes) === 0) {
+        // No soft-deleted row for this id: unknown id or it's already live.
+        db.exec('ROLLBACK');
+        throw new NotFoundError(input.id);
+      }
+
+      // getDocument filters out deleted rows, but this row is now live; still,
+      // read it directly by id to build the restored envelope.
+      const restored = db
+        .prepare('SELECT * FROM resources WHERE id = ?')
+        .get(input.id) as unknown as ResourceRow;
+      db.exec('COMMIT');
+      return rowToEnvelope(restored);
+    } catch (err) {
+      if (!(err instanceof NotFoundError)) {
+        db.exec('ROLLBACK');
+      }
+      throw err;
+    }
+  }
+
   return {
     db,
     path: dbFilePath,
@@ -388,6 +555,8 @@ export function openStore(dbFilePath: string): Store {
     listDocuments,
     getDocument,
     updateDocument,
+    deleteDocument,
+    restoreDocument,
     close(): void {
       db.close();
     },
