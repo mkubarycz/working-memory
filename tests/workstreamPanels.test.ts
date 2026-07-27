@@ -105,6 +105,9 @@ describe('buildWorkstreamPanels', () => {
     expect(card.kind).toBe('workstream');
     expect(card.label).toBe('Project');
     expect(card.section).toBe('progress');
+    // The raw slug is carried on the node so the webview can derive it without
+    // parsing the /document/<uuid> openUri.
+    expect(card.slug).toBe('proj');
     // Opens the raw envelope via the control-plane-backed document virtual doc.
     expect(card.openUri).toBe('working-memory:/document/id-proj.md');
     // Simplified extras are stubbed until the topic/entry domain layers land.

@@ -758,30 +758,36 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Attach a workstream to a topic's membership via `ws-topic-attach-workstream`
-   * (idempotent). This is the atomic "attach topic to workstream" the panel /
-   * tools need. Returns the updated topic.
+   * Attach a workstream to a topic's membership (idempotent). Topic↔workstream
+   * membership is edited via `ws-topic-update` over the topic's
+   * `spec.workstreams` array, so this is a read-modify-write: read the current
+   * topic, add the workstream if absent, then update. Returns the updated topic.
    */
   async topicAttachWorkstream(input: TopicAttachWorkstreamInput): Promise<Topic> {
-    return this.parseTopic(
-      await this.callDomainTool('ws-topic-attach-workstream', {
-        slug: input.slug,
-        workstream: input.workstream,
-      }),
-    );
+    const [topic] = await this.topicRead({ slug: input.slug });
+    if (!topic) {
+      throw new ControlPlaneClientError(`Unknown topic slug: ${input.slug}`);
+    }
+    const next = topic.workstreams.includes(input.workstream)
+      ? topic.workstreams
+      : [...topic.workstreams, input.workstream];
+    return this.topicUpdate({ slug: input.slug, workstreams: next });
   }
 
   /**
-   * Detach a workstream from a topic's membership via
-   * `ws-topic-detach-workstream` (idempotent). Returns the updated topic.
+   * Detach a workstream from a topic's membership (idempotent). Topic↔workstream
+   * membership is edited via `ws-topic-update` over the topic's
+   * `spec.workstreams` array, so this is a read-modify-write: read the current
+   * topic, drop the workstream, then update. Filtering an absent value is a
+   * no-op. Returns the updated topic.
    */
   async topicDetachWorkstream(input: TopicDetachWorkstreamInput): Promise<Topic> {
-    return this.parseTopic(
-      await this.callDomainTool('ws-topic-detach-workstream', {
-        slug: input.slug,
-        workstream: input.workstream,
-      }),
-    );
+    const [topic] = await this.topicRead({ slug: input.slug });
+    if (!topic) {
+      throw new ControlPlaneClientError(`Unknown topic slug: ${input.slug}`);
+    }
+    const next = topic.workstreams.filter((w) => w !== input.workstream);
+    return this.topicUpdate({ slug: input.slug, workstreams: next });
   }
 
   /** Close the client + transport and release the singleton. */

@@ -63,6 +63,7 @@ describe('Alert kind registry', () => {
       recommended_action: '',
       status: 'alert',
       created_by: 'system',
+      topics: [],
     });
   });
 
@@ -74,6 +75,7 @@ describe('Alert kind registry', () => {
         recommended_action: '',
         status,
         created_by: 'system',
+        topics: [],
       });
     }
   });
@@ -94,6 +96,7 @@ describe('Alert kind registry', () => {
       status: 'alert',
       dedupe_key: 'disk-space',
       created_by: 'monitor',
+      topics: [],
     });
   });
 
@@ -194,6 +197,7 @@ describe('Alert kind loader', () => {
         recommended_action: '',
         status: 'alert',
         created_by: 'system',
+        topics: [],
       });
       expect(created.status).toEqual({});
 

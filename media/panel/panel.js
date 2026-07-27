@@ -9,7 +9,7 @@
 
   /** @typedef {{ command: string, title: string, description?: string, args?: unknown[], enabled?: boolean, icon?: string }} Action */
   /** @typedef {{ kind: string, id: string, label: string, description?: string,
-   *              tooltip?: string, icon?: string, openUri?: string,
+   *              tooltip?: string, icon?: string, openUri?: string, slug?: string | null,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
    *              status?: 'open'|'closed', recentEntryCount?: number,
    *              alertCount?: number, alertSeverity?: 'alert'|'informational'|null,
@@ -221,7 +221,7 @@
    * @returns {ContextMenuItem[]}
    */
   function cardContextMenu(card, topicSlug) {
-    const slug = workstreamSlugFromOpenUri(card.openUri);
+    const slug = card.slug ?? workstreamSlugFromOpenUri(card.openUri);
     /** @type {ContextMenuItem[]} */
     const items = [];
     if (slug && topicSlug) {
@@ -742,7 +742,7 @@
     if (topicSlug) {
       row.dataset.topicSlug = topicSlug;
     }
-    const workstreamSlug = workstreamSlugFromOpenUri(workstream.openUri);
+    const workstreamSlug = workstream.slug ?? workstreamSlugFromOpenUri(workstream.openUri);
     if (workstreamSlug) {
       row.dataset.workstreamSlug = workstreamSlug;
     }
@@ -948,7 +948,7 @@
   function renderWorkstreamCard(item) {
     const card = document.createElement('div');
     card.className = 'ws-card ws-card-color-' + colorIndexForId(item.id);
-    const workstreamSlug = workstreamSlugFromOpenUri(item.openUri);
+    const workstreamSlug = item.slug ?? workstreamSlugFromOpenUri(item.openUri);
     if (workstreamSlug) {
       card.dataset.workstreamSlug = workstreamSlug;
       makeWorkstreamDraggable(card, workstreamSlug, item.section || 'progress');
@@ -1022,7 +1022,7 @@
    * @param {Node} ws
    */
   function promoteWorkstream(ws) {
-    const slug = workstreamSlugFromOpenUri(ws.openUri);
+    const slug = ws.slug ?? workstreamSlugFromOpenUri(ws.openUri);
     if (!slug) {
       return;
     }
@@ -1050,7 +1050,7 @@
   function renderShelfItem(ws, direction = 'down', draggable = false) {
     const el = document.createElement('div');
     el.className = 'ws-shelf-item';
-    const slug = workstreamSlugFromOpenUri(ws.openUri);
+    const slug = ws.slug ?? workstreamSlugFromOpenUri(ws.openUri);
     if (slug) {
       el.dataset.workstreamSlug = slug;
       const sec =

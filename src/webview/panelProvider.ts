@@ -385,15 +385,19 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     _prevSlug: string | null,
     _nextSlug: string | null,
   ): void {
-    // TODO: the workstream domain layer has no manual `position` field yet, so a
-    // control-plane workstream can't be reordered (WM 13.0 "rehome-wm-tools").
-    // Ignore the drop and snap the row back to the authoritative control-plane
-    // order via a refresh, rather than mutate the (now non-authoritative)
-    // journal store.
-    console.info(
-      `[working-memory] reorder ignored (no position field yet): ${slug} → ${section}`,
-    );
-    this.refresh();
+    // A cross-section drag (pulling a card into Queue / In Progress / Backlog)
+    // is a lifecycle-section move — delegate to the same control-plane-backed
+    // command the shelf move-button uses, so drag and the button behave
+    // identically (it validates, patches the workstream's status via the
+    // client, and refreshes).
+    // NOTE: manual WITHIN-section ordering (prevSlug/nextSlug) is still deferred
+    // — control-plane workstreams have no `position` field yet — so a
+    // same-section drop is a no-op status patch and the row snaps back to the
+    // authoritative control-plane order on refresh.
+    void vscode.commands.executeCommand('working-memory.setWorkstreamSection', {
+      slug,
+      section,
+    });
   }
 
   private async handleCardFocus(slug: string, topicSlug: string): Promise<void> {

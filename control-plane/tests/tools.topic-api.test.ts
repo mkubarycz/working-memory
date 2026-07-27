@@ -95,8 +95,6 @@ async function connect(store: Store): Promise<{
           'ws-topic-read',
           'ws-topic-update',
           'ws-topic-delete',
-          'ws-topic-attach-workstream',
-          'ws-topic-detach-workstream',
         ]),
       );
     } finally {
@@ -286,7 +284,7 @@ async function connect(store: Store): Promise<{
     }
   });
 
-  it('ws-topic-attach-workstream adds membership (idempotent) and ws-topic-read { workstream } reflects it', async () => {
+  it('ws-topic-update sets spec.workstreams (membership is edited via update)', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       await client.callTool({
@@ -300,66 +298,20 @@ async function connect(store: Store): Promise<{
         ).count,
       ).toBe(0);
 
-      const attached = jsonOf<ITopic>(
+      const updated = jsonOf<ITopic>(
         await client.callTool({
-          name: 'ws-topic-attach-workstream',
-          arguments: { slug: 'member', workstream: 'ws-a' },
+          name: 'ws-topic-update',
+          arguments: { slug: 'member', workstreams: ['ws-a'] },
         }),
       );
-      expect(attached.workstreams).toEqual(['ws-a']);
+      expect(updated.workstreams).toEqual(['ws-a']);
 
-      // Attaching again is an idempotent no-op — no duplicate.
-      const again = jsonOf<ITopic>(
-        await client.callTool({
-          name: 'ws-topic-attach-workstream',
-          arguments: { slug: 'member', workstream: 'ws-a' },
-        }),
-      );
-      expect(again.workstreams).toEqual(['ws-a']);
-
-      // Membership filter now reflects the attach.
+      // Membership filter now reflects the update.
       const members = jsonOf<TopicList>(
         await client.callTool({ name: 'ws-topic-read', arguments: { workstream: 'ws-a' } }),
       );
       expect(members.count).toBe(1);
       expect(members.topics[0]?.slug).toBe('member');
-    } finally {
-      await close();
-    }
-  });
-
-  it('ws-topic-detach-workstream removes membership and is idempotent for a non-member', async () => {
-    const { client, close } = await connect(openStore(':memory:'));
-    try {
-      await client.callTool({
-        name: 'ws-topic-create',
-        arguments: { slug: 'leave', title: 'Leave', workstreams: ['ws-a', 'ws-b'] },
-      });
-
-      // Detaching an absent workstream is a no-op success (membership unchanged).
-      const noop = jsonOf<ITopic>(
-        await client.callTool({
-          name: 'ws-topic-detach-workstream',
-          arguments: { slug: 'leave', workstream: 'ws-ghost' },
-        }),
-      );
-      expect(noop.workstreams).toEqual(['ws-a', 'ws-b']);
-
-      // Detaching a real member removes just that one.
-      const detached = jsonOf<ITopic>(
-        await client.callTool({
-          name: 'ws-topic-detach-workstream',
-          arguments: { slug: 'leave', workstream: 'ws-a' },
-        }),
-      );
-      expect(detached.workstreams).toEqual(['ws-b']);
-
-      // The workstream filter no longer returns it under ws-a.
-      expect(
-        jsonOf<TopicList>(
-          await client.callTool({ name: 'ws-topic-read', arguments: { workstream: 'ws-a' } }),
-        ).count,
-      ).toBe(0);
     } finally {
       await close();
     }
@@ -397,15 +349,13 @@ async function connect(store: Store): Promise<{
     }
   });
 
-  it('errors clearly on unknown-slug update, delete, restore, attach, and detach', async () => {
+  it('errors clearly on unknown-slug update, delete, and restore', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       for (const call of [
         { name: 'ws-topic-update', arguments: { slug: 'ghost', title: 'X' } },
         { name: 'ws-topic-delete', arguments: { slug: 'ghost' } },
         { name: 'ws-topic-delete', arguments: { slug: 'ghost', restore: true } },
-        { name: 'ws-topic-attach-workstream', arguments: { slug: 'ghost', workstream: 'ws' } },
-        { name: 'ws-topic-detach-workstream', arguments: { slug: 'ghost', workstream: 'ws' } },
       ]) {
         const res = await client.callTool(call);
         expect(isErrorResult(res)).toBe(true);

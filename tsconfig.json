@@ -10,10 +10,21 @@
     "skipLibCheck": true,
     "sourceMap": true,
     "resolveJsonModule": true,
-    "baseUrl": ".",
+    // Pin node's ambient types explicitly (mirrors control-plane/tsconfig.json).
+    // Without this, TS auto-discovers @types/* by walking node_modules, which
+    // the language server drops intermittently in this nested/multi-root
+    // workspace — surfacing phantom "Cannot find name 'Buffer'/'process'/
+    // 'console'/'node:*'" errors on extension-side files even though `tsc`
+    // itself is clean. `vscode` and the MCP SDK are module imports, unaffected
+    // by this array.
+    "types": ["node"],
+    // `paths` is resolved relative to this tsconfig's directory (no `baseUrl`
+    // needed since TS 5.0). `baseUrl` was removed because it's deprecated in
+    // TS 6.0 and stops functioning in 7.0 — keeping `paths` alone is the
+    // forward-compatible form.
     "paths": {
       "@modelcontextprotocol/sdk/*": [
-        "node_modules/@modelcontextprotocol/sdk/dist/cjs/*"
+        "./node_modules/@modelcontextprotocol/sdk/dist/cjs/*"
       ]
     }
   },

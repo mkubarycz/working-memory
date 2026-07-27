@@ -29,6 +29,9 @@
 
 import type { DocumentEnvelope } from '../../store.js';
 
+/** The Topic kind name in the control-plane registry. */
+export const TOPIC_KIND = 'Topic';
+
 /** The authored open/closed status (a `spec` field), mirroring the Topic enum. */
 export type TopicSpecStatus = 'open' | 'closed';
 

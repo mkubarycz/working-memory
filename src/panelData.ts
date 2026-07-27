@@ -110,6 +110,12 @@ export interface PanelSessionsGroup {
 export interface PanelWorkstream {
   kind: 'workstream';
   id: string;
+  /**
+   * The workstream's stable slug, carried explicitly so the webview can derive
+   * it without parsing `openUri` (which now points at a `/document/<uuid>` doc).
+   * Null when the workstream has no slug.
+   */
+  slug: string | null;
   label: string;
   description: string;
   tooltip: string;
@@ -622,6 +628,7 @@ function buildWorkstream(
   return {
     kind: 'workstream',
     id: `${tab}:workstream:${ws.id}`,
+    slug: ws.slug ?? null,
     label: ws.title,
     description,
     tooltip,
@@ -1366,6 +1373,9 @@ function buildDomainWorkstreamCard(
     kind: 'workstream',
     // Document uuid keeps the id stable across refreshes (webview expand key).
     id: `${tab}:workstream:${ws.id}`,
+    // Carry the raw slug so the webview doesn't have to parse it out of openUri
+    // (which is now a /document/<uuid> doc). Empty slug → null.
+    slug: ws.slug ?? null,
     label: ws.title,
     description,
     tooltip,

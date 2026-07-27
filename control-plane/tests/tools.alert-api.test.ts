@@ -310,6 +310,7 @@ async function connect(store: Store): Promise<{
       status: 'informational',
       dedupe_key: 'disk-space',
       created_by: 'monitor',
+      topics: [],
       created_at: 1000,
       updated_at: 2000,
       resourceVersion: 4,

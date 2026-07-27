@@ -27,6 +27,9 @@
 
 import type { DocumentEnvelope } from '../../store.js';
 
+/** The JournalEntry kind name in the control-plane registry. */
+export const JOURNAL_ENTRY_KIND = 'JournalEntry';
+
 /**
  * The legacy journal-entry shape, reconstructed from a JournalEntry document.
  * This is the interface `class JournalEntry` implements.

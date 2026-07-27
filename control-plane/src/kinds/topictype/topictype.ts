@@ -26,6 +26,9 @@
 
 import type { DocumentEnvelope } from '../../store.js';
 
+/** The TopicType kind name in the control-plane registry. */
+export const TOPIC_TYPE_KIND = 'TopicType';
+
 /**
  * The legacy topic-type shape, reconstructed from a TopicType document. This is
  * the interface `class TopicType` implements.

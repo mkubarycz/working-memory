@@ -20,12 +20,21 @@
  *   - `status`             ← `spec.status` (alert | informational | closed)
  *   - `dedupe_key`         ← `spec.dedupe_key` (absent → null)
  *   - `created_by`         ← `spec.created_by` (absent → 'system')
+ *   - `topics`             ← `spec.topics` (topic-slug references; absent → [])
  *   - `created_at`         ← `metadata.createdAt`
  *   - `updated_at`         ← `metadata.updatedAt`
  *   - `resourceVersion`    ← `metadata.resourceVersion` (carried so callers can update)
  */
 
 import type { DocumentEnvelope } from '../../store.js';
+
+/** The Alert kind name in the control-plane registry. */
+export const ALERT_KIND = 'Alert';
+
+/** Read a `string[]` spec field defensively (absent / foreign shape → `[]`). */
+export function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
 
 /** The authored alert lifecycle status (a `spec` field), mirroring migration 016. */
 export type AlertStatus = 'alert' | 'informational' | 'closed';
@@ -43,6 +52,7 @@ export interface IAlert {
   status: AlertStatus;
   dedupe_key: string | null;
   created_by: string;
+  topics: string[];
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -58,6 +68,7 @@ export class Alert implements IAlert {
   status: AlertStatus;
   dedupe_key: string | null;
   created_by: string;
+  topics: string[];
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -73,6 +84,7 @@ export class Alert implements IAlert {
     this.status = (spec.status as AlertStatus | undefined) ?? 'alert';
     this.dedupe_key = typeof spec.dedupe_key === 'string' ? spec.dedupe_key : null;
     this.created_by = typeof spec.created_by === 'string' ? spec.created_by : 'system';
+    this.topics = stringArray(spec.topics);
     this.created_at = env.metadata.createdAt;
     this.updated_at = env.metadata.updatedAt;
     this.resourceVersion = env.metadata.resourceVersion;

@@ -113,6 +113,56 @@ describe('ControlPlaneClient write methods', () => {
     }
   });
 
+  it('attaches then detaches a workstream via the topic read→update path', async () => {
+    server = await startServer({ port: 0 });
+    const mcpUrl = `${server.url}/mcp`;
+    const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
+    try {
+      await client.createDocument({
+        kind: 'Workstream',
+        slug: 'ws-membership',
+        spec: { title: 'Membership' },
+      });
+      await client.topicCreate({ slug: 'topic-membership', title: 'Membership Topic' });
+
+      // Attach adds the workstream to the topic's membership.
+      const attached = await client.topicAttachWorkstream({
+        slug: 'topic-membership',
+        workstream: 'ws-membership',
+      });
+      expect(attached.workstreams).toContain('ws-membership');
+
+      // Attaching again is idempotent — no duplicate.
+      const again = await client.topicAttachWorkstream({
+        slug: 'topic-membership',
+        workstream: 'ws-membership',
+      });
+      expect(again.workstreams.filter((w) => w === 'ws-membership')).toHaveLength(1);
+
+      // Detach removes it.
+      const detached = await client.topicDetachWorkstream({
+        slug: 'topic-membership',
+        workstream: 'ws-membership',
+      });
+      expect(detached.workstreams).not.toContain('ws-membership');
+    } finally {
+      await client.dispose();
+    }
+  });
+
+  it('throws on attach/detach for an unknown topic slug', async () => {
+    server = await startServer({ port: 0 });
+    const mcpUrl = `${server.url}/mcp`;
+    const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
+    try {
+      await expect(
+        client.topicAttachWorkstream({ slug: 'no-such-topic', workstream: 'ws-x' }),
+      ).rejects.toThrow(/[Uu]nknown topic slug/);
+    } finally {
+      await client.dispose();
+    }
+  });
+
   it('reports unavailable when no daemon is reachable', async () => {
     const client = new ControlPlaneClient({ resolveUrl: () => null });
     const created = await client.createDocument({ kind: 'Workstream', spec: { title: 'x' } });
