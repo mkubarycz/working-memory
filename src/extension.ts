@@ -255,6 +255,51 @@ export function activate(context: vscode.ExtensionContext): void {
   // the panel populates without a manual refresh on first load.
   initControlPlaneIntegration(context, refresh);
 
+  // Auto-refresh the panel when the control-plane daemon mutates its store
+  // out-of-process. WHY: the control-plane runs as a SEPARATE daemon process.
+  // The `refresh` closure above only fires for changes the extension itself
+  // initiates (panel drag/drop, legacy wm_* journal tools). When an agent or
+  // chat mutates data through the ws-* control-plane tools, those writes hit
+  // the daemon directly and the extension never learns of them — so the panel
+  // stayed stale until a manual refresh. Watching the daemon's SQLite files
+  // (`journal.sqlite`, plus `-wal`/`-shm` in WAL mode) catches every write,
+  // including out-of-process ones: OS-level file notifications are
+  // process-agnostic. An explicit-base RelativePattern is the supported way to
+  // watch a path OUTSIDE the workspace (the store home is typically app-data).
+  // `refresh()` is idempotent and never writes the DB, so there's no loop.
+  try {
+    const storeHome = controlPlaneHost.storeHome;
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(storeHome), 'journal.sqlite*'),
+    );
+    // Debounce: a single logical write fires a burst of file events (WAL +
+    // shm + the main db), so coalesce them into one refresh.
+    let debounceTimer: NodeJS.Timeout | undefined;
+    const scheduleRefresh = (): void => {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+      debounceTimer = setTimeout(() => {
+        debounceTimer = undefined;
+        refresh();
+      }, 250);
+    };
+    watcher.onDidChange(scheduleRefresh);
+    watcher.onDidCreate(scheduleRefresh);
+    watcher.onDidDelete(scheduleRefresh);
+    context.subscriptions.push(watcher, {
+      dispose: () => {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+          debounceTimer = undefined;
+        }
+      },
+    });
+  } catch (err) {
+    // A watcher problem must never break activation.
+    console.error('[working-memory] control-plane store watcher setup failed:', err);
+  }
+
   const setAlertStatus = (
     arg: number | { id?: number } | undefined,
     status: AlertStatus,

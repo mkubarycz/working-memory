@@ -89,6 +89,28 @@ export class ControlPlaneHost implements vscode.Disposable {
   }
 
   /**
+   * The resolved control-plane store home — the directory the daemon opens its
+   * `journal.sqlite` under. `start()` sets `this.home` before its first await,
+   * but this getter is robust to being called before/independent of `start()`:
+   * when `this.home` is empty it resolves lazily via the SAME precedence the
+   * daemon uses (env `WM_CONTROL_PLANE_HOME` > setting > per-OS default) and
+   * caches the result. Pure aside from that memoization — no process side
+   * effects. Callers (e.g. the panel auto-refresh watcher) use this to locate
+   * the SQLite files to watch for out-of-process daemon writes.
+   */
+  get storeHome(): string {
+    if (!this.home) {
+      this.home = resolveControlPlaneStoreHome({
+        homeEnv: { platform: process.platform, env: process.env, homedir: os.homedir() },
+        settingPath: vscode.workspace
+          .getConfiguration('workingMemory')
+          .get<string>('controlPlane.storePath'),
+      });
+    }
+    return this.home;
+  }
+
+  /**
    * Resolve mode + store home, then act: `service` → client-only (no spawn);
    * `auto` → probe a running service and only self-host if none is healthy;
    * `embedded` → spawn + supervise. Best-effort: never throws into activation.
