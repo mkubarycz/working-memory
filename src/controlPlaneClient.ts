@@ -273,6 +273,44 @@ export interface TopicDetachWorkstreamInput {
   workstream: string;
 }
 
+/**
+ * The alert shape returned by the control-plane `ws-alert-read` domain API
+ * (mapped from an Alert document by the kind's `Alert` POCO). This client OWNS
+ * the type, exactly as it owns {@link Workstream} and {@link Topic}: the
+ * extension-host consumers (panel bubble aggregation) speak this shape and no
+ * longer reach through the journal `alerts` table for the control-plane cards.
+ * Kept structurally identical to
+ * `control-plane/src/kinds/alert/alert.ts::IAlert`.
+ *
+ * `topics` is a flat topic-slug reference array (`spec.topics`) — the same slug
+ * space the Topic membership uses — so a card's bubble can be computed by
+ * matching an alert's `topics` against a topic (or workstream member) slug.
+ */
+export interface Alert {
+  /** Document id (uuid). Alerts have no slug (always null). */
+  id: string;
+  slug: string | null;
+  title: string;
+  description: string;
+  recommended_action: string;
+  /** Authored lifecycle status; `closed` alerts are excluded from bubbles. */
+  status: 'alert' | 'informational' | 'closed';
+  dedupe_key: string | null;
+  created_by: string;
+  /** Referenced topic slugs (the same slug space as Topic membership). */
+  topics: string[];
+  created_at: number;
+  updated_at: number;
+  /** CAS counter from the envelope, for a subsequent update. */
+  resourceVersion: number;
+}
+
+export interface AlertReadInput {
+  id?: string;
+  query?: string;
+  limit?: number;
+}
+
 export interface ControlPlaneClientOptions {
   /**
    * Resolve the `/mcp` URL to connect to, or `null` when the daemon is
@@ -788,6 +826,39 @@ export class ControlPlaneClient {
     }
     const next = topic.workstreams.filter((w) => w !== input.workstream);
     return this.topicUpdate({ slug: input.slug, workstreams: next });
+  }
+
+  // ----- Alert domain API (`ws-alert-read`) ---------------------------------
+  //
+  // Read-only wrapper over the control-plane's Alert kind read tool (WM 13.0
+  // panel-alert-bubbles): the panel aggregates open-alert counts for its
+  // control-plane cards/topics from THIS list rather than the journal
+  // `AlertsStore`, so alerts authored through the control-plane (`ws-alert-*`)
+  // actually surface on the bubbles. Parses the uniform `{ count, alerts }`
+  // result into the owned {@link Alert} shape and THROWS
+  // {@link ControlPlaneClientError} on a dead daemon / dropped connection /
+  // `isError` result, mirroring {@link topicRead}.
+
+  /**
+   * Read alerts via `ws-alert-read`. A by-id read yields a 0-or-1 element array;
+   * list mode (no id) returns all live alerts, optionally filtered by `query`
+   * (substring) and capped by `limit`.
+   */
+  async alertRead(input: AlertReadInput = {}): Promise<Alert[]> {
+    const args: Record<string, unknown> = {};
+    if (input.id !== undefined) {
+      args.id = input.id;
+    }
+    if (input.query !== undefined) {
+      args.query = input.query;
+    }
+    if (input.limit !== undefined) {
+      args.limit = input.limit;
+    }
+    const result = await this.callDomainTool('ws-alert-read', args);
+    const parsed = parseToolText(result) as { alerts?: unknown } | null;
+    const list = Array.isArray(parsed?.alerts) ? parsed!.alerts : [];
+    return list as Alert[];
   }
 
   /** Close the client + transport and release the singleton. */

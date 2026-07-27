@@ -25,9 +25,9 @@ import type { AlertStatus } from './alerts/types';
 import type { ControlPlaneClient } from './controlPlaneClient';
 import {
   renderControlPlaneUnavailableDoc,
-  renderDocumentEnvelopeDoc,
   renderDocumentNotFoundDoc,
 } from './documentRenderer';
+import { renderDocumentByKind } from './documentRenderers';
 
 type DocKind =
   | 'workstream'
@@ -85,6 +85,21 @@ function decodeSegment(segment: string): string {
     return segment;
   }
 }
+
+/**
+ * URI DocKind → control-plane document kind name. Only the kinds that have a
+ * control-plane equivalent are mapped; a mapped kind renders CONTROL-PLANE-FIRST
+ * (see `renderKindMaybeControlPlane`). Sessions, nanites, and alerts have no
+ * by-slug control-plane doc here (alerts open via `/document/<uuid>`), so they
+ * stay journal-rendered.
+ */
+const CONTROL_PLANE_KIND: Partial<
+  Record<DocKind, 'Topic' | 'Workstream' | 'TopicType'>
+> = {
+  topic: 'Topic',
+  workstream: 'Workstream',
+  'topic-type': 'TopicType',
+};
 
 /**
  * `FileSystemProvider` for the `working-memory:` scheme. Workstream and
@@ -162,25 +177,25 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         permissions: vscode.FilePermission.Readonly,
       }));
     }
-    if (kind === 'topic' && this.controlPlaneClient) {
-      // WM 13.0 "topic-consumer-repoint": a topic body may resolve from the
-      // control-plane (async). A control-plane-resolved doc is READ-ONLY (like
-      // `/document/<id>.md`); a journal-fallback doc keeps its writable behavior
-      // when a journal store is present.
-      // TODO: editable-body SAVE of a control-plane-only topic is DEFERRED — the
-      // writeFile topic branch is journal-only, so saving such a doc throws
-      // FileNotFound until the topic-body save is repointed onto the
-      // control-plane.
-      return this.renderTopicMaybeControlPlane(slug, uri).then(
+    const cpKind = CONTROL_PLANE_KIND[kind];
+    if (cpKind && this.controlPlaneClient) {
+      // WM 13.0: `topic` / `workstream` / `topic-type` docs resolve
+      // CONTROL-PLANE-FIRST (async). A control-plane-resolved doc is READ-ONLY
+      // (like `/document/<id>.md`); a journal-fallback doc keeps its per-kind
+      // permission behavior (topic/topic-type writable when a store is present,
+      // workstream always read-only).
+      // TODO: editable-body SAVE of a control-plane-only topic/topic-type is
+      // DEFERRED — the writeFile branches are journal-only, so saving such a doc
+      // throws FileNotFound until the save is repointed onto the control-plane.
+      return this.renderKindMaybeControlPlane(cpKind, slug, uri).then(
         ({ text, fromControlPlane }) => ({
           type: vscode.FileType.File,
           ctime: mtime,
           mtime,
           size: Buffer.byteLength(text, 'utf8'),
-          permissions:
-            fromControlPlane || !this.store
-              ? vscode.FilePermission.Readonly
-              : undefined,
+          permissions: fromControlPlane
+            ? vscode.FilePermission.Readonly
+            : this.journalPermission(kind),
         }),
       );
     }
@@ -218,10 +233,12 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         Buffer.from(text, 'utf8'),
       );
     }
-    if (kind === 'topic' && this.controlPlaneClient) {
-      // WM 13.0 "topic-consumer-repoint": prefer the control-plane topic (async).
-      return this.renderTopicMaybeControlPlane(slug, uri).then(({ text }) =>
-        Buffer.from(text, 'utf8'),
+    const cpKind = CONTROL_PLANE_KIND[kind];
+    if (cpKind && this.controlPlaneClient) {
+      // WM 13.0: prefer the control-plane doc (async) for topic / workstream /
+      // topic-type; fall back to the journal renderer.
+      return this.renderKindMaybeControlPlane(cpKind, slug, uri).then(
+        ({ text }) => Buffer.from(text, 'utf8'),
       );
     }
     const text = this.render(kind, slug, uri);
@@ -244,47 +261,68 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     if (!result.document) {
       return renderDocumentNotFoundDoc(id);
     }
-    return renderDocumentEnvelopeDoc(result.document);
+    return renderDocumentByKind(result.document);
   }
 
   /**
-   * Render a `working-memory:/topic/<slug>.md` body, preferring the control-plane
-   * topic (WM 13.0 "topic-consumer-repoint") and falling back to the journal
-   * topic doc for legacy slugs or when the daemon is down / the topic isn't in
-   * the control-plane. Resolution goes through the canonical topic domain read
-   * (`ws-topic-read`) to decide whether the slug is a control-plane topic, then
-   * fetches THAT topic's envelope by id for the shared document-envelope
-   * renderer.
+   * Render a control-plane-backed virtual doc (`/topic`, `/workstream`,
+   * `/topic-type`) CONTROL-PLANE-FIRST (WM 13.0). With a client present, fetch
+   * the document by `{ slug, kind }` (kind ∈ `Topic | Workstream | TopicType`)
+   * and, on a hit, render it via the per-kind document renderer. Otherwise fall
+   * back to the journal doc for the mapped URI kind (legacy slugs, daemon down,
+   * or object not in the control-plane).
    *
    * Returns the rendered text plus `fromControlPlane`, which `stat` uses to make
    * a control-plane-resolved doc READ-ONLY (like `/document/<id>.md`) while a
-   * journal-fallback doc keeps its writable behavior. Only invoked when a
-   * control-plane client is present; without one the topic path stays
+   * journal-fallback doc keeps its per-kind permission behavior. Only invoked
+   * when a control-plane client is present; without one these paths stay
    * synchronous (journal-rendered) — see `readFile` / `stat`.
    */
-  private async renderTopicMaybeControlPlane(
+  private async renderKindMaybeControlPlane(
+    controlPlaneKind: 'Topic' | 'Workstream' | 'TopicType',
     slug: string,
     uri: vscode.Uri,
   ): Promise<{ text: string; fromControlPlane: boolean }> {
     const client = this.controlPlaneClient;
     if (client) {
       try {
-        const topics = await client.topicRead({ slug });
-        const topic = topics[0];
-        if (topic && typeof topic.id === 'string') {
-          const result = await client.getDocument({ id: topic.id });
-          if (result.available && result.document) {
-            return {
-              text: renderDocumentEnvelopeDoc(result.document),
-              fromControlPlane: true,
-            };
-          }
+        const result = await client.getDocument({
+          slug,
+          kind: controlPlaneKind,
+        });
+        if (result.available && result.document) {
+          return {
+            text: renderDocumentByKind(result.document),
+            fromControlPlane: true,
+          };
         }
       } catch {
         // Fall through to the journal render on any control-plane error.
       }
     }
-    return { text: this.render('topic', slug, uri), fromControlPlane: false };
+    const uriKind: DocKind =
+      controlPlaneKind === 'Workstream'
+        ? 'workstream'
+        : controlPlaneKind === 'TopicType'
+          ? 'topic-type'
+          : 'topic';
+    return { text: this.render(uriKind, slug, uri), fromControlPlane: false };
+  }
+
+  /**
+   * Journal-render permission for a doc kind: topic / topic-type / alert /
+   * nanite are editable (writable) when a store is present; everything else
+   * (workstream, session, …) is read-only. Mirrors the sync `stat` permission
+   * rule so the control-plane-fallback path stays consistent.
+   */
+  private journalPermission(kind: DocKind): vscode.FilePermission | undefined {
+    return (kind === 'topic' ||
+      kind === 'topic-type' ||
+      kind === 'alert' ||
+      kind === 'nanite') &&
+      this.store
+      ? undefined
+      : vscode.FilePermission.Readonly;
   }
 
   writeFile(

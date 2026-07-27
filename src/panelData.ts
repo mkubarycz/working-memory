@@ -17,6 +17,7 @@ import type {
   ListDocumentsResult,
   Workstream,
   Topic as ControlPlaneTopic,
+  Alert as ControlPlaneAlert,
 } from './controlPlaneClient';
 
 /**
@@ -1084,6 +1085,81 @@ export function emptyAllPanelData(): {
 /** Empty topic-type map used when no journal store is available for icon lookup. */
 const EMPTY_TYPE_MAP: Map<string, TopicType> = new Map();
 
+/** An open-alert bubble (count + max severity) sourced from control-plane alerts. */
+type ControlPlaneAlertBubble = {
+  count: number;
+  severity: 'alert' | 'informational' | null;
+};
+
+/**
+ * Open-alert bubble for a single control-plane topic (WM 13.0
+ * "panel-alert-bubbles"). Counts the OPEN alerts (`status !== 'closed'`) whose
+ * `topics` refs include `topicSlug`; severity is the max over those alerts
+ * (`alert` > `informational`, else `null` when none). Sourced from the
+ * control-plane `ws-alert-read` list rather than the journal `AlertsStore`, so
+ * alerts authored through the control-plane actually surface on the card.
+ */
+function controlPlaneTopicAlertBubble(
+  alerts: ControlPlaneAlert[],
+  topicSlug: string,
+): ControlPlaneAlertBubble {
+  let count = 0;
+  let hasAlert = false;
+  let hasInformational = false;
+  for (const a of alerts) {
+    if (a.status === 'closed' || !a.topics.includes(topicSlug)) {
+      continue;
+    }
+    count += 1;
+    if (a.status === 'alert') {
+      hasAlert = true;
+    } else if (a.status === 'informational') {
+      hasInformational = true;
+    }
+  }
+  return {
+    count,
+    severity: hasAlert ? 'alert' : hasInformational ? 'informational' : null,
+  };
+}
+
+/**
+ * Open-alert bubble rolled up across a workstream's member topic slugs (WM 13.0
+ * "panel-alert-bubbles"). Takes the UNION of open alerts referencing any member
+ * topic, DEDUPED by alert `id` (an alert referencing two member topics counts
+ * once); severity is the max over the deduped set (`alert` > `informational`).
+ */
+function controlPlaneWorkstreamAlertBubble(
+  alerts: ControlPlaneAlert[],
+  memberTopicSlugs: string[],
+): ControlPlaneAlertBubble {
+  const members = new Set(memberTopicSlugs);
+  const seen = new Set<string>();
+  let count = 0;
+  let hasAlert = false;
+  let hasInformational = false;
+  for (const a of alerts) {
+    if (a.status === 'closed' || seen.has(a.id)) {
+      continue;
+    }
+    if (!a.topics.some((t) => members.has(t))) {
+      continue;
+    }
+    seen.add(a.id);
+    count += 1;
+    if (a.status === 'alert') {
+      hasAlert = true;
+    } else if (a.status === 'informational') {
+      hasInformational = true;
+    }
+  }
+  return {
+    count,
+    severity: hasAlert ? 'alert' : hasInformational ? 'informational' : null,
+  };
+}
+
+
 /**
  * One-line description for a control-plane topic row / card entry. Entry
  * rollups are journal-only (DEFERRED — the entry domain isn't migrated), so the
@@ -1108,9 +1184,10 @@ function buildControlPlaneTopicRow(
   parentSlug: string | null,
   typeMap: Map<string, TopicType>,
   store: JournalStore | null,
+  alerts: ControlPlaneAlert[],
 ): PanelTopicRow {
   const slug = t.slug ?? '';
-  const bubble = store ? alertBubble(store, slug) : null;
+  const bubble = controlPlaneTopicAlertBubble(alerts, slug);
   return {
     kind: 'topic-row',
     id: `topics:topic:${parentSlug ?? 'root'}:${slug}`,
@@ -1123,8 +1200,8 @@ function buildControlPlaneTopicRow(
     // TODO: entry↔topic linking is journal-only (DEFERRED) — no entry rollup.
     recentEntryCount: 0,
     actions: topicActions(slug),
-    alertCount: bubble?.count ?? 0,
-    alertSeverity: bubble?.severity ?? null,
+    alertCount: bubble.count,
+    alertSeverity: bubble.severity,
   };
 }
 
@@ -1139,6 +1216,7 @@ function attachControlPlaneChildren(
   childrenBySlug: Map<string, ControlPlaneTopic[]>,
   typeMap: Map<string, TopicType>,
   store: JournalStore | null,
+  alerts: ControlPlaneAlert[],
   path: Set<string>,
   depth: number,
 ): void {
@@ -1153,7 +1231,7 @@ function attachControlPlaneChildren(
   }
   row.children = children.map((c) => {
     const childSlug = c.slug as string;
-    const childRow = buildControlPlaneTopicRow(c, parentSlug, typeMap, store);
+    const childRow = buildControlPlaneTopicRow(c, parentSlug, typeMap, store, alerts);
     const nextPath = new Set(path);
     nextPath.add(childSlug);
     attachControlPlaneChildren(
@@ -1162,6 +1240,7 @@ function attachControlPlaneChildren(
       childrenBySlug,
       typeMap,
       store,
+      alerts,
       nextPath,
       depth + 1,
     );
@@ -1179,6 +1258,7 @@ function attachControlPlaneChildren(
 export function buildTopicsPanel(input: {
   available: boolean;
   topics: ControlPlaneTopic[];
+  alerts?: ControlPlaneAlert[];
   store?: JournalStore | null;
   error?: string;
 }): PanelData {
@@ -1186,6 +1266,7 @@ export function buildTopicsPanel(input: {
     return { tab: 'topics', items: [], emptyMessage: 'Control plane not running.' };
   }
   const store = input.store ?? null;
+  const alerts = input.alerts ?? [];
   const typeMap = store ? loadTypeMap(store) : EMPTY_TYPE_MAP;
   const open = input.topics.filter(
     (t) => t.status === 'open' && (t.slug ?? '') !== '',
@@ -1206,13 +1287,14 @@ export function buildTopicsPanel(input: {
   const roots = open.filter((t) => t.parents.length === 0);
   const items: PanelItem[] = roots.map((t) => {
     const slug = t.slug as string;
-    const row = buildControlPlaneTopicRow(t, null, typeMap, store);
+    const row = buildControlPlaneTopicRow(t, null, typeMap, store, alerts);
     attachControlPlaneChildren(
       row,
       slug,
       childrenBySlug,
       typeMap,
       store,
+      alerts,
       new Set([slug]),
       1,
     );
@@ -1235,6 +1317,7 @@ function buildControlPlaneCardTopics(
   members: ControlPlaneTopic[],
   typeMap: Map<string, TopicType>,
   store: JournalStore | null,
+  alerts: ControlPlaneAlert[],
 ): PanelTopicsGroup {
   const panelBySlug = new Map<string, PanelTopic>();
   const orderedSlugs: string[] = [];
@@ -1243,7 +1326,7 @@ function buildControlPlaneCardTopics(
     if (slug === '') {
       continue;
     }
-    const bubble = store ? alertBubble(store, slug) : null;
+    const bubble = controlPlaneTopicAlertBubble(alerts, slug);
     panelBySlug.set(slug, {
       kind: 'topic',
       id: `${tab}:topic:${wsId}:${slug}`,
@@ -1258,8 +1341,8 @@ function buildControlPlaneCardTopics(
       focused: false,
       recentEntryCount: 0,
       actions: topicActions(slug, wsSlug),
-      alertCount: bubble?.count ?? 0,
-      alertSeverity: bubble?.severity ?? null,
+      alertCount: bubble.count,
+      alertSeverity: bubble.severity,
     });
     orderedSlugs.push(slug);
   }
@@ -1322,12 +1405,13 @@ function buildControlPlaneCardTopics(
  * Workstream document. The per-workstream "Topics" group is populated from the
  * control-plane topic membership (`spec.workstreams`) when `topics` is supplied;
  * absent → the group is omitted (backward-compat for callers that don't fetch
- * topics, e.g. the pure-builder unit tests). Extras that still require the
- * not-yet-migrated entry / session domain layers — recent-entry counts, the
- * sessions group, alert bubbles — are stubbed to empty/zero. The per-workstream
- * focused-topic PIN is DEFERRED: control-plane membership carries no `focused`
- * flag, so `focused_topics` is always empty and every card topic is
- * `focused:false`.
+ * topics, e.g. the pure-builder unit tests). The open-alert bubble is rolled up
+ * from the control-plane `alerts` across the card's member topic slugs (WM 13.0
+ * "panel-alert-bubbles"). Extras that still require the not-yet-migrated entry /
+ * session domain layers — recent-entry counts, the sessions group — are stubbed
+ * to empty/zero. The per-workstream focused-topic PIN is DEFERRED: control-plane
+ * membership carries no `focused` flag, so `focused_topics` is always empty and
+ * every card topic is `focused:false`.
  */
 function buildDomainWorkstreamCard(
   ws: Workstream,
@@ -1335,6 +1419,7 @@ function buildDomainWorkstreamCard(
   topics: ControlPlaneTopic[] | undefined,
   typeMap: Map<string, TopicType>,
   store: JournalStore | null,
+  alerts: ControlPlaneAlert[],
 ): PanelWorkstream {
   const slug = ws.slug ?? '';
   const status = ws.status;
@@ -1363,12 +1448,21 @@ function buildDomainWorkstreamCard(
   // topic list was fetched. Only the topics group is added — the sessions group
   // needs the (not-yet-migrated) session domain layer.
   const children: (PanelTopicsGroup | PanelSessionsGroup)[] = [];
+  const members =
+    topics !== undefined && slug.length > 0
+      ? topics.filter((t) => t.workstreams.includes(slug))
+      : [];
   if (topics !== undefined && slug.length > 0) {
-    const members = topics.filter((t) => t.workstreams.includes(slug));
     children.push(
-      buildControlPlaneCardTopics(slug, ws.id, tab, members, typeMap, store),
+      buildControlPlaneCardTopics(slug, ws.id, tab, members, typeMap, store, alerts),
     );
   }
+  // Roll the workstream's bubble up from the open control-plane alerts across
+  // its member topic slugs (deduped by alert id).
+  const memberSlugs = members
+    .map((t) => t.slug ?? '')
+    .filter((s) => s !== '');
+  const wsBubble = controlPlaneWorkstreamAlertBubble(alerts, memberSlugs);
   return {
     kind: 'workstream',
     // Document uuid keeps the id stable across refreshes (webview expand key).
@@ -1387,9 +1481,10 @@ function buildDomainWorkstreamCard(
     // TODO: needs topic/entry domain layer — no recent-activity count yet.
     recentEntryCount: 0,
     ...(tab === 'active' ? { section: sectionForStatus(status) } : {}),
-    // TODO: needs alert domain layer — no alert bubble yet.
-    alertCount: 0,
-    alertSeverity: null,
+    // Open-alert rollup aggregated from control-plane alerts across the
+    // workstream's member topic slugs (deduped by alert id).
+    alertCount: wsBubble.count,
+    alertSeverity: wsBubble.severity,
     actions,
     // TODO: per-workstream focus pin is DEFERRED (control-plane membership has
     // no focus flag) — no pinned focused topics.
@@ -1414,14 +1509,17 @@ export interface WorkstreamPanels {
  *
  * When `topics` (the control-plane topic list from `client.topicRead`) is
  * supplied, each card's "Topics" group is populated from `spec.workstreams`
- * membership (WM 13.0 "topic-consumer-repoint"); `store` is used purely for the
- * journal-sourced enrichments that aren't migrated yet (topic-type icons, alert
- * bubbles) and degrades gracefully when null.
+ * membership (WM 13.0 "topic-consumer-repoint"); `alerts` (the control-plane
+ * alert list from `client.alertRead`) drive the per-topic and per-workstream
+ * open-alert bubbles (WM 13.0 "panel-alert-bubbles"). `store` is used purely for
+ * the journal-sourced enrichment that isn't migrated yet (topic-type icons) and
+ * degrades gracefully when null.
  */
 export function buildWorkstreamPanels(input: {
   available: boolean;
   workstreams: Workstream[];
   topics?: ControlPlaneTopic[];
+  alerts?: ControlPlaneAlert[];
   store?: JournalStore | null;
   error?: string;
 }): WorkstreamPanels {
@@ -1432,6 +1530,7 @@ export function buildWorkstreamPanels(input: {
     };
   }
   const store = input.store ?? null;
+  const alerts = input.alerts ?? [];
   const typeMap = store ? loadTypeMap(store) : EMPTY_TYPE_MAP;
   const buckets: Record<WorkstreamSection, PanelWorkstream[]> = {
     queue: [],
@@ -1442,11 +1541,11 @@ export function buildWorkstreamPanels(input: {
   for (const ws of input.workstreams) {
     if (ws.status === 'closed') {
       archived.push(
-        buildDomainWorkstreamCard(ws, 'archive', input.topics, typeMap, store),
+        buildDomainWorkstreamCard(ws, 'archive', input.topics, typeMap, store, alerts),
       );
     } else {
       buckets[sectionForStatus(ws.status)].push(
-        buildDomainWorkstreamCard(ws, 'active', input.topics, typeMap, store),
+        buildDomainWorkstreamCard(ws, 'active', input.topics, typeMap, store, alerts),
       );
     }
   }

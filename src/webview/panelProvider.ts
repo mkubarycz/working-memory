@@ -201,20 +201,22 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
       };
     }
     try {
-      const [workstreams, topics] = await Promise.all([
+      const [workstreams, topics, alerts] = await Promise.all([
         this.controlPlaneClient.wsRead({}),
         this.controlPlaneClient.topicRead({}),
+        this.controlPlaneClient.alertRead({}),
       ]);
       const ws = buildWorkstreamPanels({
         available: true,
         workstreams,
         topics,
+        alerts,
         store: this.store,
       });
       return {
         active: ws.active,
         archive: ws.archive,
-        topics: buildTopicsPanel({ available: true, topics, store: this.store }),
+        topics: buildTopicsPanel({ available: true, topics, alerts, store: this.store }),
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
