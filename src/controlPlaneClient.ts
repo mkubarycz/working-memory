@@ -207,8 +207,12 @@ export interface WsDeleteInput {
  *
  * Two relational fields are flat slug arrays (spec refs), NOT the journal's rich
  * join rows:
- *   - `workstreams` — the member workstream slugs. There is no per-link `focused`
- *     flag; the journal's focus pin has no control-plane equivalent yet.
+ *   - `workstreams` — the member workstream slugs. Per-workstream focus is a
+ *     separate `focusedWorkstreams` subset (there is no per-link `focused` flag
+ *     the way the journal join row carried one).
+ *   - `focusedWorkstreams` — the subset of `workstreams` for which this topic is
+ *     focused/pinned. A workstream's focused topics = topics whose
+ *     `focusedWorkstreams` includes that workstream's slug.
  *   - `parents` — the parent topic slugs (the topic DAG).
  */
 export interface Topic {
@@ -223,6 +227,8 @@ export interface Topic {
   parents: string[];
   /** Member workstream slugs (topic↔workstream membership). */
   workstreams: string[];
+  /** Subset of `workstreams` this topic is focused/pinned in (per-workstream focus). */
+  focusedWorkstreams: string[];
   created_at: number;
   updated_at: number;
   /** CAS counter from the envelope, for a subsequent update. */
@@ -246,6 +252,7 @@ export interface TopicCreateInput {
   topicType?: string;
   parents?: string[];
   workstreams?: string[];
+  focusedWorkstreams?: string[];
 }
 
 export interface TopicUpdateInput {
@@ -256,6 +263,7 @@ export interface TopicUpdateInput {
   topicType?: string;
   parents?: string[];
   workstreams?: string[];
+  focusedWorkstreams?: string[];
 }
 
 export interface TopicDeleteInput {
@@ -269,6 +277,16 @@ export interface TopicAttachWorkstreamInput {
 }
 
 export interface TopicDetachWorkstreamInput {
+  slug: string;
+  workstream: string;
+}
+
+export interface TopicSetFocusInput {
+  slug: string;
+  workstream: string;
+}
+
+export interface TopicClearFocusInput {
   slug: string;
   workstream: string;
 }
@@ -695,6 +713,14 @@ export class ControlPlaneClient {
     if (!parsed || typeof parsed.id !== 'string') {
       throw new ControlPlaneClientError('Malformed control-plane topic response');
     }
+    // Defensive defaults for the flat slug-array spec refs (an older/partial
+    // serialization may omit them).
+    if (!Array.isArray(parsed.workstreams)) {
+      parsed.workstreams = [];
+    }
+    if (!Array.isArray(parsed.focusedWorkstreams)) {
+      parsed.focusedWorkstreams = [];
+    }
     return parsed;
   }
 
@@ -747,6 +773,9 @@ export class ControlPlaneClient {
     if (input.workstreams !== undefined) {
       args.workstreams = input.workstreams;
     }
+    if (input.focusedWorkstreams !== undefined) {
+      args.focusedWorkstreams = input.focusedWorkstreams;
+    }
     return this.parseTopic(await this.callDomainTool('ws-topic-create', args));
   }
 
@@ -774,6 +803,9 @@ export class ControlPlaneClient {
     }
     if (input.workstreams !== undefined) {
       args.workstreams = input.workstreams;
+    }
+    if (input.focusedWorkstreams !== undefined) {
+      args.focusedWorkstreams = input.focusedWorkstreams;
     }
     return this.parseTopic(await this.callDomainTool('ws-topic-update', args));
   }
@@ -826,6 +858,44 @@ export class ControlPlaneClient {
     }
     const next = topic.workstreams.filter((w) => w !== input.workstream);
     return this.topicUpdate({ slug: input.slug, workstreams: next });
+  }
+
+  /**
+   * Pin (focus) a topic in a workstream (idempotent). A focused topic must be a
+   * member, so this read-modify-write ensures `workstream` is present in BOTH
+   * the topic's `workstreams` membership (added if absent) AND its
+   * `focusedWorkstreams` subset (added if absent), then updates both arrays.
+   * Returns the updated topic.
+   */
+  async topicSetFocus(input: TopicSetFocusInput): Promise<Topic> {
+    const [topic] = await this.topicRead({ slug: input.slug });
+    if (!topic) {
+      throw new ControlPlaneClientError(`Unknown topic slug: ${input.slug}`);
+    }
+    const workstreams = topic.workstreams.includes(input.workstream)
+      ? topic.workstreams
+      : [...topic.workstreams, input.workstream];
+    const focusedWorkstreams = topic.focusedWorkstreams.includes(input.workstream)
+      ? topic.focusedWorkstreams
+      : [...topic.focusedWorkstreams, input.workstream];
+    return this.topicUpdate({ slug: input.slug, workstreams, focusedWorkstreams });
+  }
+
+  /**
+   * Unpin (clear focus for) a topic in a workstream (idempotent). Removes
+   * `workstream` from the topic's `focusedWorkstreams` subset ONLY — membership
+   * in `workstreams` is intentionally KEPT (unfocusing ≠ detaching). Clearing an
+   * absent value is a no-op. Returns the updated topic.
+   */
+  async topicClearFocus(input: TopicClearFocusInput): Promise<Topic> {
+    const [topic] = await this.topicRead({ slug: input.slug });
+    if (!topic) {
+      throw new ControlPlaneClientError(`Unknown topic slug: ${input.slug}`);
+    }
+    const focusedWorkstreams = topic.focusedWorkstreams.filter(
+      (w) => w !== input.workstream,
+    );
+    return this.topicUpdate({ slug: input.slug, focusedWorkstreams });
   }
 
   // ----- Alert domain API (`ws-alert-read`) ---------------------------------

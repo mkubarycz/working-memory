@@ -26,6 +26,7 @@ import type {
   Alert,
   ControlPlaneClient,
   DocumentEnvelope,
+  Topic,
 } from './controlPlaneClient';
 import {
   renderControlPlaneUnavailableDoc,
@@ -33,6 +34,8 @@ import {
 } from './documentRenderer';
 import { renderDocumentByKind } from './documentRenderers';
 import { renderTopicDocument } from './documentRenderers/topic';
+import { renderWorkstreamDocument } from './documentRenderers/workstream';
+import { renderTopicTypeDocument } from './documentRenderers/topictype';
 
 type DocKind =
   | 'workstream'
@@ -94,16 +97,18 @@ function decodeSegment(segment: string): string {
 /**
  * URI DocKind → control-plane document kind name. Only the kinds that have a
  * control-plane equivalent are mapped; a mapped kind renders CONTROL-PLANE-FIRST
- * (see `renderKindMaybeControlPlane`). Sessions, nanites, and alerts have no
- * by-slug control-plane doc here (alerts open via `/document/<uuid>`), so they
- * stay journal-rendered.
+ * (see `renderKindMaybeControlPlane`). Alerts resolve control-plane-first too
+ * (their id may be a control-plane uuid/slug, not a journal numeric id), with a
+ * journal fallback for legacy numeric ids. Sessions and nanites have no by-slug
+ * control-plane doc here, so they stay journal-rendered.
  */
 const CONTROL_PLANE_KIND: Partial<
-  Record<DocKind, 'Topic' | 'Workstream' | 'TopicType'>
+  Record<DocKind, 'Topic' | 'Workstream' | 'TopicType' | 'Alert'>
 > = {
   topic: 'Topic',
   workstream: 'Workstream',
   'topic-type': 'TopicType',
+  alert: 'Alert',
 };
 
 /**
@@ -284,7 +289,7 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
    * synchronous (journal-rendered) — see `readFile` / `stat`.
    */
   private async renderKindMaybeControlPlane(
-    controlPlaneKind: 'Topic' | 'Workstream' | 'TopicType',
+    controlPlaneKind: 'Topic' | 'Workstream' | 'TopicType' | 'Alert',
     slug: string,
     uri: vscode.Uri,
   ): Promise<{ text: string; fromControlPlane: boolean }> {
@@ -309,13 +314,30 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         }
         if (result.available && result.document) {
           const doc = result.document;
-          // Topic docs get an `## Alerts` section (reverse relation: an Alert's
-          // `spec.topics` lists the topic slugs it concerns), resolved here and
-          // passed into the pure renderer.
-          const text =
-            controlPlaneKind === 'Topic'
-              ? renderTopicDocument(doc, await this.topicAlerts(client, doc))
-              : renderDocumentByKind(doc);
+          // Reverse-relation sections are resolved HERE and passed into the
+          // pure per-kind renderer (the renderers never do I/O):
+          //   - Topic       → `## Alerts`  (an Alert's `spec.topics` lists the
+          //     topic slugs it concerns).
+          //   - Workstream  → `## Topics`  (a Topic's `spec.workstreams` lists
+          //     the workstream slugs it belongs to).
+          //   - TopicType   → usage count + `## Recent topics` (a Topic's
+          //     `spec.topicType` names its type id).
+          let text: string;
+          if (controlPlaneKind === 'Topic') {
+            text = renderTopicDocument(doc, await this.topicAlerts(client, doc));
+          } else if (controlPlaneKind === 'Workstream') {
+            text = renderWorkstreamDocument(
+              doc,
+              await this.workstreamTopics(client, doc),
+            );
+          } else if (controlPlaneKind === 'TopicType') {
+            text = renderTopicTypeDocument(
+              doc,
+              await this.topicTypeTopics(client, doc),
+            );
+          } else {
+            text = renderDocumentByKind(doc);
+          }
           return {
             text,
             fromControlPlane: true,
@@ -330,7 +352,9 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         ? 'workstream'
         : controlPlaneKind === 'TopicType'
           ? 'topic-type'
-          : 'topic';
+          : controlPlaneKind === 'Alert'
+            ? 'alert'
+            : 'topic';
     return { text: this.render(uriKind, slug, uri), fromControlPlane: false };
   }
 
@@ -363,11 +387,56 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
   }
 
   /**
-   * Journal-render permission for a doc kind: topic / topic-type / alert /
-   * nanite are editable (writable) when a store is present; everything else
-   * (workstream, session, …) is read-only. Mirrors the sync `stat` permission
-   * rule so the control-plane-fallback path stays consistent.
+   * Resolve the topics that BELONG to a control-plane workstream document.
+   * Membership is a reverse relation — a Topic's `spec.workstreams` array lists
+   * the workstream slugs it belongs to — so topics are read via `topicRead()`
+   * and matched against the workstream's slug here. The server-side `workstream`
+   * filter is passed as a hint, but the result is ALSO filtered client-side so
+   * the section is correct regardless of the daemon's filter behavior. Any
+   * control-plane error degrades to an empty list so the workstream doc still
+   * renders its metadata + spec.
    */
+  private async workstreamTopics(
+    client: ControlPlaneClient,
+    doc: DocumentEnvelope,
+  ): Promise<Topic[]> {
+    const wsSlug = doc.metadata.slug;
+    if (!wsSlug) {
+      return [];
+    }
+    try {
+      const topics = await client.topicRead({ workstream: wsSlug });
+      return topics.filter(
+        (t) => Array.isArray(t.workstreams) && t.workstreams.includes(wsSlug),
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Resolve the topics that USE a control-plane topic-type document. Usage is a
+   * reverse relation — a Topic's `spec.topicType` names its type id — so topics
+   * are read via `topicRead()` and matched against the topic-type's id
+   * (`doc.metadata.slug`, the human id like `feature`/`topic`) here. Used for
+   * both the usage count and the `## Recent topics` list. Any control-plane
+   * error degrades to an empty list so the topic-type doc still renders.
+   */
+  private async topicTypeTopics(
+    client: ControlPlaneClient,
+    doc: DocumentEnvelope,
+  ): Promise<Topic[]> {
+    const typeId = doc.metadata.slug;
+    if (!typeId) {
+      return [];
+    }
+    try {
+      const topics = await client.topicRead({});
+      return topics.filter((t) => t.topicType === typeId);
+    } catch {
+      return [];
+    }
+  }
   private journalPermission(kind: DocKind): vscode.FilePermission | undefined {
     return (kind === 'topic' ||
       kind === 'topic-type' ||

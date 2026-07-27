@@ -32,7 +32,7 @@ export function renderTopicDocument(
     '',
     ...metadataSection(env, [
       `- \`status\`: ${status}`,
-      `- \`topicType\`: ${topicType}`,
+      `- \`topicType\`: [${topicType}](${deepLink('topic-type', topicType)})`,
     ]),
     '',
     '## Body',

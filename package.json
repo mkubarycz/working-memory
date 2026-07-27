@@ -18,12 +18,24 @@
     "node": ">=18"
   },
   "main": "./out/src/extension.js",
+  "enabledApiProposals": [
+    "chatSessionsProvider"
+  ],
   "activationEvents": [
     "onFileSystem:working-memory",
     "onStartupFinished",
     "onUri"
   ],
   "contributes": {
+    "chatSessions": [
+      {
+        "type": "working-memory-capture",
+        "name": "working-memory-capture",
+        "displayName": "Working Memory: Capture",
+        "description": "Turn what you type into Working Memory journal entries.",
+        "icon": "$(brain)"
+      }
+    ],
     "configuration": {
       "title": "Working Memory",
       "properties": {

@@ -41,6 +41,7 @@ interface ITopic {
   topicType: string;
   parents: string[];
   workstreams: string[];
+  focusedWorkstreams: string[];
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -118,6 +119,7 @@ async function connect(store: Store): Promise<{
       expect(created.topicType).toBe('topic');
       expect(created.parents).toEqual([]);
       expect(created.workstreams).toEqual([]);
+      expect(created.focusedWorkstreams).toEqual([]);
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
       expect(created.resourceVersion).toBe(1);
     } finally {
@@ -173,6 +175,50 @@ async function connect(store: Store): Promise<{
         await client.callTool({ name: 'ws-topic-read', arguments: { workstream: 'ws-none' } }),
       );
       expect(noMembers.count).toBe(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it('ws-topic-create + ws-topic-update persist focusedWorkstreams; ws-topic-read returns it', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      // Create with an explicit focus subset.
+      const created = jsonOf<ITopic>(
+        await client.callTool({
+          name: 'ws-topic-create',
+          arguments: {
+            slug: 'focus-topic',
+            title: 'Focus topic',
+            workstreams: ['ws-one', 'ws-two'],
+            focusedWorkstreams: ['ws-one'],
+          },
+        }),
+      );
+      expect(created.workstreams).toEqual(['ws-one', 'ws-two']);
+      expect(created.focusedWorkstreams).toEqual(['ws-one']);
+
+      // Read-back returns the persisted focus subset.
+      const afterCreate = jsonOf<TopicList>(
+        await client.callTool({ name: 'ws-topic-read', arguments: { slug: 'focus-topic' } }),
+      );
+      expect(afterCreate.topics[0]?.focusedWorkstreams).toEqual(['ws-one']);
+
+      // Update REPLACES the focus subset (mirrors workstreams replacement).
+      const updated = jsonOf<ITopic>(
+        await client.callTool({
+          name: 'ws-topic-update',
+          arguments: { slug: 'focus-topic', focusedWorkstreams: ['ws-two'] },
+        }),
+      );
+      expect(updated.focusedWorkstreams).toEqual(['ws-two']);
+      // Membership is untouched by a focus-only patch.
+      expect(updated.workstreams).toEqual(['ws-one', 'ws-two']);
+
+      const afterUpdate = jsonOf<TopicList>(
+        await client.callTool({ name: 'ws-topic-read', arguments: { slug: 'focus-topic' } }),
+      );
+      expect(afterUpdate.topics[0]?.focusedWorkstreams).toEqual(['ws-two']);
     } finally {
       await close();
     }

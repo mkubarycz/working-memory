@@ -68,7 +68,9 @@ describe('renderTopicDocument', () => {
       }),
     );
     expect(md).toContain('# Topic: Blackboard Tab');
-    expect(md).toContain('`topicType`: feature');
+    expect(md).toContain(
+      '`topicType`: [feature](vscode://kubarycz.working-memory/open/topic-type/feature)',
+    );
     expect(md).toContain('the body text');
     expect(md).toContain(
       '[control-plane](vscode://kubarycz.working-memory/open/workstream/control-plane)',

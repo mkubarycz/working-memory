@@ -403,17 +403,15 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleCardFocus(slug: string, topicSlug: string): Promise<void> {
-    // Repointed onto the control-plane ws-topic-attach-workstream API (WM 13.0
-    // "topic-consumer-repoint"): the "add to focus" gesture attaches the topic to
-    // the workstream's `spec.workstreams` membership.
-    // TODO: the per-workstream focus PIN has no control-plane equivalent yet
-    // (DEFERRED) — there is no `focused` flag to set, so the pinned-focus row
-    // stays inert (focused_topics is always empty for control-plane cards).
+    // "Add to Focus" pins the topic in this workstream via the control-plane
+    // ws-topic-update API (WM 13.0 "control-plane-topic-focus"): topicSetFocus
+    // ensures the topic is a member (`spec.workstreams`) AND records the focus
+    // in `spec.focusedWorkstreams`, so the pinned-focus row renders it.
     if (!this.controlPlaneClient) {
       return;
     }
     try {
-      await this.controlPlaneClient.topicAttachWorkstream({
+      await this.controlPlaneClient.topicSetFocus({
         slug: topicSlug,
         workstream: slug,
       });
@@ -427,15 +425,15 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleCardUnfocus(slug: string, topicSlug: string): Promise<void> {
-    // Repointed onto ws-topic-detach-workstream: the counterpart of
-    // handleCardFocus removes the topic from the workstream membership.
-    // TODO: focus pin deferred (see handleCardFocus) — with no focus flag,
-    // "unfocus" degrades to a plain membership detach.
+    // "Remove from Focus" unpins the topic from this workstream via
+    // topicClearFocus: it drops the workstream from `spec.focusedWorkstreams`
+    // only and KEEPS `spec.workstreams` membership (unfocusing ≠ detaching),
+    // matching the menu label.
     if (!this.controlPlaneClient) {
       return;
     }
     try {
-      await this.controlPlaneClient.topicDetachWorkstream({
+      await this.controlPlaneClient.topicClearFocus({
         slug: topicSlug,
         workstream: slug,
       });

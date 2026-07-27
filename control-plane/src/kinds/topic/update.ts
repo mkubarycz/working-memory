@@ -6,9 +6,10 @@
  * result helpers come from `../toolResult.js` and the `Topic` projection + kind
  * name from `./topic.js`.
  *
- * NOTE: `spec.workstreams` and `spec.parents` are ordinary spec fields, so this
- * one Update tool fully edits topic↔workstream membership and parent links —
- * there are no bespoke attach/detach tools.
+ * NOTE: `spec.workstreams`, `spec.focusedWorkstreams` and `spec.parents` are
+ * ordinary spec fields, so this one Update tool fully edits topic↔workstream
+ * membership, per-workstream focus pins and parent links — there are no bespoke
+ * attach/detach tools.
  */
 
 import { z } from 'zod';
@@ -31,9 +32,10 @@ export function registerWsTopicUpdate(server: McpServer, store: Store): void {
       title: 'Topic: Update',
       description:
         'Update a Topic identified by `slug`. Pass only the fields you are changing (`title`, ' +
-        '`body`, `status`, `topicType`, `parents`, `workstreams`). Reads the current document for ' +
-        'its id + resourceVersion, then does a compare-and-swap write of the merged, re-validated ' +
-        'spec. Unknown slug and version conflicts are surfaced clearly. Returns the updated topic.',
+        '`body`, `status`, `topicType`, `parents`, `workstreams`, `focusedWorkstreams`). Reads ' +
+        'the current document for its id + resourceVersion, then does a compare-and-swap write of ' +
+        'the merged, re-validated spec. Unknown slug and version conflicts are surfaced clearly. ' +
+        'Returns the updated topic.',
       inputSchema: {
         slug: z.string().describe('Slug of the topic to update (required).'),
         title: z.string().optional().describe('New title (≤120 chars).'),
@@ -45,9 +47,13 @@ export function registerWsTopicUpdate(server: McpServer, store: Store): void {
           .array(z.string())
           .optional()
           .describe('Replacement member workstream slugs.'),
+        focusedWorkstreams: z
+          .array(z.string())
+          .optional()
+          .describe('Replacement focused-in workstream slugs (subset of `workstreams`).'),
       },
     },
-    async ({ slug, title, body, status, topicType, parents, workstreams }) => {
+    async ({ slug, title, body, status, topicType, parents, workstreams, focusedWorkstreams }) => {
       const existing = store.getDocument({ slug, kind: TOPIC_KIND });
       if (!existing) {
         return asError(`Unknown topic slug: "${slug}". No live topic with that slug.`);
@@ -70,6 +76,9 @@ export function registerWsTopicUpdate(server: McpServer, store: Store): void {
       }
       if (workstreams !== undefined) {
         patch.workstreams = workstreams;
+      }
+      if (focusedWorkstreams !== undefined) {
+        patch.focusedWorkstreams = focusedWorkstreams;
       }
       if (Object.keys(patch).length === 0) {
         // Nothing to change: return the current mapped topic rather than a no-op

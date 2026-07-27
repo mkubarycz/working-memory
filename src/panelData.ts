@@ -1078,8 +1078,9 @@ export function emptyAllPanelData(): {
 // `spec.parents` slug array (both carried on the mapped ControlPlaneTopic the
 // client returns). The journal store is still consulted only for the
 // not-yet-migrated enrichments — topic-type icons and open-alert bubbles.
-// DEFERRED: entry rollups (no entry domain) render as 0, and the per-workstream
-// focus PIN has no control-plane equivalent (every card topic is focused:false).
+// DEFERRED: entry rollups (no entry domain) render as 0. The per-workstream
+// focus PIN is control-plane native: a card topic is focused when this
+// workstream's slug is in its `spec.focusedWorkstreams` subset.
 // ---------------------------------------------------------------------------
 
 /** Empty topic-type map used when no journal store is available for icon lookup. */
@@ -1307,8 +1308,10 @@ export function buildTopicsPanel(input: {
  * Build the per-workstream-card "Topics" group from the control-plane topics
  * whose `spec.workstreams` membership includes `wsSlug`. Nests a member under
  * the first of its `spec.parents` that is ALSO a member (mirroring the journal
- * {@link buildTopics} in-set nesting). The per-workstream focus PIN is DEFERRED
- * (no control-plane `focused` flag) so every entry is `focused:false`.
+ * {@link buildTopics} in-set nesting). A topic is `focused` when its
+ * `spec.focusedWorkstreams` includes `wsSlug` (the per-workstream focus pin).
+ * Returns the group PLUS the flat membership-ordered `orderedTopics` so the
+ * caller can derive the pinned `focused_topics` row (mirrors {@link buildTopics}).
  */
 function buildControlPlaneCardTopics(
   wsSlug: string,
@@ -1318,7 +1321,7 @@ function buildControlPlaneCardTopics(
   typeMap: Map<string, TopicType>,
   store: JournalStore | null,
   alerts: ControlPlaneAlert[],
-): PanelTopicsGroup {
+): { group: PanelTopicsGroup; orderedTopics: PanelTopic[] } {
   const panelBySlug = new Map<string, PanelTopic>();
   const orderedSlugs: string[] = [];
   for (const t of members) {
@@ -1336,9 +1339,9 @@ function buildControlPlaneCardTopics(
       icon: iconForType(t.topicType, typeMap),
       openUri: `working-memory:/topic/${slug}.md`,
       status: t.status,
-      // TODO: per-workstream focus pin is DEFERRED — control-plane membership
-      // has no `focused` flag, so this renders plain (unfocused) membership.
-      focused: false,
+      // Per-workstream focus pin: focused when this workstream's slug is in the
+      // topic's `focusedWorkstreams` subset.
+      focused: (t.focusedWorkstreams ?? []).includes(wsSlug),
       recentEntryCount: 0,
       actions: topicActions(slug, wsSlug),
       alertCount: bubble.count,
@@ -1390,13 +1393,16 @@ function buildControlPlaneCardTopics(
   const children = rootSlugs.map((s) => panelBySlug.get(s) as PanelTopic);
   const count = orderedSlugs.length;
   return {
-    kind: 'topics-group',
-    id: `${tab}:topics-group:${wsId}`,
-    label: count > 0 ? `Topics (${count})` : 'Topics',
-    description: count > 0 ? undefined : 'none linked',
-    icon: FALLBACK_GROUP_ICON,
-    collapsible: count > 0,
-    children,
+    group: {
+      kind: 'topics-group',
+      id: `${tab}:topics-group:${wsId}`,
+      label: count > 0 ? `Topics (${count})` : 'Topics',
+      description: count > 0 ? undefined : 'none linked',
+      icon: FALLBACK_GROUP_ICON,
+      collapsible: count > 0,
+      children,
+    },
+    orderedTopics: orderedSlugs.map((s) => panelBySlug.get(s) as PanelTopic),
   };
 }
 
@@ -1409,9 +1415,11 @@ function buildControlPlaneCardTopics(
  * from the control-plane `alerts` across the card's member topic slugs (WM 13.0
  * "panel-alert-bubbles"). Extras that still require the not-yet-migrated entry /
  * session domain layers — recent-entry counts, the sessions group — are stubbed
- * to empty/zero. The per-workstream focused-topic PIN is DEFERRED: control-plane
- * membership carries no `focused` flag, so `focused_topics` is always empty and
- * every card topic is `focused:false`.
+ * to empty/zero. The per-workstream focused-topic PIN is populated from the
+ * control-plane `spec.focusedWorkstreams` subset: `focused_topics` holds the
+ * member topics whose `focusedWorkstreams` includes this workstream's slug
+ * (in membership order), and those same topics render `focused:true` in the
+ * Topics group below.
  */
 function buildDomainWorkstreamCard(
   ws: Workstream,
@@ -1452,10 +1460,21 @@ function buildDomainWorkstreamCard(
     topics !== undefined && slug.length > 0
       ? topics.filter((t) => t.workstreams.includes(slug))
       : [];
+  let focusedTopics: PanelTopic[] = [];
   if (topics !== undefined && slug.length > 0) {
-    children.push(
-      buildControlPlaneCardTopics(slug, ws.id, tab, members, typeMap, store, alerts),
+    const { group, orderedTopics } = buildControlPlaneCardTopics(
+      slug,
+      ws.id,
+      tab,
+      members,
+      typeMap,
+      store,
+      alerts,
     );
+    children.push(group);
+    // The pinned focus row is the subset of card topics flagged focused for this
+    // workstream (mirrors the journal card's orderedTopics.filter(t.focused)).
+    focusedTopics = orderedTopics.filter((t) => t.focused);
   }
   // Roll the workstream's bubble up from the open control-plane alerts across
   // its member topic slugs (deduped by alert id).
@@ -1486,9 +1505,9 @@ function buildDomainWorkstreamCard(
     alertCount: wsBubble.count,
     alertSeverity: wsBubble.severity,
     actions,
-    // TODO: per-workstream focus pin is DEFERRED (control-plane membership has
-    // no focus flag) — no pinned focused topics.
-    focused_topics: [],
+    // Per-workstream focus pin: member topics whose `focusedWorkstreams`
+    // includes this workstream's slug (empty when none are focused).
+    focused_topics: focusedTopics,
     children,
   };
 }

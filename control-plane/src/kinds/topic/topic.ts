@@ -22,6 +22,7 @@
  *   - `topicType`     ← `spec.topicType`
  *   - `parents`       ← `spec.parents`     (parent topic slugs)
  *   - `workstreams`   ← `spec.workstreams` (member workstream slugs)
+ *   - `focusedWorkstreams` ← `spec.focusedWorkstreams` (subset of `workstreams` this topic is focused/pinned in)
  *   - `created_at`    ← `metadata.createdAt`
  *   - `updated_at`    ← `metadata.updatedAt`
  *   - `resourceVersion` ← `metadata.resourceVersion` (carried so callers can update)
@@ -53,6 +54,8 @@ export interface ITopic {
   topicType: string;
   parents: string[];
   workstreams: string[];
+  /** Subset of `workstreams` this topic is focused/pinned in (per-workstream focus). */
+  focusedWorkstreams: string[];
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -71,6 +74,7 @@ export class Topic implements ITopic {
   topicType: string;
   parents: string[];
   workstreams: string[];
+  focusedWorkstreams: string[];
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -85,6 +89,7 @@ export class Topic implements ITopic {
     this.topicType = typeof spec.topicType === 'string' ? spec.topicType : 'topic';
     this.parents = stringArray(spec.parents);
     this.workstreams = stringArray(spec.workstreams);
+    this.focusedWorkstreams = stringArray(spec.focusedWorkstreams);
     this.created_at = env.metadata.createdAt;
     this.updated_at = env.metadata.updatedAt;
     this.resourceVersion = env.metadata.resourceVersion;

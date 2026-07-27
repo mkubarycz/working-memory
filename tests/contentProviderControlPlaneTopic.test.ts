@@ -498,3 +498,293 @@ test('topic doc: renders NO `## Alerts` section when there are no matching alert
 
   store.close();
 });
+
+// --- Field parity: workstream `## Topics` section -------------------------
+// A workstream's member topics are a reverse relation (a Topic's
+// `spec.workstreams` lists the workstream slugs it belongs to). The provider
+// resolves them via `topicRead` and passes them into the pure renderer.
+function makeTopicWith(overrides: Partial<Topic>): Topic {
+  return {
+    id: 'topic-id',
+    slug: 'a-topic',
+    title: 'A Topic',
+    body: '',
+    status: 'open',
+    topicType: 'topic',
+    parents: [],
+    workstreams: [],
+    created_at: 1_700_000_000,
+    updated_at: 1_700_000_500,
+    resourceVersion: 1,
+    ...overrides,
+  };
+}
+
+test('workstream doc: renders a `## Topics` section with member topics and excludes non-members', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
+    input.slug === 'cp-ws' && input.kind === 'Workstream'
+      ? { available: true, document: makeWorkstreamEnvelope('ws-1', 'cp-ws') }
+      : { available: true, document: null },
+  );
+  const topicRead = vi.fn(async () => [
+    makeTopicWith({
+      slug: 'member-open',
+      title: 'Member Open',
+      workstreams: ['cp-ws'],
+    }),
+    makeTopicWith({
+      slug: 'member-closed',
+      title: 'Member Closed',
+      status: 'closed',
+      workstreams: ['cp-ws'],
+    }),
+    makeTopicWith({
+      slug: 'not-a-member',
+      title: 'Not A Member',
+      workstreams: ['other-ws'],
+    }),
+  ]);
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+    topicRead,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri('/workstream/cp-ws.md') as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  expect(body).toContain('## Topics');
+  expect(body).toContain(
+    '[Member Open](vscode://kubarycz.working-memory/open/topic/member-open) `member-open`',
+  );
+  // A non-'open' member gets its status appended.
+  expect(body).toContain(
+    '[Member Closed](vscode://kubarycz.working-memory/open/topic/member-closed) `member-closed` — _closed_',
+  );
+  // A topic that isn't a member of this workstream is excluded.
+  expect(body).not.toContain('not-a-member');
+
+  store.close();
+});
+
+test('workstream doc: renders NO `## Topics` section when there are no member topics', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
+    input.slug === 'cp-ws' && input.kind === 'Workstream'
+      ? { available: true, document: makeWorkstreamEnvelope('ws-1', 'cp-ws') }
+      : { available: true, document: null },
+  );
+  // Only a foreign-workstream topic exists → no members for cp-ws.
+  const topicRead = vi.fn(async () => [
+    makeTopicWith({ slug: 'foreign', workstreams: ['other-ws'] }),
+  ]);
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+    topicRead,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri('/workstream/cp-ws.md') as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  expect(body).toContain('# Workstream: CP Workstream');
+  expect(body).not.toContain('## Topics');
+
+  store.close();
+});
+
+// --- Field parity: topic-type id in heading, count, `## Recent topics` ----
+test('topic-type doc: renders id in heading, usage count, and `## Recent topics`', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
+    input.slug === 'cp-tt' && input.kind === 'TopicType'
+      ? { available: true, document: makeTopicTypeEnvelope('tt-1', 'cp-tt') }
+      : { available: true, document: null },
+  );
+  const topicRead = vi.fn(async () => [
+    makeTopicWith({ slug: 'of-type-open', title: 'Of Type Open', topicType: 'cp-tt' }),
+    makeTopicWith({
+      slug: 'of-type-closed',
+      title: 'Of Type Closed',
+      status: 'closed',
+      topicType: 'cp-tt',
+    }),
+    makeTopicWith({ slug: 'other-type', title: 'Other Type', topicType: 'feature' }),
+  ]);
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+    topicRead,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri('/topic-type/cp-tt.md') as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  // Heading includes the topic-type id.
+  expect(body).toContain('# TopicType: CP TopicType `cp-tt`');
+  // Usage count reflects ALL topics of this type (open + closed), not other types.
+  expect(body).toContain('`topics using this type`: 2');
+  // Recent topics lists the OPEN topic of this type.
+  expect(body).toContain('## Recent topics');
+  expect(body).toContain(
+    '[Of Type Open](vscode://kubarycz.working-memory/open/topic/of-type-open) `of-type-open`',
+  );
+  // Closed topic of this type and topics of a different type are excluded.
+  expect(body).not.toContain('of-type-closed');
+  expect(body).not.toContain('other-type');
+
+  store.close();
+});
+
+// --- Field parity: topic doc linkifies the topic type ---------------------
+test('topic doc: renders the topic type as a deep-link', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const envelope = makeEnvelope('doc-1', 'cp-topic');
+  envelope.spec = { ...envelope.spec, topicType: 'feature' };
+  const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
+    input.slug === 'cp-topic' && input.kind === 'Topic'
+      ? { available: true, document: envelope }
+      : { available: true, document: null },
+  );
+  const alertRead = vi.fn(async () => [] as Alert[]);
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+    alertRead,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri('/topic/cp-topic.md') as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  expect(body).toContain(
+    '`topicType`: [feature](vscode://kubarycz.working-memory/open/topic-type/feature)',
+  );
+
+  store.close();
+});
+
+// --- Alert docs resolve control-plane-first --------------------------------
+// A topic doc's `## Alerts` section links `open/alert/<id>`, where `<id>` is a
+// control-plane alert's uuid/slug — NOT a journal numeric id. Opening
+// `/alert/<id>.md` must resolve CONTROL-PLANE-FIRST and render the alert body,
+// not the journal renderer's "alert not found" (which parses `<id>` as a
+// numeric journal id).
+function makeAlertEnvelope(id: string, slug: string | null): DocumentEnvelope {
+  return {
+    kind: 'Alert',
+    metadata: {
+      id,
+      slug,
+      labels: {},
+      createdAt: 1_700_000_000,
+      updatedAt: 1_700_000_000,
+      deletedAt: null,
+      resourceVersion: 1,
+    },
+    spec: {
+      title: 'CP Alert',
+      status: 'alert',
+      description: 'something needs attention',
+      recommended_action: 'do the thing',
+      created_by: 'system',
+      topics: ['cp-topic'],
+    },
+    status: {},
+  };
+}
+
+test('alert doc: resolves control-plane-first and renders the Alert doc (read-only)', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
+    input.slug === 'cp-alert' && input.kind === 'Alert'
+      ? { available: true, document: makeAlertEnvelope('alert-1', 'cp-alert') }
+      : { available: true, document: null },
+  );
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri('/alert/cp-alert.md') as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  // Body is the control-plane Alert renderer, NOT the journal "alert not found".
+  expect(body).toContain('# Alert: CP Alert');
+  expect(body).toContain('something needs attention');
+  expect(body).not.toContain('not found');
+  expect(getDocument).toHaveBeenCalledWith({ slug: 'cp-alert', kind: 'Alert' });
+
+  // A control-plane-resolved alert doc is READ-ONLY (save is deferred).
+  const stat = await provider.stat(uri);
+  expect(stat.permissions).toBe(1 /* vscode.FilePermission.Readonly */);
+
+  store.close();
+});
+
+test('alert doc: by-slug miss falls back to a by-id lookup and renders the doc', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const alertUuid = 'alert-uuid-7';
+  const getDocument = vi.fn(
+    async (input: { id?: string; slug?: string; kind?: string }) => {
+      // Slug lookup misses (the identifier is a uuid, not a live slug)…
+      if (input.slug === alertUuid) {
+        return { available: true, document: null };
+      }
+      // …but the by-id retry resolves the alert document.
+      if (input.id === alertUuid && input.kind === 'Alert') {
+        return {
+          available: true,
+          document: makeAlertEnvelope(alertUuid, null),
+        };
+      }
+      return { available: true, document: null };
+    },
+  );
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri(`/alert/${alertUuid}.md`) as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  // The control-plane doc renders — NOT the journal "alert not found" fallback.
+  expect(body).toContain('# Alert: CP Alert');
+  expect(body).not.toContain('not found');
+  // Both lookups were attempted: first by slug, then by id.
+  expect(getDocument).toHaveBeenCalledWith({ slug: alertUuid, kind: 'Alert' });
+  expect(getDocument).toHaveBeenCalledWith({ id: alertUuid, kind: 'Alert' });
+
+  store.close();
+});

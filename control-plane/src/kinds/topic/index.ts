@@ -62,6 +62,11 @@ const topic: KindModule = {
         // "topics of a workstream" is a `ws-topic-read { workstream }` filter and
         // membership edits are ordinary `ws-topic-update` spec patches.
         workstreams: z.array(z.string()).default([]),
+        // Per-workstream FOCUS pin as a spec ref: the subset of `workstreams`
+        // for which this topic is focused/pinned. A workstream's focused topics =
+        // topics whose `focusedWorkstreams` includes that workstream's slug.
+        // Symmetric with `workstreams`; edited via ordinary `ws-topic-update`.
+        focusedWorkstreams: z.array(z.string()).default([]),
       })
       .strict(),
     // No envelope `status` schema → inherit Base (lifecycle-only, empty {}).

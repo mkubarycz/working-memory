@@ -150,6 +150,53 @@ describe('ControlPlaneClient write methods', () => {
     }
   });
 
+  it('sets then clears per-workstream focus via topicSetFocus / topicClearFocus', async () => {
+    server = await startServer({ port: 0 });
+    const mcpUrl = `${server.url}/mcp`;
+    const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
+    try {
+      await client.createDocument({
+        kind: 'Workstream',
+        slug: 'ws-focus',
+        spec: { title: 'Focus WS' },
+      });
+      // Topic starts with no membership and no focus.
+      await client.topicCreate({ slug: 'topic-focus', title: 'Focus Topic' });
+
+      // Set focus adds BOTH membership and the focus pin (idempotent).
+      const focused = await client.topicSetFocus({
+        slug: 'topic-focus',
+        workstream: 'ws-focus',
+      });
+      expect(focused.workstreams).toContain('ws-focus');
+      expect(focused.focusedWorkstreams).toContain('ws-focus');
+
+      const again = await client.topicSetFocus({
+        slug: 'topic-focus',
+        workstream: 'ws-focus',
+      });
+      expect(again.workstreams.filter((w) => w === 'ws-focus')).toHaveLength(1);
+      expect(again.focusedWorkstreams.filter((w) => w === 'ws-focus')).toHaveLength(1);
+
+      // Clear focus drops the pin but KEEPS membership (idempotent).
+      const cleared = await client.topicClearFocus({
+        slug: 'topic-focus',
+        workstream: 'ws-focus',
+      });
+      expect(cleared.focusedWorkstreams).not.toContain('ws-focus');
+      expect(cleared.workstreams).toContain('ws-focus');
+
+      const clearedAgain = await client.topicClearFocus({
+        slug: 'topic-focus',
+        workstream: 'ws-focus',
+      });
+      expect(clearedAgain.focusedWorkstreams).not.toContain('ws-focus');
+      expect(clearedAgain.workstreams).toContain('ws-focus');
+    } finally {
+      await client.dispose();
+    }
+  });
+
   it('throws on attach/detach for an unknown topic slug', async () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;

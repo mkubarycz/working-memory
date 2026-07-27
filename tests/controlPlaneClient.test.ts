@@ -81,6 +81,7 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
         topicType: 'topic',
         parents: [],
         workstreams: [],
+        focusedWorkstreams: [],
       });
     } finally {
       await client.dispose();

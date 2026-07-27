@@ -11,6 +11,7 @@
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}",
+        "--enable-proposed-api=kubarycz.working-memory",
         "${env:HOME}/wm-sandbox"
       ],
       "env": {

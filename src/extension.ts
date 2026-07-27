@@ -18,6 +18,7 @@ import { WorkstreamDocumentProvider } from './contentProvider';
 import { AlertsStore, ALERTS_ENABLED, type AlertStatus } from './alerts';
 import { NanitesStore, NANITES_ENABLED } from './nanites';
 import { registerTools } from './tools';
+import { registerWorkingMemoryChatSession } from './chatSession';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
 import {
   isMarkdownPreviewViewType,
@@ -31,10 +32,14 @@ import { type TraversalModeId } from './graphTraversals';
 import { initControlPlaneIntegration } from './controlPlane';
 import { ControlPlaneClient } from './controlPlaneClient';
 import { ControlPlaneHost } from './controlPlaneHost';
+import { maxMtimeMs } from './storeMtime';
 
 let activeStore: JournalStore | null = null;
 let controlPlaneClient: ControlPlaneClient | null = null;
 let controlPlaneHost: ControlPlaneHost | null = null;
+// Last-seen newest mtime across the control-plane store files, used by the
+// panel auto-refresh poll backstop (feature:panel-auto-refresh).
+let lastMtimeMs = 0;
 
 type TopicAddToWorkstreamCommandInput = {
   topicSlug?: string;
@@ -287,8 +292,38 @@ export function activate(context: vscode.ExtensionContext): void {
     watcher.onDidChange(scheduleRefresh);
     watcher.onDidCreate(scheduleRefresh);
     watcher.onDidDelete(scheduleRefresh);
+
+    // Reliability backstop: a VS Code FileSystemWatcher on a path OUTSIDE the
+    // workspace (the daemon's app-data store dir) is best-effort — VS Code can
+    // silently stop delivering change events, which strands the panel until a
+    // manual refresh ("worked then stopped"). Poll the store's mtime directly
+    // on a timer as a guaranteed fallback that depends on neither the watcher
+    // nor a daemon round-trip. In WAL mode writes land in `-wal` while the main
+    // db file only changes on checkpoint, so we stat both and track the newest.
+    // Both the watcher and the poll feed the SAME debounced scheduleRefresh, so
+    // they coalesce into a single refresh rather than doubling up.
+    const watchedFiles = [
+      join(storeHome, 'journal.sqlite-wal'),
+      join(storeHome, 'journal.sqlite'),
+    ];
+    // Seed from the current state so the first tick doesn't spuriously refresh.
+    lastMtimeMs = maxMtimeMs(watchedFiles);
+    const pollTimer = setInterval(() => {
+      try {
+        const current = maxMtimeMs(watchedFiles);
+        if (current > lastMtimeMs) {
+          lastMtimeMs = current;
+          scheduleRefresh();
+        }
+      } catch (err) {
+        // A transient stat error must never escape the interval callback.
+        console.error('[working-memory] control-plane store mtime poll failed:', err);
+      }
+    }, 2000);
+
     context.subscriptions.push(watcher, {
       dispose: () => {
+        clearInterval(pollTimer);
         if (debounceTimer) {
           clearTimeout(debounceTimer);
           debounceTimer = undefined;
@@ -998,6 +1033,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // useful work for them to do.
   if (store) {
     registerTools(context, store, controlPlaneClient, { refresh });
+    // Prototype: Working Memory "capture" chat-session type (proposed API).
+    // No-op when the proposed API isn't enabled.
+    registerWorkingMemoryChatSession(context, store);
     refresh();
   }
 }

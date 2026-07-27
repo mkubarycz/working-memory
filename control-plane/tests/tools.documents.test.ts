@@ -82,6 +82,7 @@ function textOf(res: unknown): string {
         topicType: 'topic',
         parents: [],
         workstreams: [],
+        focusedWorkstreams: [],
       });
 
       const list = jsonOf<{ count: number; documents: Envelope[] }>(
@@ -302,6 +303,7 @@ function textOf(res: unknown): string {
         topicType: 'topic',
         parents: [],
         workstreams: [],
+        focusedWorkstreams: [],
       });
 
       // Stale version → conflict error that mentions the current version.
@@ -397,6 +399,7 @@ function textOf(res: unknown): string {
         topicType: 'topic',
         parents: [],
         workstreams: [],
+        focusedWorkstreams: [],
       });
       // slug/labels untouched by a spec-only patch.
       expect(closed.metadata.slug).toBe('patch-me');

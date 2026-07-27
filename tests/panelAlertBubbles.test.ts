@@ -33,6 +33,7 @@ function topic(
     topicType: extra.topicType ?? 'topic',
     parents: extra.parents ?? [],
     workstreams: extra.workstreams ?? [],
+    focusedWorkstreams: extra.focusedWorkstreams ?? [],
     created_at: extra.created_at ?? 1000,
     updated_at: extra.updated_at ?? 2000,
     resourceVersion: extra.resourceVersion ?? 1,
@@ -162,5 +163,53 @@ describe('control-plane workstream alert rollup (buildWorkstreamPanels)', () => 
     const card = cardIn(panels, 'progress');
     expect(card.alertCount).toBe(0);
     expect(card.alertSeverity).toBeNull();
+  });
+});
+
+describe('control-plane per-workstream focus pin (buildWorkstreamPanels)', () => {
+  const topicsGroupOf = (card: PanelWorkstream) =>
+    card.children.find((c) => c.kind === 'topics-group')!;
+
+  it('flags a focused member focused:true in the Topics group AND pins it in focused_topics', () => {
+    const topics = [
+      // Focused in workstream `w`.
+      topic('pinned', { workstreams: ['w'], focusedWorkstreams: ['w'] }),
+      // A member of `w` but NOT focused.
+      topic('plain', { workstreams: ['w'] }),
+      // Focused in a DIFFERENT workstream → must not leak into `w`.
+      topic('elsewhere', { workstreams: ['w'], focusedWorkstreams: ['other'] }),
+    ];
+    const panels = buildWorkstreamPanels({
+      available: true,
+      workstreams: [ws('w')],
+      topics,
+      alerts: [],
+    });
+    const card: PanelWorkstream = cardIn(panels, 'progress');
+
+    // The Topics group flags exactly the pinned topic as focused.
+    const group = topicsGroupOf(card);
+    const groupRows = group.children as { label: string; focused: boolean }[];
+    const pinnedRow = groupRows.find((r) => r.label === 'Topic pinned')!;
+    const plainRow = groupRows.find((r) => r.label === 'Topic plain')!;
+    const elsewhereRow = groupRows.find((r) => r.label === 'Topic elsewhere')!;
+    expect(pinnedRow.focused).toBe(true);
+    expect(plainRow.focused).toBe(false);
+    expect(elsewhereRow.focused).toBe(false);
+
+    // The pinned row (and only it) appears in the focused_topics pin.
+    expect(card.focused_topics.map((t) => t.label)).toEqual(['Topic pinned']);
+  });
+
+  it('leaves focused_topics empty when no member is focused in this workstream', () => {
+    const topics = [topic('plain', { workstreams: ['w'] })];
+    const panels = buildWorkstreamPanels({
+      available: true,
+      workstreams: [ws('w')],
+      topics,
+      alerts: [],
+    });
+    const card = cardIn(panels, 'progress');
+    expect(card.focused_topics).toEqual([]);
   });
 });

@@ -28,7 +28,8 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
       description:
         'Create a Topic. Provide a `title` (required, ≤120 chars); optional `slug`, `body`, ' +
         "`status` ('open' | 'closed', default 'open'), `topicType` (default 'topic'), `parents` " +
-        '(parent topic slugs), and `workstreams` (member workstream slugs). The spec is validated ' +
+        '(parent topic slugs), `workstreams` (member workstream slugs), and `focusedWorkstreams` ' +
+        '(subset of `workstreams` this topic is pinned/focused in). The spec is validated ' +
         'against the Topic kind (invalid status rejected). Returns the created topic.',
       inputSchema: {
         slug: z.string().optional().describe('Optional human-friendly slug for the topic.'),
@@ -44,9 +45,13 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
           .array(z.string())
           .optional()
           .describe('Member workstream slugs (topic membership).'),
+        focusedWorkstreams: z
+          .array(z.string())
+          .optional()
+          .describe('Subset of `workstreams` this topic is focused/pinned in.'),
       },
     },
-    async ({ slug, title, body, status, topicType, parents, workstreams }) => {
+    async ({ slug, title, body, status, topicType, parents, workstreams, focusedWorkstreams }) => {
       const specInput: Record<string, unknown> = { title };
       if (body !== undefined) {
         specInput.body = body;
@@ -62,6 +67,9 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
       }
       if (workstreams !== undefined) {
         specInput.workstreams = workstreams;
+      }
+      if (focusedWorkstreams !== undefined) {
+        specInput.focusedWorkstreams = focusedWorkstreams;
       }
       let validatedSpec: Record<string, unknown>;
       let docStatus: Record<string, unknown>;

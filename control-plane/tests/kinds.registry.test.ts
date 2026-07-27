@@ -41,6 +41,7 @@ describe('kind registry', () => {
       status: 'closed',
       parents: [],
       workstreams: [],
+      focusedWorkstreams: [],
     });
   });
 
@@ -53,6 +54,7 @@ describe('kind registry', () => {
       status: 'open',
       parents: [],
       workstreams: [],
+      focusedWorkstreams: [],
     });
   });
 
