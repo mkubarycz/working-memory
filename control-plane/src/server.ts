@@ -30,7 +30,7 @@ import {
   SERVICE_VERSION,
 } from './config.js';
 import { openStore, type Store, ConflictError, NotFoundError } from './store.js';
-import { getKind, validateSpec, defaultStatus, listKinds, specFields } from './kinds/registry.js';
+import { getKind, validateSpec, defaultStatus, listKinds, specFields, listKindApis } from './kinds/registry.js';
 
 export interface StartServerOptions {
   host?: string;
@@ -369,6 +369,16 @@ export function createMcpServer(
       return asText({ count: documents.length, documents });
     },
   );
+
+  // Kind plugins: every registered kind may contribute its own namespaced
+  // domain API (Workstream → `ws-*`, …). Iterate the kinds that define a
+  // `registerApi` hook and wire their tools onto THIS session's server, so each
+  // MCP session exposes the generic CRUD PLUS every kind's domain API. The kind
+  // registry is populated by `loadKinds()` at daemon startup (or in tests'
+  // `beforeAll`) before any session is created.
+  for (const { registerApi } of listKindApis()) {
+    registerApi(server, store);
+  }
 
   return server;
 }

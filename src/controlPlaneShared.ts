@@ -188,7 +188,7 @@ export function parsePortInfo(raw: string | null | undefined): PortInfo | null {
 export function renderWm2Chatmode(): string {
   return `---
 description: 'wm2 — operator of the Working Memory document store (control-plane MCP).'
-tools: ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'wm-list-kinds']
+tools: ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'wm-list-kinds', 'ws-workstream-create', 'ws-workstream-read', 'ws-workstream-update', 'ws-workstream-delete', 'ws-topic-create', 'ws-topic-read', 'ws-topic-update', 'ws-topic-delete', 'ws-topic-attach-workstream', 'ws-topic-detach-workstream', 'ws-topictype-create', 'ws-topictype-read', 'ws-topictype-update', 'ws-topictype-delete', 'ws-alert-create', 'ws-alert-read', 'ws-alert-update', 'ws-alert-delete', 'ws-journalentry-create', 'ws-journalentry-read', 'ws-journalentry-update', 'ws-journalentry-delete']
 ---
 You are wm2, operator of the Working Memory document store.
 
@@ -202,8 +202,14 @@ Use the wm_* MCP tools (served by the Working Memory control-plane) to read, cre
   - \`status\` (\`"open"\` or \`"closed"\`, optional)
   - \`topicType\` (string, optional)
   - \`parents\` (array of parent topic slugs, optional)
+  - \`workstreams\` (array of member workstream slugs, optional)
 - To edit a document: \`wm-document-read\` (by \`id\`) to read its \`resourceVersion\`, then \`wm-document-update\` with \`{ id, expectedResourceVersion }\` plus ONLY the fields you're changing — \`spec\` is a partial (merged onto the current doc), and \`slug\`/\`labels\` replace if provided. To clear a field send it explicitly (e.g. \`parents: []\`). If you get a conflict, re-fetch and retry.
 - To delete a document: \`wm-document-delete\` with its \`id\` (works on any document). To undelete: \`wm-document-delete\` with \`restore: true\`.
+- Workstreams have a dedicated API that speaks the workstream shape directly (no \`kind\` needed): \`ws-workstream-create\` ({ title, slug?, status?, closure? }), \`ws-workstream-read\` (by \`slug\`/\`id\`, or list all with optional \`query\`/\`limit\`), \`ws-workstream-update\` ({ slug, …changed fields }), and \`ws-workstream-delete\` ({ slug, restore? }). Prefer these for workstreams.
+- Topics likewise have a dedicated API that speaks the topic shape directly: \`ws-topic-create\` ({ title, slug?, body?, status?, topicType?, parents?, workstreams? }), \`ws-topic-read\` (by \`slug\`/\`id\`, or list all with optional \`query\`/\`workstream\`/\`limit\` — \`workstream\` filters to topics whose membership includes that slug), \`ws-topic-update\` ({ slug, …changed fields }), and \`ws-topic-delete\` ({ slug, restore? }). To manage workstream membership atomically use \`ws-topic-attach-workstream\` ({ slug, workstream }) and \`ws-topic-detach-workstream\` ({ slug, workstream }) — both idempotent. Prefer these for topics.
+- TopicTypes (topic subtypes like 'feature' / 'task') have a dedicated API that speaks the topic-type shape directly (they carry a registry-key \`slug\`): \`ws-topictype-create\` ({ label, icon, description, slug?, body_template? }), \`ws-topictype-read\` (by \`slug\`/\`id\`, or list all with optional \`query\`/\`limit\`), \`ws-topictype-update\` ({ slug, …changed fields }), and \`ws-topictype-delete\` ({ slug, restore? }).
+- Alerts (structured "needs attention" items) have a dedicated API — Alerts have NO slug, so they key on the document \`id\`: \`ws-alert-create\` ({ description, title?, recommended_action?, status?, dedupe_key?, created_by? }), \`ws-alert-read\` (by \`id\`, or list all with optional \`query\`/\`limit\`), \`ws-alert-update\` ({ id, …changed fields }), and \`ws-alert-delete\` ({ id, restore? }).
+- JournalEntries have a dedicated API — entries have NO slug, so they key on the document \`id\`: \`ws-journalentry-create\` ({ body, workstream, session?, topics?, createdBy? }), \`ws-journalentry-read\` (by \`id\`, or list all with optional \`query\`/\`limit\`), \`ws-journalentry-update\` ({ id, …changed fields }), and \`ws-journalentry-delete\` ({ id, restore? }).
 
 Keep replies short. After each action, show the key fields of the result (id, kind, slug, resourceVersion).
 `;

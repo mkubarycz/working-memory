@@ -1,27 +1,23 @@
 import * as vscode from 'vscode';
 import {
+  buildTopicsPanel,
   getAllPanelData,
   getPanelData,
+  type PanelData,
   type PanelTab,
 } from './panelData';
-import { JournalStore, type Topic, type TopicStatus, type WorkstreamStatus } from './db';
+import { JournalStore, humanizeSlug, type TopicStatus, type WorkstreamStatus } from './db';
 import {
   type TraversalModeId,
 } from './graphTraversals';
-import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
 import { reshapeTopicBody, extractH2Headers } from './topicReshape';
 import { registerAlertsFeature } from './alerts';
 import { registerNanitesFeature } from './nanites';
-import type { ControlPlaneClient } from './controlPlaneClient';
-import {
-  listWorkstreams,
-  getWorkstream,
-  createWorkstream,
-  updateWorkstream,
-  deleteWorkstream,
-  restoreWorkstream,
-  type WorkstreamLifecycleStatus,
-} from './domain/workstreams';
+import type {
+  ControlPlaneClient,
+  WorkstreamLifecycleStatus,
+  Topic as ControlPlaneTopic,
+} from './controlPlaneClient';
 
 interface ToolDeps {
   refresh: () => void;
@@ -219,9 +215,9 @@ interface GetPanelDataInput {
 }
 
 function topicSummary(
-  t: Topic,
+  t: ControlPlaneTopic,
 ): { slug: string; title: string; status: TopicStatus } {
-  return { slug: t.slug, title: t.title, status: t.status };
+  return { slug: t.slug ?? '', title: t.title, status: t.status };
 }
 
 /**
@@ -258,13 +254,14 @@ export function registerTools(
     return client;
   };
 
-  // ----- workstreams (WM 13.0 "rehome-wm-tools": backed by the control-plane
-  // document store via the workstream domain layer, NOT the journal DB) -----
+  // ----- workstreams (WM 13.0 "ws-consumer-repoint": backed by the
+  // control-plane document store via the client's ws-* domain API, NOT the
+  // journal DB and NOT the retired src/domain/workstreams.ts shim) -----
 
   subs.push(
     vscode.lm.registerTool<ListWorkstreamsInput>('wm_list_workstreams', {
       invoke: safe<ListWorkstreamsInput>(async (input) => {
-        const all = await listWorkstreams(requireClient());
+        const all = await requireClient().wsRead({});
         // Preserve the legacy status filter: 'open' means any non-closed
         // lifecycle status; 'closed' means closed; 'all'/undefined means all.
         const rows = all.filter((w) => {
@@ -293,7 +290,8 @@ export function registerTools(
               : 'one of `slug` or `id` is required',
           );
         }
-        const ws = await getWorkstream(requireClient(), input.slug);
+        const found = await requireClient().wsRead({ slug: input.slug });
+        const ws = found[0] ?? null;
         if (!ws) {
           throw new Error(`workstream not found (slug=${input.slug})`);
         }
@@ -311,7 +309,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<CreateWorkstreamToolInput>('wm_create_workstream', {
       invoke: safe<CreateWorkstreamToolInput>(async (input) => {
-        const ws = await createWorkstream(requireClient(), {
+        const ws = await requireClient().wsCreate({
           slug: input.slug,
           title: input.title,
           status: normalizeLifecycleStatus(input.status),
@@ -325,7 +323,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<UpdateWorkstreamToolInput>('wm_update_workstream', {
       invoke: safe<UpdateWorkstreamToolInput>(async (input) => {
-        const ws = await updateWorkstream(requireClient(), {
+        const ws = await requireClient().wsUpdate({
           slug: input.slug,
           title: input.title,
           status: normalizeLifecycleStatus(input.status),
@@ -337,7 +335,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<DeleteWorkstreamInput>('wm_delete_workstream', {
       invoke: safe<DeleteWorkstreamInput>(async (input) => {
-        await deleteWorkstream(requireClient(), input.slug);
+        await requireClient().wsDelete({ slug: input.slug });
         deps.refresh();
         // TODO: needs the session/entry domain layers to report a real cascade
         // count. The control-plane delete soft-deletes the workstream document
@@ -350,7 +348,7 @@ export function registerTools(
     }),
     vscode.lm.registerTool<RestoreWorkstreamInput>('wm_restore_workstream', {
       invoke: safe<RestoreWorkstreamInput>(async (input) => {
-        await restoreWorkstream(requireClient(), input.slug);
+        await requireClient().wsDelete({ slug: input.slug, restore: true });
         deps.refresh();
         // TODO: mirrors wm_delete_workstream — a real cascade count needs the
         // session/entry domain layers; stubbed to the workstream row only.
@@ -459,43 +457,63 @@ export function registerTools(
 
   subs.push(
     vscode.lm.registerTool<ListTopicsInput>('wm_list_topics', {
-      invoke: safe<ListTopicsInput>((input) => {
-        const rows = store.listTopics({
-          status: input.status,
-          includeDeleted: input.include_deleted ?? false,
-          workstreamSlug: input.workstream_slug,
-          topicType: input.topic_type,
-        });
+      invoke: safe<ListTopicsInput>(async (input) => {
+        // Backed by the control-plane document store (WM 13.0
+        // "topic-consumer-repoint"): topics-of-a-workstream is the
+        // `spec.workstreams` membership filter.
+        let rows = await requireClient().topicRead(
+          input.workstream_slug ? { workstream: input.workstream_slug } : {},
+        );
+        if (input.status && input.status !== 'all') {
+          rows = rows.filter((t) => t.status === input.status);
+        }
+        if (input.topic_type !== undefined) {
+          rows = rows.filter((t) => t.topicType === input.topic_type);
+        }
+        // NOTE: include_deleted is accepted for shape-compat but a no-op — the
+        // control-plane list returns live topics only.
+        // TODO: needs a list-with-deleted path in the document store.
         return { ok: true, count: rows.length, topics: rows };
       }),
     }),
     vscode.lm.registerTool<GetTopicInput>('wm_get_topic', {
-      invoke: safe<GetTopicInput>((input) => {
-        const includeDeleted = input.include_deleted ?? false;
-        const topic = store.getTopic(input.slug, includeDeleted);
+      invoke: safe<GetTopicInput>(async (input) => {
+        const client = requireClient();
+        const found = await client.topicRead({ slug: input.slug });
+        const topic = found[0] ?? null;
         if (!topic) {
+          // NOTE: include_deleted has no control-plane equivalent on read, so a
+          // soft-deleted topic won't resolve here (no-op flag).
           throw new Error(`topic not found: ${input.slug}`);
         }
-        const workstreams = store.listWorkstreamsForTopic(input.slug);
-        const entries = store.listEntriesForTopic(input.slug, 25);
-        const parents = store.listTopicParents(input.slug).map(topicSummary);
-        const children = store.listTopicChildren(input.slug).map(topicSummary);
-        const focused_in_workstreams = workstreams
-          .filter((w) => w.focused === 1)
-          .map((w) => ({
-            slug: w.workstream_slug,
-            title: w.workstream_title,
-          }));
+        // Resolve parents/children from the full topic list: parents are this
+        // topic's `parents` slugs; children are topics whose `parents` include
+        // this slug. One list read backs both.
+        const all = await client.topicRead({});
+        const bySlug = new Map(all.map((t) => [t.slug ?? '', t]));
+        const parents = topic.parents
+          .map((s) => bySlug.get(s))
+          .filter((t): t is ControlPlaneTopic => Boolean(t))
+          .map(topicSummary);
+        const children = all
+          .filter((t) => t.parents.includes(input.slug))
+          .map(topicSummary);
         return {
           ok: true,
           topic,
-          workstream_count: workstreams.length,
-          entry_count: entries.length,
-          workstreams,
-          entries,
+          // Membership is a flat slug list on the control-plane topic.
+          workstream_count: topic.workstreams.length,
+          workstreams: topic.workstreams,
+          // TODO: entry↔topic linking is still journal-backed (DEFERRED) — a
+          // control-plane topic carries no entry rollup, so entries/entry_count
+          // are stubbed to preserve the tool's output shape.
+          entry_count: 0,
+          entries: [],
           parents,
           children,
-          focused_in_workstreams,
+          // TODO: per-workstream topic focus has no control-plane equivalent yet
+          // (DEFERRED) — always empty.
+          focused_in_workstreams: [],
         };
       }),
     }),
@@ -545,76 +563,105 @@ export function registerTools(
           }
         }
 
-        const result = store.createTopic({
+        const parents =
+          input.parent_slug === undefined
+            ? undefined
+            : Array.isArray(input.parent_slug)
+              ? input.parent_slug
+              : [input.parent_slug];
+        // Membership + parents are created natively on the control-plane topic
+        // (WM 13.0 "topic-consumer-repoint").
+        // TODO: `focused` (workstream focus pin) and `entry_id` (entry↔topic
+        // link) at creation are journal-only concepts (DEFERRED) — ignored here.
+        const topic = await requireClient().topicCreate({
           slug: input.slug,
-          title: input.title,
+          title: input.title ?? humanizeSlug(input.slug),
           body: resolvedBody,
           status: input.status,
-          topic_type: input.topic_type,
-          workstream_slug: input.workstream_slug,
-          focused: input.focused,
-          entry_id: input.entry_id,
-          parent_slug: input.parent_slug,
+          topicType: input.topic_type,
+          workstreams: input.workstream_slug ? [input.workstream_slug] : undefined,
+          parents,
         });
         deps.refresh();
-        const { topic, ...links } = result;
         return reshapeWarning
-          ? { ok: true, topic, ...links, reshape_warning: reshapeWarning }
-          : { ok: true, topic, ...links };
+          ? { ok: true, topic, reshape_warning: reshapeWarning }
+          : { ok: true, topic };
       }),
     }),
     vscode.lm.registerTool<UpdateTopicToolInput>('wm_update_topic', {
-      invoke: safe<UpdateTopicToolInput>((input) => {
-        const row = store.updateTopic(input.slug, {
+      invoke: safe<UpdateTopicToolInput>(async (input) => {
+        const topic = await requireClient().topicUpdate({
+          slug: input.slug,
           title: input.title,
           body: input.body,
           status: input.status,
-          topic_type: input.topic_type,
+          topicType: input.topic_type,
         });
         deps.refresh();
-        return { ok: true, topic: row };
+        return { ok: true, topic };
       }),
     }),
     vscode.lm.registerTool<DeleteTopicInput>('wm_delete_topic', {
-      invoke: safe<DeleteTopicInput>((input) => {
-        const counts = store.softDeleteTopic(input.slug);
+      invoke: safe<DeleteTopicInput>(async (input) => {
+        await requireClient().topicDelete({ slug: input.slug });
         deps.refresh();
-        return { ok: true, soft_deleted: counts };
+        // TODO: cascade counts (workstream_links / entry_links) need the entry
+        // domain layer; the control-plane delete soft-deletes the topic document
+        // only, so counts are stubbed to preserve the tool's output shape.
+        return {
+          ok: true,
+          soft_deleted: { topics: 1, workstream_links: 0, entry_links: 0 },
+        };
       }),
     }),
     vscode.lm.registerTool<RestoreTopicInput>('wm_restore_topic', {
-      invoke: safe<RestoreTopicInput>((input) => {
-        const counts = store.restoreTopic(input.slug);
+      invoke: safe<RestoreTopicInput>(async (input) => {
+        await requireClient().topicDelete({ slug: input.slug, restore: true });
         deps.refresh();
-        return { ok: true, restored: counts };
+        // TODO: mirrors wm_delete_topic — real cascade counts need the entry
+        // domain layer; stubbed to the topic row only.
+        return {
+          ok: true,
+          restored: { topics: 1, workstream_links: 0, entry_links: 0 },
+        };
       }),
     }),
     vscode.lm.registerTool<LinkWorkstreamTopicToolInput>(
       'wm_link_workstream_topic',
       {
-        invoke: safe<LinkWorkstreamTopicToolInput>((input) => {
-          const result = linkWorkstreamTopicWithTraversal(store, input);
+        invoke: safe<LinkWorkstreamTopicToolInput>(async (input) => {
+          // Membership add via the control-plane topic's `spec.workstreams`
+          // (WM 13.0 "topic-consumer-repoint").
+          // TODO: graph TRAVERSAL (attach a topic + its family) and the per-link
+          // `focused` pin have no control-plane equivalent yet (DEFERRED) — the
+          // `traversal` / `focused` inputs are ignored; this is a plain attach.
+          const topic = await requireClient().topicAttachWorkstream({
+            slug: input.topic_slug,
+            workstream: input.workstream_slug,
+          });
           deps.refresh();
-          return {
-            ok: true,
-            ...result,
-          };
+          return { ok: true, topic };
         }),
       },
     ),
     vscode.lm.registerTool<LinkWorkstreamTopicToolInput>(
       'wm_unlink_workstream_topic',
       {
-        invoke: safe<LinkWorkstreamTopicToolInput>((input) => {
-          const result = store.unlinkWorkstreamTopic({
-            workstream_slug: input.workstream_slug,
-            topic_slug: input.topic_slug,
+        invoke: safe<LinkWorkstreamTopicToolInput>(async (input) => {
+          const topic = await requireClient().topicDetachWorkstream({
+            slug: input.topic_slug,
+            workstream: input.workstream_slug,
           });
           deps.refresh();
-          return { ok: true, unlink: result };
+          return { ok: true, topic };
         }),
       },
     ),
+    // DEFERRED (WM 13.0 "topic-consumer-repoint"): entry↔topic linking stays
+    // journal-backed — entries are still journal rows, so these only resolve
+    // legacy journal topics (an accepted cross-store seam until the entry/session
+    // repoint). store.linkEntryTopic auto-creates a journal topic stub for an
+    // unknown slug, so the normal path never throws.
     vscode.lm.registerTool<LinkEntryTopicToolInput>('wm_link_entry_topic', {
       invoke: safe<LinkEntryTopicToolInput>((input) => {
         const result = store.linkEntryTopic({
@@ -636,29 +683,68 @@ export function registerTools(
       }),
     }),
     vscode.lm.registerTool<TopicParentLinkInput>('wm_link_topic_parent', {
-      invoke: safe<TopicParentLinkInput>((input) => {
+      invoke: safe<TopicParentLinkInput>(async (input) => {
         if (!input.child_slug || !input.parent_slug) {
           throw new Error('child_slug and parent_slug are required');
         }
-        const result = store.addTopicParent(
-          input.child_slug,
-          input.parent_slug,
-        );
+        // Parents are the control-plane topic's `spec.parents` slug array (WM
+        // 13.0 "topic-consumer-repoint"): read, merge, CAS-update.
+        // TODO: no cycle detection on the control-plane path yet; the panel tree
+        // walk is depth-guarded so a stray cycle can't hang rendering.
+        const client = requireClient();
+        const found = await client.topicRead({ slug: input.child_slug });
+        const child = found[0];
+        if (!child) {
+          throw new Error(`topic not found: ${input.child_slug}`);
+        }
+        const already = child.parents.includes(input.parent_slug);
+        const topic = already
+          ? child
+          : await client.topicUpdate({
+              slug: input.child_slug,
+              parents: [...child.parents, input.parent_slug],
+            });
         deps.refresh();
-        return { ok: true, link: result };
+        return {
+          ok: true,
+          topic,
+          link: {
+            child_slug: input.child_slug,
+            parent_slug: input.parent_slug,
+            link_created: !already,
+          },
+        };
       }),
     }),
     vscode.lm.registerTool<TopicParentLinkInput>('wm_unlink_topic_parent', {
-      invoke: safe<TopicParentLinkInput>((input) => {
+      invoke: safe<TopicParentLinkInput>(async (input) => {
         if (!input.child_slug || !input.parent_slug) {
           throw new Error('child_slug and parent_slug are required');
         }
-        const result = store.removeTopicParent(
-          input.child_slug,
-          input.parent_slug,
-        );
+        const client = requireClient();
+        const found = await client.topicRead({ slug: input.child_slug });
+        const child = found[0];
+        if (!child) {
+          throw new Error(`topic not found: ${input.child_slug}`);
+        }
+        const had = child.parents.includes(input.parent_slug);
+        const topic = had
+          ? await client.topicUpdate({
+              slug: input.child_slug,
+              parents: child.parents.filter((p) => p !== input.parent_slug),
+            })
+          : child;
         deps.refresh();
-        return { ok: true, removed: result.removed, unlink: result };
+        return {
+          ok: true,
+          topic,
+          removed: had ? 1 : 0,
+          unlink: {
+            child_slug: input.child_slug,
+            parent_slug: input.parent_slug,
+            removed: had ? 1 : 0,
+          },
+        };
       }),
     }),
     vscode.lm.registerTool<Record<string, never>>('wm_list_topic_types', {
@@ -725,10 +811,23 @@ export function registerTools(
       }),
     }),
     vscode.lm.registerTool<GetPanelDataInput>('wm_get_panel_data', {
-      invoke: safe<GetPanelDataInput>((input) => {
+      invoke: safe<GetPanelDataInput>(async (input) => {
         const tab = input?.tab ?? 'all';
+        // Topics are control-plane-sourced (WM 13.0 "topic-consumer-repoint").
+        // The rest of this agent-facing tool's panel data stays journal-sourced
+        // here (active/archive remain a known mixed-source seam on this tool);
+        // when the control-plane client is absent we fall back to the journal
+        // topics assembled by getAllPanelData / getPanelData.
+        const controlPlaneTopics = async (): Promise<PanelData> => {
+          const topics = await requireClient().topicRead({});
+          return buildTopicsPanel({ available: true, topics, store });
+        };
         if (tab === 'all') {
-          return { ok: true, tab, data: getAllPanelData(store) };
+          const data = getAllPanelData(store);
+          if (client) {
+            data.topics = await controlPlaneTopics();
+          }
+          return { ok: true, tab, data };
         }
         if (
           tab !== 'active' &&
@@ -739,6 +838,9 @@ export function registerTools(
           throw new Error(
             `invalid tab '${String(tab)}' — must be one of 'active' | 'archive' | 'topics' | 'topic-types' | 'all'`,
           );
+        }
+        if (tab === 'topics' && client) {
+          return { ok: true, tab, data: await controlPlaneTopics() };
         }
         return { ok: true, tab, data: getPanelData(store, tab as PanelTab) };
       }),

@@ -81,6 +81,7 @@ function textOf(res: unknown): string {
         status: 'open',
         topicType: 'topic',
         parents: [],
+        workstreams: [],
       });
 
       const list = jsonOf<{ count: number; documents: Envelope[] }>(
@@ -300,6 +301,7 @@ function textOf(res: unknown): string {
         status: 'closed',
         topicType: 'topic',
         parents: [],
+        workstreams: [],
       });
 
       // Stale version → conflict error that mentions the current version.
@@ -394,6 +396,7 @@ function textOf(res: unknown): string {
         status: 'closed',
         topicType: 'topic',
         parents: [],
+        workstreams: [],
       });
       // slug/labels untouched by a spec-only patch.
       expect(closed.metadata.slug).toBe('patch-me');

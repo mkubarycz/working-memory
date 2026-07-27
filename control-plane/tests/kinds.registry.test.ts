@@ -10,7 +10,7 @@ import {
   KindValidationError,
 } from '../src/kinds/registry';
 import { Base } from '../src/kinds/base';
-import topicModule from '../src/kinds/topic.kind';
+import topicModule from '../src/kinds/topic';
 
 describe('kind registry', () => {
   beforeEach(() => {
@@ -40,6 +40,7 @@ describe('kind registry', () => {
       topicType: 'note',
       status: 'closed',
       parents: [],
+      workstreams: [],
     });
   });
 
@@ -51,6 +52,7 @@ describe('kind registry', () => {
       topicType: 'topic',
       status: 'open',
       parents: [],
+      workstreams: [],
     });
   });
 

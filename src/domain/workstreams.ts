@@ -14,7 +14,7 @@
  * repoints them.
  *
  * Field mapping (Workstream document envelope → DomainWorkstream), mirroring
- * `control-plane/src/kinds/workstream.kind.ts`:
+ * `control-plane/src/kinds/workstream/workstream.ts`:
  *   - `slug`       ← `metadata.slug`
  *   - `title`      ← `spec.title`
  *   - `status`     ← `spec.status`   (queue | progress | backlog | closed)

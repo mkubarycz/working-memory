@@ -27,11 +27,9 @@ import {
 } from './panelReveal';
 import { findLatestVsix } from './vsix';
 import { deployTemplates } from './deployTemplates';
-import { TRAVERSAL_MODES, type TraversalModeId } from './graphTraversals';
-import { linkWorkstreamTopicWithTraversal } from './topicWorkstreamAttach';
+import { type TraversalModeId } from './graphTraversals';
 import { initControlPlaneIntegration } from './controlPlane';
 import { ControlPlaneClient } from './controlPlaneClient';
-import { updateWorkstream as cpUpdateWorkstream } from './domain/workstreams';
 import { ControlPlaneHost } from './controlPlaneHost';
 
 let activeStore: JournalStore | null = null;
@@ -356,10 +354,22 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const pickOpenWorkstreamSlug = async (): Promise<string | null> => {
-    if (!store) {
+    // Repointed onto the control-plane ws-workstream-* domain API (WM 13.0):
+    // pick from the live (non-closed) control-plane workstreams.
+    if (!controlPlaneClient) {
       return null;
     }
-    const rows = store.listWorkstreams({ status: 'open' });
+    let rows;
+    try {
+      rows = (await controlPlaneClient.wsRead({})).filter(
+        (w) => w.status !== 'closed',
+      );
+    } catch (err) {
+      vscode.window.showErrorMessage(
+        `Working Memory: failed to list workstreams — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
     if (rows.length === 0) {
       vscode.window.showWarningMessage(
         'Working Memory: no open workstreams available.',
@@ -369,8 +379,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const pick = await vscode.window.showQuickPick(
       rows.map((ws) => ({
         label: ws.title,
-        description: ws.slug,
-        slug: ws.slug,
+        description: ws.slug ?? undefined,
+        slug: ws.slug ?? '',
       })),
       { placeHolder: 'Choose a workstream' },
     );
@@ -380,21 +390,36 @@ export function activate(context: vscode.ExtensionContext): void {
   const pickLinkedWorkstreamSlug = async (
     topicSlug: string,
   ): Promise<string | null> => {
-    if (!store) {
+    // Repointed onto the control-plane ws-topic-* domain API (WM 13.0
+    // "topic-consumer-repoint"): the topic's `spec.workstreams` membership is
+    // the set to remove from; titles are resolved from the workstream list.
+    if (!controlPlaneClient) {
       return null;
     }
-    const rows = store.listWorkstreamsForTopic(topicSlug);
-    if (rows.length === 0) {
+    let memberSlugs: string[];
+    let titleBySlug: Map<string, string>;
+    try {
+      const found = await controlPlaneClient.topicRead({ slug: topicSlug });
+      memberSlugs = found[0]?.workstreams ?? [];
+      const workstreams = await controlPlaneClient.wsRead({});
+      titleBySlug = new Map(workstreams.map((w) => [w.slug ?? '', w.title]));
+    } catch (err) {
+      vscode.window.showErrorMessage(
+        `Working Memory: failed to read topic workstreams — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+    if (memberSlugs.length === 0) {
       vscode.window.showWarningMessage(
         `Working Memory: topic "${topicSlug}" is not linked to any workstream.`,
       );
       return null;
     }
     const pick = await vscode.window.showQuickPick(
-      rows.map((ws) => ({
-        label: ws.workstream_title,
-        description: ws.workstream_slug,
-        slug: ws.workstream_slug,
+      memberSlugs.map((slug) => ({
+        label: titleBySlug.get(slug) ?? slug,
+        description: slug,
+        slug,
       })),
       { placeHolder: 'Choose a workstream to remove this topic from' },
     );
@@ -613,17 +638,15 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        if (!store) {
+        // Repointed onto the control-plane ws-topic-* domain API via the client
+        // (WM 13.0 "topic-consumer-repoint"): attach = add the workstream slug to
+        // the topic's `spec.workstreams` membership.
+        // TODO: graph TRAVERSAL (attach a topic + its family) has no control-plane
+        // equivalent yet (DEFERRED) — the `traversalId` arg is ignored; this
+        // attaches the single topic only.
+        if (!controlPlaneClient) {
           vscode.window.showErrorMessage(
-            'Working Memory: cannot add topic to workstream — DB is not available.',
-          );
-          return;
-        }
-        const traversalId = arg?.traversalId ?? 'self';
-        if (!TRAVERSAL_MODES[traversalId]) {
-          const valid = Object.keys(TRAVERSAL_MODES).join(', ');
-          vscode.window.showErrorMessage(
-            `Working Memory: unknown traversal mode '${traversalId}' (valid: ${valid}).`,
+            'Working Memory: cannot add topic to workstream — control plane is not running.',
           );
           return;
         }
@@ -633,17 +656,13 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         try {
-          const result = linkWorkstreamTopicWithTraversal(store, {
-            workstream_slug: workstreamSlug,
-            topic_slug: topicSlug,
-            traversal: traversalId,
-            includeClosed: false,
+          await controlPlaneClient.topicAttachWorkstream({
+            slug: topicSlug,
+            workstream: workstreamSlug,
           });
           refresh();
-          const changedCount = result.linked.length;
-          const mode = TRAVERSAL_MODES[result.traversal];
           vscode.window.showInformationMessage(
-            `Working Memory: linked ${changedCount} topic${changedCount === 1 ? '' : 's'} to "${workstreamSlug}" (${mode.label}).`,
+            `Working Memory: linked "${topicSlug}" to "${workstreamSlug}".`,
           );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -663,9 +682,9 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        if (!store) {
+        if (!controlPlaneClient) {
           vscode.window.showErrorMessage(
-            'Working Memory: cannot remove topic from workstream — DB is not available.',
+            'Working Memory: cannot remove topic from workstream — control plane is not running.',
           );
           return;
         }
@@ -675,20 +694,16 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         try {
-          const result = store.unlinkWorkstreamTopic({
-            workstream_slug: workstreamSlug,
-            topic_slug: topicSlug,
+          // Detach = remove the workstream slug from the topic's membership
+          // (idempotent — a no-op if it wasn't a member).
+          await controlPlaneClient.topicDetachWorkstream({
+            slug: topicSlug,
+            workstream: workstreamSlug,
           });
           refresh();
-          if (result.removed > 0) {
-            vscode.window.showInformationMessage(
-              `Working Memory: removed "${topicSlug}" from "${workstreamSlug}".`,
-            );
-          } else {
-            vscode.window.showInformationMessage(
-              `Working Memory: "${topicSlug}" was not linked to "${workstreamSlug}".`,
-            );
-          }
+          vscode.window.showInformationMessage(
+            `Working Memory: removed "${topicSlug}" from "${workstreamSlug}".`,
+          );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           vscode.window.showErrorMessage(
@@ -718,8 +733,9 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        // Repointed onto the control-plane workstream domain layer (WM 13.0
-        // "rehome-wm-tools"): a section move is a lifecycle-status patch.
+        // Repointed onto the control-plane ws-* domain API via the client (WM
+        // 13.0 "ws-consumer-repoint"): a section move is a lifecycle-status
+        // patch.
         if (!controlPlaneClient) {
           vscode.window.showErrorMessage(
             'Working Memory: cannot move workstream — control plane is not running.',
@@ -727,7 +743,7 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         try {
-          await cpUpdateWorkstream(controlPlaneClient, { slug, status: section });
+          await controlPlaneClient.wsUpdate({ slug, status: section });
           refresh();
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -747,9 +763,9 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        // Repointed onto the control-plane workstream domain layer (WM 13.0
-        // "rehome-wm-tools"): reopen = move the workstream back to an active
-        // lifecycle section (progress).
+        // Repointed onto the control-plane ws-* domain API via the client (WM
+        // 13.0 "ws-consumer-repoint"): reopen = move the workstream back to an
+        // active lifecycle section (progress).
         if (!controlPlaneClient) {
           vscode.window.showErrorMessage(
             'Working Memory: cannot reopen — control plane is not running.',
@@ -757,7 +773,7 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         try {
-          const updated = await cpUpdateWorkstream(controlPlaneClient, {
+          const updated = await controlPlaneClient.wsUpdate({
             slug,
             status: 'progress',
           });

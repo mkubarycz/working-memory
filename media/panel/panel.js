@@ -2,9 +2,12 @@
 (function () {
   'use strict';
 
+  // `acquireVsCodeApi` is injected into the webview by the VS Code runtime; it
+  // has no ambient declaration in this standalone `// @ts-check` file.
+  // @ts-ignore
   const vscode = acquireVsCodeApi();
 
-  /** @typedef {{ command: string, title: string, description?: string, args?: unknown[], enabled?: boolean }} Action */
+  /** @typedef {{ command: string, title: string, description?: string, args?: unknown[], enabled?: boolean, icon?: string }} Action */
   /** @typedef {{ kind: string, id: string, label: string, description?: string,
    *              tooltip?: string, icon?: string, openUri?: string,
    *              actions?: Action[], children?: any[], collapsible?: boolean,
@@ -84,7 +87,7 @@
   /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'|'blackboard', gearView: 'archive'|'topic-types'|'topics', expanded: Set<string>,
    *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData, nanites?: TabData, blackboard?: TabData },
    *           focusedId: string | null, recentCounts: Map<string, number>,
-   *           flashChipIds: Set<string> }} */
+   *           flashChipIds: Set<string>, revealTarget: { kind?: string, id: string } | null }} */
   const state = {
     activeTab:
       persisted?.activeTab === 'active' ||
@@ -107,7 +110,7 @@
     focusedId: null,
     recentCounts: new Map(),
     flashChipIds: new Set(),
-    /** @type {{ kind: string, id: string } | null} Latest reveal target from the host. */
+    /** @type {{ kind?: string, id: string } | null} Latest reveal target from the host. */
     revealTarget: null,
   };
 
@@ -120,7 +123,7 @@
   }
 
   /**
-   * @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'} tab
+   * @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'|'blackboard'} tab
    * @returns {TabData | undefined}
    */
   function getTabData(tab) {
@@ -251,11 +254,11 @@
       label: action.title,
       enabled: action.enabled !== false,
       icon: action.icon,
-      message: {
+      message: /** @type {InvokeMessage} */ ({
         type: 'invoke',
         command: action.command,
         args: Array.isArray(action.args) ? action.args : [],
-      },
+      }),
     }));
     const topicContext = workstreamTopicContext(node, row);
     if (!topicContext) {
@@ -265,20 +268,20 @@
       ? {
         label: 'Remove from Focus',
         enabled: true,
-        message: {
+        message: /** @type {CardUnfocusMessage} */ ({
           type: 'card.unfocus',
           slug: topicContext.workstreamSlug,
           topicSlug: topicContext.topicSlug,
-        },
+        }),
       }
       : {
         label: 'Add to Focus',
         enabled: true,
-        message: {
+        message: /** @type {CardFocusMessage} */ ({
           type: 'card.focus',
           slug: topicContext.workstreamSlug,
           topicSlug: topicContext.topicSlug,
-        },
+        }),
       };
     return [
       focusItem,
@@ -298,7 +301,7 @@
    * @returns {{ workstreamSlug: string, topicSlug: string, focused: boolean } | null}
    */
   function workstreamTopicContext(node, row) {
-    const card = row.closest('.ws-card');
+    const card = /** @type {HTMLElement | null} */ (row.closest('.ws-card'));
     const workstreamSlug =
       row.dataset.workstreamSlug ?? card?.dataset.workstreamSlug ?? null;
     if (!workstreamSlug) {
@@ -388,7 +391,7 @@
         btn.appendChild(indicator);
         const submenu = document.createElement('div');
         submenu.className = 'context-submenu';
-        for (const child of item.children) {
+        for (const child of (item.children ?? [])) {
           const childBtn = document.createElement('button');
           childBtn.className = 'context-menu-item';
           childBtn.type = 'button';
@@ -701,12 +704,13 @@
     const hasChildren =
       Array.isArray(node.children) && node.children.length > 0;
     if (hasChildren && state.expanded.has(node.id)) {
-      for (const child of node.children) {
+      for (const child of (node.children ?? [])) {
         renderNode(child, depth + 1, target);
       }
     }
   }
 
+  /** @param {string} id */
   function toggle(id) {
     if (state.expanded.has(id)) {
       state.expanded.delete(id);
@@ -977,7 +981,7 @@
           const pinned = renderPinnedFocusedTopic(ft, item);
           body.appendChild(pinned);
         }
-        for (const child of item.children) {
+        for (const child of (item.children ?? [])) {
           renderNode(child, 1, body);
         }
       }
@@ -1004,11 +1008,11 @@
       label: a.title,
       enabled: a.enabled !== false,
       icon: a.icon,
-      message: {
+      message: /** @type {InvokeMessage} */ ({
         type: 'invoke',
         command: a.command,
         args: Array.isArray(a.args) ? a.args : [],
-      },
+      }),
     }));
   }
 
@@ -1208,7 +1212,7 @@
       body = document.createElement('div');
       body.className = 'ws-shelf-empty';
       body.textContent = section.emptyMessage || '';
-      enableSectionDrop(body, section.section);
+      enableSectionDrop(body, /** @type {string} */ (section.section));
       content.appendChild(body);
       shelf.appendChild(rail);
       shelf.appendChild(content);
@@ -1229,7 +1233,7 @@
       for (const ws of ordered) {
         list.appendChild(renderShelfItem(ws, moveDir, true));
       }
-      enableSectionDrop(list, section.section);
+      enableSectionDrop(list, /** @type {string} */ (section.section));
       body = list;
     } else {
       // Collapsed = peek deck. The TWO newest workstreams render as normal,
@@ -1269,7 +1273,7 @@
       }
       // A collapsed shelf still accepts cross-section drops: the two peek rows
       // are tagged (drop-neighbours) so a dropped item lands relative to them.
-      enableSectionDrop(fan, section.section);
+      enableSectionDrop(fan, /** @type {string} */ (section.section));
 
       deck.appendChild(fan);
       body = deck;
@@ -1641,7 +1645,7 @@
       // the Set from growing unbounded across many refreshes.
       /** @type {Set<string>} */
       const liveIds = new Set();
-      const visit = (n) => {
+      const visit = (/** @type {any} */ n) => {
         liveIds.add(n.id);
         if (Array.isArray(n.workstreams)) {
           for (const w of n.workstreams) {
@@ -1671,7 +1675,7 @@
       const nextRecentCounts = new Map();
       /** @type {Set<string>} */
       const flashChipIds = new Set();
-      const collectRecent = (n) => {
+      const collectRecent = (/** @type {any} */ n) => {
         const count = typeof n.recentEntryCount === 'number' ? n.recentEntryCount : 0;
         nextRecentCounts.set(n.id, count);
         const previous = state.recentCounts.get(n.id) ?? 0;

@@ -18,6 +18,8 @@
  */
 
 import { z, type ZodTypeAny } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { Store } from '../store.js';
 
 /** The row shape handed to a descriptor's `fts` projection. */
 export interface FtsRow {
@@ -51,6 +53,15 @@ export interface KindDescriptor {
 export interface KindModule {
   name: string;
   descriptor: KindDescriptor;
+  /**
+   * OPTIONAL: register this kind's own **namespaced domain API** (MCP tools) on
+   * the control-plane server, co-located with the schema. Called once per MCP
+   * session by `createMcpServer` after the generic CRUD tools, for every
+   * registered kind that defines it. A kind that omits this hook contributes
+   * only the generic `wm-document-*` surface. Each kind owns a prefix namespace
+   * (Workstream → `ws-`, …) and backs its tools with `store` document ops.
+   */
+  registerApi?(server: McpServer, store: Store): void;
 }
 
 /**

@@ -28,10 +28,22 @@
  */
 
 import { z } from 'zod';
-import { Base, type KindModule } from './base.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Base, type KindModule } from '../base.js';
+import type { Store } from '../../store.js';
+import { WORKSTREAM_KIND } from './shared.js';
+import { registerWsWorkstreamCreate } from './create.js';
+import { registerWsWorkstreamRead } from './read.js';
+import { registerWsWorkstreamUpdate } from './update.js';
+import { registerWsWorkstreamDelete } from './delete.js';
+
+// Re-export the domain type + POCO interface so type consumers of the kind can
+// import them from the kind entry point (e.g. the default import in
+// control-plane/tests/kinds.workstream.test.ts).
+export type { IWorkstream, WorkstreamLifecycleStatus } from './workstream.js';
 
 const workstream: KindModule = {
-  name: 'Workstream',
+  name: WORKSTREAM_KIND,
   descriptor: {
     extends: Base,
     spec: z
@@ -50,6 +62,25 @@ const workstream: KindModule = {
     // No envelope `status` schema → inherit Base (lifecycle-only, empty {}).
     fts: (r) => (r.spec.closure ? `${r.spec.title}\n${r.spec.closure}` : r.spec.title),
   },
+  // The Workstream domain API (`ws-workstream-*`) — the four tools live in sibling
+  // `create` / `read` / `update` / `delete` files; `registerApi` wires them together.
+  registerApi: registerWorkstreamApi,
 };
+
+/**
+ * Register the Workstream domain API (`ws-workstream-*`) on an MCP session's
+ * server by wiring the four split tool files. Each tool lives in its own sibling
+ * file (`create` / `read` / `update` / `delete`) in this kind folder and shares
+ * the kind name + result helpers via `./shared.js` and the `Workstream`
+ * projection via `./workstream.js`. This is the "kind is a plugin" surface:
+ * schema + validation + the `ws-workstream-*` API all belong to this one kind —
+ * just split across files in one folder.
+ */
+function registerWorkstreamApi(server: McpServer, store: Store): void {
+  registerWsWorkstreamCreate(server, store);
+  registerWsWorkstreamRead(server, store);
+  registerWsWorkstreamUpdate(server, store);
+  registerWsWorkstreamDelete(server, store);
+}
 
 export default workstream;

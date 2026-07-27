@@ -14,7 +14,7 @@
  */
 
 import { z, type ZodTypeAny, type ZodError } from 'zod';
-import { Base, type KindDescriptor } from './base.js';
+import { Base, type KindDescriptor, type KindModule } from './base.js';
 
 /** Version-stable alias for Zod's issue list (name differs across zod majors). */
 type ZodIssues = ZodError['issues'];
@@ -27,6 +27,13 @@ export interface RegisteredKind {
   spec: ZodTypeAny;
   /** `parent.status` composed with the descriptor's own `status` (if any). */
   status: ZodTypeAny;
+  /**
+   * The kind's OPTIONAL domain-API registrar (its `ws-*` / `topic-*` / … MCP
+   * tools). Retained here so the server can iterate every registered kind and
+   * wire up its namespaced API alongside the generic CRUD. `undefined` for
+   * kinds that contribute only the generic surface.
+   */
+  registerApi?: KindModule['registerApi'];
 }
 
 /** Thrown by `validateSpec` when caller input fails the kind's `spec` schema. */
@@ -80,11 +87,15 @@ function compose(parent: ZodTypeAny, own: ZodTypeAny | undefined): ZodTypeAny {
 }
 
 /** Register (or overwrite) a kind, composing its schemas on top of Base. */
-export function registerKind(name: string, descriptor: KindDescriptor): void {
+export function registerKind(
+  name: string,
+  descriptor: KindDescriptor,
+  registerApi?: KindModule['registerApi'],
+): void {
   const parent = descriptor.extends ?? Base;
   const spec = compose(parent.spec, descriptor.spec);
   const status = compose(parent.status ?? Base.status ?? z.object({}), descriptor.status);
-  registry.set(name, { name, descriptor, spec, status });
+  registry.set(name, { name, descriptor, spec, status, registerApi });
 }
 
 /** Look up a registered kind by (case-sensitive) name. */
@@ -95,6 +106,24 @@ export function getKind(name: string): RegisteredKind | undefined {
 /** All registered kind names, in registration order. */
 export function listKinds(): string[] {
   return [...registry.keys()];
+}
+
+/**
+ * Every registered kind that exposes a domain API, as `{ name, registerApi }`
+ * (registration order). Kinds without a `registerApi` hook are omitted, so the
+ * server can iterate this list and call each registrar unconditionally.
+ */
+export function listKindApis(): {
+  name: string;
+  registerApi: NonNullable<KindModule['registerApi']>;
+}[] {
+  const apis: { name: string; registerApi: NonNullable<KindModule['registerApi']> }[] = [];
+  for (const kind of registry.values()) {
+    if (kind.registerApi) {
+      apis.push({ name: kind.name, registerApi: kind.registerApi });
+    }
+  }
+  return apis;
 }
 
 /**

@@ -124,6 +124,155 @@ export interface DeleteDocumentInput {
   expectedResourceVersion?: number;
 }
 
+/**
+ * The authored workstream lifecycle status (a `spec` field), mirroring migration
+ * 014 and the control-plane Workstream kind enum. Legacy 'open' is NOT part of
+ * this enum — it only ever existed as a pre-migration DB value.
+ */
+export type WorkstreamLifecycleStatus = 'queue' | 'progress' | 'backlog' | 'closed';
+
+/**
+ * The legacy workstream shape returned by the control-plane `ws-*` domain API
+ * (mapped from a Workstream document by the kind's `Workstream` POCO). This
+ * client OWNS the type: the extension-host consumers (LM tools, panel, commands)
+ * speak this shape and no longer reach through the retired
+ * `src/domain/workstreams.ts` mapping. Kept structurally identical to
+ * `control-plane/src/kinds/workstream/workstream.ts::IWorkstream`.
+ */
+export interface Workstream {
+  /** Document id (uuid). Distinct from the legacy integer rowid. */
+  id: string;
+  slug: string | null;
+  title: string;
+  status: WorkstreamLifecycleStatus;
+  closure: string | null;
+  opened_at: number;
+  updated_at: number;
+  closed_at: number | null;
+  /** CAS counter from the envelope, for a subsequent update. */
+  resourceVersion: number;
+}
+
+/**
+ * Thrown by the typed `ws-*` domain methods (`wsRead`/`wsCreate`/`wsUpdate`/
+ * `wsDelete`) when the daemon is unreachable or a tool result is flagged
+ * `isError` (unknown slug, version conflict, spec validation, …). Unlike the
+ * generic `wm-document-*` helpers — which return an `{ available }` result
+ * wrapper so the Blackboard can render an empty state — the domain methods
+ * return the mapped value directly, so failures MUST throw. The control-plane's
+ * plain-text `asError` message is preserved so conflicts / not-found surface
+ * clearly to the caller (the LM-tool `safe()` wrapper, panel refresh, commands).
+ */
+export class ControlPlaneClientError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ControlPlaneClientError';
+  }
+}
+
+export interface WsReadInput {
+  slug?: string;
+  id?: string;
+  query?: string;
+  limit?: number;
+}
+
+export interface WsCreateInput {
+  slug?: string;
+  title: string;
+  status?: string;
+  closure?: string;
+}
+
+export interface WsUpdateInput {
+  slug: string;
+  title?: string;
+  status?: string;
+  closure?: string;
+}
+
+export interface WsDeleteInput {
+  slug: string;
+  restore?: boolean;
+}
+
+/**
+ * The topic shape returned by the control-plane `ws-topic-*` domain API (mapped
+ * from a Topic document by the kind's `Topic` POCO). This client OWNS the type,
+ * exactly as it owns {@link Workstream}: the extension-host topic consumers (LM
+ * tools, panel, commands, the topic virtual doc) speak this shape and no longer
+ * reach through the journal `topics` table (WM 13.0 "topic-consumer-repoint").
+ * Kept structurally identical to
+ * `control-plane/src/kinds/topic/topic.ts::ITopic`.
+ *
+ * Two relational fields are flat slug arrays (spec refs), NOT the journal's rich
+ * join rows:
+ *   - `workstreams` — the member workstream slugs. There is no per-link `focused`
+ *     flag; the journal's focus pin has no control-plane equivalent yet.
+ *   - `parents` — the parent topic slugs (the topic DAG).
+ */
+export interface Topic {
+  /** Document id (uuid). */
+  id: string;
+  slug: string | null;
+  title: string;
+  body: string;
+  status: 'open' | 'closed';
+  topicType: string;
+  /** Parent topic slugs (the topic DAG). */
+  parents: string[];
+  /** Member workstream slugs (topic↔workstream membership). */
+  workstreams: string[];
+  created_at: number;
+  updated_at: number;
+  /** CAS counter from the envelope, for a subsequent update. */
+  resourceVersion: number;
+}
+
+export interface TopicReadInput {
+  slug?: string;
+  id?: string;
+  query?: string;
+  /** Filter to topics whose `workstreams` membership includes this slug. */
+  workstream?: string;
+  limit?: number;
+}
+
+export interface TopicCreateInput {
+  slug?: string;
+  title: string;
+  body?: string;
+  status?: string;
+  topicType?: string;
+  parents?: string[];
+  workstreams?: string[];
+}
+
+export interface TopicUpdateInput {
+  slug: string;
+  title?: string;
+  body?: string;
+  status?: string;
+  topicType?: string;
+  parents?: string[];
+  workstreams?: string[];
+}
+
+export interface TopicDeleteInput {
+  slug: string;
+  restore?: boolean;
+}
+
+export interface TopicAttachWorkstreamInput {
+  slug: string;
+  workstream: string;
+}
+
+export interface TopicDetachWorkstreamInput {
+  slug: string;
+  workstream: string;
+}
+
 export interface ControlPlaneClientOptions {
   /**
    * Resolve the `/mcp` URL to connect to, or `null` when the daemon is
@@ -371,6 +520,268 @@ export class ControlPlaneClient {
       this.resetConnection();
       return { available: false, document: null, error: messageOf(err) };
     }
+  }
+
+  // ----- Workstream domain API (`ws-*`) -------------------------------------
+  //
+  // Typed wrappers over the control-plane's Workstream kind API. Each parses the
+  // tool's JSON text result (`result.content[0].text` → JSON.parse) into the
+  // owned {@link Workstream} shape and THROWS {@link ControlPlaneClientError} on
+  // a dead daemon, a dropped connection, or an `isError` tool result — so the
+  // extension-host consumers get the mapped value directly (no `available`
+  // wrapper) and surface failures through their existing try/catch paths.
+
+  /**
+   * Call a `ws-*` (namespaced domain) tool and return its raw result, throwing a
+   * typed {@link ControlPlaneClientError} when the daemon is unreachable, the
+   * transport drops (also resetting the connection so the next call reconnects),
+   * or the tool result is flagged `isError`.
+   */
+  private async callDomainTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const client = await this.ensureConnected();
+    if (!client) {
+      throw new ControlPlaneClientError('Control plane not running');
+    }
+    let result: unknown;
+    try {
+      result = await client.callTool({ name, arguments: args });
+    } catch (err) {
+      this.resetConnection();
+      throw new ControlPlaneClientError(messageOf(err));
+    }
+    if ((result as { isError?: unknown }).isError === true) {
+      throw new ControlPlaneClientError(errorTextOf(result));
+    }
+    return result;
+  }
+
+  /** Parse a `ws-*` success result into the owned {@link Workstream} shape. */
+  private parseWorkstream(result: unknown): Workstream {
+    const parsed = parseToolText(result) as Workstream | null;
+    if (!parsed || typeof parsed.id !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane workstream response');
+    }
+    return parsed;
+  }
+
+  /**
+   * Read workstreams via `ws-workstream-read`. A by-slug/id read yields a 0-or-1
+   * element array; list mode (no slug/id) returns all live workstreams, optionally
+   * filtered by `query` / capped by `limit`.
+   */
+  async wsRead(input: WsReadInput = {}): Promise<Workstream[]> {
+    const args: Record<string, unknown> = {};
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.id !== undefined) {
+      args.id = input.id;
+    }
+    if (input.query !== undefined) {
+      args.query = input.query;
+    }
+    if (input.limit !== undefined) {
+      args.limit = input.limit;
+    }
+    const result = await this.callDomainTool('ws-workstream-read', args);
+    const parsed = parseToolText(result) as { workstreams?: unknown } | null;
+    const list = Array.isArray(parsed?.workstreams) ? parsed!.workstreams : [];
+    return list as Workstream[];
+  }
+
+  /** Create a workstream via `ws-workstream-create`. Returns the created workstream. */
+  async wsCreate(input: WsCreateInput): Promise<Workstream> {
+    const args: Record<string, unknown> = { title: input.title };
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    if (input.closure !== undefined) {
+      args.closure = input.closure;
+    }
+    return this.parseWorkstream(await this.callDomainTool('ws-workstream-create', args));
+  }
+
+  /**
+   * Update a workstream via `ws-workstream-update` (identified by `slug`; only the
+   * changed fields are sent). The control-plane reads the current doc for its CAS guard.
+   */
+  async wsUpdate(input: WsUpdateInput): Promise<Workstream> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.title !== undefined) {
+      args.title = input.title;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    if (input.closure !== undefined) {
+      args.closure = input.closure;
+    }
+    return this.parseWorkstream(await this.callDomainTool('ws-workstream-update', args));
+  }
+
+  /**
+   * Soft-delete (or, with `restore: true`, undelete) a workstream via
+   * `ws-workstream-delete` (identified by `slug`). Returns `{ ok, slug }`.
+   */
+  async wsDelete(input: WsDeleteInput): Promise<{ ok: boolean; slug: string }> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.restore !== undefined) {
+      args.restore = input.restore;
+    }
+    const result = await this.callDomainTool('ws-workstream-delete', args);
+    const parsed = parseToolText(result) as { ok?: unknown; slug?: unknown } | null;
+    return {
+      ok: parsed?.ok === true,
+      slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
+    };
+  }
+
+  // ----- Topic domain API (`ws-topic-*`) ------------------------------------
+  //
+  // Typed wrappers over the control-plane's Topic kind API (WM 13.0
+  // "topic-consumer-repoint"), mirroring the ws-workstream-* methods above: each
+  // parses the tool's JSON text result into the owned {@link Topic} shape and
+  // THROWS {@link ControlPlaneClientError} on a dead daemon, a dropped
+  // connection, or an `isError` tool result. Workstream membership + parents are
+  // flat slug arrays on the returned Topic; attach/detach edit membership.
+
+  /** Parse a `ws-topic-*` success result into the owned {@link Topic} shape. */
+  private parseTopic(result: unknown): Topic {
+    const parsed = parseToolText(result) as Topic | null;
+    if (!parsed || typeof parsed.id !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane topic response');
+    }
+    return parsed;
+  }
+
+  /**
+   * Read topics via `ws-topic-read`. A by-slug/id read yields a 0-or-1 element
+   * array; list mode (no slug/id) returns all live topics, optionally filtered
+   * by `query` (substring), `workstream` (membership), and capped by `limit`.
+   */
+  async topicRead(input: TopicReadInput = {}): Promise<Topic[]> {
+    const args: Record<string, unknown> = {};
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.id !== undefined) {
+      args.id = input.id;
+    }
+    if (input.query !== undefined) {
+      args.query = input.query;
+    }
+    if (input.workstream !== undefined) {
+      args.workstream = input.workstream;
+    }
+    if (input.limit !== undefined) {
+      args.limit = input.limit;
+    }
+    const result = await this.callDomainTool('ws-topic-read', args);
+    const parsed = parseToolText(result) as { topics?: unknown } | null;
+    const list = Array.isArray(parsed?.topics) ? parsed!.topics : [];
+    return list as Topic[];
+  }
+
+  /** Create a topic via `ws-topic-create`. Returns the created topic. */
+  async topicCreate(input: TopicCreateInput): Promise<Topic> {
+    const args: Record<string, unknown> = { title: input.title };
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.body !== undefined) {
+      args.body = input.body;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    if (input.topicType !== undefined) {
+      args.topicType = input.topicType;
+    }
+    if (input.parents !== undefined) {
+      args.parents = input.parents;
+    }
+    if (input.workstreams !== undefined) {
+      args.workstreams = input.workstreams;
+    }
+    return this.parseTopic(await this.callDomainTool('ws-topic-create', args));
+  }
+
+  /**
+   * Update a topic via `ws-topic-update` (identified by `slug`; only the changed
+   * fields are sent). The control-plane reads the current doc for its CAS guard.
+   * Note `parents` / `workstreams` are REPLACEMENT arrays when provided.
+   */
+  async topicUpdate(input: TopicUpdateInput): Promise<Topic> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.title !== undefined) {
+      args.title = input.title;
+    }
+    if (input.body !== undefined) {
+      args.body = input.body;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    if (input.topicType !== undefined) {
+      args.topicType = input.topicType;
+    }
+    if (input.parents !== undefined) {
+      args.parents = input.parents;
+    }
+    if (input.workstreams !== undefined) {
+      args.workstreams = input.workstreams;
+    }
+    return this.parseTopic(await this.callDomainTool('ws-topic-update', args));
+  }
+
+  /**
+   * Soft-delete (or, with `restore: true`, undelete) a topic via
+   * `ws-topic-delete` (identified by `slug`). Returns `{ ok, slug }`.
+   */
+  async topicDelete(input: TopicDeleteInput): Promise<{ ok: boolean; slug: string }> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.restore !== undefined) {
+      args.restore = input.restore;
+    }
+    const result = await this.callDomainTool('ws-topic-delete', args);
+    const parsed = parseToolText(result) as { ok?: unknown; slug?: unknown } | null;
+    return {
+      ok: parsed?.ok === true,
+      slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
+    };
+  }
+
+  /**
+   * Attach a workstream to a topic's membership via `ws-topic-attach-workstream`
+   * (idempotent). This is the atomic "attach topic to workstream" the panel /
+   * tools need. Returns the updated topic.
+   */
+  async topicAttachWorkstream(input: TopicAttachWorkstreamInput): Promise<Topic> {
+    return this.parseTopic(
+      await this.callDomainTool('ws-topic-attach-workstream', {
+        slug: input.slug,
+        workstream: input.workstream,
+      }),
+    );
+  }
+
+  /**
+   * Detach a workstream from a topic's membership via
+   * `ws-topic-detach-workstream` (idempotent). Returns the updated topic.
+   */
+  async topicDetachWorkstream(input: TopicDetachWorkstreamInput): Promise<Topic> {
+    return this.parseTopic(
+      await this.callDomainTool('ws-topic-detach-workstream', {
+        slug: input.slug,
+        workstream: input.workstream,
+      }),
+    );
   }
 
   /** Close the client + transport and release the singleton. */

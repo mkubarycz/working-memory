@@ -162,6 +162,28 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         permissions: vscode.FilePermission.Readonly,
       }));
     }
+    if (kind === 'topic' && this.controlPlaneClient) {
+      // WM 13.0 "topic-consumer-repoint": a topic body may resolve from the
+      // control-plane (async). A control-plane-resolved doc is READ-ONLY (like
+      // `/document/<id>.md`); a journal-fallback doc keeps its writable behavior
+      // when a journal store is present.
+      // TODO: editable-body SAVE of a control-plane-only topic is DEFERRED — the
+      // writeFile topic branch is journal-only, so saving such a doc throws
+      // FileNotFound until the topic-body save is repointed onto the
+      // control-plane.
+      return this.renderTopicMaybeControlPlane(slug, uri).then(
+        ({ text, fromControlPlane }) => ({
+          type: vscode.FileType.File,
+          ctime: mtime,
+          mtime,
+          size: Buffer.byteLength(text, 'utf8'),
+          permissions:
+            fromControlPlane || !this.store
+              ? vscode.FilePermission.Readonly
+              : undefined,
+        }),
+      );
+    }
     const text = this.render(kind, slug, uri);
     return {
       type: vscode.FileType.File,
@@ -196,6 +218,12 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         Buffer.from(text, 'utf8'),
       );
     }
+    if (kind === 'topic' && this.controlPlaneClient) {
+      // WM 13.0 "topic-consumer-repoint": prefer the control-plane topic (async).
+      return this.renderTopicMaybeControlPlane(slug, uri).then(({ text }) =>
+        Buffer.from(text, 'utf8'),
+      );
+    }
     const text = this.render(kind, slug, uri);
     return Buffer.from(text, 'utf8');
   }
@@ -217,6 +245,46 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       return renderDocumentNotFoundDoc(id);
     }
     return renderDocumentEnvelopeDoc(result.document);
+  }
+
+  /**
+   * Render a `working-memory:/topic/<slug>.md` body, preferring the control-plane
+   * topic (WM 13.0 "topic-consumer-repoint") and falling back to the journal
+   * topic doc for legacy slugs or when the daemon is down / the topic isn't in
+   * the control-plane. Resolution goes through the canonical topic domain read
+   * (`ws-topic-read`) to decide whether the slug is a control-plane topic, then
+   * fetches THAT topic's envelope by id for the shared document-envelope
+   * renderer.
+   *
+   * Returns the rendered text plus `fromControlPlane`, which `stat` uses to make
+   * a control-plane-resolved doc READ-ONLY (like `/document/<id>.md`) while a
+   * journal-fallback doc keeps its writable behavior. Only invoked when a
+   * control-plane client is present; without one the topic path stays
+   * synchronous (journal-rendered) — see `readFile` / `stat`.
+   */
+  private async renderTopicMaybeControlPlane(
+    slug: string,
+    uri: vscode.Uri,
+  ): Promise<{ text: string; fromControlPlane: boolean }> {
+    const client = this.controlPlaneClient;
+    if (client) {
+      try {
+        const topics = await client.topicRead({ slug });
+        const topic = topics[0];
+        if (topic && typeof topic.id === 'string') {
+          const result = await client.getDocument({ id: topic.id });
+          if (result.available && result.document) {
+            return {
+              text: renderDocumentEnvelopeDoc(result.document),
+              fromControlPlane: true,
+            };
+          }
+        }
+      } catch {
+        // Fall through to the journal render on any control-plane error.
+      }
+    }
+    return { text: this.render('topic', slug, uri), fromControlPlane: false };
   }
 
   writeFile(
@@ -288,6 +356,10 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       return;
     }
     if (kind === 'topic') {
+      // TODO (WM 13.0 "topic-consumer-repoint"): topic-body SAVE stays
+      // journal-backed (DEFERRED). A control-plane-only topic has no journal row,
+      // so this throws FileNotFound until the save is repointed; legacy journal
+      // topics still save here as before.
       const topic = this.store.getTopic(slug);
       if (!topic) {
         throw vscode.FileSystemError.FileNotFound(uri);

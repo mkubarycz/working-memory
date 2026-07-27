@@ -4,21 +4,22 @@ import {
   type PanelWorkstream,
   type PanelWorkstreamSection,
 } from '../src/panelData';
-import type { DomainWorkstream } from '../src/domain/workstreams';
+import type { Workstream } from '../src/controlPlaneClient';
 
 /**
  * Unit-tests the PURE control-plane Active/Archive builder (WM 13.0
- * "rehome-wm-tools"). No store, no VS Code, no daemon — it only shapes already-
- * fetched domain workstreams into the panel structures, so the per-workstream
- * extras that need the topic/entry/session domain layers are deliberately
- * stubbed (empty children, zero counts, no focused topics).
+ * "ws-consumer-repoint"). No store, no VS Code, no daemon — it only shapes
+ * already-fetched control-plane workstreams (the shape `client.wsRead` returns)
+ * into the panel structures, so the per-workstream extras that need the
+ * topic/entry/session domain layers are deliberately stubbed (empty children,
+ * zero counts, no focused topics).
  */
 
 function ws(
   slug: string,
-  status: DomainWorkstream['status'],
-  extra: Partial<DomainWorkstream> = {},
-): DomainWorkstream {
+  status: Workstream['status'],
+  extra: Partial<Workstream> = {},
+): Workstream {
   return {
     id: extra.id ?? `id-${slug}`,
     slug,

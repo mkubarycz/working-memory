@@ -87,6 +87,7 @@ interface Envelope {
         topicType: 'topic',
         status: 'open',
         parents: [],
+        workstreams: [],
       });
       // Envelope status inherits Base's empty default.
       expect(created.status).toEqual({});

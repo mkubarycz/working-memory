@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import {
   buildBlackboardPanelData,
+  buildTopicsPanel,
   buildWorkstreamPanels,
   emptyAllPanelData,
   getAllPanelData,
@@ -10,7 +11,6 @@ import {
 } from '../panelData';
 import { JournalStore, type WorkstreamSection } from '../db';
 import type { ControlPlaneClient } from '../controlPlaneClient';
-import { listWorkstreams } from '../domain/workstreams';
 import type { PanelRevealTarget } from '../panelReveal';
 
 interface InvokeMessage {
@@ -139,7 +139,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
    * Assemble the `data` message: topics / topic-types / alerts / nanites come
    * from the journal store (unchanged), while the Active + Archive (workstream)
    * tabs are sourced ASYNC from the control-plane document store via the
-   * workstream domain layer (WM 13.0 "rehome-wm-tools"). Awaiting the
+   * client's ws-* domain API (WM 13.0 "ws-consumer-repoint"). Awaiting the
    * control-plane here is cheap: a down daemon fails fast (no port file), a live
    * one is a localhost round-trip. Blackboard keeps its own dedicated channel.
    */
@@ -150,49 +150,84 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     const journal = this.store
       ? getAllPanelData(this.store)
       : emptyAllPanelData();
-    const workstreams = await this.loadWorkstreamPanels();
+    const cp = await this.loadControlPlanePanels();
     // The view may have been disposed while awaiting the control-plane.
     if (!this.view) {
       return;
     }
     const data = {
       ...journal,
-      active: workstreams.active,
-      archive: workstreams.archive,
+      active: cp.active,
+      archive: cp.archive,
+      // Topics are control-plane-sourced now (WM 13.0 "topic-consumer-repoint"),
+      // overriding the journal topics assembled by getAllPanelData above.
+      topics: cp.topics,
     };
     this.view.webview.postMessage({ type: 'data', data });
-    this.updateBadge(workstreams.active);
+    this.updateBadge(cp.active);
     // Blackboard rows come from the control-plane MCP server, not the journal
     // DB, so they're fetched async and posted separately.
     void this.refreshBlackboard();
   }
 
   /**
-   * Fetch the Active + Archive tabs from the control-plane workstream domain
-   * layer, degrading to the "control plane not running" empty state when the
-   * client is absent or the daemon is unreachable (mirrors refreshBlackboard's
-   * unavailable handling).
+   * Fetch the Active + Archive (workstream) tabs AND the Topics tab from the
+   * control-plane via the client's ws-* domain API, degrading to the "control
+   * plane not running" empty state when the client is absent or the daemon is
+   * unreachable (mirrors refreshBlackboard's unavailable handling). Workstreams
+   * and topics are fetched together so each workstream card's Topics group can
+   * be populated from the topic `spec.workstreams` membership (WM 13.0
+   * "topic-consumer-repoint").
    */
-  private async loadWorkstreamPanels(): Promise<{
+  private async loadControlPlanePanels(): Promise<{
     active: PanelData;
     archive: PanelData;
+    topics: PanelData;
   }> {
     if (!this.controlPlaneClient) {
-      return buildWorkstreamPanels({
+      const ws = buildWorkstreamPanels({
         available: false,
         workstreams: [],
         error: 'Control plane not running',
       });
+      return {
+        active: ws.active,
+        archive: ws.archive,
+        topics: buildTopicsPanel({
+          available: false,
+          topics: [],
+          error: 'Control plane not running',
+        }),
+      };
     }
     try {
-      const workstreams = await listWorkstreams(this.controlPlaneClient);
-      return buildWorkstreamPanels({ available: true, workstreams });
+      const [workstreams, topics] = await Promise.all([
+        this.controlPlaneClient.wsRead({}),
+        this.controlPlaneClient.topicRead({}),
+      ]);
+      const ws = buildWorkstreamPanels({
+        available: true,
+        workstreams,
+        topics,
+        store: this.store,
+      });
+      return {
+        active: ws.active,
+        archive: ws.archive,
+        topics: buildTopicsPanel({ available: true, topics, store: this.store }),
+      };
     } catch (err) {
-      return buildWorkstreamPanels({
+      const message = err instanceof Error ? err.message : String(err);
+      const ws = buildWorkstreamPanels({
         available: false,
         workstreams: [],
-        error: err instanceof Error ? err.message : String(err),
+        error: message,
       });
+      return {
+        active: ws.active,
+        archive: ws.archive,
+        topics: buildTopicsPanel({ available: false, topics: [], error: message }),
+      };
     }
   }
 
@@ -312,7 +347,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           typeof msg.topicSlug === 'string' &&
           msg.topicSlug.trim().length > 0
         ) {
-          this.handleCardUnfocus(msg.slug, msg.topicSlug);
+          void this.handleCardUnfocus(msg.slug, msg.topicSlug);
         }
         return;
       case 'card.focus':
@@ -322,7 +357,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           typeof msg.topicSlug === 'string' &&
           msg.topicSlug.trim().length > 0
         ) {
-          this.handleCardFocus(msg.slug, msg.topicSlug);
+          void this.handleCardFocus(msg.slug, msg.topicSlug);
         }
         return;
       case 'reorderWorkstream':
@@ -361,15 +396,20 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     this.refresh();
   }
 
-  private handleCardFocus(slug: string, topicSlug: string): void {
-    if (!this.store) {
+  private async handleCardFocus(slug: string, topicSlug: string): Promise<void> {
+    // Repointed onto the control-plane ws-topic-attach-workstream API (WM 13.0
+    // "topic-consumer-repoint"): the "add to focus" gesture attaches the topic to
+    // the workstream's `spec.workstreams` membership.
+    // TODO: the per-workstream focus PIN has no control-plane equivalent yet
+    // (DEFERRED) — there is no `focused` flag to set, so the pinned-focus row
+    // stays inert (focused_topics is always empty for control-plane cards).
+    if (!this.controlPlaneClient) {
       return;
     }
     try {
-      this.store.linkWorkstreamTopic({
-        workstream_slug: slug,
-        topic_slug: topicSlug,
-        focused: true,
+      await this.controlPlaneClient.topicAttachWorkstream({
+        slug: topicSlug,
+        workstream: slug,
       });
       this.refresh();
     } catch (err) {
@@ -380,14 +420,18 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private handleCardUnfocus(slug: string, topicSlug: string): void {
-    if (!this.store) {
+  private async handleCardUnfocus(slug: string, topicSlug: string): Promise<void> {
+    // Repointed onto ws-topic-detach-workstream: the counterpart of
+    // handleCardFocus removes the topic from the workstream membership.
+    // TODO: focus pin deferred (see handleCardFocus) — with no focus flag,
+    // "unfocus" degrades to a plain membership detach.
+    if (!this.controlPlaneClient) {
       return;
     }
     try {
-      this.store.unfocusWorkstreamTopic({
-        workstream_slug: slug,
-        topic_slug: topicSlug,
+      await this.controlPlaneClient.topicDetachWorkstream({
+        slug: topicSlug,
+        workstream: slug,
       });
       this.refresh();
     } catch (err) {

@@ -142,12 +142,38 @@ async function setupTools() {
   const refresh = vi.fn();
   const { registerTools } = await import('../src/tools');
   const vscode = await import('vscode');
+  // wm_create_topic is control-plane-backed now (WM 13.0
+  // "topic-consumer-repoint"): the body-template reshape still reads the journal
+  // topic-type, but the topic itself is created via the client. These tests
+  // assert on the resolved body, so the mock echoes the body it was handed back
+  // on the returned topic. (The topic-type tools under test use the store.)
+  const client = {
+    topicCreate: async (input: {
+      slug?: string;
+      title: string;
+      body?: string;
+      status?: string;
+      topicType?: string;
+      workstreams?: string[];
+      parents?: string[];
+    }) => ({
+      id: 'topic-uuid-0000',
+      slug: input.slug ?? 'topic',
+      title: input.title,
+      body: input.body ?? '',
+      status: (input.status as 'open' | 'closed') ?? 'open',
+      topicType: input.topicType ?? 'topic',
+      parents: input.parents ?? [],
+      workstreams: input.workstreams ?? [],
+      created_at: 0,
+      updated_at: 0,
+      resourceVersion: 1,
+    }),
+  } as unknown as import('../src/controlPlaneClient').ControlPlaneClient;
   registerTools(
     { subscriptions: [] } as unknown as { subscriptions: Array<{ dispose: () => void }> },
     store,
-    // Workstream tools are control-plane-backed now; these tests exercise only
-    // topic tools, so a null client is fine (workstream tools go unused here).
-    null,
+    client,
     { refresh },
   );
   const getTool = (name: string) =>

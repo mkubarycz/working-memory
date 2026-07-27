@@ -12,8 +12,12 @@ import { TRAVERSAL_MODES } from './graphTraversals';
 import { AlertsStore, ALERTS_ENABLED } from './alerts/store';
 import type { AlertStatus } from './alerts/types';
 import { NanitesStore, NANITES_ENABLED } from './nanites/store';
-import type { DocumentEnvelope, ListDocumentsResult } from './controlPlaneClient';
-import type { DomainWorkstream } from './domain/workstreams';
+import type {
+  DocumentEnvelope,
+  ListDocumentsResult,
+  Workstream,
+  Topic as ControlPlaneTopic,
+} from './controlPlaneClient';
 
 /**
  * Plain-JSON shapes shipped to the webview. Keep these serializable —
@@ -1048,25 +1052,282 @@ export function emptyAllPanelData(): {
 // Control-plane-sourced Active / Archive tabs (WM 13.0 "rehome-wm-tools").
 //
 // The workstream tabs are being repointed from the journal DB onto the
-// control-plane document store. These builders take the already-fetched domain
-// workstreams (see src/domain/workstreams.ts) and shape them into the SAME
+// control-plane document store. These builders take the already-fetched
+// control-plane workstreams (via `client.wsRead`, the ws-* domain API) and
+// shape them into the SAME
 // PanelWorkstream / PanelWorkstreamSection structures the journal path emits, so
 // the webview renderer is unchanged. Per-workstream extras that need the
 // topic/entry/session domain layers (still journal-only) are stubbed — see
 // buildDomainWorkstreamCard.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Control-plane-sourced topics (WM 13.0 "topic-consumer-repoint").
+//
+// The Topics tab tree and the per-workstream-card topic groups are repointed
+// from the journal `topics` table onto the control-plane Topic kind: membership
+// is the flat `spec.workstreams` slug array and the parent→child DAG is the flat
+// `spec.parents` slug array (both carried on the mapped ControlPlaneTopic the
+// client returns). The journal store is still consulted only for the
+// not-yet-migrated enrichments — topic-type icons and open-alert bubbles.
+// DEFERRED: entry rollups (no entry domain) render as 0, and the per-workstream
+// focus PIN has no control-plane equivalent (every card topic is focused:false).
+// ---------------------------------------------------------------------------
+
+/** Empty topic-type map used when no journal store is available for icon lookup. */
+const EMPTY_TYPE_MAP: Map<string, TopicType> = new Map();
+
+/**
+ * One-line description for a control-plane topic row / card entry. Entry
+ * rollups are journal-only (DEFERRED — the entry domain isn't migrated), so the
+ * text carries the membership count and a non-open status marker only.
+ */
+function describeControlPlaneTopic(t: ControlPlaneTopic): string {
+  const parts: string[] = [];
+  if (t.workstreams.length > 0) {
+    parts.push(
+      `${t.workstreams.length} workstream${t.workstreams.length === 1 ? '' : 's'}`,
+    );
+  }
+  if (t.status !== 'open') {
+    parts.push(t.status);
+  }
+  return parts.join(' • ');
+}
+
+/** Build a Topics-tab row (PanelTopicRow) for a single control-plane topic. */
+function buildControlPlaneTopicRow(
+  t: ControlPlaneTopic,
+  parentSlug: string | null,
+  typeMap: Map<string, TopicType>,
+  store: JournalStore | null,
+): PanelTopicRow {
+  const slug = t.slug ?? '';
+  const bubble = store ? alertBubble(store, slug) : null;
+  return {
+    kind: 'topic-row',
+    id: `topics:topic:${parentSlug ?? 'root'}:${slug}`,
+    label: t.title,
+    description: describeControlPlaneTopic(t),
+    tooltip: `${t.title} (${slug}) — ${t.status}`,
+    icon: iconForType(t.topicType, typeMap),
+    openUri: `working-memory:/topic/${slug}.md`,
+    status: t.status,
+    // TODO: entry↔topic linking is journal-only (DEFERRED) — no entry rollup.
+    recentEntryCount: 0,
+    actions: topicActions(slug),
+    alertCount: bubble?.count ?? 0,
+    alertSeverity: bubble?.severity ?? null,
+  };
+}
+
+/**
+ * Recursively attach control-plane child topics onto a Topics-tab row, walking
+ * the parent→children adjacency built from the flat `spec.parents` refs. Guarded
+ * by a visited-path set (cycle safety) and {@link MAX_TOPIC_DEPTH}.
+ */
+function attachControlPlaneChildren(
+  row: PanelTopicRow,
+  parentSlug: string,
+  childrenBySlug: Map<string, ControlPlaneTopic[]>,
+  typeMap: Map<string, TopicType>,
+  store: JournalStore | null,
+  path: Set<string>,
+  depth: number,
+): void {
+  if (depth >= MAX_TOPIC_DEPTH) {
+    return;
+  }
+  const children = (childrenBySlug.get(parentSlug) ?? []).filter(
+    (c) => (c.slug ?? '') !== '' && !path.has(c.slug as string),
+  );
+  if (children.length === 0) {
+    return;
+  }
+  row.children = children.map((c) => {
+    const childSlug = c.slug as string;
+    const childRow = buildControlPlaneTopicRow(c, parentSlug, typeMap, store);
+    const nextPath = new Set(path);
+    nextPath.add(childSlug);
+    attachControlPlaneChildren(
+      childRow,
+      childSlug,
+      childrenBySlug,
+      typeMap,
+      store,
+      nextPath,
+      depth + 1,
+    );
+    return childRow;
+  });
+}
+
+/**
+ * Build the Topics tab from the control-plane topic list (WM 13.0
+ * "topic-consumer-repoint"). Mirrors the journal {@link getPanelTopicsData}:
+ * only OPEN topics are shown, rooted at the parentless ones, with the DAG walked
+ * top-down via the flat `spec.parents` refs. `available:false` (daemon down)
+ * renders the "control plane not running" empty state.
+ */
+export function buildTopicsPanel(input: {
+  available: boolean;
+  topics: ControlPlaneTopic[];
+  store?: JournalStore | null;
+  error?: string;
+}): PanelData {
+  if (!input.available) {
+    return { tab: 'topics', items: [], emptyMessage: 'Control plane not running.' };
+  }
+  const store = input.store ?? null;
+  const typeMap = store ? loadTypeMap(store) : EMPTY_TYPE_MAP;
+  const open = input.topics.filter(
+    (t) => t.status === 'open' && (t.slug ?? '') !== '',
+  );
+  // Invert the flat parent refs into a parent→children adjacency map. Values are
+  // open topics; keys may reference closed/absent parents, but the tree is only
+  // walked from parentless open roots, so such dangling refs are skipped — the
+  // same orphaning the journal tree exhibits for a child whose only parent is
+  // closed.
+  const childrenBySlug = new Map<string, ControlPlaneTopic[]>();
+  for (const t of open) {
+    for (const p of t.parents) {
+      const arr = childrenBySlug.get(p) ?? [];
+      arr.push(t);
+      childrenBySlug.set(p, arr);
+    }
+  }
+  const roots = open.filter((t) => t.parents.length === 0);
+  const items: PanelItem[] = roots.map((t) => {
+    const slug = t.slug as string;
+    const row = buildControlPlaneTopicRow(t, null, typeMap, store);
+    attachControlPlaneChildren(
+      row,
+      slug,
+      childrenBySlug,
+      typeMap,
+      store,
+      new Set([slug]),
+      1,
+    );
+    return row;
+  });
+  return { tab: 'topics', items, emptyMessage: 'No open topics.' };
+}
+
+/**
+ * Build the per-workstream-card "Topics" group from the control-plane topics
+ * whose `spec.workstreams` membership includes `wsSlug`. Nests a member under
+ * the first of its `spec.parents` that is ALSO a member (mirroring the journal
+ * {@link buildTopics} in-set nesting). The per-workstream focus PIN is DEFERRED
+ * (no control-plane `focused` flag) so every entry is `focused:false`.
+ */
+function buildControlPlaneCardTopics(
+  wsSlug: string,
+  wsId: string,
+  tab: 'active' | 'archive',
+  members: ControlPlaneTopic[],
+  typeMap: Map<string, TopicType>,
+  store: JournalStore | null,
+): PanelTopicsGroup {
+  const panelBySlug = new Map<string, PanelTopic>();
+  const orderedSlugs: string[] = [];
+  for (const t of members) {
+    const slug = t.slug ?? '';
+    if (slug === '') {
+      continue;
+    }
+    const bubble = store ? alertBubble(store, slug) : null;
+    panelBySlug.set(slug, {
+      kind: 'topic',
+      id: `${tab}:topic:${wsId}:${slug}`,
+      label: t.title,
+      description: describeControlPlaneTopic(t),
+      tooltip: `${t.title} (${slug}) — ${t.status}`,
+      icon: iconForType(t.topicType, typeMap),
+      openUri: `working-memory:/topic/${slug}.md`,
+      status: t.status,
+      // TODO: per-workstream focus pin is DEFERRED — control-plane membership
+      // has no `focused` flag, so this renders plain (unfocused) membership.
+      focused: false,
+      recentEntryCount: 0,
+      actions: topicActions(slug, wsSlug),
+      alertCount: bubble?.count ?? 0,
+      alertSeverity: bubble?.severity ?? null,
+    });
+    orderedSlugs.push(slug);
+  }
+  // Nest a member under the first of its parents that is also a member of this
+  // workstream (matches the journal card's in-set nesting).
+  const slugSet = new Set(panelBySlug.keys());
+  const childrenBySlug = new Map<string, string[]>();
+  const rootSlugs: string[] = [];
+  for (const t of members) {
+    const slug = t.slug ?? '';
+    if (slug === '' || !slugSet.has(slug)) {
+      continue;
+    }
+    const inSetParent = t.parents.find((p) => slugSet.has(p) && p !== slug);
+    if (inSetParent) {
+      const arr = childrenBySlug.get(inSetParent) ?? [];
+      arr.push(slug);
+      childrenBySlug.set(inSetParent, arr);
+    } else {
+      rootSlugs.push(slug);
+    }
+  }
+  const attach = (slug: string, path: Set<string>, depth: number): void => {
+    if (depth >= MAX_TOPIC_DEPTH) {
+      return;
+    }
+    const kids = (childrenBySlug.get(slug) ?? []).filter((s) => !path.has(s));
+    if (kids.length === 0) {
+      return;
+    }
+    const panel = panelBySlug.get(slug);
+    if (!panel) {
+      return;
+    }
+    panel.children = kids.map((s) => panelBySlug.get(s) as PanelTopic);
+    for (const s of kids) {
+      const next = new Set(path);
+      next.add(s);
+      attach(s, next, depth + 1);
+    }
+  };
+  for (const s of rootSlugs) {
+    attach(s, new Set([s]), 1);
+  }
+  const children = rootSlugs.map((s) => panelBySlug.get(s) as PanelTopic);
+  const count = orderedSlugs.length;
+  return {
+    kind: 'topics-group',
+    id: `${tab}:topics-group:${wsId}`,
+    label: count > 0 ? `Topics (${count})` : 'Topics',
+    description: count > 0 ? undefined : 'none linked',
+    icon: FALLBACK_GROUP_ICON,
+    collapsible: count > 0,
+    children,
+  };
+}
+
 /**
  * Build a simplified Active/Archive workstream CARD from a control-plane
- * Workstream document. Extras that require the not-yet-migrated topic / entry /
- * session domain layers — focused topics, the per-workstream topic + session
- * groups, alert bubbles, and recent-entry counts — are stubbed to empty/zero.
- * Only the fields a Workstream document actually carries (title, slug, lifecycle
- * status/section, closure) drive the card.
+ * Workstream document. The per-workstream "Topics" group is populated from the
+ * control-plane topic membership (`spec.workstreams`) when `topics` is supplied;
+ * absent → the group is omitted (backward-compat for callers that don't fetch
+ * topics, e.g. the pure-builder unit tests). Extras that still require the
+ * not-yet-migrated entry / session domain layers — recent-entry counts, the
+ * sessions group, alert bubbles — are stubbed to empty/zero. The per-workstream
+ * focused-topic PIN is DEFERRED: control-plane membership carries no `focused`
+ * flag, so `focused_topics` is always empty and every card topic is
+ * `focused:false`.
  */
 function buildDomainWorkstreamCard(
-  ws: DomainWorkstream,
+  ws: Workstream,
   tab: 'active' | 'archive',
+  topics: ControlPlaneTopic[] | undefined,
+  typeMap: Map<string, TopicType>,
+  store: JournalStore | null,
 ): PanelWorkstream {
   const slug = ws.slug ?? '';
   const status = ws.status;
@@ -1091,6 +1352,16 @@ function buildDomainWorkstreamCard(
             },
           ]
         : sectionMoveActions({ slug, status });
+  // Populate the per-card Topics group from control-plane membership when the
+  // topic list was fetched. Only the topics group is added — the sessions group
+  // needs the (not-yet-migrated) session domain layer.
+  const children: (PanelTopicsGroup | PanelSessionsGroup)[] = [];
+  if (topics !== undefined && slug.length > 0) {
+    const members = topics.filter((t) => t.workstreams.includes(slug));
+    children.push(
+      buildControlPlaneCardTopics(slug, ws.id, tab, members, typeMap, store),
+    );
+  }
   return {
     kind: 'workstream',
     // Document uuid keeps the id stable across refreshes (webview expand key).
@@ -1110,10 +1381,10 @@ function buildDomainWorkstreamCard(
     alertCount: 0,
     alertSeverity: null,
     actions,
-    // TODO: needs topic domain layer — no focused topics yet.
+    // TODO: per-workstream focus pin is DEFERRED (control-plane membership has
+    // no focus flag) — no pinned focused topics.
     focused_topics: [],
-    // TODO: needs topic/entry/session domain layers — no topic/session groups.
-    children: [],
+    children,
   };
 }
 
@@ -1130,10 +1401,18 @@ export interface WorkstreamPanels {
  * are grouped by lifecycle status — queue/progress/backlog → the three Active
  * sections, closed → Archive. Ordering within a group follows the store's
  * newest-first list order (manual position isn't migrated yet).
+ *
+ * When `topics` (the control-plane topic list from `client.topicRead`) is
+ * supplied, each card's "Topics" group is populated from `spec.workstreams`
+ * membership (WM 13.0 "topic-consumer-repoint"); `store` is used purely for the
+ * journal-sourced enrichments that aren't migrated yet (topic-type icons, alert
+ * bubbles) and degrades gracefully when null.
  */
 export function buildWorkstreamPanels(input: {
   available: boolean;
-  workstreams: DomainWorkstream[];
+  workstreams: Workstream[];
+  topics?: ControlPlaneTopic[];
+  store?: JournalStore | null;
   error?: string;
 }): WorkstreamPanels {
   if (!input.available) {
@@ -1142,6 +1421,8 @@ export function buildWorkstreamPanels(input: {
       archive: { tab: 'archive', items: [], emptyMessage: 'Control plane not running.' },
     };
   }
+  const store = input.store ?? null;
+  const typeMap = store ? loadTypeMap(store) : EMPTY_TYPE_MAP;
   const buckets: Record<WorkstreamSection, PanelWorkstream[]> = {
     queue: [],
     progress: [],
@@ -1150,10 +1431,12 @@ export function buildWorkstreamPanels(input: {
   const archived: PanelWorkstream[] = [];
   for (const ws of input.workstreams) {
     if (ws.status === 'closed') {
-      archived.push(buildDomainWorkstreamCard(ws, 'archive'));
+      archived.push(
+        buildDomainWorkstreamCard(ws, 'archive', input.topics, typeMap, store),
+      );
     } else {
       buckets[sectionForStatus(ws.status)].push(
-        buildDomainWorkstreamCard(ws, 'active'),
+        buildDomainWorkstreamCard(ws, 'active', input.topics, typeMap, store),
       );
     }
   }

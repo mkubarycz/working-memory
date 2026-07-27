@@ -1,18 +1,22 @@
 /**
- * Kind loader — discovers `*.kind.ts` / `*.kind.js` files in the kinds folder
- * and registers each descriptor. Adding a kind = dropping ONE `*.kind.ts` file
- * into this folder; there is no central list to edit.
+ * Kind loader — discovers per-kind SUBFOLDERS in the kinds folder and registers
+ * each descriptor. Adding a kind = dropping ONE `<kind>/index.ts` folder into
+ * this directory; there is no central list to edit.
  *
- * Discovery is a runtime directory scan of `dir` (default: this module's own
- * folder). It works under BOTH runtimes because we resolve every file through a
- * dynamic `import()` (which `tsc --module node16` preserves rather than
- * downleveling to `require`):
- *   - Compiled CJS daemon: `__dirname` is `out/control-plane/kinds`, which holds
- *     the compiled `*.kind.js` files. `import()` loads them as CJS.
- *   - Vitest: `__dirname` is `control-plane/src/kinds`, which holds the source
- *     `*.kind.ts` files. Vitest's transform pipeline handles the `import()`.
- * `resolveEntry` normalizes the differing CJS/ESM module shapes so both yield
- * the same `{ name, descriptor }`.
+ * Discovery is a runtime scan of `dir` (default: this module's own folder). For
+ * each SUBDIRECTORY it resolves the entry module `<subdir>/index.js` (compiled
+ * daemon) or `<subdir>/index.ts` (vitest), preferring `.js` when both exist. It
+ * works under BOTH runtimes because we resolve every entry through a dynamic
+ * `import()` (which `tsc --module node16` preserves rather than downleveling to
+ * `require`):
+ *   - Compiled CJS daemon: `__dirname` is `out/control-plane/kinds`, whose
+ *     subfolders hold the compiled `<kind>/index.js`. `import()` loads them as CJS.
+ *   - Vitest: `__dirname` is `control-plane/src/kinds`, whose subfolders hold the
+ *     source `<kind>/index.ts`. Vitest's transform pipeline handles the `import()`.
+ * `resolveEntry` normalizes the differing CJS/ESM module shapes so both yield the
+ * same `{ name, descriptor }`. Sibling files at the kinds root (base.ts,
+ * loader.ts, registry.ts) are NOT directories, so they are skipped; a subfolder
+ * with no `index` file is skipped too (never throws).
  */
 
 import * as fs from 'node:fs';
@@ -21,10 +25,8 @@ import { pathToFileURL } from 'node:url';
 import { registerKind } from './registry.js';
 import type { KindModule } from './base.js';
 
-const KIND_FILE_RE = /\.kind\.(js|ts)$/;
-
 /** Unwrap the CJS/ESM interop shapes down to the `{ name, descriptor }` entry. */
-function resolveEntry(mod: unknown, file: string): KindModule {
+function resolveEntry(mod: unknown, source: string): KindModule {
   const m = mod as Record<string, unknown>;
   const candidates: unknown[] = [
     m?.default,
@@ -37,42 +39,56 @@ function resolveEntry(mod: unknown, file: string): KindModule {
       return entry as KindModule;
     }
   }
-  throw new Error(`kind file "${file}" must default-export { name, descriptor }`);
+  throw new Error(`kind module "${source}" must default-export { name, descriptor }`);
 }
 
 /**
- * Discover and register every kind file in `dir`. Returns the registered names.
- * Missing directories yield `[]` (never throws on a bad path).
+ * Resolve a kind subfolder's entry module: `<subdir>/index.js` preferred (so a
+ * compiled build wins over stray sources), else `<subdir>/index.ts`. Returns
+ * `null` when the subfolder has no `index` file, so the caller can skip it
+ * rather than throw.
+ */
+function resolveIndex(subdir: string): string | null {
+  const js = path.join(subdir, 'index.js');
+  if (fs.existsSync(js)) {
+    return js;
+  }
+  const ts = path.join(subdir, 'index.ts');
+  if (fs.existsSync(ts)) {
+    return ts;
+  }
+  return null;
+}
+
+/**
+ * Discover and register every kind subfolder in `dir`. Returns the registered
+ * names. Missing directories yield `[]` (never throws on a bad path).
  */
 export async function loadKinds(dir: string = __dirname): Promise<string[]> {
-  let names: string[];
+  let entries: fs.Dirent[];
   try {
-    names = fs.readdirSync(dir);
+    entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return [];
   }
 
-  // One extension per environment in practice; dedupe by base name (prefer .js)
-  // to stay safe if both ever coexist in a directory.
-  const byBase = new Map<string, string>();
-  for (const file of names) {
-    if (!KIND_FILE_RE.test(file) || file.endsWith('.d.ts')) {
+  const registered: string[] = [];
+  for (const entry of entries) {
+    // Only per-kind SUBFOLDERS are kinds; base.ts / loader.ts / registry.ts at
+    // the root are files and are skipped.
+    if (!entry.isDirectory()) {
       continue;
     }
-    const base = file.replace(KIND_FILE_RE, '');
-    const existing = byBase.get(base);
-    if (!existing || (existing.endsWith('.ts') && file.endsWith('.js'))) {
-      byBase.set(base, file);
+    const index = resolveIndex(path.join(dir, entry.name));
+    if (!index) {
+      // A subfolder without an `index` entry module is not a kind — skip it.
+      continue;
     }
-  }
-
-  const registered: string[] = [];
-  for (const file of byBase.values()) {
-    const full = path.join(dir, file);
-    const mod = (await import(pathToFileURL(full).href)) as unknown;
-    const entry = resolveEntry(mod, file);
-    registerKind(entry.name, entry.descriptor);
-    registered.push(entry.name);
+    const mod = (await import(pathToFileURL(index).href)) as unknown;
+    const kind = resolveEntry(mod, entry.name);
+    registerKind(kind.name, kind.descriptor, kind.registerApi);
+    registered.push(kind.name);
   }
   return registered;
 }
+

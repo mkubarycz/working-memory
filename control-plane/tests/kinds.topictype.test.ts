@@ -9,7 +9,7 @@ import {
   KindValidationError,
 } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
-import topicTypeModule from '../src/kinds/topictype.kind';
+import topicTypeModule from '../src/kinds/topictype';
 import { startServer } from '../src/server';
 import { openStore } from '../src/store';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
