@@ -53,7 +53,10 @@ type McpHttpServerDefinitionCtor = new (
  * Wire the control-plane into the extension. Safe to call unconditionally from
  * `activate()`; each half guards its own failures.
  */
-export function initControlPlaneIntegration(context: vscode.ExtensionContext): void {
+export function initControlPlaneIntegration(
+  context: vscode.ExtensionContext,
+  onControlPlaneReady?: () => void,
+): void {
   try {
     maybeInstallWm2Agent(context);
   } catch (err) {
@@ -61,7 +64,7 @@ export function initControlPlaneIntegration(context: vscode.ExtensionContext): v
   }
 
   try {
-    registerControlPlaneMcpServer(context);
+    registerControlPlaneMcpServer(context, onControlPlaneReady);
   } catch (err) {
     console.error('[working-memory] control-plane MCP registration failed:', err);
   }
@@ -72,7 +75,10 @@ export function initControlPlaneIntegration(context: vscode.ExtensionContext): v
  * daemon's port file and fire the change event so VS Code (re)queries once the
  * endpoint is known.
  */
-function registerControlPlaneMcpServer(context: vscode.ExtensionContext): void {
+function registerControlPlaneMcpServer(
+  context: vscode.ExtensionContext,
+  onControlPlaneReady?: () => void,
+): void {
   const lm = vscode.lm as unknown as {
     registerMcpServerDefinitionProvider?: RegisterMcpFn;
   };
@@ -125,6 +131,11 @@ function registerControlPlaneMcpServer(context: vscode.ExtensionContext): void {
     if (info) {
       discovered = info;
       didChange.fire();
+      // The control-plane-backed panel tabs (Active/Archive/Topics) rendered
+      // their empty state during activation because the daemon's port file did
+      // not exist yet. Now that the daemon is ready, nudge the panel to
+      // re-fetch so it populates without a manual refresh.
+      onControlPlaneReady?.();
       console.log(
         `[working-memory] control-plane discovered on 127.0.0.1:${info.port} ` +
           `(pid ${info.pid}); MCP server registered.`,

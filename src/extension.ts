@@ -191,12 +191,6 @@ export function activate(context: vscode.ExtensionContext): void {
   controlPlaneHost = new ControlPlaneHost(context);
   void controlPlaneHost.start();
 
-  // Wire the WM 13.0 control-plane: register its MCP server with Copilot once
-  // the daemon's port file appears, and install the wm2 chat mode in the
-  // sandbox. Independent of the journal DB and self-guarding, so it runs here
-  // regardless of hub/DB state.
-  initControlPlaneIntegration(context);
-
   // Try to open the store so we can wire it into every provider.
   // Failures are non-fatal — the providers degrade gracefully when
   // `store` is null.
@@ -252,6 +246,14 @@ export function activate(context: vscode.ExtensionContext): void {
     panelProvider.refresh();
     contentProvider.refresh();
   };
+
+  // Wire the WM 13.0 control-plane: register its MCP server with Copilot once
+  // the daemon's port file appears, and install the wm2 chat mode in the
+  // sandbox. Independent of the journal DB and self-guarding, so it runs here
+  // regardless of hub/DB state. Passing `refresh` lets the readiness poll nudge
+  // the control-plane-backed panel tabs once the daemon's port file appears, so
+  // the panel populates without a manual refresh on first load.
+  initControlPlaneIntegration(context, refresh);
 
   const setAlertStatus = (
     arg: number | { id?: number } | undefined,
