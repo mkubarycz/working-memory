@@ -12,6 +12,7 @@
 import { test, expect, vi } from 'vitest';
 import { openJournalStore } from '../src/db';
 import type {
+  Alert,
   ControlPlaneClient,
   DocumentEnvelope,
   Topic,
@@ -361,6 +362,139 @@ test('topic-type doc: unknown control-plane slug falls back to the journal rende
   // Journal-fallback topic-type doc stays WRITABLE while a store is present.
   const stat = await provider.stat(uri);
   expect(stat.permissions).toBeUndefined();
+
+  store.close();
+});
+
+// --- Bug 1: id-or-slug resolution -----------------------------------------
+// A topic's `spec.workstreams` can hold a slugless workstream's UUID (written
+// there by topic↔workstream attach when the panel opened it via
+// `/document/<uuid>`). The topic-doc link is then `open/workstream/<uuid>`, so
+// the by-slug lookup misses. Resolution must fall back to a by-id lookup rather
+// than rendering the "# Workstream not found" journal fallback.
+test('workstream doc: by-slug miss falls back to a by-id lookup and renders the doc', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const wsUuid = 'ws-uuid-42';
+  const getDocument = vi.fn(
+    async (input: { id?: string; slug?: string; kind?: string }) => {
+      // Slug lookup misses (the identifier is a uuid, not a live slug)…
+      if (input.slug === wsUuid) {
+        return { available: true, document: null };
+      }
+      // …but the by-id retry resolves the workstream document.
+      if (input.id === wsUuid && input.kind === 'Workstream') {
+        return {
+          available: true,
+          document: makeWorkstreamEnvelope(wsUuid, wsUuid),
+        };
+      }
+      return { available: true, document: null };
+    },
+  );
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri(`/workstream/${wsUuid}.md`) as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  // The control-plane doc renders — NOT the "# Workstream not found" fallback.
+  expect(body).toContain('# Workstream: CP Workstream');
+  expect(body).not.toContain('Workstream not found');
+  // Both lookups were attempted: first by slug, then by id.
+  expect(getDocument).toHaveBeenCalledWith({ slug: wsUuid, kind: 'Workstream' });
+  expect(getDocument).toHaveBeenCalledWith({ id: wsUuid, kind: 'Workstream' });
+
+  store.close();
+});
+
+// --- Bug 2: topic doc Alerts section --------------------------------------
+function makeAlert(id: string, topics: string[], status: Alert['status']): Alert {
+  return {
+    id,
+    slug: null,
+    title: `Alert ${id}`,
+    description: 'something needs attention',
+    recommended_action: 'do the thing',
+    status,
+    dedupe_key: null,
+    created_by: 'system',
+    topics,
+    created_at: 1_700_000_000,
+    updated_at: 1_700_000_000,
+    resourceVersion: 1,
+  };
+}
+
+test('topic doc: renders an `## Alerts` section for a matching open alert', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
+    input.slug === 'cp-topic' && input.kind === 'Topic'
+      ? { available: true, document: makeEnvelope('doc-1', 'cp-topic') }
+      : { available: true, document: null },
+  );
+  const alertRead = vi.fn(async () => [
+    makeAlert('alert-1', ['cp-topic'], 'alert'), // open + matches → shown
+    makeAlert('alert-closed', ['cp-topic'], 'closed'), // closed → excluded
+    makeAlert('alert-other', ['different-topic'], 'alert'), // other topic → excluded
+  ]);
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+    alertRead,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri('/topic/cp-topic.md') as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  expect(body).toContain('## Alerts');
+  expect(body).toContain(
+    '[Alert alert-1](vscode://kubarycz.working-memory/open/alert/alert-1)',
+  );
+  // Closed / non-matching alerts are excluded.
+  expect(body).not.toContain('alert-closed');
+  expect(body).not.toContain('alert-other');
+
+  store.close();
+});
+
+test('topic doc: renders NO `## Alerts` section when there are no matching alerts', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
+    input.slug === 'cp-topic' && input.kind === 'Topic'
+      ? { available: true, document: makeEnvelope('doc-1', 'cp-topic') }
+      : { available: true, document: null },
+  );
+  const alertRead = vi.fn(async () => [
+    makeAlert('alert-other', ['different-topic'], 'alert'),
+  ]);
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+    alertRead,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri('/topic/cp-topic.md') as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  expect(body).toContain('# Topic: CP Topic');
+  expect(body).not.toContain('## Alerts');
 
   store.close();
 });

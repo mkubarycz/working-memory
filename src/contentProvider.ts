@@ -22,12 +22,17 @@ import {
 import { AlertsStore } from './alerts/store';
 import { NanitesStore } from './nanites/store';
 import type { AlertStatus } from './alerts/types';
-import type { ControlPlaneClient } from './controlPlaneClient';
+import type {
+  Alert,
+  ControlPlaneClient,
+  DocumentEnvelope,
+} from './controlPlaneClient';
 import {
   renderControlPlaneUnavailableDoc,
   renderDocumentNotFoundDoc,
 } from './documentRenderer';
 import { renderDocumentByKind } from './documentRenderers';
+import { renderTopicDocument } from './documentRenderers/topic';
 
 type DocKind =
   | 'workstream'
@@ -286,13 +291,33 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     const client = this.controlPlaneClient;
     if (client) {
       try {
-        const result = await client.getDocument({
+        let result = await client.getDocument({
           slug,
           kind: controlPlaneKind,
         });
+        // A deep-link identifier isn't always a live SLUG. A slugless
+        // workstream is opened by the panel via `/document/<uuid>`, and
+        // topic↔workstream attach can write that uuid into a topic's
+        // `spec.workstreams`, so the topic-doc link becomes
+        // `open/workstream/<uuid>`. The by-slug lookup then misses; retry by id
+        // so the doc resolves instead of rendering the "not found" fallback.
+        if (result.available && !result.document) {
+          result = await client.getDocument({
+            id: slug,
+            kind: controlPlaneKind,
+          });
+        }
         if (result.available && result.document) {
+          const doc = result.document;
+          // Topic docs get an `## Alerts` section (reverse relation: an Alert's
+          // `spec.topics` lists the topic slugs it concerns), resolved here and
+          // passed into the pure renderer.
+          const text =
+            controlPlaneKind === 'Topic'
+              ? renderTopicDocument(doc, await this.topicAlerts(client, doc))
+              : renderDocumentByKind(doc);
           return {
-            text: renderDocumentByKind(result.document),
+            text,
             fromControlPlane: true,
           };
         }
@@ -307,6 +332,34 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
           ? 'topic-type'
           : 'topic';
     return { text: this.render(uriKind, slug, uri), fromControlPlane: false };
+  }
+
+  /**
+   * Resolve the OPEN alerts that concern a control-plane topic document. Alerts
+   * are a reverse relation — an Alert's `spec.topics` array lists the topic
+   * slugs it concerns — so they're read via `alertRead()` and matched against
+   * the topic's slug here (closed alerts excluded). Any control-plane error
+   * degrades to an empty list so the topic doc still renders.
+   */
+  private async topicAlerts(
+    client: ControlPlaneClient,
+    doc: DocumentEnvelope,
+  ): Promise<Alert[]> {
+    const topicSlug = doc.metadata.slug;
+    if (!topicSlug) {
+      return [];
+    }
+    try {
+      const alerts = await client.alertRead();
+      return alerts.filter(
+        (a) =>
+          a.status !== 'closed' &&
+          Array.isArray(a.topics) &&
+          a.topics.includes(topicSlug),
+      );
+    } catch {
+      return [];
+    }
   }
 
   /**
