@@ -32,6 +32,19 @@
       "dependsOrder": "sequence",
       "dependsOn": ["kill-stale-control-plane", "npm: compile:control-plane"],
       "problemMatcher": []
+    },
+    {
+      // Composite prep for the EXTENSION F5. The embedded daemon is a separate
+      // OS process that orphans when the debugger is stopped abruptly (its
+      // parent ext-host dies without a clean deactivate). A leftover daemon
+      // holds port 7717 + the single-instance lock, so the next F5 connects to
+      // the STALE daemon (with its un-reset sandbox) instead of spawning a fresh
+      // one — surfacing leftover workstreams. Killing stale daemons before the
+      // full compile guarantees each F5 spawns a fresh, sandbox-resetting daemon.
+      "label": "prep-extension",
+      "dependsOrder": "sequence",
+      "dependsOn": ["kill-stale-control-plane", "npm: compile"],
+      "problemMatcher": []
     }
   ]
 }

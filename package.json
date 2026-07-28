@@ -18,41 +18,12 @@
     "node": ">=18"
   },
   "main": "./out/src/extension.js",
-  "enabledApiProposals": [
-    "chatSessionsProvider"
-  ],
   "activationEvents": [
     "onFileSystem:working-memory",
     "onStartupFinished",
     "onUri"
   ],
   "contributes": {
-    "chatSessions": [
-      {
-        "type": "working-memory-capture",
-        "name": "working-memory-capture",
-        "displayName": "Working Memory: Capture",
-        "description": "Turn what you type into Working Memory journal entries.",
-        "icon": "$(brain)"
-      }
-    ],
-    "colors": [
-      { "id": "workingMemory.ws.color0", "description": "Working Memory workstream accent (red)", "defaults": { "dark": "#cb4d4d", "light": "#cb4d4d", "highContrast": "#cb4d4d" } },
-      { "id": "workingMemory.ws.color1", "description": "Working Memory workstream accent (red-orange)", "defaults": { "dark": "#cb804d", "light": "#cb804d", "highContrast": "#cb804d" } },
-      { "id": "workingMemory.ws.color2", "description": "Working Memory workstream accent (orange)", "defaults": { "dark": "#cbac4d", "light": "#cbac4d", "highContrast": "#cbac4d" } },
-      { "id": "workingMemory.ws.color3", "description": "Working Memory workstream accent (yellow)", "defaults": { "dark": "#bbcb4d", "light": "#bbcb4d", "highContrast": "#bbcb4d" } },
-      { "id": "workingMemory.ws.color4", "description": "Working Memory workstream accent (chartreuse)", "defaults": { "dark": "#88cb4d", "light": "#88cb4d", "highContrast": "#88cb4d" } },
-      { "id": "workingMemory.ws.color5", "description": "Working Memory workstream accent (green)", "defaults": { "dark": "#4dcb62", "light": "#4dcb62", "highContrast": "#4dcb62" } },
-      { "id": "workingMemory.ws.color6", "description": "Working Memory workstream accent (spring-green)", "defaults": { "dark": "#4dcb90", "light": "#4dcb90", "highContrast": "#4dcb90" } },
-      { "id": "workingMemory.ws.color7", "description": "Working Memory workstream accent (teal)", "defaults": { "dark": "#4dcbb6", "light": "#4dcbb6", "highContrast": "#4dcbb6" } },
-      { "id": "workingMemory.ws.color8", "description": "Working Memory workstream accent (cyan)", "defaults": { "dark": "#4db2cb", "light": "#4db2cb", "highContrast": "#4db2cb" } },
-      { "id": "workingMemory.ws.color9", "description": "Working Memory workstream accent (blue)", "defaults": { "dark": "#4d8ccb", "light": "#4d8ccb", "highContrast": "#4d8ccb" } },
-      { "id": "workingMemory.ws.color10", "description": "Working Memory workstream accent (indigo)", "defaults": { "dark": "#4d4dcb", "light": "#4d4dcb", "highContrast": "#4d4dcb" } },
-      { "id": "workingMemory.ws.color11", "description": "Working Memory workstream accent (violet)", "defaults": { "dark": "#804dcb", "light": "#804dcb", "highContrast": "#804dcb" } },
-      { "id": "workingMemory.ws.color12", "description": "Working Memory workstream accent (purple)", "defaults": { "dark": "#b24dcb", "light": "#b24dcb", "highContrast": "#b24dcb" } },
-      { "id": "workingMemory.ws.color13", "description": "Working Memory workstream accent (magenta)", "defaults": { "dark": "#cb4db2", "light": "#cb4db2", "highContrast": "#cb4db2" } },
-      { "id": "workingMemory.ws.color14", "description": "Working Memory workstream accent (rose)", "defaults": { "dark": "#cb4d80", "light": "#cb4d80", "highContrast": "#cb4d80" } }
-    ],
     "configuration": {
       "title": "Working Memory",
       "properties": {

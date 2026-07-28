@@ -11,17 +11,17 @@
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}",
-        "--enable-proposed-api=kubarycz.working-memory",
         "${env:HOME}/wm-sandbox"
       ],
       "env": {
         "WM_CONTROL_PLANE_HOME": "${env:HOME}/wm-control-plane-sandbox",
-        "WM_CONTROL_PLANE_HOSTING": "embedded"
+        "WM_CONTROL_PLANE_HOSTING": "embedded",
+        "WM_CONTROL_PLANE_KILL_STALE": "1"
       },
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
       ],
-      "preLaunchTask": "npm: compile"
+      "preLaunchTask": "prep-extension"
     },
     {
       // Standalone control-plane daemon (WM 13.0 Phase 1). F5 compiles the

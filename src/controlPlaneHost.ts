@@ -32,7 +32,7 @@ import * as vscode from 'vscode';
 import * as os from 'node:os';
 import * as http from 'node:http';
 import * as path from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import {
   CONTROL_PLANE_HOME_ENV,
@@ -147,10 +147,47 @@ export class ControlPlaneHost implements vscode.Disposable {
       }
 
       void this.logChildNodeVersion(process.execPath);
+      await this.freeStalePort();
       this.spawnSupervised();
     } catch (err) {
       this.log(`start failed: ${(err as Error).message}`);
       console.error('[working-memory] control-plane host start failed:', err);
+    }
+  }
+
+  /**
+   * Best-effort cleanup of a stale daemon left bound to our port by a previous
+   * ext-host that didn't shut it down — e.g. a debugger *reload/restart*, which
+   * (unlike a fresh launch) does NOT re-run the `kill-stale-control-plane`
+   * preLaunchTask. OPT-IN via `WM_CONTROL_PLANE_KILL_STALE=1` (set only by the
+   * solo sandbox F5 config) so it can never disturb a legitimately separate
+   * daemon — e.g. the standalone service in the compound launch. POSIX only;
+   * no-ops on Windows and never throws into activation.
+   */
+  private async freeStalePort(): Promise<void> {
+    if (
+      process.env.WM_CONTROL_PLANE_KILL_STALE !== '1' ||
+      process.platform === 'win32'
+    ) {
+      return;
+    }
+    try {
+      await new Promise<void>((resolve) => {
+        // Kill any daemon whose command line contains the daemon entry path.
+        execFile('pkill', ['-f', DAEMON_ENTRY], () => resolve());
+      });
+      // Clear the single-instance lock + port file so the fresh daemon doesn't
+      // refuse to start behind the just-killed one.
+      for (const name of ['control-plane.lock', 'control-plane.port.json']) {
+        try {
+          rmSync(path.join(this.home, 'run', name), { force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
+      this.log('freed any stale daemon on the sandbox port before spawning.');
+    } catch (err) {
+      this.log(`freeStalePort best-effort failure: ${(err as Error).message}`);
     }
   }
 

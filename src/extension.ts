@@ -18,7 +18,6 @@ import { WorkstreamDocumentProvider } from './contentProvider';
 import { AlertsStore, ALERTS_ENABLED, type AlertStatus } from './alerts';
 import { NanitesStore, NANITES_ENABLED } from './nanites';
 import { registerTools } from './tools';
-import { registerWorkingMemoryChatSession } from './chatSession';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
 import {
   isMarkdownPreviewViewType,
@@ -1056,9 +1055,6 @@ export function activate(context: vscode.ExtensionContext): void {
   // useful work for them to do.
   if (store) {
     registerTools(context, store, controlPlaneClient, { refresh });
-    // Prototype: Working Memory "capture" chat-session type (proposed API).
-    // No-op when the proposed API isn't enabled.
-    registerWorkingMemoryChatSession(context, store, controlPlaneClient);
     refresh();
   }
 }

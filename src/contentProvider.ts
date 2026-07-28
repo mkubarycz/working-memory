@@ -359,7 +359,7 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
   }
 
   /**
-   * Resolve the alerts that concern a control-plane topic document. Alerts are a
+@@   * Resolve the alerts that concern a control-plane topic document. Alerts are a
    * reverse relation — an Alert's `spec.topics` array lists the topic slugs it
    * concerns — so they're read via `alertRead()` and matched against the topic's
    * slug here. CLOSED alerts are INCLUDED (so the topic doc can render their
