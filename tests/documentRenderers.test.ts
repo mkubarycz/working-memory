@@ -8,7 +8,6 @@ import { renderWorkstreamDocument } from '../src/documentRenderers/workstream';
 import { renderTopicDocument } from '../src/documentRenderers/topic';
 import { renderTopicTypeDocument } from '../src/documentRenderers/topictype';
 import { renderAlertDocument } from '../src/documentRenderers/alert';
-import { renderJournalEntryDocument } from '../src/documentRenderers/journalentry';
 
 function makeEnvelope(
   kind: string,
@@ -145,48 +144,6 @@ describe('renderAlertDocument', () => {
       }),
     );
     expect(md).toContain('# Alert: First line');
-  });
-});
-
-describe('renderJournalEntryDocument', () => {
-  it('renders heading, body and workstream / session / topic deep links', () => {
-    const md = renderJournalEntryDocument(
-      makeEnvelope(
-        'JournalEntry',
-        {
-          body: 'decision: chose option B',
-          workstream: 'control-plane',
-          session: 'sess-42',
-          topics: ['blackboard', 'renderers'],
-          createdBy: 'executor',
-        },
-        { slug: null },
-      ),
-    );
-    expect(md).toContain('# JournalEntry: decision: chose option B');
-    expect(md).toContain('`createdBy`: executor');
-    expect(md).toContain(
-      '[control-plane](vscode://kubarycz.working-memory/open/workstream/control-plane)',
-    );
-    expect(md).toContain(
-      '[sess-42](vscode://kubarycz.working-memory/open/session/sess-42)',
-    );
-    expect(md).toContain(
-      '[blackboard](vscode://kubarycz.working-memory/open/topic/blackboard)',
-    );
-  });
-
-  it('omits the session link when session is absent', () => {
-    const md = renderJournalEntryDocument(
-      makeEnvelope(
-        'JournalEntry',
-        { body: 'fact: something', workstream: 'ws', topics: [] },
-        { slug: null },
-      ),
-    );
-    const sessionSection = md.slice(md.indexOf('## Session'));
-    expect(sessionSection).toContain('_none_');
-    expect(sessionSection).not.toContain('/open/session/');
   });
 });
 

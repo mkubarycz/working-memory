@@ -432,7 +432,7 @@ function makeAlert(id: string, topics: string[], status: Alert['status']): Alert
   };
 }
 
-test('topic doc: renders an `## Alerts` section for a matching open alert', async () => {
+test('topic doc: renders rich per-status alert cards (incl. closed) with action pills', async () => {
   const store = openJournalStore({ dbPath: ':memory:' });
 
   const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
@@ -441,8 +441,9 @@ test('topic doc: renders an `## Alerts` section for a matching open alert', asyn
       : { available: true, document: null },
   );
   const alertRead = vi.fn(async () => [
-    makeAlert('alert-1', ['cp-topic'], 'alert'), // open + matches → shown
-    makeAlert('alert-closed', ['cp-topic'], 'closed'), // closed → excluded
+    makeAlert('alert-1', ['cp-topic', 'other-topic'], 'alert'),
+    makeAlert('info-1', ['cp-topic'], 'informational'),
+    makeAlert('closed-1', ['cp-topic'], 'closed'), // closed → NOW included
     makeAlert('alert-other', ['different-topic'], 'alert'), // other topic → excluded
   ]);
 
@@ -459,11 +460,43 @@ test('topic doc: renders an `## Alerts` section for a matching open alert', asyn
   const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
 
   expect(body).toContain('## Alerts');
+  // Bold title deep-linked by id (rich header, not a bare bullet).
   expect(body).toContain(
-    '[Alert alert-1](vscode://kubarycz.working-memory/open/alert/alert-1)',
+    '**[Alert alert-1](vscode://kubarycz.working-memory/open/alert/alert-1)**',
   );
-  // Closed / non-matching alerts are excluded.
-  expect(body).not.toContain('alert-closed');
+  // Detail lines: description + recommended action are now exposed.
+  expect(body).toContain('something needs attention');
+  expect(body).toContain('Next: do the thing');
+  // Other topics line (the current topic is filtered out).
+  expect(body).toContain(
+    'Other topics: [other-topic](vscode://kubarycz.working-memory/open/topic/other-topic)',
+  );
+
+  // `alert` status → Acknowledge · Close.
+  expect(body).toContain(
+    '[Acknowledge](vscode://kubarycz.working-memory/alert/alert-1/acknowledge)',
+  );
+  expect(body).toContain(
+    '[Close](vscode://kubarycz.working-memory/alert/alert-1/close)',
+  );
+  // `informational` status → Escalate · Close.
+  expect(body).toContain(
+    '[Escalate](vscode://kubarycz.working-memory/alert/info-1/reopen)',
+  );
+  expect(body).toContain(
+    '[Close](vscode://kubarycz.working-memory/alert/info-1/close)',
+  );
+  // `closed` status → Reopen (Alert) · Reopen (Information); the closed alert is
+  // now INCLUDED so its Reopen pills render.
+  expect(body).toContain('closed-1');
+  expect(body).toContain(
+    '[Reopen (Alert)](vscode://kubarycz.working-memory/alert/closed-1/reopen)',
+  );
+  expect(body).toContain(
+    '[Reopen (Information)](vscode://kubarycz.working-memory/alert/closed-1/acknowledge)',
+  );
+
+  // The alert on a different topic is still excluded.
   expect(body).not.toContain('alert-other');
 
   store.close();

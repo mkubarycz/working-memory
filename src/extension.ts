@@ -356,6 +356,23 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
 
+  const setControlPlaneAlertStatus = async (
+    id: string,
+    status: AlertStatus,
+  ): Promise<void> => {
+    if (!controlPlaneClient) {
+      vscode.window.showErrorMessage('Working Memory: alerts unavailable.');
+      return;
+    }
+    try {
+      await controlPlaneClient.alertUpdate({ id, status });
+      refresh();
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Working Memory: ${m}`);
+    }
+  };
+
   const editAlertField = async (
     id: number | undefined,
     field: 'description' | 'recommended_action',
@@ -961,28 +978,34 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerUriHandler({
       handleUri(uri: vscode.Uri): void {
         const parts = uri.path.split('/').filter((p) => p.length > 0);
-        // Alert action deep links: alert/<id>/<acknowledge|close>. The built-in
-        // markdown preview strips command: links, so the alert cards' buttons
-        // route through here instead.
+        // Alert action deep links: alert/<id>/<acknowledge|close|reopen>. The
+        // built-in markdown preview strips command: links, so the alert cards'
+        // buttons route through here instead. `<id>` is a STRING: a positive
+        // integer means a legacy journal alert (integer PK); anything else is a
+        // control-plane alert uuid.
         if (parts.length === 3 && parts[0] === 'alert') {
-          const id = Number(parts[1]);
+          const rawId = parts[1];
           const action = parts[2];
-          if (!Number.isInteger(id) || id <= 0) {
+          let status: AlertStatus;
+          if (action === 'acknowledge') {
+            status = 'informational';
+          } else if (action === 'close') {
+            status = 'closed';
+          } else if (action === 'reopen') {
+            status = 'alert';
+          } else {
             vscode.window.showErrorMessage(
               `Working Memory: unrecognized deep link: ${uri.toString()}`,
             );
             return;
           }
-          if (action === 'acknowledge') {
-            setAlertStatus(id, 'informational');
-          } else if (action === 'close') {
-            setAlertStatus(id, 'closed');
-          } else if (action === 'reopen') {
-            setAlertStatus(id, 'alert');
+          const numericId = Number(rawId);
+          if (Number.isInteger(numericId) && numericId > 0) {
+            // Legacy journal alert (integer PK).
+            setAlertStatus(numericId, status);
           } else {
-            vscode.window.showErrorMessage(
-              `Working Memory: unrecognized deep link: ${uri.toString()}`,
-            );
+            // Control-plane alert (uuid).
+            void setControlPlaneAlertStatus(rawId, status);
           }
           return;
         }
@@ -1035,7 +1058,7 @@ export function activate(context: vscode.ExtensionContext): void {
     registerTools(context, store, controlPlaneClient, { refresh });
     // Prototype: Working Memory "capture" chat-session type (proposed API).
     // No-op when the proposed API isn't enabled.
-    registerWorkingMemoryChatSession(context, store);
+    registerWorkingMemoryChatSession(context, store, controlPlaneClient);
     refresh();
   }
 }

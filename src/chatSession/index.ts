@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import type { JournalStore } from '../db';
+import type { ControlPlaneClient } from '../controlPlaneClient';
 import { registerCaptureChatSession } from './provider';
 
 /**
@@ -15,9 +16,10 @@ import { registerCaptureChatSession } from './provider';
 export function registerWorkingMemoryChatSession(
   context: vscode.ExtensionContext,
   store: JournalStore,
+  controlPlane: ControlPlaneClient | null,
 ): void {
   try {
-    registerCaptureChatSession(context, store);
+    registerCaptureChatSession(context, store, controlPlane);
   } catch (err) {
     console.error(
       '[working-memory] failed to register capture chat-session:',

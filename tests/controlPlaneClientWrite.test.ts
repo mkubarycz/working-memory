@@ -218,4 +218,31 @@ describe('ControlPlaneClient write methods', () => {
     expect(created.error).toBeTruthy();
     await client.dispose();
   });
+
+  it('alertUpdate sends { id, status } to ws-alert-update and returns the parsed alert', async () => {
+    server = await startServer({ port: 0 });
+    const mcpUrl = `${server.url}/mcp`;
+    const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
+    try {
+      // Seed an alert document (status defaults to 'alert') via the generic
+      // create tool, then flip it to 'closed' through the typed alertUpdate.
+      const created = await client.createDocument({
+        kind: 'Alert',
+        spec: { description: 'disk almost full', topics: ['ops'] },
+      });
+      const id = created.document!.metadata.id;
+
+      const updated = await client.alertUpdate({ id, status: 'closed' });
+      expect(updated.id).toBe(id);
+      expect(updated.status).toBe('closed');
+      // Untouched fields are preserved (partial-patch merge server-side) and the
+      // returned shape is well-formed.
+      expect(updated.description).toBe('disk almost full');
+      expect(updated.topics).toEqual(['ops']);
+      expect(updated.slug).toBeNull();
+      expect(updated.resourceVersion).toBe(2);
+    } finally {
+      await client.dispose();
+    }
+  });
 });

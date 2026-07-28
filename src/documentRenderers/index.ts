@@ -19,7 +19,6 @@ import { renderWorkstreamDocument } from './workstream';
 import { renderTopicDocument } from './topic';
 import { renderTopicTypeDocument } from './topictype';
 import { renderAlertDocument } from './alert';
-import { renderJournalEntryDocument } from './journalentry';
 
 /** A pure per-kind renderer: envelope → markdown. */
 export type DocumentRenderer = (env: DocumentEnvelope) => string;
@@ -43,10 +42,9 @@ export function renderDocumentByKind(env: DocumentEnvelope): string {
   return renderer ? renderer(env) : renderDocumentEnvelopeDoc(env);
 }
 
-// Register all five control-plane kinds at module load. Keys mirror the kind
+// Register the control-plane kinds at module load. Keys mirror the kind
 // name strings the control-plane assigns (control-plane/src/kinds/*/…).
 registerDocumentRenderer('Workstream', renderWorkstreamDocument);
 registerDocumentRenderer('Topic', renderTopicDocument);
 registerDocumentRenderer('TopicType', renderTopicTypeDocument);
 registerDocumentRenderer('Alert', renderAlertDocument);
-registerDocumentRenderer('JournalEntry', renderJournalEntryDocument);

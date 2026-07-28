@@ -359,11 +359,12 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
   }
 
   /**
-   * Resolve the OPEN alerts that concern a control-plane topic document. Alerts
-   * are a reverse relation — an Alert's `spec.topics` array lists the topic
-   * slugs it concerns — so they're read via `alertRead()` and matched against
-   * the topic's slug here (closed alerts excluded). Any control-plane error
-   * degrades to an empty list so the topic doc still renders.
+   * Resolve the alerts that concern a control-plane topic document. Alerts are a
+   * reverse relation — an Alert's `spec.topics` array lists the topic slugs it
+   * concerns — so they're read via `alertRead()` and matched against the topic's
+   * slug here. CLOSED alerts are INCLUDED (so the topic doc can render their
+   * Reopen actions); results are sorted newest-first by `updated_at`. Any
+   * control-plane error degrades to an empty list so the topic doc still renders.
    */
   private async topicAlerts(
     client: ControlPlaneClient,
@@ -375,12 +376,11 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     }
     try {
       const alerts = await client.alertRead();
-      return alerts.filter(
-        (a) =>
-          a.status !== 'closed' &&
-          Array.isArray(a.topics) &&
-          a.topics.includes(topicSlug),
-      );
+      return alerts
+        .filter(
+          (a) => Array.isArray(a.topics) && a.topics.includes(topicSlug),
+        )
+        .sort((a, b) => b.updated_at - a.updated_at);
     } catch {
       return [];
     }

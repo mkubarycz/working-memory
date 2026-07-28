@@ -48,6 +48,43 @@ declare module 'vscode' {
     token: CancellationToken,
   ) => Thenable<void>;
 
+  /** A selectable item inside an option group (e.g. one workstream). */
+  export interface ChatSessionProviderOptionItem {
+    readonly id: string;
+    readonly name: string;
+    readonly description?: string;
+    readonly icon?: ThemeIcon;
+    readonly default?: boolean;
+    readonly locked?: boolean;
+    readonly tooltip?: string;
+  }
+
+  /** A group of related options rendered as a picker at the chat input. */
+  export interface ChatSessionProviderOptionGroup {
+    readonly id: string;
+    readonly name: string;
+    readonly description?: string;
+    readonly selected?: ChatSessionProviderOptionItem;
+    readonly items: readonly ChatSessionProviderOptionItem[];
+    readonly icon?: ThemeIcon;
+    readonly when?: string;
+  }
+
+  /** Live, mutable input state for one chat session (drives the bottom pills). */
+  export interface ChatSessionInputState {
+    readonly onDidChange: Event<void>;
+    readonly onDidDispose: Event<void>;
+    readonly sessionResource: Uri | undefined;
+    /** Replace the whole array to update the rendered option pickers. */
+    groups: readonly ChatSessionProviderOptionGroup[];
+  }
+
+  export type ChatSessionControllerGetInputState = (
+    sessionResource: Uri | undefined,
+    context: { readonly previousInputState: ChatSessionInputState | undefined },
+    token: CancellationToken,
+  ) => Thenable<ChatSessionInputState> | ChatSessionInputState;
+
   /** Context passed when the user starts a brand-new session for this type. */
   export interface ChatSessionNewItemContext {
     readonly request: {
@@ -65,6 +102,10 @@ declare module 'vscode' {
       context: ChatSessionNewItemContext,
       token: CancellationToken,
     ) => Thenable<ChatSessionItem>;
+    getChatSessionInputState?: ChatSessionControllerGetInputState;
+    createChatSessionInputState(
+      groups: readonly ChatSessionProviderOptionGroup[],
+    ): ChatSessionInputState;
     dispose(): void;
   }
 
@@ -87,7 +128,7 @@ declare module 'vscode' {
     provideChatSessionContent(
       resource: Uri,
       token: CancellationToken,
-      context: { readonly inputState: unknown },
+      context: { readonly inputState: ChatSessionInputState },
     ): Thenable<ChatSession> | ChatSession;
   }
 

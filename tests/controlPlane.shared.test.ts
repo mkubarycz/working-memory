@@ -18,7 +18,7 @@ describe('controlPlaneShared', () => {
       expect(md.startsWith('---\n')).toBe(true);
       expect(md).toContain('description:');
       expect(md).toContain(
-        "tools: ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'wm-list-kinds', 'ws-workstream-create', 'ws-workstream-read', 'ws-workstream-update', 'ws-workstream-delete', 'ws-topic-create', 'ws-topic-read', 'ws-topic-update', 'ws-topic-delete', 'ws-topictype-create', 'ws-topictype-read', 'ws-topictype-update', 'ws-topictype-delete', 'ws-alert-create', 'ws-alert-read', 'ws-alert-update', 'ws-alert-delete', 'ws-journalentry-create', 'ws-journalentry-read', 'ws-journalentry-update', 'ws-journalentry-delete']",
+        "tools: ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'wm-list-kinds', 'ws-workstream-create', 'ws-workstream-read', 'ws-workstream-update', 'ws-workstream-delete', 'ws-topic-create', 'ws-topic-read', 'ws-topic-update', 'ws-topic-delete', 'ws-topictype-create', 'ws-topictype-read', 'ws-topictype-update', 'ws-topictype-delete', 'ws-alert-create', 'ws-alert-read', 'ws-alert-update', 'ws-alert-delete']",
       );
     });
 
@@ -44,10 +44,6 @@ describe('controlPlaneShared', () => {
       expect(md).toContain('ws-alert-read');
       expect(md).toContain('ws-alert-update');
       expect(md).toContain('ws-alert-delete');
-      expect(md).toContain('ws-journalentry-create');
-      expect(md).toContain('ws-journalentry-read');
-      expect(md).toContain('ws-journalentry-update');
-      expect(md).toContain('ws-journalentry-delete');
     });
   });
 

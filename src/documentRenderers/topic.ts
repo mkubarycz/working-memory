@@ -13,7 +13,15 @@
  */
 
 import type { Alert, DocumentEnvelope } from '../controlPlaneClient';
-import { asStr, asStrArray, deepLink, linkList, metadataSection } from './shared';
+import {
+  alertActionLink,
+  asStr,
+  asStrArray,
+  deepLink,
+  fmtTs,
+  linkList,
+  metadataSection,
+} from './shared';
 
 export function renderTopicDocument(
   env: DocumentEnvelope,
@@ -50,16 +58,70 @@ export function renderTopicDocument(
   ];
 
   if (alerts.length > 0) {
+    const thisSlug = env.metadata.slug;
     lines.push('## Alerts', '');
-    for (const alert of alerts) {
-      const label =
-        asStr(alert.title) ??
-        asStr(alert.description)?.split('\n')[0] ??
-        `Alert ${alert.id}`;
+    const blocks = alerts.map((alert) => {
       // Alerts have no slug (always null), so deep-link by id.
-      lines.push(`- [${label}](${deepLink('alert', alert.slug ?? alert.id)})`);
-    }
-    lines.push('');
+      const link = deepLink('alert', alert.slug ?? alert.id);
+      const iconName =
+        alert.status === 'alert'
+          ? 'bell'
+          : alert.status === 'informational'
+            ? 'info'
+            : 'pass';
+      // Colored codicon via inline style only — the markdown preview keeps the
+      // glyph + color but strips CSS class styling. Red bell for active alerts;
+      // text-bottom keeps the glyph on the text baseline.
+      const color = alert.status === 'alert' ? 'color:#f14c4c;' : '';
+      const icon = `<span class="codicon codicon-${iconName}" style="${color}vertical-align:text-bottom"></span>`;
+      const title =
+        alert.title.trim() ||
+        alert.description.split('\n')[0] ||
+        `Alert ${alert.id}`;
+      const desc = alert.description.trim();
+      const next = alert.recommended_action.trim();
+      const alertLines = [
+        `[${icon}](${link}) **[${title}](${link})** — ${fmtTs(alert.updated_at)}`,
+      ];
+      if (desc) {
+        alertLines.push(desc);
+      }
+      if (next) {
+        alertLines.push(`Next: ${next}`);
+      }
+      const others = asStrArray(alert.topics).filter((t) => t !== thisSlug);
+      if (others.length) {
+        const shown = others
+          .slice(0, 3)
+          .map((t) => `[${t}](${deepLink('topic', t)})`);
+        const more = others.length > 3 ? ' …' : '';
+        alertLines.push(`Other topics: ${shown.join(', ')}${more}`);
+      }
+      if (alert.status === 'alert') {
+        alertLines.push(
+          [
+            `[Acknowledge](${alertActionLink(alert.id, 'acknowledge')})`,
+            `[Close](${alertActionLink(alert.id, 'close')})`,
+          ].join(' · '),
+        );
+      } else if (alert.status === 'informational') {
+        alertLines.push(
+          [
+            `[Escalate](${alertActionLink(alert.id, 'reopen')})`,
+            `[Close](${alertActionLink(alert.id, 'close')})`,
+          ].join(' · '),
+        );
+      } else {
+        alertLines.push(
+          [
+            `[Reopen (Alert)](${alertActionLink(alert.id, 'reopen')})`,
+            `[Reopen (Information)](${alertActionLink(alert.id, 'acknowledge')})`,
+          ].join(' · '),
+        );
+      }
+      return alertLines.join('  \n');
+    });
+    lines.push(blocks.join('\n\n'), '');
   }
 
   return lines.join('\n');

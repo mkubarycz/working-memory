@@ -329,6 +329,22 @@ export interface AlertReadInput {
   limit?: number;
 }
 
+/**
+ * Fields for `ws-alert-update` (identified by `id`; only the provided fields are
+ * sent). Mirrors {@link TopicUpdateInput}: a partial patch the control-plane
+ * merges + re-validates before a compare-and-swap write.
+ */
+export interface AlertUpdateInput {
+  id: string;
+  status?: 'alert' | 'informational' | 'closed';
+  title?: string;
+  description?: string;
+  recommended_action?: string;
+  dedupe_key?: string | null;
+  created_by?: string;
+  topics?: string[];
+}
+
 export interface ControlPlaneClientOptions {
   /**
    * Resolve the `/mcp` URL to connect to, or `null` when the daemon is
@@ -929,6 +945,74 @@ export class ControlPlaneClient {
     const parsed = parseToolText(result) as { alerts?: unknown } | null;
     const list = Array.isArray(parsed?.alerts) ? parsed!.alerts : [];
     return list as Alert[];
+  }
+
+  /**
+   * Parse a `ws-alert-*` success result — a single mapped alert object (the
+   * control-plane `Alert` POCO) — into the owned {@link Alert} shape, applying
+   * the same defensive field defaults as the control-plane's projection so the
+   * returned value is always well-formed. THROWS when the result is malformed.
+   */
+  private parseAlert(result: unknown): Alert {
+    const parsed = parseToolText(result) as Partial<Alert> | null;
+    if (!parsed || typeof parsed.id !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane alert response');
+    }
+    const status =
+      parsed.status === 'alert' ||
+      parsed.status === 'informational' ||
+      parsed.status === 'closed'
+        ? parsed.status
+        : 'alert';
+    return {
+      id: parsed.id,
+      slug: typeof parsed.slug === 'string' ? parsed.slug : null,
+      title: typeof parsed.title === 'string' ? parsed.title : '',
+      description: typeof parsed.description === 'string' ? parsed.description : '',
+      recommended_action:
+        typeof parsed.recommended_action === 'string' ? parsed.recommended_action : '',
+      status,
+      dedupe_key: typeof parsed.dedupe_key === 'string' ? parsed.dedupe_key : null,
+      created_by: typeof parsed.created_by === 'string' ? parsed.created_by : 'system',
+      topics: Array.isArray(parsed.topics)
+        ? parsed.topics.filter((t): t is string => typeof t === 'string')
+        : [],
+      created_at: typeof parsed.created_at === 'number' ? parsed.created_at : 0,
+      updated_at: typeof parsed.updated_at === 'number' ? parsed.updated_at : 0,
+      resourceVersion:
+        typeof parsed.resourceVersion === 'number' ? parsed.resourceVersion : 0,
+    };
+  }
+
+  /**
+   * Update an alert via `ws-alert-update` (identified by `id`; only the provided
+   * fields are sent). The control-plane reads the current doc for its CAS guard,
+   * merges + re-validates the patch, then writes. Returns the updated alert.
+   */
+  async alertUpdate(input: AlertUpdateInput): Promise<Alert> {
+    const args: Record<string, unknown> = { id: input.id };
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    if (input.title !== undefined) {
+      args.title = input.title;
+    }
+    if (input.description !== undefined) {
+      args.description = input.description;
+    }
+    if (input.recommended_action !== undefined) {
+      args.recommended_action = input.recommended_action;
+    }
+    if (input.dedupe_key !== undefined) {
+      args.dedupe_key = input.dedupe_key;
+    }
+    if (input.created_by !== undefined) {
+      args.created_by = input.created_by;
+    }
+    if (input.topics !== undefined) {
+      args.topics = input.topics;
+    }
+    return this.parseAlert(await this.callDomainTool('ws-alert-update', args));
   }
 
   /** Close the client + transport and release the singleton. */

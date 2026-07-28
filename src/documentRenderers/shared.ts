@@ -24,6 +24,22 @@ export function deepLink(kind: DeepLinkKind, slug: string): string {
   return `vscode://kubarycz.working-memory/open/${kind}/${encodeURIComponent(slug)}`;
 }
 
+/**
+ * Deep link to MUTATE a control-plane alert via the extension URI handler,
+ * routed as `vscode://kubarycz.working-memory/alert/<id>/<action>`. Used by the
+ * topic doc's alert action pills (Acknowledge / Close / Escalate / Reopen)
+ * because `command:` links are stripped by the built-in markdown preview.
+ *
+ * The id is the control-plane alert uuid (a STRING), unlike the journal
+ * `alertActionLink` whose id is the integer PK.
+ */
+export function alertActionLink(
+  id: string,
+  action: 'acknowledge' | 'close' | 'reopen',
+): string {
+  return `vscode://kubarycz.working-memory/alert/${encodeURIComponent(id)}/${action}`;
+}
+
 /** Format a unix-seconds timestamp as `<seconds> (<ISO>)`, or `—` when absent. */
 export function fmtTs(seconds: number | null | undefined): string {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds)) {
