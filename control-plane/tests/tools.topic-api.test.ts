@@ -109,7 +109,7 @@ async function connect(store: Store): Promise<{
       const created = jsonOf<ITopic>(
         await client.callTool({
           name: 'ws-topic-create',
-          arguments: { slug: 'alpha', title: 'Alpha' },
+          arguments: { slug: 'alpha', title: 'Alpha', workstreams: ['ws-seed'] },
         }),
       );
       expect(created.slug).toBe('alpha');
@@ -118,7 +118,7 @@ async function connect(store: Store): Promise<{
       expect(created.status).toBe('open');
       expect(created.topicType).toBe('topic');
       expect(created.parents).toEqual([]);
-      expect(created.workstreams).toEqual([]);
+      expect(created.workstreams).toEqual(['ws-seed']);
       expect(created.focusedWorkstreams).toEqual([]);
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
       expect(created.resourceVersion).toBe(1);
@@ -136,7 +136,7 @@ async function connect(store: Store): Promise<{
       });
       await client.callTool({
         name: 'ws-topic-create',
-        arguments: { slug: 'beta', title: 'Beta topic' },
+        arguments: { slug: 'beta', title: 'Beta topic', workstreams: ['ws-two'] },
       });
 
       // one-by-slug → 0-or-1 element list.
@@ -229,7 +229,7 @@ async function connect(store: Store): Promise<{
     try {
       await client.callTool({
         name: 'ws-topic-create',
-        arguments: { slug: 'evolve', title: 'Old', body: 'old body' },
+        arguments: { slug: 'evolve', title: 'Old', body: 'old body', workstreams: ['ws-seed'] },
       });
       const updated = jsonOf<ITopic>(
         await client.callTool({
@@ -276,7 +276,7 @@ async function connect(store: Store): Promise<{
     try {
       await client.callTool({
         name: 'ws-topic-create',
-        arguments: { slug: 'race', title: 'Race' },
+        arguments: { slug: 'race', title: 'Race', workstreams: ['ws-seed'] },
       });
       // Advance the real row to version 2.
       await client.callTool({
@@ -335,7 +335,7 @@ async function connect(store: Store): Promise<{
     try {
       await client.callTool({
         name: 'ws-topic-create',
-        arguments: { slug: 'member', title: 'Member' },
+        arguments: { slug: 'member', title: 'Member', workstreams: ['ws-seed'] },
       });
       // Not yet a member.
       expect(
@@ -368,7 +368,7 @@ async function connect(store: Store): Promise<{
     try {
       const badCreate = await client.callTool({
         name: 'ws-topic-create',
-        arguments: { slug: 'bad', title: 'Bad', status: 'nonsense' },
+        arguments: { slug: 'bad', title: 'Bad', status: 'nonsense', workstreams: ['ws-seed'] },
       });
       expect(isErrorResult(badCreate)).toBe(true);
       expect(textOf(badCreate)).toMatch(/status/i);
@@ -378,7 +378,10 @@ async function connect(store: Store): Promise<{
       ).toBe(0);
 
       // A valid create, then an invalid-status update, is also rejected …
-      await client.callTool({ name: 'ws-topic-create', arguments: { slug: 'ok', title: 'OK' } });
+      await client.callTool({
+        name: 'ws-topic-create',
+        arguments: { slug: 'ok', title: 'OK', workstreams: ['ws-seed'] },
+      });
       const badUpdate = await client.callTool({
         name: 'ws-topic-update',
         arguments: { slug: 'ok', status: 'nonsense' },
@@ -411,4 +414,73 @@ async function connect(store: Store): Promise<{
       await close();
     }
   });
+
+  it('ws-topic-create with neither workstreams nor parents is rejected and persists nothing', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      const orphan = await client.callTool({
+        name: 'ws-topic-create',
+        arguments: { slug: 'orphan', title: 'Orphan' },
+      });
+      expect(isErrorResult(orphan)).toBe(true);
+      expect(textOf(orphan)).toMatch(/must belong to at least one workstream/i);
+      // Nothing persisted.
+      expect(
+        jsonOf<TopicList>(await client.callTool({ name: 'ws-topic-read', arguments: {} })).count,
+      ).toBe(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it('ws-topic-create inherits the union of its parents workstreams when none supplied', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({
+        name: 'ws-topic-create',
+        arguments: { slug: 'mom', title: 'Mom', workstreams: ['ws-a', 'ws-b'] },
+      });
+      await client.callTool({
+        name: 'ws-topic-create',
+        arguments: { slug: 'dad', title: 'Dad', workstreams: ['ws-b', 'ws-c'] },
+      });
+
+      const child = jsonOf<ITopic>(
+        await client.callTool({
+          name: 'ws-topic-create',
+          arguments: { slug: 'kid', title: 'Kid', parents: ['mom', 'dad'] },
+        }),
+      );
+      // Union of both parents' memberships (dedup preserved), no explicit input.
+      expect([...child.workstreams].sort()).toEqual(['ws-a', 'ws-b', 'ws-c']);
+      expect(child.parents).toEqual(['mom', 'dad']);
+    } finally {
+      await close();
+    }
+  });
+
+  it('ws-topic-update clearing workstreams to [] is rejected and leaves the topic unchanged', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({
+        name: 'ws-topic-create',
+        arguments: { slug: 'keep', title: 'Keep', workstreams: ['ws-a'] },
+      });
+      const rejected = await client.callTool({
+        name: 'ws-topic-update',
+        arguments: { slug: 'keep', workstreams: [] },
+      });
+      expect(isErrorResult(rejected)).toBe(true);
+      expect(textOf(rejected)).toMatch(/must belong to at least one workstream/i);
+      // Membership + version unchanged.
+      const still = jsonOf<TopicList>(
+        await client.callTool({ name: 'ws-topic-read', arguments: { slug: 'keep' } }),
+      );
+      expect(still.topics[0]?.workstreams).toEqual(['ws-a']);
+      expect(still.topics[0]?.resourceVersion).toBe(1);
+    } finally {
+      await close();
+    }
+  });
 });
+

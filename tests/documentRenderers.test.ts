@@ -98,7 +98,7 @@ describe('renderTopicDocument', () => {
     expect(md).not.toContain('## Parents');
     expect(md).toContain('## Family');
     // With no injected family the section degrades to the current node only.
-    expect(md).toContain('**Blackboard Tab** ← this topic');
+    expect(md).toContain('**Blackboard Tab**');
   });
 
   it('renders friendly workstream links + an ancestor/current/descendant Family tree', () => {
@@ -153,8 +153,8 @@ describe('renderTopicDocument', () => {
     expect(md).toContain(
       '  - [Parent](vscode://kubarycz.working-memory/open/topic/parent)',
     );
-    // The current node is bold + marked, NOT a link.
-    expect(md).toContain('    - **Family Node** ← this topic');
+    // The current node is bold, NOT a link.
+    expect(md).toContain('    - **Family Node**');
     expect(md).toContain(
       '      - [Child](vscode://kubarycz.working-memory/open/topic/child)',
     );
@@ -194,7 +194,7 @@ describe('renderTopicDocument', () => {
     // Workstreams falls back to _none_; Family shows just this topic.
     expect(md).toContain('## Workstreams\n\n_none_');
     expect(md).toContain('## Family');
-    expect(md).toContain('**Bare** ← this topic');
+    expect(md).toContain('**Bare**');
     expect(md).not.toContain('## Parents');
   });
 

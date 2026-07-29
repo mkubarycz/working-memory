@@ -46,7 +46,7 @@ function familyLines(
   for (const n of nodes) {
     const pad = '  '.repeat(indent);
     if (n.isCurrent) {
-      out.push(`${pad}- **${n.title}** ← this topic`);
+      out.push(`${pad}- **${n.title}**`);
     } else {
       out.push(`${pad}- [${n.title}](${deepLink('topic', n.slug)})`);
     }

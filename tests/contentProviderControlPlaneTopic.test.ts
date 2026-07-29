@@ -587,9 +587,10 @@ test('topic doc: renders rich per-status alert cards (incl. closed) with action 
   // Detail lines: description + recommended action are now exposed.
   expect(body).toContain('something needs attention');
   expect(body).toContain('Next: do the thing');
-  // Other topics line (the current topic is filtered out).
+  // Other topics line (the current topic is filtered out). The topic deep-link
+  // is enriched with a leading type codicon (fallback, no topic-type mocked).
   expect(body).toContain(
-    'Other topics: [other-topic](vscode://kubarycz.working-memory/open/topic/other-topic)',
+    'Other topics: [<span class="codicon codicon-symbol-misc"></span> other-topic](vscode://kubarycz.working-memory/open/topic/other-topic)',
   );
 
   // `alert` status → Acknowledge · Close.
@@ -713,12 +714,14 @@ test('workstream doc: renders a `## Topics` section with member topics and exclu
   const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
 
   expect(body).toContain('## Topics');
+  // Topic deep-links are enriched with a leading type codicon (fallback icon —
+  // no topic-type mocked — and no child count since these have no children).
   expect(body).toContain(
-    '[Member Open](vscode://kubarycz.working-memory/open/topic/member-open) `member-open`',
+    '[<span class="codicon codicon-symbol-misc"></span> Member Open](vscode://kubarycz.working-memory/open/topic/member-open) `member-open`',
   );
   // A non-'open' member gets its status appended.
   expect(body).toContain(
-    '[Member Closed](vscode://kubarycz.working-memory/open/topic/member-closed) `member-closed` — _closed_',
+    '[<span class="codicon codicon-symbol-misc"></span> Member Closed](vscode://kubarycz.working-memory/open/topic/member-closed) `member-closed` — _closed_',
   );
   // A topic that isn't a member of this workstream is excluded.
   expect(body).not.toContain('not-a-member');
@@ -795,8 +798,9 @@ test('topic-type doc: renders id in heading, usage count, and `## Recent topics`
   expect(body).toContain('`topics using this type`: 2');
   // Recent topics lists the OPEN topic of this type.
   expect(body).toContain('## Recent topics');
+  // The topic deep-link is enriched with a leading type codicon (fallback).
   expect(body).toContain(
-    '[Of Type Open](vscode://kubarycz.working-memory/open/topic/of-type-open) `of-type-open`',
+    '[<span class="codicon codicon-symbol-misc"></span> Of Type Open](vscode://kubarycz.working-memory/open/topic/of-type-open) `of-type-open`',
   );
   // Closed topic of this type and topics of a different type are excluded.
   expect(body).not.toContain('of-type-closed');
@@ -830,8 +834,9 @@ test('topic doc: renders the topic type as a deep-link', async () => {
   >[0];
   const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
 
+  // The topic-type deep-link is enriched with the fixed `tag` codicon.
   expect(body).toContain(
-    '`topicType`: [feature](vscode://kubarycz.working-memory/open/topic-type/feature)',
+    '`topicType`: [<span class="codicon codicon-tag"></span> feature](vscode://kubarycz.working-memory/open/topic-type/feature)',
   );
 
   store.close();
@@ -893,20 +898,80 @@ test('topic doc: renders a `## Family` tree and friendly workstream links', asyn
   expect(body).not.toContain('## Parents');
   expect(body).toContain('## Family');
   // Ancestor → current → descendant, indented 2 spaces per level, friendly.
+  // Family deep-links are enriched: fallback type codicon + a `(N)` child count
+  // where meaningful (Parent has one child — the current topic — so `(1)`).
   expect(body).toContain(
-    '- [Parent Topic](vscode://kubarycz.working-memory/open/topic/parent-slug)',
+    '- [<span class="codicon codicon-symbol-misc"></span> Parent Topic (1)](vscode://kubarycz.working-memory/open/topic/parent-slug)',
   );
-  expect(body).toContain('  - **CP Topic** ← this topic');
+  expect(body).toContain('  - **CP Topic**');
   expect(body).toContain(
-    '    - [Child Topic](vscode://kubarycz.working-memory/open/topic/child-slug)',
+    '    - [<span class="codicon codicon-symbol-misc"></span> Child Topic](vscode://kubarycz.working-memory/open/topic/child-slug)',
   );
-  // Workstream link uses the resolved friendly title, not the slug.
+  // Workstream link uses the resolved friendly title, plus the fixed `repo`
+  // codicon and a `(1)` topic count (the current topic is a member of ws-a).
   expect(body).toContain(
-    '[Workstream A](vscode://kubarycz.working-memory/open/workstream/ws-a)',
+    '[<span class="codicon codicon-repo"></span> Workstream A (1)](vscode://kubarycz.working-memory/open/workstream/ws-a)',
   );
 
   store.close();
 });
+
+// --- Deep-link enrichment: real topic-type icon resolved from the control plane
+// The enrichment post-pass resolves a topic link's icon from the referenced
+// topic's topic-type icon (fetched via `topicTypeRead`), not just the fallback.
+test('topic doc: family topic links resolve the real topic-type icon (enrichment)', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const envelope = makeEnvelope('doc-current', 'cp-topic');
+  envelope.spec = { ...envelope.spec, title: 'CP Topic', topicType: 'topic' };
+  const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
+    input.slug === 'cp-topic' && input.kind === 'Topic'
+      ? { available: true, document: envelope }
+      : { available: true, document: null },
+  );
+  const alertRead = vi.fn(async () => [] as Alert[]);
+  const topicRead = vi.fn(async () => [
+    makeTopicWith({ slug: 'cp-topic', title: 'CP Topic', topicType: 'topic' }),
+    // A child of type `feature`, so its link should resolve the feature icon.
+    makeTopicWith({
+      slug: 'child-slug',
+      title: 'Child Topic',
+      topicType: 'feature',
+      parents: ['cp-topic'],
+    }),
+  ]);
+  const topicTypeRead = vi.fn(async () => [
+    { id: 'tt-f', slug: 'feature', icon: 'rocket' },
+    { id: 'tt-t', slug: 'topic', icon: 'comment' },
+  ]);
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+    alertRead,
+    topicRead,
+    topicTypeRead,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri('/topic/cp-topic.md') as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  // The `feature`-typed child link resolves the feature topic-type icon.
+  expect(body).toContain(
+    '[<span class="codicon codicon-rocket"></span> Child Topic](vscode://kubarycz.working-memory/open/topic/child-slug)',
+  );
+  // The topic-type metadata link still uses the FIXED `tag` icon (topic-type
+  // kind), never the topic-type's own icon.
+  expect(body).toContain(
+    '`topicType`: [<span class="codicon codicon-tag"></span> topic](vscode://kubarycz.working-memory/open/topic-type/topic)',
+  );
+
+  store.close();
+});
+
 
 // --- Alert docs resolve control-plane-first --------------------------------
 // A topic doc's `## Alerts` section links `open/alert/<id>`, where `<id>` is a

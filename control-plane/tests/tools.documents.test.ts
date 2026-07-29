@@ -67,7 +67,7 @@ function textOf(res: unknown): string {
       const created = jsonOf<Envelope>(
         await client.callTool({
           name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'demo', spec: { title: 'Demo' } },
+          arguments: { kind: 'Topic', slug: 'demo', spec: { title: 'Demo', workstreams: ['ws-one'] } },
         }),
       );
       expect(created.kind).toBe('Topic');
@@ -81,7 +81,7 @@ function textOf(res: unknown): string {
         status: 'open',
         topicType: 'topic',
         parents: [],
-        workstreams: [],
+        workstreams: ['ws-one'],
         focusedWorkstreams: [],
       });
 
@@ -169,7 +169,7 @@ function textOf(res: unknown): string {
 
       await client.callTool({
         name: 'wm-document-create',
-        arguments: { kind: 'Topic', slug: 'a', spec: { title: 'A' } },
+        arguments: { kind: 'Topic', slug: 'a', spec: { title: 'A', workstreams: ['ws-one'] } },
       });
       // A non-Topic doc seeded directly through the (kind-agnostic) store, so
       // the kind filter below has something to exclude.
@@ -177,7 +177,7 @@ function textOf(res: unknown): string {
       const c = jsonOf<Envelope>(
         await client.callTool({
           name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'c', spec: { title: 'C' } },
+          arguments: { kind: 'Topic', slug: 'c', spec: { title: 'C', workstreams: ['ws-one'] } },
         }),
       );
       expect(c.metadata.resourceVersion).toBe(3);
@@ -205,12 +205,12 @@ function textOf(res: unknown): string {
       const alpha = jsonOf<Envelope>(
         await client.callTool({
           name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'alpha', spec: { title: 'Alpha Widget' } },
+          arguments: { kind: 'Topic', slug: 'alpha', spec: { title: 'Alpha Widget', workstreams: ['ws-one'] } },
         }),
       );
       await client.callTool({
         name: 'wm-document-create',
-        arguments: { kind: 'Topic', slug: 'beta', spec: { title: 'Beta Gadget' } },
+        arguments: { kind: 'Topic', slug: 'beta', spec: { title: 'Beta Gadget', workstreams: ['ws-one'] } },
       });
       // A non-Topic doc so the kind filter has something to exclude.
       store.createDocument({ kind: 'note', slug: 'gamma', spec: {}, status: {} });
@@ -279,7 +279,7 @@ function textOf(res: unknown): string {
       const created = jsonOf<Envelope>(
         await client.callTool({
           name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'edit-me', spec: { title: 'Before' } },
+          arguments: { kind: 'Topic', slug: 'edit-me', spec: { title: 'Before', workstreams: ['ws-one'] } },
         }),
       );
       expect(created.metadata.resourceVersion).toBe(1);
@@ -302,7 +302,7 @@ function textOf(res: unknown): string {
         status: 'closed',
         topicType: 'topic',
         parents: [],
-        workstreams: [],
+        workstreams: ['ws-one'],
         focusedWorkstreams: [],
       });
 
@@ -374,7 +374,7 @@ function textOf(res: unknown): string {
             kind: 'Topic',
             slug: 'patch-me',
             labels: { keep: 'me' },
-            spec: { title: 'Title', body: 'Body' },
+            spec: { title: 'Title', body: 'Body', workstreams: ['ws-one'] },
           },
         }),
       );
@@ -398,7 +398,7 @@ function textOf(res: unknown): string {
         status: 'closed',
         topicType: 'topic',
         parents: [],
-        workstreams: [],
+        workstreams: ['ws-one'],
         focusedWorkstreams: [],
       });
       // slug/labels untouched by a spec-only patch.

@@ -61,7 +61,11 @@ const topic: KindModule = {
         // topic belongs to. Modeled here (not as a separate edges table) so
         // "topics of a workstream" is a `ws-topic-read { workstream }` filter and
         // membership edits are ordinary `ws-topic-update` spec patches.
-        workstreams: z.array(z.string()).default([]),
+        // REQUIRED to be non-empty: every topic must belong to ≥1 workstream.
+        // `ws-topic-create` inherits the union of `parents`' workstreams when the
+        // caller supplies none; the guard here rejects a topic that would end up
+        // orphaned (no parents to inherit from, no explicit membership).
+        workstreams: z.array(z.string()).min(1, 'a topic must belong to at least one workstream'),
         // Per-workstream FOCUS pin as a spec ref: the subset of `workstreams`
         // for which this topic is focused/pinned. A workstream's focused topics =
         // topics whose `focusedWorkstreams` includes that workstream's slug.

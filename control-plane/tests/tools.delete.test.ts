@@ -70,7 +70,7 @@ interface Envelope {
       const created = jsonOf<Envelope>(
         await client.callTool({
           name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'to-delete', spec: { title: 'Delete me' } },
+          arguments: { kind: 'Topic', slug: 'to-delete', spec: { title: 'Delete me', workstreams: ['ws-one'] } },
         }),
       );
 

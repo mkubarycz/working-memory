@@ -33,6 +33,7 @@ describe('kind registry', () => {
       body: 'World',
       topicType: 'note',
       status: 'closed',
+      workstreams: ['ws-one'],
     });
     expect(parsed).toEqual({
       title: 'Hello',
@@ -40,20 +41,20 @@ describe('kind registry', () => {
       topicType: 'note',
       status: 'closed',
       parents: [],
-      workstreams: [],
+      workstreams: ['ws-one'],
       focusedWorkstreams: [],
     });
   });
 
   it('applies defaults (body "", topicType "topic", status "open")', () => {
-    const parsed = validateSpec('Topic', { title: 'Only a title' });
+    const parsed = validateSpec('Topic', { title: 'Only a title', workstreams: ['ws-one'] });
     expect(parsed).toEqual({
       title: 'Only a title',
       body: '',
       topicType: 'topic',
       status: 'open',
       parents: [],
-      workstreams: [],
+      workstreams: ['ws-one'],
       focusedWorkstreams: [],
     });
   });

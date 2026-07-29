@@ -123,7 +123,11 @@ describe('ControlPlaneClient write methods', () => {
         slug: 'ws-membership',
         spec: { title: 'Membership' },
       });
-      await client.topicCreate({ slug: 'topic-membership', title: 'Membership Topic' });
+      await client.topicCreate({
+        slug: 'topic-membership',
+        title: 'Membership Topic',
+        workstreams: ['ws-seed'],
+      });
 
       // Attach adds the workstream to the topic's membership.
       const attached = await client.topicAttachWorkstream({
@@ -160,8 +164,8 @@ describe('ControlPlaneClient write methods', () => {
         slug: 'ws-focus',
         spec: { title: 'Focus WS' },
       });
-      // Topic starts with no membership and no focus.
-      await client.topicCreate({ slug: 'topic-focus', title: 'Focus Topic' });
+      // Topic starts with a seed membership (the invariant needs ≥1) and no focus.
+      await client.topicCreate({ slug: 'topic-focus', title: 'Focus Topic', workstreams: ['ws-seed'] });
 
       // Set focus adds BOTH membership and the focus pin (idempotent).
       const focused = await client.topicSetFocus({

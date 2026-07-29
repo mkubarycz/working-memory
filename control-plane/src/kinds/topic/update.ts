@@ -75,6 +75,11 @@ export function registerWsTopicUpdate(server: McpServer, store: Store): void {
         patch.parents = parents;
       }
       if (workstreams !== undefined) {
+        // Invariant: every topic must belong to ≥1 workstream. Reject a patch
+        // that would strip the last one; non-empty replacements are fine.
+        if (workstreams.length === 0) {
+          return asError('a topic must belong to at least one workstream');
+        }
         patch.workstreams = workstreams;
       }
       if (focusedWorkstreams !== undefined) {

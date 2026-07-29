@@ -10,6 +10,8 @@ import type {
   ControlPlaneClient,
   DocumentEnvelope,
   Topic,
+  TopicType,
+  Workstream,
 } from './controlPlaneClient';
 import {
   renderControlPlaneUnavailableDoc,
@@ -22,6 +24,24 @@ import { buildFamilyTree } from './documentRenderers/family';
 import { asStr, asStrArray } from './documentRenderers/shared';
 import { renderWorkstreamDocument } from './documentRenderers/workstream';
 import { renderTopicTypeDocument } from './documentRenderers/topictype';
+import {
+  DEEP_LINK_FALLBACK_ICON,
+  enrichDeepLinks,
+  type DeepLinkContext,
+} from './documentRenderers/enrichDeepLinks';
+
+/**
+ * The control-plane data used to enrich deep-links in EVERY rendered doc plus
+ * resolve a topic's `## Family` / `## Workstreams` sections. Fetched ONCE per
+ * render (all topics + all topic-types + all workstreams) and threaded through
+ * so we never double-fetch: the same `topics`/`workstreams` power the family
+ * tree AND the deep-link icon/count adjacency in `ctx`.
+ */
+interface EnrichmentData {
+  topics: Topic[];
+  workstreams: Workstream[];
+  ctx: DeepLinkContext;
+}
 
 type DocKind =
   | 'workstream'
@@ -247,12 +267,16 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       }
       if (result.available && result.document) {
         const doc = result.document;
+        // Fetch the enrichment data ONCE (all topics / topic-types /
+        // workstreams). It powers both the topic `## Family` tree and the
+        // deep-link icon/count post-pass applied to every kind below.
+        const enrichment = await this.buildEnrichmentData(client);
         let text: string;
         if (controlPlaneKind === 'Topic') {
           text = renderTopicDocument(
             doc,
             await this.topicAlerts(client, doc),
-            await this.topicFamily(client, doc),
+            this.topicFamily(doc, enrichment),
           );
         } else if (controlPlaneKind === 'Workstream') {
           text = renderWorkstreamDocument(
@@ -267,6 +291,11 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         } else {
           text = renderDocumentByKind(doc);
         }
+        // Post-pass: rewrite deep-links with a leading type codicon + `(N)`
+        // child-count (WM 13.0.2 `feature-friendly-wm-links`). Pure + applied
+        // to the FINAL markdown for all kinds; alert links / fenced code are
+        // left untouched by the pass itself.
+        text = enrichDeepLinks(text, enrichment.ctx);
         const editable =
           controlPlaneKind === 'Topic' || controlPlaneKind === 'TopicType';
         return { text, permission: editable ? undefined : readonly };
@@ -311,22 +340,90 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
   }
 
   /**
+   * Fetch the control-plane data every render needs — ALL topics, topic-types,
+   * and workstreams — ONCE, and build the {@link DeepLinkContext} adjacency from
+   * it (topic→child count via reverse `parents`, workstream→topic count, and the
+   * topic-type slug→icon / topic slug→topic-type maps for icons). The raw
+   * `topics` + `workstreams` are returned alongside so `topicFamily` reuses them
+   * instead of re-fetching. Each fetch is guarded independently: a missing
+   * client method or a control-plane error degrades that slice to empty, so the
+   * context still resolves (fallback icon, zero counts) and enrichment never
+   * throws. Perf note: this is a fetch-all on EVERY doc render — fine at current
+   * corpus size; revisit with a server-side adjacency endpoint if it grows.
+   */
+  private async buildEnrichmentData(
+    client: ControlPlaneClient,
+  ): Promise<EnrichmentData> {
+    let topics: Topic[] = [];
+    let topicTypes: TopicType[] = [];
+    let workstreams: Workstream[] = [];
+    try {
+      topics = await client.topicRead({});
+    } catch {
+      topics = [];
+    }
+    try {
+      topicTypes = await client.topicTypeRead({});
+    } catch {
+      topicTypes = [];
+    }
+    try {
+      workstreams = await client.wsRead({});
+    } catch {
+      workstreams = [];
+    }
+
+    const iconByType = new Map<string, string>();
+    for (const tt of topicTypes) {
+      const key = tt.slug ?? tt.id;
+      if (key && tt.icon) {
+        iconByType.set(key, tt.icon);
+      }
+    }
+    const typeByTopic = new Map<string, string>();
+    const childCount = new Map<string, number>();
+    const wsTopicCount = new Map<string, number>();
+    for (const t of topics) {
+      const key = t.slug ?? t.id;
+      if (key && t.topicType) {
+        typeByTopic.set(key, t.topicType);
+      }
+      for (const parent of Array.isArray(t.parents) ? t.parents : []) {
+        childCount.set(parent, (childCount.get(parent) ?? 0) + 1);
+      }
+      for (const ws of Array.isArray(t.workstreams) ? t.workstreams : []) {
+        wsTopicCount.set(ws, (wsTopicCount.get(ws) ?? 0) + 1);
+      }
+    }
+
+    const ctx: DeepLinkContext = {
+      topicTypeIcon: (slug) => iconByType.get(slug) ?? DEEP_LINK_FALLBACK_ICON,
+      topicTypeOf: (slug) => typeByTopic.get(slug) ?? null,
+      topicChildCount: (slug) => childCount.get(slug) ?? 0,
+      workstreamTopicCount: (slug) => wsTopicCount.get(slug) ?? 0,
+    };
+
+    return { topics, workstreams, ctx };
+  }
+
+  /**
    * Resolve a control-plane topic's `## Family` tree + friendly `## Workstreams`
    * links (WM 13.0.2 `feature-family-tree-display`). Both are cross-document
-   * relations the topic envelope can't carry, so — like `topicAlerts` — they're
-   * fetched here and passed into the pure renderer:
-   *   - Family: list ALL topics (`topicRead({})`), reduce to slug/title/parents
-   *     triples, and let `buildFamilyTree` walk parents upward (bounded) and the
-   *     reverse parent→child adjacency downward (cycle + depth guarded).
-   *   - Workstreams: resolve each `spec.workstreams` slug to its title via
-   *     `wsRead({})` so the links read as human titles, not slugs.
-   * Any control-plane error degrades gracefully: an empty family (renderer falls
-   * back to a single-node tree) and slug-labeled workstream links.
+   * relations the topic envelope can't carry, so they're resolved from the
+   * already-fetched {@link EnrichmentData} (no I/O here — the fetch happened once
+   * in `buildEnrichmentData`):
+   *   - Family: reduce ALL topics to slug/title/parents triples and let
+   *     `buildFamilyTree` walk parents upward (bounded) and the reverse
+   *     parent→child adjacency downward (cycle + depth guarded).
+   *   - Workstreams: resolve each `spec.workstreams` slug to its title via the
+   *     prefetched workstream list so the links read as human titles, not slugs.
+   * Missing data degrades gracefully: an empty family (renderer falls back to a
+   * single-node tree) and slug-labeled workstream links.
    */
-  private async topicFamily(
-    client: ControlPlaneClient,
+  private topicFamily(
     doc: DocumentEnvelope,
-  ): Promise<TopicRelations> {
+    enrichment: EnrichmentData,
+  ): TopicRelations {
     const spec = doc.spec ?? {};
     const slug = doc.metadata.slug;
     const title = asStr(spec.title) ?? slug ?? doc.metadata.id;
@@ -340,30 +437,24 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
       return { family, workstreams };
     }
 
-    try {
-      const topics = await client.topicRead({});
-      const familyTopics = topics.map((t) => ({
-        slug: t.slug ?? t.id,
-        title: t.title,
-        parents: Array.isArray(t.parents) ? t.parents : [],
-      }));
-      family = buildFamilyTree(slug, title, familyTopics, asStrArray(spec.parents));
+    const familyTopics = enrichment.topics.map((t) => ({
+      slug: t.slug ?? t.id,
+      title: t.title,
+      parents: Array.isArray(t.parents) ? t.parents : [],
+    }));
+    family = buildFamilyTree(slug, title, familyTopics, asStrArray(spec.parents));
 
-      if (wsSlugs.length > 0) {
-        const titleBySlug = new Map<string, string>();
-        const wss = await client.wsRead({});
-        for (const w of wss) {
-          if (w.slug) {
-            titleBySlug.set(w.slug, w.title);
-          }
+    if (wsSlugs.length > 0) {
+      const titleBySlug = new Map<string, string>();
+      for (const w of enrichment.workstreams) {
+        if (w.slug) {
+          titleBySlug.set(w.slug, w.title);
         }
-        workstreams = wsSlugs.map((s) => ({
-          slug: s,
-          title: titleBySlug.get(s) ?? s,
-        }));
       }
-    } catch {
-      // Degrade to the single-node family + slug-labeled workstream links.
+      workstreams = wsSlugs.map((s) => ({
+        slug: s,
+        title: titleBySlug.get(s) ?? s,
+      }));
     }
 
     return { family, workstreams };

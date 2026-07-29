@@ -57,7 +57,7 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
     const created = await seedDocument(mcpUrl, {
       kind: 'Topic',
       slug: 'hello-blackboard',
-      spec: { title: 'Hello Blackboard' },
+      spec: { title: 'Hello Blackboard', workstreams: ['ws-one'] },
     });
 
     const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
@@ -80,7 +80,7 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
         status: 'open',
         topicType: 'topic',
         parents: [],
-        workstreams: [],
+        workstreams: ['ws-one'],
         focusedWorkstreams: [],
       });
     } finally {
@@ -91,8 +91,8 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
   it('filters list by kind', async () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;
-    await seedDocument(mcpUrl, { kind: 'Topic', slug: 't1', spec: { title: 'T1' } });
-    await seedDocument(mcpUrl, { kind: 'Topic', slug: 't2', spec: { title: 'T2' } });
+    await seedDocument(mcpUrl, { kind: 'Topic', slug: 't1', spec: { title: 'T1', workstreams: ['ws-one'] } });
+    await seedDocument(mcpUrl, { kind: 'Topic', slug: 't2', spec: { title: 'T2', workstreams: ['ws-one'] } });
 
     const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
     try {

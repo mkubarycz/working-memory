@@ -76,7 +76,7 @@ interface Envelope {
       const created = jsonOf<Envelope>(
         await client.callTool({
           name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'demo', spec: { title: 'Demo Topic' } },
+          arguments: { kind: 'Topic', slug: 'demo', spec: { title: 'Demo Topic', workstreams: ['ws-one'] } },
         }),
       );
       expect(created.kind).toBe('Topic');
@@ -87,7 +87,7 @@ interface Envelope {
         topicType: 'topic',
         status: 'open',
         parents: [],
-        workstreams: [],
+        workstreams: ['ws-one'],
         focusedWorkstreams: [],
       });
       // Envelope status inherits Base's empty default.

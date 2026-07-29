@@ -16,15 +16,16 @@
       "presentation": { "reveal": "silent" }
     },
     {
-      // Kill the stale DEV control-plane daemon by the pid recorded in the
-      // sandbox port file (never by entry-path substring — the installed
-      // production daemon shares the same out/control-plane/index.js suffix and
-      // must NOT be touched), free the fixed sandbox port (7717) as a fallback,
-      // then clear the lock/port runtime files. Always exits 0 so "nothing to
-      // kill" never blocks the F5 launch.
+      // Kill the stale DEV (sandbox) control-plane daemon by the pid recorded
+      // in the sandbox port file ONLY. Never kill by entry-path substring (the
+      // installed prod daemon shares the out/control-plane/index.js suffix) and
+      // never by port 7717 — the sandbox daemon binds an EPHEMERAL port while
+      // the installed PROD daemon holds the default 7717, so an lsof:7717 kill
+      // would restart production. Then clear the lock/port runtime files.
+      // Always exits 0 so "nothing to kill" never blocks the F5 launch.
       "label": "kill-stale-control-plane",
       "type": "shell",
-      "command": "PF=\"$HOME/wm-control-plane-sandbox/run/control-plane.port.json\"; if [ -f \"$PF\" ]; then PID=$(sed -n 's/.*\"pid\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' \"$PF\"); [ -n \"$PID\" ] && kill \"$PID\" 2>/dev/null; fi; lsof -ti tcp:7717 | xargs kill -9 2>/dev/null; rm -f \"$HOME/wm-control-plane-sandbox/run/control-plane.lock\" \"$PF\"; true",
+      "command": "PF=\"$HOME/wm-control-plane-sandbox/run/control-plane.port.json\"; if [ -f \"$PF\" ]; then PID=$(sed -n 's/.*\"pid\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' \"$PF\"); [ -n \"$PID\" ] && kill \"$PID\" 2>/dev/null; fi; rm -f \"$HOME/wm-control-plane-sandbox/run/control-plane.lock\" \"$PF\"; true",
       "presentation": { "reveal": "silent" },
       "problemMatcher": []
     },

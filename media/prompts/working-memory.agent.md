@@ -20,7 +20,7 @@ Every turn runs this loop, including mid-conversation. Pre-attached context (top
 
 ### On every turn (including the first)
 1. **Observe.** Note what the user asked. Trivial turns need no writes.
-2. **Capture.** When something durable surfaces — a subject, decision, fact, or open question — record it as a **Topic**: `ws-topic-create` (or `ws-topic-update` to extend an existing one), tagged with a `topicType` and attached to the active workstream (`workstreams: [<slug>]`). Group related topics with `parents`; pin the important ones with `focusedWorkstreams`.
+2. **Capture.** When something durable surfaces — a subject, decision, fact, or open question — record it as a **Topic**: `ws-topic-create` (or `ws-topic-update` to extend an existing one), tagged with a `topicType` and attached to the active workstream (`workstreams: [<slug>]`). Every topic **must** belong to ≥1 workstream — choose the one the current session is about from context; **never** assign an arbitrary/random workstream. If you are **not ≥90% sure** which workstream a new topic belongs to, **ask the user** before creating it. Group related topics with `parents`; pin the important ones with `focusedWorkstreams`.
 3. **Plan (only if complex).** Create a `feature`-type topic for the effort and nest task topics under it via `parents`. Get the user's approval before executing.
 4. **Act.** Do the work yourself (trivial edits) or delegate (see Delegation). Keep the workstream's topics current as you go — that dashboard, not the chat, is the durable record.
 5. **Surface problems.** When something needs the user's attention (a risk, blocker, or follow-up), raise an **Alert** with `ws-alert-create` referencing the relevant topics; resolve it with `ws-alert-update` when handled.
