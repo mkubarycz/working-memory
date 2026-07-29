@@ -36,6 +36,16 @@ export const HOME_ENV = 'WM_CONTROL_PLANE_HOME';
 /** Env var: overrides the default port. */
 export const PORT_ENV = 'WM_CONTROL_PLANE_PORT';
 
+/**
+ * Marker printed to stdout once the HTTP server is bound:
+ * `WM_CONTROL_PLANE_LISTENING <port>`. The embedded extension host parses this
+ * from the child's own stdout stream to learn the ACTUAL bound port (which is
+ * ephemeral when the host spawns us with `WM_CONTROL_PLANE_PORT=0`), so it can
+ * register exactly the daemon it owns rather than discovering a port via the
+ * shared port file (which two racing daemons can cross).
+ */
+export const LISTENING_MARKER = 'WM_CONTROL_PLANE_LISTENING';
+
 /** Runtime-dir filename for the single-instance lock. */
 export const LOCK_FILE = 'control-plane.lock';
 

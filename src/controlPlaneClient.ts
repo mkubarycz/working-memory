@@ -388,6 +388,13 @@ export interface ControlPlaneClientOptions {
    * fixed URL pointing at an ephemeral in-process server.
    */
   resolveUrl?: () => string | null;
+  /**
+   * Whether the `WM_CONTROL_PLANE_HOME` env override may steer the default URL
+   * resolver. Only true in Development (the F5 sandbox); in Production the env
+   * is ignored so a leaked sandbox var can't repoint chat's tools at the
+   * sandbox daemon. Ignored when `resolveUrl` is supplied.
+   */
+  allowEnvOverride?: boolean;
 }
 
 /** MCP text content shape (a subset of the SDK's `CallToolResult.content`). */
@@ -464,11 +471,12 @@ function interpretWriteResult(result: unknown): WriteDocumentResult {
  * the control-plane home and return its `/mcp` URL. `null` when the file is
  * missing or malformed (daemon not running yet).
  */
-function defaultResolveUrl(): string | null {
+function defaultResolveUrl(allowEnvOverride: boolean): string | null {
   const home = resolveControlPlaneHome({
     platform: process.platform,
     env: process.env,
     homedir: os.homedir(),
+    allowEnvOverride,
   });
   const portFile = controlPlanePortFilePath(home);
   let raw: string;
@@ -498,7 +506,8 @@ export class ControlPlaneClient {
   private disposed = false;
 
   constructor(options: ControlPlaneClientOptions = {}) {
-    this.resolveUrl = options.resolveUrl ?? defaultResolveUrl;
+    this.resolveUrl =
+      options.resolveUrl ?? (() => defaultResolveUrl(options.allowEnvOverride ?? false));
   }
 
   /** List documents via `wm-document-read` (list mode), optionally filtered by `kind`. */

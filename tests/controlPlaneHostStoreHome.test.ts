@@ -17,6 +17,14 @@ const cfg = vi.hoisted(() => ({ storePath: undefined as string | undefined }));
 
 vi.mock('vscode', () => ({
   window: { createOutputChannel: () => ({ dispose: () => {} }) },
+  ExtensionMode: { Production: 2, Development: 1, Test: 3 },
+  EventEmitter: class {
+    get event() {
+      return () => ({ dispose: () => {} });
+    }
+    fire(): void {}
+    dispose(): void {}
+  },
   workspace: {
     getConfiguration: () => ({
       get: (key: string) => (key === 'controlPlane.storePath' ? cfg.storePath : undefined),
@@ -24,8 +32,14 @@ vi.mock('vscode', () => ({
   },
 }));
 
-function makeContext(): unknown {
-  return { subscriptions: [] as Array<{ dispose: () => void }>, extensionPath: '/ext' };
+// `extensionMode` drives whether the WM_CONTROL_PLANE_HOME env override is
+// honored: Development (F5 sandbox) honors it; Production ignores it.
+function makeContext(extensionMode = 1 /* Development */): unknown {
+  return {
+    subscriptions: [] as Array<{ dispose: () => void }>,
+    extensionPath: '/ext',
+    extensionMode,
+  };
 }
 
 afterEach(() => {
@@ -33,18 +47,28 @@ afterEach(() => {
   delete process.env.WM_CONTROL_PLANE_HOME;
 });
 
-test('storeHome honours the WM_CONTROL_PLANE_HOME env override (before start())', async () => {
+test('storeHome honours the WM_CONTROL_PLANE_HOME env override in Development (before start())', async () => {
   process.env.WM_CONTROL_PLANE_HOME = '/tmp/wm-override';
   const { ControlPlaneHost } = await import('../src/controlPlaneHost');
-  const host = new ControlPlaneHost(makeContext() as never);
+  const host = new ControlPlaneHost(makeContext(1) as never);
 
   expect(host.storeHome).toBe('/tmp/wm-override');
+});
+
+test('storeHome IGNORES the WM_CONTROL_PLANE_HOME env override in Production', async () => {
+  process.env.WM_CONTROL_PLANE_HOME = '/tmp/wm-sandbox';
+  cfg.storePath = '/opt/wm-setting';
+  const { ControlPlaneHost } = await import('../src/controlPlaneHost');
+  const host = new ControlPlaneHost(makeContext(2) as never);
+
+  // Env skipped → resolves from the setting, not the leaked sandbox path.
+  expect(host.storeHome).toBe('/opt/wm-setting');
 });
 
 test('storeHome falls back to the controlPlane.storePath setting when no env override', async () => {
   cfg.storePath = '/opt/wm-setting';
   const { ControlPlaneHost } = await import('../src/controlPlaneHost');
-  const host = new ControlPlaneHost(makeContext() as never);
+  const host = new ControlPlaneHost(makeContext(1) as never);
 
   expect(host.storeHome).toBe('/opt/wm-setting');
 });
@@ -52,7 +76,7 @@ test('storeHome falls back to the controlPlane.storePath setting when no env ove
 test('storeHome caches its first resolution (env change afterwards is ignored)', async () => {
   process.env.WM_CONTROL_PLANE_HOME = '/tmp/wm-first';
   const { ControlPlaneHost } = await import('../src/controlPlaneHost');
-  const host = new ControlPlaneHost(makeContext() as never);
+  const host = new ControlPlaneHost(makeContext(1) as never);
 
   const first = host.storeHome;
   process.env.WM_CONTROL_PLANE_HOME = '/tmp/wm-second';

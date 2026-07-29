@@ -42,21 +42,28 @@ export interface HomeEnv {
   platform: NodeJS.Platform;
   env: NodeJS.ProcessEnv;
   homedir: string;
+  /**
+   * Whether the `WM_CONTROL_PLANE_HOME` env override may win. Only true in
+   * Development (the F5 sandbox); in Production the env is ignored so a leaked
+   * sandbox var can't repoint the installed extension. Omitted/undefined is
+   * treated as allowed to preserve the pure resolvers' default behavior.
+   */
+  allowEnvOverride?: boolean;
 }
 
 /**
  * Resolve the control-plane app-data home directory, matching
  * `control-plane/src/paths.ts::resolveAppHome`:
- *  1. `WM_CONTROL_PLANE_HOME` (explicit override)
+ *  1. `WM_CONTROL_PLANE_HOME` (explicit override — only when `allowEnvOverride`)
  *  2. Windows → `%LOCALAPPDATA%\WorkingMemory`
  *  3. macOS   → `~/Library/Application Support/WorkingMemory`
  *  4. Linux   → `$XDG_DATA_HOME/working-memory` (or `~/.local/share/working-memory`)
  */
 export function resolveControlPlaneHome(input: HomeEnv): string {
-  const { platform, env, homedir } = input;
+  const { platform, env, homedir, allowEnvOverride } = input;
 
   const override = env[CONTROL_PLANE_HOME_ENV];
-  if (override && override.trim()) {
+  if (allowEnvOverride !== false && override && override.trim()) {
     return path.resolve(override.trim());
   }
 
@@ -96,7 +103,8 @@ function isHostingMode(value: string): value is ControlPlaneHostingMode {
 
 /**
  * Resolve the effective hosting mode. Precedence:
- *  1. `WM_CONTROL_PLANE_HOSTING` env override (used by the F5 sandbox).
+ *  1. `WM_CONTROL_PLANE_HOSTING` env override — only when `allowEnvOverride`
+ *     (used by the F5 sandbox); ignored in Production.
  *  2. The `workingMemory.controlPlane.hosting` setting value.
  *  3. Default (`auto`).
  *
@@ -106,9 +114,10 @@ function isHostingMode(value: string): value is ControlPlaneHostingMode {
 export function resolveHostingMode(input: {
   envValue?: string | null;
   settingValue?: string | null;
+  allowEnvOverride?: boolean;
 }): ControlPlaneHostingMode {
   const env = (input.envValue ?? '').trim().toLowerCase();
-  if (isHostingMode(env)) {
+  if (input.allowEnvOverride !== false && isHostingMode(env)) {
     return env;
   }
   const setting = (input.settingValue ?? '').trim().toLowerCase();
@@ -120,19 +129,20 @@ export function resolveHostingMode(input: {
 
 /**
  * Resolve the control-plane store home directory. Precedence:
- *  1. `WM_CONTROL_PLANE_HOME` env override (F5 sandbox + tests).
+ *  1. `WM_CONTROL_PLANE_HOME` env override — only when the passed `homeEnv`
+ *     sets `allowEnvOverride` (F5 sandbox + tests); ignored in Production.
  *  2. The `workingMemory.controlPlane.storePath` setting, when non-empty.
  *  3. The per-OS app-data default (`resolveControlPlaneHome`).
  *
  * This maps the store-path setting onto `WM_CONTROL_PLANE_HOME` — the same var
- * the daemon reads — while keeping the env override authoritative.
+ * the daemon reads — while keeping the env override authoritative in Dev.
  */
 export function resolveControlPlaneStoreHome(input: {
   homeEnv: HomeEnv;
   settingPath?: string | null;
 }): string {
   const override = input.homeEnv.env[CONTROL_PLANE_HOME_ENV];
-  if (override && override.trim()) {
+  if (input.homeEnv.allowEnvOverride !== false && override && override.trim()) {
     return path.resolve(override.trim());
   }
   const setting = (input.settingPath ?? '').trim();
@@ -145,6 +155,104 @@ export function resolveControlPlaneStoreHome(input: {
 /** Loopback health-probe URL for a control-plane bound to `port`. */
 export function controlPlaneHealthUrl(port: number): string {
   return `http://127.0.0.1:${port}/health`;
+}
+
+/** Loopback `/mcp` endpoint URL for a control-plane bound to `port`. */
+export function controlPlaneMcpUrl(port: number): string {
+  return `http://127.0.0.1:${port}/mcp`;
+}
+
+/**
+ * Env var: pins the control-plane TCP port. Read by the daemon (bind port) and,
+ * in Development only, by the extension host to steer service/auto-client
+ * endpoint resolution. Ignored by the extension in Production (mirrors the
+ * `WM_CONTROL_PLANE_HOME` env-gating) so a leaked sandbox var can't repoint the
+ * installed extension.
+ */
+export const CONTROL_PLANE_PORT_ENV = 'WM_CONTROL_PLANE_PORT';
+
+/**
+ * Well-known default port for an EXTERNAL/standalone control-plane daemon
+ * (service mode, or auto-mode probing for a running service). The embedded
+ * self-hosted daemon does NOT use this — the host spawns it on an ephemeral
+ * port and learns the actual bound port from the daemon's stdout, so two hosts
+ * never race for a fixed port.
+ */
+export const DEFAULT_CONTROL_PLANE_SERVICE_PORT = 7717;
+
+/**
+ * Marker the daemon prints to stdout once its HTTP server is bound:
+ * `WM_CONTROL_PLANE_LISTENING <port>`. The embedded host parses this from the
+ * child's own stdout stream to learn the ACTUAL bound port — no port-file race,
+ * no TOCTOU, and inherently tied to our own child process.
+ */
+export const CONTROL_PLANE_LISTENING_MARKER = 'WM_CONTROL_PLANE_LISTENING';
+
+/**
+ * Coerce a port-ish value (number, or a numeric string from an env var) into a
+ * valid TCP port number, or `null` when it is absent/invalid. `0` is rejected
+ * here on purpose: it is a valid *bind request* (ephemeral) but never a valid
+ * endpoint to connect to.
+ */
+export function coercePort(value: unknown): number | null {
+  let n: number;
+  if (typeof value === 'number') {
+    n = value;
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    n = Number.parseInt(trimmed, 10);
+  } else {
+    return null;
+  }
+  return isValidPort(n) ? n : null;
+}
+
+/**
+ * Parse the daemon's `WM_CONTROL_PLANE_LISTENING <port>` line out of a stdout
+ * chunk/buffer. Tolerant of surrounding log noise and chunk concatenation:
+ * scans for the marker anywhere in the text. Returns the port, or `null` when
+ * the marker is absent or the port is out of range.
+ */
+export function parseListeningPort(text: string): number | null {
+  const re = new RegExp(`${CONTROL_PLANE_LISTENING_MARKER}\\s+(\\d{1,5})\\b`);
+  const match = re.exec(text);
+  if (!match) {
+    return null;
+  }
+  return coercePort(match[1]);
+}
+
+/**
+ * Resolve the port to CONNECT to for a control-plane we do NOT own — i.e.
+ * `service` mode (external OS service) and `auto` mode's health probe for a
+ * running service. Precedence:
+ *  1. `WM_CONTROL_PLANE_PORT` env override — only when `allowEnvOverride`
+ *     (Development / F5 sandbox); ignored in Production.
+ *  2. The `workingMemory.controlPlane.port` setting, when a valid port.
+ *  3. The well-known default ({@link DEFAULT_CONTROL_PLANE_SERVICE_PORT}).
+ *
+ * Never returns 0: unlike an embedded *bind* request, a client endpoint must be
+ * a concrete port, so an invalid/zero value at any layer falls through.
+ */
+export function resolveServicePort(input: {
+  envValue?: string | number | null;
+  settingValue?: string | number | null;
+  allowEnvOverride?: boolean;
+}): number {
+  if (input.allowEnvOverride !== false) {
+    const env = coercePort(input.envValue);
+    if (env !== null) {
+      return env;
+    }
+  }
+  const setting = coercePort(input.settingValue);
+  if (setting !== null) {
+    return setting;
+  }
+  return DEFAULT_CONTROL_PLANE_SERVICE_PORT;
 }
 
 function isValidPort(port: unknown): port is number {
@@ -178,6 +286,48 @@ export function parsePortInfo(raw: string | null | undefined): PortInfo | null {
     return null;
   }
   return { port, pid };
+}
+
+/** A single-process signaller — `process.kill`-shaped, but injectable for tests. */
+export type PidKiller = (pid: number, signal: NodeJS.Signals | 0) => void;
+
+/**
+ * Terminate exactly one daemon `pid`: SIGTERM, wait `graceMs`, then SIGKILL if
+ * it's still alive. Every signal is guarded — an `ESRCH` (process already gone)
+ * is a success, not an error — so this never throws. Purposely pid-scoped: it
+ * only touches the process whose id we were handed (read from the sandbox port
+ * file), never a shared entry-path match, so it can't disturb an unrelated
+ * (e.g. installed/production) daemon.
+ *
+ * Injectable `kill`/`delay` keep it unit-testable without spawning processes.
+ */
+export async function terminateDaemonPid(
+  pid: number,
+  kill: PidKiller,
+  delay: (ms: number) => Promise<void>,
+  graceMs = 750,
+): Promise<void> {
+  try {
+    kill(pid, 'SIGTERM');
+  } catch {
+    // ESRCH (already gone) or EPERM — nothing more we can safely do.
+    return;
+  }
+  await delay(graceMs);
+  // Signal 0 probes liveness: throws ESRCH once the process has exited.
+  let alive = true;
+  try {
+    kill(pid, 0);
+  } catch {
+    alive = false;
+  }
+  if (alive) {
+    try {
+      kill(pid, 'SIGKILL');
+    } catch {
+      /* raced us to exit — fine */
+    }
+  }
 }
 
 /**

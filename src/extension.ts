@@ -173,20 +173,32 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
+  // Own the control-plane PROCESS (WM 13.0 "control-plane-hosting-modes").
+  // Depending on the resolved hosting mode (auto/embedded/service) this either
+  // spawns + supervises the daemon (embedded / auto-with-no-service) or stays a
+  // pure client (service / auto-with-running-service). Constructed BEFORE the
+  // MCP client + registration so both can source the endpoint port from the
+  // host it authoritatively owns (embedded child's reported port, or the
+  // configured service port) rather than the shared discovery port file.
+  controlPlaneHost = new ControlPlaneHost(context);
+  const host = controlPlaneHost;
+
   // MCP client for the control-plane document store (WM 13.0 "blackboard-tab").
   // Reads documents through the same `/mcp` surface an agent uses, so the
   // Blackboard tab + `working-memory:/document/<id>.md` virtual docs exercise
   // the real tool path. Best-effort: no-ops when the daemon isn't running.
-  controlPlaneClient = new ControlPlaneClient();
+  // Sources its URL from the host's OWNED port so it always talks to the same
+  // daemon the MCP registration points chat at — never the shared port file.
+  controlPlaneClient = new ControlPlaneClient({
+    resolveUrl: () => {
+      const port = host.endpointPort;
+      return port === undefined ? null : `http://127.0.0.1:${port}/mcp`;
+    },
+  });
   contentProvider.setControlPlaneClient(controlPlaneClient);
 
-  // Own the control-plane PROCESS (WM 13.0 "control-plane-hosting-modes").
-  // Depending on the resolved hosting mode (auto/embedded/service) this either
-  // spawns + supervises the daemon (embedded / auto-with-no-service) or stays a
-  // pure client (service / auto-with-running-service). Started before the MCP
-  // registration below so the port file is more likely to exist when discovery
-  // polls. Best-effort: start() never throws into activation.
-  controlPlaneHost = new ControlPlaneHost(context);
+  // Start supervising/probing now that the client is wired to its owned port.
+  // Best-effort: start() never throws into activation.
   void controlPlaneHost.start();
 
   // Deploy the bundled templates into the hub workspace (best-effort). This is
@@ -253,7 +265,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // regardless of hub/DB state. Passing `refresh` lets the readiness poll nudge
   // the control-plane-backed panel tabs once the daemon's port file appears, so
   // the panel populates without a manual refresh on first load.
-  initControlPlaneIntegration(context, () => {
+  initControlPlaneIntegration(context, controlPlaneHost, () => {
     refresh();
     void ensureDefaultTopicTypes().then(refresh);
   });

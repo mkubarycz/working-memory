@@ -21,7 +21,7 @@ import { removePortFile, writePortFile } from './portfile.js';
 import { openStore, type Store } from './store.js';
 import { startServer, type RunningServer } from './server.js';
 import { loadKinds } from './kinds/loader.js';
-import { DEFAULT_PORT, HOST, PORT_ENV, SERVICE_VERSION } from './config.js';
+import { DEFAULT_PORT, HOST, LISTENING_MARKER, PORT_ENV, SERVICE_VERSION } from './config.js';
 
 export interface Daemon {
   readonly port: number;
@@ -95,6 +95,12 @@ export async function runDaemon(): Promise<Daemon> {
     log(`registered kinds: ${kinds.length ? kinds.join(', ') : '(none)'}`);
     server = await startWithFallback(resolvePreferredPort(), store);
     writePortFile(portFilePath(), { port: server.port, pid: process.pid });
+
+    // Announce the ACTUAL bound port on stdout so the embedded extension host
+    // can learn the port of the daemon IT spawned — without reading the shared
+    // port file (which two racing daemons can cross). A single machine-parseable
+    // line, tied to this process's stdout stream.
+    process.stdout.write(`${LISTENING_MARKER} ${server.port}\n`);
 
     const boundServer = server;
     const openedStore = store;

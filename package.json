@@ -46,6 +46,13 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Filesystem directory for the control-plane's SQLite files. Empty = per-OS app-data default. Maps to the `WM_CONTROL_PLANE_HOME` environment variable."
+        },
+        "workingMemory.controlPlane.port": {
+          "type": "number",
+          "default": 7717,
+          "minimum": 1,
+          "maximum": 65535,
+          "markdownDescription": "TCP port the extension connects to when an EXTERNAL control-plane daemon owns the process — i.e. `#workingMemory.controlPlane.hosting#` = **service**, or **auto** while probing for a running service. Ignored in **embedded** / auto-self-host mode, where the extension spawns the daemon on an ephemeral port and learns the actual bound port automatically. Set this to match the port your external/OS-service daemon binds (`WM_CONTROL_PLANE_PORT`)."
         }
       }
     },

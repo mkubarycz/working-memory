@@ -37,11 +37,15 @@ import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import {
   CONTROL_PLANE_HOME_ENV,
   CONTROL_PLANE_HOSTING_ENV,
+  CONTROL_PLANE_PORT_ENV,
   controlPlaneHealthUrl,
   controlPlanePortFilePath,
+  parseListeningPort,
   parsePortInfo,
   resolveControlPlaneStoreHome,
   resolveHostingMode,
+  resolveServicePort,
+  terminateDaemonPid,
   type ControlPlaneHostingMode,
 } from './controlPlaneShared';
 
@@ -83,9 +87,32 @@ export class ControlPlaneHost implements vscode.Disposable {
   private mode: ControlPlaneHostingMode = 'auto';
   private home = '';
 
+  /**
+   * The authoritative port clients + MCP registration should connect to — the
+   * port THIS host owns. For `service`/`auto`-as-client it is the resolved
+   * service port; for `embedded` it is the ACTUAL port the child reported on
+   * stdout (`WM_CONTROL_PLANE_LISTENING <port>`). `undefined` until known.
+   * Deliberately NOT derived from the shared port file, so two daemons racing
+   * for a port can never cross wires here.
+   */
+  private endpointPortValue: number | undefined;
+  private readonly onDidChangeEndpointPortEmitter = new vscode.EventEmitter<number>();
+  /** Fires whenever {@link endpointPort} becomes known or changes. */
+  readonly onDidChangeEndpointPort = this.onDidChangeEndpointPortEmitter.event;
+
   constructor(private readonly context: vscode.ExtensionContext) {
     this.output = vscode.window.createOutputChannel('Working Memory Control Plane');
     this.context.subscriptions.push(this.output);
+    this.context.subscriptions.push(this.onDidChangeEndpointPortEmitter);
+  }
+
+  /**
+   * The `WM_CONTROL_PLANE_HOME` / `WM_CONTROL_PLANE_HOSTING` env overrides are
+   * dev-only (the F5 sandbox). In Production they're ignored so a leaked
+   * sandbox var can't repoint the installed extension at the sandbox daemon.
+   */
+  private get allowEnvOverride(): boolean {
+    return this.context.extensionMode === vscode.ExtensionMode.Development;
   }
 
   /**
@@ -101,7 +128,12 @@ export class ControlPlaneHost implements vscode.Disposable {
   get storeHome(): string {
     if (!this.home) {
       this.home = resolveControlPlaneStoreHome({
-        homeEnv: { platform: process.platform, env: process.env, homedir: os.homedir() },
+        homeEnv: {
+          platform: process.platform,
+          env: process.env,
+          homedir: os.homedir(),
+          allowEnvOverride: this.allowEnvOverride,
+        },
         settingPath: vscode.workspace
           .getConfiguration('workingMemory')
           .get<string>('controlPlane.storePath'),
@@ -111,10 +143,56 @@ export class ControlPlaneHost implements vscode.Disposable {
   }
 
   /**
-   * Resolve mode + store home, then act: `service` → client-only (no spawn);
-   * `auto` → probe a running service and only self-host if none is healthy;
-   * `embedded` → spawn + supervise. Best-effort: never throws into activation.
+   * The port clients + MCP registration must use — the port this host owns.
+   * `undefined` until resolved (immediately for service/auto-client; once the
+   * child reports its bound port for embedded).
    */
+  get endpointPort(): number | undefined {
+    return this.endpointPortValue;
+  }
+
+  /** Set the owned endpoint port and fire the change event (no-op if unchanged). */
+  private setEndpointPort(port: number): void {
+    if (this.endpointPortValue === port) {
+      return;
+    }
+    this.endpointPortValue = port;
+    this.onDidChangeEndpointPortEmitter.fire(port);
+  }
+
+  /**
+   * Resolve the port to connect to for an EXTERNAL daemon (service mode, or the
+   * auto-mode health probe): dev env `WM_CONTROL_PLANE_PORT` > the
+   * `controlPlane.port` setting > the well-known default. Never the port file.
+   */
+  private resolveServicePortNumber(): number {
+    return resolveServicePort({
+      envValue: process.env[CONTROL_PLANE_PORT_ENV],
+      settingValue: vscode.workspace
+        .getConfiguration('workingMemory')
+        .get<number>('controlPlane.port'),
+      allowEnvOverride: this.allowEnvOverride,
+    });
+  }
+
+  /**
+   * The bind port to hand the EMBEDDED child. `0` (ephemeral) by default so two
+   * self-hosting hosts never collide on a fixed port; a dev-only
+   * `WM_CONTROL_PLANE_PORT` may pin it (Development / tests). The host learns
+   * the ACTUAL bound port from the child's stdout regardless.
+   */
+  private preferredEmbeddedPort(): number {
+    if (this.allowEnvOverride) {
+      const raw = process.env[CONTROL_PLANE_PORT_ENV];
+      if (raw && raw.trim()) {
+        const n = Number.parseInt(raw.trim(), 10);
+        if (Number.isInteger(n) && n >= 0 && n <= 65535) {
+          return n;
+        }
+      }
+    }
+    return 0;
+  }
   async start(): Promise<void> {
     try {
       const config = vscode.workspace.getConfiguration('workingMemory');
@@ -124,23 +202,38 @@ export class ControlPlaneHost implements vscode.Disposable {
       this.mode = resolveHostingMode({
         envValue: process.env[CONTROL_PLANE_HOSTING_ENV],
         settingValue: settingMode,
+        allowEnvOverride: this.allowEnvOverride,
       });
       this.home = resolveControlPlaneStoreHome({
-        homeEnv: { platform: process.platform, env: process.env, homedir: os.homedir() },
+        homeEnv: {
+          platform: process.platform,
+          env: process.env,
+          homedir: os.homedir(),
+          allowEnvOverride: this.allowEnvOverride,
+        },
         settingPath,
       });
 
       this.log(`hosting mode = ${this.mode}; store home = ${this.home}`);
 
       if (this.mode === 'service') {
-        this.log('service mode — external OS service owns the daemon; not spawning.');
+        const port = this.resolveServicePortNumber();
+        this.log(
+          `service mode — external OS service owns the daemon; not spawning. ` +
+            `Connecting on 127.0.0.1:${port}.`,
+        );
+        this.setEndpointPort(port);
         return;
       }
 
       if (this.mode === 'auto') {
-        const healthy = await this.probeRunningService();
-        if (healthy) {
-          this.log('auto mode — a healthy control-plane is already running; acting as client.');
+        const healthyPort = await this.probeRunningService();
+        if (healthyPort !== null) {
+          this.log(
+            `auto mode — a healthy control-plane is already running on ` +
+              `127.0.0.1:${healthyPort}; acting as client.`,
+          );
+          this.setEndpointPort(healthyPort);
           return;
         }
         this.log('auto mode — no healthy control-plane found; self-hosting (embedded).');
@@ -163,6 +256,12 @@ export class ControlPlaneHost implements vscode.Disposable {
    * solo sandbox F5 config) so it can never disturb a legitimately separate
    * daemon — e.g. the standalone service in the compound launch. POSIX only;
    * no-ops on Windows and never throws into activation.
+   *
+   * Kills strictly by the pid recorded in THIS home's port file — never by an
+   * entry-path substring. The dev and installed builds share the same
+   * `out/control-plane/index.js` suffix, so a `pkill -f` on it would also match
+   * (and bounce) the user's production daemon; targeting the sandbox pid keeps
+   * the kill scoped to our own process.
    */
   private async freeStalePort(): Promise<void> {
     if (
@@ -172,10 +271,21 @@ export class ControlPlaneHost implements vscode.Disposable {
       return;
     }
     try {
-      await new Promise<void>((resolve) => {
-        // Kill any daemon whose command line contains the daemon entry path.
-        execFile('pkill', ['-f', DAEMON_ENTRY], () => resolve());
-      });
+      const portFile = controlPlanePortFilePath(this.home);
+      let pid: number | undefined;
+      try {
+        pid = parsePortInfo(readFileSync(portFile, 'utf8'))?.pid;
+      } catch {
+        // No/unreadable port file → nothing recorded to kill.
+      }
+      if (pid !== undefined) {
+        await terminateDaemonPid(
+          pid,
+          (p, signal) => process.kill(p, signal),
+          (ms) => new Promise((r) => setTimeout(r, ms)),
+        );
+        this.log(`freed stale sandbox daemon pid ${pid} before spawning.`);
+      }
       // Clear the single-instance lock + port file so the fresh daemon doesn't
       // refuse to start behind the just-killed one.
       for (const name of ['control-plane.lock', 'control-plane.port.json']) {
@@ -185,7 +295,6 @@ export class ControlPlaneHost implements vscode.Disposable {
           /* best-effort */
         }
       }
-      this.log('freed any stale daemon on the sandbox port before spawning.');
     } catch (err) {
       this.log(`freeStalePort best-effort failure: ${(err as Error).message}`);
     }
@@ -230,15 +339,20 @@ export class ControlPlaneHost implements vscode.Disposable {
     const command = useExecPath ? process.execPath : 'node';
     const indexPath = path.join(this.context.extensionPath, DAEMON_ENTRY);
     const args = ['--experimental-sqlite', indexPath];
+    // Bind an ephemeral port by default (WM_CONTROL_PLANE_PORT=0) so two
+    // self-hosting hosts never race for a fixed port; we learn the actual bound
+    // port from the child's stdout below. A dev-only override may pin it.
+    const bindPort = this.preferredEmbeddedPort();
     const env = {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
       [CONTROL_PLANE_HOME_ENV]: this.home,
+      [CONTROL_PLANE_PORT_ENV]: String(bindPort),
     };
 
     this.log(
       `spawning daemon via ${useExecPath ? 'VS Code bundled node (process.execPath)' : 'node on PATH'}: ` +
-        `${command} ${args.join(' ')}`,
+        `${command} ${args.join(' ')} (bind port ${bindPort === 0 ? 'ephemeral' : bindPort})`,
     );
 
     this.sawSqliteError = false;
@@ -253,7 +367,30 @@ export class ControlPlaneHost implements vscode.Disposable {
     }
     this.child = child;
 
-    child.stdout?.on('data', (chunk: Buffer) => this.pipe(chunk));
+    // Accumulate stdout until the daemon announces its bound port. The port is
+    // read from THIS child's own stdout stream, so it is inherently tied to our
+    // child.pid — we never adopt a port from a foreign process or the port file.
+    let stdoutBuf = '';
+    let portReported = false;
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (!portReported) {
+        stdoutBuf += chunk.toString();
+        const port = parseListeningPort(stdoutBuf);
+        if (port !== null) {
+          portReported = true;
+          stdoutBuf = '';
+          if (this.child === child) {
+            this.log(`daemon reported listening on 127.0.0.1:${port} (pid ${child.pid}).`);
+            this.setEndpointPort(port);
+          }
+        } else if (stdoutBuf.length > 8_192) {
+          // Cap the buffer so a chatty daemon that never prints the marker can't
+          // grow it unbounded; keep the tail in case the marker straddles.
+          stdoutBuf = stdoutBuf.slice(-1_024);
+        }
+      }
+      this.pipe(chunk);
+    });
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
       if (text.includes(SQLITE_UNAVAILABLE_MARKER)) {
@@ -313,19 +450,16 @@ export class ControlPlaneHost implements vscode.Disposable {
     }, delay);
   }
 
-  /** Read the port file + probe `GET /health`; true only on a 200 response. */
-  private async probeRunningService(): Promise<boolean> {
-    const portFile = controlPlanePortFilePath(this.home);
-    let info: ReturnType<typeof parsePortInfo>;
-    try {
-      info = parsePortInfo(readFileSync(portFile, 'utf8'));
-    } catch {
-      return false;
-    }
-    if (!info) {
-      return false;
-    }
-    return httpHealthOk(controlPlaneHealthUrl(info.port), HEALTH_PROBE_TIMEOUT_MS);
+  /**
+   * Probe the CONFIGURED service port (not the shared port file) for a healthy
+   * running daemon. Returns the port on a 200 `/health`, else `null`. Using the
+   * configured/known port — never a foreign port file — keeps auto-mode from
+   * latching onto a daemon it didn't spawn and can't identify.
+   */
+  private async probeRunningService(): Promise<number | null> {
+    const port = this.resolveServicePortNumber();
+    const ok = await httpHealthOk(controlPlaneHealthUrl(port), HEALTH_PROBE_TIMEOUT_MS);
+    return ok ? port : null;
   }
 
   /** Best-effort: log the node version of `command` (helps diagnose the spike). */

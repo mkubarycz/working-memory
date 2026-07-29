@@ -1,10 +1,13 @@
 /**
  * Control-plane integration (WM 13.0 "f5-wiring").
  *
- * Three responsibilities, all best-effort and non-fatal to activation:
- *  1. Discover the standalone control-plane daemon via its port file and
- *     register its localhost Streamable-HTTP endpoint as an MCP server so
- *     Copilot chat picks up the `wm_*` document tools.
+ * Two responsibilities, both best-effort and non-fatal to activation:
+ *  1. Register the control-plane's localhost Streamable-HTTP endpoint as an MCP
+ *     server so Copilot chat picks up the `wm_*` document tools. The endpoint
+ *     port comes from the {@link ControlPlaneHost} — the authoritative owner of
+ *     the port we spawned (embedded) or the configured service port (service /
+ *     auto-as-client) — NOT from the shared discovery port file, which two
+ *     racing daemons can cross.
  *  2. Install the `wm2` chat mode into the sandbox workspace (dev + sandbox
  *     only) so Michael can drive the document store from chat.
  *
@@ -16,23 +19,20 @@
  */
 
 import * as vscode from 'vscode';
-import * as os from 'node:os';
 import * as path from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import {
   CONTROL_PLANE_PROVIDER_ID,
   CONTROL_PLANE_PROVIDER_LABEL,
-  controlPlanePortFilePath,
-  parsePortInfo,
+  controlPlaneMcpUrl,
   renderWm2Chatmode,
-  resolveControlPlaneHome,
-  type PortInfo,
 } from './controlPlaneShared';
 
-/** How long to wait for the port file to appear (the daemon starts concurrently). */
-const DISCOVERY_TIMEOUT_MS = 10_000;
-/** Poll interval while waiting for the port file. */
-const DISCOVERY_INTERVAL_MS = 500;
+/** The subset of {@link ControlPlaneHost} the MCP registration depends on. */
+export interface ControlPlanePortSource {
+  readonly endpointPort: number | undefined;
+  readonly onDidChangeEndpointPort: vscode.Event<number>;
+}
 
 // Minimal structural mirrors of the finalized 1.101 MCP API, so this compiles
 // against the older pinned `@types/vscode`.
@@ -51,10 +51,12 @@ type McpHttpServerDefinitionCtor = new (
 
 /**
  * Wire the control-plane into the extension. Safe to call unconditionally from
- * `activate()`; each half guards its own failures.
+ * `activate()`; each half guards its own failures. `portSource` is the
+ * {@link ControlPlaneHost}, which owns the authoritative endpoint port.
  */
 export function initControlPlaneIntegration(
   context: vscode.ExtensionContext,
+  portSource: ControlPlanePortSource,
   onControlPlaneReady?: () => void,
 ): void {
   try {
@@ -64,19 +66,20 @@ export function initControlPlaneIntegration(
   }
 
   try {
-    registerControlPlaneMcpServer(context, onControlPlaneReady);
+    registerControlPlaneMcpServer(context, portSource, onControlPlaneReady);
   } catch (err) {
     console.error('[working-memory] control-plane MCP registration failed:', err);
   }
 }
 
 /**
- * Register the control-plane MCP server definition provider, then poll for the
- * daemon's port file and fire the change event so VS Code (re)queries once the
- * endpoint is known.
+ * Register the control-plane MCP server definition provider, sourcing the
+ * endpoint port from the host and re-firing the change event whenever the host
+ * resolves/changes its owned port. The shared port file is NOT consulted here.
  */
 function registerControlPlaneMcpServer(
   context: vscode.ExtensionContext,
+  portSource: ControlPlanePortSource,
   onControlPlaneReady?: () => void,
 ): void {
   const lm = vscode.lm as unknown as {
@@ -98,85 +101,52 @@ function registerControlPlaneMcpServer(
   const didChange = new vscode.EventEmitter<void>();
   context.subscriptions.push(didChange);
 
-  let discovered: PortInfo | null = null;
+  let port: number | undefined = portSource.endpointPort;
 
   const provider: McpServerDefinitionProviderLike = {
     onDidChangeMcpServerDefinitions: didChange.event,
     provideMcpServerDefinitions: () => {
-      if (!discovered) {
+      if (port === undefined) {
         return [];
       }
-      const uri = vscode.Uri.parse(`http://127.0.0.1:${discovered.port}/mcp`);
+      const uri = vscode.Uri.parse(controlPlaneMcpUrl(port));
       // VS Code caches an MCP server's tool manifest and only re-fetches
-      // `tools/list` when the server definition's `version` changes. Derive the
-      // version from the discovered daemon's port + pid so a fresh daemon (new
-      // build → new pid) always busts the cache and VS Code re-indexes the
-      // tools. A long-lived production daemon keeps a stable pid, so it won't
-      // needlessly re-index.
-      const version = `${discovered.port}-${discovered.pid}`;
+      // `tools/list` when the server definition's `version` changes. The owned
+      // port already changes whenever a fresh embedded daemon binds (each
+      // ephemeral spawn → new port), so keying the version on the port busts
+      // the cache on a new daemon while staying stable for a long-lived
+      // service on a fixed port.
+      const version = `port-${port}`;
       return [new HttpServerDefinition(CONTROL_PLANE_PROVIDER_LABEL, uri, undefined, version)];
     },
   };
 
   context.subscriptions.push(register(CONTROL_PLANE_PROVIDER_ID, provider));
 
-  const home = resolveControlPlaneHome({
-    platform: process.platform,
-    env: process.env,
-    homedir: os.homedir(),
-  });
-  const portFile = controlPlanePortFilePath(home);
-
-  void discoverPortInfo(portFile).then((info) => {
-    if (info) {
-      discovered = info;
-      didChange.fire();
+  let announcedReady = false;
+  const applyPort = (resolved: number): void => {
+    port = resolved;
+    didChange.fire();
+    if (!announcedReady) {
+      announcedReady = true;
       // The control-plane-backed panel tabs (Active/Archive/Topics) rendered
-      // their empty state during activation because the daemon's port file did
-      // not exist yet. Now that the daemon is ready, nudge the panel to
-      // re-fetch so it populates without a manual refresh.
+      // their empty state during activation because the endpoint port was not
+      // known yet. Now that it is, nudge the panel to re-fetch so it populates
+      // without a manual refresh.
       onControlPlaneReady?.();
-      console.log(
-        `[working-memory] control-plane discovered on 127.0.0.1:${info.port} ` +
-          `(pid ${info.pid}); MCP server registered.`,
-      );
-    } else {
-      console.warn(
-        `[working-memory] control-plane port file not found at ${portFile} within ` +
-          `${DISCOVERY_TIMEOUT_MS / 1000}s; MCP server not registered.`,
-      );
     }
-  });
-}
+    console.log(
+      `[working-memory] control-plane MCP endpoint set to 127.0.0.1:${resolved}; server registered.`,
+    );
+  };
 
-/** Read + parse the port file once; `null` when missing or malformed. */
-function readPortInfo(portFile: string): PortInfo | null {
-  let raw: string;
-  try {
-    raw = readFileSync(portFile, 'utf8');
-  } catch {
-    return null;
+  // The port may already be known (service / auto-as-client resolve it
+  // synchronously in the host's start()); otherwise wait for the host to
+  // report the embedded child's bound port.
+  if (port !== undefined) {
+    applyPort(port);
   }
-  return parsePortInfo(raw);
-}
-
-/** Poll the port file until it appears or the timeout elapses. */
-async function discoverPortInfo(
-  portFile: string,
-  timeoutMs: number = DISCOVERY_TIMEOUT_MS,
-  intervalMs: number = DISCOVERY_INTERVAL_MS,
-): Promise<PortInfo | null> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const info = readPortInfo(portFile);
-    if (info) {
-      return info;
-    }
-    if (Date.now() >= deadline) {
-      return null;
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
-  }
+  context.subscriptions.push(portSource.onDidChangeEndpointPort(applyPort));
 }
 
 /**
