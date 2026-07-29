@@ -52,8 +52,6 @@ export function renderTopicDocument(
       `- \`topicType\`: [${topicType}](${deepLink('topic-type', topicType)})`,
     ]),
     '',
-    '## Body',
-    '',
     EDITABLE_DESCRIPTION_COMMENT_START,
     body ?? '_Empty body — write something here, then save (⌘S)._',
     EDITABLE_DESCRIPTION_COMMENT_END,

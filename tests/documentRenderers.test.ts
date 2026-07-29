@@ -58,6 +58,16 @@ describe('renderWorkstreamDocument', () => {
     );
     expect(md).toContain('`closure`: _none_');
   });
+
+  // bug: topic-page-extra-headers — the shared metadata helper no longer emits
+  // a `## Metadata` heading, so no per-kind virtual doc shows it; the list stays.
+  it('omits the ## Metadata heading but keeps the metadata list', () => {
+    const md = renderWorkstreamDocument(
+      makeEnvelope('Workstream', { title: 'X', status: 'queue' }),
+    );
+    expect(md).not.toContain('## Metadata');
+    expect(md).toContain('`id`: `doc-1`');
+  });
 });
 
 describe('renderTopicDocument', () => {
@@ -112,6 +122,27 @@ describe('renderTopicDocument', () => {
   it('empty body round-trips to an empty string (save contract)', () => {
     const md = renderTopicDocument(makeEnvelope('Topic', { title: 'RT' }));
     expect(extractTopicBody(md)).toBe('');
+  });
+
+  // bug: topic-page-extra-headers — the intermediate `## Body` / `## Metadata`
+  // H2 headings should NOT render; the metadata list + body content stay, and
+  // the editable markers must remain intact so save still round-trips.
+  it('omits the ## Body and ## Metadata headings but keeps content + markers', () => {
+    const md = renderTopicDocument(
+      makeEnvelope('Topic', { title: 'No Headers', body: 'the body text' }),
+    );
+    expect(md).not.toContain('## Body');
+    expect(md).not.toContain('## Metadata');
+    // Metadata list rows still render.
+    expect(md).toContain('`id`: `doc-1`');
+    // Body content + editable markers still present, and still round-trip.
+    expect(md).toContain('<!-- editable:description -->');
+    expect(md).toContain('<!-- /editable:description -->');
+    expect(md).toContain('the body text');
+    expect(extractTopicBody(md)).toBe('the body text');
+    // No leftover blank-line gap where the heading was: the metadata list
+    // flows straight into a single blank line before the editable marker.
+    expect(md).not.toContain('\n\n\n');
   });
 });
 

@@ -69,8 +69,12 @@ export function linkList(kind: DeepLinkKind, slugs: string[]): string {
 }
 
 /**
- * The shared metadata section (id / slug / resourceVersion / timestamps).
+ * The shared metadata list (id / slug / resourceVersion / timestamps).
  * `extra` rows (e.g. an authored `status`) are appended after the standard set.
+ *
+ * Emits the bullet list only — no `## Metadata` heading. The per-kind virtual
+ * docs render the metadata inline under the title, matching the pre-13.0
+ * layout (bug: topic-page-extra-headers).
  */
 export function metadataSection(
   env: DocumentEnvelope,
@@ -78,8 +82,6 @@ export function metadataSection(
 ): string[] {
   const { metadata } = env;
   return [
-    '## Metadata',
-    '',
     `- \`id\`: \`${metadata.id}\``,
     `- \`slug\`: ${metadata.slug ?? '_none_'}`,
     `- \`resourceVersion\`: ${metadata.resourceVersion}`,
