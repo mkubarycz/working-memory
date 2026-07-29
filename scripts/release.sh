@@ -132,14 +132,21 @@ mkdir -p "$VSIX_DIR"
 # vsce honors -o but won't overwrite an existing file; guard for re-runs.
 rm -f "$VSIX_PATH"
 # --no-yarn: don't try to use yarn even if a yarn.lock is around.
-# --no-dependencies: skip vsce's dependency-tree walk; we ship node_modules verbatim,
-#                    so the walk is wasted work and emits warnings that prompt y/N.
-# printf 'y' feed: auto-confirm the LICENSE-missing prompt. We avoid `yes |`
-# because under `set -o pipefail` SIGPIPE from `yes` after vsce exits trips
-# the whole script (exit 141). A finite feed works around that.
-printf 'y\ny\ny\n' | npx --no-install vsce package --allow-missing-repository --no-yarn --no-dependencies -o "$VSIX_PATH"
+# Let vsce run its production dependency walk: that walk is what bundles the
+# runtime node_modules (incl. @modelcontextprotocol/sdk) the control-plane
+# daemon requires. Do NOT pass --no-dependencies — it SKIPS the walk and ships a
+# vsix with NO node_modules, so the daemon dies at startup on
+# `Cannot find module '@modelcontextprotocol/sdk/...'` (the v0.13.1/0.13.2 bug).
+# printf 'y' feed: auto-confirm any y/N prompts (LICENSE-missing etc.). We avoid
+# `yes |` because under `set -o pipefail` SIGPIPE from `yes` after vsce exits
+# trips the whole script (exit 141). A finite feed works around that.
+printf 'y\ny\ny\n' | npx --no-install vsce package --allow-missing-repository --no-yarn -o "$VSIX_PATH"
 [[ -f "$VSIX_PATH" ]] || die "vsce did not produce $VSIX_PATH"
-ok "packaged."
+# Guard against the v0.13.1/0.13.2 regression: the control-plane daemon can't
+# start without its production deps bundled. Fail loudly if the SDK is missing.
+unzip -l "$VSIX_PATH" | grep -q 'node_modules/@modelcontextprotocol/sdk/' \
+  || die "vsix is missing node_modules/@modelcontextprotocol/sdk — the control-plane daemon would not start. Aborting."
+ok "packaged (verified runtime node_modules bundled)."
 
 # ---------------------------------------------------------------------------
 # 4. Install
