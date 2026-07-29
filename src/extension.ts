@@ -9,15 +9,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import {
-  JournalStore,
-  openJournalStore,
-} from './db';
 import { findHubWorkspace, resolveDbPath } from './paths';
 import { WorkstreamDocumentProvider } from './contentProvider';
-import { AlertsStore, ALERTS_ENABLED, type AlertStatus } from './alerts';
-import { NanitesStore, NANITES_ENABLED } from './nanites';
-import { registerTools } from './tools';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
 import {
   isMarkdownPreviewViewType,
@@ -27,13 +20,14 @@ import {
 } from './panelReveal';
 import { findLatestVsix } from './vsix';
 import { deployTemplates } from './deployTemplates';
-import { type TraversalModeId } from './graphTraversals';
 import { initControlPlaneIntegration } from './controlPlane';
 import { ControlPlaneClient } from './controlPlaneClient';
 import { ControlPlaneHost } from './controlPlaneHost';
 import { maxMtimeMs } from './storeMtime';
 
-let activeStore: JournalStore | null = null;
+/** Authored alert lifecycle status, mirroring the control-plane Alert kind. */
+type AlertStatus = 'alert' | 'informational' | 'closed';
+
 let controlPlaneClient: ControlPlaneClient | null = null;
 let controlPlaneHost: ControlPlaneHost | null = null;
 // Last-seen newest mtime across the control-plane store files, used by the
@@ -42,7 +36,7 @@ let lastMtimeMs = 0;
 
 type TopicAddToWorkstreamCommandInput = {
   topicSlug?: string;
-  traversalId?: TraversalModeId;
+  traversalId?: string;
   workstreamSlug?: string;
 };
 
@@ -170,7 +164,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // live provider to call into.  The provider degrades gracefully while
   // store is null (returns placeholder content) and is updated with the
   // real store once the DB opens below.
-  const contentProvider = new WorkstreamDocumentProvider(null);
+  const contentProvider = new WorkstreamDocumentProvider();
   context.subscriptions.push(
     vscode.workspace.registerFileSystemProvider(
       WorkstreamDocumentProvider.scheme,
@@ -195,10 +189,8 @@ export function activate(context: vscode.ExtensionContext): void {
   controlPlaneHost = new ControlPlaneHost(context);
   void controlPlaneHost.start();
 
-  // Try to open the store so we can wire it into every provider.
-  // Failures are non-fatal — the providers degrade gracefully when
-  // `store` is null.
-  let store: JournalStore | null = null;
+  // Deploy the bundled templates into the hub workspace (best-effort). This is
+  // independent of any data plane — it just refreshes on-disk template assets.
   const hub = findHubWorkspace();
   if (hub) {
     try {
@@ -218,31 +210,9 @@ export function activate(context: vscode.ExtensionContext): void {
       console.error('[working-memory] deployTemplates failed:', err);
     }
   }
-  const dbPath = resolveDbPath();
-  if (!dbPath) {
-    vscode.window.showWarningMessage(
-      'Working Memory: no hub workspace found (need a folder containing a memory/ directory). The Workstreams panel will be empty.',
-    );
-  } else {
-    try {
-      store = openJournalStore({ dbPath });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error('[working-memory] openJournalStore failed:', err);
-      vscode.window.showErrorMessage(
-        `Working Memory: failed to open journal DB — ${message}. Title-bar actions still work; try 'Working Memory: Reload Window' after investigating.`,
-      );
-    }
-  }
-  activeStore = store;
-
-  // Wire the real store into the already-registered FSP and create the
-  // remaining providers.
-  contentProvider.updateStore(store);
 
   const panelProvider = new WorkstreamPanelProvider(
     context.extensionUri,
-    store,
     controlPlaneClient,
   );
 
@@ -251,13 +221,42 @@ export function activate(context: vscode.ExtensionContext): void {
     contentProvider.refresh();
   };
 
+  // Ensure the built-in default topic type exists in the control plane so a
+  // topic's default `topicType: 'topic'` resolves to a real type (shape icon)
+  // and shows in the Topic Types tab. Idempotent + best-effort; retries on the
+  // next ready signal if the control plane isn't reachable yet.
+  let defaultsEnsured = false;
+  const ensureDefaultTopicTypes = async (): Promise<void> => {
+    if (defaultsEnsured || !controlPlaneClient) {
+      return;
+    }
+    try {
+      const existing = await controlPlaneClient.topicTypeRead({});
+      const have = new Set(existing.map((t) => t.slug));
+      if (!have.has('topic')) {
+        await controlPlaneClient.topicTypeCreate({
+          slug: 'topic',
+          label: 'Topic',
+          icon: 'symbol-key',
+          description: 'A general note or subject — the default topic type.',
+        });
+      }
+      defaultsEnsured = true;
+    } catch {
+      // Best-effort: a control-plane hiccup must never break activation.
+    }
+  };
+
   // Wire the WM 13.0 control-plane: register its MCP server with Copilot once
   // the daemon's port file appears, and install the wm2 chat mode in the
   // sandbox. Independent of the journal DB and self-guarding, so it runs here
   // regardless of hub/DB state. Passing `refresh` lets the readiness poll nudge
   // the control-plane-backed panel tabs once the daemon's port file appears, so
   // the panel populates without a manual refresh on first load.
-  initControlPlaneIntegration(context, refresh);
+  initControlPlaneIntegration(context, () => {
+    refresh();
+    void ensureDefaultTopicTypes().then(refresh);
+  });
 
   // Auto-refresh the panel when the control-plane daemon mutates its store
   // out-of-process. WHY: the control-plane runs as a SEPARATE daemon process.
@@ -334,27 +333,6 @@ export function activate(context: vscode.ExtensionContext): void {
     console.error('[working-memory] control-plane store watcher setup failed:', err);
   }
 
-  const setAlertStatus = (
-    arg: number | { id?: number } | undefined,
-    status: AlertStatus,
-  ): void => {
-    const id = typeof arg === 'number' ? arg : arg?.id;
-    if (!id) {
-      return;
-    }
-    if (!store || !ALERTS_ENABLED) {
-      vscode.window.showErrorMessage('Working Memory: alerts unavailable.');
-      return;
-    }
-    try {
-      new AlertsStore(store.connection).updateAlert(id, { status });
-      refresh();
-    } catch (err) {
-      const m = err instanceof Error ? err.message : String(err);
-      vscode.window.showErrorMessage(`Working Memory: ${m}`);
-    }
-  };
-
   const setControlPlaneAlertStatus = async (
     id: string,
     status: AlertStatus,
@@ -365,36 +343,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     try {
       await controlPlaneClient.alertUpdate({ id, status });
-      refresh();
-    } catch (err) {
-      const m = err instanceof Error ? err.message : String(err);
-      vscode.window.showErrorMessage(`Working Memory: ${m}`);
-    }
-  };
-
-  const editAlertField = async (
-    id: number | undefined,
-    field: 'description' | 'recommended_action',
-  ): Promise<void> => {
-    if (!id || !store || !ALERTS_ENABLED) {
-      vscode.window.showErrorMessage('Working Memory: alerts unavailable.');
-      return;
-    }
-    const alerts = new AlertsStore(store.connection);
-    const current = alerts.getAlert(id);
-    if (!current) {
-      vscode.window.showWarningMessage(`Working Memory: alert #${id} not found.`);
-      return;
-    }
-    const value = await vscode.window.showInputBox({
-      prompt: field === 'description' ? 'Alert description' : 'Recommended action',
-      value: current[field],
-    });
-    if (value === undefined) {
-      return;
-    }
-    try {
-      alerts.updateAlert(id, { [field]: value });
       refresh();
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
@@ -661,7 +609,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (!kind || !id) {
           const pickedKind = await vscode.window.showQuickPick(
-            ['session', 'topic', 'topic-type', 'workstream', 'alert', 'nanite'],
+            ['topic', 'topic-type', 'workstream', 'alert'],
             { placeHolder: 'Kind of working-memory doc to open' },
           );
           if (!pickedKind) {
@@ -669,23 +617,20 @@ export function activate(context: vscode.ExtensionContext): void {
           }
           kind = pickedKind;
           id = await vscode.window.showInputBox({
-            prompt: `Enter ${kind} ${kind === 'session' ? 'uuid' : 'slug/id'}`,
+            prompt: `Enter ${kind} slug/id`,
           });
           if (!id) {
             return;
           }
         }
         if (
-          kind !== 'session' &&
           kind !== 'topic' &&
           kind !== 'topic-type' &&
           kind !== 'workstream' &&
-          kind !== 'alert' &&
-          kind !== 'nanite' &&
-          kind !== 'nanite-run'
+          kind !== 'alert'
         ) {
           vscode.window.showWarningMessage(
-            `Working Memory: unknown kind "${kind}" (expected session|topic|topic-type|workstream|alert|nanite|nanite-run).`,
+            `Working Memory: unknown kind "${kind}" (expected topic|topic-type|workstream|alert).`,
           );
           return;
         }
@@ -701,14 +646,6 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         await vscode.commands.executeCommand('vscode.open', uri);
       },
-    ),
-    vscode.commands.registerCommand(
-      'working-memory.openSession',
-      (id?: string) =>
-        vscode.commands.executeCommand('working-memory.open', {
-          kind: 'session',
-          id,
-        }),
     ),
     vscode.commands.registerCommand(
       'working-memory.openTopic',
@@ -888,86 +825,17 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.commands.registerCommand(
-      'working-memory.alert.editDescription',
-      async (arg?: { id?: number }) => {
-        await editAlertField(arg?.id, 'description');
-      },
-    ),
-    vscode.commands.registerCommand(
-      'working-memory.alert.editAction',
-      async (arg?: { id?: number }) => {
-        await editAlertField(arg?.id, 'recommended_action');
-      },
-    ),
-    vscode.commands.registerCommand(
       'working-memory.alert.setStatus',
-      (arg?: { id?: number; status?: string }) => {
-        const id = arg?.id;
+      (arg?: { id?: string | number; status?: string }) => {
+        const rawId = arg?.id;
         const status = arg?.status;
-        if (!id || (status !== 'alert' && status !== 'informational' && status !== 'closed')) {
+        if (
+          rawId === undefined ||
+          (status !== 'alert' && status !== 'informational' && status !== 'closed')
+        ) {
           return;
         }
-        if (!store || !ALERTS_ENABLED) {
-          vscode.window.showErrorMessage('Working Memory: alerts unavailable.');
-          return;
-        }
-        try {
-          new AlertsStore(store.connection).updateAlert(id, { status });
-          refresh();
-        } catch (err) {
-          const m = err instanceof Error ? err.message : String(err);
-          vscode.window.showErrorMessage(`Working Memory: ${m}`);
-        }
-      },
-    ),
-    vscode.commands.registerCommand(
-      'working-memory.nanite.delete',
-      (arg?: { slug?: string }) => {
-        const slug = arg?.slug?.trim();
-        if (!slug) {
-          vscode.window.showWarningMessage(
-            'Working Memory: Delete Nanite requires a slug.',
-          );
-          return;
-        }
-        if (!store || !NANITES_ENABLED) {
-          vscode.window.showErrorMessage('Working Memory: nanites unavailable.');
-          return;
-        }
-        try {
-          new NanitesStore(store.connection).deleteNanite(slug);
-          refresh();
-        } catch (err) {
-          const m = err instanceof Error ? err.message : String(err);
-          vscode.window.showErrorMessage(
-            `Working Memory: failed to delete nanite — ${m}`,
-          );
-        }
-      },
-    ),
-    vscode.commands.registerCommand(
-      'working-memory.nanite.restore',
-      (arg?: { slug?: string }) => {
-        const slug = arg?.slug?.trim();
-        if (!slug) {
-          vscode.window.showWarningMessage(
-            'Working Memory: Restore Nanite requires a slug.',
-          );
-          return;
-        }
-        if (!store || !NANITES_ENABLED) {
-          vscode.window.showErrorMessage('Working Memory: nanites unavailable.');
-          return;
-        }
-        try {
-          new NanitesStore(store.connection).restoreNanite(slug);
-          refresh();
-        } catch (err) {
-          const m = err instanceof Error ? err.message : String(err);
-          vscode.window.showErrorMessage(
-            `Working Memory: failed to restore nanite — ${m}`,
-          );
-        }
+        void setControlPlaneAlertStatus(String(rawId), status);
       },
     ),
     vscode.window.registerWebviewViewProvider(
@@ -979,9 +847,8 @@ export function activate(context: vscode.ExtensionContext): void {
         const parts = uri.path.split('/').filter((p) => p.length > 0);
         // Alert action deep links: alert/<id>/<acknowledge|close|reopen>. The
         // built-in markdown preview strips command: links, so the alert cards'
-        // buttons route through here instead. `<id>` is a STRING: a positive
-        // integer means a legacy journal alert (integer PK); anything else is a
-        // control-plane alert uuid.
+        // buttons route through here instead. `<id>` is the control-plane alert
+        // id; the mutation flows through the control-plane client.
         if (parts.length === 3 && parts[0] === 'alert') {
           const rawId = parts[1];
           const action = parts[2];
@@ -998,14 +865,7 @@ export function activate(context: vscode.ExtensionContext): void {
             );
             return;
           }
-          const numericId = Number(rawId);
-          if (Number.isInteger(numericId) && numericId > 0) {
-            // Legacy journal alert (integer PK).
-            setAlertStatus(numericId, status);
-          } else {
-            // Control-plane alert (uuid).
-            void setControlPlaneAlertStatus(rawId, status);
-          }
+          void setControlPlaneAlertStatus(rawId, status);
           return;
         }
         if (parts.length !== 3 || parts[0] !== 'open') {
@@ -1016,13 +876,10 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const kind = parts[1];
         if (
-          kind !== 'session' &&
           kind !== 'topic' &&
           kind !== 'topic-type' &&
           kind !== 'workstream' &&
-          kind !== 'alert' &&
-          kind !== 'nanite' &&
-          kind !== 'nanite-run'
+          kind !== 'alert'
         ) {
           vscode.window.showErrorMessage(
             `Working Memory: unrecognized deep link: ${uri.toString()}`,
@@ -1051,12 +908,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // Seed the panel with whatever WM doc (if any) is already visible.
   pushActiveRevealTarget();
 
-  // Tools only register when we have a live store — without one there's no
-  // useful work for them to do.
-  if (store) {
-    registerTools(context, store, controlPlaneClient, { refresh });
-    refresh();
-  }
+  // Populate the control-plane-backed panel on first load.
+  refresh();
 }
 
 export function deactivate(): void {
@@ -1075,13 +928,5 @@ export function deactivate(): void {
     }
   } catch (err) {
     console.error('[working-memory] control-plane client dispose failed:', err);
-  }
-  try {
-    if (activeStore) {
-      activeStore.close();
-      activeStore = null;
-    }
-  } catch (err) {
-    console.error('[working-memory] store.close failed:', err);
   }
 }

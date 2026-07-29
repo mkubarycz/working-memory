@@ -7,9 +7,13 @@
  */
 
 import { test, expect, vi } from 'vitest';
-import { openJournalStore } from '../src/db';
-import { AlertsStore } from '../src/alerts/store';
-import { renderTopicDoc } from '../src/virtualFileRenderer';
+import { renderTopicDocument } from '../src/documentRenderers/topic';
+import type {
+  Alert,
+  ControlPlaneClient,
+  DocumentEnvelope,
+  Topic,
+} from '../src/controlPlaneClient';
 
 vi.mock('vscode', () => {
   class EventEmitter<T> {
@@ -56,32 +60,80 @@ function makeUri(path: string): unknown {
 }
 
 test('topic doc: editing description with alerts present persists only description', async () => {
-  const store = openJournalStore({ dbPath: ':memory:' });
-  store.createTopic({ slug: 'topic-a', body: 'original body' });
-  const alerts = new AlertsStore(store.connection);
-  alerts.createAlert({
+  // A control-plane topic with an alert that concerns it. The `## Alerts`
+  // section renders OUTSIDE the editable:description markers, so extractTopicBody
+  // must grab only the body — not the alerts HTML.
+  const env: DocumentEnvelope = {
+    kind: 'Topic',
+    metadata: {
+      id: 'topic-a-id',
+      slug: 'topic-a',
+      labels: {},
+      createdAt: 1,
+      updatedAt: 2,
+      deletedAt: null,
+      resourceVersion: 1,
+    },
+    spec: {
+      title: 'Topic A',
+      body: 'original body',
+      status: 'open',
+      topicType: 'topic',
+      workstreams: [],
+      parents: [],
+    },
+    status: {},
+  };
+  const alert = {
+    id: 'alert-1',
+    slug: null,
+    status: 'alert',
+    title: 'Disk almost full',
     description: 'Disk almost full',
     recommended_action: 'Free up space',
-    topic_slugs: ['topic-a'],
-    created_by: 'tester',
-  });
+    topics: ['topic-a'],
+    created_at: 1,
+    updated_at: 2,
+    resourceVersion: 1,
+  } as unknown as Alert;
 
-  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
-  const provider = new WorkstreamDocumentProvider(store);
-
-  const doc = renderTopicDoc(store, 'topic-a').replace(
+  const doc = renderTopicDocument(env, [alert]).replace(
     '<!-- editable:description -->\noriginal body\n<!-- /editable:description -->',
     '<!-- editable:description -->\nedited body\n<!-- /editable:description -->',
   );
   // sanity: the alerts callout HTML is present in the rendered doc
   expect(doc).toContain('Disk almost full');
 
-  const uri = makeUri('/topic/topic-a.md') as Parameters<typeof provider.writeFile>[0];
-  provider.writeFile(uri, Buffer.from(doc), { create: false, overwrite: true });
+  const topic = {
+    id: 'topic-a-id',
+    slug: 'topic-a',
+    title: 'Topic A',
+    body: 'original body',
+    status: 'open',
+    topicType: 'topic',
+    parents: [],
+    workstreams: [],
+    focusedWorkstreams: [],
+    created_at: 1,
+    updated_at: 2,
+    resourceVersion: 1,
+  } as unknown as Topic;
+  const topicUpdate = vi.fn(async () => topic);
+  const client = {
+    topicRead: vi.fn(async (i: { slug?: string }) =>
+      i.slug === 'topic-a' ? [topic] : [],
+    ),
+    topicUpdate,
+    alertRead: vi.fn(async () => [alert]),
+  } as unknown as ControlPlaneClient;
 
-  const topic = store.getTopic('topic-a');
-  expect(topic?.body).toBe('edited body');
-  // alert untouched
-  expect(alerts.topicAlertsWithRecentClosed('topic-a')).toHaveLength(1);
-  store.close();
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(null);
+  provider.setControlPlaneClient(client);
+
+  const uri = makeUri('/topic/topic-a.md') as Parameters<typeof provider.writeFile>[0];
+  await provider.writeFile(uri, Buffer.from(doc), { create: false, overwrite: true });
+
+  // Only the body was extracted + saved — NOT the alerts HTML.
+  expect(topicUpdate).toHaveBeenCalledWith({ slug: 'topic-a', body: 'edited body' });
 });

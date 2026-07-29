@@ -1,15 +1,15 @@
 import * as vscode from 'vscode';
 import {
+  buildAlertsPanel,
   buildBlackboardPanelData,
   buildTopicsPanel,
+  buildTopicTypesPanel,
   buildWorkstreamPanels,
-  emptyAllPanelData,
-  getAllPanelData,
   type PanelAction,
   type PanelData,
   type PanelWorkstreamSection,
+  type WorkstreamSection,
 } from '../panelData';
-import { JournalStore, type WorkstreamSection } from '../db';
 import type { ControlPlaneClient } from '../controlPlaneClient';
 import type { PanelRevealTarget } from '../panelReveal';
 
@@ -91,7 +91,6 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly store: JournalStore | null,
     private readonly controlPlaneClient: ControlPlaneClient | null = null,
   ) {}
 
@@ -136,37 +135,32 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Assemble the `data` message: topics / topic-types / alerts / nanites come
-   * from the journal store (unchanged), while the Active + Archive (workstream)
-   * tabs are sourced ASYNC from the control-plane document store via the
-   * client's ws-* domain API (WM 13.0 "ws-consumer-repoint"). Awaiting the
-   * control-plane here is cheap: a down daemon fails fast (no port file), a live
-   * one is a localhost round-trip. Blackboard keeps its own dedicated channel.
+   * Assemble the `data` message PURELY from the control-plane document store:
+   * the Active + Archive (workstream) tabs and the Topics tab are sourced via
+   * the client's ws-* domain API. Awaiting the control-plane here is cheap: a
+   * down daemon fails fast (no port file), a live one is a localhost round-trip.
+   * Blackboard keeps its own dedicated channel.
    */
   private async refreshInternal(): Promise<void> {
     if (!this.view) {
       return;
     }
-    const journal = this.store
-      ? getAllPanelData(this.store)
-      : emptyAllPanelData();
     const cp = await this.loadControlPlanePanels();
     // The view may have been disposed while awaiting the control-plane.
     if (!this.view) {
       return;
     }
     const data = {
-      ...journal,
       active: cp.active,
       archive: cp.archive,
-      // Topics are control-plane-sourced now (WM 13.0 "topic-consumer-repoint"),
-      // overriding the journal topics assembled by getAllPanelData above.
       topics: cp.topics,
+      alerts: cp.alerts,
+      topicTypes: cp.topicTypes,
     };
     this.view.webview.postMessage({ type: 'data', data });
     this.updateBadge(cp.active);
-    // Blackboard rows come from the control-plane MCP server, not the journal
-    // DB, so they're fetched async and posted separately.
+    // Blackboard rows come from the control-plane MCP server, fetched async and
+    // posted separately.
     void this.refreshBlackboard();
   }
 
@@ -174,15 +168,17 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
    * Fetch the Active + Archive (workstream) tabs AND the Topics tab from the
    * control-plane via the client's ws-* domain API, degrading to the "control
    * plane not running" empty state when the client is absent or the daemon is
-   * unreachable (mirrors refreshBlackboard's unavailable handling). Workstreams
-   * and topics are fetched together so each workstream card's Topics group can
-   * be populated from the topic `spec.workstreams` membership (WM 13.0
-   * "topic-consumer-repoint").
+   * unreachable. Workstreams, topics, alerts, and topic-types are fetched
+   * together so each workstream card's Topics group can be populated from topic
+   * `spec.workstreams` membership, bubbles from the alert list, and icons from
+   * the topic-type list.
    */
   private async loadControlPlanePanels(): Promise<{
     active: PanelData;
     archive: PanelData;
     topics: PanelData;
+    alerts: PanelData;
+    topicTypes: PanelData;
   }> {
     if (!this.controlPlaneClient) {
       const ws = buildWorkstreamPanels({
@@ -198,25 +194,36 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           topics: [],
           error: 'Control plane not running',
         }),
+        alerts: buildAlertsPanel({
+          available: false,
+          error: 'Control plane not running',
+        }),
+        topicTypes: buildTopicTypesPanel({
+          available: false,
+          error: 'Control plane not running',
+        }),
       };
     }
     try {
-      const [workstreams, topics, alerts] = await Promise.all([
+      const [workstreams, topics, alerts, topicTypes] = await Promise.all([
         this.controlPlaneClient.wsRead({}),
         this.controlPlaneClient.topicRead({}),
         this.controlPlaneClient.alertRead({}),
+        this.controlPlaneClient.topicTypeRead({}),
       ]);
       const ws = buildWorkstreamPanels({
         available: true,
         workstreams,
         topics,
         alerts,
-        store: this.store,
+        topicTypes,
       });
       return {
         active: ws.active,
         archive: ws.archive,
-        topics: buildTopicsPanel({ available: true, topics, alerts, store: this.store }),
+        topics: buildTopicsPanel({ available: true, topics, alerts, topicTypes }),
+        alerts: buildAlertsPanel({ available: true, alerts }),
+        topicTypes: buildTopicTypesPanel({ available: true, topicTypes }),
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -229,6 +236,8 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         active: ws.active,
         archive: ws.archive,
         topics: buildTopicsPanel({ available: false, topics: [], error: message }),
+        alerts: buildAlertsPanel({ available: false, error: message }),
+        topicTypes: buildTopicTypesPanel({ available: false, error: message }),
       };
     }
   }
@@ -498,12 +507,6 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
   <body>
     <div id="root">
       <div class="tabs" role="tablist">
-        <button
-          class="tab"
-          role="tab"
-          data-tab="blackboard"
-          aria-selected="false"
-        >Blackboard</button>
         <button
           class="tab"
           role="tab"

@@ -6,8 +6,11 @@
  */
 
 import { test, expect, vi } from 'vitest';
-import { openJournalStore } from '../src/db';
-import { renderTopicTypeDoc } from '../src/virtualFileRenderer';
+import { renderTopicTypeDocument } from '../src/documentRenderers/topictype';
+import type {
+  ControlPlaneClient,
+  DocumentEnvelope,
+} from '../src/controlPlaneClient';
 
 // ---------------------------------------------------------------------------
 // Mock vscode — full shape needed for WorkstreamDocumentProvider
@@ -64,64 +67,111 @@ function makeUri(path: string): unknown {
   return { path, toString: () => `working-memory:${path}` };
 }
 
+// A control-plane TopicType envelope for slug `task`, rendered via the per-kind
+// document renderer (the same editable markers the extractors parse).
+function makeTypeEnvelope(spec: {
+  label: string;
+  description: string;
+  body_template: string;
+}): DocumentEnvelope {
+  return {
+    kind: 'TopicType',
+    metadata: {
+      id: 'task-id',
+      slug: 'task',
+      labels: {},
+      createdAt: 1,
+      updatedAt: 2,
+      deletedAt: null,
+      resourceVersion: 1,
+    },
+    spec: { icon: 'tag', ...spec },
+    status: {},
+  };
+}
+
+// A control-plane client whose `ws-topictype-read` reports `task` exists and
+// whose `ws-topictype-update` is the spy under test.
+function makeClient(
+  spec: { label: string; description: string; body_template: string },
+  topicTypeUpdate: ReturnType<typeof vi.fn>,
+): ControlPlaneClient {
+  return {
+    topicTypeRead: vi.fn(async (i: { slug?: string }) =>
+      i.slug === 'task'
+        ? [
+            {
+              id: 'task-id',
+              slug: 'task',
+              icon: 'tag',
+              created_at: 1,
+              updated_at: 2,
+              resourceVersion: 1,
+              ...spec,
+            },
+          ]
+        : [],
+    ),
+    topicTypeUpdate,
+  } as unknown as ControlPlaneClient;
+}
+
 // ---------------------------------------------------------------------------
 // contentProvider writeFile tests
 // ---------------------------------------------------------------------------
 
 test('contentProvider: writeFile with modified label calls updateTopicType with new label', async () => {
-  const store = openJournalStore({ dbPath: ':memory:' });
-  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
-  const provider = new WorkstreamDocumentProvider(store);
-
-  // Render the current doc for 'task', then edit the label region
-  const originalDoc = renderTopicTypeDoc(store, 'task');
-  const modifiedDoc = originalDoc.replace(
+  const spec = { label: 'Task', description: 'a task', body_template: '' };
+  const doc = renderTopicTypeDocument(makeTypeEnvelope(spec));
+  const modifiedDoc = doc.replace(
     /<!-- editable:label -->\n\nTask\n/,
     '<!-- editable:label -->\n\nUpdated Task Label\n',
   );
 
-  const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
-  provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
+  const topicTypeUpdate = vi.fn(async () => ({}));
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(null);
+  provider.setControlPlaneClient(makeClient(spec, topicTypeUpdate));
 
-  const updated = store.getTopicType('task');
-  expect(updated?.label).toBe('Updated Task Label');
-  store.close();
+  const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
+  await provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
+
+  expect(topicTypeUpdate).toHaveBeenCalledWith({
+    slug: 'task',
+    label: 'Updated Task Label',
+    description: 'a task',
+    body_template: '',
+  });
 });
 
 test('contentProvider: writeFile with empty label shows error and does not update label', async () => {
   mockShowErrorMessage.mockClear();
-  const store = openJournalStore({ dbPath: ':memory:' });
-  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
-  const provider = new WorkstreamDocumentProvider(store);
-
-  const originalDoc = renderTopicTypeDoc(store, 'task');
+  const spec = { label: 'Task', description: 'a task', body_template: '' };
+  const doc = renderTopicTypeDocument(makeTypeEnvelope(spec));
   // Replace label content with whitespace
-  const modifiedDoc = originalDoc.replace(
+  const modifiedDoc = doc.replace(
     /<!-- editable:label -->\n\nTask\n/,
     '<!-- editable:label -->\n\n   \n',
   );
 
+  const topicTypeUpdate = vi.fn(async () => ({}));
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(null);
+  provider.setControlPlaneClient(makeClient(spec, topicTypeUpdate));
+
   const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
-  provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
+  await provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
 
-  // DB label should be unchanged
-  const unchanged = store.getTopicType('task');
-  expect(unchanged?.label).toBe('Task');
-
-  // Error should have been surfaced
+  // No control-plane update, and an error surfaced.
+  expect(topicTypeUpdate).not.toHaveBeenCalled();
   expect(mockShowErrorMessage).toHaveBeenCalledOnce();
   expect(mockShowErrorMessage.mock.calls[0][0]).toMatch(/label must not be empty/i);
-  store.close();
 });
 
 test('contentProvider: writeFile persists both label and body_template in a single save', async () => {
-  const store = openJournalStore({ dbPath: ':memory:' });
-  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
-  const provider = new WorkstreamDocumentProvider(store);
-
-  // Start from a freshly rendered doc and mutate both editable regions
-  const originalDoc = renderTopicTypeDoc(store, 'task');
-  const withNewLabel = originalDoc.replace(
+  const spec = { label: 'Task', description: 'a task', body_template: '' };
+  const doc = renderTopicTypeDocument(makeTypeEnvelope(spec));
+  const withNewLabel = doc.replace(
     /<!-- editable:label -->\n\nTask\n/,
     '<!-- editable:label -->\n\nRenamed Task\n',
   );
@@ -132,55 +182,64 @@ test('contentProvider: writeFile persists both label and body_template in a sing
     newTemplate,
   );
 
-  const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
-  provider.writeFile(uri, Buffer.from(withBoth), { create: false, overwrite: true });
+  const topicTypeUpdate = vi.fn(async () => ({}));
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(null);
+  provider.setControlPlaneClient(makeClient(spec, topicTypeUpdate));
 
-  const updated = store.getTopicType('task');
-  expect(updated?.label).toBe('Renamed Task');
-  expect(updated?.body_template).toBe(newTemplate);
-  store.close();
+  const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
+  await provider.writeFile(uri, Buffer.from(withBoth), { create: false, overwrite: true });
+
+  expect(topicTypeUpdate).toHaveBeenCalledWith({
+    slug: 'task',
+    label: 'Renamed Task',
+    description: 'a task',
+    body_template: newTemplate,
+  });
 });
 
 test('contentProvider: writeFile with modified description persists new description', async () => {
-  const store = openJournalStore({ dbPath: ':memory:' });
-  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
-  const provider = new WorkstreamDocumentProvider(store);
-
-  const originalDoc = renderTopicTypeDoc(store, 'task');
-  const existingDescription = store.getTopicType('task')!.description;
-  const modifiedDoc = originalDoc.replace(
-    `<!-- editable:description -->\n\n${existingDescription}\n`,
+  const spec = { label: 'Task', description: 'a task', body_template: '' };
+  const doc = renderTopicTypeDocument(makeTypeEnvelope(spec));
+  const modifiedDoc = doc.replace(
+    /<!-- editable:description -->\n\na task\n/,
     '<!-- editable:description -->\n\nUpdated description text.\n',
   );
 
-  const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
-  provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
+  const topicTypeUpdate = vi.fn(async () => ({}));
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(null);
+  provider.setControlPlaneClient(makeClient(spec, topicTypeUpdate));
 
-  const updated = store.getTopicType('task');
-  expect(updated?.description).toBe('Updated description text.');
-  store.close();
+  const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
+  await provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
+
+  expect(topicTypeUpdate).toHaveBeenCalledWith({
+    slug: 'task',
+    label: 'Task',
+    description: 'Updated description text.',
+    body_template: '',
+  });
 });
 
 test('contentProvider: writeFile with empty description shows error and does not update description', async () => {
   mockShowErrorMessage.mockClear();
-  const store = openJournalStore({ dbPath: ':memory:' });
-  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
-  const provider = new WorkstreamDocumentProvider(store);
-
-  const originalDoc = renderTopicTypeDoc(store, 'task');
-  const existingDescription = store.getTopicType('task')!.description;
-  const modifiedDoc = originalDoc.replace(
-    `<!-- editable:description -->\n\n${existingDescription}\n`,
+  const spec = { label: 'Task', description: 'a task', body_template: '' };
+  const doc = renderTopicTypeDocument(makeTypeEnvelope(spec));
+  const modifiedDoc = doc.replace(
+    /<!-- editable:description -->\n\na task\n/,
     '<!-- editable:description -->\n\n   \n',
   );
 
+  const topicTypeUpdate = vi.fn(async () => ({}));
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(null);
+  provider.setControlPlaneClient(makeClient(spec, topicTypeUpdate));
+
   const uri = makeUri('/topic-type/task.md') as Parameters<typeof provider.writeFile>[0];
-  provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
+  await provider.writeFile(uri, Buffer.from(modifiedDoc), { create: false, overwrite: true });
 
-  const unchanged = store.getTopicType('task');
-  expect(unchanged?.description).toBe(existingDescription);
-
+  expect(topicTypeUpdate).not.toHaveBeenCalled();
   expect(mockShowErrorMessage).toHaveBeenCalledOnce();
   expect(mockShowErrorMessage.mock.calls[0][0]).toMatch(/description must not be empty/i);
-  store.close();
 });

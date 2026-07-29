@@ -84,7 +84,7 @@
       vscode.getState()
     );
 
-  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'|'blackboard', gearView: 'archive'|'topic-types'|'topics', expanded: Set<string>,
+  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'|'blackboard', gearView: 'archive'|'topic-types'|'topics'|'blackboard', expanded: Set<string>,
    *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData, nanites?: TabData, blackboard?: TabData },
    *           focusedId: string | null, recentCounts: Map<string, number>,
    *           flashChipIds: Set<string>, revealTarget: { kind?: string, id: string } | null }} */
@@ -98,11 +98,13 @@
       persisted?.activeTab === 'nanites' ||
       persisted?.activeTab === 'blackboard'
         ? persisted.activeTab
-        : 'blackboard',
+        : 'active',
     // Which gear-hosted view the always-visible 4th tab slot represents.
     // Defaults to Archive; swapped via the gear dropdown.
     gearView:
-      persisted?.gearView === 'topic-types' || persisted?.gearView === 'topics'
+      persisted?.gearView === 'topic-types' ||
+      persisted?.gearView === 'topics' ||
+      persisted?.gearView === 'blackboard'
         ? persisted.gearView
         : 'archive',
     expanded: new Set(Array.isArray(persisted?.expanded) ? persisted.expanded : []),
@@ -143,11 +145,12 @@
 
   // Views collapsed behind the gear: rendered as a dropdown, with the active
   // one surfaced as a label chip beside the gear icon.
-  /** @type {{ tab: 'archive'|'topic-types'|'topics', label: string }[]} */
+  /** @type {{ tab: 'archive'|'topic-types'|'topics'|'blackboard', label: string }[]} */
   const GEAR_VIEWS = [
     { tab: 'archive', label: 'Archive' },
     { tab: 'topic-types', label: 'Types' },
     { tab: 'topics', label: 'Topics' },
+    { tab: 'blackboard', label: 'Blackboard' },
   ];
 
   /**

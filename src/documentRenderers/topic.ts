@@ -22,6 +22,15 @@ import {
   linkList,
   metadataSection,
 } from './shared';
+// Editable-region markers are the SAVE contract shared with the journal
+// renderer + `extractTopicBody`: the body is sliced from between these HTML
+// comments on save (WM 13.0 topic-save cutover onto `ws-topic-update`). They
+// are invisible in the markdown preview, so the read-only `/document/<id>` view
+// is unaffected. A render->extract round-trip test guards against drift.
+import {
+  EDITABLE_DESCRIPTION_COMMENT_END,
+  EDITABLE_DESCRIPTION_COMMENT_START,
+} from '../editableRegions';
 
 export function renderTopicDocument(
   env: DocumentEnvelope,
@@ -45,7 +54,9 @@ export function renderTopicDocument(
     '',
     '## Body',
     '',
-    body ?? '_none_',
+    EDITABLE_DESCRIPTION_COMMENT_START,
+    body ?? '_Empty body — write something here, then save (⌘S)._',
+    EDITABLE_DESCRIPTION_COMMENT_END,
     '',
     '## Workstreams',
     '',

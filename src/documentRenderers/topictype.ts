@@ -11,6 +11,22 @@
 
 import type { DocumentEnvelope, Topic } from '../controlPlaneClient';
 import { asStr, deepLink, fmtTs, metadataSection } from './shared';
+// Editable-region markers are the SAVE contract shared with the journal
+// renderer + the `extractTopicType*` parsers: on save, label / description /
+// body-template are sliced from between these HTML comments (WM 13.0 topic-type
+// save cutover onto `ws-topictype-update`). They are invisible in the markdown
+// preview. A render->extract round-trip test guards against drift.
+import {
+  DESCRIPTION_EMPTY_PLACEHOLDER,
+  EDITABLE_COMMENT_END,
+  EDITABLE_COMMENT_START,
+  EDITABLE_DESCRIPTION_COMMENT_END,
+  EDITABLE_DESCRIPTION_COMMENT_START,
+  EDITABLE_DIV_CLOSE,
+  EDITABLE_DIV_OPEN,
+  EDITABLE_LABEL_COMMENT_END,
+  EDITABLE_LABEL_COMMENT_START,
+} from '../editableRegions';
 
 export function renderTopicTypeDocument(
   env: DocumentEnvelope,
@@ -27,18 +43,39 @@ export function renderTopicTypeDocument(
     `# TopicType: ${label} \`${id}\``,
     '',
     ...metadataSection(env, [
+      `- \`icon\`: ${icon ?? '_none_'}`,
       `- \`topics using this type\`: ${topicsOfType.length}`,
     ]),
     '',
-    '## Spec',
+    '## Label',
     '',
-    `- \`label\`: ${label}`,
-    `- \`icon\`: ${icon ?? '_none_'}`,
-    `- \`description\`: ${description ?? '_none_'}`,
+    EDITABLE_DIV_OPEN,
+    EDITABLE_LABEL_COMMENT_START,
     '',
-    '## Body template',
+    label,
     '',
-    bodyTemplate ?? '_none_',
+    EDITABLE_LABEL_COMMENT_END,
+    EDITABLE_DIV_CLOSE,
+    '',
+    '## Description',
+    '',
+    EDITABLE_DIV_OPEN,
+    EDITABLE_DESCRIPTION_COMMENT_START,
+    '',
+    description ?? DESCRIPTION_EMPTY_PLACEHOLDER,
+    '',
+    EDITABLE_DESCRIPTION_COMMENT_END,
+    EDITABLE_DIV_CLOSE,
+    '',
+    '## Content Template',
+    '',
+    EDITABLE_DIV_OPEN,
+    EDITABLE_COMMENT_START,
+    '',
+    bodyTemplate ?? '_No body template — add one here, then save (⌘S)._',
+    '',
+    EDITABLE_COMMENT_END,
+    EDITABLE_DIV_CLOSE,
     '',
   ];
 

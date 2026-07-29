@@ -266,6 +266,42 @@ export interface TopicUpdateInput {
   focusedWorkstreams?: string[];
 }
 
+export interface TopicType {
+  id: string;
+  slug: string | null;
+  label: string;
+  icon: string;
+  description: string;
+  body_template: string;
+  created_at: number;
+  updated_at: number;
+  /** CAS counter from the envelope, for a subsequent update. */
+  resourceVersion: number;
+}
+
+export interface TopicTypeReadInput {
+  slug?: string;
+  id?: string;
+  query?: string;
+  limit?: number;
+}
+
+export interface TopicTypeUpdateInput {
+  slug: string;
+  label?: string;
+  icon?: string;
+  description?: string;
+  body_template?: string;
+}
+
+export interface TopicTypeCreateInput {
+  slug?: string;
+  label: string;
+  icon: string;
+  description: string;
+  body_template?: string;
+}
+
 export interface TopicDeleteInput {
   slug: string;
   restore?: boolean;
@@ -841,6 +877,91 @@ export class ControlPlaneClient {
       ok: parsed?.ok === true,
       slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
     };
+  }
+
+  // ----- TopicType domain API (`ws-topictype-*`) ----------------------------
+  //
+  // Typed wrappers over the control-plane's TopicType kind API, mirroring the
+  // ws-topic-* methods: each parses the tool's JSON text result into the owned
+  // {@link TopicType} shape and THROWS {@link ControlPlaneClientError} on a dead
+  // daemon, a dropped connection, or an `isError` tool result. Used to render +
+  // SAVE `working-memory:/topic-type/<slug>.md` docs control-plane-only.
+
+  /**
+   * Read topic types via `ws-topictype-read`. A by-slug/id read yields a
+   * 0-or-1 element array; list mode (no slug/id) returns all live topic types.
+   */
+  async topicTypeRead(input: TopicTypeReadInput = {}): Promise<TopicType[]> {
+    const args: Record<string, unknown> = {};
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.id !== undefined) {
+      args.id = input.id;
+    }
+    if (input.query !== undefined) {
+      args.query = input.query;
+    }
+    if (input.limit !== undefined) {
+      args.limit = input.limit;
+    }
+    const result = await this.callDomainTool('ws-topictype-read', args);
+    const parsed = parseToolText(result) as { topicTypes?: unknown } | null;
+    const list = Array.isArray(parsed?.topicTypes) ? parsed!.topicTypes : [];
+    return list as TopicType[];
+  }
+
+  /** Create a topic type via `ws-topictype-create`. Returns the created type. */
+  async topicTypeCreate(input: TopicTypeCreateInput): Promise<TopicType> {
+    const args: Record<string, unknown> = {
+      label: input.label,
+      icon: input.icon,
+      description: input.description,
+    };
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.body_template !== undefined) {
+      args.body_template = input.body_template;
+    }
+    return this.parseTopicType(
+      await this.callDomainTool('ws-topictype-create', args),
+    );
+  }
+
+  /**
+   * Update a topic type via `ws-topictype-update` (identified by `slug`; only
+   * the changed fields are sent). The control-plane reads the current doc for
+   * its CAS guard. Returns the updated topic type.
+   */
+  async topicTypeUpdate(input: TopicTypeUpdateInput): Promise<TopicType> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.label !== undefined) {
+      args.label = input.label;
+    }
+    if (input.icon !== undefined) {
+      args.icon = input.icon;
+    }
+    if (input.description !== undefined) {
+      args.description = input.description;
+    }
+    if (input.body_template !== undefined) {
+      args.body_template = input.body_template;
+    }
+    return this.parseTopicType(
+      await this.callDomainTool('ws-topictype-update', args),
+    );
+  }
+
+  /** Parse a `ws-topictype-*` success result into the owned {@link TopicType} shape. */
+  private parseTopicType(result: unknown): TopicType {
+    const parsed = parseToolText(result) as TopicType | null;
+    if (!parsed || typeof parsed.id !== 'string') {
+      throw new ControlPlaneClientError(
+        'Malformed control-plane topic type response',
+      );
+    }
+    return parsed;
   }
 
   /**

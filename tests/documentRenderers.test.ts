@@ -8,6 +8,12 @@ import { renderWorkstreamDocument } from '../src/documentRenderers/workstream';
 import { renderTopicDocument } from '../src/documentRenderers/topic';
 import { renderTopicTypeDocument } from '../src/documentRenderers/topictype';
 import { renderAlertDocument } from '../src/documentRenderers/alert';
+import { extractTopicBody } from '../src/editableRegions';
+import {
+  extractTopicTypeBodyTemplate,
+  extractTopicTypeDescription,
+  extractTopicTypeLabel,
+} from '../src/editableRegions';
 
 function makeEnvelope(
   kind: string,
@@ -92,6 +98,21 @@ describe('renderTopicDocument', () => {
     // Both the Workstreams and Parents sections fall back to _none_.
     expect(md.match(/_none_/g)?.length).toBeGreaterThanOrEqual(2);
   });
+
+  // Drift guard for the WM 13.0 topic-save cutover: the body the control-plane
+  // renderer emits (between the editable markers) MUST round-trip back through
+  // the journal extractor unchanged, so a save persists exactly what was typed.
+  it('body round-trips through extractTopicBody (save contract)', () => {
+    const md = renderTopicDocument(
+      makeEnvelope('Topic', { title: 'RT', body: 'line one\n\nline two' }),
+    );
+    expect(extractTopicBody(md)).toBe('line one\n\nline two');
+  });
+
+  it('empty body round-trips to an empty string (save contract)', () => {
+    const md = renderTopicDocument(makeEnvelope('Topic', { title: 'RT' }));
+    expect(extractTopicBody(md)).toBe('');
+  });
 });
 
 describe('renderTopicTypeDocument', () => {
@@ -110,8 +131,29 @@ describe('renderTopicTypeDocument', () => {
     );
     expect(md).toContain('# TopicType: Feature');
     expect(md).toContain('`icon`: rocket');
-    expect(md).toContain('`description`: A shippable capability.');
+    expect(md).toContain('A shippable capability.');
     expect(md).toContain('## Problem');
+  });
+
+  // Drift guard for the WM 13.0 topic-type-save cutover: label / description /
+  // body-template must round-trip back through the journal extractors so a save
+  // via ws-topictype-update persists exactly what was typed.
+  it('label / description / body-template round-trip through the extractors', () => {
+    const md = renderTopicTypeDocument(
+      makeEnvelope(
+        'TopicType',
+        {
+          label: 'Feature',
+          icon: 'rocket',
+          description: 'A shippable capability.',
+          body_template: '## Problem\n## Proposal',
+        },
+        { slug: 'feature' },
+      ),
+    );
+    expect(extractTopicTypeLabel(md)).toBe('Feature');
+    expect(extractTopicTypeDescription(md)).toBe('A shippable capability.');
+    expect(extractTopicTypeBodyTemplate(md)).toBe('## Problem\n## Proposal');
   });
 });
 
