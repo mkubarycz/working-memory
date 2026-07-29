@@ -381,6 +381,121 @@ export interface AlertUpdateInput {
   topics?: string[];
 }
 
+/**
+ * The Nanite Template shape returned by the control-plane `ws-nanitetemplate-*`
+ * domain API. Kept structurally identical to
+ * `control-plane/src/kinds/naniteTemplate/naniteTemplate.ts::INaniteTemplate`.
+ * A Nanite Template is the reusable DEFINITION; a {@link Nanite} is one
+ * execution instance of it.
+ */
+export interface NaniteTemplate {
+  id: string;
+  slug: string | null;
+  title: string;
+  triggerPhrase: string;
+  instructions: string;
+  executionSettings: Record<string, unknown>;
+  toolAllowlist: string[];
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  acceptanceCriteria: string;
+  acceptanceThreshold: number;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+  resourceVersion: number;
+}
+
+export interface NaniteTemplateReadInput {
+  slug?: string;
+  id?: string;
+  query?: string;
+  limit?: number;
+}
+
+export interface NaniteTemplateCreateInput {
+  slug?: string;
+  title: string;
+  triggerPhrase?: string;
+  instructions?: string;
+  executionSettings?: Record<string, unknown>;
+  toolAllowlist?: string[];
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  acceptanceCriteria?: string;
+  acceptanceThreshold?: number;
+  enabled?: boolean;
+}
+
+export interface NaniteTemplateUpdateInput {
+  slug: string;
+  title?: string;
+  triggerPhrase?: string;
+  instructions?: string;
+  executionSettings?: Record<string, unknown>;
+  toolAllowlist?: string[];
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  acceptanceCriteria?: string;
+  acceptanceThreshold?: number;
+  enabled?: boolean;
+}
+
+export interface NaniteTemplateDeleteInput {
+  slug: string;
+  restore?: boolean;
+}
+
+/** The Nanite lifecycle phase, mirroring the control-plane Nanite kind enum. */
+export type NanitePhase = 'Pending' | 'Running' | 'Succeeded' | 'Failed';
+
+/**
+ * The Nanite shape returned by the control-plane `ws-nanite-*` domain API — ONE
+ * execution instance of a {@link NaniteTemplate}. Kept structurally identical to
+ * `control-plane/src/kinds/nanite/nanite.ts::INanite`. `workstream` + `inputTopic`
+ * are immutable at creation.
+ */
+export interface Nanite {
+  id: string;
+  slug: string | null;
+  templateId: string | null;
+  workstream: string;
+  inputTopic: string;
+  request: string;
+  phase: NanitePhase;
+  startedAt: number | null;
+  endedAt: number | null;
+  error: string;
+  created_at: number;
+  updated_at: number;
+  resourceVersion: number;
+}
+
+export interface NaniteReadInput {
+  id?: string;
+  inputTopic?: string;
+  workstream?: string;
+  limit?: number;
+}
+
+export interface NaniteCreateInput {
+  workstream: string;
+  inputTopic: string;
+  templateId?: string;
+  request?: string;
+}
+
+export interface NaniteRunInput {
+  id: string;
+  outcome?: 'succeeded' | 'failed';
+  error?: string;
+}
+
+export interface NaniteDeleteInput {
+  id: string;
+  restore?: boolean;
+}
+
 export interface ControlPlaneClientOptions {
   /**
    * Resolve the `/mcp` URL to connect to, or `null` when the daemon is
@@ -1143,6 +1258,185 @@ export class ControlPlaneClient {
       args.topics = input.topics;
     }
     return this.parseAlert(await this.callDomainTool('ws-alert-update', args));
+  }
+
+  // ----- Nanite Template domain API (`ws-nanitetemplate-*`) -----------------
+  //
+  // Typed wrappers over the control-plane's NaniteTemplate kind API (slug-based,
+  // mirroring ws-topic-*). Each parses the tool's JSON text result into the
+  // owned {@link NaniteTemplate} shape and THROWS {@link ControlPlaneClientError}
+  // on a dead daemon / dropped connection / `isError` result.
+
+  /** Parse a `ws-nanitetemplate-*` success result into the owned {@link NaniteTemplate}. */
+  private parseNaniteTemplate(result: unknown): NaniteTemplate {
+    const parsed = parseToolText(result) as NaniteTemplate | null;
+    if (!parsed || typeof parsed.id !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane nanite template response');
+    }
+    return parsed;
+  }
+
+  /** Read nanite templates via `ws-nanitetemplate-read` (by slug/id, or list). */
+  async naniteTemplateRead(input: NaniteTemplateReadInput = {}): Promise<NaniteTemplate[]> {
+    const args: Record<string, unknown> = {};
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.id !== undefined) {
+      args.id = input.id;
+    }
+    if (input.query !== undefined) {
+      args.query = input.query;
+    }
+    if (input.limit !== undefined) {
+      args.limit = input.limit;
+    }
+    const result = await this.callDomainTool('ws-nanitetemplate-read', args);
+    const parsed = parseToolText(result) as { templates?: unknown } | null;
+    const list = Array.isArray(parsed?.templates) ? parsed!.templates : [];
+    return list as NaniteTemplate[];
+  }
+
+  /** Create a nanite template via `ws-nanitetemplate-create`. */
+  async naniteTemplateCreate(input: NaniteTemplateCreateInput): Promise<NaniteTemplate> {
+    const args: Record<string, unknown> = { title: input.title };
+    for (const key of [
+      'slug',
+      'triggerPhrase',
+      'instructions',
+      'executionSettings',
+      'toolAllowlist',
+      'inputSchema',
+      'outputSchema',
+      'acceptanceCriteria',
+      'acceptanceThreshold',
+      'enabled',
+    ] as const) {
+      if (input[key] !== undefined) {
+        args[key] = input[key];
+      }
+    }
+    return this.parseNaniteTemplate(
+      await this.callDomainTool('ws-nanitetemplate-create', args),
+    );
+  }
+
+  /** Update a nanite template via `ws-nanitetemplate-update` (by slug). */
+  async naniteTemplateUpdate(input: NaniteTemplateUpdateInput): Promise<NaniteTemplate> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    for (const key of [
+      'title',
+      'triggerPhrase',
+      'instructions',
+      'executionSettings',
+      'toolAllowlist',
+      'inputSchema',
+      'outputSchema',
+      'acceptanceCriteria',
+      'acceptanceThreshold',
+      'enabled',
+    ] as const) {
+      if (input[key] !== undefined) {
+        args[key] = input[key];
+      }
+    }
+    return this.parseNaniteTemplate(
+      await this.callDomainTool('ws-nanitetemplate-update', args),
+    );
+  }
+
+  /** Soft-delete (or restore) a nanite template via `ws-nanitetemplate-delete` (by slug). */
+  async naniteTemplateDelete(
+    input: NaniteTemplateDeleteInput,
+  ): Promise<{ ok: boolean; slug: string }> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.restore !== undefined) {
+      args.restore = input.restore;
+    }
+    const result = await this.callDomainTool('ws-nanitetemplate-delete', args);
+    const parsed = parseToolText(result) as { ok?: unknown; slug?: unknown } | null;
+    return {
+      ok: parsed?.ok === true,
+      slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
+    };
+  }
+
+  // ----- Nanite domain API (`ws-nanite-*`) ----------------------------------
+  //
+  // Typed wrappers over the control-plane's Nanite kind API — ONE execution
+  // instance of a NaniteTemplate (id-based, mirroring ws-alert-*). `run`
+  // transitions the lifecycle phase; there is no generic update (workstream +
+  // inputTopic are immutable).
+
+  /** Parse a `ws-nanite-*` success result into the owned {@link Nanite}. */
+  private parseNanite(result: unknown): Nanite {
+    const parsed = parseToolText(result) as Nanite | null;
+    if (!parsed || typeof parsed.id !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane nanite response');
+    }
+    return parsed;
+  }
+
+  /** Read nanites via `ws-nanite-read` (by id, or list filtered by input topic / workstream). */
+  async naniteRead(input: NaniteReadInput = {}): Promise<Nanite[]> {
+    const args: Record<string, unknown> = {};
+    if (input.id !== undefined) {
+      args.id = input.id;
+    }
+    if (input.inputTopic !== undefined) {
+      args.inputTopic = input.inputTopic;
+    }
+    if (input.workstream !== undefined) {
+      args.workstream = input.workstream;
+    }
+    if (input.limit !== undefined) {
+      args.limit = input.limit;
+    }
+    const result = await this.callDomainTool('ws-nanite-read', args);
+    const parsed = parseToolText(result) as { nanites?: unknown } | null;
+    const list = Array.isArray(parsed?.nanites) ? parsed!.nanites : [];
+    return list as Nanite[];
+  }
+
+  /** Create a nanite via `ws-nanite-create` (requires workstream + inputTopic). */
+  async naniteCreate(input: NaniteCreateInput): Promise<Nanite> {
+    const args: Record<string, unknown> = {
+      workstream: input.workstream,
+      inputTopic: input.inputTopic,
+    };
+    if (input.templateId !== undefined) {
+      args.templateId = input.templateId;
+    }
+    if (input.request !== undefined) {
+      args.request = input.request;
+    }
+    return this.parseNanite(await this.callDomainTool('ws-nanite-create', args));
+  }
+
+  /** Kick off a nanite via `ws-nanite-run` (valid only while Pending). */
+  async naniteRun(input: NaniteRunInput): Promise<Nanite> {
+    const args: Record<string, unknown> = { id: input.id };
+    if (input.outcome !== undefined) {
+      args.outcome = input.outcome;
+    }
+    if (input.error !== undefined) {
+      args.error = input.error;
+    }
+    return this.parseNanite(await this.callDomainTool('ws-nanite-run', args));
+  }
+
+  /** Soft-delete (or restore) a nanite via `ws-nanite-delete` (by id). */
+  async naniteDelete(input: NaniteDeleteInput): Promise<{ ok: boolean; id: string }> {
+    const args: Record<string, unknown> = { id: input.id };
+    if (input.restore !== undefined) {
+      args.restore = input.restore;
+    }
+    const result = await this.callDomainTool('ws-nanite-delete', args);
+    const parsed = parseToolText(result) as { ok?: unknown; id?: unknown } | null;
+    return {
+      ok: parsed?.ok === true,
+      id: typeof parsed?.id === 'string' ? parsed.id : input.id,
+    };
   }
 
   /** Close the client + transport and release the singleton. */

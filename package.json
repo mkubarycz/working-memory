@@ -136,6 +136,11 @@
         "command": "working-memory.setWorkstreamSection",
         "title": "Move Workstream to Section",
         "category": "Working Memory"
+      },
+      {
+        "command": "workingMemory.nanite.run",
+        "title": "Run Nanite",
+        "category": "Working Memory"
       }
     ],
     "menus": {

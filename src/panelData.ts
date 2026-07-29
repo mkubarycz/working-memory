@@ -13,6 +13,7 @@ import type {
   Alert as ControlPlaneAlert,
   DocumentEnvelope,
   ListDocumentsResult,
+  Nanite,
   Topic as ControlPlaneTopic,
   TopicType,
   Workstream,
@@ -40,6 +41,8 @@ export interface PanelAction {
   args?: unknown[];
   /** Optional codicon id rendered beside the menu label (e.g. 'arrow-circle-up'). */
   icon?: string;
+  /** When false, the row's context-menu item renders disabled (default true). */
+  enabled?: boolean;
 }
 
 export interface PanelTopic {
@@ -127,7 +130,31 @@ export interface PanelTopicRow {
   actions?: PanelAction[];
   alertCount?: number;
   alertSeverity?: 'alert' | 'informational' | null;
-  children?: PanelTopicRow[];
+  children?: Array<PanelTopicRow | PanelNaniteRow>;
+}
+
+/**
+ * A Nanite row rendered as a CHILD of its input topic in the panel tree (kind
+ * `nanite`, so `media/panel/panel.js` renders it with right-click actions and
+ * deleted-muting). One Nanite = one execution instance of a Nanite Template; it
+ * shows its lifecycle `phase` (Pending → Running → Succeeded|Failed) and offers
+ * a Run action while Pending.
+ */
+export interface PanelNaniteRow {
+  kind: 'nanite';
+  id: string;
+  label: string;
+  description: string;
+  tooltip: string;
+  /** Codicon id. */
+  icon: string;
+  /** `working-memory:/document/<id>.md` virtual-doc URI (generic envelope route). */
+  openUri: string;
+  /** Lifecycle phase. */
+  phase: 'Pending' | 'Running' | 'Succeeded' | 'Failed';
+  /** Whether the underlying document is soft-deleted (muted in the tree). */
+  deleted: boolean;
+  actions?: PanelAction[];
 }
 
 /**
@@ -442,14 +469,87 @@ function attachControlPlaneChildren(
 }
 
 /**
+ * Build a Nanite child row for the Topics tab. A Nanite renders under its input
+ * topic showing its lifecycle `phase`; while `Pending` it offers a Run action
+ * (the `workingMemory.nanite.run` command, registered in extension.ts). Kind
+ * `nanite` so `media/panel/panel.js` gives it right-click actions + soft-delete
+ * muting.
+ */
+function buildNaniteRow(n: Nanite): PanelNaniteRow {
+  const label = n.request.trim() || n.templateId || `Nanite ${n.id.slice(0, 8)}`;
+  const actions: PanelAction[] =
+    n.phase === 'Pending'
+      ? [
+          {
+            command: 'workingMemory.nanite.run',
+            title: 'Run Nanite',
+            icon: 'play',
+            args: [{ id: n.id }],
+          },
+        ]
+      : [];
+  return {
+    kind: 'nanite',
+    id: `topics:nanite:${n.inputTopic}:${n.id}`,
+    label,
+    description: n.phase,
+    tooltip: `${label} — ${n.phase}`,
+    icon: NANITE_PHASE_ICON[n.phase],
+    // Generic envelope route — a dedicated `/nanite/` renderer is a next step.
+    openUri: `working-memory:/document/${n.id}.md`,
+    phase: n.phase,
+    deleted: false,
+    actions,
+  };
+}
+
+/** Codicon per Nanite lifecycle phase. */
+const NANITE_PHASE_ICON: Record<Nanite['phase'], string> = {
+  Pending: 'circle-outline',
+  Running: 'sync',
+  Succeeded: 'pass',
+  Failed: 'error',
+};
+
+/** Slug of a topic row, parsed from its `working-memory:/topic/<slug>.md` openUri. */
+function topicSlugFromRow(row: PanelTopicRow): string | null {
+  const m = /^working-memory:\/topic\/(.+)\.md$/.exec(row.openUri);
+  return m ? m[1] : null;
+}
+
+/**
+ * Recursively append Nanite child rows onto every topic row whose slug is an
+ * input topic in `nanitesByTopic`. Nanites are appended AFTER any child topics,
+ * and the walk descends only into topic-row children (never into nanite rows).
+ */
+function attachNanites(
+  row: PanelTopicRow,
+  nanitesByTopic: Map<string, PanelNaniteRow[]>,
+): void {
+  const existing = row.children ?? [];
+  for (const child of existing) {
+    if (child.kind === 'topic-row') {
+      attachNanites(child, nanitesByTopic);
+    }
+  }
+  const slug = topicSlugFromRow(row);
+  const nanites = slug ? nanitesByTopic.get(slug) : undefined;
+  if (nanites && nanites.length > 0) {
+    row.children = [...existing, ...nanites];
+  }
+}
+
+/**
  * Build the Topics tab from the control-plane topic list. Only OPEN topics are
  * shown, rooted at the parentless ones, with the DAG walked top-down via the
- * flat `spec.parents` refs. `available:false` (daemon down) renders the "control
- * plane not running" empty state.
+ * flat `spec.parents` refs. Nanites render as child rows under their input
+ * topic. `available:false` (daemon down) renders the "control plane not running"
+ * empty state.
  */
 export function buildTopicsPanel(input: {
   available: boolean;
   topics: ControlPlaneTopic[];
+  nanites?: Nanite[];
   alerts?: ControlPlaneAlert[];
   topicTypes?: TopicType[];
   error?: string;
@@ -472,6 +572,14 @@ export function buildTopicsPanel(input: {
       childrenBySlug.set(p, arr);
     }
   }
+  // Group nanites by their input topic slug for under-topic render (the read
+  // returns non-deleted rows only).
+  const nanitesByTopic = new Map<string, PanelNaniteRow[]>();
+  for (const n of input.nanites ?? []) {
+    const arr = nanitesByTopic.get(n.inputTopic) ?? [];
+    arr.push(buildNaniteRow(n));
+    nanitesByTopic.set(n.inputTopic, arr);
+  }
   const roots = open.filter((t) => t.parents.length === 0);
   const items: PanelItem[] = roots.map((t) => {
     const slug = t.slug as string;
@@ -485,6 +593,7 @@ export function buildTopicsPanel(input: {
       new Set([slug]),
       1,
     );
+    attachNanites(row, nanitesByTopic);
     return row;
   });
   return { tab: 'topics', items, emptyMessage: 'No open topics.' };

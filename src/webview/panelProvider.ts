@@ -205,11 +205,12 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
       };
     }
     try {
-      const [workstreams, topics, alerts, topicTypes] = await Promise.all([
+      const [workstreams, topics, alerts, topicTypes, nanites] = await Promise.all([
         this.controlPlaneClient.wsRead({}),
         this.controlPlaneClient.topicRead({}),
         this.controlPlaneClient.alertRead({}),
         this.controlPlaneClient.topicTypeRead({}),
+        this.controlPlaneClient.naniteRead({}),
       ]);
       const ws = buildWorkstreamPanels({
         available: true,
@@ -221,7 +222,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
       return {
         active: ws.active,
         archive: ws.archive,
-        topics: buildTopicsPanel({ available: true, topics, alerts, topicTypes }),
+        topics: buildTopicsPanel({ available: true, topics, nanites, alerts, topicTypes }),
         alerts: buildAlertsPanel({ available: true, alerts }),
         topicTypes: buildTopicTypesPanel({ available: true, topicTypes }),
       };
