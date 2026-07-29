@@ -17,6 +17,9 @@ import {
 } from './documentRenderer';
 import { renderDocumentByKind } from './documentRenderers';
 import { renderTopicDocument } from './documentRenderers/topic';
+import type { TopicRelations } from './documentRenderers/topic';
+import { buildFamilyTree } from './documentRenderers/family';
+import { asStr, asStrArray } from './documentRenderers/shared';
 import { renderWorkstreamDocument } from './documentRenderers/workstream';
 import { renderTopicTypeDocument } from './documentRenderers/topictype';
 
@@ -246,7 +249,11 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
         const doc = result.document;
         let text: string;
         if (controlPlaneKind === 'Topic') {
-          text = renderTopicDocument(doc, await this.topicAlerts(client, doc));
+          text = renderTopicDocument(
+            doc,
+            await this.topicAlerts(client, doc),
+            await this.topicFamily(client, doc),
+          );
         } else if (controlPlaneKind === 'Workstream') {
           text = renderWorkstreamDocument(
             doc,
@@ -301,6 +308,65 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Resolve a control-plane topic's `## Family` tree + friendly `## Workstreams`
+   * links (WM 13.0.2 `feature-family-tree-display`). Both are cross-document
+   * relations the topic envelope can't carry, so — like `topicAlerts` — they're
+   * fetched here and passed into the pure renderer:
+   *   - Family: list ALL topics (`topicRead({})`), reduce to slug/title/parents
+   *     triples, and let `buildFamilyTree` walk parents upward (bounded) and the
+   *     reverse parent→child adjacency downward (cycle + depth guarded).
+   *   - Workstreams: resolve each `spec.workstreams` slug to its title via
+   *     `wsRead({})` so the links read as human titles, not slugs.
+   * Any control-plane error degrades gracefully: an empty family (renderer falls
+   * back to a single-node tree) and slug-labeled workstream links.
+   */
+  private async topicFamily(
+    client: ControlPlaneClient,
+    doc: DocumentEnvelope,
+  ): Promise<TopicRelations> {
+    const spec = doc.spec ?? {};
+    const slug = doc.metadata.slug;
+    const title = asStr(spec.title) ?? slug ?? doc.metadata.id;
+    const wsSlugs = asStrArray(spec.workstreams);
+
+    // Default (degraded) workstream links use the slug as the label.
+    let workstreams = wsSlugs.map((s) => ({ slug: s, title: s }));
+    let family: TopicRelations['family'] = [];
+
+    if (!slug) {
+      return { family, workstreams };
+    }
+
+    try {
+      const topics = await client.topicRead({});
+      const familyTopics = topics.map((t) => ({
+        slug: t.slug ?? t.id,
+        title: t.title,
+        parents: Array.isArray(t.parents) ? t.parents : [],
+      }));
+      family = buildFamilyTree(slug, title, familyTopics, asStrArray(spec.parents));
+
+      if (wsSlugs.length > 0) {
+        const titleBySlug = new Map<string, string>();
+        const wss = await client.wsRead({});
+        for (const w of wss) {
+          if (w.slug) {
+            titleBySlug.set(w.slug, w.title);
+          }
+        }
+        workstreams = wsSlugs.map((s) => ({
+          slug: s,
+          title: titleBySlug.get(s) ?? s,
+        }));
+      }
+    } catch {
+      // Degrade to the single-node family + slug-labeled workstream links.
+    }
+
+    return { family, workstreams };
   }
 
   /**

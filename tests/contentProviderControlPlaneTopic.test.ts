@@ -837,6 +837,77 @@ test('topic doc: renders the topic type as a deep-link', async () => {
   store.close();
 });
 
+// --- Field parity: topic doc `## Family` tree + friendly workstream links --
+// The topic doc resolves its family neighborhood (ancestors via the injected
+// topics' `parents`, descendants via the reverse parent lookup) and its
+// workstream titles, and passes them into the pure renderer.
+test('topic doc: renders a `## Family` tree and friendly workstream links', async () => {
+  const store = openJournalStore({ dbPath: ':memory:' });
+
+  const envelope = makeEnvelope('doc-current', 'cp-topic');
+  envelope.spec = {
+    ...envelope.spec,
+    title: 'CP Topic',
+    parents: ['parent-slug'],
+    workstreams: ['ws-a'],
+  };
+  const getDocument = vi.fn(async (input: { slug?: string; kind?: string }) =>
+    input.slug === 'cp-topic' && input.kind === 'Topic'
+      ? { available: true, document: envelope }
+      : { available: true, document: null },
+  );
+  const alertRead = vi.fn(async () => [] as Alert[]);
+  const topicRead = vi.fn(async () => [
+    makeTopicWith({
+      slug: 'cp-topic',
+      title: 'CP Topic',
+      parents: ['parent-slug'],
+      workstreams: ['ws-a'],
+    }),
+    makeTopicWith({ slug: 'parent-slug', title: 'Parent Topic', parents: [] }),
+    makeTopicWith({
+      slug: 'child-slug',
+      title: 'Child Topic',
+      parents: ['cp-topic'],
+    }),
+  ]);
+  const wsRead = vi.fn(async () => [
+    { id: 'ws-1', slug: 'ws-a', title: 'Workstream A' },
+  ]);
+
+  const { WorkstreamDocumentProvider } = await import('../src/contentProvider');
+  const provider = new WorkstreamDocumentProvider(store);
+  provider.setControlPlaneClient({
+    getDocument,
+    alertRead,
+    topicRead,
+    wsRead,
+  } as unknown as ControlPlaneClient);
+
+  const uri = makeUri('/topic/cp-topic.md') as Parameters<
+    typeof provider.readFile
+  >[0];
+  const body = Buffer.from(await provider.readFile(uri)).toString('utf8');
+
+  // The flat `## Parents` section is replaced by a `## Family` tree.
+  expect(body).not.toContain('## Parents');
+  expect(body).toContain('## Family');
+  // Ancestor → current → descendant, indented 2 spaces per level, friendly.
+  expect(body).toContain(
+    '- [Parent Topic](vscode://kubarycz.working-memory/open/topic/parent-slug)',
+  );
+  expect(body).toContain('  - **CP Topic** ← this topic');
+  expect(body).toContain(
+    '    - [Child Topic](vscode://kubarycz.working-memory/open/topic/child-slug)',
+  );
+  // Workstream link uses the resolved friendly title, not the slug.
+  expect(body).toContain(
+    '[Workstream A](vscode://kubarycz.working-memory/open/workstream/ws-a)',
+  );
+
+  store.close();
+});
+
 // --- Alert docs resolve control-plane-first --------------------------------
 // A topic doc's `## Alerts` section links `open/alert/<id>`, where `<id>` is a
 // control-plane alert's uuid/slug — NOT a journal numeric id. Opening

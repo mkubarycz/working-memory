@@ -2,26 +2,57 @@
  * Per-kind renderer for a control-plane `Topic` document envelope → rich
  * markdown. Pure function of the envelope (no journal store, no VS Code).
  *
- * Topic carries two outbound ref lists: `spec.workstreams[]` (membership →
- * workstream deep links) and `spec.parents[]` (→ topic deep links). Both are
- * rendered as clickable lists; missing / foreign-shaped fields render `_none_`.
+ * The `## Workstreams` section renders friendly clickable links (title label,
+ * not slug). The `## Family` section renders the topic's hierarchical family —
+ * ancestors, the current topic (marked), and descendants — as an indented tree
+ * of friendly links (WM 13.0.2 `feature-family-tree-display`).
  *
- * Alerts are a REVERSE relation (an Alert's `spec.topics[]` lists the topic
- * slugs it concerns), so they can't be read off the topic envelope. The caller
- * resolves the matching open alerts and passes them in; the renderer stays a
- * pure function of `env` + `alerts` (no I/O).
+ * Both the family tree and the workstream titles are REVERSE / cross-document
+ * relations that can't be read off the topic envelope alone, so — exactly like
+ * `alerts` — the caller resolves them and passes them in via `relations`; the
+ * renderer stays a pure function of `env` + `alerts` + `relations` (no I/O).
+ * When `relations` is omitted the renderer degrades gracefully: a single-node
+ * Family (just this topic) and slug-labeled workstream links from `spec`.
  */
 
 import type { Alert, DocumentEnvelope } from '../controlPlaneClient';
+import type { FamilyNode } from './family';
 import {
   alertActionLink,
   asStr,
   asStrArray,
   deepLink,
   fmtTs,
-  linkList,
   metadataSection,
 } from './shared';
+
+/**
+ * Resolved cross-document relations for a topic doc, fetched by the content
+ * provider and injected into the pure renderer.
+ */
+export interface TopicRelations {
+  /** Unified family display tree roots (ancestors → current → descendants). */
+  family?: FamilyNode[];
+  /** Member workstreams with resolved friendly titles. */
+  workstreams?: { slug: string; title: string }[];
+}
+
+/** Render the unified family tree as indented (2 spaces / level) bullets. */
+function familyLines(
+  nodes: FamilyNode[],
+  indent: number,
+  out: string[],
+): void {
+  for (const n of nodes) {
+    const pad = '  '.repeat(indent);
+    if (n.isCurrent) {
+      out.push(`${pad}- **${n.title}** ← this topic`);
+    } else {
+      out.push(`${pad}- [${n.title}](${deepLink('topic', n.slug)})`);
+    }
+    familyLines(n.children, indent + 1, out);
+  }
+}
 // Editable-region markers are the SAVE contract shared with the journal
 // renderer + `extractTopicBody`: the body is sliced from between these HTML
 // comments on save (WM 13.0 topic-save cutover onto `ws-topic-update`). They
@@ -35,14 +66,36 @@ import {
 export function renderTopicDocument(
   env: DocumentEnvelope,
   alerts: Alert[] = [],
+  relations: TopicRelations = {},
 ): string {
   const spec = env.spec ?? {};
   const title = asStr(spec.title) ?? env.metadata.slug ?? env.metadata.id;
   const status = asStr(spec.status) ?? '—';
   const topicType = asStr(spec.topicType) ?? 'topic';
   const body = asStr(spec.body);
-  const workstreams = asStrArray(spec.workstreams);
-  const parents = asStrArray(spec.parents);
+
+  // Workstreams: prefer resolved friendly links; degrade to slug labels from
+  // `spec.workstreams` when the caller injected none.
+  const workstreamLinks =
+    relations.workstreams && relations.workstreams.length > 0
+      ? relations.workstreams
+      : asStrArray(spec.workstreams).map((slug) => ({ slug, title: slug }));
+
+  // Family: prefer the injected tree; degrade to a single-node tree (this topic
+  // only) so a direct render or an offline path still shows a sensible section.
+  const family: FamilyNode[] =
+    relations.family && relations.family.length > 0
+      ? relations.family
+      : [
+          {
+            slug: env.metadata.slug ?? env.metadata.id,
+            title,
+            isCurrent: true,
+            children: [],
+          },
+        ];
+  const familyOut: string[] = [];
+  familyLines(family, 0, familyOut);
 
   const lines: string[] = [
     `# Topic: ${title}`,
@@ -58,11 +111,15 @@ export function renderTopicDocument(
     '',
     '## Workstreams',
     '',
-    linkList('workstream', workstreams),
+    workstreamLinks.length > 0
+      ? workstreamLinks
+          .map((w) => `- [${w.title}](${deepLink('workstream', w.slug)})`)
+          .join('\n')
+      : '_none_',
     '',
-    '## Parents',
+    '## Family',
     '',
-    linkList('topic', parents),
+    ...familyOut,
     '',
   ];
 

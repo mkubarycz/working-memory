@@ -71,7 +71,7 @@ describe('renderWorkstreamDocument', () => {
 });
 
 describe('renderTopicDocument', () => {
-  it('renders heading, body and clickable workstream + parent deep links', () => {
+  it('renders heading, body, a `## Family` section and friendly workstream links', () => {
     const md = renderTopicDocument(
       makeEnvelope('Topic', {
         title: 'Blackboard Tab',
@@ -87,26 +87,115 @@ describe('renderTopicDocument', () => {
       '`topicType`: [feature](vscode://kubarycz.working-memory/open/topic-type/feature)',
     );
     expect(md).toContain('the body text');
+    // Workstreams degrade to slug labels when no resolved titles are injected.
     expect(md).toContain(
       '[control-plane](vscode://kubarycz.working-memory/open/workstream/control-plane)',
     );
     expect(md).toContain(
       '[blackboard](vscode://kubarycz.working-memory/open/workstream/blackboard)',
     );
+    // The flat `## Parents` section is gone; a `## Family` tree replaces it.
+    expect(md).not.toContain('## Parents');
+    expect(md).toContain('## Family');
+    // With no injected family the section degrades to the current node only.
+    expect(md).toContain('**Blackboard Tab** ← this topic');
+  });
+
+  it('renders friendly workstream links + an ancestor/current/descendant Family tree', () => {
+    const md = renderTopicDocument(
+      makeEnvelope('Topic', {
+        title: 'Family Node',
+        body: 'b',
+        workstreams: ['ws-a'],
+      }),
+      [],
+      {
+        workstreams: [{ slug: 'ws-a', title: 'Workstream A' }],
+        family: [
+          {
+            slug: 'grandparent',
+            title: 'Grandparent',
+            isCurrent: false,
+            children: [
+              {
+                slug: 'parent',
+                title: 'Parent',
+                isCurrent: false,
+                children: [
+                  {
+                    slug: 'the-slug',
+                    title: 'Family Node',
+                    isCurrent: true,
+                    children: [
+                      {
+                        slug: 'child',
+                        title: 'Child',
+                        isCurrent: false,
+                        children: [],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+    // Friendly workstream link (title label, not slug).
     expect(md).toContain(
-      '[agentic-store](vscode://kubarycz.working-memory/open/topic/agentic-store)',
+      '[Workstream A](vscode://kubarycz.working-memory/open/workstream/ws-a)',
+    );
+    // Ancestors + descendant are friendly clickable links, indented 2/level.
+    expect(md).toContain(
+      '- [Grandparent](vscode://kubarycz.working-memory/open/topic/grandparent)',
+    );
+    expect(md).toContain(
+      '  - [Parent](vscode://kubarycz.working-memory/open/topic/parent)',
+    );
+    // The current node is bold + marked, NOT a link.
+    expect(md).toContain('    - **Family Node** ← this topic');
+    expect(md).toContain(
+      '      - [Child](vscode://kubarycz.working-memory/open/topic/child)',
     );
   });
 
-  it('renders _none_ for missing / foreign-shaped ref fields', () => {
+  it('falls back to the slug label for a dangling family ref', () => {
+    const md = renderTopicDocument(makeEnvelope('Topic', { title: 'X' }), [], {
+      family: [
+        {
+          slug: 'ghost-parent',
+          title: 'ghost-parent',
+          isCurrent: false,
+          children: [
+            {
+              slug: 'the-slug',
+              title: 'X',
+              isCurrent: true,
+              children: [],
+            },
+          ],
+        },
+      ],
+    });
+    // Title unresolved → the slug itself is the label, so the link never breaks.
+    expect(md).toContain(
+      '- [ghost-parent](vscode://kubarycz.working-memory/open/topic/ghost-parent)',
+    );
+  });
+
+  it('renders _none_ workstreams and a single-node Family for a bare topic', () => {
     const md = renderTopicDocument(
       makeEnvelope('Topic', {
         title: 'Bare',
         workstreams: 'not-an-array',
       }),
     );
-    // Both the Workstreams and Parents sections fall back to _none_.
-    expect(md.match(/_none_/g)?.length).toBeGreaterThanOrEqual(2);
+    // Workstreams falls back to _none_; Family shows just this topic.
+    expect(md).toContain('## Workstreams\n\n_none_');
+    expect(md).toContain('## Family');
+    expect(md).toContain('**Bare** ← this topic');
+    expect(md).not.toContain('## Parents');
   });
 
   // Drift guard for the WM 13.0 topic-save cutover: the body the control-plane
