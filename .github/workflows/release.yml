@@ -54,8 +54,13 @@ jobs:
 
       - name: Package VSIX
         run: |
-          npx vsce package --allow-missing-repository --no-dependencies
+          # Do NOT pass --no-dependencies: it skips the dependency walk that
+          # bundles the runtime node_modules the control-plane daemon needs.
+          npx vsce package --allow-missing-repository
           cp working-memory-*.vsix working-memory.vsix
+          # Guard: fail the release if the daemon's prod deps aren't bundled.
+          unzip -l working-memory.vsix | grep -q 'node_modules/@modelcontextprotocol/sdk/' \
+            || { echo "::error::vsix is missing node_modules/@modelcontextprotocol/sdk — daemon would not start"; exit 1; }
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
