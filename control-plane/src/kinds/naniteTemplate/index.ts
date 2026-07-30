@@ -45,6 +45,7 @@ const naniteTemplate: KindModule = {
         executionSettings: z.record(z.string(), z.unknown()).default({}),
         // Allow-listed tool names the runner may expose (018 `tool_allowlist`).
         toolAllowlist: z.array(z.string()).default([]),
+        toolDenylist: z.array(z.string()).default([]),
         // Typed input / output JSON schemas (018 `input_schema` / `output_schema`).
         inputSchema: z.record(z.string(), z.unknown()).default({}),
         outputSchema: z.record(z.string(), z.unknown()).default({}),

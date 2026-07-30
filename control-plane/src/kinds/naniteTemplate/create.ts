@@ -27,7 +27,8 @@ export function registerWsNaniteTemplateCreate(server: McpServer, store: Store):
       description:
         'Create a Nanite Template (the reusable DEFINITION of a headless subagent). Provide a ' +
         '`title` (required); optional `slug`, `triggerPhrase`, `instructions`, `executionSettings` ' +
-        '(model + tuning object), `toolAllowlist` (allowed tool names), `inputSchema`/`outputSchema` ' +
+        '(model + tuning object), `toolAllowlist` (allowed tool names; `*` = all available), `toolDenylist` ' +
+        '(names the nanite may never use), `inputSchema`/`outputSchema` ' +
         '(typed JSON schemas), `acceptanceCriteria`, `acceptanceThreshold` (0-100, default 60), and ' +
         '`enabled` (default true). Instantiate a template into a running Nanite with ws-nanite-create. ' +
         'Returns the created template.',
@@ -40,7 +41,8 @@ export function registerWsNaniteTemplateCreate(server: McpServer, store: Store):
           .record(z.string(), z.unknown())
           .optional()
           .describe('Model + tuning knobs (open object).'),
-        toolAllowlist: z.array(z.string()).optional().describe('Allow-listed tool names.'),
+        toolAllowlist: z.array(z.string()).optional().describe('Allow-listed tool names (`*` = all available).'),
+        toolDenylist: z.array(z.string()).optional().describe('Tool names the nanite may never use (subtracted from the allow-list).'),
         inputSchema: z.record(z.string(), z.unknown()).optional().describe('Typed input JSON schema.'),
         outputSchema: z.record(z.string(), z.unknown()).optional().describe('Typed output JSON schema.'),
         acceptanceCriteria: z.string().optional().describe('Acceptance rubric (human-written).'),
@@ -59,6 +61,7 @@ export function registerWsNaniteTemplateCreate(server: McpServer, store: Store):
         'instructions',
         'executionSettings',
         'toolAllowlist',
+        'toolDenylist',
         'inputSchema',
         'outputSchema',
         'acceptanceCriteria',

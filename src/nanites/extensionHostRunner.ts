@@ -64,6 +64,17 @@ const DEFAULT_READ_TIMEOUT_MS = 20_000;
 /** Default cap on each lifecycle persist so a hung write can't strand a nanite. */
 const DEFAULT_PERSIST_TIMEOUT_MS = 15_000;
 
+/**
+ * Appended to every run's system instructions: the model must not fake success
+ * when it lacks a capability — it reports the gap (a soft request surfaced to
+ * the author) instead of reaching for tools it wasn't granted.
+ */
+const SELF_REPORT_DIRECTIVE =
+  'If you lack a tool or capability needed to complete the task, do NOT claim ' +
+  'success — state plainly what you could not do and name the tool or ' +
+  'capability you would need. Only report work you actually performed; if a ' +
+  'tool call failed or returned an error, treat the step as NOT done.';
+
 /** Reject `promise` with a labelled error if it doesn't settle within `ms`. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -123,12 +134,15 @@ function buildRunPrompt(ctx: {
       `# Input topic\n${ctx.topic.title} (${ctx.topic.slug ?? '—'})\n\n${ctx.topic.body ?? ''}`.trim(),
     );
   } else if (ctx.workstreamTopics && ctx.workstreamTopics.length > 0) {
-    // Only promise the tool-call path if the template actually grants a
-    // topic-read tool; otherwise inline each topic's full content so the run
-    // has everything it needs without any tools.
-    const grantsTopicRead = (ctx.template?.toolAllowlist ?? []).some(
-      (t) => t === 'ws-topic-read' || t.endsWith('topic-read'),
-    );
+    // Only promise the tool-call path if the template's POLICY grants a
+    // topic-read tool (allow-list has it, or `*`, and the deny-list doesn't
+    // block it); otherwise inline each topic's full content so the run has
+    // everything it needs without any tools.
+    const allow = ctx.template?.toolAllowlist ?? [];
+    const deny = ctx.template?.toolDenylist ?? [];
+    const isTopicRead = (t: string): boolean => t === 'ws-topic-read' || t.endsWith('topic-read');
+    const grantsTopicRead =
+      !deny.some(isTopicRead) && (allow.includes('*') || allow.some(isTopicRead));
     if (grantsTopicRead) {
       const index = ctx.workstreamTopics
         .map((t) => `- ${t.title} (${t.slug ?? '—'}) — ${t.status}`)
@@ -245,8 +259,13 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     });
     // The verbatim request the model receives = system instructions + the
     // composed context prompt. Persist it so the run is auditable end-to-end.
-    const instructions = template?.instructions ?? '';
-    const fullRequest = instructions ? `${instructions}\n\n---\n\n${prompt}` : prompt;
+    const baseInstructions = template?.instructions ?? '';
+    const seededInstructions = [baseInstructions, SELF_REPORT_DIRECTIVE]
+      .filter((s) => s.trim())
+      .join('\n\n');
+    const fullRequest = seededInstructions
+      ? `${seededInstructions}\n\n---\n\n${prompt}`
+      : prompt;
 
     // Phase 2 — flip to Running (time-boxed). If this write fails the nanite is
     // still Pending, so a retry is safe; don't proceed to the model call.
@@ -279,9 +298,10 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
           );
         }, timeoutMs);
         runNanite(bridge, {
-          instructions: template?.instructions ?? '',
+          instructions: seededInstructions,
           prompt,
           allowlist: template?.toolAllowlist ?? [],
+          denylist: template?.toolDenylist ?? [],
           acceptanceCriteria: template?.acceptanceCriteria ?? '',
           acceptanceThreshold: template?.acceptanceThreshold ?? 60,
           model: modelFromSettings(template?.executionSettings),
@@ -302,6 +322,7 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
             output: result.output,
             acceptance: result.acceptance ?? null,
             toolCalls: result.toolCalls,
+            missingTools: result.missingTools ?? [],
             tokens: result.tokens ?? null,
           }),
           persistTimeoutMs,

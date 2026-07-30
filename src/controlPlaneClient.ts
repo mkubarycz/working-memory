@@ -396,6 +396,7 @@ export interface NaniteTemplate {
   instructions: string;
   executionSettings: Record<string, unknown>;
   toolAllowlist: string[];
+  toolDenylist: string[];
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   acceptanceCriteria: string;
@@ -420,6 +421,7 @@ export interface NaniteTemplateCreateInput {
   instructions?: string;
   executionSettings?: Record<string, unknown>;
   toolAllowlist?: string[];
+  toolDenylist?: string[];
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   acceptanceCriteria?: string;
@@ -434,6 +436,7 @@ export interface NaniteTemplateUpdateInput {
   instructions?: string;
   executionSettings?: Record<string, unknown>;
   toolAllowlist?: string[];
+  toolDenylist?: string[];
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   acceptanceCriteria?: string;
@@ -492,6 +495,8 @@ export interface Nanite {
   prompt: string;
   /** The run's verbatim final text (empty until it finishes). */
   output: string;
+  /** Allow-list entries that weren't available at run time. */
+  missingTools: string[];
   /** The acceptance verdict (null until the run is judged). */
   acceptance: NaniteAcceptance | null;
   /** The run's tool-call trail, in execution order. */
@@ -529,6 +534,8 @@ export interface NaniteRunInput {
   acceptance?: NaniteAcceptance | null;
   /** The run's tool-call trail (finishing call). */
   toolCalls?: NaniteToolCallOutcome[];
+  /** Allow-list entries that were unavailable at run time (finishing call). */
+  missingTools?: string[];
   /** Approximate token usage, loop + judge (finishing call). */
   tokens?: NaniteTokenUsage | null;
   /** Reset the nanite back to Pending from any phase (clears a stuck run). */
@@ -1350,6 +1357,7 @@ export class ControlPlaneClient {
       'instructions',
       'executionSettings',
       'toolAllowlist',
+      'toolDenylist',
       'inputSchema',
       'outputSchema',
       'acceptanceCriteria',
@@ -1374,6 +1382,7 @@ export class ControlPlaneClient {
       'instructions',
       'executionSettings',
       'toolAllowlist',
+      'toolDenylist',
       'inputSchema',
       'outputSchema',
       'acceptanceCriteria',
@@ -1479,6 +1488,9 @@ export class ControlPlaneClient {
     }
     if (input.toolCalls !== undefined) {
       args.toolCalls = input.toolCalls;
+    }
+    if (input.missingTools !== undefined) {
+      args.missingTools = input.missingTools;
     }
     if (input.tokens !== undefined) {
       args.tokens = input.tokens;

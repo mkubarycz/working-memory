@@ -4,7 +4,7 @@ import {
   ExtensionHostNaniteRunner,
   type NaniteRunnerClient,
 } from '../src/nanites/extensionHostRunner';
-import { matchesToolName } from '../src/nanites/toolNames';
+import { matchesToolName, resolveToolPlan } from '../src/nanites/toolNames';
 import {
   NaniteRunnerRegistry,
   providerFromSettings,
@@ -53,6 +53,8 @@ interface BridgeOpts {
   usage?: NaniteTokenUsage;
   judge?: NaniteJudgeResult;
   startError?: string;
+  /** Simulated registered-tool catalog (defaults to the seed allow-list). */
+  available?: string[];
 }
 
 class ScriptedConversation implements NaniteConversation {
@@ -63,6 +65,8 @@ class ScriptedConversation implements NaniteConversation {
     private readonly turns: NaniteModelTurn[],
     private readonly tokenUsage: NaniteTokenUsage = DEFAULT_CONVO_USAGE,
     modelId = 'test-model',
+    public readonly grantedTools: string[] = [],
+    public readonly missingTools: string[] = [],
   ) {
     this.modelId = modelId;
   }
@@ -92,10 +96,17 @@ class ScriptedBridge implements NaniteLmBridge {
     if (this.opts.startError) {
       throw new Error(this.opts.startError);
     }
+    // Mirror the real bridge: resolve the tool policy against a catalog. The
+    // catalog defaults to the allow-list itself (everything requested is
+    // available); pass `available` to simulate missing / prefixed tools.
+    const available = this.opts.available ?? seed.allowlist.filter((a) => a !== '*');
+    const plan = resolveToolPlan(available, seed.allowlist, seed.denylist);
     return new ScriptedConversation(
       this.turns,
       this.opts.usage ?? DEFAULT_CONVO_USAGE,
       this.opts.modelId ?? 'test-model',
+      plan.granted.map((g) => g.offer),
+      plan.missing,
     );
   }
   async invokeTool(name: string, input: unknown): Promise<string> {
@@ -159,7 +170,7 @@ describe('runNanite (core)', () => {
     ]);
     const forbidden = result.toolCalls.find((t) => t.name === 'wm_delete_topic');
     expect(forbidden?.ok).toBe(false);
-    expect(forbidden?.error).toMatch(/allow-list/);
+    expect(forbidden?.error).toMatch(/not granted/);
   });
 
   // bug: acceptance-evaluator-requires-tool-evidence — the judge must be told
@@ -185,6 +196,32 @@ describe('runNanite (core)', () => {
     expect(bridge.judged?.toolCalls).toEqual([]);
     // With the default (passing) judge, an empty allow-list run still succeeds.
     expect(result.status).toBe('succeeded');
+  });
+
+  test('reports missing tools and enforces the deny-list', async () => {
+    // The model tries a denied tool; it must be refused, and the unavailable
+    // allow-list entry must surface as missingTools.
+    const bridge = new ScriptedBridge(
+      [
+        { text: '', toolCalls: [{ callId: '1', name: 'ws-topic-delete', input: {} }] },
+        { text: 'Done.', toolCalls: [] },
+      ],
+      undefined,
+      { available: ['ws-topic-read', 'ws-topic-delete'] },
+    );
+    const result = await runNanite(bridge, {
+      ...BASE_OPTS,
+      allowlist: ['ws-topic-read', 'ws-topic-delete', 'ws-gone'],
+      denylist: ['ws-topic-delete'],
+    });
+
+    // ws-gone was requested but not available → reported as missing.
+    expect(result.missingTools).toEqual(['ws-gone']);
+    // ws-topic-delete was available but denied → the call is refused, not run.
+    const denied = result.toolCalls.find((t) => t.name === 'ws-topic-delete');
+    expect(denied?.ok).toBe(false);
+    expect(denied?.error).toMatch(/not granted/);
+    expect(bridge.invoked.map((i) => i.name)).not.toContain('ws-topic-delete');
   });
 
   test('acceptance passes when confidence >= threshold', async () => {
@@ -296,6 +333,7 @@ function fakeTemplate(over: Partial<NaniteTemplate> = {}): NaniteTemplate {
     instructions: 'Scan open topics and raise deduped alerts.',
     executionSettings: {},
     toolAllowlist: ['wm_create_alert'],
+    toolDenylist: [],
     inputSchema: {},
     outputSchema: {},
     acceptanceCriteria: 'Every open followup topic is flagged.',
@@ -320,7 +358,9 @@ function fakeNanite(over: Partial<Nanite> = {}): Nanite {
     startedAt: null,
     endedAt: null,
     error: '',
+    prompt: '',
     output: '',
+    missingTools: [],
     acceptance: null,
     toolCalls: [],
     tokens: null,
@@ -414,9 +454,11 @@ describe('ExtensionHostNaniteRunner', () => {
     const result = await runner.run(fakeNanite());
 
     expect(result.status).toBe('succeeded');
-    // The runner seeded the bridge with the TEMPLATE's config and a prompt
-    // carrying the workstream + input topic context.
-    expect(bridge.started?.instructions).toBe('Scan open topics and raise deduped alerts.');
+    // The runner seeded the bridge with the TEMPLATE's config (plus the
+    // standard self-report directive) and a prompt carrying the workstream +
+    // input topic context.
+    expect(bridge.started?.instructions).toContain('Scan open topics and raise deduped alerts.');
+    expect(bridge.started?.instructions).toContain('do NOT claim'); // self-report directive
     expect(bridge.started?.prompt).toContain('Do the thing described here.'); // topic body
     expect(bridge.started?.prompt).toContain('Topic A'); // topic title
     expect(bridge.started?.prompt).toContain('Peanut Harvest'); // workstream context
@@ -444,7 +486,9 @@ describe('ExtensionHostNaniteRunner', () => {
     const result = await runner.run(fakeNanite({ templateId: null }));
 
     expect(result.status).toBe('succeeded');
-    expect(bridge.started?.instructions).toBe('');
+    // No template → the only system instruction is the standard self-report
+    // directive; the allow-list is empty.
+    expect(bridge.started?.instructions).toContain('If you lack a tool');
     expect(bridge.started?.allowlist).toEqual([]);
     expect(bridge.started?.prompt).toContain('Do the thing described here.');
   });
@@ -497,6 +541,23 @@ describe('ExtensionHostNaniteRunner', () => {
     expect(bridge.started?.prompt).toContain('body a');
     expect(bridge.started?.prompt).toContain('body b');
     expect(bridge.started?.prompt).not.toContain('ws-topic-read tool call');
+  });
+
+  test('persists missingTools on the terminal call', async () => {
+    // Template requests a tool the catalog doesn't have → reported as missing.
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['ws-topic-read', 'ws-gone'] }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }], undefined, {
+      available: ['ws-topic-read'],
+    });
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    await runner.run(fakeNanite());
+
+    const finish = client.runCalls[1];
+    expect(finish.missingTools).toEqual(['ws-gone']);
   });
 
   test('failed acceptance is persisted as a Failed terminal call', async () => {
@@ -623,6 +684,51 @@ describe('matchesToolName', () => {
     expect(matchesToolName('mcp_working-memor_ws-topic-create', 'ws-topic-read')).toBe(false);
     // A suffix without the `_` boundary must not match (avoids `x-topic-read`).
     expect(matchesToolName('ws-subtopic-read', 'topic-read')).toBe(false);
+  });
+});
+
+describe('resolveToolPlan', () => {
+  const available = [
+    'mcp_working-memor_ws-topic-read',
+    'mcp_working-memor_ws-topic-delete',
+    'wm_create_alert',
+  ];
+
+  test('empty allow-list grants nothing (safe default)', () => {
+    const plan = resolveToolPlan(available, [], []);
+    expect(plan.granted).toEqual([]);
+    expect(plan.missing).toEqual([]);
+  });
+
+  test('grants matched tools under their clean names', () => {
+    const plan = resolveToolPlan(available, ['ws-topic-read', 'wm_create_alert'], []);
+    expect(plan.granted).toEqual([
+      { offer: 'ws-topic-read', registered: 'mcp_working-memor_ws-topic-read' },
+      { offer: 'wm_create_alert', registered: 'wm_create_alert' },
+    ]);
+    expect(plan.missing).toEqual([]);
+  });
+
+  test('reports allow-list entries with no available match as missing', () => {
+    const plan = resolveToolPlan(available, ['ws-topic-read', 'ws-nonexistent'], []);
+    expect(plan.granted.map((g) => g.offer)).toEqual(['ws-topic-read']);
+    expect(plan.missing).toEqual(['ws-nonexistent']);
+  });
+
+  test('deny-list subtracts from the grant (deny wins)', () => {
+    const plan = resolveToolPlan(available, ['ws-topic-read', 'ws-topic-delete'], ['ws-topic-delete']);
+    expect(plan.granted.map((g) => g.offer)).toEqual(['ws-topic-read']);
+    // Denied ≠ missing — it was available, just blocked.
+    expect(plan.missing).toEqual([]);
+  });
+
+  test('`*` grants ALL available tools, still minus the deny-list', () => {
+    const plan = resolveToolPlan(available, ['*'], ['ws-topic-delete']);
+    expect(plan.granted.map((g) => g.registered)).toEqual([
+      'mcp_working-memor_ws-topic-read',
+      'wm_create_alert',
+    ]);
+    expect(plan.missing).toEqual([]);
   });
 });
 

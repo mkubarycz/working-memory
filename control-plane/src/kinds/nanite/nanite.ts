@@ -84,6 +84,8 @@ export interface INanite {
   prompt: string;
   /** The run's verbatim final text (empty until it finishes). */
   output: string;
+  /** Allow-list entries that weren't available at run time. */
+  missingTools: string[];
   /** The acceptance verdict (null until the run is judged). */
   acceptance: NaniteAcceptance | null;
   /** The run's tool-call trail, in execution order. */
@@ -109,6 +111,7 @@ export class Nanite implements INanite {
   error: string;
   prompt: string;
   output: string;
+  missingTools: string[];
   acceptance: NaniteAcceptance | null;
   toolCalls: NaniteToolCallOutcome[];
   tokens: NaniteTokenUsage | null;
@@ -130,6 +133,9 @@ export class Nanite implements INanite {
     this.error = typeof spec.error === 'string' ? spec.error : '';
     this.prompt = typeof spec.prompt === 'string' ? spec.prompt : '';
     this.output = typeof spec.output === 'string' ? spec.output : '';
+    this.missingTools = Array.isArray(spec.missingTools)
+      ? spec.missingTools.filter((x): x is string => typeof x === 'string')
+      : [];
     this.acceptance = readAcceptance(spec.acceptance);
     this.toolCalls = readToolCalls(spec.toolCalls);
     this.tokens = readTokens(spec.tokens);

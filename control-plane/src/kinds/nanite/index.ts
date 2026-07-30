@@ -59,6 +59,9 @@ const nanite: KindModule = {
         // engine runs in the extension host; these carry its output back.
         prompt: z.string().default(''),
         output: z.string().default(''),
+        // Allow-list entries that weren't available at run time (typo / not
+        // installed / MCP server down) — surfaced so a run explains itself.
+        missingTools: z.array(z.string()).default([]),
         acceptance: z
           .object({
             summary: z.string(),

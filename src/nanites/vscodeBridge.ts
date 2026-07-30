@@ -23,7 +23,7 @@ import type {
   NaniteTokenUsage,
   RunnerToken,
 } from './types';
-import { matchesToolName } from './toolNames';
+import { matchesToolName, resolveToolPlan } from './toolNames';
 
 function asCancellation(token: RunnerToken): vscode.CancellationToken {
   // `vscode.lm` needs a real CancellationToken (with an `onCancellationRequested`
@@ -135,6 +135,8 @@ class VscodeConversation implements NaniteConversation {
     private readonly model: vscode.LanguageModelChat,
     private readonly tools: vscode.LanguageModelChatTool[],
     seed: NaniteConversationSeed,
+    public readonly grantedTools: string[],
+    public readonly missingTools: string[],
   ) {
     this.modelId = model.id;
     // The LM stable API has no system role — fold the instructions into the
@@ -219,7 +221,30 @@ class VscodeConversation implements NaniteConversation {
 export class VscodeLmBridge implements NaniteLmBridge {
   async start(seed: NaniteConversationSeed): Promise<NaniteConversation> {
     const model = await this.selectModel(seed.model);
-    return new VscodeConversation(model, this.buildTools(seed.allowlist), seed);
+    // Resolve the tool policy against the live catalog: allow ∩ available −
+    // deny (with `*` = all), plus the allow-list entries that resolved to
+    // nothing (missing). The model is offered granted tools under their clean
+    // names; the runner enforces + reports against the same set.
+    const plan = resolveToolPlan(
+      vscode.lm.tools.map((t) => t.name),
+      seed.allowlist,
+      seed.denylist,
+    );
+    const byRegistered = new Map(vscode.lm.tools.map((t) => [t.name, t]));
+    const tools: vscode.LanguageModelChatTool[] = [];
+    for (const g of plan.granted) {
+      const info = byRegistered.get(g.registered);
+      if (info) {
+        tools.push({ name: g.offer, description: info.description, inputSchema: info.inputSchema });
+      }
+    }
+    return new VscodeConversation(
+      model,
+      tools,
+      seed,
+      plan.granted.map((g) => g.offer),
+      plan.missing,
+    );
   }
 
   async invokeTool(
@@ -369,26 +394,5 @@ export class VscodeLmBridge implements NaniteLmBridge {
       );
     }
     return model;
-  }
-
-  /** Map allow-listed tool names to LM tool descriptors (skip unknown ones). */
-  private buildTools(allowlist: string[]): vscode.LanguageModelChatTool[] {
-    const tools: vscode.LanguageModelChatTool[] = [];
-    for (const entry of allowlist) {
-      const info = vscode.lm.tools.find((t) => matchesToolName(t.name, entry));
-      if (!info) {
-        continue;
-      }
-      // Offer the tool under the CLEAN allow-list name so the runner's
-      // allow-list check (same names) matches and templates stay portable
-      // across VS Code's MCP name-prefixing; invokeTool re-resolves to the
-      // registered name.
-      tools.push({
-        name: entry,
-        description: info.description,
-        inputSchema: info.inputSchema,
-      });
-    }
-    return tools;
   }
 }

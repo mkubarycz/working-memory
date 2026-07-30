@@ -40,6 +40,7 @@ export async function runNanite(
   const maxIterations = Math.max(1, options.maxIterations ?? 12);
   const prompt = options.prompt.trim();
   const allowlist = options.allowlist;
+  const denylist = options.denylist ?? [];
 
   const toolCalls: ToolCallOutcome[] = [];
   let iterations = 0;
@@ -51,8 +52,13 @@ export async function runNanite(
       instructions: options.instructions,
       prompt,
       allowlist,
+      denylist,
       model: options.model ?? null,
     });
+    // The bridge resolved the policy (allow ∩ available − deny). Enforce tool
+    // calls against the RESOLVED grant, not the raw allow-list, so `*` and the
+    // deny-list are honored uniformly.
+    const grantedTools = convo.grantedTools;
 
     for (let i = 0; i < maxIterations; i++) {
       if (token.isCancellationRequested) {
@@ -72,8 +78,8 @@ export async function runNanite(
       }
 
       for (const call of turn.toolCalls) {
-        if (!allowlist.includes(call.name)) {
-          const err = `tool '${call.name}' is not in this nanite's allow-list`;
+        if (!grantedTools.includes(call.name)) {
+          const err = `tool '${call.name}' is not granted to this nanite`;
           toolCalls.push({ name: call.name, ok: false, error: err });
           convo.addToolResult(
             call.callId,
@@ -114,7 +120,7 @@ export async function runNanite(
         prompt,
         output: finalText,
         toolCalls,
-        toolsAvailable: allowlist.length > 0,
+        toolsAvailable: grantedTools.length > 0,
         model: options.model ?? null,
       },
       token,
@@ -146,6 +152,9 @@ export async function runNanite(
       requestSummary: verdict.request_summary || prompt,
       responseSummary: verdict.response_summary || finalText,
     };
+    if (convo.missingTools.length > 0) {
+      result.missingTools = convo.missingTools;
+    }
     if (!passed) {
       result.error = 'Acceptance Criteria Not Matched';
     }

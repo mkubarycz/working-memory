@@ -65,6 +65,9 @@ export function renderNaniteDocument(env: DocumentEnvelope): string {
   const acceptance = readAcceptance(spec.acceptance);
   const startedAt = typeof spec.startedAt === 'number' ? spec.startedAt : null;
   const endedAt = typeof spec.endedAt === 'number' ? spec.endedAt : null;
+  const missingTools = Array.isArray(spec.missingTools)
+    ? spec.missingTools.filter((x): x is string => typeof x === 'string')
+    : [];
 
   const overview: string[] = [
     `- \`phase\`: ${phase}`,
@@ -83,6 +86,9 @@ export function renderNaniteDocument(env: DocumentEnvelope): string {
     overview.push(
       `- \`acceptance\`: ${acceptance.passed ? 'passed' : 'failed'} (confidence ${acceptance.confidence} / threshold ${acceptance.threshold})`,
     );
+  }
+  if (missingTools.length > 0) {
+    overview.push(`- \`missingTools\`: ${missingTools.map((t) => `\`${t}\``).join(', ')}`);
   }
   if (error) {
     overview.push(`- \`error\`: ${error}`);

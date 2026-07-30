@@ -61,6 +61,7 @@ export interface INaniteTemplate {
   instructions: string;
   executionSettings: Record<string, unknown>;
   toolAllowlist: string[];
+  toolDenylist: string[];
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   acceptanceCriteria: string;
@@ -80,6 +81,7 @@ export class NaniteTemplate implements INaniteTemplate {
   instructions: string;
   executionSettings: Record<string, unknown>;
   toolAllowlist: string[];
+  toolDenylist: string[];
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   acceptanceCriteria: string;
@@ -98,6 +100,7 @@ export class NaniteTemplate implements INaniteTemplate {
     this.instructions = typeof spec.instructions === 'string' ? spec.instructions : '';
     this.executionSettings = plainObject(spec.executionSettings);
     this.toolAllowlist = stringArray(spec.toolAllowlist);
+    this.toolDenylist = stringArray(spec.toolDenylist);
     this.inputSchema = plainObject(spec.inputSchema);
     this.outputSchema = plainObject(spec.outputSchema);
     this.acceptanceCriteria =

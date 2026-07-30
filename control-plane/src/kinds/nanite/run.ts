@@ -68,6 +68,10 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           )
           .optional()
           .describe('The run\'s tool-call trail (finishing call).'),
+        missingTools: z
+          .array(z.string())
+          .optional()
+          .describe('Allow-list entries that were unavailable at run time (finishing call).'),
         tokens: z
           .object({
             input_tokens: z.number(),
@@ -83,7 +87,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           .describe('Reset the nanite back to Pending from ANY phase (clears timings + result) so it can be re-run. Use to clear a stuck Running nanite.'),
       },
     },
-    async ({ id, outcome, error, prompt, output, acceptance, toolCalls, tokens, reset }) => {
+    async ({ id, outcome, error, prompt, output, acceptance, toolCalls, missingTools, tokens, reset }) => {
       const existing = store.getDocument({ id, kind: NANITE_KIND });
       if (!existing || existing.kind !== NANITE_KIND) {
         return asError(`Unknown nanite id: "${id}". No live nanite with that id.`);
@@ -103,6 +107,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           output: '',
           acceptance: null,
           toolCalls: [],
+          missingTools: [],
           tokens: null,
         };
       } else if (phase === 'Pending') {
@@ -125,6 +130,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           ...(output !== undefined ? { output } : {}),
           ...(acceptance !== undefined ? { acceptance } : {}),
           ...(toolCalls !== undefined ? { toolCalls } : {}),
+          ...(missingTools !== undefined ? { missingTools } : {}),
           ...(tokens !== undefined ? { tokens } : {}),
         };
       } else {

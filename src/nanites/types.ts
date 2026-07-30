@@ -47,6 +47,12 @@ export interface NaniteTokenUsage {
 export interface NaniteConversation {
   /** The id of the model backing this conversation (e.g. `gpt-4o`). */
   readonly modelId: string;
+  /** Clean names of the tools actually granted to (and offered) this run —
+   *  the resolved allow-list ∩ available − deny-list. The runner enforces
+   *  tool calls against THIS set. */
+  readonly grantedTools: string[];
+  /** Allow-list entries that matched no available tool at run time. */
+  readonly missingTools: string[];
   /** Send the accumulated messages, append the assistant reply, return it. */
   next(token: RunnerToken): Promise<NaniteModelTurn>;
   /** Record a tool result so it is fed into the next turn. */
@@ -59,6 +65,8 @@ export interface NaniteConversationSeed {
   instructions: string;
   prompt: string;
   allowlist: string[];
+  /** Tool names the run may NEVER use (subtracted from the allow-list). */
+  denylist: string[];
   model: string | null;
 }
 
@@ -134,8 +142,10 @@ export interface RunNaniteOptions {
   instructions: string;
   /** The prompt the run executes with — the input topic's body. */
   prompt: string;
-  /** Allow-listed tool names the run may invoke. */
+  /** Allow-listed tool names the run may invoke (`*` = all available). */
   allowlist: string[];
+  /** Tool names the run may NEVER use (subtracted from the allow-list). */
+  denylist?: string[];
   /** Human-written rubric the output is judged against (may be empty). */
   acceptanceCriteria: string;
   /** Minimum judge confidence (0-100) for the run to pass. */
@@ -160,6 +170,9 @@ export interface NaniteRunResult {
   acceptance?: NaniteAcceptance;
   /** The tool-call trail (name + ok + optional error), in execution order. */
   toolCalls: ToolCallOutcome[];
+  /** Allow-list entries that weren't available at run time (typo / not
+   *  installed / MCP server down). Empty when everything requested resolved. */
+  missingTools?: string[];
   iterations: number;
   hitIterationCap: boolean;
   /** Id of the model that ran the loop (absent on infra failure). */
