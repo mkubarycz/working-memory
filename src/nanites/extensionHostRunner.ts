@@ -99,11 +99,11 @@ function failedResult(message: string): NaniteRunResult {
 /**
  * Assemble the run prompt handed to the model: the owning **workstream**, the
  * **input topic** (title + body) OR — for a workstream-wide Nanite with no
- * single topic — an **index** of the workstream's topics (title/slug/status)
- * the model can fetch in full via a `ws-topic-read` tool call, and the **task**
- * (the nanite's request, or the template's trigger phrase). The template
- * `instructions` are the system prompt (folded into the seed by the bridge) and
- * are NOT repeated here.
+ * single topic — the workstream's topics (an **index** the model can fetch via
+ * `ws-topic-read` when that tool is granted, else the topics' full content
+ * inlined), and the **task** (the nanite's request, or the template's trigger
+ * phrase). The template `instructions` are the system prompt (folded into the
+ * seed by the bridge) and are NOT repeated here.
  */
 function buildRunPrompt(ctx: {
   workstream: Workstream | undefined;
@@ -123,14 +123,32 @@ function buildRunPrompt(ctx: {
       `# Input topic\n${ctx.topic.title} (${ctx.topic.slug ?? '—'})\n\n${ctx.topic.body ?? ''}`.trim(),
     );
   } else if (ctx.workstreamTopics && ctx.workstreamTopics.length > 0) {
-    const index = ctx.workstreamTopics
-      .map((t) => `- ${t.title} (${t.slug ?? '—'}) — ${t.status}`)
-      .join('\n');
-    parts.push(
-      `# Topics in this workstream\nThis Nanite runs workstream-wide (no single input ` +
-        `topic). The workstream's topics are listed below — fetch any topic's full ` +
-        `content with a ws-topic-read tool call when you need it.\n\n${index}`,
+    // Only promise the tool-call path if the template actually grants a
+    // topic-read tool; otherwise inline each topic's full content so the run
+    // has everything it needs without any tools.
+    const grantsTopicRead = (ctx.template?.toolAllowlist ?? []).some(
+      (t) => t === 'ws-topic-read' || t.endsWith('topic-read'),
     );
+    if (grantsTopicRead) {
+      const index = ctx.workstreamTopics
+        .map((t) => `- ${t.title} (${t.slug ?? '—'}) — ${t.status}`)
+        .join('\n');
+      parts.push(
+        `# Topics in this workstream\nThis Nanite runs workstream-wide (no single input ` +
+          `topic). The workstream's topics are listed below — fetch any topic's full ` +
+          `content with a ws-topic-read tool call when you need it.\n\n${index}`,
+      );
+    } else {
+      const full = ctx.workstreamTopics
+        .map((t) =>
+          `## ${t.title} (${t.slug ?? '—'}) — ${t.status}\n\n${t.body ?? ''}`.trim(),
+        )
+        .join('\n\n');
+      parts.push(
+        `# Topics in this workstream\nThis Nanite runs workstream-wide (no single input ` +
+          `topic); each topic's full content is included below.\n\n${full}`,
+      );
+    }
   }
   const task = (ctx.request.trim() || ctx.template?.triggerPhrase || '').trim();
   if (task) {

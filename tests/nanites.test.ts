@@ -4,6 +4,7 @@ import {
   ExtensionHostNaniteRunner,
   type NaniteRunnerClient,
 } from '../src/nanites/extensionHostRunner';
+import { matchesToolName } from '../src/nanites/toolNames';
 import {
   NaniteRunnerRegistry,
   providerFromSettings,
@@ -453,7 +454,12 @@ describe('ExtensionHostNaniteRunner', () => {
       fakeTopic({ slug: 'topic-a', title: 'Topic A', body: 'body a' }),
       fakeTopic({ slug: 'topic-b', title: 'Topic B', body: 'body b' }),
     ];
-    const client = new FakeClient(fakeTemplate(), null, topics);
+    // Template grants a topic-read tool → the index + tool-call path is used.
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['ws-topic-read'] }),
+      null,
+      topics,
+    );
     const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
     const runner = new ExtensionHostNaniteRunner({ client, bridge });
 
@@ -470,6 +476,27 @@ describe('ExtensionHostNaniteRunner', () => {
     expect(bridge.started?.prompt).not.toContain('# Input topic');
     // Workstream context is still present.
     expect(bridge.started?.prompt).toContain('Peanut Harvest');
+  });
+
+  test('workstream-wide nanite with NO topic-read tool inlines topic bodies', async () => {
+    const topics = [
+      fakeTopic({ slug: 'topic-a', title: 'Topic A', body: 'body a' }),
+      fakeTopic({ slug: 'topic-b', title: 'Topic B', body: 'body b' }),
+    ];
+    // Default template grants only wm_create_alert → no way to fetch bodies, so
+    // the runner inlines each topic's full content instead of promising a tool.
+    const client = new FakeClient(fakeTemplate(), null, topics);
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    const result = await runner.run(fakeNanite({ inputTopic: '' }));
+
+    expect(result.status).toBe('succeeded');
+    expect(bridge.started?.prompt).toContain('# Topics in this workstream');
+    // Full bodies are inlined; the tool-call invite is NOT present.
+    expect(bridge.started?.prompt).toContain('body a');
+    expect(bridge.started?.prompt).toContain('body b');
+    expect(bridge.started?.prompt).not.toContain('ws-topic-read tool call');
   });
 
   test('failed acceptance is persisted as a Failed terminal call', async () => {
@@ -577,6 +604,25 @@ describe('ExtensionHostNaniteRunner error handling', () => {
     // The run DID flip to Running and DID attempt the terminal write.
     expect(runCalls[0]).toEqual({ id: 'n1' });
     expect(runCalls.some((c) => c.outcome === 'succeeded')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool-name matching (allow-list ↔ VS Code's MCP-prefixed tool names)
+// ---------------------------------------------------------------------------
+describe('matchesToolName', () => {
+  test('matches an exact name', () => {
+    expect(matchesToolName('ws-topic-read', 'ws-topic-read')).toBe(true);
+  });
+
+  test('matches a VS Code MCP-prefixed name against a clean entry', () => {
+    expect(matchesToolName('mcp_working-memor_ws-topic-read', 'ws-topic-read')).toBe(true);
+  });
+
+  test('does not match a different tool or a non-boundary suffix', () => {
+    expect(matchesToolName('mcp_working-memor_ws-topic-create', 'ws-topic-read')).toBe(false);
+    // A suffix without the `_` boundary must not match (avoids `x-topic-read`).
+    expect(matchesToolName('ws-subtopic-read', 'topic-read')).toBe(false);
   });
 });
 

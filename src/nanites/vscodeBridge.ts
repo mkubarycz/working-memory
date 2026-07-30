@@ -23,6 +23,7 @@ import type {
   NaniteTokenUsage,
   RunnerToken,
 } from './types';
+import { matchesToolName } from './toolNames';
 
 function asCancellation(token: RunnerToken): vscode.CancellationToken {
   // `vscode.lm` needs a real CancellationToken (with an `onCancellationRequested`
@@ -227,7 +228,7 @@ export class VscodeLmBridge implements NaniteLmBridge {
     token: RunnerToken,
   ): Promise<string> {
     const result = await vscode.lm.invokeTool(
-      name,
+      this.resolveRegisteredToolName(name),
       {
         input: (input ?? {}) as object,
         toolInvocationToken: undefined,
@@ -235,6 +236,15 @@ export class VscodeLmBridge implements NaniteLmBridge {
       asCancellation(token),
     );
     return flattenToolResult(result);
+  }
+
+  /**
+   * Resolve a clean allow-list tool name (the name the model was offered) to
+   * the actual registered `vscode.lm` name (possibly MCP-prefixed) to invoke.
+   */
+  private resolveRegisteredToolName(name: string): string {
+    const match = vscode.lm.tools.find((t) => matchesToolName(t.name, name));
+    return match ? match.name : name;
   }
 
   async judge(
@@ -363,15 +373,18 @@ export class VscodeLmBridge implements NaniteLmBridge {
 
   /** Map allow-listed tool names to LM tool descriptors (skip unknown ones). */
   private buildTools(allowlist: string[]): vscode.LanguageModelChatTool[] {
-    const registered = new Map(vscode.lm.tools.map((t) => [t.name, t]));
     const tools: vscode.LanguageModelChatTool[] = [];
-    for (const name of allowlist) {
-      const info = registered.get(name);
+    for (const entry of allowlist) {
+      const info = vscode.lm.tools.find((t) => matchesToolName(t.name, entry));
       if (!info) {
         continue;
       }
+      // Offer the tool under the CLEAN allow-list name so the runner's
+      // allow-list check (same names) matches and templates stay portable
+      // across VS Code's MCP name-prefixing; invokeTool re-resolves to the
+      // registered name.
       tools.push({
-        name: info.name,
+        name: entry,
         description: info.description,
         inputSchema: info.inputSchema,
       });
