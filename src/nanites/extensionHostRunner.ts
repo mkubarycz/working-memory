@@ -50,11 +50,51 @@ export interface ExtensionHostRunnerDeps {
   maxIterations?: number;
   /** Wall-clock cap for a run before it's forced to Failed. Default 120s. */
   timeoutMs?: number;
+  /** Cap for each control-plane READ during input resolution. Default 20s. */
+  readTimeoutMs?: number;
+  /** Cap for each control-plane WRITE (lifecycle persist). Default 15s. */
+  persistTimeoutMs?: number;
   token?: RunnerToken;
 }
 
 /** Default wall-clock cap so a hung model call can't strand a nanite in Running. */
 const DEFAULT_RUN_TIMEOUT_MS = 120_000;
+/** Default cap on each input-resolution read so a hung daemon can't stall a run. */
+const DEFAULT_READ_TIMEOUT_MS = 20_000;
+/** Default cap on each lifecycle persist so a hung write can't strand a nanite. */
+const DEFAULT_PERSIST_TIMEOUT_MS = 15_000;
+
+/** Reject `promise` with a labelled error if it doesn't settle within `ms`. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/** A terminal Failed result carrying `message`, with no partial output. */
+function failedResult(message: string): NaniteRunResult {
+  return {
+    status: 'failed',
+    output: '',
+    toolCalls: [],
+    iterations: 0,
+    hitIterationCap: false,
+    error: message,
+  };
+}
 
 /**
  * Assemble the run prompt handed to the model: the owning **workstream**, the
@@ -132,20 +172,52 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
 
   async run(nanite: Nanite): Promise<NaniteRunResult> {
     const { client, bridge } = this.deps;
+    const readTimeoutMs = this.deps.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
+    const persistTimeoutMs = this.deps.persistTimeoutMs ?? DEFAULT_PERSIST_TIMEOUT_MS;
 
-    // Resolve inputs BEFORE flipping the lifecycle, so a bad read leaves the
-    // nanite Pending rather than stranded in Running.
-    const template = await loadTemplate(client, nanite.templateId);
-    const [workstream] = await client.wsRead({ slug: nanite.workstream });
-    // With an input topic, load it; workstream-wide (no topic) → load the
-    // topic index so the model knows what's there and can tool-call for content.
-    const hasTopic = nanite.inputTopic.trim() !== '';
-    const topic = hasTopic
-      ? (await client.topicRead({ slug: nanite.inputTopic }))[0]
-      : undefined;
-    const workstreamTopics = hasTopic
-      ? []
-      : await client.topicRead({ workstream: nanite.workstream });
+    // Phase 1 — resolve inputs, each read time-boxed so a hung control-plane
+    // call can't stall the run. This runs BEFORE the lifecycle flips, so ANY
+    // failure here leaves the nanite Pending (safe to retry) — we surface the
+    // reason rather than hanging.
+    let template: NaniteTemplate | null;
+    let workstream: Workstream | undefined;
+    let topic: Topic | undefined;
+    let workstreamTopics: Topic[];
+    try {
+      template = await withTimeout(
+        loadTemplate(client, nanite.templateId),
+        readTimeoutMs,
+        'load template',
+      );
+      [workstream] = await withTimeout(
+        client.wsRead({ slug: nanite.workstream }),
+        readTimeoutMs,
+        'read workstream',
+      );
+      const hasTopic = nanite.inputTopic.trim() !== '';
+      // With an input topic, load it; workstream-wide (no topic) → load the
+      // topic index so the model knows what's there and can tool-call for it.
+      topic = hasTopic
+        ? (
+            await withTimeout(
+              client.topicRead({ slug: nanite.inputTopic }),
+              readTimeoutMs,
+              'read input topic',
+            )
+          )[0]
+        : undefined;
+      workstreamTopics = hasTopic
+        ? []
+        : await withTimeout(
+            client.topicRead({ workstream: nanite.workstream }),
+            readTimeoutMs,
+            'read workstream topics',
+          );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return failedResult(`could not resolve nanite inputs: ${message}`);
+    }
+
     const prompt = buildRunPrompt({
       workstream,
       topic,
@@ -158,12 +230,23 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     const instructions = template?.instructions ?? '';
     const fullRequest = instructions ? `${instructions}\n\n---\n\n${prompt}` : prompt;
 
-    // Persist the visible Running transition (Pending → Running).
-    await client.naniteRun({ id: nanite.id });
+    // Phase 2 — flip to Running (time-boxed). If this write fails the nanite is
+    // still Pending, so a retry is safe; don't proceed to the model call.
+    try {
+      await withTimeout(
+        client.naniteRun({ id: nanite.id }),
+        persistTimeoutMs,
+        'persist Running',
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return failedResult(`could not start nanite: ${message}`);
+    }
 
-    // Once Running, ANY outcome — success, failure, or a hung model call — must
-    // land a terminal phase, or the nanite strands in Running forever. Race the
-    // pure run against a wall-clock timeout (which also cancels the loop).
+    // Phase 3 — execute. Once Running, ANY outcome (success, failure, hung
+    // model call, or a hung terminal write) MUST land a terminal phase, or the
+    // nanite strands in Running forever. Race the pure run against a wall-clock
+    // timeout (which also cancels the loop), then persist the outcome.
     const timeoutMs = this.deps.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     const cancel: RunnerToken & { isCancellationRequested: boolean } = {
       isCancellationRequested: this.deps.token?.isCancellationRequested ?? false,
@@ -190,34 +273,41 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
       });
 
       // Persist the terminal phase + result (Running → Succeeded | Failed).
-      await client.naniteRun({
-        id: nanite.id,
-        outcome: result.status,
-        error: result.error,
-        prompt: fullRequest,
-        output: result.output,
-        acceptance: result.acceptance ?? null,
-        toolCalls: result.toolCalls,
-        tokens: result.tokens ?? null,
-      });
+      // Time-boxed so a hung write can't leave the nanite stuck in Running.
+      try {
+        await withTimeout(
+          client.naniteRun({
+            id: nanite.id,
+            outcome: result.status,
+            error: result.error,
+            prompt: fullRequest,
+            output: result.output,
+            acceptance: result.acceptance ?? null,
+            toolCalls: result.toolCalls,
+            tokens: result.tokens ?? null,
+          }),
+          persistTimeoutMs,
+          'persist result',
+        );
+      } catch (persistErr) {
+        const message = persistErr instanceof Error ? persistErr.message : String(persistErr);
+        return failedResult(`nanite finished but its result could not be saved: ${message}`);
+      }
       return result;
     } catch (err) {
       // Timeout or an unexpected throw: force the nanite to Failed so it is
-      // never stranded in Running. Best-effort persist.
+      // never stranded in Running. Best-effort, time-boxed persist.
       const message = err instanceof Error ? err.message : String(err);
       try {
-        await client.naniteRun({ id: nanite.id, outcome: 'failed', error: message, prompt: fullRequest });
+        await withTimeout(
+          client.naniteRun({ id: nanite.id, outcome: 'failed', error: message, prompt: fullRequest }),
+          persistTimeoutMs,
+          'persist failure',
+        );
       } catch {
         // ignore — the run already failed; surfacing the original error matters most.
       }
-      return {
-        status: 'failed',
-        output: '',
-        toolCalls: [],
-        iterations: 0,
-        hitIterationCap: false,
-        error: message,
-      };
+      return failedResult(message);
     } finally {
       if (timer) {
         clearTimeout(timer);

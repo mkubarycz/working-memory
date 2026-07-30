@@ -497,6 +497,90 @@ describe('ExtensionHostNaniteRunner', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Error handling: no unbounded await may strand a nanite (bug: workstream-wide
+// nanite stalls). Every control-plane read/write is time-boxed.
+// ---------------------------------------------------------------------------
+describe('ExtensionHostNaniteRunner error handling', () => {
+  /** Build a bare NaniteRunnerClient with per-method overrides. */
+  function makeClient(over: Partial<NaniteRunnerClient> & { runCalls?: NaniteRunInput[] }): NaniteRunnerClient {
+    const runCalls = over.runCalls ?? [];
+    return {
+      naniteTemplateRead: over.naniteTemplateRead ?? (async () => [fakeTemplate()]),
+      wsRead: over.wsRead ?? (async () => [fakeWorkstream()]),
+      topicRead: over.topicRead ?? (async () => [fakeTopic()]),
+      naniteRun:
+        over.naniteRun ??
+        (async (i) => {
+          runCalls.push(i);
+          return fakeNanite();
+        }),
+    };
+  }
+
+  const HANG = <T>(): Promise<T> => new Promise<T>(() => {});
+
+  test('a hung input read fails fast and leaves the nanite Pending', async () => {
+    const runCalls: NaniteRunInput[] = [];
+    const client = makeClient({
+      runCalls,
+      // The workstream-wide topic-index read hangs forever.
+      topicRead: async (input) => (input.workstream !== undefined ? HANG<Topic[]>() : []),
+      naniteRun: async (i) => {
+        runCalls.push(i);
+        return fakeNanite();
+      },
+    });
+    const bridge = new ScriptedBridge([{ text: 'x', toolCalls: [] }]);
+    const runner = new ExtensionHostNaniteRunner({ client, bridge, readTimeoutMs: 20 });
+
+    const result = await runner.run(fakeNanite({ inputTopic: '' }));
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/could not resolve nanite inputs/);
+    expect(result.error).toMatch(/read workstream topics timed out/);
+    // Never flipped to Running — no persist happened, so a retry is safe.
+    expect(runCalls).toHaveLength(0);
+    expect(bridge.started).toBeUndefined();
+  });
+
+  test('a hung Running flip fails fast without invoking the model', async () => {
+    const client = makeClient({
+      naniteRun: async (i) => (i.outcome === undefined ? HANG<Nanite>() : fakeNanite()),
+    });
+    const bridge = new ScriptedBridge([{ text: 'done', toolCalls: [] }]);
+    const runner = new ExtensionHostNaniteRunner({ client, bridge, persistTimeoutMs: 20 });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/could not start nanite/);
+    expect(bridge.started).toBeUndefined();
+  });
+
+  test('a hung result persist fails the run instead of stalling in Running', async () => {
+    const runCalls: NaniteRunInput[] = [];
+    const client = makeClient({
+      runCalls,
+      // The Running flip resolves; the terminal write hangs forever.
+      naniteRun: async (i) => {
+        runCalls.push(i);
+        return i.outcome !== undefined ? HANG<Nanite>() : fakeNanite();
+      },
+    });
+    const bridge = new ScriptedBridge([{ text: 'done', toolCalls: [] }]);
+    const runner = new ExtensionHostNaniteRunner({ client, bridge, persistTimeoutMs: 20 });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/could not be saved/);
+    // The run DID flip to Running and DID attempt the terminal write.
+    expect(runCalls[0]).toEqual({ id: 'n1' });
+    expect(runCalls.some((c) => c.outcome === 'succeeded')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Provider registry
 // ---------------------------------------------------------------------------
 describe('NaniteRunnerRegistry', () => {
