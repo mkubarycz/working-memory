@@ -26,10 +26,10 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
     {
       title: 'Nanite: Run',
       description:
-        'Manually kick off a Nanite. Only valid while the Nanite is `Pending`. STUB execution ' +
-        '(the real engine is out of scope): walks Pending → Running → terminal in one call, ' +
-        "stamping timings. Pass `outcome` ('succeeded' | 'failed', default 'succeeded') to choose " +
-        'the terminal phase, and optional `error` text for a failure. Returns the updated nanite.',
+        'Advance a Nanite one lifecycle step (STUB execution — the real engine is out of scope): ' +
+        'Pending → Running on the first call, Running → terminal on the next, stamping timings. ' +
+        "On the finishing call pass `outcome` ('succeeded' | 'failed', default 'succeeded') and " +
+        'optional `error` text. Returns the updated nanite.',
       inputSchema: {
         id: z.string().describe('Document id of the nanite to run (required).'),
         outcome: z
@@ -44,21 +44,30 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
       if (!existing || existing.kind !== NANITE_KIND) {
         return asError(`Unknown nanite id: "${id}". No live nanite with that id.`);
       }
-      if (existing.spec?.phase !== 'Pending') {
+      const phase = existing.spec?.phase;
+      // Advance ONE step per call so the Running state is observable in the
+      // panel: Pending → Running (start), then Running → terminal (finish).
+      let mergedSpec: Record<string, unknown>;
+      if (phase === 'Pending') {
+        mergedSpec = {
+          ...existing.spec,
+          phase: 'Running',
+          startedAt: nowSeconds(),
+          endedAt: null,
+          error: '',
+        };
+      } else if (phase === 'Running') {
+        mergedSpec = {
+          ...existing.spec,
+          phase: outcome === 'failed' ? 'Failed' : 'Succeeded',
+          endedAt: nowSeconds(),
+          error: outcome === 'failed' ? (error ?? 'Nanite failed.') : '',
+        };
+      } else {
         return asError(
-          `Nanite "${id}" is not Pending (phase is "${String(existing.spec?.phase)}") — ` +
-            'a nanite runs once.',
+          `Nanite "${id}" already finished (phase is "${String(phase)}") — a nanite runs once.`,
         );
       }
-      const started = nowSeconds();
-      const finalPhase = outcome === 'failed' ? 'Failed' : 'Succeeded';
-      const mergedSpec: Record<string, unknown> = {
-        ...existing.spec,
-        phase: finalPhase,
-        startedAt: started,
-        endedAt: nowSeconds(),
-        error: outcome === 'failed' ? (error ?? 'Nanite failed.') : '',
-      };
       try {
         const updated = store.updateDocument({
           id: existing.metadata.id,

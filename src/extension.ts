@@ -775,12 +775,34 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
+        const client = controlPlaneClient;
         try {
-          const nanite = await controlPlaneClient.naniteRun({ id });
+          // Two-phase stub so the Running state is observable in the panel:
+          // Pending → Running now, then Running → terminal after a short pause.
+          const started = await client.naniteRun({ id });
           refresh();
-          vscode.window.showInformationMessage(
-            `Working Memory: nanite ${id.slice(0, 8)} — ${nanite.phase}.`,
-          );
+          if (started.phase !== 'Running') {
+            vscode.window.showInformationMessage(
+              `Working Memory: nanite ${id.slice(0, 8)} — ${started.phase}.`,
+            );
+            return;
+          }
+          setTimeout(() => {
+            void (async () => {
+              try {
+                const done = await client.naniteRun({ id });
+                refresh();
+                vscode.window.showInformationMessage(
+                  `Working Memory: nanite ${id.slice(0, 8)} — ${done.phase}.`,
+                );
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                vscode.window.showErrorMessage(
+                  `Working Memory: nanite finish failed — ${message}`,
+                );
+              }
+            })();
+          }, 900);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           vscode.window.showErrorMessage(
