@@ -1,0 +1,163 @@
+/**
+ * The nanite run engine — pure control flow. It drives an agentic tool-calling
+ * loop but delegates every editor-specific concern (model selection, message
+ * construction, streaming, tool dispatch, the acceptance judge) to an
+ * injectable {@link NaniteLmBridge}.
+ *
+ * That seam is deliberate. The real bridge (`vscodeBridge.ts`) is built on
+ * `vscode.lm.selectChatModels` / `model.sendRequest` / `vscode.lm.invokeTool`
+ * and can only run inside the extension host. Tests inject a scripted fake
+ * bridge and exercise this exact loop deterministically — no `vscode` needed.
+ *
+ * Unlike the pre-control-plane engine, this core does NO persistence and NO
+ * document reads: it takes fully-resolved options (instructions, prompt,
+ * allow-list, acceptance rubric) and returns a structured {@link NaniteRunResult}.
+ * Reading the input topic + template and persisting the result belong to the
+ * {@link NaniteRunner} that wraps this core (see `extensionHostRunner.ts`).
+ */
+
+import type {
+  NaniteAcceptance,
+  NaniteLmBridge,
+  NaniteRunResult,
+  RunNaniteOptions,
+  RunnerToken,
+  ToolCallOutcome,
+} from './types';
+
+const NEVER_CANCELLED: RunnerToken = { isCancellationRequested: false };
+
+/**
+ * Execute a nanite headlessly against an injected bridge. Never throws for
+ * expected failure modes (model/tool errors); those are captured on the
+ * returned result (`status: 'failed'`, `error` set).
+ */
+export async function runNanite(
+  bridge: NaniteLmBridge,
+  options: RunNaniteOptions,
+): Promise<NaniteRunResult> {
+  const token = options.token ?? NEVER_CANCELLED;
+  const maxIterations = Math.max(1, options.maxIterations ?? 12);
+  const prompt = options.prompt.trim();
+  const allowlist = options.allowlist;
+
+  const toolCalls: ToolCallOutcome[] = [];
+  let iterations = 0;
+  let hitCap = false;
+  let finalText = '';
+
+  try {
+    const convo = await bridge.start({
+      instructions: options.instructions,
+      prompt,
+      allowlist,
+      model: options.model ?? null,
+    });
+
+    for (let i = 0; i < maxIterations; i++) {
+      if (token.isCancellationRequested) {
+        throw new Error('run cancelled');
+      }
+      iterations++;
+      const turn = await convo.next(token);
+
+      if (!turn.toolCalls.length) {
+        finalText = turn.text;
+        break;
+      }
+
+      // Capture assistant narration even on tool-only turns.
+      if (turn.text.trim()) {
+        finalText = turn.text;
+      }
+
+      for (const call of turn.toolCalls) {
+        if (!allowlist.includes(call.name)) {
+          const err = `tool '${call.name}' is not in this nanite's allow-list`;
+          toolCalls.push({ name: call.name, ok: false, error: err });
+          convo.addToolResult(
+            call.callId,
+            call.name,
+            JSON.stringify({ ok: false, error: err }),
+          );
+          continue;
+        }
+        try {
+          const resultText = await bridge.invokeTool(call.name, call.input, token);
+          toolCalls.push({ name: call.name, ok: true });
+          convo.addToolResult(call.callId, call.name, resultText);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          toolCalls.push({ name: call.name, ok: false, error: message });
+          convo.addToolResult(
+            call.callId,
+            call.name,
+            JSON.stringify({ ok: false, error: message }),
+          );
+        }
+      }
+
+      if (i === maxIterations - 1) {
+        hitCap = true;
+      }
+    }
+
+    // Approximate token usage accumulated across the tool-calling loop.
+    const loopUsage = convo.usage();
+
+    // Acceptance validation: one extra LM call (same model) that restates the
+    // request, summarizes the response, and scores how well the final output
+    // meets the rubric. Its tokens fold into the totals.
+    const verdict = await bridge.judge(
+      {
+        criteria: options.acceptanceCriteria,
+        prompt,
+        output: finalText,
+        toolCalls,
+        model: options.model ?? null,
+      },
+      token,
+    );
+    const passed = verdict.confidence >= options.acceptanceThreshold;
+    const acceptance: NaniteAcceptance = {
+      summary: verdict.rationale,
+      confidence: verdict.confidence,
+      threshold: options.acceptanceThreshold,
+      passed,
+    };
+
+    const inputTokens = loopUsage.input_tokens + verdict.tokens.input_tokens;
+    const outputTokens = loopUsage.output_tokens + verdict.tokens.output_tokens;
+
+    const result: NaniteRunResult = {
+      status: passed ? 'succeeded' : 'failed',
+      output: finalText,
+      acceptance,
+      toolCalls,
+      iterations,
+      hitIterationCap: hitCap,
+      model: convo.modelId,
+      tokens: {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        total_tokens: inputTokens + outputTokens,
+      },
+      requestSummary: verdict.request_summary || prompt,
+      responseSummary: verdict.response_summary || finalText,
+    };
+    if (!passed) {
+      result.error = 'Acceptance Criteria Not Matched';
+    }
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      status: 'failed',
+      output: finalText,
+      toolCalls,
+      iterations,
+      hitIterationCap: hitCap,
+      error: message,
+    };
+  }
+}

@@ -1,11 +1,13 @@
 /**
- * `ws-nanite-run` — the Nanite kind's manual kickoff tool.
+ * `ws-nanite-run` — the Nanite kind's manual kickoff + result-persistence tool.
  *
- * Transitions a Nanite OUT of `Pending`. The real headless engine is out of
- * scope (feature `nanite-headless-runtime`); this is a synchronous STUB that
- * walks the lifecycle Pending → Running → (Succeeded | Failed) in one call,
- * stamping `startedAt` / `endedAt`. Refuses when the Nanite is not currently
- * `Pending` (idempotent guard — a Nanite runs once).
+ * Walks the lifecycle Pending → Running → (Succeeded | Failed), stamping
+ * `startedAt` / `endedAt`. It is a persistence PRIMITIVE, not the engine: the
+ * real headless engine (the extension-host runner in `src/nanites/`) drives the
+ * model + tools, then calls this tool's finishing step to record the terminal
+ * phase plus the run RESULT (`output`, `acceptance`, `toolCalls`, `tokens`).
+ * Refuses when the Nanite is not currently `Pending`/`Running` (idempotent
+ * guard — a Nanite runs once).
  */
 
 import { z } from 'zod';
@@ -26,10 +28,11 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
     {
       title: 'Nanite: Run',
       description:
-        'Advance a Nanite one lifecycle step (STUB execution — the real engine is out of scope): ' +
+        'Advance a Nanite one lifecycle step: ' +
         'Pending → Running on the first call, Running → terminal on the next, stamping timings. ' +
-        "On the finishing call pass `outcome` ('succeeded' | 'failed', default 'succeeded') and " +
-        'optional `error` text. Returns the updated nanite.',
+        "On the finishing call pass `outcome` ('succeeded' | 'failed', default 'succeeded'), " +
+        'optional `error` text, and the run RESULT — `output`, `acceptance`, `toolCalls`, `tokens` ' +
+        '(written by the extension-host engine). Returns the updated nanite.',
       inputSchema: {
         id: z.string().describe('Document id of the nanite to run (required).'),
         outcome: z
@@ -37,9 +40,42 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           .optional()
           .describe("Terminal phase to land in (default 'succeeded')."),
         error: z.string().optional().describe('Failure message (used when outcome is failed).'),
+        output: z
+          .string()
+          .optional()
+          .describe('The run\'s verbatim final text (finishing call).'),
+        acceptance: z
+          .object({
+            summary: z.string(),
+            confidence: z.number(),
+            threshold: z.number(),
+            passed: z.boolean(),
+          })
+          .nullable()
+          .optional()
+          .describe('The acceptance-judge verdict (finishing call).'),
+        toolCalls: z
+          .array(
+            z.object({
+              name: z.string(),
+              ok: z.boolean(),
+              error: z.string().optional(),
+            }),
+          )
+          .optional()
+          .describe('The run\'s tool-call trail (finishing call).'),
+        tokens: z
+          .object({
+            input_tokens: z.number(),
+            output_tokens: z.number(),
+            total_tokens: z.number(),
+          })
+          .nullable()
+          .optional()
+          .describe('Approximate token usage, loop + judge (finishing call).'),
       },
     },
-    async ({ id, outcome, error }) => {
+    async ({ id, outcome, error, output, acceptance, toolCalls, tokens }) => {
       const existing = store.getDocument({ id, kind: NANITE_KIND });
       if (!existing || existing.kind !== NANITE_KIND) {
         return asError(`Unknown nanite id: "${id}". No live nanite with that id.`);
@@ -62,6 +98,12 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           phase: outcome === 'failed' ? 'Failed' : 'Succeeded',
           endedAt: nowSeconds(),
           error: outcome === 'failed' ? (error ?? 'Nanite failed.') : '',
+          // Persist the run result carried by the finishing call. Absent fields
+          // fall back to whatever the spec already held (defaults on create).
+          ...(output !== undefined ? { output } : {}),
+          ...(acceptance !== undefined ? { acceptance } : {}),
+          ...(toolCalls !== undefined ? { toolCalls } : {}),
+          ...(tokens !== undefined ? { tokens } : {}),
         };
       } else {
         return asError(

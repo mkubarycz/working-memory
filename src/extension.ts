@@ -24,12 +24,22 @@ import { initControlPlaneIntegration } from './controlPlane';
 import { ControlPlaneClient } from './controlPlaneClient';
 import { ControlPlaneHost } from './controlPlaneHost';
 import { maxMtimeMs } from './storeMtime';
+import {
+  EXTENSION_HOST_RUNNER_ID,
+  ExtensionHostNaniteRunner,
+  NaniteRunnerRegistry,
+  VscodeLmBridge,
+  providerFromSettings,
+} from './nanites';
 
 /** Authored alert lifecycle status, mirroring the control-plane Alert kind. */
 type AlertStatus = 'alert' | 'informational' | 'closed';
 
 let controlPlaneClient: ControlPlaneClient | null = null;
 let controlPlaneHost: ControlPlaneHost | null = null;
+// The `vscode.lm`-backed model bridge, shared by every extension-host nanite
+// run. Stateless — one instance is enough.
+const naniteLmBridge = new VscodeLmBridge();
 // Last-seen newest mtime across the control-plane store files, used by the
 // panel auto-refresh poll backstop (feature:panel-auto-refresh).
 let lastMtimeMs = 0;
@@ -777,32 +787,49 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const client = controlPlaneClient;
         try {
-          // Two-phase stub so the Running state is observable in the panel:
-          // Pending → Running now, then Running → terminal after a short pause.
-          const started = await client.naniteRun({ id });
-          refresh();
-          if (started.phase !== 'Running') {
-            vscode.window.showInformationMessage(
-              `Working Memory: nanite ${id.slice(0, 8)} — ${started.phase}.`,
+          // Load the nanite, then resolve its execution provider from the
+          // owning template's executionSettings. Unknown/absent provider →
+          // default runner (the extension-host runner).
+          const [nanite] = await client.naniteRead({ id });
+          if (!nanite) {
+            vscode.window.showErrorMessage(
+              `Working Memory: no nanite with id ${id.slice(0, 8)}.`,
             );
             return;
           }
-          setTimeout(() => {
-            void (async () => {
-              try {
-                const done = await client.naniteRun({ id });
-                refresh();
-                vscode.window.showInformationMessage(
-                  `Working Memory: nanite ${id.slice(0, 8)} — ${done.phase}.`,
-                );
-              } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                vscode.window.showErrorMessage(
-                  `Working Memory: nanite finish failed — ${message}`,
-                );
-              }
-            })();
-          }, 900);
+          if (nanite.phase !== 'Pending') {
+            vscode.window.showInformationMessage(
+              `Working Memory: nanite ${id.slice(0, 8)} already ${nanite.phase.toLowerCase()}.`,
+            );
+            return;
+          }
+
+          let provider: string | null = null;
+          if (nanite.templateId) {
+            const [tpl] = await client.naniteTemplateRead({ slug: nanite.templateId });
+            const template =
+              tpl ?? (await client.naniteTemplateRead({ id: nanite.templateId }))[0];
+            provider = providerFromSettings(template?.executionSettings);
+          }
+
+          const registry = new NaniteRunnerRegistry(EXTENSION_HOST_RUNNER_ID);
+          registry.register(
+            new ExtensionHostNaniteRunner({ client, bridge: naniteLmBridge }),
+          );
+          const runner = registry.resolve(provider);
+
+          refresh();
+          const result = await runner.run(nanite);
+          refresh();
+          if (result.status === 'succeeded') {
+            vscode.window.showInformationMessage(
+              `Working Memory: nanite ${id.slice(0, 8)} — Succeeded.`,
+            );
+          } else {
+            vscode.window.showWarningMessage(
+              `Working Memory: nanite ${id.slice(0, 8)} — Failed: ${result.error ?? 'unknown error'}.`,
+            );
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           vscode.window.showErrorMessage(

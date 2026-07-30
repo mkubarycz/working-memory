@@ -449,6 +449,28 @@ export interface NaniteTemplateDeleteInput {
 /** The Nanite lifecycle phase, mirroring the control-plane Nanite kind enum. */
 export type NanitePhase = 'Pending' | 'Running' | 'Succeeded' | 'Failed';
 
+/** The acceptance-judge verdict persisted on a finished Nanite. */
+export interface NaniteAcceptance {
+  summary: string;
+  confidence: number;
+  threshold: number;
+  passed: boolean;
+}
+
+/** One entry in a Nanite run's tool-call trail. */
+export interface NaniteToolCallOutcome {
+  name: string;
+  ok: boolean;
+  error?: string;
+}
+
+/** Approximate token usage (loop + judge) recorded on a finished Nanite. */
+export interface NaniteTokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
 /**
  * The Nanite shape returned by the control-plane `ws-nanite-*` domain API — ONE
  * execution instance of a {@link NaniteTemplate}. Kept structurally identical to
@@ -466,6 +488,14 @@ export interface Nanite {
   startedAt: number | null;
   endedAt: number | null;
   error: string;
+  /** The run's verbatim final text (empty until it finishes). */
+  output: string;
+  /** The acceptance verdict (null until the run is judged). */
+  acceptance: NaniteAcceptance | null;
+  /** The run's tool-call trail, in execution order. */
+  toolCalls: NaniteToolCallOutcome[];
+  /** Approximate token usage (loop + judge), or null before the run finishes. */
+  tokens: NaniteTokenUsage | null;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -489,6 +519,14 @@ export interface NaniteRunInput {
   id: string;
   outcome?: 'succeeded' | 'failed';
   error?: string;
+  /** The run's verbatim final text (finishing call). */
+  output?: string;
+  /** The acceptance-judge verdict (finishing call). */
+  acceptance?: NaniteAcceptance | null;
+  /** The run's tool-call trail (finishing call). */
+  toolCalls?: NaniteToolCallOutcome[];
+  /** Approximate token usage, loop + judge (finishing call). */
+  tokens?: NaniteTokenUsage | null;
 }
 
 export interface NaniteDeleteInput {
@@ -1413,7 +1451,7 @@ export class ControlPlaneClient {
     return this.parseNanite(await this.callDomainTool('ws-nanite-create', args));
   }
 
-  /** Kick off a nanite via `ws-nanite-run` (valid only while Pending). */
+  /** Kick off (or finish) a nanite via `ws-nanite-run`. */
   async naniteRun(input: NaniteRunInput): Promise<Nanite> {
     const args: Record<string, unknown> = { id: input.id };
     if (input.outcome !== undefined) {
@@ -1421,6 +1459,18 @@ export class ControlPlaneClient {
     }
     if (input.error !== undefined) {
       args.error = input.error;
+    }
+    if (input.output !== undefined) {
+      args.output = input.output;
+    }
+    if (input.acceptance !== undefined) {
+      args.acceptance = input.acceptance;
+    }
+    if (input.toolCalls !== undefined) {
+      args.toolCalls = input.toolCalls;
+    }
+    if (input.tokens !== undefined) {
+      args.tokens = input.tokens;
     }
     return this.parseNanite(await this.callDomainTool('ws-nanite-run', args));
   }

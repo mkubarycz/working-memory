@@ -54,6 +54,35 @@ const nanite: KindModule = {
         startedAt: z.number().nullable().default(null),
         endedAt: z.number().nullable().default(null),
         error: z.string().default(''),
+        // Run RESULT (written by ws-nanite-run's finishing call). The real
+        // engine runs in the extension host; these carry its output back.
+        output: z.string().default(''),
+        acceptance: z
+          .object({
+            summary: z.string(),
+            confidence: z.number(),
+            threshold: z.number(),
+            passed: z.boolean(),
+          })
+          .nullable()
+          .default(null),
+        toolCalls: z
+          .array(
+            z.object({
+              name: z.string(),
+              ok: z.boolean(),
+              error: z.string().optional(),
+            }),
+          )
+          .default([]),
+        tokens: z
+          .object({
+            input_tokens: z.number(),
+            output_tokens: z.number(),
+            total_tokens: z.number(),
+          })
+          .nullable()
+          .default(null),
       })
       .strict(),
     fts: (r) => `${r.spec.request}\n${r.spec.inputTopic}\n${r.spec.workstream}`,

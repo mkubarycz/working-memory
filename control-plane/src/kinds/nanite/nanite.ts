@@ -35,6 +35,31 @@ export const NANITE_KIND = 'Nanite';
 /** The Nanite lifecycle phase (a `spec` field). */
 export type NanitePhase = 'Pending' | 'Running' | 'Succeeded' | 'Failed';
 
+/** The acceptance-judge verdict persisted on a finished Nanite. */
+export interface NaniteAcceptance {
+  /** Plain-language rationale for the pass/fail judgement. */
+  summary: string;
+  /** Judge confidence (0-100). */
+  confidence: number;
+  /** Minimum confidence the run needed to pass. */
+  threshold: number;
+  passed: boolean;
+}
+
+/** One entry in a run's tool-call trail (name + ok + optional error). */
+export interface NaniteToolCallOutcome {
+  name: string;
+  ok: boolean;
+  error?: string;
+}
+
+/** Approximate token usage (loop + judge) recorded on a finished Nanite. */
+export interface NaniteTokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
 /** All valid phases, in lifecycle order. */
 export const NANITE_PHASES: readonly NanitePhase[] = [
   'Pending',
@@ -55,6 +80,14 @@ export interface INanite {
   startedAt: number | null;
   endedAt: number | null;
   error: string;
+  /** The run's verbatim final text (empty until it finishes). */
+  output: string;
+  /** The acceptance verdict (null until the run is judged). */
+  acceptance: NaniteAcceptance | null;
+  /** The run's tool-call trail, in execution order. */
+  toolCalls: NaniteToolCallOutcome[];
+  /** Approximate token usage (loop + judge), or null before the run finishes. */
+  tokens: NaniteTokenUsage | null;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -72,6 +105,10 @@ export class Nanite implements INanite {
   startedAt: number | null;
   endedAt: number | null;
   error: string;
+  output: string;
+  acceptance: NaniteAcceptance | null;
+  toolCalls: NaniteToolCallOutcome[];
+  tokens: NaniteTokenUsage | null;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -88,8 +125,58 @@ export class Nanite implements INanite {
     this.startedAt = typeof spec.startedAt === 'number' ? spec.startedAt : null;
     this.endedAt = typeof spec.endedAt === 'number' ? spec.endedAt : null;
     this.error = typeof spec.error === 'string' ? spec.error : '';
+    this.output = typeof spec.output === 'string' ? spec.output : '';
+    this.acceptance = readAcceptance(spec.acceptance);
+    this.toolCalls = readToolCalls(spec.toolCalls);
+    this.tokens = readTokens(spec.tokens);
     this.created_at = env.metadata.createdAt;
     this.updated_at = env.metadata.updatedAt;
     this.resourceVersion = env.metadata.resourceVersion;
   }
+}
+
+/** Reconstruct the acceptance verdict from a spec blob (null on absent/foreign). */
+function readAcceptance(value: unknown): NaniteAcceptance | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const v = value as Record<string, unknown>;
+  return {
+    summary: typeof v.summary === 'string' ? v.summary : '',
+    confidence: typeof v.confidence === 'number' ? v.confidence : 0,
+    threshold: typeof v.threshold === 'number' ? v.threshold : 0,
+    passed: v.passed === true,
+  };
+}
+
+/** Reconstruct the tool-call trail from a spec blob (empty on absent/foreign). */
+function readToolCalls(value: unknown): NaniteToolCallOutcome[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: NaniteToolCallOutcome[] = [];
+  for (const item of value) {
+    if (item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string') {
+      const v = item as Record<string, unknown>;
+      out.push({
+        name: v.name as string,
+        ok: v.ok === true,
+        ...(typeof v.error === 'string' ? { error: v.error } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+/** Reconstruct approximate token usage from a spec blob (null on absent/foreign). */
+function readTokens(value: unknown): NaniteTokenUsage | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const v = value as Record<string, unknown>;
+  return {
+    input_tokens: typeof v.input_tokens === 'number' ? v.input_tokens : 0,
+    output_tokens: typeof v.output_tokens === 'number' ? v.output_tokens : 0,
+    total_tokens: typeof v.total_tokens === 'number' ? v.total_tokens : 0,
+  };
 }
