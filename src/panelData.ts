@@ -530,9 +530,15 @@ function buildNaniteRow(
         ]
       : [
           {
+            command: 'workingMemory.nanite.restart',
+            title: 'Restart Nanite',
+            icon: 'debug-restart',
+            args: [{ id: n.id }],
+          },
+          {
             command: 'workingMemory.nanite.reset',
             title: 'Reset to Pending',
-            icon: 'debug-restart',
+            icon: 'discard',
             args: [{ id: n.id }],
           },
         ];
