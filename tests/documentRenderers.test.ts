@@ -311,24 +311,34 @@ describe('renderAlertDocument', () => {
 });
 
 describe('renderNaniteDocument', () => {
-  it('renders collapsed Request + Response sections ABOVE the envelope', () => {
+  it('renders Request + Response as their OWN collapsed sections', () => {
     const md = renderNaniteDocument(
       makeEnvelope('Nanite', {
         phase: 'Succeeded',
+        templateId: 'due-action-alerts',
+        workstream: 'peanut-planting-season',
+        inputTopic: 'plant-select-seed-variety',
         prompt: 'You are a helper.\n\n---\n\n# Task\ndo the thing',
         output: 'here is the answer',
       }),
     );
-    expect(md).toContain('<details>');
+    expect(md).toContain('# Nanite: due-action-alerts');
+    expect(md).toContain('`phase`: Succeeded');
+    // Each blob is in its own collapsed disclosure...
     expect(md).toContain('<summary>Request — full prompt sent to the model</summary>');
     expect(md).toContain('<summary>Response — model output</summary>');
     expect(md).toContain('You are a helper.');
     expect(md).toContain('here is the answer');
-    expect(md).toContain('`phase`: Succeeded');
-    expect(md.indexOf('<summary>Request')).toBeLessThan(md.indexOf('## Envelope'));
-    expect(md.indexOf('<summary>Response')).toBeLessThan(md.indexOf('## Envelope'));
-    expect(md).toContain('## Envelope');
-    expect(md).toContain('```json');
+    // ...and rendered VERBATIM in a fence so prompt headings don't become page
+    // headings, and NOT dumped inline via a raw envelope block.
+    expect(md).toContain('~~~text');
+    expect(md).not.toContain('## Envelope');
+    expect(md).not.toContain('```json');
+    // Request comes before Response.
+    expect(md.indexOf('<summary>Request')).toBeLessThan(md.indexOf('<summary>Response'));
+    // Deep links for the workstream + input topic.
+    expect(md).toContain('open/workstream/peanut-planting-season');
+    expect(md).toContain('open/topic/plant-select-seed-variety');
   });
 
   it('omits a section whose field is empty', () => {
