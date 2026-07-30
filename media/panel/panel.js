@@ -520,6 +520,9 @@
     row.setAttribute('role', 'treeitem');
     row.dataset.id = node.id;
     row.dataset.kind = node.kind;
+    // Stash the node so an ancestor handler (the workstream card) can defer to
+    // this row's own actions instead of swallowing the right-click.
+    /** @type {any} */ (row).__wmNode = node;
     if (node.kind === 'alert' && node.status) {
       row.dataset.status = node.status;
     }
@@ -1005,6 +1008,20 @@
     card.addEventListener('contextmenu', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      // If the right-click landed on a nested row that carries its own actions
+      // (e.g. a nanite), show THAT row's menu — not the workstream card menu.
+      const target = event.target;
+      const rowEl = target instanceof Element ? target.closest('.row') : null;
+      const rowNode = rowEl && /** @type {any} */ (rowEl).__wmNode;
+      if (
+        rowNode &&
+        RIGHT_CLICK_ACTION_KINDS.has(rowNode.kind) &&
+        Array.isArray(rowNode.actions) &&
+        rowNode.actions.length > 0
+      ) {
+        openRowContextMenu(event, rowNode, /** @type {HTMLElement} */ (rowEl));
+        return;
+      }
       openCardContextMenu(event, item);
     });
     return card;
