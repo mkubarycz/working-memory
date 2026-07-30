@@ -14,6 +14,7 @@ import type {
   DocumentEnvelope,
   ListDocumentsResult,
   Nanite,
+  NaniteTemplate,
   Topic as ControlPlaneTopic,
   TopicType,
   Workstream,
@@ -152,9 +153,44 @@ export interface PanelNaniteRow {
   openUri: string;
   /** Lifecycle phase. */
   phase: 'Pending' | 'Running' | 'Succeeded' | 'Failed';
+  /** Owning Nanite Template ref (id or slug); used to filter on the Nanites tab. */
+  templateId: string | null;
   /** Whether the underlying document is soft-deleted (muted in the tree). */
   deleted: boolean;
   actions?: PanelAction[];
+}
+
+/**
+ * A Nanite Template row for the top section of the Nanites tab. Clicking it
+ * selects/filters the nanites list below; `templateId`/`slug` are the match keys.
+ */
+export interface PanelNaniteTemplateRow {
+  kind: 'nanite-template';
+  /** DOM id. */
+  id: string;
+  /** Template document id (primary selection key). */
+  templateId: string;
+  /** Template slug (secondary selection key). */
+  slug: string | null;
+  label: string;
+  description: string;
+  tooltip: string;
+  icon: string;
+  openUri: string;
+  enabled: boolean;
+}
+
+/**
+ * The Nanites tab payload: templates on top, latest nanites (newest-first)
+ * below, split by a draggable divider in the webview. Distinct from `PanelData`
+ * (no flat `items`) — the webview renders it with a dedicated split view.
+ */
+export interface PanelNanitesData {
+  tab: 'nanites';
+  available: boolean;
+  templates: PanelNaniteTemplateRow[];
+  nanites: PanelNaniteRow[];
+  emptyMessage: string;
 }
 
 /**
@@ -475,7 +511,10 @@ function attachControlPlaneChildren(
  * `nanite` so `media/panel/panel.js` gives it right-click actions + soft-delete
  * muting.
  */
-function buildNaniteRow(n: Nanite): PanelNaniteRow {
+function buildNaniteRow(
+  n: Nanite,
+  rowIdPrefix = `topics:nanite:${n.inputTopic}`,
+): PanelNaniteRow {
   const label = n.request.trim() || n.templateId || `Nanite ${n.id.slice(0, 8)}`;
   const actions: PanelAction[] =
     n.phase === 'Pending'
@@ -490,7 +529,7 @@ function buildNaniteRow(n: Nanite): PanelNaniteRow {
       : [];
   return {
     kind: 'nanite',
-    id: `topics:nanite:${n.inputTopic}:${n.id}`,
+    id: `${rowIdPrefix}:${n.id}`,
     label,
     description: n.phase,
     tooltip: `${label} — ${n.phase}`,
@@ -498,6 +537,7 @@ function buildNaniteRow(n: Nanite): PanelNaniteRow {
     // Generic envelope route — a dedicated `/nanite/` renderer is a next step.
     openUri: `working-memory:/document/${n.id}.md`,
     phase: n.phase,
+    templateId: n.templateId,
     deleted: false,
     actions,
   };
@@ -510,6 +550,55 @@ const NANITE_PHASE_ICON: Record<Nanite['phase'], string> = {
   Succeeded: 'pass',
   Failed: 'error',
 };
+
+/** Build a top-section row for a Nanite Template on the Nanites tab. */
+function buildNaniteTemplateRow(t: NaniteTemplate): PanelNaniteTemplateRow {
+  return {
+    kind: 'nanite-template',
+    id: `nanites:template:${t.id}`,
+    templateId: t.id,
+    slug: t.slug,
+    label: t.title,
+    description: t.enabled ? '' : 'disabled',
+    tooltip: `${t.title}${t.slug ? ` (${t.slug})` : ''}`,
+    icon: t.enabled ? 'symbol-class' : 'circle-slash',
+    openUri: `working-memory:/document/${t.id}.md`,
+    enabled: t.enabled,
+  };
+}
+
+/**
+ * Build the Nanites tab: Nanite Templates on top, latest Nanites (newest-first)
+ * below. The webview splits them with a draggable divider and filters the
+ * bottom list to the selected template. `available:false` renders the empty
+ * "control plane not running" state.
+ */
+export function buildNanitesPanel(input: {
+  available: boolean;
+  templates?: NaniteTemplate[];
+  nanites?: Nanite[];
+}): PanelNanitesData {
+  if (!input.available) {
+    return {
+      tab: 'nanites',
+      available: false,
+      templates: [],
+      nanites: [],
+      emptyMessage: 'Control plane not running.',
+    };
+  }
+  const templates = (input.templates ?? []).map(buildNaniteTemplateRow);
+  const nanites = [...(input.nanites ?? [])]
+    .sort((a, b) => b.created_at - a.created_at)
+    .map((n) => buildNaniteRow(n, 'nanites:nanite'));
+  return {
+    tab: 'nanites',
+    available: true,
+    templates,
+    nanites,
+    emptyMessage: 'No nanite templates yet.',
+  };
+}
 
 /** Slug of a topic row, parsed from its `working-memory:/topic/<slug>.md` openUri. */
 function topicSlugFromRow(row: PanelTopicRow): string | null {

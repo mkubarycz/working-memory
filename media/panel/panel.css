@@ -144,6 +144,111 @@ html, body {
   height: 0;
 }
 
+/* Nanites tab: two stacked panes split by a draggable divider. */
+.list.nanites-mode {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.nanites-split {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.nanites-pane {
+  display: flex;
+  flex-direction: column;
+  flex-basis: 0;
+  min-height: 24px;
+  overflow: hidden;
+}
+
+.nanites-pane-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+
+.nanites-pane-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.nanites-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-sideBar-background);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.nanites-clear {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground);
+}
+
+.nanites-clear:hover {
+  text-decoration: underline;
+}
+
+.nanites-divider {
+  flex: 0 0 auto;
+  height: 6px;
+  cursor: row-resize;
+  background: var(--vscode-panel-border);
+}
+
+.nanites-divider:hover {
+  background: var(--vscode-focusBorder);
+}
+
+.nanite-template-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+}
+
+.nanite-template-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.nanite-template-row.selected {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.nanite-template-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nanite-template-tag {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+}
+
 .empty {
   padding: 12px;
   color: var(--vscode-descriptionForeground);

@@ -80,7 +80,7 @@
   // --- State ------------------------------------------------------------
 
   const persisted =
-    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites', gearView?: 'archive'|'topic-types'|'topics', expanded?: string[] } | undefined} */ (
+    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites', gearView?: 'archive'|'topic-types'|'topics', expanded?: string[], nanitesSplit?: number, nanitesSelectedTemplate?: { id: string, slug: string | null } | null } | undefined} */ (
       vscode.getState()
     );
 
@@ -114,6 +114,15 @@
     flashChipIds: new Set(),
     /** @type {{ kind?: string, id: string } | null} Latest reveal target from the host. */
     revealTarget: null,
+    /** Nanites tab: top/bottom split ratio (0.1..0.9). */
+    nanitesSplit:
+      typeof persisted?.nanitesSplit === 'number' &&
+      persisted.nanitesSplit > 0.1 &&
+      persisted.nanitesSplit < 0.9
+        ? persisted.nanitesSplit
+        : 0.5,
+    /** @type {{ id: string, slug: string | null } | null} Selected template filter on the Nanites tab. */
+    nanitesSelectedTemplate: persisted?.nanitesSelectedTemplate ?? null,
   };
 
   function persist() {
@@ -121,6 +130,8 @@
       activeTab: state.activeTab,
       gearView: state.gearView,
       expanded: Array.from(state.expanded),
+      nanitesSplit: state.nanitesSplit,
+      nanitesSelectedTemplate: state.nanitesSelectedTemplate,
     });
   }
 
@@ -1335,6 +1346,176 @@
     return wrap;
   }
 
+  /**
+   * Render the Nanites tab: Nanite Templates (top) + latest Nanites (bottom),
+   * split by a draggable divider. Selecting a template filters the bottom list.
+   * @param {any} data
+   */
+  function renderNanitesTab(data) {
+    if (!data || !data.available) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = data ? data.emptyMessage : '';
+      listEl.appendChild(empty);
+      return;
+    }
+    const sel = state.nanitesSelectedTemplate;
+    const container = document.createElement('div');
+    container.className = 'nanites-split';
+
+    // Top pane: templates.
+    const top = document.createElement('div');
+    top.className = 'nanites-pane';
+    top.style.flexGrow = String(state.nanitesSplit);
+    const topHead = document.createElement('div');
+    topHead.className = 'nanites-head';
+    topHead.textContent = 'Nanite Templates';
+    top.appendChild(topHead);
+    const topList = document.createElement('div');
+    topList.className = 'nanites-pane-list';
+    if (!data.templates || data.templates.length === 0) {
+      const e = document.createElement('div');
+      e.className = 'empty';
+      e.textContent = 'No nanite templates yet.';
+      topList.appendChild(e);
+    } else {
+      for (const t of data.templates) {
+        topList.appendChild(renderTemplateRow(t));
+      }
+    }
+    top.appendChild(topList);
+
+    // Draggable divider.
+    const divider = document.createElement('div');
+    divider.className = 'nanites-divider';
+    divider.setAttribute('role', 'separator');
+    divider.setAttribute('aria-orientation', 'horizontal');
+
+    // Bottom pane: latest nanites, filtered to the selected template.
+    const bottom = document.createElement('div');
+    bottom.className = 'nanites-pane';
+    bottom.style.flexGrow = String(1 - state.nanitesSplit);
+    const selTemplate = sel
+      ? (data.templates || []).find((t) => t.templateId === sel.id)
+      : null;
+    const botHead = document.createElement('div');
+    botHead.className = 'nanites-head';
+    const botLabel = document.createElement('span');
+    botLabel.textContent = sel
+      ? 'Nanites · ' + (selTemplate ? selTemplate.label : 'selected')
+      : 'Latest Nanites';
+    botHead.appendChild(botLabel);
+    if (sel) {
+      const clear = document.createElement('button');
+      clear.className = 'nanites-clear';
+      clear.textContent = 'Clear';
+      clear.title = 'Clear template filter';
+      clear.addEventListener('click', () => {
+        state.nanitesSelectedTemplate = null;
+        persist();
+        render();
+      });
+      botHead.appendChild(clear);
+    }
+    bottom.appendChild(botHead);
+    const botList = document.createElement('div');
+    botList.className = 'nanites-pane-list';
+    const nanites = data.nanites || [];
+    const filtered = sel
+      ? nanites.filter(
+          (n) => n.templateId === sel.id || (sel.slug && n.templateId === sel.slug),
+        )
+      : nanites;
+    if (filtered.length === 0) {
+      const e = document.createElement('div');
+      e.className = 'empty';
+      e.textContent = sel ? 'No nanites for this template.' : 'No nanites yet.';
+      botList.appendChild(e);
+    } else {
+      for (const n of filtered) {
+        renderNode(n, 0, botList);
+      }
+    }
+    bottom.appendChild(botList);
+
+    container.append(top, divider, bottom);
+    listEl.appendChild(container);
+    wireNanitesDivider(divider, top, bottom, container);
+  }
+
+  /**
+   * Render a Nanite Template row (top section). Click selects/toggles the
+   * template filter; double-click opens its virtual doc.
+   * @param {any} t
+   */
+  function renderTemplateRow(t) {
+    const row = document.createElement('div');
+    row.className = 'nanite-template-row';
+    const sel = state.nanitesSelectedTemplate;
+    if (sel && sel.id === t.templateId) {
+      row.classList.add('selected');
+    }
+    row.appendChild(makeCodicon(t.icon || 'symbol-class'));
+    const label = document.createElement('span');
+    label.className = 'nanite-template-label';
+    label.textContent = t.label;
+    row.appendChild(label);
+    if (t.enabled === false) {
+      const tag = document.createElement('span');
+      tag.className = 'nanite-template-tag';
+      tag.textContent = 'disabled';
+      row.appendChild(tag);
+    }
+    row.title = t.tooltip || t.label;
+    row.addEventListener('click', () => {
+      const cur = state.nanitesSelectedTemplate;
+      state.nanitesSelectedTemplate =
+        cur && cur.id === t.templateId ? null : { id: t.templateId, slug: t.slug };
+      persist();
+      render();
+    });
+    row.addEventListener('dblclick', () => {
+      if (t.openUri) {
+        vscode.postMessage({ type: 'open', uri: t.openUri });
+      }
+    });
+    return row;
+  }
+
+  /**
+   * Drag-to-resize the Nanites split. Listeners are scoped to the drag so they
+   * don't accumulate across re-renders.
+   * @param {HTMLElement} divider
+   * @param {HTMLElement} top
+   * @param {HTMLElement} bottom
+   * @param {HTMLElement} container
+   */
+  function wireNanitesDivider(divider, top, bottom, container) {
+    divider.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      document.body.style.cursor = 'row-resize';
+      const onMove = (/** @type {MouseEvent} */ ev) => {
+        const rect = container.getBoundingClientRect();
+        if (rect.height <= 0) {
+          return;
+        }
+        let ratio = (ev.clientY - rect.top) / rect.height;
+        ratio = Math.max(0.1, Math.min(0.9, ratio));
+        state.nanitesSplit = ratio;
+        top.style.flexGrow = String(ratio);
+        bottom.style.flexGrow = String(1 - ratio);
+      };
+      const onUp = () => {
+        document.body.style.cursor = '';
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        persist();
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+  }
+
   function render() {
     // Tabs
     const tabButtons = tabsEl.querySelectorAll('.tab');
@@ -1348,6 +1529,12 @@
     // List
     listEl.replaceChildren();
     listEl.classList.toggle('cards', state.activeTab === 'active');
+    listEl.classList.toggle('nanites-mode', state.activeTab === 'nanites');
+    if (state.activeTab === 'nanites') {
+      renderNanitesTab(getTabData('nanites'));
+      state.flashChipIds.clear();
+      return;
+    }
     const data = getTabData(state.activeTab);
     if (!data || data.items.length === 0) {
       const empty = document.createElement('div');
