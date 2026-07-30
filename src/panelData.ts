@@ -64,8 +64,8 @@ export interface PanelTopic {
   alertCount?: number;
   /** Max severity among open alerts: 'alert' reddish, 'informational' default. */
   alertSeverity?: 'alert' | 'informational' | null;
-  /** Nested child topics — only set when non-empty. */
-  children?: PanelTopic[];
+  /** Nested child topics (and any nanites nested under this topic) — only set when non-empty. */
+  children?: Array<PanelTopic | PanelNaniteRow>;
 }
 
 export interface PanelTopicsGroup {
@@ -563,45 +563,51 @@ function formatNaniteTimestamp(sec: number): string {
   });
 }
 
+/** Map a Nanite Template ref (id or slug) → friendly title. */
+function naniteTemplateNameMap(templates: NaniteTemplate[]): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const t of templates) {
+    m.set(t.id, t.title);
+    if (t.slug) {
+      m.set(t.slug, t.title);
+    }
+  }
+  return m;
+}
+
+/** Card row label for a nanite: its template's friendly name + timestamp. */
+function cardNaniteLabel(n: Nanite, nameByRef: Map<string, string>): string {
+  const tname = n.templateId ? nameByRef.get(n.templateId) : undefined;
+  const base = tname ?? (n.request.trim() || `Nanite ${n.id.slice(0, 8)}`);
+  return `${base} · ${formatNaniteTimestamp(n.created_at)}`;
+}
+
 /**
- * Build the per-card "Nanites" group: the nanites owned by `wsSlug`, newest
- * first, each labelled with its Nanite Template's friendly name + timestamp
- * (falling back to the request/short-id when it has no template). Returns null
- * when the workstream has no nanites.
+ * Build the per-card "Nanites" group. `nanites` is assumed pre-filtered to the
+ * workstream's ORPHAN nanites (those whose input topic is NOT a member of the
+ * card — nanites whose topic IS a member nest under that topic instead). Newest
+ * first, labelled with the Nanite Template's friendly name + timestamp. Returns
+ * null when empty.
  */
 function buildWorkstreamNanitesGroup(
-  wsSlug: string,
   wsId: string,
   tab: 'active' | 'archive',
   nanites: Nanite[],
   templates: NaniteTemplate[],
 ): PanelTopicsGroup | null {
-  if (wsSlug === '') {
+  if (nanites.length === 0) {
     return null;
   }
-  const mine = nanites.filter((n) => n.workstream === wsSlug);
-  if (mine.length === 0) {
-    return null;
-  }
-  const nameByRef = new Map<string, string>();
-  for (const t of templates) {
-    nameByRef.set(t.id, t.title);
-    if (t.slug) {
-      nameByRef.set(t.slug, t.title);
-    }
-  }
-  const rows = [...mine]
+  const nameByRef = naniteTemplateNameMap(templates);
+  const rows = [...nanites]
     .sort((a, b) => b.created_at - a.created_at)
-    .map((n) => {
-      const tname = n.templateId ? nameByRef.get(n.templateId) : undefined;
-      const base = tname ?? (n.request.trim() || `Nanite ${n.id.slice(0, 8)}`);
-      const label = `${base} · ${formatNaniteTimestamp(n.created_at)}`;
-      return buildNaniteRow(n, `${tab}:ws-nanite:${wsId}`, label);
-    });
+    .map((n) =>
+      buildNaniteRow(n, `${tab}:ws-nanite:${wsId}`, cardNaniteLabel(n, nameByRef)),
+    );
   return {
     kind: 'topics-group',
     id: `${tab}:ws-nanites:${wsId}`,
-    label: 'Nanites',
+    label: `Nanites (${rows.length})`,
     icon: 'zap',
     collapsible: true,
     children: rows,
@@ -760,6 +766,8 @@ function buildControlPlaneCardTopics(
   members: ControlPlaneTopic[],
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
+  nanites: Nanite[] = [],
+  naniteTemplates: NaniteTemplate[] = [],
 ): { group: PanelTopicsGroup; orderedTopics: PanelTopic[] } {
   const panelBySlug = new Map<string, PanelTopic>();
   const orderedSlugs: string[] = [];
@@ -825,6 +833,23 @@ function buildControlPlaneCardTopics(
   for (const s of rootSlugs) {
     attach(s, new Set([s]), 1);
   }
+  // Nest nanites under their input topic (`nanites` is pre-filtered to members
+  // of this workstream). Appended after any child topics on the same panel.
+  if (nanites.length > 0) {
+    const nameByRef = naniteTemplateNameMap(naniteTemplates);
+    for (const n of [...nanites].sort((a, b) => b.created_at - a.created_at)) {
+      const panel = panelBySlug.get(n.inputTopic);
+      if (!panel) {
+        continue;
+      }
+      const row = buildNaniteRow(
+        n,
+        `${tab}:topic-nanite:${wsId}:${n.inputTopic}`,
+        cardNaniteLabel(n, nameByRef),
+      );
+      panel.children = [...(panel.children ?? []), row];
+    }
+  }
   const children = rootSlugs.map((s) => panelBySlug.get(s) as PanelTopic);
   const count = orderedSlugs.length;
   return {
@@ -883,6 +908,14 @@ function buildDomainWorkstreamCard(
     topics !== undefined && slug.length > 0
       ? topics.filter((t) => t.workstreams.includes(slug))
       : [];
+  const memberTopicSlugs = new Set(
+    members.map((m) => m.slug ?? '').filter((s) => s !== ''),
+  );
+  const myNanites = slug.length > 0 ? nanites.filter((n) => n.workstream === slug) : [];
+  // A nanite whose input topic is a member of this workstream nests under that
+  // topic; the rest surface in the card-level "Nanites" group.
+  const nestedNanites = myNanites.filter((n) => memberTopicSlugs.has(n.inputTopic));
+  const orphanNanites = myNanites.filter((n) => !memberTopicSlugs.has(n.inputTopic));
   let focusedTopics: PanelTopic[] = [];
   if (topics !== undefined && slug.length > 0) {
     const { group, orderedTopics } = buildControlPlaneCardTopics(
@@ -892,15 +925,16 @@ function buildDomainWorkstreamCard(
       members,
       typeMap,
       alerts,
+      nestedNanites,
+      naniteTemplates,
     );
     children.push(group);
     focusedTopics = orderedTopics.filter((t) => t.focused);
   }
   const nanitesGroup = buildWorkstreamNanitesGroup(
-    slug,
     ws.id,
     tab,
-    nanites,
+    orphanNanites,
     naniteTemplates,
   );
   if (nanitesGroup) {
