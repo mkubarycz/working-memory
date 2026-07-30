@@ -25,7 +25,13 @@ import type {
 } from './types';
 
 function asCancellation(token: RunnerToken): vscode.CancellationToken {
-  return token as unknown as vscode.CancellationToken;
+  // `vscode.lm` needs a real CancellationToken (with an `onCancellationRequested`
+  // Event); the RunnerToken is only a boolean flag, so bridge it through a source.
+  const source = new vscode.CancellationTokenSource();
+  if (token.isCancellationRequested) {
+    source.cancel();
+  }
+  return source.token;
 }
 
 function flattenToolResult(result: vscode.LanguageModelToolResult): string {
