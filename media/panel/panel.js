@@ -570,7 +570,7 @@
     if (hasChildren) {
       twisty.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggle(node.id);
+        toggle(node.id, node);
       });
     }
     row.appendChild(twisty);
@@ -689,7 +689,7 @@
       if (node.openUri) {
         vscode.postMessage({ type: 'open', uri: node.openUri });
       } else if (hasChildren) {
-        toggle(node.id);
+        toggle(node.id, node);
       } else {
         render();
       }
@@ -727,12 +727,42 @@
     }
   }
 
-  /** @param {string} id */
-  function toggle(id) {
+  /**
+   * Collect every descendant node id under `node`, depth-first.
+   * @param {Node} node
+   * @param {string[]} out
+   */
+  function collectDescendantIds(node, out) {
+    const kids = Array.isArray(node.children) ? node.children : [];
+    for (const child of kids) {
+      if (child && typeof child.id === 'string') {
+        out.push(child.id);
+        collectDescendantIds(child, out);
+      }
+    }
+  }
+
+  /**
+   * @param {string} id
+   * @param {Node} [node] The row's node — when it's a workstream, expanding it
+   *   cascades to the WHOLE subtree so a card opens fully expanded by default.
+   */
+  function toggle(id, node) {
     if (state.expanded.has(id)) {
       state.expanded.delete(id);
     } else {
       state.expanded.add(id);
+      // Expand-everything-by-default: opening a workstream reveals all of its
+      // groups, topics (incl. nested), and nanites at once instead of leaving
+      // each one collapsed.
+      if (node && node.kind === 'workstream') {
+        /** @type {string[]} */
+        const ids = [];
+        collectDescendantIds(node, ids);
+        for (const cid of ids) {
+          state.expanded.add(cid);
+        }
+      }
     }
     persist();
     render();
