@@ -18,6 +18,7 @@ import type {
   NaniteRunInput,
   NaniteTemplate,
   Topic,
+  Workstream,
 } from '../controlPlaneClient';
 import { runNanite } from './runner';
 import type {
@@ -38,6 +39,7 @@ export const EXTENSION_HOST_RUNNER_ID = 'extension-host';
 export interface NaniteRunnerClient {
   naniteTemplateRead(input: { slug?: string; id?: string }): Promise<NaniteTemplate[]>;
   topicRead(input: { slug?: string }): Promise<Topic[]>;
+  wsRead(input: { slug?: string }): Promise<Workstream[]>;
   naniteRun(input: NaniteRunInput): Promise<Nanite>;
 }
 
@@ -53,6 +55,36 @@ export interface ExtensionHostRunnerDeps {
 
 /** Default wall-clock cap so a hung model call can't strand a nanite in Running. */
 const DEFAULT_RUN_TIMEOUT_MS = 120_000;
+
+/**
+ * Assemble the run prompt handed to the model: the owning **workstream**, the
+ * full **input topic** (title + body), and the **task** (the nanite's request,
+ * or the template's trigger phrase). The template `instructions` are the system
+ * prompt (folded into the seed by the bridge) and are NOT repeated here.
+ */
+function buildRunPrompt(ctx: {
+  workstream: Workstream | undefined;
+  topic: Topic | undefined;
+  request: string;
+  template: NaniteTemplate | null;
+}): string {
+  const parts: string[] = [];
+  if (ctx.workstream) {
+    parts.push(
+      `# Workstream\n${ctx.workstream.title} (${ctx.workstream.slug ?? '—'}) — status: ${ctx.workstream.status}`,
+    );
+  }
+  if (ctx.topic) {
+    parts.push(
+      `# Input topic\n${ctx.topic.title} (${ctx.topic.slug ?? '—'})\n\n${ctx.topic.body ?? ''}`.trim(),
+    );
+  }
+  const task = (ctx.request.trim() || ctx.template?.triggerPhrase || '').trim();
+  if (task) {
+    parts.push(`# Task\n${task}`);
+  }
+  return parts.join('\n\n');
+}
 
 /** Read `executionSettings.model` defensively (absent / foreign shape → null). */
 function modelFromSettings(settings: Record<string, unknown> | undefined): string | null {
@@ -92,7 +124,14 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     // nanite Pending rather than stranded in Running.
     const template = await loadTemplate(client, nanite.templateId);
     const [topic] = await client.topicRead({ slug: nanite.inputTopic });
-    const prompt = (topic?.body || nanite.request || template?.triggerPhrase || '').trim();
+    const [workstream] = await client.wsRead({ slug: nanite.workstream });
+    // Feed the model the full context: workstream + input topic + task.
+    const prompt = buildRunPrompt({
+      workstream,
+      topic,
+      request: nanite.request,
+      template,
+    });
 
     // Persist the visible Running transition (Pending → Running).
     await client.naniteRun({ id: nanite.id });

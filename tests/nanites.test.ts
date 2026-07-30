@@ -25,6 +25,7 @@ import type {
   NaniteRunInput,
   NaniteTemplate,
   Topic,
+  Workstream,
 } from '../src/controlPlaneClient';
 
 // ---------------------------------------------------------------------------
@@ -346,10 +347,29 @@ class FakeClient implements NaniteRunnerClient {
     }
     return input.slug === this.topic.slug ? [this.topic] : [];
   }
+  async wsRead(input: { slug?: string }): Promise<Workstream[]> {
+    const ws = fakeWorkstream();
+    return input.slug === ws.slug ? [ws] : [];
+  }
   async naniteRun(input: NaniteRunInput): Promise<Nanite> {
     this.runCalls.push(input);
     return fakeNanite();
   }
+}
+
+function fakeWorkstream(over: Partial<Workstream> = {}): Workstream {
+  return {
+    id: 'ws-id',
+    slug: 'ws',
+    title: 'Peanut Harvest',
+    status: 'progress',
+    closure: null,
+    opened_at: 0,
+    updated_at: 0,
+    closed_at: null,
+    resourceVersion: 1,
+    ...over,
+  };
 }
 
 describe('ExtensionHostNaniteRunner', () => {
@@ -364,9 +384,12 @@ describe('ExtensionHostNaniteRunner', () => {
     const result = await runner.run(fakeNanite());
 
     expect(result.status).toBe('succeeded');
-    // The runner seeded the bridge with the TEMPLATE's config and the TOPIC body.
+    // The runner seeded the bridge with the TEMPLATE's config and a prompt
+    // carrying the workstream + input topic context.
     expect(bridge.started?.instructions).toBe('Scan open topics and raise deduped alerts.');
-    expect(bridge.started?.prompt).toBe('Do the thing described here.');
+    expect(bridge.started?.prompt).toContain('Do the thing described here.'); // topic body
+    expect(bridge.started?.prompt).toContain('Topic A'); // topic title
+    expect(bridge.started?.prompt).toContain('Peanut Harvest'); // workstream context
     expect(bridge.started?.allowlist).toEqual(['wm_create_alert']);
     // The allow-listed tool was actually invoked.
     expect(bridge.invoked.map((i) => i.name)).toEqual(['wm_create_alert']);
@@ -393,7 +416,7 @@ describe('ExtensionHostNaniteRunner', () => {
     expect(result.status).toBe('succeeded');
     expect(bridge.started?.instructions).toBe('');
     expect(bridge.started?.allowlist).toEqual([]);
-    expect(bridge.started?.prompt).toBe('Do the thing described here.');
+    expect(bridge.started?.prompt).toContain('Do the thing described here.');
   });
 
   test('failed acceptance is persisted as a Failed terminal call', async () => {
