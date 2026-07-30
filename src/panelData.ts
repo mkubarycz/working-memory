@@ -76,7 +76,7 @@ export interface PanelTopicsGroup {
   /** Codicon id for the group header. */
   icon: string;
   collapsible: boolean;
-  children: PanelTopic[];
+  children: Array<PanelTopic | PanelNaniteRow>;
 }
 
 export interface PanelWorkstream {
@@ -514,8 +514,10 @@ function attachControlPlaneChildren(
 function buildNaniteRow(
   n: Nanite,
   rowIdPrefix = `topics:nanite:${n.inputTopic}`,
+  labelOverride?: string,
 ): PanelNaniteRow {
-  const label = n.request.trim() || n.templateId || `Nanite ${n.id.slice(0, 8)}`;
+  const label =
+    labelOverride ?? (n.request.trim() || n.templateId || `Nanite ${n.id.slice(0, 8)}`);
   const actions: PanelAction[] =
     n.phase === 'Pending'
       ? [
@@ -550,6 +552,61 @@ const NANITE_PHASE_ICON: Record<Nanite['phase'], string> = {
   Succeeded: 'pass',
   Failed: 'error',
 };
+
+/** Format a unix-seconds timestamp for a nanite card row. */
+function formatNaniteTimestamp(sec: number): string {
+  return new Date(sec * 1000).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/**
+ * Build the per-card "Nanites" group: the nanites owned by `wsSlug`, newest
+ * first, each labelled with its Nanite Template's friendly name + timestamp
+ * (falling back to the request/short-id when it has no template). Returns null
+ * when the workstream has no nanites.
+ */
+function buildWorkstreamNanitesGroup(
+  wsSlug: string,
+  wsId: string,
+  tab: 'active' | 'archive',
+  nanites: Nanite[],
+  templates: NaniteTemplate[],
+): PanelTopicsGroup | null {
+  if (wsSlug === '') {
+    return null;
+  }
+  const mine = nanites.filter((n) => n.workstream === wsSlug);
+  if (mine.length === 0) {
+    return null;
+  }
+  const nameByRef = new Map<string, string>();
+  for (const t of templates) {
+    nameByRef.set(t.id, t.title);
+    if (t.slug) {
+      nameByRef.set(t.slug, t.title);
+    }
+  }
+  const rows = [...mine]
+    .sort((a, b) => b.created_at - a.created_at)
+    .map((n) => {
+      const tname = n.templateId ? nameByRef.get(n.templateId) : undefined;
+      const base = tname ?? (n.request.trim() || `Nanite ${n.id.slice(0, 8)}`);
+      const label = `${base} · ${formatNaniteTimestamp(n.created_at)}`;
+      return buildNaniteRow(n, `${tab}:ws-nanite:${wsId}`, label);
+    });
+  return {
+    kind: 'topics-group',
+    id: `${tab}:ws-nanites:${wsId}`,
+    label: 'Nanites',
+    icon: 'zap',
+    collapsible: true,
+    children: rows,
+  };
+}
 
 /** Build a top-section row for a Nanite Template on the Nanites tab. */
 function buildNaniteTemplateRow(t: NaniteTemplate): PanelNaniteTemplateRow {
@@ -798,6 +855,8 @@ function buildDomainWorkstreamCard(
   topics: ControlPlaneTopic[] | undefined,
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
+  nanites: Nanite[] = [],
+  naniteTemplates: NaniteTemplate[] = [],
 ): PanelWorkstream {
   const slug = ws.slug ?? '';
   const status = ws.status;
@@ -836,6 +895,16 @@ function buildDomainWorkstreamCard(
     );
     children.push(group);
     focusedTopics = orderedTopics.filter((t) => t.focused);
+  }
+  const nanitesGroup = buildWorkstreamNanitesGroup(
+    slug,
+    ws.id,
+    tab,
+    nanites,
+    naniteTemplates,
+  );
+  if (nanitesGroup) {
+    children.push(nanitesGroup);
   }
   const memberSlugs = members
     .map((t) => t.slug ?? '')
@@ -881,6 +950,8 @@ export function buildWorkstreamPanels(input: {
   topics?: ControlPlaneTopic[];
   alerts?: ControlPlaneAlert[];
   topicTypes?: TopicType[];
+  nanites?: Nanite[];
+  naniteTemplates?: NaniteTemplate[];
   error?: string;
 }): WorkstreamPanels {
   if (!input.available) {
@@ -899,14 +970,16 @@ export function buildWorkstreamPanels(input: {
     backlog: [],
   };
   const archived: PanelWorkstream[] = [];
+  const nanites = input.nanites ?? [];
+  const naniteTemplates = input.naniteTemplates ?? [];
   for (const ws of input.workstreams) {
     if (ws.status === 'closed') {
       archived.push(
-        buildDomainWorkstreamCard(ws, 'archive', input.topics, typeMap, alerts),
+        buildDomainWorkstreamCard(ws, 'archive', input.topics, typeMap, alerts, nanites, naniteTemplates),
       );
     } else {
       buckets[sectionForStatus(ws.status)].push(
-        buildDomainWorkstreamCard(ws, 'active', input.topics, typeMap, alerts),
+        buildDomainWorkstreamCard(ws, 'active', input.topics, typeMap, alerts, nanites, naniteTemplates),
       );
     }
   }

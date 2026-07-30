@@ -224,6 +224,8 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         topics,
         alerts,
         topicTypes,
+        nanites,
+        naniteTemplates,
       });
       return {
         active: ws.active,
