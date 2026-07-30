@@ -1468,16 +1468,13 @@
     }
     row.title = t.tooltip || t.label;
     row.addEventListener('click', () => {
-      const cur = state.nanitesSelectedTemplate;
-      state.nanitesSelectedTemplate =
-        cur && cur.id === t.templateId ? null : { id: t.templateId, slug: t.slug };
-      persist();
-      render();
-    });
-    row.addEventListener('dblclick', () => {
+      // Open the template's view AND filter the nanites list below to it.
+      state.nanitesSelectedTemplate = { id: t.templateId, slug: t.slug };
       if (t.openUri) {
         vscode.postMessage({ type: 'open', uri: t.openUri });
       }
+      persist();
+      render();
     });
     return row;
   }
