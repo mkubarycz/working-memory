@@ -78,6 +78,12 @@ export interface NaniteJudgeRequest {
    * concrete actions the automation took — not just the shape of the output.
    */
   toolCalls: ToolCallOutcome[];
+  /**
+   * Whether ANY tools were available to the run (the template's allow-list was
+   * non-empty). Lets the judge tell "chose not to call tools" from "had no
+   * tools" — so it never demands tool-call evidence the run could not produce.
+   */
+  toolsAvailable: boolean;
   /** Same model family the nanite ran with (null ⇒ bridge default). */
   model: string | null;
 }

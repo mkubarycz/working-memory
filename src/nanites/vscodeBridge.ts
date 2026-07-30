@@ -250,7 +250,9 @@ export class VscodeLmBridge implements NaniteLmBridge {
               : `- ${c.name} (error: ${c.error ?? 'unknown'})`,
           )
           .join('\n')
-      : '(no tools were called)';
+      : request.toolsAvailable
+        ? '(tools were available but none were called)'
+        : '(no tools were available to this run — it could only reason over the PROMPT-provided input)';
     const prompt = [
       'You are a strict acceptance judge. You are given the PROMPT the',
       'automation ran with, the acceptance CRITERIA it must satisfy, the',
@@ -267,18 +269,21 @@ export class VscodeLmBridge implements NaniteLmBridge {
       '     describe the format or shape of the OUTPUT; describe the actions.',
       '     E.g. "Closed alert-35 because its only linked topic was closed."',
       '  3. Evaluate that response summary against the CRITERIA, given the',
-      '     PROMPT. Treat the ACTIONS trail as concrete EVIDENCE that the steps',
-      '     required by the criteria were actually performed: if the criteria',
-      '     call for retrieving or cross-referencing data (e.g. alerts and',
-      '     topics) and the ACTIONS show the corresponding list/query tool',
-      '     calls succeeded, credit that those steps were done. Do NOT lower',
-      '     confidence merely because the OUTPUT does not exhaustively prove',
-      '     every step, or because only a few tool calls were made, when the',
-      '     actions taken plausibly cover the criteria. Judge whether the work',
-      '     was done correctly, not whether it was exhaustively documented.',
-      '     Reserve low confidence for cases where the ACTIONS or OUTPUT',
-      '     actually contradict or fail the criteria; stay conservative about',
-      '     genuine failures.',
+      '     PROMPT. Judge ONLY against what the CRITERIA actually require — do',
+      '     NOT invent unstated requirements. In particular, do NOT require',
+      '     tool-call evidence unless the CRITERIA explicitly call for it: if the',
+      '     input the criteria concern is already present in the PROMPT, or no',
+      '     tools were available to this run, then reasoning over the PROMPT and',
+      '     reporting a conclusion in the OUTPUT fully satisfies a "check X"',
+      '     criterion — the absence of tool calls is NOT a deficiency. When the',
+      '     ACTIONS trail IS present, treat it as concrete evidence that those',
+      '     steps were performed; do NOT lower confidence merely because the',
+      '     OUTPUT does not exhaustively prove every step, or because only a few',
+      '     tool calls were made, when the work plausibly covers the criteria.',
+      '     Judge whether the work was done correctly, not whether it was',
+      '     exhaustively documented. Reserve low confidence for cases where the',
+      '     ACTIONS or OUTPUT actually contradict or fail the criteria; stay',
+      '     conservative about genuine failures.',
       '',
       'Keep each summary to less than a paragraph. Reply with STRICT JSON and',
       'nothing else, in exactly this shape:',

@@ -114,6 +114,7 @@ export async function runNanite(
         prompt,
         output: finalText,
         toolCalls,
+        toolsAvailable: allowlist.length > 0,
         model: options.model ?? null,
       },
       token,

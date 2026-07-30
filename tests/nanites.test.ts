@@ -161,6 +161,31 @@ describe('runNanite (core)', () => {
     expect(forbidden?.error).toMatch(/allow-list/);
   });
 
+  // bug: acceptance-evaluator-requires-tool-evidence — the judge must be told
+  // whether tools were even available, so it can't demand tool-call evidence a
+  // no-tools run could never produce.
+  test('judge is told tools WERE available when the allow-list is non-empty', async () => {
+    const bridge = new ScriptedBridge([{ text: 'done', toolCalls: [] }]);
+    await runNanite(bridge, BASE_OPTS);
+    expect(bridge.judged?.toolsAvailable).toBe(true);
+  });
+
+  test('judge is told NO tools were available when the allow-list is empty', async () => {
+    const bridge = new ScriptedBridge([
+      { text: 'Checked the topic for due-dated items; found none; no errors.', toolCalls: [] },
+    ]);
+    const result = await runNanite(bridge, {
+      ...BASE_OPTS,
+      allowlist: [],
+      acceptanceCriteria:
+        'Accept when it reports it checked the topic for due-dated tasks/reminders and hit no errors.',
+    });
+    expect(bridge.judged?.toolsAvailable).toBe(false);
+    expect(bridge.judged?.toolCalls).toEqual([]);
+    // With the default (passing) judge, an empty allow-list run still succeeds.
+    expect(result.status).toBe('succeeded');
+  });
+
   test('acceptance passes when confidence >= threshold', async () => {
     const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }], undefined, {
       judge: {
