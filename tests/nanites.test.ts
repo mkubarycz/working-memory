@@ -328,6 +328,7 @@ class FakeClient implements NaniteRunnerClient {
   constructor(
     private readonly template: NaniteTemplate | null,
     private readonly topic: Topic | null,
+    private readonly workstreamTopics: Topic[] = [],
   ) {}
   async naniteTemplateRead(input: { slug?: string; id?: string }): Promise<NaniteTemplate[]> {
     if (!this.template) {
@@ -341,7 +342,10 @@ class FakeClient implements NaniteRunnerClient {
     }
     return [this.template];
   }
-  async topicRead(input: { slug?: string }): Promise<Topic[]> {
+  async topicRead(input: { slug?: string; workstream?: string }): Promise<Topic[]> {
+    if (input.workstream !== undefined) {
+      return this.workstreamTopics.filter((t) => t.workstreams.includes(input.workstream!));
+    }
     if (!this.topic) {
       return [];
     }
@@ -417,6 +421,30 @@ describe('ExtensionHostNaniteRunner', () => {
     expect(bridge.started?.instructions).toBe('');
     expect(bridge.started?.allowlist).toEqual([]);
     expect(bridge.started?.prompt).toContain('Do the thing described here.');
+  });
+
+  test('workstream-wide nanite (no input topic) seeds a topic INDEX, not a body', async () => {
+    const topics = [
+      fakeTopic({ slug: 'topic-a', title: 'Topic A', body: 'body a' }),
+      fakeTopic({ slug: 'topic-b', title: 'Topic B', body: 'body b' }),
+    ];
+    const client = new FakeClient(fakeTemplate(), null, topics);
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    const result = await runner.run(fakeNanite({ inputTopic: '' }));
+
+    expect(result.status).toBe('succeeded');
+    // The prompt lists the workstream's topics as an INDEX (title + slug +
+    // status) and invites a ws-topic-read tool call — it does NOT inline bodies.
+    expect(bridge.started?.prompt).toContain('# Topics in this workstream');
+    expect(bridge.started?.prompt).toContain('Topic A (topic-a) — open');
+    expect(bridge.started?.prompt).toContain('Topic B (topic-b) — open');
+    expect(bridge.started?.prompt).toContain('ws-topic-read');
+    expect(bridge.started?.prompt).not.toContain('body a');
+    expect(bridge.started?.prompt).not.toContain('# Input topic');
+    // Workstream context is still present.
+    expect(bridge.started?.prompt).toContain('Peanut Harvest');
   });
 
   test('failed acceptance is persisted as a Failed terminal call', async () => {

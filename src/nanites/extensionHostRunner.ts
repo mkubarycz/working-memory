@@ -38,7 +38,7 @@ export const EXTENSION_HOST_RUNNER_ID = 'extension-host';
  */
 export interface NaniteRunnerClient {
   naniteTemplateRead(input: { slug?: string; id?: string }): Promise<NaniteTemplate[]>;
-  topicRead(input: { slug?: string }): Promise<Topic[]>;
+  topicRead(input: { slug?: string; workstream?: string }): Promise<Topic[]>;
   wsRead(input: { slug?: string }): Promise<Workstream[]>;
   naniteRun(input: NaniteRunInput): Promise<Nanite>;
 }
@@ -58,13 +58,17 @@ const DEFAULT_RUN_TIMEOUT_MS = 120_000;
 
 /**
  * Assemble the run prompt handed to the model: the owning **workstream**, the
- * full **input topic** (title + body), and the **task** (the nanite's request,
- * or the template's trigger phrase). The template `instructions` are the system
- * prompt (folded into the seed by the bridge) and are NOT repeated here.
+ * **input topic** (title + body) OR — for a workstream-wide Nanite with no
+ * single topic — an **index** of the workstream's topics (title/slug/status)
+ * the model can fetch in full via a `ws-topic-read` tool call, and the **task**
+ * (the nanite's request, or the template's trigger phrase). The template
+ * `instructions` are the system prompt (folded into the seed by the bridge) and
+ * are NOT repeated here.
  */
 function buildRunPrompt(ctx: {
   workstream: Workstream | undefined;
   topic: Topic | undefined;
+  workstreamTopics?: Topic[];
   request: string;
   template: NaniteTemplate | null;
 }): string {
@@ -77,6 +81,15 @@ function buildRunPrompt(ctx: {
   if (ctx.topic) {
     parts.push(
       `# Input topic\n${ctx.topic.title} (${ctx.topic.slug ?? '—'})\n\n${ctx.topic.body ?? ''}`.trim(),
+    );
+  } else if (ctx.workstreamTopics && ctx.workstreamTopics.length > 0) {
+    const index = ctx.workstreamTopics
+      .map((t) => `- ${t.title} (${t.slug ?? '—'}) — ${t.status}`)
+      .join('\n');
+    parts.push(
+      `# Topics in this workstream\nThis Nanite runs workstream-wide (no single input ` +
+        `topic). The workstream's topics are listed below — fetch any topic's full ` +
+        `content with a ws-topic-read tool call when you need it.\n\n${index}`,
     );
   }
   const task = (ctx.request.trim() || ctx.template?.triggerPhrase || '').trim();
@@ -123,12 +136,20 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     // Resolve inputs BEFORE flipping the lifecycle, so a bad read leaves the
     // nanite Pending rather than stranded in Running.
     const template = await loadTemplate(client, nanite.templateId);
-    const [topic] = await client.topicRead({ slug: nanite.inputTopic });
     const [workstream] = await client.wsRead({ slug: nanite.workstream });
-    // Feed the model the full context: workstream + input topic + task.
+    // With an input topic, load it; workstream-wide (no topic) → load the
+    // topic index so the model knows what's there and can tool-call for content.
+    const hasTopic = nanite.inputTopic.trim() !== '';
+    const topic = hasTopic
+      ? (await client.topicRead({ slug: nanite.inputTopic }))[0]
+      : undefined;
+    const workstreamTopics = hasTopic
+      ? []
+      : await client.topicRead({ workstream: nanite.workstream });
     const prompt = buildRunPrompt({
       workstream,
       topic,
+      workstreamTopics,
       request: nanite.request,
       template,
     });

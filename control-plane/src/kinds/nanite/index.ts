@@ -10,9 +10,10 @@
  * store-assigned uuid `metadata.id`), like the Alert kind.
  *
  * Immutability: `workstream` + `inputTopic` are set at creation and never
- * edited — there is intentionally NO generic update tool. Only `ws-nanite-run`
- * mutates the lifecycle (`phase` + timings). `spec.phase` is an AUTHORED-style
- * lifecycle field (like Topic/Alert `status`) rather than the controller-owned
+ * edited — there is intentionally NO generic update tool. `workstream` is
+ * REQUIRED; `inputTopic` is OPTIONAL — a Nanite may run workstream-wide with no
+ * single input topic. Only `ws-nanite-run` mutates the lifecycle (`phase` +
+ * timings). `spec.phase` is an AUTHORED-style lifecycle field (like Topic/Alert
  * envelope status, so the whole surface flows through the well-trodden
  * spec-write path. The real headless engine is out of scope (feature
  * `nanite-headless-runtime`); `ws-nanite-run` is a synchronous stub.
@@ -42,9 +43,9 @@ const nanite: KindModule = {
         templateId: z.string().nullable().default(null),
         // Owning workstream slug — REQUIRED, immutable after creation.
         workstream: z.string().min(1, 'a nanite must belong to a workstream'),
-        // Input topic slug — REQUIRED, immutable after creation. The topic IS
-        // the input.
-        inputTopic: z.string().min(1, 'a nanite must have an input topic'),
+        // Input topic slug — OPTIONAL, immutable after creation. When set, the
+        // topic IS the input; when empty the Nanite runs workstream-wide.
+        inputTopic: z.string().default(''),
         // Free-text request/prompt for this execution.
         request: z.string().default(''),
         // Lifecycle phase — AUTHORED-style spec field (mirrors Topic/Alert

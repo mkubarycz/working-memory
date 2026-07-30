@@ -512,7 +512,7 @@ export interface NaniteReadInput {
 
 export interface NaniteCreateInput {
   workstream: string;
-  inputTopic: string;
+  inputTopic?: string;
   templateId?: string;
   request?: string;
 }
@@ -1446,8 +1446,10 @@ export class ControlPlaneClient {
   async naniteCreate(input: NaniteCreateInput): Promise<Nanite> {
     const args: Record<string, unknown> = {
       workstream: input.workstream,
-      inputTopic: input.inputTopic,
     };
+    if (input.inputTopic !== undefined) {
+      args.inputTopic = input.inputTopic;
+    }
     if (input.templateId !== undefined) {
       args.templateId = input.templateId;
     }

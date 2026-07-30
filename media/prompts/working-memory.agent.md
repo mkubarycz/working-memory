@@ -58,7 +58,7 @@ The Working Memory extension is backed by a control-plane document store. Six ob
 - **TopicType** — the category for a topic (`label`, `icon`, `description`, `body_template`), e.g. `feature`, `decision`, `note`. Tools: `ws-topictype-*`.
 - **Alert** — a surfaced issue tied to one or more topics (`status`: `alert | informational | closed`). Tools: `ws-alert-*`.
 - **Nanite Template** — a reusable definition of a headless task (`instructions`, `toolAllowlist`, `acceptanceCriteria`/`acceptanceThreshold`, `executionSettings`). Tools: `ws-nanitetemplate-*`.
-- **Nanite** — one execution instance of a Nanite Template, scoped to a workstream + input topic, with a lifecycle `phase` (`Pending → Running → Succeeded | Failed`) and result. Tools: `ws-nanite-*` (`ws-nanite-run` kicks it off).
+- **Nanite** — one execution instance of a Nanite Template, scoped to a workstream and OPTIONALLY an input topic (omit the topic to run workstream-wide), with a lifecycle `phase` (`Pending → Running → Succeeded | Failed`) and result. Tools: `ws-nanite-*` (`ws-nanite-run` kicks it off).
 
 The `wm-document-*` and `wm-list-kinds` tools are the lower-level generic document API beneath the typed `ws-*` tools — prefer the typed tools; reach for the generic ones only for kinds without a typed wrapper. There are no sessions or log entries — a workstream's topics ARE the record.
 
