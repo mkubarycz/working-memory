@@ -73,9 +73,13 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           .nullable()
           .optional()
           .describe('Approximate token usage, loop + judge (finishing call).'),
+        reset: z
+          .boolean()
+          .optional()
+          .describe('Reset the nanite back to Pending from ANY phase (clears timings + result) so it can be re-run. Use to clear a stuck Running nanite.'),
       },
     },
-    async ({ id, outcome, error, output, acceptance, toolCalls, tokens }) => {
+    async ({ id, outcome, error, output, acceptance, toolCalls, tokens, reset }) => {
       const existing = store.getDocument({ id, kind: NANITE_KIND });
       if (!existing || existing.kind !== NANITE_KIND) {
         return asError(`Unknown nanite id: "${id}". No live nanite with that id.`);
@@ -84,7 +88,20 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
       // Advance ONE step per call so the Running state is observable in the
       // panel: Pending → Running (start), then Running → terminal (finish).
       let mergedSpec: Record<string, unknown>;
-      if (phase === 'Pending') {
+      if (reset) {
+        // Return to Pending from any phase (clears a stuck Running nanite).
+        mergedSpec = {
+          ...existing.spec,
+          phase: 'Pending',
+          startedAt: null,
+          endedAt: null,
+          error: '',
+          output: '',
+          acceptance: null,
+          toolCalls: [],
+          tokens: null,
+        };
+      } else if (phase === 'Pending') {
         mergedSpec = {
           ...existing.spec,
           phase: 'Running',

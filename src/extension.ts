@@ -839,6 +839,36 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.commands.registerCommand(
+      'workingMemory.nanite.reset',
+      async (arg?: { id?: string }) => {
+        const id = arg?.id?.trim();
+        if (!id) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Reset Nanite requires a nanite id.',
+          );
+          return;
+        }
+        if (!controlPlaneClient) {
+          vscode.window.showErrorMessage(
+            'Working Memory: cannot reset nanite — control plane is not running.',
+          );
+          return;
+        }
+        try {
+          await controlPlaneClient.naniteRun({ id, reset: true });
+          refresh();
+          vscode.window.showInformationMessage(
+            `Working Memory: nanite ${id.slice(0, 8)} reset to Pending.`,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to reset nanite — ${message}`,
+          );
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
       'working-memory.setWorkstreamSection',
       async (arg?: { slug?: string; section?: string }) => {
         const slug = arg?.slug;

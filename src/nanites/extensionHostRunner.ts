@@ -46,8 +46,13 @@ export interface ExtensionHostRunnerDeps {
   bridge: NaniteLmBridge;
   /** Safety cap on model turns (forwarded to the core). */
   maxIterations?: number;
+  /** Wall-clock cap for a run before it's forced to Failed. Default 120s. */
+  timeoutMs?: number;
   token?: RunnerToken;
 }
+
+/** Default wall-clock cap so a hung model call can't strand a nanite in Running. */
+const DEFAULT_RUN_TIMEOUT_MS = 120_000;
 
 /** Read `executionSettings.model` defensively (absent / foreign shape → null). */
 function modelFromSettings(settings: Record<string, unknown> | undefined): string | null {
@@ -92,28 +97,66 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     // Persist the visible Running transition (Pending → Running).
     await client.naniteRun({ id: nanite.id });
 
-    const result = await runNanite(bridge, {
-      instructions: template?.instructions ?? '',
-      prompt,
-      allowlist: template?.toolAllowlist ?? [],
-      acceptanceCriteria: template?.acceptanceCriteria ?? '',
-      acceptanceThreshold: template?.acceptanceThreshold ?? 60,
-      model: modelFromSettings(template?.executionSettings),
-      maxIterations: this.deps.maxIterations,
-      token: this.deps.token,
-    });
+    // Once Running, ANY outcome — success, failure, or a hung model call — must
+    // land a terminal phase, or the nanite strands in Running forever. Race the
+    // pure run against a wall-clock timeout (which also cancels the loop).
+    const timeoutMs = this.deps.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+    const cancel: RunnerToken & { isCancellationRequested: boolean } = {
+      isCancellationRequested: this.deps.token?.isCancellationRequested ?? false,
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await new Promise<NaniteRunResult>((resolve, reject) => {
+        timer = setTimeout(() => {
+          cancel.isCancellationRequested = true;
+          reject(
+            new Error(`nanite run timed out after ${Math.round(timeoutMs / 1000)}s`),
+          );
+        }, timeoutMs);
+        runNanite(bridge, {
+          instructions: template?.instructions ?? '',
+          prompt,
+          allowlist: template?.toolAllowlist ?? [],
+          acceptanceCriteria: template?.acceptanceCriteria ?? '',
+          acceptanceThreshold: template?.acceptanceThreshold ?? 60,
+          model: modelFromSettings(template?.executionSettings),
+          maxIterations: this.deps.maxIterations,
+          token: cancel,
+        }).then(resolve, reject);
+      });
 
-    // Persist the terminal phase + result (Running → Succeeded | Failed).
-    await client.naniteRun({
-      id: nanite.id,
-      outcome: result.status,
-      error: result.error,
-      output: result.output,
-      acceptance: result.acceptance ?? null,
-      toolCalls: result.toolCalls,
-      tokens: result.tokens ?? null,
-    });
-
-    return result;
+      // Persist the terminal phase + result (Running → Succeeded | Failed).
+      await client.naniteRun({
+        id: nanite.id,
+        outcome: result.status,
+        error: result.error,
+        output: result.output,
+        acceptance: result.acceptance ?? null,
+        toolCalls: result.toolCalls,
+        tokens: result.tokens ?? null,
+      });
+      return result;
+    } catch (err) {
+      // Timeout or an unexpected throw: force the nanite to Failed so it is
+      // never stranded in Running. Best-effort persist.
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await client.naniteRun({ id: nanite.id, outcome: 'failed', error: message });
+      } catch {
+        // ignore — the run already failed; surfacing the original error matters most.
+      }
+      return {
+        status: 'failed',
+        output: '',
+        toolCalls: [],
+        iterations: 0,
+        hitIterationCap: false,
+        error: message,
+      };
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
   }
 }

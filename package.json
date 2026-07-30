@@ -141,6 +141,11 @@
         "command": "workingMemory.nanite.run",
         "title": "Run Nanite",
         "category": "Working Memory"
+      },
+      {
+        "command": "workingMemory.nanite.reset",
+        "title": "Reset Nanite to Pending",
+        "category": "Working Memory"
       }
     ],
     "menus": {

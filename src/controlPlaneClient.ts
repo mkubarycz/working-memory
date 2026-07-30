@@ -527,6 +527,8 @@ export interface NaniteRunInput {
   toolCalls?: NaniteToolCallOutcome[];
   /** Approximate token usage, loop + judge (finishing call). */
   tokens?: NaniteTokenUsage | null;
+  /** Reset the nanite back to Pending from any phase (clears a stuck run). */
+  reset?: boolean;
 }
 
 export interface NaniteDeleteInput {
@@ -1471,6 +1473,9 @@ export class ControlPlaneClient {
     }
     if (input.tokens !== undefined) {
       args.tokens = input.tokens;
+    }
+    if (input.reset !== undefined) {
+      args.reset = input.reset;
     }
     return this.parseNanite(await this.callDomainTool('ws-nanite-run', args));
   }
