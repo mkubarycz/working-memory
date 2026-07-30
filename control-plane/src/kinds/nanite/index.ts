@@ -56,6 +56,7 @@ const nanite: KindModule = {
         error: z.string().default(''),
         // Run RESULT (written by ws-nanite-run's finishing call). The real
         // engine runs in the extension host; these carry its output back.
+        prompt: z.string().default(''),
         output: z.string().default(''),
         acceptance: z
           .object({

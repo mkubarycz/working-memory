@@ -488,6 +488,8 @@ export interface Nanite {
   startedAt: number | null;
   endedAt: number | null;
   error: string;
+  /** The full request text actually sent to the model (instructions + context). */
+  prompt: string;
   /** The run's verbatim final text (empty until it finishes). */
   output: string;
   /** The acceptance verdict (null until the run is judged). */
@@ -519,6 +521,8 @@ export interface NaniteRunInput {
   id: string;
   outcome?: 'succeeded' | 'failed';
   error?: string;
+  /** The full request text sent to the model, instructions + context (finishing call). */
+  prompt?: string;
   /** The run's verbatim final text (finishing call). */
   output?: string;
   /** The acceptance-judge verdict (finishing call). */
@@ -1461,6 +1465,9 @@ export class ControlPlaneClient {
     }
     if (input.error !== undefined) {
       args.error = input.error;
+    }
+    if (input.prompt !== undefined) {
+      args.prompt = input.prompt;
     }
     if (input.output !== undefined) {
       args.output = input.output;

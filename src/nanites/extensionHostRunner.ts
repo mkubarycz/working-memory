@@ -132,6 +132,10 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
       request: nanite.request,
       template,
     });
+    // The verbatim request the model receives = system instructions + the
+    // composed context prompt. Persist it so the run is auditable end-to-end.
+    const instructions = template?.instructions ?? '';
+    const fullRequest = instructions ? `${instructions}\n\n---\n\n${prompt}` : prompt;
 
     // Persist the visible Running transition (Pending → Running).
     await client.naniteRun({ id: nanite.id });
@@ -169,6 +173,7 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
         id: nanite.id,
         outcome: result.status,
         error: result.error,
+        prompt: fullRequest,
         output: result.output,
         acceptance: result.acceptance ?? null,
         toolCalls: result.toolCalls,
@@ -180,7 +185,7 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
       // never stranded in Running. Best-effort persist.
       const message = err instanceof Error ? err.message : String(err);
       try {
-        await client.naniteRun({ id: nanite.id, outcome: 'failed', error: message });
+        await client.naniteRun({ id: nanite.id, outcome: 'failed', error: message, prompt: fullRequest });
       } catch {
         // ignore — the run already failed; surfacing the original error matters most.
       }

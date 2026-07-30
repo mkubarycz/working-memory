@@ -40,6 +40,10 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           .optional()
           .describe("Terminal phase to land in (default 'succeeded')."),
         error: z.string().optional().describe('Failure message (used when outcome is failed).'),
+        prompt: z
+          .string()
+          .optional()
+          .describe('The full request text sent to the model, instructions + context (finishing call).'),
         output: z
           .string()
           .optional()
@@ -79,7 +83,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           .describe('Reset the nanite back to Pending from ANY phase (clears timings + result) so it can be re-run. Use to clear a stuck Running nanite.'),
       },
     },
-    async ({ id, outcome, error, output, acceptance, toolCalls, tokens, reset }) => {
+    async ({ id, outcome, error, prompt, output, acceptance, toolCalls, tokens, reset }) => {
       const existing = store.getDocument({ id, kind: NANITE_KIND });
       if (!existing || existing.kind !== NANITE_KIND) {
         return asError(`Unknown nanite id: "${id}". No live nanite with that id.`);
@@ -117,6 +121,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           error: outcome === 'failed' ? (error ?? 'Nanite failed.') : '',
           // Persist the run result carried by the finishing call. Absent fields
           // fall back to whatever the spec already held (defaults on create).
+          ...(prompt !== undefined ? { prompt } : {}),
           ...(output !== undefined ? { output } : {}),
           ...(acceptance !== undefined ? { acceptance } : {}),
           ...(toolCalls !== undefined ? { toolCalls } : {}),

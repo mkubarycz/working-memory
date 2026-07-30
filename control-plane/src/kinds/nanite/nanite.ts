@@ -80,6 +80,8 @@ export interface INanite {
   startedAt: number | null;
   endedAt: number | null;
   error: string;
+  /** The full request text actually sent to the model (instructions + context). */
+  prompt: string;
   /** The run's verbatim final text (empty until it finishes). */
   output: string;
   /** The acceptance verdict (null until the run is judged). */
@@ -105,6 +107,7 @@ export class Nanite implements INanite {
   startedAt: number | null;
   endedAt: number | null;
   error: string;
+  prompt: string;
   output: string;
   acceptance: NaniteAcceptance | null;
   toolCalls: NaniteToolCallOutcome[];
@@ -125,6 +128,7 @@ export class Nanite implements INanite {
     this.startedAt = typeof spec.startedAt === 'number' ? spec.startedAt : null;
     this.endedAt = typeof spec.endedAt === 'number' ? spec.endedAt : null;
     this.error = typeof spec.error === 'string' ? spec.error : '';
+    this.prompt = typeof spec.prompt === 'string' ? spec.prompt : '';
     this.output = typeof spec.output === 'string' ? spec.output : '';
     this.acceptance = readAcceptance(spec.acceptance);
     this.toolCalls = readToolCalls(spec.toolCalls);

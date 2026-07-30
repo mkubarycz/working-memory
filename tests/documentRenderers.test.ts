@@ -8,6 +8,7 @@ import { renderWorkstreamDocument } from '../src/documentRenderers/workstream';
 import { renderTopicDocument } from '../src/documentRenderers/topic';
 import { renderTopicTypeDocument } from '../src/documentRenderers/topictype';
 import { renderAlertDocument } from '../src/documentRenderers/alert';
+import { renderNaniteDocument } from '../src/documentRenderers/nanite';
 import { extractTopicBody } from '../src/editableRegions';
 import {
   extractTopicTypeBodyTemplate,
@@ -306,6 +307,45 @@ describe('renderAlertDocument', () => {
       }),
     );
     expect(md).toContain('# Alert: First line');
+  });
+});
+
+describe('renderNaniteDocument', () => {
+  it('renders collapsed Request + Response sections ABOVE the envelope', () => {
+    const md = renderNaniteDocument(
+      makeEnvelope('Nanite', {
+        phase: 'Succeeded',
+        prompt: 'You are a helper.\n\n---\n\n# Task\ndo the thing',
+        output: 'here is the answer',
+      }),
+    );
+    expect(md).toContain('<details>');
+    expect(md).toContain('<summary>Request — full prompt sent to the model</summary>');
+    expect(md).toContain('<summary>Response — model output</summary>');
+    expect(md).toContain('You are a helper.');
+    expect(md).toContain('here is the answer');
+    expect(md).toContain('`phase`: Succeeded');
+    expect(md.indexOf('<summary>Request')).toBeLessThan(md.indexOf('## Envelope'));
+    expect(md.indexOf('<summary>Response')).toBeLessThan(md.indexOf('## Envelope'));
+    expect(md).toContain('## Envelope');
+    expect(md).toContain('```json');
+  });
+
+  it('omits a section whose field is empty', () => {
+    const md = renderNaniteDocument(
+      makeEnvelope('Nanite', { phase: 'Pending', prompt: '', output: '' }),
+    );
+    expect(md).not.toContain('<summary>Request');
+    expect(md).not.toContain('<summary>Response');
+    expect(md).toContain('# Nanite: doc-1');
+    expect(md).toContain('`phase`: Pending');
+  });
+
+  it('is wired into the dispatcher for the Nanite kind', () => {
+    const md = renderDocumentByKind(
+      makeEnvelope('Nanite', { phase: 'Running', prompt: 'req', output: '' }),
+    );
+    expect(md).toContain('<summary>Request — full prompt sent to the model</summary>');
   });
 });
 
