@@ -54,7 +54,39 @@ function collapsedSection(summary: string, body: string | null | undefined): str
   ].join('\n');
 }
 
-export function renderNaniteDocument(env: DocumentEnvelope): string {
+/** Optional hints the content provider resolves from the OWNING template. */
+export interface NaniteRenderHints {
+  /** Whether the owning template permits unattended (no-human) dispatch. */
+  allowRunWithoutHuman?: boolean;
+}
+
+/** Plain-language status + next action for a phase, so a reader can tell what
+ *  (if anything) they need to do. */
+function statusLine(phase: string, hints: NaniteRenderHints): string {
+  switch (phase) {
+    case 'Pending':
+      return hints.allowRunWithoutHuman
+        ? '⏳ **Awaiting dispatch** — not queued yet. This template allows unattended runs, so an ' +
+            'agent or parent nanite can enqueue it; or press **Run** to start it now.'
+        : '⏳ **Awaiting your approval** — not queued yet. Press **Run** to queue it for the ' +
+            'dispatcher. (Nothing will run it until you do.)';
+    case 'Queued':
+      return '🕒 **Queued** — waiting for a dispatcher slot; it will start automatically (oldest-first).';
+    case 'Running':
+      return '▶️ **Running now.**';
+    case 'Succeeded':
+      return '✅ **Succeeded** — see Acceptance below.';
+    case 'Failed':
+      return '❌ **Failed** — see `error` below.';
+    default:
+      return `**${phase}**`;
+  }
+}
+
+export function renderNaniteDocument(
+  env: DocumentEnvelope,
+  hints: NaniteRenderHints = {},
+): string {
   const spec = env.spec ?? {};
   const phase = asStr(spec.phase) ?? 'Pending';
   const templateId = asStr(spec.templateId);
@@ -100,6 +132,10 @@ export function renderNaniteDocument(env: DocumentEnvelope): string {
     `# Nanite: ${templateId ?? env.metadata.id}`,
     '',
     ...metadataSection(env),
+    '',
+    '## Status',
+    '',
+    statusLine(phase, hints),
     '',
     '## Overview',
     '',

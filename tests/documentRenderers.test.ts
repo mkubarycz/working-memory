@@ -357,6 +357,27 @@ describe('renderNaniteDocument', () => {
     );
     expect(md).toContain('<summary>Request — full prompt sent to the model</summary>');
   });
+
+  it('explains a Pending nanite as awaiting the user by default', () => {
+    const md = renderNaniteDocument(makeEnvelope('Nanite', { phase: 'Pending' }));
+    expect(md).toContain('## Status');
+    expect(md).toContain('Awaiting your approval');
+    expect(md).toContain('**Run**');
+  });
+
+  it('explains a Pending nanite as awaiting dispatch when the template allows unattended', () => {
+    const md = renderNaniteDocument(makeEnvelope('Nanite', { phase: 'Pending' }), {
+      allowRunWithoutHuman: true,
+    });
+    expect(md).toContain('Awaiting dispatch');
+    expect(md).not.toContain('Awaiting your approval');
+  });
+
+  it('gives a plain-language status for Queued', () => {
+    const md = renderNaniteDocument(makeEnvelope('Nanite', { phase: 'Queued' }));
+    expect(md).toContain('**Queued**');
+    expect(md).toContain('start automatically');
+  });
 });
 
 describe('renderDocumentByKind (dispatcher)', () => {

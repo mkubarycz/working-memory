@@ -544,12 +544,15 @@ function buildNaniteRow(
       : n.phase === 'Queued' || n.phase === 'Running'
         ? [{ ...resetAction, title: 'Cancel (Reset to Pending)' }]
         : [restartAction, resetAction];
+  // At-a-glance status hover so a reader can tell what (if anything) a phase
+  // is waiting on — Pending especially reads as "waiting for you to Run it".
+  const phaseHint = NANITE_PHASE_HINT[n.phase];
   return {
     kind: 'nanite',
     id: `${rowIdPrefix}:${n.id}`,
     label,
     description: n.phase,
-    tooltip: `${label} — ${n.phase}`,
+    tooltip: `${label} — ${n.phase}${phaseHint ? `\n${phaseHint}` : ''}`,
     icon: NANITE_PHASE_ICON[n.phase],
     // Generic envelope route — a dedicated `/nanite/` renderer is a next step.
     openUri: `working-memory:/document/${n.id}.md`,
@@ -559,6 +562,15 @@ function buildNaniteRow(
     actions,
   };
 }
+
+/** One-line "what is this waiting on" hint per phase (panel row tooltip). */
+const NANITE_PHASE_HINT: Record<Nanite['phase'], string> = {
+  Pending: 'Waiting for you — press Run to queue it.',
+  Queued: 'Queued — the dispatcher will start it automatically.',
+  Running: 'Running now.',
+  Succeeded: 'Finished — succeeded.',
+  Failed: 'Finished — failed; open it for the error.',
+};
 
 /** Codicon per Nanite lifecycle phase. */
 const NANITE_PHASE_ICON: Record<Nanite['phase'], string> = {
