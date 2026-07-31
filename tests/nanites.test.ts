@@ -5,6 +5,7 @@ import {
   type NaniteRunnerClient,
 } from '../src/nanites/extensionHostRunner';
 import { matchesToolName, resolveToolPlan } from '../src/nanites/toolNames';
+import { stripPrivilegedNaniteArgs } from '../src/nanites/toolNames';
 import {
   NaniteRunnerRegistry,
   providerFromSettings,
@@ -684,6 +685,22 @@ describe('matchesToolName', () => {
     expect(matchesToolName('mcp_working-memor_ws-topic-create', 'ws-topic-read')).toBe(false);
     // A suffix without the `_` boundary must not match (avoids `x-topic-read`).
     expect(matchesToolName('ws-subtopic-read', 'topic-read')).toBe(false);
+  });
+});
+
+describe('stripPrivilegedNaniteArgs', () => {
+  test('removes approved + begin from a ws-nanite-run call (clean or prefixed)', () => {
+    expect(
+      stripPrivilegedNaniteArgs('ws-nanite-run', { id: 'n1', approved: true, begin: true, reset: true }),
+    ).toEqual({ id: 'n1', reset: true });
+    expect(
+      stripPrivilegedNaniteArgs('mcp_working-memor_ws-nanite-run', { id: 'n1', approved: true }),
+    ).toEqual({ id: 'n1' });
+  });
+
+  test('leaves other tools untouched', () => {
+    const input = { id: 'n1', approved: true };
+    expect(stripPrivilegedNaniteArgs('ws-topic-read', input)).toBe(input);
   });
 });
 

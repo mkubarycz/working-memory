@@ -23,7 +23,7 @@ import type {
   NaniteTokenUsage,
   RunnerToken,
 } from './types';
-import { matchesToolName, resolveToolPlan } from './toolNames';
+import { matchesToolName, resolveToolPlan, stripPrivilegedNaniteArgs } from './toolNames';
 
 function asCancellation(token: RunnerToken): vscode.CancellationToken {
   // `vscode.lm` needs a real CancellationToken (with an `onCancellationRequested`
@@ -255,7 +255,9 @@ export class VscodeLmBridge implements NaniteLmBridge {
     const result = await vscode.lm.invokeTool(
       this.resolveRegisteredToolName(name),
       {
-        input: (input ?? {}) as object,
+        // A nanite must not self-approve or force-start work: strip the
+        // extension-host-owned `approved`/`begin` trust signals.
+        input: (stripPrivilegedNaniteArgs(name, input ?? {}) ?? {}) as object,
         toolInvocationToken: undefined,
       } as vscode.LanguageModelToolInvocationOptions<object>,
       asCancellation(token),

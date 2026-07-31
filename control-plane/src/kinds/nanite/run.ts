@@ -51,7 +51,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
         approved: z
           .boolean()
           .optional()
-          .describe('Human approval to enqueue a Pending nanite (set by the Run action). Bypasses the template gate.'),
+          .describe('Reserved for the extension-host Run action (human approval). Do NOT set this from a nanite or agent tool call — nanite-originated calls have it stripped, and it does not grant unattended dispatch (use the template allowRunWithoutHuman flag for that).'),
         begin: z
           .boolean()
           .optional()

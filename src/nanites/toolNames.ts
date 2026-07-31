@@ -13,6 +13,25 @@ export function matchesToolName(registeredName: string, entry: string): boolean 
   return registeredName === entry || registeredName.endsWith(`_${entry}`);
 }
 
+/**
+ * Strip PRIVILEGED arguments a nanite must never set on its own tool calls.
+ * `ws-nanite-run`'s `approved` (human approval) and `begin` (engine start) are
+ * trust signals owned by the extension host / dispatcher — if a nanite could
+ * pass them it would self-approve or force-start work, defeating the
+ * `allowRunWithoutHuman` gate. Every nanite tool call is sanitized through this
+ * before dispatch. Non-nanite-run tools pass through untouched. Pure.
+ */
+export function stripPrivilegedNaniteArgs(toolName: string, input: unknown): unknown {
+  const isNaniteRun = toolName === 'ws-nanite-run' || toolName.endsWith('_ws-nanite-run');
+  if (!isNaniteRun || !input || typeof input !== 'object') {
+    return input;
+  }
+  const rest = { ...(input as Record<string, unknown>) };
+  delete rest.approved;
+  delete rest.begin;
+  return rest;
+}
+
 /** The allow-list entry `*` grants every available tool (auditable opt-in). */
 export const ALLOW_ALL = '*';
 
