@@ -361,16 +361,21 @@ describe('renderNaniteDocument', () => {
   it('explains a Pending nanite as awaiting the user by default', () => {
     const md = renderNaniteDocument(makeEnvelope('Nanite', { phase: 'Pending' }));
     expect(md).toContain('## Status');
-    expect(md).toContain('Awaiting your approval');
+    expect(md).toContain('Waiting for approval');
+    expect(md).toContain('will not run on its own');
     expect(md).toContain('**Run**');
+    // Clickable Approve & Run deep link.
+    expect(md).toContain('vscode://kubarycz.working-memory/nanite/doc-1/run');
+    expect(md).not.toContain('allows unattended runs');
   });
 
-  it('explains a Pending nanite as awaiting dispatch when the template allows unattended', () => {
+  it('notes unattended runs on a Pending nanite but still says it will not run on its own', () => {
     const md = renderNaniteDocument(makeEnvelope('Nanite', { phase: 'Pending' }), {
       allowRunWithoutHuman: true,
     });
-    expect(md).toContain('Awaiting dispatch');
-    expect(md).not.toContain('Awaiting your approval');
+    expect(md).toContain('Waiting for approval');
+    expect(md).toContain('will not run on its own');
+    expect(md).toContain('allows unattended runs');
   });
 
   it('gives a plain-language status for Queued', () => {

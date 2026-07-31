@@ -18,7 +18,9 @@ test('updateToLatest downloads the vsix from a tagged GitHub Release', () => {
 test('updateToLatest no longer pulls from the CI run artifact', () => {
   const src = readFileSync(extensionTsPath, 'utf8');
 
-  expect(src).not.toContain("'run'");
+  // Guard the actual anti-pattern (`gh run download …`), not any occurrence of
+  // the word 'run' — unrelated code (e.g. nanite `.../run` deep links) is fine.
+  expect(src).not.toMatch(/['"]run['"],\s*['"]download['"]/);
   expect(src).not.toContain('working-memory-vsix');
   expect(src).not.toMatch(/['"]--name['"]/);
 });

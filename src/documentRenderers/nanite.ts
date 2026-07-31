@@ -65,11 +65,15 @@ export interface NaniteRenderHints {
 function statusLine(phase: string, hints: NaniteRenderHints): string {
   switch (phase) {
     case 'Pending':
+      // A Pending nanite NEVER runs on its own — something must enqueue it. Lead
+      // with the human action so the reader knows they're the blocker; the
+      // unattended note is secondary and must not imply passive auto-dispatch.
       return hints.allowRunWithoutHuman
-        ? '⏳ **Awaiting dispatch** — not queued yet. This template allows unattended runs, so an ' +
-            'agent or parent nanite can enqueue it; or press **Run** to start it now.'
-        : '⏳ **Awaiting your approval** — not queued yet. Press **Run** to queue it for the ' +
-            'dispatcher. (Nothing will run it until you do.)';
+        ? '⏳ **Waiting for approval** — this nanite will not run on its own. Press **Run** ' +
+            'to approve and queue it. (This template also allows unattended runs, so an agent ' +
+            'or parent nanite can enqueue it.)'
+        : '⏳ **Waiting for approval** — this nanite will not run on its own. Press **Run** ' +
+            'to approve and queue it.';
     case 'Queued':
       return '🕒 **Queued** — waiting for a dispatcher slot; it will start automatically (oldest-first).';
     case 'Running':
@@ -136,6 +140,14 @@ export function renderNaniteDocument(
     '## Status',
     '',
     statusLine(phase, hints),
+    // A clickable Approve action for Pending (markdown preview strips command:
+    // links, so route through the extension's nanite deep-link handler).
+    ...(phase === 'Pending'
+      ? [
+          '',
+          `[▶ Approve & Run this nanite](vscode://kubarycz.working-memory/nanite/${encodeURIComponent(env.metadata.id)}/run)`,
+        ]
+      : []),
     '',
     '## Overview',
     '',

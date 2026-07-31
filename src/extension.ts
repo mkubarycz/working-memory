@@ -1052,6 +1052,20 @@ export function activate(context: vscode.ExtensionContext): void {
           void setControlPlaneAlertStatus(rawId, status);
           return;
         }
+        // Nanite action deep links: nanite/<id>/run — the doc's "Approve & Run"
+        // button (markdown preview strips command: links). Routes through the
+        // Run command, which is the human-approval enqueue.
+        if (parts.length === 3 && parts[0] === 'nanite') {
+          const rawId = parts[1];
+          if (parts[2] === 'run') {
+            void vscode.commands.executeCommand('workingMemory.nanite.run', { id: rawId });
+            return;
+          }
+          vscode.window.showErrorMessage(
+            `Working Memory: unrecognized deep link: ${uri.toString()}`,
+          );
+          return;
+        }
         if (parts.length !== 3 || parts[0] !== 'open') {
           vscode.window.showErrorMessage(
             `Working Memory: unrecognized deep link: ${uri.toString()}`,

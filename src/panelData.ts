@@ -520,7 +520,7 @@ function buildNaniteRow(
     labelOverride ?? (n.request.trim() || n.templateId || `Nanite ${n.id.slice(0, 8)}`);
   const runAction: PanelAction = {
     command: 'workingMemory.nanite.run',
-    title: 'Run Nanite',
+    title: 'Approve & Run',
     icon: 'play',
     args: [{ id: n.id }],
   };
@@ -565,7 +565,7 @@ function buildNaniteRow(
 
 /** One-line "what is this waiting on" hint per phase (panel row tooltip). */
 const NANITE_PHASE_HINT: Record<Nanite['phase'], string> = {
-  Pending: 'Waiting for you — press Run to queue it.',
+  Pending: 'Waiting for approval — it will not run on its own; press Run to approve & queue it.',
   Queued: 'Queued — the dispatcher will start it automatically.',
   Running: 'Running now.',
   Succeeded: 'Finished — succeeded.',
