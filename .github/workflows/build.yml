@@ -35,7 +35,7 @@ jobs:
         run: npm test
 
       - name: Package VSIX
-        run: npx vsce package --allow-missing-repository --no-dependencies
+        run: npx vsce package --allow-missing-repository
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
