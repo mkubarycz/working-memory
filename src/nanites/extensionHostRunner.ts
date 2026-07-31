@@ -54,6 +54,8 @@ export interface ExtensionHostRunnerDeps {
   readTimeoutMs?: number;
   /** Cap for each control-plane WRITE (lifecycle persist). Default 15s. */
   persistTimeoutMs?: number;
+  /** Clock for the run prompt's Context section (injectable for tests). */
+  now?: () => Date;
   token?: RunnerToken;
 }
 
@@ -122,8 +124,13 @@ function buildRunPrompt(ctx: {
   workstreamTopics?: Topic[];
   request: string;
   template: NaniteTemplate | null;
+  now: Date;
 }): string {
-  const parts: string[] = [];
+  // Ambient context every run gets for free (no tool call needed). Starts with
+  // the current time so a nanite can reason about "due today" etc. Extend later.
+  const parts: string[] = [
+    `# Context\nCurrent time: ${ctx.now.toISOString()} (local: ${ctx.now.toString()})`,
+  ];
   if (ctx.workstream) {
     parts.push(
       `# Workstream\n${ctx.workstream.title} (${ctx.workstream.slug ?? '—'}) — status: ${ctx.workstream.status}`,
@@ -256,6 +263,7 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
       workstreamTopics,
       request: nanite.request,
       template,
+      now: this.deps.now?.() ?? new Date(),
     });
     // The verbatim request the model receives = system instructions + the
     // composed context prompt. Persist it so the run is auditable end-to-end.

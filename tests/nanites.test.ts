@@ -471,6 +471,21 @@ function fakeWorkstream(over: Partial<Workstream> = {}): Workstream {
 }
 
 describe('ExtensionHostNaniteRunner', () => {
+  test('prepends a Context section with the current time (no clock tool needed)', async () => {
+    const client = new FakeClient(fakeTemplate(), fakeTopic());
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const now = new Date('2026-07-31T15:30:00.000Z');
+    const runner = new ExtensionHostNaniteRunner({ client, bridge, now: () => now });
+
+    await runner.run(fakeNanite());
+
+    const prompt = bridge.started?.prompt ?? '';
+    expect(prompt).toContain('# Context');
+    expect(prompt).toContain('Current time: 2026-07-31T15:30:00.000Z');
+    // Context leads the prompt, before the workstream/topic/task.
+    expect(prompt.indexOf('# Context')).toBeLessThan(prompt.indexOf('# Task'));
+  });
+
   test('reads topic body as prompt + template config, persists Running then terminal', async () => {
     const client = new FakeClient(fakeTemplate(), fakeTopic());
     const bridge = new ScriptedBridge([
