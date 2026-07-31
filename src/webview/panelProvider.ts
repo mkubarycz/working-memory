@@ -2,11 +2,13 @@ import * as vscode from 'vscode';
 import {
   buildAlertsPanel,
   buildBlackboardPanelData,
+  buildNanitesPanel,
   buildTopicsPanel,
   buildTopicTypesPanel,
   buildWorkstreamPanels,
   type PanelAction,
   type PanelData,
+  type PanelNanitesData,
   type PanelWorkstreamSection,
   type WorkstreamSection,
 } from '../panelData';
@@ -156,6 +158,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
       topics: cp.topics,
       alerts: cp.alerts,
       topicTypes: cp.topicTypes,
+      nanites: cp.nanites,
     };
     this.view.webview.postMessage({ type: 'data', data });
     this.updateBadge(cp.active);
@@ -179,6 +182,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
     topics: PanelData;
     alerts: PanelData;
     topicTypes: PanelData;
+    nanites: PanelNanitesData;
   }> {
     if (!this.controlPlaneClient) {
       const ws = buildWorkstreamPanels({
@@ -202,14 +206,17 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
           available: false,
           error: 'Control plane not running',
         }),
+        nanites: buildNanitesPanel({ available: false }),
       };
     }
     try {
-      const [workstreams, topics, alerts, topicTypes] = await Promise.all([
+      const [workstreams, topics, alerts, topicTypes, nanites, naniteTemplates] = await Promise.all([
         this.controlPlaneClient.wsRead({}),
         this.controlPlaneClient.topicRead({}),
         this.controlPlaneClient.alertRead({}),
         this.controlPlaneClient.topicTypeRead({}),
+        this.controlPlaneClient.naniteRead({}),
+        this.controlPlaneClient.naniteTemplateRead({}),
       ]);
       const ws = buildWorkstreamPanels({
         available: true,
@@ -217,13 +224,16 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         topics,
         alerts,
         topicTypes,
+        nanites,
+        naniteTemplates,
       });
       return {
         active: ws.active,
         archive: ws.archive,
-        topics: buildTopicsPanel({ available: true, topics, alerts, topicTypes }),
+        topics: buildTopicsPanel({ available: true, topics, nanites, alerts, topicTypes }),
         alerts: buildAlertsPanel({ available: true, alerts }),
         topicTypes: buildTopicTypesPanel({ available: true, topicTypes }),
+        nanites: buildNanitesPanel({ available: true, templates: naniteTemplates, nanites }),
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -238,6 +248,7 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         topics: buildTopicsPanel({ available: false, topics: [], error: message }),
         alerts: buildAlertsPanel({ available: false, error: message }),
         topicTypes: buildTopicTypesPanel({ available: false, error: message }),
+        nanites: buildNanitesPanel({ available: false }),
       };
     }
   }

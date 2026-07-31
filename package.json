@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.13.4",
+  "version": "0.14.0",
   "publisher": "kubarycz",
   "private": true,
   "repository": {
@@ -53,6 +53,13 @@
           "minimum": 1,
           "maximum": 65535,
           "markdownDescription": "TCP port the extension connects to when an EXTERNAL control-plane daemon owns the process — i.e. `#workingMemory.controlPlane.hosting#` = **service**, or **auto** while probing for a running service. Ignored in **embedded** / auto-self-host mode, where the extension spawns the daemon on an ephemeral port and learns the actual bound port automatically. Set this to match the port your external/OS-service daemon binds (`WM_CONTROL_PLANE_PORT`)."
+        },
+        "workingMemory.nanites.maxConcurrent": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 20,
+          "markdownDescription": "How many `Queued` nanites the dispatcher runs at once. Start at **1**; raise to run more background nanites in parallel (each is a live model call, so higher values cost more)."
         }
       }
     },
@@ -135,6 +142,21 @@
       {
         "command": "working-memory.setWorkstreamSection",
         "title": "Move Workstream to Section",
+        "category": "Working Memory"
+      },
+      {
+        "command": "workingMemory.nanite.run",
+        "title": "Run Nanite",
+        "category": "Working Memory"
+      },
+      {
+        "command": "workingMemory.nanite.reset",
+        "title": "Reset Nanite to Pending",
+        "category": "Working Memory"
+      },
+      {
+        "command": "workingMemory.nanite.restart",
+        "title": "Restart Nanite",
         "category": "Working Memory"
       }
     ],

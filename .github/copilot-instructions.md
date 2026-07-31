@@ -18,9 +18,6 @@ working-memory/
 │   ├── tools.ts              # MCP language-model tool registrations (wm_*)
 │   ├── tree.ts               # webview tree provider (Active + Archive tabs)
 │   └── contentProvider.ts    # virtual docs for `working-memory:` URI scheme
-├── scripts/
-│   ├── release.sh            # snapshot DB + compile + package + install
-│   └── rollback.sh           # restore snapshot + reinstall previous vsix
 ├── tests/                    # vitest specs
 ├── media/                    # activity-bar icon, panel assets
 └── dist/                     # built .vsix artifacts (gitignored)
@@ -42,9 +39,8 @@ npm run package        # npx vsce package --allow-missing-repository
 ```
 
 Cloud agent default: run `npm install`, then `npm run compile && npm run test`
-before opening a PR. Skip `release.sh` and `rollback.sh` — those are
-local-install tools that install a `.vsix` into a running VS Code; they don't
-belong in CI or cloud-agent workflows.
+before opening a PR. GitHub releases are created by merging the release PR to
+`main`, then tagging the merge commit `v<package-version>`.
 
 ## Conventions
 
@@ -107,14 +103,11 @@ activation event in `package.json`.
 - `<hub>/memory/` — the live journal DB and legacy markdown sessions
   (read-only for new content).
 - `.github/prompts/working-memory-developer.agent.md` — the local-IDE
-  specialist agent that owns the dev loop (release.sh / rollback.sh /
-  commit-on-green). The cloud agent does NOT run that loop — it produces PRs.
+  specialist agent that owns local development and GitHub release coordination.
 
 ## Cloud-agent guidance
 
 - Make code changes; run `npm run compile && npm run test`; open a PR.
-- Do **not** run `scripts/release.sh` or `scripts/rollback.sh` — those install
-  a `.vsix` into a local VS Code and snapshot Michael's live DB.
 - Do **not** bump the `version` in `package.json` unless explicitly asked. The
   release flow is human-driven by Michael.
 - Do **not** edit applied migrations or write `memory/*.md` files (legacy).

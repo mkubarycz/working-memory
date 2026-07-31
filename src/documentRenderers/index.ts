@@ -19,6 +19,7 @@ import { renderWorkstreamDocument } from './workstream';
 import { renderTopicDocument } from './topic';
 import { renderTopicTypeDocument } from './topictype';
 import { renderAlertDocument } from './alert';
+import { renderNaniteDocument } from './nanite';
 
 /** A pure per-kind renderer: envelope → markdown. */
 export type DocumentRenderer = (env: DocumentEnvelope) => string;
@@ -48,3 +49,4 @@ registerDocumentRenderer('Workstream', renderWorkstreamDocument);
 registerDocumentRenderer('Topic', renderTopicDocument);
 registerDocumentRenderer('TopicType', renderTopicTypeDocument);
 registerDocumentRenderer('Alert', renderAlertDocument);
+registerDocumentRenderer('Nanite', renderNaniteDocument);

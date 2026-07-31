@@ -18,6 +18,7 @@ import {
   renderDocumentNotFoundDoc,
 } from './documentRenderer';
 import { renderDocumentByKind } from './documentRenderers';
+import { renderNaniteDocument } from './documentRenderers/nanite';
 import { renderTopicDocument } from './documentRenderers/topic';
 import type { TopicRelations } from './documentRenderers/topic';
 import { buildFamilyTree } from './documentRenderers/family';
@@ -227,6 +228,23 @@ export class WorkstreamDocumentProvider implements vscode.FileSystemProvider {
     }
     if (!result.document) {
       return renderDocumentNotFoundDoc(id);
+    }
+    // Nanites render a precise "why is this pending" status, which needs the
+    // OWNING template's approval policy — fetch it best-effort and pass it in.
+    if (result.document.kind === 'Nanite') {
+      const templateId = asStr(result.document.spec?.templateId);
+      let allowRunWithoutHuman = false;
+      if (templateId) {
+        try {
+          const [tpl] = await this.controlPlaneClient.naniteTemplateRead({ slug: templateId });
+          const template =
+            tpl ?? (await this.controlPlaneClient.naniteTemplateRead({ id: templateId }))[0];
+          allowRunWithoutHuman = template?.allowRunWithoutHuman === true;
+        } catch {
+          // best-effort — fall back to the approval-required wording
+        }
+      }
+      return renderNaniteDocument(result.document, { allowRunWithoutHuman });
     }
     return renderDocumentByKind(result.document);
   }

@@ -21,15 +21,58 @@ import {
 import { findLatestVsix } from './vsix';
 import { deployTemplates } from './deployTemplates';
 import { initControlPlaneIntegration } from './controlPlane';
-import { ControlPlaneClient } from './controlPlaneClient';
+import { ControlPlaneClient, type Nanite } from './controlPlaneClient';
 import { ControlPlaneHost } from './controlPlaneHost';
 import { maxMtimeMs } from './storeMtime';
+import {
+  EXTENSION_HOST_RUNNER_ID,
+  ExtensionHostNaniteRunner,
+  NaniteDispatcher,
+  NaniteRunnerRegistry,
+  VscodeLmBridge,
+  providerFromSettings,
+} from './nanites';
 
 /** Authored alert lifecycle status, mirroring the control-plane Alert kind. */
 type AlertStatus = 'alert' | 'informational' | 'closed';
 
 let controlPlaneClient: ControlPlaneClient | null = null;
 let controlPlaneHost: ControlPlaneHost | null = null;
+// The `vscode.lm`-backed model bridge, shared by every extension-host nanite
+// run. Stateless — one instance is enough.
+const naniteLmBridge = new VscodeLmBridge();
+
+/** Read the dispatcher's concurrency cap from settings (>= 1, default 1). */
+function naniteMaxConcurrent(): number {
+  const raw = vscode.workspace
+    .getConfiguration('workingMemory')
+    .get<number>('nanites.maxConcurrent', 1);
+  return Math.max(1, Math.floor(typeof raw === 'number' ? raw : 1));
+}
+
+/**
+ * Execute ONE nanite instance through the extension-host runner, resolving its
+ * provider from the owning template's execution settings. Shared by the manual
+ * Run path and the {@link NaniteDispatcher}.
+ */
+async function runNaniteInstance(
+  client: ControlPlaneClient,
+  nanite: Nanite,
+): Promise<void> {
+  let provider: string | null = null;
+  if (nanite.templateId) {
+    const [tpl] = await client.naniteTemplateRead({ slug: nanite.templateId });
+    const template =
+      tpl ?? (await client.naniteTemplateRead({ id: nanite.templateId }))[0];
+    provider = providerFromSettings(template?.executionSettings);
+  }
+  const registry = new NaniteRunnerRegistry(EXTENSION_HOST_RUNNER_ID);
+  registry.register(
+    new ExtensionHostNaniteRunner({ client, bridge: naniteLmBridge }),
+  );
+  await registry.resolve(provider).run(nanite);
+}
+
 // Last-seen newest mtime across the control-plane store files, used by the
 // panel auto-refresh poll backstop (feature:panel-auto-refresh).
 let lastMtimeMs = 0;
@@ -233,6 +276,18 @@ export function activate(context: vscode.ExtensionContext): void {
     contentProvider.refresh();
   };
 
+  // The nanite EXECUTION DISPATCHER — the centralized execution plane. Polls the
+  // control plane for `Queued` nanites and runs them through the extension-host
+  // runner, throttled to `workingMemory.nanites.maxConcurrent` (default 1).
+  const naniteDispatcher = new NaniteDispatcher({
+    readClient: () => controlPlaneClient,
+    run: (nanite) => runNaniteInstance(controlPlaneClient as ControlPlaneClient, nanite),
+    maxConcurrent: naniteMaxConcurrent,
+    onChange: refresh,
+  });
+  naniteDispatcher.start();
+  context.subscriptions.push({ dispose: () => naniteDispatcher.dispose() });
+
   // Ensure the built-in default topic type exists in the control plane so a
   // topic's default `topicType: 'topic'` resolves to a real type (shape icon)
   // and shows in the Topic Types tab. Idempotent + best-effort; retries on the
@@ -268,6 +323,8 @@ export function activate(context: vscode.ExtensionContext): void {
   initControlPlaneIntegration(context, controlPlaneHost, () => {
     refresh();
     void ensureDefaultTopicTypes().then(refresh);
+    // Drain any nanites that were Queued while the daemon was down.
+    void naniteDispatcher.pump();
   });
 
   // Auto-refresh the panel when the control-plane daemon mutates its store
@@ -760,6 +817,121 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.commands.registerCommand(
+      'workingMemory.nanite.run',
+      async (arg?: { id?: string }) => {
+        const id = arg?.id?.trim();
+        if (!id) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Run Nanite requires a nanite id.',
+          );
+          return;
+        }
+        if (!controlPlaneClient) {
+          vscode.window.showErrorMessage(
+            'Working Memory: cannot run nanite — control plane is not running.',
+          );
+          return;
+        }
+        const client = controlPlaneClient;
+        try {
+          const [nanite] = await client.naniteRead({ id });
+          if (!nanite) {
+            vscode.window.showErrorMessage(
+              `Working Memory: no nanite with id ${id.slice(0, 8)}.`,
+            );
+            return;
+          }
+          if (nanite.phase === 'Running' || nanite.phase === 'Queued') {
+            // Already in the execution plane — just nudge the dispatcher.
+            void naniteDispatcher.pump();
+            vscode.window.showInformationMessage(
+              `Working Memory: nanite ${id.slice(0, 8)} already ${nanite.phase.toLowerCase()}.`,
+            );
+            return;
+          }
+          if (nanite.phase !== 'Pending') {
+            vscode.window.showInformationMessage(
+              `Working Memory: nanite ${id.slice(0, 8)} already ${nanite.phase.toLowerCase()} — use Restart to re-run.`,
+            );
+            return;
+          }
+          // Human approval: enqueue for the dispatcher (the centralized
+          // execution plane), which starts it (Queued → Running) and runs it.
+          await client.naniteRun({ id, approved: true });
+          refresh();
+          void naniteDispatcher.pump();
+          vscode.window.showInformationMessage(
+            `Working Memory: nanite ${id.slice(0, 8)} queued.`,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to run nanite — ${message}`,
+          );
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      'workingMemory.nanite.reset',
+      async (arg?: { id?: string }) => {
+        const id = arg?.id?.trim();
+        if (!id) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Reset Nanite requires a nanite id.',
+          );
+          return;
+        }
+        if (!controlPlaneClient) {
+          vscode.window.showErrorMessage(
+            'Working Memory: cannot reset nanite — control plane is not running.',
+          );
+          return;
+        }
+        try {
+          await controlPlaneClient.naniteRun({ id, reset: true });
+          refresh();
+          vscode.window.showInformationMessage(
+            `Working Memory: nanite ${id.slice(0, 8)} reset to Pending.`,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to reset nanite — ${message}`,
+          );
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      'workingMemory.nanite.restart',
+      async (arg?: { id?: string }) => {
+        const id = arg?.id?.trim();
+        if (!id) {
+          vscode.window.showWarningMessage(
+            'Working Memory: Restart Nanite requires a nanite id.',
+          );
+          return;
+        }
+        if (!controlPlaneClient) {
+          vscode.window.showErrorMessage(
+            'Working Memory: cannot restart nanite — control plane is not running.',
+          );
+          return;
+        }
+        try {
+          // Reset to Pending, then run — the run command reads it fresh.
+          await controlPlaneClient.naniteRun({ id, reset: true });
+          refresh();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to restart nanite — ${message}`,
+          );
+          return;
+        }
+        await vscode.commands.executeCommand('workingMemory.nanite.run', { id });
+      },
+    ),
+    vscode.commands.registerCommand(
       'working-memory.setWorkstreamSection',
       async (arg?: { slug?: string; section?: string }) => {
         const slug = arg?.slug;
@@ -878,6 +1050,20 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
           }
           void setControlPlaneAlertStatus(rawId, status);
+          return;
+        }
+        // Nanite action deep links: nanite/<id>/run — the doc's "Approve & Run"
+        // button (markdown preview strips command: links). Routes through the
+        // Run command, which is the human-approval enqueue.
+        if (parts.length === 3 && parts[0] === 'nanite') {
+          const rawId = parts[1];
+          if (parts[2] === 'run') {
+            void vscode.commands.executeCommand('workingMemory.nanite.run', { id: rawId });
+            return;
+          }
+          vscode.window.showErrorMessage(
+            `Working Memory: unrecognized deep link: ${uri.toString()}`,
+          );
           return;
         }
         if (parts.length !== 3 || parts[0] !== 'open') {

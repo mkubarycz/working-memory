@@ -68,11 +68,7 @@ git clone https://github.com/mkubarycz/working-memory.git
 cd working-memory
 npm install
 npm run compile           # tsc -p .  →  out/src/extension.js
-./scripts/release.sh      # build, package, and install the .vsix; then reload the window
 ```
-
-`./scripts/release.sh` is the local deploy step — it builds, packages, and
-installs the `.vsix` into your running VS Code in one shot.
 
 ## DB path resolution (extension)
 
@@ -93,8 +89,8 @@ For iterating on the extension itself, use the **Extension Development Host**:
    `kubarycz-agentic-workspace.code-workspace` so the hub folder is present.
 4. Click the brain icon in the activity bar → see your workstreams.
 
-To install a build instead of debugging, use the prebuilt one-liner above or
-`./scripts/release.sh` for a local build-and-install.
+To install a build instead of debugging, use the prebuilt GitHub Release
+one-liner above.
 
 ## Chat link patterns
 
@@ -175,11 +171,6 @@ git push origin main --follow-tags    # pushes the commit and the tag
 **Tags must be on `main`.** The workflow's first step verifies the tagged
 commit is an ancestor of `origin/main` and refuses to release a feature-branch
 tag.
-
-For ad-hoc local testing before a release, `./scripts/release.sh` builds,
-packages, and installs the `.vsix` into your running VS Code. It is a
-local-only convenience script and does no git work — it is not part of the
-release flow.
 
 ### Migration safety
 
