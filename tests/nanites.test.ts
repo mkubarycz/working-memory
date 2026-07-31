@@ -43,6 +43,7 @@ const DEFAULT_CONVO_USAGE: NaniteTokenUsage = {
 const DEFAULT_JUDGE: NaniteJudgeResult = {
   request_summary: 'asked to scan open topics and raise deduped alerts',
   response_summary: 'scanned topics and flagged the followups',
+  pass: true,
   confidence: 100,
   rationale: 'meets the criteria',
   model: 'test-model',
@@ -230,6 +231,7 @@ describe('runNanite (core)', () => {
       judge: {
         request_summary: 'restated request',
         response_summary: 'summarized response',
+        pass: true,
         confidence: 75,
         rationale: 'clears the bar',
         model: 'test-model',
@@ -260,6 +262,7 @@ describe('runNanite (core)', () => {
       judge: {
         request_summary: 'restated request',
         response_summary: 'only half done',
+        pass: true,
         confidence: 40,
         rationale: 'missed two topics',
         model: 'test-model',
@@ -282,6 +285,29 @@ describe('runNanite (core)', () => {
     expect(result.responseSummary).toBe('only half done');
   });
 
+  // bug: confidence-vs-verdict — the judge's `confidence` is its CERTAINTY in
+  // the verdict, not P(pass). A confident FAIL (pass:false, high confidence)
+  // must NOT be accepted just because confidence >= threshold.
+  test('a confident FAIL (pass:false, high confidence) does not pass acceptance', async () => {
+    const bridge = new ScriptedBridge([{ text: 'Could not get the value.', toolCalls: [] }], undefined, {
+      judge: {
+        request_summary: 'get the exact value from a command',
+        response_summary: 'reported it could not obtain the value',
+        pass: false,
+        confidence: 95,
+        rationale: 'the output says the value was not obtained, so this fails',
+        model: 'test-model',
+        tokens: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+    });
+
+    const result = await runNanite(bridge, { ...BASE_OPTS, acceptanceThreshold: 60 });
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('Acceptance Criteria Not Matched');
+    expect(result.acceptance).toMatchObject({ passed: false, confidence: 95 });
+  });
+
   test('records model + summed loop/judge token usage', async () => {
     const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }], undefined, {
       modelId: 'gpt-test',
@@ -289,6 +315,7 @@ describe('runNanite (core)', () => {
       judge: {
         request_summary: 'req',
         response_summary: 'res',
+        pass: true,
         confidence: 90,
         rationale: 'good',
         model: 'gpt-test',
@@ -567,6 +594,7 @@ describe('ExtensionHostNaniteRunner', () => {
       judge: {
         request_summary: 'r',
         response_summary: 'r',
+        pass: false,
         confidence: 10,
         rationale: 'missed it',
         model: 'test-model',

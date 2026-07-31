@@ -125,7 +125,10 @@ export async function runNanite(
       },
       token,
     );
-    const passed = verdict.confidence >= options.acceptanceThreshold;
+    // Acceptance = the judge's explicit PASS decision, AND enough certainty in
+    // it (threshold). `confidence` is the judge's certainty in its verdict, not
+    // a pass-score — so a confident FAIL (pass:false) must never accept.
+    const passed = verdict.pass && verdict.confidence >= options.acceptanceThreshold;
     const acceptance: NaniteAcceptance = {
       summary: verdict.rationale,
       confidence: verdict.confidence,

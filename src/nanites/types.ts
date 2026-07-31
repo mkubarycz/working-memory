@@ -102,7 +102,10 @@ export interface NaniteJudgeResult {
   request_summary: string;
   /** A plain-language summary of what the run actually produced. */
   response_summary: string;
-  /** Integer 0-100 confidence that the output meets the criteria. */
+  /** The judge's explicit pass/fail DECISION for the run. */
+  pass: boolean;
+  /** Integer 0-100 — the judge's CERTAINTY in its pass/fail decision (NOT a
+   *  degree of passing). */
   confidence: number;
   /** The acceptance judgement (why it passed/failed). */
   rationale: string;

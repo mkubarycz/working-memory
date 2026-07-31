@@ -69,6 +69,9 @@ function truncate(text: string, max = 400): string {
 interface ParsedJudge {
   request_summary: string;
   response_summary: string;
+  /** The judge's explicit pass/fail DECISION (not a score). */
+  pass: boolean;
+  /** How CERTAIN the judge is in that decision (0-100) — not a degree of passing. */
   confidence: number;
   rationale: string;
 }
@@ -90,12 +93,14 @@ function parseJudgeReply(
       const parsed = JSON.parse(match[0]) as {
         request_summary?: unknown;
         response_summary?: unknown;
+        pass?: unknown;
         confidence?: unknown;
         rationale?: unknown;
       };
       const raw = Number(parsed.confidence);
       if (Number.isFinite(raw)) {
         const confidence = Math.max(0, Math.min(100, Math.round(raw)));
+        const pass = parsed.pass === true;
         const rationale =
           typeof parsed.rationale === 'string' ? parsed.rationale : '';
         const request_summary =
@@ -108,7 +113,7 @@ function parseJudgeReply(
           parsed.response_summary.trim()
             ? parsed.response_summary
             : fallbackResponse;
-        return { request_summary, response_summary, confidence, rationale };
+        return { request_summary, response_summary, pass, confidence, rationale };
       }
     } catch {
       // fall through to the parse-failure verdict
@@ -117,6 +122,7 @@ function parseJudgeReply(
   return {
     request_summary: fallbackRequest,
     response_summary: fallbackResponse,
+    pass: false,
     confidence: 0,
     rationale: `judge reply could not be parsed as JSON: ${reply.slice(0, 200)}`,
   };
@@ -294,10 +300,10 @@ export class VscodeLmBridge implements NaniteLmBridge {
       'You are a strict acceptance judge. You are given the PROMPT the',
       'automation ran with, the acceptance CRITERIA it must satisfy, the',
       'ACTIONS it took (its tool-call trail), and its final OUTPUT. Evaluate the',
-      "automation's work against the CRITERIA — summarize what it did, then",
-      'score how well that work satisfies the criteria, using ACTIONS and OUTPUT',
-      'as evidence of what was actually checked or done. Do three things in one',
-      'reply:',
+      "automation's work against the CRITERIA — summarize what it did, decide",
+      'whether it PASSES, and state how CERTAIN you are in that decision, using',
+      'ACTIONS and OUTPUT as evidence of what was actually checked or done. Do',
+      'four things in one reply:',
       '  1. Restate, in plain language, what the automation was asked to do',
       '     (from the PROMPT + CRITERIA).',
       '  2. Summarize, in plain language, what the automation actually DID — the',
@@ -305,26 +311,27 @@ export class VscodeLmBridge implements NaniteLmBridge {
       '     OUTPUT) — as a short sentence describing the work performed. Do NOT',
       '     describe the format or shape of the OUTPUT; describe the actions.',
       '     E.g. "Closed alert-35 because its only linked topic was closed."',
-      '  3. Evaluate that response summary against the CRITERIA, given the',
-      '     PROMPT. Judge ONLY against what the CRITERIA actually require — do',
+      '  3. DECIDE pass or fail: does the OUTPUT (with ACTIONS as evidence)',
+      '     satisfy the CRITERIA? Set "pass" true ONLY if it clearly does, false',
+      '     otherwise. Judge ONLY against what the CRITERIA actually require — do',
       '     NOT invent unstated requirements. In particular, do NOT require',
       '     tool-call evidence unless the CRITERIA explicitly call for it: if the',
       '     input the criteria concern is already present in the PROMPT, or no',
       '     tools were available to this run, then reasoning over the PROMPT and',
-      '     reporting a conclusion in the OUTPUT fully satisfies a "check X"',
+      '     reporting a conclusion in the OUTPUT can fully satisfy a "check X"',
       '     criterion — the absence of tool calls is NOT a deficiency. When the',
-      '     ACTIONS trail IS present, treat it as concrete evidence that those',
-      '     steps were performed; do NOT lower confidence merely because the',
-      '     OUTPUT does not exhaustively prove every step, or because only a few',
-      '     tool calls were made, when the work plausibly covers the criteria.',
-      '     Judge whether the work was done correctly, not whether it was',
-      '     exhaustively documented. Reserve low confidence for cases where the',
-      '     ACTIONS or OUTPUT actually contradict or fail the criteria; stay',
-      '     conservative about genuine failures.',
+      '     ACTIONS trail IS present, treat it as concrete evidence those steps',
+      '     were performed. If the OUTPUT admits it could not do what the CRITERIA',
+      '     require (missing/guessed/fabricated data, a required step not run),',
+      '     that is a FAIL.',
+      '  4. Set "confidence" to how CERTAIN you are IN YOUR pass/fail DECISION',
+      '     (integer 0-100) — this is your certainty, NOT how well it passed. A',
+      '     clear-cut FAIL is HIGH confidence with "pass": false; do not report',
+      '     high confidence with "pass": true when your rationale says it fails.',
       '',
       'Keep each summary to less than a paragraph. Reply with STRICT JSON and',
       'nothing else, in exactly this shape:',
-      '{"request_summary": "<what it was asked to do>", "response_summary": "<what it did>", "confidence": <integer 0-100>, "rationale": "<one short sentence on why it passed/failed>"}',
+      '{"request_summary": "<what it was asked to do>", "response_summary": "<what it did>", "pass": <true|false>, "confidence": <integer 0-100>, "rationale": "<one short sentence on why it passed or failed>"}',
       '',
       '--- PROMPT ---',
       request.prompt,
@@ -357,12 +364,13 @@ export class VscodeLmBridge implements NaniteLmBridge {
       }
     }
     const outputTokens = await countTokens(model, reply);
-    const { request_summary, response_summary, confidence, rationale } =
+    const { request_summary, response_summary, pass, confidence, rationale } =
       parseJudgeReply(reply, truncate(request.prompt), truncate(request.output));
 
     return {
       request_summary,
       response_summary,
+      pass,
       confidence,
       rationale,
       model: model.id,
