@@ -152,7 +152,7 @@ export interface PanelNaniteRow {
   /** `working-memory:/document/<id>.md` virtual-doc URI (generic envelope route). */
   openUri: string;
   /** Lifecycle phase. */
-  phase: 'Pending' | 'Running' | 'Succeeded' | 'Failed';
+  phase: 'Pending' | 'Queued' | 'Running' | 'Succeeded' | 'Failed';
   /** Owning Nanite Template ref (id or slug); used to filter on the Nanites tab. */
   templateId: string | null;
   /** Whether the underlying document is soft-deleted (muted in the tree). */
@@ -518,30 +518,32 @@ function buildNaniteRow(
 ): PanelNaniteRow {
   const label =
     labelOverride ?? (n.request.trim() || n.templateId || `Nanite ${n.id.slice(0, 8)}`);
+  const runAction: PanelAction = {
+    command: 'workingMemory.nanite.run',
+    title: 'Run Nanite',
+    icon: 'play',
+    args: [{ id: n.id }],
+  };
+  const resetAction: PanelAction = {
+    command: 'workingMemory.nanite.reset',
+    title: 'Reset to Pending',
+    icon: 'discard',
+    args: [{ id: n.id }],
+  };
+  const restartAction: PanelAction = {
+    command: 'workingMemory.nanite.restart',
+    title: 'Restart Nanite',
+    icon: 'debug-restart',
+    args: [{ id: n.id }],
+  };
+  // Actions per lifecycle phase: Pending offers Run; Queued/Running offer a
+  // Cancel (reset to Pending); terminal offers Restart + Reset.
   const actions: PanelAction[] =
     n.phase === 'Pending'
-      ? [
-          {
-            command: 'workingMemory.nanite.run',
-            title: 'Run Nanite',
-            icon: 'play',
-            args: [{ id: n.id }],
-          },
-        ]
-      : [
-          {
-            command: 'workingMemory.nanite.restart',
-            title: 'Restart Nanite',
-            icon: 'debug-restart',
-            args: [{ id: n.id }],
-          },
-          {
-            command: 'workingMemory.nanite.reset',
-            title: 'Reset to Pending',
-            icon: 'discard',
-            args: [{ id: n.id }],
-          },
-        ];
+      ? [runAction]
+      : n.phase === 'Queued' || n.phase === 'Running'
+        ? [{ ...resetAction, title: 'Cancel (Reset to Pending)' }]
+        : [restartAction, resetAction];
   return {
     kind: 'nanite',
     id: `${rowIdPrefix}:${n.id}`,
@@ -561,6 +563,7 @@ function buildNaniteRow(
 /** Codicon per Nanite lifecycle phase. */
 const NANITE_PHASE_ICON: Record<Nanite['phase'], string> = {
   Pending: 'circle-outline',
+  Queued: 'clock',
   Running: 'sync',
   Succeeded: 'pass',
   Failed: 'error',

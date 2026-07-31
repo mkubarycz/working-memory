@@ -397,6 +397,7 @@ export interface NaniteTemplate {
   executionSettings: Record<string, unknown>;
   toolAllowlist: string[];
   toolDenylist: string[];
+  allowRunWithoutHuman: boolean;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   acceptanceCriteria: string;
@@ -422,6 +423,7 @@ export interface NaniteTemplateCreateInput {
   executionSettings?: Record<string, unknown>;
   toolAllowlist?: string[];
   toolDenylist?: string[];
+  allowRunWithoutHuman?: boolean;
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   acceptanceCriteria?: string;
@@ -437,6 +439,7 @@ export interface NaniteTemplateUpdateInput {
   executionSettings?: Record<string, unknown>;
   toolAllowlist?: string[];
   toolDenylist?: string[];
+  allowRunWithoutHuman?: boolean;
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   acceptanceCriteria?: string;
@@ -450,7 +453,7 @@ export interface NaniteTemplateDeleteInput {
 }
 
 /** The Nanite lifecycle phase, mirroring the control-plane Nanite kind enum. */
-export type NanitePhase = 'Pending' | 'Running' | 'Succeeded' | 'Failed';
+export type NanitePhase = 'Pending' | 'Queued' | 'Running' | 'Succeeded' | 'Failed';
 
 /** The acceptance-judge verdict persisted on a finished Nanite. */
 export interface NaniteAcceptance {
@@ -488,6 +491,8 @@ export interface Nanite {
   inputTopic: string;
   request: string;
   phase: NanitePhase;
+  /** Unix seconds the nanite was enqueued for dispatch (null until Queued). */
+  queuedAt: number | null;
   startedAt: number | null;
   endedAt: number | null;
   error: string;
@@ -512,6 +517,7 @@ export interface NaniteReadInput {
   id?: string;
   inputTopic?: string;
   workstream?: string;
+  phase?: NanitePhase;
   limit?: number;
 }
 
@@ -524,7 +530,9 @@ export interface NaniteCreateInput {
 
 export interface NaniteRunInput {
   id: string;
-  /** Set by the extension-host runner to START execution (Pending → Running). */
+  /** Human approval to enqueue a Pending nanite (set by the Run action). */
+  approved?: boolean;
+  /** Set by the extension-host runner to START execution (Queued|Pending → Running). */
   begin?: boolean;
   outcome?: 'succeeded' | 'failed';
   error?: string;
@@ -1360,6 +1368,7 @@ export class ControlPlaneClient {
       'executionSettings',
       'toolAllowlist',
       'toolDenylist',
+      'allowRunWithoutHuman',
       'inputSchema',
       'outputSchema',
       'acceptanceCriteria',
@@ -1385,6 +1394,7 @@ export class ControlPlaneClient {
       'executionSettings',
       'toolAllowlist',
       'toolDenylist',
+      'allowRunWithoutHuman',
       'inputSchema',
       'outputSchema',
       'acceptanceCriteria',
@@ -1444,6 +1454,9 @@ export class ControlPlaneClient {
     if (input.workstream !== undefined) {
       args.workstream = input.workstream;
     }
+    if (input.phase !== undefined) {
+      args.phase = input.phase;
+    }
     if (input.limit !== undefined) {
       args.limit = input.limit;
     }
@@ -1473,6 +1486,9 @@ export class ControlPlaneClient {
   /** Kick off (or finish) a nanite via `ws-nanite-run`. */
   async naniteRun(input: NaniteRunInput): Promise<Nanite> {
     const args: Record<string, unknown> = { id: input.id };
+    if (input.approved !== undefined) {
+      args.approved = input.approved;
+    }
     if (input.begin !== undefined) {
       args.begin = input.begin;
     }

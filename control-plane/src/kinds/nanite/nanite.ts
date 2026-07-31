@@ -33,7 +33,7 @@ import type { DocumentEnvelope } from '../../store.js';
 export const NANITE_KIND = 'Nanite';
 
 /** The Nanite lifecycle phase (a `spec` field). */
-export type NanitePhase = 'Pending' | 'Running' | 'Succeeded' | 'Failed';
+export type NanitePhase = 'Pending' | 'Queued' | 'Running' | 'Succeeded' | 'Failed';
 
 /** The acceptance-judge verdict persisted on a finished Nanite. */
 export interface NaniteAcceptance {
@@ -63,6 +63,7 @@ export interface NaniteTokenUsage {
 /** All valid phases, in lifecycle order. */
 export const NANITE_PHASES: readonly NanitePhase[] = [
   'Pending',
+  'Queued',
   'Running',
   'Succeeded',
   'Failed',
@@ -77,6 +78,8 @@ export interface INanite {
   inputTopic: string;
   request: string;
   phase: NanitePhase;
+  /** Unix seconds the nanite was enqueued for dispatch (null until Queued). */
+  queuedAt: number | null;
   startedAt: number | null;
   endedAt: number | null;
   error: string;
@@ -106,6 +109,7 @@ export class Nanite implements INanite {
   inputTopic: string;
   request: string;
   phase: NanitePhase;
+  queuedAt: number | null;
   startedAt: number | null;
   endedAt: number | null;
   error: string;
@@ -128,6 +132,7 @@ export class Nanite implements INanite {
     this.inputTopic = typeof spec.inputTopic === 'string' ? spec.inputTopic : '';
     this.request = typeof spec.request === 'string' ? spec.request : '';
     this.phase = (spec.phase as NanitePhase | undefined) ?? 'Pending';
+    this.queuedAt = typeof spec.queuedAt === 'number' ? spec.queuedAt : null;
     this.startedAt = typeof spec.startedAt === 'number' ? spec.startedAt : null;
     this.endedAt = typeof spec.endedAt === 'number' ? spec.endedAt : null;
     this.error = typeof spec.error === 'string' ? spec.error : '';

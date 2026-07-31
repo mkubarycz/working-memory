@@ -50,7 +50,9 @@ const nanite: KindModule = {
         request: z.string().default(''),
         // Lifecycle phase — AUTHORED-style spec field (mirrors Topic/Alert
         // status), NOT the controller-owned envelope status.
-        phase: z.enum(['Pending', 'Running', 'Succeeded', 'Failed']).default('Pending'),
+        phase: z.enum(['Pending', 'Queued', 'Running', 'Succeeded', 'Failed']).default('Pending'),
+        // Unix seconds the nanite was enqueued for dispatch (null until Queued).
+        queuedAt: z.number().nullable().default(null),
         // Run timings (unix seconds) + failure message.
         startedAt: z.number().nullable().default(null),
         endedAt: z.number().nullable().default(null),

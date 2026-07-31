@@ -65,6 +65,7 @@ export function renderNaniteDocument(env: DocumentEnvelope): string {
   const acceptance = readAcceptance(spec.acceptance);
   const startedAt = typeof spec.startedAt === 'number' ? spec.startedAt : null;
   const endedAt = typeof spec.endedAt === 'number' ? spec.endedAt : null;
+  const queuedAt = typeof spec.queuedAt === 'number' ? spec.queuedAt : null;
   const missingTools = Array.isArray(spec.missingTools)
     ? spec.missingTools.filter((x): x is string => typeof x === 'string')
     : [];
@@ -79,6 +80,7 @@ export function renderNaniteDocument(env: DocumentEnvelope): string {
       ? `- \`inputTopic\`: [${inputTopic}](${deepLink('topic', inputTopic)})`
       : `- \`inputTopic\`: _none_`,
     `- \`request\`: ${request ?? '_none_'}`,
+    `- \`queuedAt\`: ${fmtTs(queuedAt)}`,
     `- \`startedAt\`: ${fmtTs(startedAt)}`,
     `- \`endedAt\`: ${fmtTs(endedAt)}`,
   ];

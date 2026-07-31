@@ -43,6 +43,10 @@ export function registerWsNaniteTemplateCreate(server: McpServer, store: Store):
           .describe('Model + tuning knobs (open object).'),
         toolAllowlist: z.array(z.string()).optional().describe('Allow-listed tool names (`*` = all available).'),
         toolDenylist: z.array(z.string()).optional().describe('Tool names the nanite may never use (subtracted from the allow-list).'),
+        allowRunWithoutHuman: z
+          .boolean()
+          .optional()
+          .describe('Allow unattended dispatch (no human approval). Default false.'),
         inputSchema: z.record(z.string(), z.unknown()).optional().describe('Typed input JSON schema.'),
         outputSchema: z.record(z.string(), z.unknown()).optional().describe('Typed output JSON schema.'),
         acceptanceCriteria: z.string().optional().describe('Acceptance rubric (human-written).'),
@@ -62,6 +66,7 @@ export function registerWsNaniteTemplateCreate(server: McpServer, store: Store):
         'executionSettings',
         'toolAllowlist',
         'toolDenylist',
+        'allowRunWithoutHuman',
         'inputSchema',
         'outputSchema',
         'acceptanceCriteria',

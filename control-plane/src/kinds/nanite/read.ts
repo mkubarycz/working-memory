@@ -20,16 +20,21 @@ export function registerWsNaniteRead(server: McpServer, store: Store): void {
       title: 'Nanite: Read',
       description:
         'Read one Nanite or many. Read ONE by `id`; otherwise LIST all Nanites (newest-first), ' +
-        'optionally filtered by `inputTopic` (topic slug) and/or `workstream` (workstream slug), ' +
-        'with an optional `limit`. ALWAYS returns { count, nanites }.',
+        'optionally filtered by `inputTopic` (topic slug), `workstream` (workstream slug), and/or ' +
+        '`phase` (e.g. `Queued` for the dispatcher), with an optional `limit`. ALWAYS returns ' +
+        '{ count, nanites }.',
       inputSchema: {
         id: z.string().optional().describe('Read ONE nanite by document id (uuid).'),
         inputTopic: z.string().optional().describe('Filter to nanites whose input topic is this slug.'),
         workstream: z.string().optional().describe('Filter to nanites owned by this workstream slug.'),
+        phase: z
+          .enum(['Pending', 'Queued', 'Running', 'Succeeded', 'Failed'])
+          .optional()
+          .describe('Filter to nanites in this lifecycle phase.'),
         limit: z.number().int().positive().optional().describe('Max nanites to return (list mode).'),
       },
     },
-    async ({ id, inputTopic, workstream, limit }) => {
+    async ({ id, inputTopic, workstream, phase, limit }) => {
       if (id !== undefined) {
         const doc = store.getDocument({ id, kind: NANITE_KIND });
         const nanites = doc && doc.kind === NANITE_KIND ? [new Nanite(doc)] : [];
@@ -41,6 +46,9 @@ export function registerWsNaniteRead(server: McpServer, store: Store): void {
       }
       if (workstream !== undefined) {
         docs = docs.filter((d) => d.spec?.workstream === workstream);
+      }
+      if (phase !== undefined) {
+        docs = docs.filter((d) => d.spec?.phase === phase);
       }
       if (limit !== undefined) {
         docs = docs.slice(0, limit);

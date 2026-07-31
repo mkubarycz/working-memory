@@ -46,6 +46,9 @@ const naniteTemplate: KindModule = {
         // Allow-listed tool names the runner may expose (018 `tool_allowlist`).
         toolAllowlist: z.array(z.string()).default([]),
         toolDenylist: z.array(z.string()).default([]),
+        // When true, a nanite from this template may be dispatched WITHOUT
+        // human approval (an agent/parent may enqueue it). Default false.
+        allowRunWithoutHuman: z.boolean().default(false),
         // Typed input / output JSON schemas (018 `input_schema` / `output_schema`).
         inputSchema: z.record(z.string(), z.unknown()).default({}),
         outputSchema: z.record(z.string(), z.unknown()).default({}),

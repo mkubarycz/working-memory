@@ -116,7 +116,7 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
     }
   });
 
-  it('rejects a bare START (no begin) but allows begin:true (extension-host engine)', async () => {
+  it('gates a bare start behind human approval; approved/begin advance the lifecycle', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       await client.callTool({
@@ -127,21 +127,31 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
         await client.callTool({ name: 'ws-nanite-create', arguments: { workstream: 'ws-run' } }),
       );
 
-      // A bare start (an agent / parent nanite) is refused — nothing would run it.
+      // A bare enqueue (agent / parent nanite, no approval, no template flag) is
+      // refused — it needs a human, and nothing would run it otherwise.
       const bare = await client.callTool({
         name: 'ws-nanite-run',
         arguments: { id: created.id },
       });
       expect(isErrorResult(bare)).toBe(true);
-      expect(textOf(bare)).toContain('cannot run models');
+      expect(textOf(bare)).toContain('needs human approval');
 
-      // Still Pending (never stranded in Running).
+      // Still Pending (never stranded).
       const afterBare = jsonOf<{ nanites: INanite[] }>(
         await client.callTool({ name: 'ws-nanite-read', arguments: { id: created.id } }),
       );
       expect(afterBare.nanites[0]?.phase).toBe('Pending');
 
-      // The engine's start (begin:true) transitions to Running.
+      // Human approval → Queued (awaiting the dispatcher).
+      const queued = jsonOf<INanite>(
+        await client.callTool({
+          name: 'ws-nanite-run',
+          arguments: { id: created.id, approved: true },
+        }),
+      );
+      expect(queued.phase).toBe('Queued');
+
+      // The engine's start (begin:true) transitions Queued → Running.
       const started = jsonOf<INanite>(
         await client.callTool({
           name: 'ws-nanite-run',
@@ -149,6 +159,34 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
         }),
       );
       expect(started.phase).toBe('Running');
+    } finally {
+      await close();
+    }
+  });
+
+  it('a template with allowRunWithoutHuman lets a bare enqueue reach Queued', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({
+        name: 'ws-workstream-create',
+        arguments: { slug: 'ws-auto', title: 'WS Auto' },
+      });
+      await client.callTool({
+        name: 'ws-nanitetemplate-create',
+        arguments: { slug: 'auto-tpl', title: 'Auto', allowRunWithoutHuman: true },
+      });
+      const created = jsonOf<INanite>(
+        await client.callTool({
+          name: 'ws-nanite-create',
+          arguments: { workstream: 'ws-auto', templateId: 'auto-tpl' },
+        }),
+      );
+
+      // No `approved`, but the template opts into unattended runs → Queued.
+      const queued = jsonOf<INanite>(
+        await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id } }),
+      );
+      expect(queued.phase).toBe('Queued');
     } finally {
       await close();
     }

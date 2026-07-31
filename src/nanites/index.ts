@@ -22,3 +22,9 @@ export {
   type NaniteRunnerClient,
 } from './extensionHostRunner';
 export { NaniteRunnerRegistry, providerFromSettings } from './registry';
+export {
+  NaniteDispatcher,
+  selectDispatchable,
+  type DispatcherClient,
+  type NaniteDispatcherDeps,
+} from './dispatcher';

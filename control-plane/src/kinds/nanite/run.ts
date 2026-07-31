@@ -21,6 +21,17 @@ function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+/** Whether the owning template opts into unattended (no-human) dispatch. */
+function templateAllowsUnattended(store: Store, templateId: unknown): boolean {
+  if (typeof templateId !== 'string' || templateId === '') {
+    return false;
+  }
+  const doc =
+    store.getDocument({ slug: templateId, kind: 'NaniteTemplate' }) ??
+    store.getDocument({ id: templateId, kind: 'NaniteTemplate' });
+  return doc?.spec?.allowRunWithoutHuman === true;
+}
+
 /** Register the `ws-nanite-run` tool. */
 export function registerWsNaniteRun(server: McpServer, store: Store): void {
   server.registerTool(
@@ -28,14 +39,19 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
     {
       title: 'Nanite: Run',
       description:
-        'Advance a Nanite one lifecycle step. STARTING a nanite (Pending → Running) requires ' +
-        '`begin: true` and is done ONLY by the extension-host engine, which actually runs the ' +
-        'model — the control plane cannot execute. A bare start (no `begin`) is rejected: to run a ' +
-        'nanite use the Run action / `workingMemory.nanite.run` command. This tool also does ' +
-        'Running → terminal on the finishing call (pass `outcome`, plus the run RESULT: `output`, ' +
-        '`acceptance`, `toolCalls`, `tokens`) and `reset` (→ Pending). Returns the updated nanite.',
+        'Advance a Nanite through its lifecycle: Pending → Queued → Running → terminal. A bare ' +
+        'call ENQUEUES a Pending nanite for the extension-host dispatcher, but only with human ' +
+        'approval (`approved: true`, set by the Run action) OR when the owning template sets ' +
+        '`allowRunWithoutHuman` — otherwise it is rejected (the nanite stays Pending). `begin: true` ' +
+        '(dispatcher/engine only) starts execution (→ Running); the control plane cannot run models. ' +
+        'The finishing call (Running → terminal) carries `outcome` + the run RESULT (`output`, ' +
+        '`acceptance`, `toolCalls`, `tokens`). `reset` returns to Pending. Returns the updated nanite.',
       inputSchema: {
         id: z.string().describe('Document id of the nanite to run (required).'),
+        approved: z
+          .boolean()
+          .optional()
+          .describe('Human approval to enqueue a Pending nanite (set by the Run action). Bypasses the template gate.'),
         begin: z
           .boolean()
           .optional()
@@ -92,20 +108,23 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           .describe('Reset the nanite back to Pending from ANY phase (clears timings + result) so it can be re-run. Use to clear a stuck Running nanite.'),
       },
     },
-    async ({ id, begin, outcome, error, prompt, output, acceptance, toolCalls, missingTools, tokens, reset }) => {
+    async ({ id, begin, approved, outcome, error, prompt, output, acceptance, toolCalls, missingTools, tokens, reset }) => {
       const existing = store.getDocument({ id, kind: NANITE_KIND });
       if (!existing || existing.kind !== NANITE_KIND) {
         return asError(`Unknown nanite id: "${id}". No live nanite with that id.`);
       }
       const phase = existing.spec?.phase;
-      // Advance ONE step per call so the Running state is observable in the
-      // panel: Pending → Running (start), then Running → terminal (finish).
+      // Lifecycle: Pending → Queued (enqueue) → Running (begin) → terminal.
+      // Execution happens ONLY in the extension host; the control plane just
+      // records phases. `begin` is set by the dispatcher/runner; a bare call
+      // ENQUEUES (gated by human approval / the template flag).
       let mergedSpec: Record<string, unknown>;
       if (reset) {
-        // Return to Pending from any phase (clears a stuck Running nanite).
+        // Return to Pending from any phase (clears a stuck run).
         mergedSpec = {
           ...existing.spec,
           phase: 'Pending',
+          queuedAt: null,
           startedAt: null,
           endedAt: null,
           error: '',
@@ -115,16 +134,11 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           missingTools: [],
           tokens: null,
         };
-      } else if (phase === 'Pending') {
-        // Only the extension-host engine may START a nanite (it runs the model,
-        // then records the result here). A start from anywhere else — e.g. an
-        // agent or a parent nanite — would flip the phase with NOTHING to
-        // execute it, stranding the child in Running. Reject it loudly.
-        if (!begin) {
+      } else if (begin) {
+        // The extension-host engine is STARTING execution (Pending|Queued → Running).
+        if (phase !== 'Pending' && phase !== 'Queued') {
           return asError(
-            `Cannot start nanite "${id}" via ws-nanite-run: the control plane cannot run models. ` +
-              'Start it with the Run action or the workingMemory.nanite.run command (the extension ' +
-              'host executes it). ws-nanite-run supports `reset` and result-recording only.',
+            `Cannot start nanite "${id}": phase is "${String(phase)}" (only Pending/Queued can start).`,
           );
         }
         mergedSpec = {
@@ -135,6 +149,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           error: '',
         };
       } else if (phase === 'Running') {
+        // Finishing call (Running → terminal), carrying the run result.
         mergedSpec = {
           ...existing.spec,
           phase: outcome === 'failed' ? 'Failed' : 'Succeeded',
@@ -148,6 +163,25 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           ...(toolCalls !== undefined ? { toolCalls } : {}),
           ...(missingTools !== undefined ? { missingTools } : {}),
           ...(tokens !== undefined ? { tokens } : {}),
+        };
+      } else if (phase === 'Queued') {
+        // Already queued — a bare re-enqueue is an idempotent no-op.
+        return asText(new Nanite(existing));
+      } else if (phase === 'Pending') {
+        // ENQUEUE for dispatch. The control plane cannot run models, so a bare
+        // start can't execute; instead we queue it for the extension-host
+        // dispatcher — but ONLY with human approval (`approved`, set by the Run
+        // action) or when the owning template opts into unattended runs.
+        if (approved !== true && !templateAllowsUnattended(store, existing.spec?.templateId)) {
+          return asError(
+            `Nanite "${id}" needs human approval to run. Start it with the Run action ` +
+              '(or set the template\'s `allowRunWithoutHuman` to enable unattended dispatch).',
+          );
+        }
+        mergedSpec = {
+          ...existing.spec,
+          phase: 'Queued',
+          queuedAt: nowSeconds(),
         };
       } else {
         return asError(

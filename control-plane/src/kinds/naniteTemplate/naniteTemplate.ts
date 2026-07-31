@@ -62,6 +62,8 @@ export interface INaniteTemplate {
   executionSettings: Record<string, unknown>;
   toolAllowlist: string[];
   toolDenylist: string[];
+  /** When true, nanites may be dispatched without human approval. */
+  allowRunWithoutHuman: boolean;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   acceptanceCriteria: string;
@@ -82,6 +84,7 @@ export class NaniteTemplate implements INaniteTemplate {
   executionSettings: Record<string, unknown>;
   toolAllowlist: string[];
   toolDenylist: string[];
+  allowRunWithoutHuman: boolean;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   acceptanceCriteria: string;
@@ -101,6 +104,7 @@ export class NaniteTemplate implements INaniteTemplate {
     this.executionSettings = plainObject(spec.executionSettings);
     this.toolAllowlist = stringArray(spec.toolAllowlist);
     this.toolDenylist = stringArray(spec.toolDenylist);
+    this.allowRunWithoutHuman = spec.allowRunWithoutHuman === true;
     this.inputSchema = plainObject(spec.inputSchema);
     this.outputSchema = plainObject(spec.outputSchema);
     this.acceptanceCriteria =
