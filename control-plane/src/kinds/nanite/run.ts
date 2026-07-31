@@ -28,13 +28,18 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
     {
       title: 'Nanite: Run',
       description:
-        'Advance a Nanite one lifecycle step: ' +
-        'Pending → Running on the first call, Running → terminal on the next, stamping timings. ' +
-        "On the finishing call pass `outcome` ('succeeded' | 'failed', default 'succeeded'), " +
-        'optional `error` text, and the run RESULT — `output`, `acceptance`, `toolCalls`, `tokens` ' +
-        '(written by the extension-host engine). Returns the updated nanite.',
+        'Advance a Nanite one lifecycle step. STARTING a nanite (Pending → Running) requires ' +
+        '`begin: true` and is done ONLY by the extension-host engine, which actually runs the ' +
+        'model — the control plane cannot execute. A bare start (no `begin`) is rejected: to run a ' +
+        'nanite use the Run action / `workingMemory.nanite.run` command. This tool also does ' +
+        'Running → terminal on the finishing call (pass `outcome`, plus the run RESULT: `output`, ' +
+        '`acceptance`, `toolCalls`, `tokens`) and `reset` (→ Pending). Returns the updated nanite.',
       inputSchema: {
         id: z.string().describe('Document id of the nanite to run (required).'),
+        begin: z
+          .boolean()
+          .optional()
+          .describe('Set by the extension-host engine to START execution (Pending → Running). A start without it is rejected — the control plane cannot run models.'),
         outcome: z
           .enum(['succeeded', 'failed'])
           .optional()
@@ -87,7 +92,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           .describe('Reset the nanite back to Pending from ANY phase (clears timings + result) so it can be re-run. Use to clear a stuck Running nanite.'),
       },
     },
-    async ({ id, outcome, error, prompt, output, acceptance, toolCalls, missingTools, tokens, reset }) => {
+    async ({ id, begin, outcome, error, prompt, output, acceptance, toolCalls, missingTools, tokens, reset }) => {
       const existing = store.getDocument({ id, kind: NANITE_KIND });
       if (!existing || existing.kind !== NANITE_KIND) {
         return asError(`Unknown nanite id: "${id}". No live nanite with that id.`);
@@ -111,6 +116,17 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           tokens: null,
         };
       } else if (phase === 'Pending') {
+        // Only the extension-host engine may START a nanite (it runs the model,
+        // then records the result here). A start from anywhere else — e.g. an
+        // agent or a parent nanite — would flip the phase with NOTHING to
+        // execute it, stranding the child in Running. Reject it loudly.
+        if (!begin) {
+          return asError(
+            `Cannot start nanite "${id}" via ws-nanite-run: the control plane cannot run models. ` +
+              'Start it with the Run action or the workingMemory.nanite.run command (the extension ' +
+              'host executes it). ws-nanite-run supports `reset` and result-recording only.',
+          );
+        }
         mergedSpec = {
           ...existing.spec,
           phase: 'Running',

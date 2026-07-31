@@ -466,10 +466,10 @@ describe('ExtensionHostNaniteRunner', () => {
     // The allow-listed tool was actually invoked.
     expect(bridge.invoked.map((i) => i.name)).toEqual(['wm_create_alert']);
 
-    // Two persistence calls: Pending→Running (no outcome), then the terminal
+    // Two persistence calls: Pending→Running (begin), then the terminal
     // call carrying the result.
     expect(client.runCalls).toHaveLength(2);
-    expect(client.runCalls[0]).toEqual({ id: 'n1' });
+    expect(client.runCalls[0]).toEqual({ id: 'n1', begin: true });
     const finish = client.runCalls[1];
     expect(finish.id).toBe('n1');
     expect(finish.outcome).toBe('succeeded');
@@ -663,7 +663,7 @@ describe('ExtensionHostNaniteRunner error handling', () => {
     expect(result.status).toBe('failed');
     expect(result.error).toMatch(/could not be saved/);
     // The run DID flip to Running and DID attempt the terminal write.
-    expect(runCalls[0]).toEqual({ id: 'n1' });
+    expect(runCalls[0]).toEqual({ id: 'n1', begin: true });
     expect(runCalls.some((c) => c.outcome === 'succeeded')).toBe(true);
   });
 });

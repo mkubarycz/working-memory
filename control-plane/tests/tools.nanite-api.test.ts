@@ -115,4 +115,42 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       await close();
     }
   });
+
+  it('rejects a bare START (no begin) but allows begin:true (extension-host engine)', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({
+        name: 'ws-workstream-create',
+        arguments: { slug: 'ws-run', title: 'WS Run' },
+      });
+      const created = jsonOf<INanite>(
+        await client.callTool({ name: 'ws-nanite-create', arguments: { workstream: 'ws-run' } }),
+      );
+
+      // A bare start (an agent / parent nanite) is refused — nothing would run it.
+      const bare = await client.callTool({
+        name: 'ws-nanite-run',
+        arguments: { id: created.id },
+      });
+      expect(isErrorResult(bare)).toBe(true);
+      expect(textOf(bare)).toContain('cannot run models');
+
+      // Still Pending (never stranded in Running).
+      const afterBare = jsonOf<{ nanites: INanite[] }>(
+        await client.callTool({ name: 'ws-nanite-read', arguments: { id: created.id } }),
+      );
+      expect(afterBare.nanites[0]?.phase).toBe('Pending');
+
+      // The engine's start (begin:true) transitions to Running.
+      const started = jsonOf<INanite>(
+        await client.callTool({
+          name: 'ws-nanite-run',
+          arguments: { id: created.id, begin: true },
+        }),
+      );
+      expect(started.phase).toBe('Running');
+    } finally {
+      await close();
+    }
+  });
 });

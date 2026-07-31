@@ -524,6 +524,8 @@ export interface NaniteCreateInput {
 
 export interface NaniteRunInput {
   id: string;
+  /** Set by the extension-host runner to START execution (Pending → Running). */
+  begin?: boolean;
   outcome?: 'succeeded' | 'failed';
   error?: string;
   /** The full request text sent to the model, instructions + context (finishing call). */
@@ -1471,6 +1473,9 @@ export class ControlPlaneClient {
   /** Kick off (or finish) a nanite via `ws-nanite-run`. */
   async naniteRun(input: NaniteRunInput): Promise<Nanite> {
     const args: Record<string, unknown> = { id: input.id };
+    if (input.begin !== undefined) {
+      args.begin = input.begin;
+    }
     if (input.outcome !== undefined) {
       args.outcome = input.outcome;
     }

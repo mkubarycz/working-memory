@@ -271,7 +271,7 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     // still Pending, so a retry is safe; don't proceed to the model call.
     try {
       await withTimeout(
-        client.naniteRun({ id: nanite.id }),
+        client.naniteRun({ id: nanite.id, begin: true }),
         persistTimeoutMs,
         'persist Running',
       );
