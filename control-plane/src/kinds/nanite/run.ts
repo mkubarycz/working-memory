@@ -89,6 +89,20 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           )
           .optional()
           .describe('The run\'s tool-call trail (finishing call).'),
+        steps: z
+          .array(
+            z.object({
+              kind: z.enum(['assistant', 'tool']),
+              text: z.string().optional(),
+              name: z.string().optional(),
+              ok: z.boolean().optional(),
+              input: z.string().optional(),
+              result: z.string().optional(),
+              error: z.string().optional(),
+            }),
+          )
+          .optional()
+          .describe('The run\'s ordered execution trace — model narration interleaved with each tool call, in execution order (finishing call).'),
         missingTools: z
           .array(z.string())
           .optional()
@@ -108,7 +122,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           .describe('Reset the nanite back to Pending from ANY phase (clears timings + result) so it can be re-run. Use to clear a stuck Running nanite.'),
       },
     },
-    async ({ id, begin, approved, outcome, error, prompt, output, acceptance, toolCalls, missingTools, tokens, reset }) => {
+    async ({ id, begin, approved, outcome, error, prompt, output, acceptance, toolCalls, steps, missingTools, tokens, reset }) => {
       const existing = store.getDocument({ id, kind: NANITE_KIND });
       if (!existing || existing.kind !== NANITE_KIND) {
         return asError(`Unknown nanite id: "${id}". No live nanite with that id.`);
@@ -131,6 +145,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           output: '',
           acceptance: null,
           toolCalls: [],
+          steps: [],
           missingTools: [],
           tokens: null,
         };
@@ -161,6 +176,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           ...(output !== undefined ? { output } : {}),
           ...(acceptance !== undefined ? { acceptance } : {}),
           ...(toolCalls !== undefined ? { toolCalls } : {}),
+          ...(steps !== undefined ? { steps } : {}),
           ...(missingTools !== undefined ? { missingTools } : {}),
           ...(tokens !== undefined ? { tokens } : {}),
         };

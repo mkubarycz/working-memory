@@ -47,6 +47,12 @@ export interface KindDescriptor {
   status?: ZodTypeAny;
   /** Projection to FTS text (wired in a later slice). */
   fts?: (row: FtsRow) => string;
+  /** Validate envelope metadata before a document is created or updated. */
+  validateMetadata?: (input: {
+    slug: string | null | undefined;
+    store: Store;
+    excludeId?: string;
+  }) => void;
 }
 
 /** What a `*.kind.ts` file default-exports; the loader registers these. */

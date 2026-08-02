@@ -130,6 +130,30 @@ export interface ToolCallOutcome {
   error?: string;
 }
 
+/**
+ * One ordered step in a run's execution trace. The trace interleaves the
+ * model's own narration (`kind: 'assistant'`) with each tool call it made
+ * (`kind: 'tool'`), in the exact order they happened — so a reader can follow
+ * the full workflow: what the model said, which tool it reached for next, and
+ * what came back. Previews (`input`/`result`) are pre-stringified and truncated
+ * by the runner so the persisted trace stays bounded.
+ */
+export interface NaniteRunStep {
+  kind: 'assistant' | 'tool';
+  /** Assistant narration for this step (`kind: 'assistant'`). */
+  text?: string;
+  /** Tool name (`kind: 'tool'`). */
+  name?: string;
+  /** Whether the tool call succeeded (`kind: 'tool'`). */
+  ok?: boolean;
+  /** Truncated preview of the tool arguments (`kind: 'tool'`). */
+  input?: string;
+  /** Truncated preview of the tool's text result (`kind: 'tool'`, on success). */
+  result?: string;
+  /** Failure message (`kind: 'tool'`, when the call errored or was denied). */
+  error?: string;
+}
+
 /** The acceptance-judge verdict, surfaced on (and persisted with) a run. */
 export interface NaniteAcceptance {
   /** Plain-language rationale for the pass/fail judgement. */
@@ -173,6 +197,13 @@ export interface NaniteRunResult {
   acceptance?: NaniteAcceptance;
   /** The tool-call trail (name + ok + optional error), in execution order. */
   toolCalls: ToolCallOutcome[];
+  /**
+   * The ordered execution trace — the model's narration interleaved with each
+   * tool call, in the order they occurred. Richer than {@link toolCalls}: it
+   * also carries the between-tool narration and truncated arg/result previews,
+   * so the full workflow can be rendered inline with the response.
+   */
+  steps: NaniteRunStep[];
   /** Allow-list entries that weren't available at run time (typo / not
    *  installed / MCP server down). Empty when everything requested resolved. */
   missingTools?: string[];

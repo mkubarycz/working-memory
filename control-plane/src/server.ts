@@ -30,7 +30,15 @@ import {
   SERVICE_VERSION,
 } from './config.js';
 import { openStore, type Store, ConflictError, NotFoundError } from './store.js';
-import { getKind, validateSpec, defaultStatus, listKinds, specFields, listKindApis } from './kinds/registry.js';
+import {
+  getKind,
+  validateMetadata,
+  validateSpec,
+  defaultStatus,
+  listKinds,
+  specFields,
+  listKindApis,
+} from './kinds/registry.js';
 
 export interface StartServerOptions {
   host?: string;
@@ -99,11 +107,16 @@ export function createMcpServer(
         "document body/fields. The `kind` MUST be a registered kind (see `wm-list-kinds`); " +
         'unknown kinds are rejected. The `spec` MUST match the kind\'s schema exactly — ' +
         'required fields must be present and unknown fields are rejected (e.g. "Topic" ' +
-        'requires a `title`, ≤120 chars). The parsed spec (defaults applied) is what gets ' +
+        'requires a `title`, ≤120 chars; a Topic also requires a unique slug using lowercase words ' +
+        'separated with dashes, with 3-5 short, precise words as the best practice). The parsed spec ' +
+        '(defaults applied) is what gets ' +
         'persisted. Returns the created document envelope.',
       inputSchema: {
         kind: z.string().describe('The document kind. Must be registered (see wm-list-kinds), e.g. "Topic".'),
-        slug: z.string().optional().describe('Optional human-friendly slug.'),
+        slug: z
+          .string()
+          .optional()
+          .describe('Optional human-friendly slug, except Topic requires a unique lowercase dash-separated slug; best practice is 3-5 short, precise words.'),
         labels: z
           .record(z.string(), z.string())
           .optional()
@@ -129,6 +142,7 @@ export function createMcpServer(
         // validateSpec parses (defaults applied, unknown fields rejected via
         // the kind's strict spec). We persist the PARSED value, never the raw
         // input, so a stored document always conforms to its kind.
+        validateMetadata(kind, { slug, store });
         validatedSpec = validateSpec(kind, spec);
         status = defaultStatus(kind);
       } catch (err) {
@@ -194,19 +208,20 @@ export function createMcpServer(
             'cannot be validated. Register the kind (see wm-list-kinds) first.',
         );
       }
+      // slug / labels are replace-if-provided: fall back to current when omitted.
+      const newSlug = slug ?? existing.metadata.slug;
+      const newLabels = labels ?? existing.metadata.labels;
       let validatedSpec: Record<string, unknown>;
       try {
         // Shallow-merge the partial patch onto the current spec, then validate
         // the MERGED spec (strict → an unknown field in the patch is rejected).
         // Persist the PARSED merged spec. On validation failure nothing is written.
         const mergedSpec = { ...existing.spec, ...(spec ?? {}) };
+        validateMetadata(existing.kind, { slug: newSlug, store, excludeId: id });
         validatedSpec = validateSpec(existing.kind, mergedSpec);
       } catch (err) {
         return asError((err as Error).message);
       }
-      // slug / labels are replace-if-provided: fall back to current when omitted.
-      const newSlug = slug ?? existing.metadata.slug;
-      const newLabels = labels ?? existing.metadata.labels;
       try {
         return asText(
           store.updateDocument({

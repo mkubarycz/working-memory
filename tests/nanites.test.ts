@@ -175,6 +175,71 @@ describe('runNanite (core)', () => {
     expect(forbidden?.error).toMatch(/not granted/);
   });
 
+  test('records an ordered execution trace: narration interleaved with tool calls', async () => {
+    const bridge = new ScriptedBridge(
+      [
+        {
+          text: 'Looking up the open topics first.',
+          toolCalls: [{ callId: '1', name: 'wm_list_topics', input: { status: 'open' } }],
+        },
+        {
+          text: 'Now flagging and trying a denied delete.',
+          toolCalls: [
+            { callId: '2', name: 'wm_create_alert', input: { topic_slugs: ['topic-a'] } },
+            { callId: '3', name: 'wm_delete_topic', input: { slug: 'topic-a' } },
+          ],
+        },
+        { text: 'Done: flagged 1 topic.', toolCalls: [] },
+      ],
+      (name) => JSON.stringify({ ok: true, tool: name }),
+    );
+
+    const result = await runNanite(bridge, {
+      ...BASE_OPTS,
+      allowlist: ['wm_list_topics', 'wm_create_alert'],
+    });
+
+    // The trace preserves order: narration, its tool call, narration, both
+    // tool calls (granted then denied). The final response is NOT a step.
+    expect(result.steps.map((s) => (s.kind === 'assistant' ? `say:${s.text}` : `tool:${s.name}`))).toEqual([
+      'say:Looking up the open topics first.',
+      'tool:wm_list_topics',
+      'say:Now flagging and trying a denied delete.',
+      'tool:wm_create_alert',
+      'tool:wm_delete_topic',
+    ]);
+
+    // Granted calls carry an args preview + a result preview; the denied one
+    // carries the args + the not-granted error instead of a result.
+    const listStep = result.steps.find((s) => s.name === 'wm_list_topics');
+    expect(listStep?.ok).toBe(true);
+    expect(listStep?.input).toContain('open');
+    expect(listStep?.result).toContain('wm_list_topics');
+    const deniedStep = result.steps.find((s) => s.name === 'wm_delete_topic');
+    expect(deniedStep?.ok).toBe(false);
+    expect(deniedStep?.error).toMatch(/not granted/);
+    expect(deniedStep?.result).toBeUndefined();
+  });
+
+  test('truncates oversized step previews so the persisted trace stays bounded', async () => {
+    const huge = 'x'.repeat(5000);
+    const bridge = new ScriptedBridge(
+      [
+        { text: '', toolCalls: [{ callId: '1', name: 'wm_list_topics', input: { blob: huge } }] },
+        { text: 'Done.', toolCalls: [] },
+      ],
+      () => huge,
+    );
+
+    const result = await runNanite(bridge, { ...BASE_OPTS, allowlist: ['wm_list_topics'] });
+
+    const step = result.steps.find((s) => s.name === 'wm_list_topics');
+    expect(step?.input?.length).toBeLessThan(huge.length);
+    expect(step?.input).toMatch(/truncated/);
+    expect(step?.result?.length).toBeLessThan(huge.length);
+    expect(step?.result).toMatch(/truncated/);
+  });
+
   // bug: acceptance-evaluator-requires-tool-evidence — the judge must be told
   // whether tools were even available, so it can't demand tool-call evidence a
   // no-tools run could never produce.
@@ -519,6 +584,11 @@ describe('ExtensionHostNaniteRunner', () => {
     expect(finish.output).toBe('Done.');
     expect(finish.acceptance).toMatchObject({ passed: true, threshold: 60 });
     expect(finish.toolCalls?.map((t) => t.name)).toEqual(['wm_create_alert']);
+    // The ordered execution trace is persisted alongside the flat tool-call
+    // trail so the workflow can render inline with the response.
+    expect(finish.steps?.map((s) => (s.kind === 'tool' ? `tool:${s.name}` : 'say'))).toEqual([
+      'tool:wm_create_alert',
+    ]);
   });
 
   test('no template → runs against the topic with empty instructions/allowlist', async () => {

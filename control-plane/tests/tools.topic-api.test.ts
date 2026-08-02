@@ -127,6 +127,54 @@ async function connect(store: Store): Promise<{
     }
   });
 
+  it('requires a unique lowercase dash-separated slug and creates a visible workstream member', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      for (const arguments_ of [
+        { title: 'Missing', workstreams: ['ws-one'] },
+        { slug: '   ', title: 'Blank', workstreams: ['ws-one'] },
+        { slug: 'Not_valid', title: 'Invalid', workstreams: ['ws-one'] },
+      ]) {
+        const rejected = await client.callTool({ name: 'ws-topic-create', arguments: arguments_ });
+        expect(isErrorResult(rejected)).toBe(true);
+        expect(textOf(rejected)).toMatch(/unique slug.*lowercase words separated with dashes/i);
+      }
+
+      const created = jsonOf<ITopic>(
+        await client.callTool({
+          name: 'ws-topic-create',
+          arguments: {
+            slug: 'require-topic-slugs',
+            title: 'Require topic slugs',
+            workstreams: ['working-memory-14-1'],
+          },
+        }),
+      );
+      expect(created.slug).toBe('require-topic-slugs');
+
+      const duplicate = await client.callTool({
+        name: 'ws-topic-create',
+        arguments: {
+          slug: 'require-topic-slugs',
+          title: 'Duplicate topic slug',
+          workstreams: ['working-memory-14-1'],
+        },
+      });
+      expect(isErrorResult(duplicate)).toBe(true);
+      expect(textOf(duplicate)).toMatch(/unique slug.*already in use/i);
+
+      const members = jsonOf<TopicList>(
+        await client.callTool({
+          name: 'ws-topic-read',
+          arguments: { workstream: 'working-memory-14-1' },
+        }),
+      );
+      expect(members.topics.map((topic) => topic.slug)).toEqual(['require-topic-slugs']);
+    } finally {
+      await close();
+    }
+  });
+
   it('ws-topic-read: one-by-slug (0-or-1), list, query filter, and workstream membership filter', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {

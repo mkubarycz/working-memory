@@ -53,6 +53,23 @@ export interface NaniteToolCallOutcome {
   error?: string;
 }
 
+/**
+ * One ordered step in a run's execution trace: the model's narration
+ * (`kind: 'assistant'`) or a single tool call (`kind: 'tool'`), in execution
+ * order. Richer than {@link NaniteToolCallOutcome} — it also carries between-tool
+ * narration and truncated arg/result previews so the full workflow can be
+ * rendered inline with the response.
+ */
+export interface NaniteRunStep {
+  kind: 'assistant' | 'tool';
+  text?: string;
+  name?: string;
+  ok?: boolean;
+  input?: string;
+  result?: string;
+  error?: string;
+}
+
 /** Approximate token usage (loop + judge) recorded on a finished Nanite. */
 export interface NaniteTokenUsage {
   input_tokens: number;
@@ -93,6 +110,8 @@ export interface INanite {
   acceptance: NaniteAcceptance | null;
   /** The run's tool-call trail, in execution order. */
   toolCalls: NaniteToolCallOutcome[];
+  /** The run's ordered execution trace (narration + tool calls). */
+  steps: NaniteRunStep[];
   /** Approximate token usage (loop + judge), or null before the run finishes. */
   tokens: NaniteTokenUsage | null;
   created_at: number;
@@ -118,6 +137,7 @@ export class Nanite implements INanite {
   missingTools: string[];
   acceptance: NaniteAcceptance | null;
   toolCalls: NaniteToolCallOutcome[];
+  steps: NaniteRunStep[];
   tokens: NaniteTokenUsage | null;
   created_at: number;
   updated_at: number;
@@ -143,6 +163,7 @@ export class Nanite implements INanite {
       : [];
     this.acceptance = readAcceptance(spec.acceptance);
     this.toolCalls = readToolCalls(spec.toolCalls);
+    this.steps = readSteps(spec.steps);
     this.tokens = readTokens(spec.tokens);
     this.created_at = env.metadata.createdAt;
     this.updated_at = env.metadata.updatedAt;
@@ -179,6 +200,45 @@ function readToolCalls(value: unknown): NaniteToolCallOutcome[] {
         ...(typeof v.error === 'string' ? { error: v.error } : {}),
       });
     }
+  }
+  return out;
+}
+
+/** Reconstruct the ordered execution trace from a spec blob (empty on absent/foreign). */
+function readSteps(value: unknown): NaniteRunStep[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: NaniteRunStep[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const v = item as Record<string, unknown>;
+    const kind = v.kind === 'assistant' || v.kind === 'tool' ? v.kind : null;
+    if (!kind) {
+      continue;
+    }
+    const step: NaniteRunStep = { kind };
+    if (typeof v.text === 'string') {
+      step.text = v.text;
+    }
+    if (typeof v.name === 'string') {
+      step.name = v.name;
+    }
+    if (typeof v.ok === 'boolean') {
+      step.ok = v.ok;
+    }
+    if (typeof v.input === 'string') {
+      step.input = v.input;
+    }
+    if (typeof v.result === 'string') {
+      step.result = v.result;
+    }
+    if (typeof v.error === 'string') {
+      step.error = v.error;
+    }
+    out.push(step);
   }
   return out;
 }

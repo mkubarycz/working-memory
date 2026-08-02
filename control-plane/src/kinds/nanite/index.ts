@@ -82,6 +82,23 @@ const nanite: KindModule = {
             }),
           )
           .default([]),
+        // Ordered execution trace: the model's narration interleaved with each
+        // tool call, in order. Richer than `toolCalls` — carries between-tool
+        // narration and truncated arg/result previews so the full workflow can
+        // be rendered inline with the response.
+        steps: z
+          .array(
+            z.object({
+              kind: z.enum(['assistant', 'tool']),
+              text: z.string().optional(),
+              name: z.string().optional(),
+              ok: z.boolean().optional(),
+              input: z.string().optional(),
+              result: z.string().optional(),
+              error: z.string().optional(),
+            }),
+          )
+          .default([]),
         tokens: z
           .object({
             input_tokens: z.number(),

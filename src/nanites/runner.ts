@@ -20,12 +20,34 @@ import type {
   NaniteAcceptance,
   NaniteLmBridge,
   NaniteRunResult,
+  NaniteRunStep,
   RunNaniteOptions,
   RunnerToken,
   ToolCallOutcome,
 } from './types';
 
 const NEVER_CANCELLED: RunnerToken = { isCancellationRequested: false };
+
+/** Cap on each persisted arg/result preview so the trace stays bounded. */
+const MAX_STEP_PREVIEW = 800;
+
+/** Stringify + truncate a value for a step preview (compact JSON for objects). */
+function stepPreview(value: unknown): string {
+  let s: string;
+  if (typeof value === 'string') {
+    s = value;
+  } else {
+    try {
+      s = JSON.stringify(value);
+    } catch {
+      s = String(value);
+    }
+  }
+  if (s.length > MAX_STEP_PREVIEW) {
+    s = s.slice(0, MAX_STEP_PREVIEW) + '… (truncated)';
+  }
+  return s;
+}
 
 /**
  * Execute a nanite headlessly against an injected bridge. Never throws for
@@ -43,6 +65,7 @@ export async function runNanite(
   const denylist = options.denylist ?? [];
 
   const toolCalls: ToolCallOutcome[] = [];
+  const steps: NaniteRunStep[] = [];
   let iterations = 0;
   let hitCap = false;
   let finalText = '';
@@ -75,12 +98,23 @@ export async function runNanite(
       // Capture assistant narration even on tool-only turns.
       if (turn.text.trim()) {
         finalText = turn.text;
+        // Record the between-tool narration in the execution trace so the
+        // rendered workflow shows what the model was reasoning before it
+        // reached for the tools below.
+        steps.push({ kind: 'assistant', text: turn.text.trim() });
       }
 
       for (const call of turn.toolCalls) {
         if (!grantedTools.includes(call.name)) {
           const err = `tool '${call.name}' is not granted to this nanite`;
           toolCalls.push({ name: call.name, ok: false, error: err });
+          steps.push({
+            kind: 'tool',
+            name: call.name,
+            ok: false,
+            input: stepPreview(call.input),
+            error: err,
+          });
           convo.addToolResult(
             call.callId,
             call.name,
@@ -91,10 +125,24 @@ export async function runNanite(
         try {
           const resultText = await bridge.invokeTool(call.name, call.input, token);
           toolCalls.push({ name: call.name, ok: true });
+          steps.push({
+            kind: 'tool',
+            name: call.name,
+            ok: true,
+            input: stepPreview(call.input),
+            result: stepPreview(resultText),
+          });
           convo.addToolResult(call.callId, call.name, resultText);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           toolCalls.push({ name: call.name, ok: false, error: message });
+          steps.push({
+            kind: 'tool',
+            name: call.name,
+            ok: false,
+            input: stepPreview(call.input),
+            error: message,
+          });
           convo.addToolResult(
             call.callId,
             call.name,
@@ -144,6 +192,7 @@ export async function runNanite(
       output: finalText,
       acceptance,
       toolCalls,
+      steps,
       iterations,
       hitIterationCap: hitCap,
       model: convo.modelId,
@@ -168,6 +217,7 @@ export async function runNanite(
       status: 'failed',
       output: finalText,
       toolCalls,
+      steps,
       iterations,
       hitIterationCap: hitCap,
       error: message,
