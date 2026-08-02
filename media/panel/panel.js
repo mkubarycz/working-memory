@@ -1560,6 +1560,25 @@
     });
   }
 
+  /**
+   * The element that owns vertical scroll for the current tab. In Active
+   * ("cards") mode the In Progress region scrolls internally; every other tab
+   * scrolls the list itself.
+   * @returns {HTMLElement | null}
+   */
+  function getScrollContainer() {
+    if (state.activeTab === 'active') {
+      return /** @type {HTMLElement | null} */ (
+        listEl.querySelector('.active-sections > .ws-section-cards')
+      );
+    }
+    return listEl;
+  }
+
+  // Last tab render() built DOM for. Distinguishes a same-tab data refresh
+  // (preserve scroll) from a tab switch (start at top).
+  let lastRenderedTab = /** @type {string | null} */ (null);
+
   function render() {
     // Tabs
     const tabButtons = tabsEl.querySelectorAll('.tab');
@@ -1569,6 +1588,16 @@
       btn.setAttribute('aria-selected', selected ? 'true' : 'false');
     });
     renderGearStrip();
+
+    // Preserve the user's scroll position across re-renders of the SAME tab.
+    // A data/auto refresh rebuilds the list DOM (replaceChildren below), which
+    // recreates the Active "In Progress" scroll region and would otherwise
+    // snap it back to the top. A tab switch intentionally starts at the top.
+    const sameTab = lastRenderedTab === state.activeTab;
+    const prevScrollTop = sameTab
+      ? (getScrollContainer()?.scrollTop ?? 0)
+      : 0;
+    lastRenderedTab = state.activeTab;
 
     // List
     listEl.replaceChildren();
@@ -1609,6 +1638,14 @@
       }
     }
     listEl.appendChild(frag);
+    // Restore the pre-render scroll position on the (possibly recreated)
+    // scroll container. The browser clamps to the new content height.
+    if (prevScrollTop > 0) {
+      const nextScrollEl = getScrollContainer();
+      if (nextScrollEl) {
+        nextScrollEl.scrollTop = prevScrollTop;
+      }
+    }
     state.flashChipIds.clear();
   }
 
