@@ -37,6 +37,17 @@ interface INanite {
   workstream: string;
   inputTopic: string;
   phase: string;
+  output?: string;
+  toolCalls?: { name: string; ok: boolean; error?: string }[];
+  steps?: {
+    kind: 'assistant' | 'tool';
+    text?: string;
+    name?: string;
+    ok?: boolean;
+    input?: string;
+    result?: string;
+    error?: string;
+  }[];
 }
 
 let clientSeq = 0;
@@ -187,6 +198,101 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
         await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id } }),
       );
       expect(queued.phase).toBe('Queued');
+    } finally {
+      await close();
+    }
+  });
+
+  it('persists the run result — output, toolCalls, and the ordered steps trace — and reads it back', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({
+        name: 'ws-workstream-create',
+        arguments: { slug: 'ws-trace', title: 'WS Trace' },
+      });
+      await client.callTool({
+        name: 'ws-nanitetemplate-create',
+        arguments: { slug: 'trace-tpl', title: 'Trace', allowRunWithoutHuman: true },
+      });
+      const created = jsonOf<INanite>(
+        await client.callTool({
+          name: 'ws-nanite-create',
+          arguments: { workstream: 'ws-trace', templateId: 'trace-tpl' },
+        }),
+      );
+      // Queue (unattended) then start.
+      await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id } });
+      await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id, begin: true } });
+
+      const steps = [
+        { kind: 'assistant', text: 'Listing topics first.' },
+        { kind: 'tool', name: 'wm_list_topics', ok: true, input: '{"status":"open"}', result: '[]' },
+        { kind: 'tool', name: 'wm_delete_topic', ok: false, input: '{"slug":"a"}', error: 'not granted' },
+      ];
+      const finished = jsonOf<INanite>(
+        await client.callTool({
+          name: 'ws-nanite-run',
+          arguments: {
+            id: created.id,
+            outcome: 'succeeded',
+            output: 'all done',
+            toolCalls: [
+              { name: 'wm_list_topics', ok: true },
+              { name: 'wm_delete_topic', ok: false, error: 'not granted' },
+            ],
+            steps,
+          },
+        }),
+      );
+
+      expect(finished.phase).toBe('Succeeded');
+      expect(finished.output).toBe('all done');
+      // The ordered trace survives the strict spec schema round-trip.
+      expect(finished.steps).toEqual(steps);
+
+      // And it's still there on a fresh read.
+      const reread = jsonOf<{ nanites: INanite[] }>(
+        await client.callTool({ name: 'ws-nanite-read', arguments: { id: created.id } }),
+      );
+      expect(reread.nanites[0]?.steps).toEqual(steps);
+    } finally {
+      await close();
+    }
+  });
+
+  it('reset clears the steps trace back to empty', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({
+        name: 'ws-workstream-create',
+        arguments: { slug: 'ws-reset', title: 'WS Reset' },
+      });
+      await client.callTool({
+        name: 'ws-nanitetemplate-create',
+        arguments: { slug: 'reset-tpl', title: 'Reset', allowRunWithoutHuman: true },
+      });
+      const created = jsonOf<INanite>(
+        await client.callTool({
+          name: 'ws-nanite-create',
+          arguments: { workstream: 'ws-reset', templateId: 'reset-tpl' },
+        }),
+      );
+      await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id } });
+      await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id, begin: true } });
+      await client.callTool({
+        name: 'ws-nanite-run',
+        arguments: {
+          id: created.id,
+          outcome: 'succeeded',
+          steps: [{ kind: 'tool', name: 'wm_list_topics', ok: true }],
+        },
+      });
+
+      const reset = jsonOf<INanite>(
+        await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id, reset: true } }),
+      );
+      expect(reset.phase).toBe('Pending');
+      expect(reset.steps).toEqual([]);
     } finally {
       await close();
     }

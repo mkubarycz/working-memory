@@ -34,6 +34,96 @@ function readAcceptance(v: unknown): Acceptance | null {
   };
 }
 
+interface RunStep {
+  kind: 'assistant' | 'tool';
+  text?: string;
+  name?: string;
+  ok?: boolean;
+  input?: string;
+  result?: string;
+  error?: string;
+}
+
+function readSteps(v: unknown): RunStep[] {
+  if (!Array.isArray(v)) {
+    return [];
+  }
+  const out: RunStep[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const o = item as Record<string, unknown>;
+    const kind = o.kind === 'assistant' || o.kind === 'tool' ? o.kind : null;
+    if (!kind) {
+      continue;
+    }
+    out.push({
+      kind,
+      ...(typeof o.text === 'string' ? { text: o.text } : {}),
+      ...(typeof o.name === 'string' ? { name: o.name } : {}),
+      ...(typeof o.ok === 'boolean' ? { ok: o.ok } : {}),
+      ...(typeof o.input === 'string' ? { input: o.input } : {}),
+      ...(typeof o.result === 'string' ? { result: o.result } : {}),
+      ...(typeof o.error === 'string' ? { error: o.error } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Render the ordered execution trace inline: the model's narration interleaved
+ * with each tool call, in the order they happened, so a reader can follow the
+ * full workflow — what the model reasoned, which tool it called next, and what
+ * came back. Each tool call's args/result are tucked into a collapsed block so
+ * the timeline stays scannable. Returns '' when there's no trace to show.
+ */
+function renderWorkflow(steps: RunStep[]): string {
+  if (steps.length === 0) {
+    return '';
+  }
+  const out: string[] = [
+    '## Workflow',
+    '',
+    '_The run step-by-step — model narration interleaved with each tool call, in execution order._',
+    '',
+  ];
+  let toolNo = 0;
+  for (const step of steps) {
+    if (step.kind === 'assistant') {
+      const text = (step.text ?? '').trim();
+      if (text) {
+        out.push(`> 💬 ${text.replace(/\n/g, '\n> ')}`, '');
+      }
+      continue;
+    }
+    toolNo++;
+    const icon = step.ok ? '✅' : '❌';
+    out.push(`**${toolNo}. ${icon} \`${step.name ?? 'unknown'}\`**`);
+    const detail: string[] = [];
+    if (step.input) {
+      detail.push('_Arguments_', '', '~~~json', step.input, '~~~', '');
+    }
+    if (step.error) {
+      detail.push('_Error_', '', '~~~text', step.error, '~~~', '');
+    } else if (step.result) {
+      detail.push('_Result_', '', '~~~text', step.result, '~~~', '');
+    }
+    if (detail.length > 0) {
+      out.push(
+        '',
+        '<details>',
+        '<summary>arguments &amp; result</summary>',
+        '',
+        ...detail,
+        '</details>',
+      );
+    }
+    out.push('');
+  }
+  return out.join('\n').trimEnd();
+}
+
 /** A collapsed `<details>` block, or '' when there's nothing to show. */
 function collapsedSection(summary: string, body: string | null | undefined): string {
   const content = (body ?? '').trim();
@@ -164,6 +254,10 @@ export function renderNaniteDocument(
   }
   if (acceptance?.summary) {
     lines.push('## Acceptance', '', acceptance.summary, '');
+  }
+  const workflow = renderWorkflow(readSteps(spec.steps));
+  if (workflow) {
+    lines.push(workflow, '');
   }
   const responseSection = collapsedSection('Response — model output', asStr(spec.output));
   if (responseSection) {

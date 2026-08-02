@@ -470,6 +470,22 @@ export interface NaniteToolCallOutcome {
   error?: string;
 }
 
+/**
+ * One ordered step in a Nanite run's execution trace — the model's narration
+ * (`kind: 'assistant'`) interleaved with each tool call (`kind: 'tool'`), in
+ * execution order. Structurally identical to the control-plane
+ * `kinds/nanite/nanite.ts::NaniteRunStep`.
+ */
+export interface NaniteRunStep {
+  kind: 'assistant' | 'tool';
+  text?: string;
+  name?: string;
+  ok?: boolean;
+  input?: string;
+  result?: string;
+  error?: string;
+}
+
 /** Approximate token usage (loop + judge) recorded on a finished Nanite. */
 export interface NaniteTokenUsage {
   input_tokens: number;
@@ -506,6 +522,8 @@ export interface Nanite {
   acceptance: NaniteAcceptance | null;
   /** The run's tool-call trail, in execution order. */
   toolCalls: NaniteToolCallOutcome[];
+  /** The run's ordered execution trace (narration + tool calls). */
+  steps: NaniteRunStep[];
   /** Approximate token usage (loop + judge), or null before the run finishes. */
   tokens: NaniteTokenUsage | null;
   created_at: number;
@@ -544,6 +562,8 @@ export interface NaniteRunInput {
   acceptance?: NaniteAcceptance | null;
   /** The run's tool-call trail (finishing call). */
   toolCalls?: NaniteToolCallOutcome[];
+  /** The run's ordered execution trace — narration + tool calls (finishing call). */
+  steps?: NaniteRunStep[];
   /** Allow-list entries that were unavailable at run time (finishing call). */
   missingTools?: string[];
   /** Approximate token usage, loop + judge (finishing call). */
@@ -1509,6 +1529,9 @@ export class ControlPlaneClient {
     }
     if (input.toolCalls !== undefined) {
       args.toolCalls = input.toolCalls;
+    }
+    if (input.steps !== undefined) {
+      args.steps = input.steps;
     }
     if (input.missingTools !== undefined) {
       args.missingTools = input.missingTools;

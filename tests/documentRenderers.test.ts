@@ -351,6 +351,38 @@ describe('renderNaniteDocument', () => {
     expect(md).toContain('`phase`: Pending');
   });
 
+  it('renders the execution trace as an inline Workflow, in order, before the Response', () => {
+    const md = renderNaniteDocument(
+      makeEnvelope('Nanite', {
+        phase: 'Succeeded',
+        output: 'here is the answer',
+        steps: [
+          { kind: 'assistant', text: 'Looking up the open topics first.' },
+          { kind: 'tool', name: 'wm_list_topics', ok: true, input: '{"status":"open"}', result: '[{"slug":"a"}]' },
+          { kind: 'tool', name: 'wm_delete_topic', ok: false, input: '{"slug":"a"}', error: 'not granted' },
+        ],
+      }),
+    );
+    expect(md).toContain('## Workflow');
+    // Narration and each tool call appear, numbered, with status icons.
+    expect(md).toContain('Looking up the open topics first.');
+    expect(md).toContain('1. ✅ `wm_list_topics`');
+    expect(md).toContain('2. ❌ `wm_delete_topic`');
+    // Args + result/error tucked into a disclosure.
+    expect(md).toContain('<summary>arguments &amp; result</summary>');
+    expect(md).toContain('"status":"open"');
+    expect(md).toContain('not granted');
+    // Workflow renders before the Response disclosure.
+    expect(md.indexOf('## Workflow')).toBeLessThan(md.indexOf('<summary>Response'));
+  });
+
+  it('omits the Workflow section when there is no execution trace', () => {
+    const md = renderNaniteDocument(
+      makeEnvelope('Nanite', { phase: 'Succeeded', output: 'done', steps: [] }),
+    );
+    expect(md).not.toContain('## Workflow');
+  });
+
   it('is wired into the dispatcher for the Nanite kind', () => {
     const md = renderDocumentByKind(
       makeEnvelope('Nanite', { phase: 'Running', prompt: 'req', output: '' }),
