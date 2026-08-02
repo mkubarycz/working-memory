@@ -135,6 +135,15 @@ function textOf(res: unknown): string {
       });
       expect(isErrorResult(lowercaseTopic)).toBe(true);
 
+      // Topic metadata invariants apply through the generic document boundary,
+      // not only through the ws-topic-create input schema.
+      const missingTopicSlug = await client.callTool({
+        name: 'wm-document-create',
+        arguments: { kind: 'Topic', spec: { title: 'Missing slug', workstreams: ['ws-one'] } },
+      });
+      expect(isErrorResult(missingTopicSlug)).toBe(true);
+      expect(textOf(missingTopicSlug)).toMatch(/unique slug.*lowercase words separated with dashes/i);
+
       // Registered kind but extra spec fields → validation error, no doc.
       const extraFields = await client.callTool({
         name: 'wm-document-create',

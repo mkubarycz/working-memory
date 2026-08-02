@@ -170,6 +170,18 @@ export function validateSpec(name: string, specInput: unknown): Record<string, u
   return result.data as Record<string, unknown>;
 }
 
+/** Validate a registered kind's envelope metadata before persisting it. */
+export function validateMetadata(
+  name: string,
+  input: Parameters<NonNullable<KindDescriptor['validateMetadata']>>[0],
+): void {
+  const kind = registry.get(name);
+  if (!kind) {
+    throw new Error(`Unknown kind: ${name}`);
+  }
+  kind.descriptor.validateMetadata?.(input);
+}
+
 /** The kind's controller-owned status default (Base → `{}`). */
 export function defaultStatus(name: string): Record<string, unknown> {
   const kind = registry.get(name);

@@ -73,6 +73,18 @@ const topic: KindModule = {
         focusedWorkstreams: z.array(z.string()).default([]),
       })
       .strict(),
+    validateMetadata: ({ slug, store, excludeId }) => {
+      const slugConvention =
+        'A Topic requires a unique slug: lowercase words separated with dashes ' +
+        '(best practice: 3-5 words, short and precise).';
+      if (typeof slug !== 'string' || slug.trim() === '' || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(slug)) {
+        throw new Error(slugConvention);
+      }
+      const existing = store.getDocument({ slug, kind: TOPIC_KIND });
+      if (existing && existing.metadata.id !== excludeId) {
+        throw new Error(`${slugConvention} "${slug}" is already in use.`);
+      }
+    },
     // No envelope `status` schema → inherit Base (lifecycle-only, empty {}).
     fts: (r) => `${r.spec.title}\n${r.spec.body}`,
   },

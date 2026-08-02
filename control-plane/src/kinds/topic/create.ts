@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
-import { validateSpec, defaultStatus } from '../registry.js';
+import { validateMetadata, validateSpec, defaultStatus } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Topic, TOPIC_KIND, stringArray } from './topic.js';
 
@@ -26,7 +26,8 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
     {
       title: 'Topic: Create',
       description:
-        'Create a Topic. Provide a `title` (required, ≤120 chars); optional `slug`, `body`, ' +
+        'Create a Topic. Provide a `title` (required, ≤120 chars) and a unique `slug` (required: ' +
+        'lowercase words separated with dashes; best practice 3-5 words, short and precise); optional `body`, ' +
         "`status` ('open' | 'closed', default 'open'), `topicType` (default 'topic'), `parents` " +
         '(parent topic slugs), `workstreams` (member workstream slugs), and `focusedWorkstreams` ' +
         '(subset of `workstreams` this topic is pinned/focused in). Every topic MUST belong to ' +
@@ -35,7 +36,10 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
         'user before creating it. The spec is validated ' +
         'against the Topic kind (invalid status rejected). Returns the created topic.',
       inputSchema: {
-        slug: z.string().optional().describe('Optional human-friendly slug for the topic.'),
+        slug: z
+          .string()
+          .optional()
+          .describe('Required unique slug: lowercase words separated with dashes; best practice 3-5 words, short and precise.'),
         title: z.string().describe('Topic title (required, 1–120 chars).'),
         body: z.string().optional().describe('Topic body (markdown).'),
         status: z
@@ -108,6 +112,7 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
       let validatedSpec: Record<string, unknown>;
       let docStatus: Record<string, unknown>;
       try {
+        validateMetadata(TOPIC_KIND, { slug, store });
         validatedSpec = validateSpec(TOPIC_KIND, specInput);
         docStatus = defaultStatus(TOPIC_KIND);
       } catch (err) {
