@@ -185,20 +185,3 @@ that template is the documented cure.
 See the [GitHub Releases](https://github.com/mkubarycz/working-memory/releases)
 page — each tagged `v<version>` release carries its notes and the published
 `.vsix`.
-
-### 0.14.2 — New Document UI
-
-- **Unified `.working-memory` Svelte custom editor** — a single custom editor
-  that dispatches on document kind: dedicated **workstream** and **topic**
-  screens, with a **generic fallback** for other document kinds.
-- **Tree UX** — collapse/expand, right-click context menu, pin, focus **glow**,
-  and per-state styling (dim + sort closed topics, red-X for failed nanites).
-- **Autosave + save indicator** — edits persist automatically with a live save
-  status in the editor.
-- **Live-refresh + startup-race heal** — open editors refresh in place on
-  external changes, and a startup race that could leave the panel stale now
-  self-heals.
-- **Markdown Preview/Edit tabs** — topic bodies get a tabbed Preview/Edit
-  panel.
-- **Codicon packaging fix** — `media/codicons` is regenerated on build/install
-  so the packaged `.vsix` reliably ships `codicon.css`.
