@@ -63,7 +63,6 @@
       for (const id of cascadeExpandIds(node, CASCADE_LEVELS)) {
         expanded.add(id);
       }
-      collapsed.add(id);
     }
   }
 

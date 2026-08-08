@@ -99,7 +99,9 @@
   }
 
   function invokeAction(command: string, args: unknown[]): void {
-    transport.post({ type: 'invoke', command, args });
+    // args live inside the `doc` $state proxy; postMessage's structured clone
+    // throws DataCloneError on a Svelte proxy, so snapshot to a plain value.
+    transport.post({ type: 'invoke', command, args: $state.snapshot(args) as unknown[] });
   }
 
   function togglePinTopic(slug: string): void {
