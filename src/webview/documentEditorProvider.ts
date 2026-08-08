@@ -129,7 +129,7 @@ interface WmDocument extends vscode.CustomDocument {
 }
 
 /** Parse `working-memory:/<kind>/<x>.working-memory` into a kind hint + id. */
-function parseRef(uri: vscode.Uri): ParsedRef {
+export function parseRef(uri: vscode.Uri): ParsedRef {
   const match = /^\/([^/]+)\/(.+)\.working-memory$/.exec(uri.path);
   if (!match) {
     return { kindHint: 'document', identifier: uri.path };
@@ -145,7 +145,7 @@ function parseRef(uri: vscode.Uri): ParsedRef {
 }
 
 /** Map a URI kind hint to the control-plane document `kind` name. */
-function controlPlaneKindFor(kindHint: string): string | null {
+export function controlPlaneKindFor(kindHint: string): string | null {
   switch (kindHint) {
     case 'workstream':
       return 'Workstream';
@@ -168,7 +168,7 @@ function makeNonce(): string {
 }
 
 /** Best-effort string coercion for a `spec` value. */
-function asString(v: unknown): string {
+export function asString(v: unknown): string {
   if (v === null || v === undefined) {
     return '';
   }
@@ -176,6 +176,33 @@ function asString(v: unknown): string {
     return v;
   }
   return typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
+}
+
+/**
+ * Build the generic fallback view-model from a document envelope: flatten +
+ * sort the `spec` into readable fields and derive a title. Pure — no client,
+ * no VS Code APIs — so it can be unit-tested directly.
+ */
+export function buildGenericVM(doc: DocumentEnvelope): GenericDocVM {
+  const spec: GenericFieldVM[] = Object.entries(doc.spec ?? {}).map(
+    ([key, value]) => ({ key, value: asString(value) }),
+  );
+  spec.sort((a, b) => a.key.localeCompare(b.key));
+  const title =
+    asString(doc.spec?.title) ||
+    asString(doc.spec?.label) ||
+    doc.metadata.slug ||
+    doc.metadata.id;
+  return {
+    kind: doc.kind,
+    id: doc.metadata.id,
+    slug: doc.metadata.slug,
+    title,
+    createdAt: doc.metadata.createdAt,
+    updatedAt: doc.metadata.updatedAt,
+    resourceVersion: doc.metadata.resourceVersion,
+    spec,
+  };
 }
 
 export class DocumentEditorProvider
@@ -495,25 +522,7 @@ export class DocumentEditorProvider
   }
 
   private buildGeneric(doc: DocumentEnvelope): GenericDocVM {
-    const spec: GenericFieldVM[] = Object.entries(doc.spec ?? {}).map(
-      ([key, value]) => ({ key, value: asString(value) }),
-    );
-    spec.sort((a, b) => a.key.localeCompare(b.key));
-    const title =
-      asString(doc.spec?.title) ||
-      asString(doc.spec?.label) ||
-      doc.metadata.slug ||
-      doc.metadata.id;
-    return {
-      kind: doc.kind,
-      id: doc.metadata.id,
-      slug: doc.metadata.slug,
-      title,
-      createdAt: doc.metadata.createdAt,
-      updatedAt: doc.metadata.updatedAt,
-      resourceVersion: doc.metadata.resourceVersion,
-      spec,
-    };
+    return buildGenericVM(doc);
   }
 
   // ---- Autosave -------------------------------------------------------------
