@@ -20,7 +20,7 @@ coverage/
 # vsce temp/partial packages
 *.vsix.tmp
 
-# Codicon assets — copied from node_modules/@vscode/codicons by release.sh.
+# Codicon assets — copied from node_modules/@vscode/codicons by scripts/copy-codicons.mjs.
 # Treated as a build artifact so the source of truth stays the npm package.
 media/codicons/
 

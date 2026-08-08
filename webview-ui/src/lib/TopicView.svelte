@@ -378,14 +378,6 @@
     margin: 0 0 10px;
   }
 
-  .count {
-    font-size: 0.75em;
-    color: var(--vscode-badge-foreground);
-    background: var(--vscode-badge-background);
-    border-radius: 10px;
-    padding: 1px 8px;
-  }
-
   /* Tabbed body panel: a bordered content box with editor-style tabs sitting
      on its top edge. The active tab merges into the box (shares the top
      border, no seam) via a -1px bottom margin that overlaps the box border. */
