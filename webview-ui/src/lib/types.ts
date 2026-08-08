@@ -206,7 +206,17 @@ export type ExtToWebview =
   | { type: 'connecting' }
   // A newer server version exists but the user has unsaved edits — surface a
   // "content changed — reload" affordance instead of overwriting (Bug A).
-  | { type: 'staleReload' };
+  | { type: 'staleReload' }
+  // ---- Right-rail command widget (WM 14.2.1) --------------------------------
+  // The sticky-context slug (currently/last-selected WM doc), pushed so the
+  // command box can show + default its scope.
+  | { type: 'context'; slug: string | null; kind: string | null }
+  // The agentic tool-calling loop started running for the submitted command.
+  | { type: 'briefRunning' }
+  // The loop finished: a markdown brief of what was done + the tool-call trail.
+  | { type: 'brief'; markdown: string }
+  // The command could not run (control plane down, transport error, …).
+  | { type: 'briefError'; message: string };
 
 /** A topic edit patch (title / status / body). */
 export interface TopicPatch {
@@ -234,4 +244,8 @@ export type WebviewToExt =
   | { type: 'editState'; hasPendingEdits: boolean }
   // The user clicked the reload banner: discard local edits + take the server
   // version.
-  | { type: 'discardAndReload' };
+  | { type: 'discardAndReload' }
+  // ---- Right-rail command widget (WM 14.2.1) --------------------------------
+  // Run a natural-language command through the local-model tool-calling loop,
+  // scoped to the sticky-context slug (or null when nothing is selected).
+  | { type: 'submitCommand'; command: string; contextSlug: string | null };

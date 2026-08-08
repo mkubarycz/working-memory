@@ -382,6 +382,27 @@ export interface AlertUpdateInput {
 }
 
 /**
+ * Fields for `ws-alert-create`. Alerts have NO slug — the control-plane returns
+ * the created alert (whose `id` is the handle for later update/delete). Only
+ * `description` is required by the kind; the rest default server-side.
+ */
+export interface AlertCreateInput {
+  description: string;
+  title?: string;
+  recommended_action?: string;
+  status?: 'alert' | 'informational' | 'closed';
+  dedupe_key?: string | null;
+  created_by?: string;
+  topics?: string[];
+}
+
+/** Fields for `ws-alert-delete` (identified by `id`; `restore` undeletes). */
+export interface AlertDeleteInput {
+  id: string;
+  restore?: boolean;
+}
+
+/**
  * The Nanite Template shape returned by the control-plane `ws-nanitetemplate-*`
  * domain API. Kept structurally identical to
  * `control-plane/src/kinds/naniteTemplate/naniteTemplate.ts::INaniteTemplate`.
@@ -1364,6 +1385,52 @@ export class ControlPlaneClient {
       args.topics = input.topics;
     }
     return this.parseAlert(await this.callDomainTool('ws-alert-update', args));
+  }
+
+  /**
+   * Create an alert via `ws-alert-create` (WM 14.2.1 "poc-command-widget" — the
+   * right-rail agentic loop needs to raise alerts, and the read-only alert
+   * wrapper predates that). Only `description` is required; the rest default
+   * server-side. Returns the created alert (its `id` is the update/delete handle).
+   */
+  async alertCreate(input: AlertCreateInput): Promise<Alert> {
+    const args: Record<string, unknown> = { description: input.description };
+    if (input.title !== undefined) {
+      args.title = input.title;
+    }
+    if (input.recommended_action !== undefined) {
+      args.recommended_action = input.recommended_action;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    if (input.dedupe_key !== undefined) {
+      args.dedupe_key = input.dedupe_key;
+    }
+    if (input.created_by !== undefined) {
+      args.created_by = input.created_by;
+    }
+    if (input.topics !== undefined) {
+      args.topics = input.topics;
+    }
+    return this.parseAlert(await this.callDomainTool('ws-alert-create', args));
+  }
+
+  /**
+   * Soft-delete (or, with `restore: true`, undelete) an alert via
+   * `ws-alert-delete` (identified by `id`). Returns `{ ok, id }`.
+   */
+  async alertDelete(input: AlertDeleteInput): Promise<{ ok: boolean; id: string }> {
+    const args: Record<string, unknown> = { id: input.id };
+    if (input.restore !== undefined) {
+      args.restore = input.restore;
+    }
+    const result = await this.callDomainTool('ws-alert-delete', args);
+    const parsed = parseToolText(result) as { ok?: unknown; id?: unknown } | null;
+    return {
+      ok: parsed?.ok === true,
+      id: typeof parsed?.id === 'string' ? parsed.id : input.id,
+    };
   }
 
   // ----- Nanite Template domain API (`ws-nanitetemplate-*`) -----------------

@@ -13,6 +13,7 @@ import { findHubWorkspace, resolveDbPath } from './paths';
 import { WorkstreamDocumentProvider } from './contentProvider';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
 import { DocumentEditorProvider } from './webview/documentEditorProvider';
+import { CommandWidgetProvider } from './webview/commandWidgetProvider';
 import {
   resolveRevealFromTabs,
   type TabDescriptor,
@@ -265,6 +266,23 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
+  // The right-rail command widget (WM 14.2.1 "poc-right-rail-command-widget").
+  // A second webview view in the Working Memory container that drives WM CRUD by
+  // handing a natural-language command to a LOCAL model tool-calling loop, all
+  // through the control-plane client (never SQLite). Michael can drag it into
+  // the secondary side bar. Reads the live client through the same accessor the
+  // document editor uses so it always talks to the currently-connected daemon.
+  const commandWidgetProvider = new CommandWidgetProvider(
+    context.extensionUri,
+    () => controlPlaneClient,
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      CommandWidgetProvider.viewType,
+      commandWidgetProvider,
+    ),
+  );
+
   const refresh = (): void => {
     panelProvider.refresh();
     contentProvider.refresh();
@@ -439,6 +457,14 @@ export function activate(context: vscode.ExtensionContext): void {
     const activeTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
     const target = resolveRevealFromTabs(classifyTab(activeTab));
     panelProvider.reveal(target);
+    // Sticky context for the command widget: mirror the same active-tab signal.
+    // Only topic/workstream targets are a meaningful command scope; anything
+    // else (session, topic-type, or no WM doc) clears the widget's scope.
+    if (target && (target.kind === 'topic' || target.kind === 'workstream')) {
+      commandWidgetProvider.setContext({ slug: target.id, kind: target.kind });
+    } else {
+      commandWidgetProvider.setContext(null);
+    }
   };
 
   const pickOpenWorkstreamSlug = async (): Promise<string | null> => {

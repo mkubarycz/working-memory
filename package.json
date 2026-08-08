@@ -60,6 +60,23 @@
           "minimum": 1,
           "maximum": 20,
           "markdownDescription": "How many `Queued` nanites the dispatcher runs at once. Start at **1**; raise to run more background nanites in parallel (each is a live model call, so higher values cost more)."
+        },
+        "workingMemory.localModel.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "markdownDescription": "Base URL of the local Ollama/Llama server that powers the right-rail command widget. The widget POSTs to `${baseUrl}/api/chat` (native tool-calling)."
+        },
+        "workingMemory.localModel.model": {
+          "type": "string",
+          "default": "qwen2.5:14b",
+          "markdownDescription": "Model tag the command widget asks the local server to run. Must be a tool-capable model (e.g. `qwen2.5:14b`)."
+        },
+        "workingMemory.localModel.maxIterations": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 50,
+          "markdownDescription": "Maximum tool-calling turns the command widget's agentic loop takes before it gives up (the classic small-model \"never stops\" guard)."
         }
       }
     },
@@ -83,6 +100,11 @@
         {
           "id": "workingMemory.workstreams",
           "name": "Workstreams",
+          "type": "webview"
+        },
+        {
+          "id": "workingMemory.commandWidget",
+          "name": "Working Memory Command",
           "type": "webview"
         }
       ]
