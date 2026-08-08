@@ -203,9 +203,11 @@
     }
   },
   "scripts": {
-    "compile": "npm run compile:webview && tsc -p . && npm run compile:control-plane",
+    "compile": "npm run compile:webview && npm run copy:codicons && tsc -p . && npm run compile:control-plane",
     "compile:control-plane": "tsc -p control-plane",
     "compile:webview": "vite build",
+    "copy:codicons": "node scripts/copy-codicons.mjs",
+    "postinstall": "node scripts/copy-codicons.mjs",
     "watch": "tsc -p . -w",
     "watch:webview": "vite build --watch",
     "package": "vsce package",
