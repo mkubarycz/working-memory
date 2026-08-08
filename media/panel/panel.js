@@ -1665,8 +1665,8 @@
   // workstream); this is independent of the click-selection `.focused` style.
 
   /**
-   * Extract the slug/id segment from a node's `working-memory:/<kind>/<id>.md`
-   * openUri, regardless of kind. Used for kind-less reveal-by-slug matching.
+   * Extract the slug/id segment from a node's
+   * `working-memory:/<kind>/<id>.working-memory` openUri, regardless of kind.
    * @param {string | undefined} openUri
    * @returns {string | null}
    */
@@ -1674,7 +1674,7 @@
     if (typeof openUri !== 'string') {
       return null;
     }
-    const m = /^working-memory:\/(?:session|topic|workstream|topic-type)\/(.+)\.md$/.exec(openUri);
+    const m = /^working-memory:\/(?:session|topic|workstream|topic-type)\/(.+)\.working-memory$/.exec(openUri);
     if (!m) {
       return null;
     }
@@ -1690,8 +1690,8 @@
   /**
    * Predicate: does this node represent the WM doc currently revealed from the
    * editor? Concrete-kind targets match the full
-   * `working-memory:/<kind>/<id>.md` openUri; kind-less targets (slug recovered
-   * from a tab label) match by slug/id alone. Pinned/focused clones preserve
+   * `working-memory:/<kind>/<id>.working-memory` openUri; kind-less targets
+   * (legacy slug-only) match by slug/id alone. Pinned/focused clones preserve
    * the underlying topic's openUri, so they match too.
    * @param {Node} node
    * @returns {boolean}
@@ -1706,7 +1706,7 @@
     }
     if (typeof target.kind === 'string') {
       return node.openUri ===
-        'working-memory:/' + target.kind + '/' + target.id + '.md';
+        'working-memory:/' + target.kind + '/' + target.id + '.working-memory';
     }
     return slugFromOpenUri(node.openUri) === target.id;
   }

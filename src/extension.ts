@@ -12,11 +12,10 @@ import { dirname, join } from 'node:path';
 import { findHubWorkspace, resolveDbPath } from './paths';
 import { WorkstreamDocumentProvider } from './contentProvider';
 import { WorkstreamPanelProvider } from './webview/panelProvider';
+import { DocumentEditorProvider } from './webview/documentEditorProvider';
 import {
-  isMarkdownPreviewViewType,
   resolveRevealFromTabs,
   type TabDescriptor,
-  type PanelRevealTarget,
 } from './panelReveal';
 import { findLatestVsix } from './vsix';
 import { deployTemplates } from './deployTemplates';
@@ -87,33 +86,6 @@ type TopicRemoveFromWorkstreamCommandInput = {
   topicSlug?: string;
   workstreamSlug?: string;
 };
-
-function revealHeading(
-  editor: vscode.TextEditor,
-  section: 'sessions' | 'recent-entries' | 'entries',
-): void {
-  const wanted =
-    section === 'sessions'
-      ? 'sessions'
-      : section === 'recent-entries'
-        ? 'recent entries'
-        : 'entries';
-  for (let i = 0; i < editor.document.lineCount; i++) {
-    const line = editor.document.lineAt(i).text.trim();
-    const match = /^##\s+(.+?)\s*$/.exec(line);
-    if (!match || !match[1]) {
-      continue;
-    }
-    if (match[1].toLocaleLowerCase('en-US') !== wanted) {
-      continue;
-    }
-    const pos = new vscode.Position(i, 0);
-    const range = new vscode.Range(pos, pos);
-    editor.selection = new vscode.Selection(pos, pos);
-    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-    return;
-  }
-}
 
 function backupTimestamp(date = new Date()): string {
   const pad = (n: number): string => String(n).padStart(2, '0');
@@ -228,8 +200,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // MCP client for the control-plane document store (WM 13.0 "blackboard-tab").
   // Reads documents through the same `/mcp` surface an agent uses, so the
-  // Blackboard tab + `working-memory:/document/<id>.md` virtual docs exercise
-  // the real tool path. Best-effort: no-ops when the daemon isn't running.
+  // Blackboard tab + the unified `.working-memory` custom editor exercise the
+  // real tool path. Best-effort: no-ops when the daemon isn't running.
   // Sources its URL from the host's OWNED port so it always talks to the same
   // daemon the MCP registration points chat at — never the shared port file.
   controlPlaneClient = new ControlPlaneClient({
@@ -238,7 +210,6 @@ export function activate(context: vscode.ExtensionContext): void {
       return port === undefined ? null : `http://127.0.0.1:${port}/mcp`;
     },
   });
-  contentProvider.setControlPlaneClient(controlPlaneClient);
 
   // Start supervising/probing now that the client is wired to its owned port.
   // Best-effort: start() never throws into activation.
@@ -265,10 +236,27 @@ export function activate(context: vscode.ExtensionContext): void {
       console.error('[working-memory] deployTemplates failed:', err);
     }
   }
-
   const panelProvider = new WorkstreamPanelProvider(
     context.extensionUri,
     controlPlaneClient,
+  );
+
+  // The unified Svelte document custom editor (WM 14.2). Reads/writes documents
+  // THROUGH the control-plane client (never the DB); dispatches its UI by kind
+  // (workstream / topic / generic fallback). Opened via a synthetic
+  // `working-memory:/<kind>/<id>.working-memory` URI from the panel rail.
+  context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider(
+      DocumentEditorProvider.viewType,
+      new DocumentEditorProvider(
+        context.extensionUri,
+        () => controlPlaneClient,
+      ),
+      {
+        supportsMultipleEditorsPerDocument: false,
+        webviewOptions: { retainContextWhenHidden: true },
+      },
+    ),
   );
 
   const refresh = (): void => {
@@ -420,51 +408,26 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   // Derive the visible WM doc from tabGroups, not window.activeTextEditor:
-  // the latter goes undefined when the WM webview takes focus, and Markdown
-  // Preview tabs expose no source URI. lastWmRevealTarget is the fallback for
-  // when the source text tab has since been closed.
-  let lastWmRevealTarget: PanelRevealTarget | null = null;
-
+  // the latter goes undefined when the WM webview takes focus. WM docs open in
+  // the unified custom editor (`workingMemory.documentEditor`), which surfaces
+  // as a `vscode.TabInputCustom` carrying the source `working-memory:` URI.
   const classifyTab = (tab: vscode.Tab | undefined): TabDescriptor => {
     const input = tab?.input;
-    if (input instanceof vscode.TabInputText) {
+    if (input instanceof vscode.TabInputCustom) {
       // uri.path is already percent-decoded.
       return {
-        kind: 'text',
+        kind: 'custom',
         scheme: input.uri.scheme,
         path: input.uri.path,
-        label: tab?.label,
+        viewType: input.viewType,
       };
     }
-    if (
-      input instanceof vscode.TabInputWebview &&
-      isMarkdownPreviewViewType(input.viewType)
-    ) {
-      return { kind: 'preview', label: tab?.label };
-    }
-    return { kind: 'other', label: tab?.label };
+    return { kind: 'other' };
   };
 
   const pushActiveRevealTarget = (): void => {
     const activeTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
-    const activeDesc = classifyTab(activeTab);
-
-    const allDescs: TabDescriptor[] = [];
-    for (const group of vscode.window.tabGroups.all) {
-      for (const tab of group.tabs) {
-        allDescs.push(classifyTab(tab));
-      }
-    }
-
-    let target = resolveRevealFromTabs(allDescs, activeDesc);
-    if (!target && activeDesc.kind === 'preview' && lastWmRevealTarget) {
-      // Source text tab was closed but its preview is still active — replay.
-      target = lastWmRevealTarget;
-    }
-    if (target) {
-      lastWmRevealTarget = target;
-    }
-
+    const target = resolveRevealFromTabs(classifyTab(activeTab));
     panelProvider.reveal(target);
   };
 
@@ -703,17 +666,23 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        const uri = vscode.Uri.parse(`working-memory:/${kind}/${id}.md`);
-        if (revealSection) {
-          const doc = await vscode.workspace.openTextDocument(uri);
-          const editor = await vscode.window.showTextDocument(doc, {
-            preview: false,
-            preserveFocus: false,
-          });
-          revealHeading(editor, revealSection);
-          return;
-        }
-        await vscode.commands.executeCommand('vscode.open', uri);
+        // WM 14.2.1: EVERY Working Memory document kind opens in the unified
+        // Svelte custom editor (`workingMemory.documentEditor`) via a synthetic
+        // `working-memory:/<kind>/<id>.working-memory` URI. Kinds without a
+        // bespoke view (topic-type, alert) render through the editor's generic
+        // `DocumentView` fallback. There is no longer a `.md` virtual-doc route.
+        //
+        // TODO(wm-14.2.1): the old markdown route supported a heading reveal
+        // (`revealSection` → scroll to ## Sessions / ## Recent entries). The
+        // Svelte editor has no markdown headings to scroll to, so
+        // `revealSection` is now ignored — the document just opens. Re-add an
+        // in-editor section reveal when the editor grows anchored sections.
+        void revealSection;
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          DocumentEditorProvider.uriFor(kind, id),
+          DocumentEditorProvider.viewType,
+        );
       },
     ),
     vscode.commands.registerCommand(

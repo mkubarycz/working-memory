@@ -331,22 +331,22 @@ export class WorkstreamPanelProvider implements vscode.WebviewViewProvider {
         return;
       case 'open':
         if (typeof msg.uri === 'string') {
-          if (
-            msg.revealSection === 'sessions' ||
-            msg.revealSection === 'recent-entries' ||
-            msg.revealSection === 'entries'
-          ) {
-            try {
-              const uri = vscode.Uri.parse(msg.uri).with({
-                fragment: msg.revealSection,
-              });
-              void vscode.commands.executeCommand('vscode.open', uri);
-              return;
-            } catch (err) {
-              console.warn('[working-memory] panel open URI parse failed:', err);
-            }
-          }
           const parsed = vscode.Uri.parse(msg.uri);
+          // WM 14.2.1: every rail row opens the unified Svelte custom editor via
+          // its synthetic `.working-memory` URI. The old markdown heading-reveal
+          // (`revealSection` → scroll to ## Sessions / ## Recent entries) is gone
+          // — the editor has no markdown headings to scroll to. `revealSection`
+          // is still sent by the webview chip but is intentionally ignored here;
+          // see the TODO in the `working-memory.open` command.
+          void msg.revealSection;
+          if (parsed.path.endsWith('.working-memory')) {
+            void vscode.commands.executeCommand(
+              'vscode.openWith',
+              parsed,
+              'workingMemory.documentEditor',
+            );
+            return;
+          }
           void vscode.commands.executeCommand('vscode.open', parsed);
         }
         return;

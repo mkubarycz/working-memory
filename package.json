@@ -87,6 +87,18 @@
         }
       ]
     },
+    "customEditors": [
+      {
+        "viewType": "workingMemory.documentEditor",
+        "displayName": "Working Memory Document",
+        "selector": [
+          {
+            "filenamePattern": "*.working-memory"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
         "command": "working-memory.refresh",
@@ -191,20 +203,25 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p . && npm run compile:control-plane",
+    "compile": "npm run compile:webview && tsc -p . && npm run compile:control-plane",
     "compile:control-plane": "tsc -p control-plane",
+    "compile:webview": "vite build",
     "watch": "tsc -p . -w",
+    "watch:webview": "vite build --watch",
     "package": "vsce package",
     "test": "vitest run",
     "test:watch": "vitest",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.0.0",
     "@types/node": "^22.5.0",
     "@types/vscode": "^1.95.0",
     "@vscode/codicons": "^0.0.45",
     "@vscode/vsce": "^2.24.0",
+    "svelte": "^5.19.0",
     "typescript": "^5.4.0",
+    "vite": "^7.0.0",
     "vitest": "^4.1.8"
   },
   "dependencies": {
