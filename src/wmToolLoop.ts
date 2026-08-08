@@ -51,11 +51,42 @@ export interface ToolCallRecord {
   deduped?: boolean;
 }
 
-/** The `chat` seam — one model turn (mirrors `LlamaClient.chat`). */
+/**
+ * One failed-call → corrective-retry record (self-correction story
+ * `command-widget-tool-failure-self-correct`). When a tool call fails we feed
+ * the model the tool's parameter schema plus a terse hint; if a later call to
+ * the SAME tool succeeds within the run we mark this recovered. Journaled so we
+ * can see where the model got stuck and how it recovered.
+ */
+export interface Correction {
+  tool: string;
+  /** The args that failed. */
+  failedArgs: Record<string, unknown>;
+  /** The error the tool returned. */
+  error: string;
+  /** The corrective hint (schema + instruction) fed back to the model. */
+  hint?: string;
+  /** The args of the corrected retry (present once the model retried). */
+  retriedArgs?: Record<string, unknown>;
+  /** True once a later call to the same tool succeeded within the run. */
+  recovered: boolean;
+}
+
+/**
+ * A prior conversation turn replayed into a new run as chat history (context
+ * carryover baseline A — full replay). `command` was the user's message;
+ * `brief` was the assistant's rendered answer.
+ */
+export interface PriorTurn {
+  command: string;
+  brief: string;
+}
+
+/** The `chat` seam — one model turn (mirrors `LlamaClient.chatConstrained`). */
 export type ChatFn = (
   messages: LlamaMessage[],
   tools: LlamaToolDef[],
-) => Promise<{ message: LlamaMessage }>;
+) => Promise<{ message: LlamaMessage; promptEvalCount?: number; evalCount?: number }>;
 
 /**
  * A lightweight per-turn trace event. Injected via {@link ToolLoopInput.trace}
@@ -70,6 +101,12 @@ export type TraceEvent =
       toolCallCount: number;
       /** The raw calls (name + args) the model requested this turn. */
       toolCalls: { name: string; args: Record<string, unknown> }[];
+      /** Ollama prompt-eval token count for this turn (context-window signal). */
+      promptTokens?: number;
+      /** Ollama eval (generated) token count for this turn. */
+      evalTokens?: number;
+      /** Wall-clock duration (ms) of this turn's model call. */
+      perCallMs?: number;
     }
   | {
       type: 'exec';
@@ -88,10 +125,46 @@ export interface ToolLoopInput {
   contextSlug: string | null;
   /** Optional context kind (`topic` / `workstream`) for a richer prompt. */
   contextKind?: string | null;
+  /**
+   * Prior turns of THIS scope's conversation, replayed as chat history so the
+   * model sees the ongoing conversation (context carryover baseline A — full
+   * replay). Oldest→newest. The host caps this to a bounded window.
+   */
+  history?: PriorTurn[];
   /** Hard cap on model turns before we give up (default 8). */
   maxIterations?: number;
   /** Optional trace sink for per-turn diagnostics (kept VS Code-free). */
   trace?: (event: TraceEvent) => void;
+  /**
+   * Injectable wall-clock (ms) seam for deterministic timing tests. Defaults to
+   * `Date.now`; tests pass a fake clock so `timings` is reproducible. The loop
+   * never calls `Date.now`/`performance.now` inline — always through this.
+   */
+  now?: () => number;
+}
+
+/** Accumulated token usage across a run (context-window instrumentation). */
+export interface TokenUsage {
+  /** Summed prompt-eval tokens across all model turns. */
+  promptTokens: number;
+  /** Summed generated (eval) tokens across all model turns. */
+  evalTokens: number;
+  /** Number of model calls made. */
+  calls: number;
+}
+
+/**
+ * Wall-clock timing accumulated across a run (benchmarking story
+ * `performance-concerns-llm-calls`). The loop owns the model-call timings; the
+ * host derives the run-total, journal, and tools/overhead splits.
+ */
+export interface ToolLoopTimings {
+  /** Summed duration (ms) of every `chat` (model) call. */
+  modelMs: number;
+  /** Number of model calls timed. */
+  modelCalls: number;
+  /** Per-call model durations (ms), in turn order. */
+  perCallMs: number[];
 }
 
 export interface ToolLoopResult {
@@ -99,6 +172,12 @@ export interface ToolLoopResult {
   finalText: string;
   /** The ordered tool-call trail. */
   toolCalls: ToolCallRecord[];
+  /** Failed-call → corrective-retry records (self-correction). */
+  corrections: Correction[];
+  /** Accumulated token usage across the run. */
+  tokens: TokenUsage;
+  /** Accumulated wall-clock timing for the run's model calls. */
+  timings: ToolLoopTimings;
   /** Number of model turns taken. */
   iterations: number;
   /** Why the loop ended. */
@@ -189,16 +268,18 @@ export function buildSystemPrompt(
   return [
     'You are the Working Memory command assistant. You translate the user\'s command into Working Memory tool calls (create, read, update, delete of topics, workstreams, and alerts).',
     scope,
-    'You respond with ONE JSON action per turn: either a tool call `{ "action": { "tool": <name>, "args": { … } } }`, or, when finished, `{ "action": { "tool": "respond", "message": <short summary> } }`.',
+    'Each turn you respond with a JSON object `{ "actions": [ … ] }` containing one OR MORE actions. Each action is either a tool call `{ "tool": <name>, "args": { … } }`, or, when finished, `{ "tool": "respond", "message": <short summary> }`.',
+    'Batch INDEPENDENT actions into a single turn to save time: if two actions do not depend on each other (e.g. creating three unrelated topics, or reading two different documents), put them ALL in the `actions` array of ONE turn so they run together.',
+    'SEQUENCE DEPENDENT actions across turns: if one action needs the result of another (e.g. you must read a topic to learn its slug before you can update or delete it), emit ONLY the first action, wait for its result on the next turn, then emit the dependent action. Never guess a value you have not yet read.',
     'Available tools:',
     buildToolCatalog(tools),
     'Rules:',
     '- Prefer reading (topic_read / workstream_read) to discover exact slugs BEFORE updating or deleting.',
     '- Slugs are lowercase-hyphenated. Never invent a slug for update/delete — look it up first. For create, derive a fresh slug from the title.',
-    '- Make as many tool calls as needed, one logical step at a time.',
+    '- Batch independent tool calls in one turn; sequence dependent ones across turns.',
     '- Create or delete each object at most once per request unless the user explicitly asks for multiple; never repeat a create you have already made in this conversation.',
     '- Deletes are soft/recoverable but still destructive — only delete when the user clearly asked.',
-    '- When the task is complete, STOP calling tools and use the `respond` tool with a short plain-text summary of what you did.',
+    '- When the task is complete, STOP calling tools and emit a single `respond` action with a short plain-text summary of what you did.',
   ].join('\n');
 }
 
@@ -229,11 +310,24 @@ function buildToolCatalog(tools: LlamaToolDef[]): string {
 export async function runToolLoop(input: ToolLoopInput): Promise<ToolLoopResult> {
   const maxIterations = input.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   const trace = input.trace ?? (() => {});
+  const now = input.now ?? Date.now;
   const toolCalls: ToolCallRecord[] = [];
+  const corrections: Correction[] = [];
+  // The last unrecovered failure per tool → the same object reference stored in
+  // `corrections`, so marking it recovered updates the trail in place.
+  const pendingByTool = new Map<string, Correction>();
+  const tokens: TokenUsage = { promptTokens: 0, evalTokens: 0, calls: 0 };
+  const timings: ToolLoopTimings = { modelMs: 0, modelCalls: 0, perCallMs: [] };
   const messages: LlamaMessage[] = [
     { role: 'system', content: buildSystemPrompt(input.contextSlug, input.contextKind) },
-    { role: 'user', content: buildUserTurn(input.command, input.contextSlug) },
   ];
+  // Context carryover (baseline A): replay this scope's prior turns as chat
+  // history so the model sees the ongoing conversation. Oldest→newest.
+  for (const turn of input.history ?? []) {
+    messages.push({ role: 'user', content: turn.command });
+    messages.push({ role: 'assistant', content: turn.brief });
+  }
+  messages.push({ role: 'user', content: buildUserTurn(input.command, input.contextSlug) });
   // Dedup within a single run: key (name + normalized args) → the prior result
   // we already executed and fed back. A repeat is NOT re-executed; instead the
   // model is shown the prior result so it stops repeating the create.
@@ -244,12 +338,35 @@ export async function runToolLoop(input: ToolLoopInput): Promise<ToolLoopResult>
     iterations += 1;
     let message: LlamaMessage;
     try {
+      const callStart = now();
       const res = await input.chat(messages, WM_TOOLS);
+      const perCallMs = now() - callStart;
+      timings.modelMs += perCallMs;
+      timings.modelCalls += 1;
+      timings.perCallMs.push(perCallMs);
       message = res.message;
+      tokens.promptTokens += res.promptEvalCount ?? 0;
+      tokens.evalTokens += res.evalCount ?? 0;
+      tokens.calls += 1;
+      trace({
+        type: 'turn',
+        iteration: iterations,
+        toolCallCount: (message.tool_calls ?? []).length,
+        toolCalls: (message.tool_calls ?? []).map((c) => ({
+          name: c.function.name,
+          args: c.function.arguments ?? {},
+        })),
+        promptTokens: res.promptEvalCount,
+        evalTokens: res.evalCount,
+        perCallMs,
+      });
     } catch (err) {
       return {
         finalText: '',
         toolCalls,
+        corrections,
+        tokens,
+        timings,
         iterations,
         stopReason: 'error',
         error: err instanceof Error ? err.message : String(err),
@@ -265,17 +382,13 @@ export async function runToolLoop(input: ToolLoopInput): Promise<ToolLoopResult>
       return {
         finalText: message.content ?? '',
         toolCalls,
+        corrections,
+        tokens,
+        timings,
         iterations,
         stopReason: 'final',
       };
     }
-
-    trace({
-      type: 'turn',
-      iteration: iterations,
-      toolCallCount: calls.length,
-      toolCalls: calls.map((c) => ({ name: c.function.name, args: c.function.arguments ?? {} })),
-    });
 
     // Execute each requested tool call and feed each result back as a `tool`
     // message so the model can react on the next turn — but skip re-running a
@@ -309,18 +422,49 @@ export async function runToolLoop(input: ToolLoopInput): Promise<ToolLoopResult>
       const { record, result } = await executeOne(input.executor, call);
       executed.set(key, result);
       toolCalls.push(record);
-      messages.push({
-        role: 'tool',
-        tool_name: record.name,
-        content: toolResultContent(record, result),
-      });
-      trace({
-        type: 'exec',
-        iteration: iterations,
-        name,
-        outcome: result.ok ? 'ok' : 'error',
-        error: result.ok ? undefined : result.error,
-      });
+
+      if (result.ok) {
+        // A successful call to a tool that previously failed this run = the
+        // corrective retry landed. Mark the pending correction recovered.
+        const pending = pendingByTool.get(name);
+        if (pending) {
+          pending.recovered = true;
+          pending.retriedArgs = args;
+          pendingByTool.delete(name);
+        }
+        messages.push({
+          role: 'tool',
+          tool_name: record.name,
+          content: toolResultContent(record, result),
+        });
+        trace({ type: 'exec', iteration: iterations, name, outcome: 'ok' });
+      } else {
+        // Self-correction: feed back the tool's schema + a corrective hint so
+        // the model can retry a CORRECTED call (rather than repeat the broken
+        // one), and journal the failure so we can see where it got stuck.
+        const { hint, schema } = buildCorrectiveHint(name, result.error ?? 'tool failed');
+        const correction: Correction = {
+          tool: name,
+          failedArgs: args,
+          error: result.error ?? 'tool failed',
+          hint,
+          recovered: false,
+        };
+        corrections.push(correction);
+        pendingByTool.set(name, correction);
+        messages.push({
+          role: 'tool',
+          tool_name: record.name,
+          content: correctiveToolContent(result.error ?? 'tool failed', hint, schema),
+        });
+        trace({
+          type: 'exec',
+          iteration: iterations,
+          name,
+          outcome: 'error',
+          error: result.error,
+        });
+      }
     }
   }
 
@@ -329,6 +473,9 @@ export async function runToolLoop(input: ToolLoopInput): Promise<ToolLoopResult>
   return {
     finalText: '',
     toolCalls,
+    corrections,
+    tokens,
+    timings,
     iterations,
     stopReason: 'max-iterations',
   };
@@ -387,6 +534,45 @@ function dedupedToolContent(prior: ToolResult): string {
     result: prior.ok ? trimForModel(prior.result) : undefined,
     error: prior.ok ? undefined : prior.error,
   }).slice(0, 4000);
+}
+
+/**
+ * Build the self-correction hint + schema for a FAILED tool call: look up the
+ * tool's parameter schema from {@link WM_TOOLS} and pair it with a terse
+ * corrective instruction, so the model can retry a CORRECTED call within the
+ * run instead of blindly repeating the broken one. Returns the human hint plus
+ * the raw JSON-schema (fed back verbatim to the model).
+ */
+export function buildCorrectiveHint(
+  name: string,
+  error: string,
+  tools: LlamaToolDef[] = WM_TOOLS,
+): { hint: string; schema?: Record<string, unknown> } {
+  const tool = tools.find((t) => t.function.name === name);
+  const schema = tool?.function.parameters as
+    | { properties?: Record<string, unknown>; required?: string[] }
+    | undefined;
+  const required = schema?.required ?? [];
+  const requiredNote =
+    required.length > 0 ? `Required argument(s): ${required.join(', ')}. ` : '';
+  const hint =
+    `Your call to \`${name}\` failed: ${error}. ${requiredNote}` +
+    `Consult the tool's parameter schema below, fix the arguments, and call \`${name}\` ` +
+    `again with corrected args. Do not repeat the same invalid call.`;
+  return { hint, schema: schema as Record<string, unknown> | undefined };
+}
+
+/**
+ * The `content` fed back for a FAILED call: the error plus the corrective hint
+ * and the tool's parameter schema (self-correction). Bounded to keep a small
+ * model's context window in check.
+ */
+function correctiveToolContent(
+  error: string,
+  hint: string,
+  schema: Record<string, unknown> | undefined,
+): string {
+  return JSON.stringify({ ok: false, error, hint, schema }).slice(0, 4000);
 }
 
 /** Stable dedup key: tool name + a deterministic stringify of normalized args. */

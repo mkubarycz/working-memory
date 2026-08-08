@@ -145,13 +145,17 @@ const CREATE_TOOLS: LlamaToolDef[] = [
   },
 ];
 
-test('buildToolEnvelopeSchema wraps each tool + a respond branch under action.anyOf', () => {
+test('buildToolEnvelopeSchema wraps each tool + a respond branch under actions.items.anyOf', () => {
   const schema = buildToolEnvelopeSchema(CREATE_TOOLS) as {
-    properties: { action: { anyOf: Array<Record<string, unknown>> } };
+    properties: { actions: { type: string; minItems: number; items: { anyOf: Array<Record<string, unknown>> } } };
     required: string[];
   };
-  const branches = schema.properties.action.anyOf;
-  expect(schema.required).toEqual(['action']);
+  expect(schema.required).toEqual(['actions']);
+  const actions = schema.properties.actions;
+  // The top-level `actions` is a bounded array so the model can batch calls.
+  expect(actions.type).toBe('array');
+  expect(actions.minItems).toBe(1);
+  const branches = actions.items.anyOf;
   // One branch per tool + the respond branch.
   expect(branches).toHaveLength(2);
   const toolBranch = branches[0] as {
@@ -249,6 +253,97 @@ test('chatConstrained posts `format` (not `tools`) and parses the envelope', asy
   const body = JSON.parse(seen.init?.body ?? '{}');
   expect(body.format).toBeDefined();
   expect(body.tools).toBeUndefined();
-  expect(body.format.properties.action.anyOf).toHaveLength(2);
+  expect(body.format.properties.actions.items.anyOf).toHaveLength(2);
   expect(res.message.tool_calls?.[0].function.name).toBe('topic_create');
+});
+
+// --- multi-action envelope (WM 14.2.1 multiple-tool-calls-per-turn) ---------
+
+test('parseEnvelopeResponse maps a multi-action envelope to one tool_call per action', () => {
+  const raw = JSON.stringify({
+    message: {
+      role: 'assistant',
+      content: JSON.stringify({
+        actions: [
+          { tool: 'topic_create', args: { title: 'A', slug: 'a-topic' } },
+          { tool: 'topic_create', args: { title: 'B', slug: 'b-topic' } },
+          { tool: 'topic_read', args: { slug: 'c-topic' } },
+        ],
+      }),
+    },
+  });
+  const res = parseEnvelopeResponse(raw);
+  expect(res.message.tool_calls).toHaveLength(3);
+  expect(res.message.tool_calls?.map((c) => c.function.name)).toEqual([
+    'topic_create',
+    'topic_create',
+    'topic_read',
+  ]);
+  expect(res.message.tool_calls?.[1].function.arguments).toEqual({ title: 'B', slug: 'b-topic' });
+  expect(res.message.content).toBe('');
+});
+
+test('parseEnvelopeResponse maps an actions array with only respond to final text', () => {
+  const raw = JSON.stringify({
+    message: {
+      role: 'assistant',
+      content: JSON.stringify({ actions: [{ tool: 'respond', message: 'All set.' }] }),
+    },
+  });
+  const res = parseEnvelopeResponse(raw);
+  expect(res.message.tool_calls).toBeUndefined();
+  expect(res.message.content).toBe('All set.');
+});
+
+test('parseEnvelopeResponse drops a trailing respond when tool calls are present', () => {
+  const raw = JSON.stringify({
+    message: {
+      role: 'assistant',
+      content: JSON.stringify({
+        actions: [
+          { tool: 'topic_read', args: { slug: 'foo' } },
+          { tool: 'respond', message: 'done' },
+        ],
+      }),
+    },
+  });
+  const res = parseEnvelopeResponse(raw);
+  // Tool calls win this turn; the respond is deferred to a later turn.
+  expect(res.message.tool_calls).toHaveLength(1);
+  expect(res.message.tool_calls?.[0].function.name).toBe('topic_read');
+  expect(res.message.content).toBe('');
+});
+
+test('parseEnvelopeResponse still handles the legacy single-action envelope', () => {
+  const raw = JSON.stringify({
+    message: {
+      role: 'assistant',
+      content: JSON.stringify({
+        action: { tool: 'topic_create', args: { title: 'X', slug: 'x-topic' } },
+      }),
+    },
+  });
+  const res = parseEnvelopeResponse(raw);
+  expect(res.message.tool_calls).toHaveLength(1);
+  expect(res.message.tool_calls?.[0].function).toEqual({
+    name: 'topic_create',
+    arguments: { title: 'X', slug: 'x-topic' },
+  });
+});
+
+test('parseEnvelopeResponse tolerates a bare top-level array of actions', () => {
+  const raw = JSON.stringify({
+    message: {
+      role: 'assistant',
+      content: JSON.stringify([
+        { tool: 'topic_read', args: { slug: 'a' } },
+        { tool: 'workstream_read', args: {} },
+      ]),
+    },
+  });
+  const res = parseEnvelopeResponse(raw);
+  expect(res.message.tool_calls?.map((c) => c.function.name)).toEqual([
+    'topic_read',
+    'workstream_read',
+  ]);
 });

@@ -13,15 +13,18 @@
  * `tools` + `format` don't compose reliably on Ollama, and unconstrained native
  * tool-calling on small local models leaks `<tool_call>` scaffolding / garbled
  * (Cyrillic) tokens into `message.content` and drops required args (the missing
- * `slug` bug). So `chatConstrained()` drives a SINGLE grammar-constrained JSON
- * envelope instead: it passes `format` = a JSON schema that is an `anyOf` over
+ * `slug` bug). So `chatConstrained()` drives a grammar-constrained JSON envelope
+ * instead: it passes `format` = a JSON schema whose top level is an `actions`
+ * ARRAY (WM 14.2.1 "multiple-tool-calls-per-turn"), each item an `anyOf` over
  * one branch per tool (each carrying that tool's own `parameters` schema, so
  * required args like `slug` are forced) plus a `respond` branch for the final
  * answer. Ollama compiles that schema to a llama.cpp grammar, so the model's
- * output is guaranteed schema-valid — no scaffolding, no missing required args.
- * We then map the envelope back onto the same {@link LlamaChatResult} shape
- * (synthesizing `tool_calls`) so `wmToolLoop.ts` needs no change. The legacy
- * native path (`chat()` + {@link parseChatResponse}) is retained for reference.
+ * output is guaranteed schema-valid — no scaffolding, no missing required args —
+ * and the model can BATCH several independent tool calls in one turn to cut
+ * round-trips. We map the envelope back onto the same {@link LlamaChatResult}
+ * shape (synthesizing one `tool_calls` entry per action) so `wmToolLoop.ts`
+ * needs no change. The legacy native path (`chat()` + {@link parseChatResponse})
+ * is retained for reference.
  *
  * This module is intentionally VS Code-free and takes an injectable `fetch` so
  * it can be unit-tested against a fake server without a live daemon.
@@ -135,9 +138,10 @@ export class LlamaClient {
   /**
    * Send one chat turn with CONSTRAINED DECODING: instead of native `tools`, we
    * pass `format` = the {@link buildToolEnvelopeSchema} JSON schema so Ollama
-   * grammar-constrains the output to a valid tool-call (or `respond`) envelope.
-   * The envelope is mapped back onto {@link LlamaChatResult} (with synthesized
-   * `tool_calls`) so the loop consumes it identically to the native path.
+   * grammar-constrains the output to a valid `actions` envelope (one or more
+   * tool calls, or a `respond`). The envelope is mapped back onto
+   * {@link LlamaChatResult} (with one synthesized `tool_call` per action) so the
+   * loop consumes it identically to the native path and can execute a batch.
    */
   async chatConstrained(
     messages: LlamaMessage[],
@@ -184,11 +188,16 @@ export class LlamaClient {
 
 /**
  * Build the JSON schema passed as Ollama's `format` for constrained decoding: a
- * single top-level object `{ action: <anyOf> }` where each `anyOf` branch is
- * one tool (a `const` discriminator `tool` + that tool's own `parameters`
- * schema as `args`, so required args like `slug` are grammar-forced) plus a
- * `respond` branch `{ tool: "respond", message }` for the final answer.
- * Exported for unit tests.
+ * top-level object `{ actions: [ <anyOf>, … ] }` — an ARRAY so the model can
+ * emit MULTIPLE tool calls in ONE turn (WM 14.2.1 "multiple-tool-calls-per-turn"),
+ * collapsing several sequential round-trips into one. Each array item is one
+ * `anyOf` branch: a tool (a `const` discriminator `tool` + that tool's own
+ * `parameters` schema as `args`, so required args like `slug` are grammar-forced)
+ * or a `respond` branch `{ tool: "respond", message }` for the final answer. The
+ * array is bounded (`minItems: 1`) so an empty turn can't slip through. A single
+ * action is just an array of length one, so {@link parseEnvelopeResponse} stays
+ * backward-compatible with the old `{ action: {…} }` shape. Exported for unit
+ * tests.
  */
 export function buildToolEnvelopeSchema(tools: LlamaToolDef[]): Record<string, unknown> {
   const branches: unknown[] = tools.map((t) => ({
@@ -211,8 +220,17 @@ export function buildToolEnvelopeSchema(tools: LlamaToolDef[]): Record<string, u
   });
   return {
     type: 'object',
-    properties: { action: { anyOf: branches } },
-    required: ['action'],
+    properties: {
+      actions: {
+        type: 'array',
+        minItems: 1,
+        items: { anyOf: branches },
+        description:
+          'One or more actions to perform this turn. Batch INDEPENDENT tool calls; ' +
+          'use a single `respond` action to finish.',
+      },
+    },
+    required: ['actions'],
     additionalProperties: false,
   };
 }
@@ -225,40 +243,72 @@ interface ToolEnvelope {
 }
 
 /**
- * Pull the `{ action: {...} }` envelope out of a constrained response's
- * `content`. Tolerant of the model emitting the action at the top level. Returns
- * `null` when the content is not a recognizable envelope (the caller then falls
- * back to treating the raw content as final text).
+ * Pull the list of action envelopes out of a constrained response's `content`.
+ * Handles all shapes the model (or a legacy path) might emit:
+ * - `{ actions: [ {…}, … ] }` — the multi-action envelope (current grammar);
+ * - `{ action: {…} }` — the legacy single-action envelope;
+ * - a bare `{ tool, args }` / `{ tool: "respond", message }` at the top level;
+ * - a bare array of the above.
+ * Returns `[]` when the content is not a recognizable envelope (the caller then
+ * falls back to treating the raw content as final text).
  */
-function extractEnvelope(content: string): ToolEnvelope | null {
+function extractEnvelopes(content: string): ToolEnvelope[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
   } catch {
+    return [];
+  }
+  const out: ToolEnvelope[] = [];
+  for (const raw of collectActions(parsed)) {
+    const env = toEnvelope(raw);
+    if (env) {
+      out.push(env);
+    }
+  }
+  return out;
+}
+
+/** Normalize any accepted envelope shape into a flat list of raw action objects. */
+function collectActions(parsed: unknown): unknown[] {
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  const root = parsed as { actions?: unknown; action?: unknown };
+  if (root && Array.isArray(root.actions)) {
+    return root.actions;
+  }
+  if (root && root.action !== undefined) {
+    return [root.action];
+  }
+  return [parsed];
+}
+
+/** Coerce one raw action object into a {@link ToolEnvelope}, or `null` if unusable. */
+function toEnvelope(action: unknown): ToolEnvelope | null {
+  const a = action as { tool?: unknown; args?: unknown; message?: unknown };
+  if (!a || typeof a.tool !== 'string') {
     return null;
   }
-  const root = parsed as { action?: unknown; tool?: unknown };
-  const action = (root.action ?? root) as { tool?: unknown; args?: unknown; message?: unknown };
-  if (!action || typeof action.tool !== 'string') {
-    return null;
+  const env: ToolEnvelope = { tool: a.tool };
+  if (a.args && typeof a.args === 'object' && !Array.isArray(a.args)) {
+    env.args = a.args as Record<string, unknown>;
   }
-  const env: ToolEnvelope = { tool: action.tool };
-  if (action.args && typeof action.args === 'object' && !Array.isArray(action.args)) {
-    env.args = action.args as Record<string, unknown>;
-  }
-  if (typeof action.message === 'string') {
-    env.message = action.message;
+  if (typeof a.message === 'string') {
+    env.message = a.message;
   }
   return env;
 }
 
 /**
  * Parse a constrained `/api/chat` response into a {@link LlamaChatResult}. The
- * envelope in `message.content` becomes either a synthesized `tool_calls` entry
- * (tool branch) or a plain-text `content` (the `respond` branch). If the content
- * is somehow not a valid envelope, the raw content is returned as final text
- * (the brief sanitizer strips any residual scaffolding downstream). Exported for
- * unit tests.
+ * `actions` array in `message.content` becomes synthesized `tool_calls` (one per
+ * tool branch, in order) — so the loop can execute a BATCH of independent calls
+ * in one turn — or, when the only action is `respond`, plain-text `content`. A
+ * `respond` mixed in with tool calls is ignored this turn (the tool results are
+ * fed back and the model finishes on a later turn). If the content is somehow
+ * not a valid envelope, the raw content is returned as final text (the brief
+ * sanitizer strips any residual scaffolding downstream). Exported for unit tests.
  */
 export function parseEnvelopeResponse(raw: string): LlamaChatResult {
   let parsed: unknown;
@@ -286,22 +336,22 @@ export function parseEnvelopeResponse(raw: string): LlamaChatResult {
     typeof obj.prompt_eval_count === 'number' ? obj.prompt_eval_count : undefined;
   const evalCount = typeof obj.eval_count === 'number' ? obj.eval_count : undefined;
 
-  const envelope = extractEnvelope(content);
-  if (envelope && envelope.tool !== 'respond') {
+  const envelopes = extractEnvelopes(content);
+  const toolEnvelopes = envelopes.filter((e) => e.tool !== 'respond');
+  if (toolEnvelopes.length > 0) {
     const message: LlamaMessage = {
       role: 'assistant',
       content: '',
-      tool_calls: [
-        { function: { name: envelope.tool, arguments: envelope.args ?? {} } },
-      ],
+      tool_calls: toolEnvelopes.map((e) => ({
+        function: { name: e.tool, arguments: e.args ?? {} },
+      })),
     };
     return { message, doneReason, promptEvalCount, evalCount };
   }
 
+  const respond = envelopes.find((e) => e.tool === 'respond');
   const finalText =
-    envelope && envelope.tool === 'respond' && typeof envelope.message === 'string'
-      ? envelope.message
-      : content;
+    respond && typeof respond.message === 'string' ? respond.message : content;
   return {
     message: { role: 'assistant', content: finalText },
     doneReason,

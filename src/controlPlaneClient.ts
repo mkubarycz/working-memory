@@ -33,6 +33,12 @@ import {
   parsePortInfo,
   resolveControlPlaneHome,
 } from './controlPlaneShared';
+import {
+  COMMAND_JOURNAL_KIND,
+  filterAndSortJournals,
+  type CommandJournalDoc,
+  type CommandJournalSpec,
+} from './commandJournal';
 
 /** Client identity advertised to the control-plane during the MCP handshake. */
 const CLIENT_NAME = 'working-memory-extension';
@@ -879,6 +885,91 @@ export class ControlPlaneClient {
       this.resetConnection();
       return { available: false, document: null, error: messageOf(err) };
     }
+  }
+
+  // ----- CommandJournal (per-workstream command-widget chat) ----------------
+  //
+  // Thin typed wrappers over the GENERIC `wm-document-*` surface — the POC only
+  // needs create + read-by-kind, so no bespoke `ws-commandjournal-*` tools are
+  // added. Persistence goes through the control-plane client ONLY (guardrail).
+
+  /**
+   * Persist one command-widget request/response cycle as a `CommandJournal`
+   * document (via `wm-document-create`). Returns the write result; on success
+   * the `document` envelope carries BOTH `metadata.id` and
+   * `metadata.resourceVersion`, so the caller can drive the two-phase update
+   * without an extra read. The caller decides how to surface a failure
+   * (journaling is best-effort).
+   */
+  async commandJournalCreate(spec: CommandJournalSpec): Promise<WriteDocumentResult> {
+    return this.createDocument({
+      kind: COMMAND_JOURNAL_KIND,
+      spec: spec as unknown as Record<string, unknown>,
+    });
+  }
+
+  /**
+   * Update a `CommandJournal` document (two-phase write, phase 2) via the
+   * generic `wm-document-update` compare-and-swap. `spec` is a PARTIAL patch
+   * shallow-merged onto the current spec server-side, so passing `{ status,
+   * response }` overwrites those top-level keys while `workstream`/`request`
+   * carry through.
+   *
+   * The CAS needs an `expectedResourceVersion`: pass the version the create
+   * returned to skip a read. On a version conflict (a concurrent write bumped
+   * the row) this does ONE re-read + retry with the fresh version; any other
+   * rejection is returned as-is. Journaling is best-effort, so the caller logs
+   * and moves on rather than throwing.
+   */
+  async commandJournalUpdate(
+    id: string,
+    spec: Partial<CommandJournalSpec>,
+    expectedResourceVersion?: number,
+  ): Promise<WriteDocumentResult> {
+    const patch = spec as unknown as Record<string, unknown>;
+    // Resolve the version to CAS against: the caller's (from create) or a read.
+    let version = expectedResourceVersion;
+    if (version === undefined) {
+      const current = await this.getDocument({ id });
+      if (!current.available) {
+        return { available: false, document: null, error: current.error };
+      }
+      if (!current.document) {
+        return { available: true, document: null, error: `CommandJournal ${id} not found` };
+      }
+      version = current.document.metadata.resourceVersion;
+    }
+
+    const first = await this.updateDocument({ id, expectedResourceVersion: version, spec: patch });
+    // Only a version conflict is worth retrying (a concurrent bump); every other
+    // rejection — not-found, validation — would just fail again.
+    const isConflict =
+      first.available && !first.document && /conflict/i.test(first.error ?? '');
+    if (!isConflict) {
+      return first;
+    }
+    const reread = await this.getDocument({ id });
+    if (!reread.available || !reread.document) {
+      return first;
+    }
+    return this.updateDocument({
+      id,
+      expectedResourceVersion: reread.document.metadata.resourceVersion,
+      spec: patch,
+    });
+  }
+
+  /**
+   * Read this scope's command-widget chat: list `CommandJournal` docs, filter to
+   * `workstream`, and return them OLDEST→NEWEST (replay order). Returns `[]` when
+   * the daemon is down or the read fails (journaling/replay is non-critical).
+   */
+  async commandJournalReadByWorkstream(workstream: string): Promise<CommandJournalDoc[]> {
+    const result = await this.listDocuments(COMMAND_JOURNAL_KIND);
+    if (!result.available) {
+      return [];
+    }
+    return filterAndSortJournals(result.documents, workstream);
   }
 
   // ----- Workstream domain API (`ws-*`) -------------------------------------

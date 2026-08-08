@@ -11,7 +11,7 @@ describe('kind loader', () => {
     // Default dir = the loader module's own folder (control-plane/src/kinds under
     // vitest; out/control-plane/kinds in the compiled daemon). The scan walks each
     // SUBFOLDER and loads its `index.ts` / `index.js` by convention — no central
-    // list. Exactly the six kinds register.
+    // list. Exactly the seven kinds register.
     const registered = await loadKinds();
     expect(registered).toEqual(
       expect.arrayContaining([
@@ -21,9 +21,10 @@ describe('kind loader', () => {
         'Alert',
         'NaniteTemplate',
         'Nanite',
+        'CommandJournal',
       ]),
     );
-    expect(registered).toHaveLength(6);
+    expect(registered).toHaveLength(7);
     expect(listKinds()).toContain('Topic');
     expect(getKind('Topic')).toBeTruthy();
   });

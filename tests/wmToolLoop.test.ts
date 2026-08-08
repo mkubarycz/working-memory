@@ -266,3 +266,288 @@ test('(g) trace fires a turn event with the raw calls and an exec event per call
   const execs = events.filter((e) => e.type === 'exec');
   expect(execs.map((e) => (e.type === 'exec' ? e.outcome : ''))).toEqual(['ok', 'deduped']);
 });
+
+test('(h) prior turns are prepended as user/assistant messages before the new user turn', async () => {
+  const captured = { messages: [] as LlamaMessage[][] };
+  const chat = scriptedChat([{ role: 'assistant', content: 'ack' }], captured);
+
+  await runToolLoop({
+    chat,
+    executor: fakeExecutor(),
+    command: 'the new command',
+    contextSlug: null,
+    history: [
+      { command: 'first command', brief: 'first brief' },
+      { command: 'second command', brief: 'second brief' },
+    ],
+  });
+
+  const first = captured.messages[0];
+  // system, then the two prior turns (user/assistant each), then the new user.
+  const roles = first.map((m) => m.role);
+  expect(roles).toEqual(['system', 'user', 'assistant', 'user', 'assistant', 'user']);
+  expect(first[1].content).toBe('first command');
+  expect(first[2].content).toBe('first brief');
+  expect(first[3].content).toBe('second command');
+  expect(first[4].content).toBe('second brief');
+  // The live user turn comes AFTER the replayed history and carries the command.
+  expect(first[5].content).toContain('the new command');
+});
+
+test('(i) token counts accumulate across turns into result.tokens', async () => {
+  let call = 0;
+  const chat: ChatFn = async () => {
+    call += 1;
+    if (call === 1) {
+      return {
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ function: { name: 'topic_read', arguments: {} } }],
+        },
+        promptEvalCount: 100,
+        evalCount: 20,
+      };
+    }
+    return {
+      message: { role: 'assistant', content: 'done' },
+      promptEvalCount: 150,
+      evalCount: 5,
+    };
+  };
+
+  const result = await runToolLoop({
+    chat,
+    executor: fakeExecutor(),
+    command: 'count tokens',
+    contextSlug: null,
+  });
+
+  expect(result.tokens).toEqual({ promptTokens: 250, evalTokens: 25, calls: 2 });
+});
+
+test('(k) per-call model timings accumulate across turns with an injected fake clock', async () => {
+  // The loop reads `now()` exactly twice per model turn (start, end). Feed a
+  // scripted sequence so each turn's duration is deterministic: turn 1 = 10ms,
+  // turn 2 = 25ms → modelMs 35, perCallMs [10, 25], modelCalls 2.
+  const ticks = [0, 10, 10, 35];
+  let i = 0;
+  const now = () => ticks[Math.min(i++, ticks.length - 1)];
+
+  const captured = { messages: [] as LlamaMessage[][] };
+  const chat = scriptedChat(
+    [
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name: 'topic_read', arguments: {} } }],
+      },
+      { role: 'assistant', content: 'done' },
+    ],
+    captured,
+  );
+
+  const result = await runToolLoop({
+    chat,
+    executor: fakeExecutor(),
+    command: 'time me',
+    contextSlug: null,
+    now,
+  });
+
+  expect(result.timings.modelCalls).toBe(2);
+  expect(result.timings.perCallMs).toEqual([10, 25]);
+  expect(result.timings.modelMs).toBe(35);
+});
+
+test('(l) turn trace event carries the per-call model duration (ms)', async () => {
+  const ticks = [0, 42, 42, 42];
+  let i = 0;
+  const now = () => ticks[Math.min(i++, ticks.length - 1)];
+
+  const captured = { messages: [] as LlamaMessage[][] };
+  const chat = scriptedChat(
+    [
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name: 'topic_read', arguments: {} } }],
+      },
+      { role: 'assistant', content: 'done' },
+    ],
+    captured,
+  );
+  const events: TraceEvent[] = [];
+
+  await runToolLoop({
+    chat,
+    executor: fakeExecutor(),
+    command: 'trace timing',
+    contextSlug: null,
+    now,
+    trace: (e) => events.push(e),
+  });
+
+  const firstTurn = events.find((e) => e.type === 'turn');
+  expect(firstTurn && firstTurn.type === 'turn' && firstTurn.perCallMs).toBe(42);
+});
+
+test('(j) a tool that fails then succeeds records a recovered Correction and feeds back the hint + schema', async () => {
+  const captured = { messages: [] as LlamaMessage[][] };
+  const chat = scriptedChat(
+    [
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name: 'topic_create', arguments: { title: '' } } }],
+      },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { function: { name: 'topic_create', arguments: { title: 'Fixed', slug: 'fixed' } } },
+        ],
+      },
+      { role: 'assistant', content: 'Created it after fixing the args.' },
+    ],
+    captured,
+  );
+
+  // topic_create fails the first time, succeeds the second.
+  let creates = 0;
+  const executor: ToolExecutor & { calls: { name: string; args: Record<string, unknown> }[] } = {
+    calls: [],
+    async execute(name, args) {
+      this.calls.push({ name, args });
+      if (name === 'topic_create') {
+        creates += 1;
+        if (creates === 1) {
+          return { ok: false, error: 'title is required' };
+        }
+        return { ok: true, result: { slug: 'fixed', title: 'Fixed' } };
+      }
+      return { ok: true, result: {} };
+    },
+  };
+
+  const result = await runToolLoop({
+    chat,
+    executor,
+    command: 'create a topic',
+    contextSlug: null,
+  });
+
+  expect(result.stopReason).toBe('final');
+  expect(result.corrections).toHaveLength(1);
+  expect(result.corrections[0]).toMatchObject({
+    tool: 'topic_create',
+    error: 'title is required',
+    recovered: true,
+    retriedArgs: { title: 'Fixed', slug: 'fixed' },
+  });
+
+  // The failed-call tool message fed back to the model (visible on the SECOND
+  // model turn) carries the corrective hint AND the tool's parameter schema.
+  const secondTurn = captured.messages[1];
+  const toolMsg = secondTurn.find((m) => m.role === 'tool');
+  expect(toolMsg).toBeDefined();
+  const fed = JSON.parse(toolMsg!.content) as {
+    ok: boolean;
+    error: string;
+    hint?: string;
+    schema?: { properties?: Record<string, unknown>; required?: string[] };
+  };
+  expect(fed.ok).toBe(false);
+  expect(fed.error).toBe('title is required');
+  expect(fed.hint).toContain('topic_create');
+  expect(fed.hint?.toLowerCase()).toContain('schema');
+  expect(fed.schema?.properties).toBeDefined();
+  expect(fed.schema?.required).toContain('title');
+});
+
+test('(m) a BATCH of distinct tool calls in one turn all execute; all results fed back before the next turn', async () => {
+  const captured = { messages: [] as LlamaMessage[][] };
+  const chat = scriptedChat(
+    [
+      {
+        role: 'assistant',
+        content: '',
+        // Three INDEPENDENT creates batched into a single turn.
+        tool_calls: [
+          { function: { name: 'topic_create', arguments: { title: 'One', slug: 'one' } } },
+          { function: { name: 'topic_create', arguments: { title: 'Two', slug: 'two' } } },
+          { function: { name: 'topic_create', arguments: { title: 'Three', slug: 'three' } } },
+        ],
+      },
+      { role: 'assistant', content: 'Created all three topics.' },
+    ],
+    captured,
+  );
+  const executor = fakeExecutor();
+
+  const result = await runToolLoop({
+    chat,
+    executor,
+    command: 'create One, Two and Three',
+    contextSlug: null,
+  });
+
+  expect(result.stopReason).toBe('final');
+  // All three ran in a SINGLE turn; the whole run took only two model calls.
+  expect(executor.calls).toHaveLength(3);
+  expect(result.toolCalls).toHaveLength(3);
+  expect(result.toolCalls.every((c) => c.ok && !c.deduped)).toBe(true);
+  expect(result.iterations).toBe(2);
+  expect(result.tokens.calls).toBe(2);
+  expect(result.timings.modelCalls).toBe(2);
+
+  // The SECOND model turn must carry a tool result message for EACH batched
+  // call, fed back together before the model responded.
+  const secondTurn = captured.messages[1];
+  const toolMsgs = secondTurn.filter((m) => m.role === 'tool');
+  expect(toolMsgs).toHaveLength(3);
+  expect(toolMsgs.every((m) => m.tool_name === 'topic_create')).toBe(true);
+});
+
+test('(n) dedup still applies WITHIN a single batch (distinct + duplicate mixed)', async () => {
+  const captured = { messages: [] as LlamaMessage[][] };
+  const chat = scriptedChat(
+    [
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { function: { name: 'workstream_create', arguments: { title: 'Alpha' } } },
+          { function: { name: 'workstream_create', arguments: { title: 'Beta' } } },
+          // Duplicate of the first call in the SAME batch.
+          { function: { name: 'workstream_create', arguments: { title: 'Alpha' } } },
+        ],
+      },
+      { role: 'assistant', content: 'Created Alpha and Beta.' },
+    ],
+    captured,
+  );
+  let n = 0;
+  const executor: ToolExecutor & { calls: { name: string; args: Record<string, unknown> }[] } = {
+    calls: [],
+    async execute(name, args) {
+      this.calls.push({ name, args });
+      n += 1;
+      return { ok: true, result: { slug: `ws-${n}`, title: args.title } };
+    },
+  };
+
+  const result = await runToolLoop({
+    chat,
+    executor,
+    command: 'create Alpha and Beta',
+    contextSlug: null,
+  });
+
+  expect(result.stopReason).toBe('final');
+  // Only the two DISTINCT creates executed; the duplicate was skipped.
+  expect(executor.calls).toHaveLength(2);
+  expect(result.toolCalls).toHaveLength(3);
+  expect(result.toolCalls[2].deduped).toBe(true);
+});
+

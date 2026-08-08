@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import MarkdownIt from 'markdown-it';
   import { createVsCodeTransport } from './transport';
+  import { scopeKeyFor, isCurrentScope } from './scope';
 
   // markdown-it with `html:false` — raw HTML in the brief is escaped, so the
   // `{@html}` below only ever renders markdown-it's own sanitized output. This
@@ -24,6 +25,13 @@
     /** Rendered markdown brief (assistant `done` only). */
     html: string;
     state: 'running' | 'done' | 'error';
+    /**
+     * The underlying CommandJournal doc id for this turn (both the user and
+     * assistant entry of a turn share it). Set from `hydrate` on replay, or from
+     * `attachJournalId` once a live run's record is persisted. When set, the
+     * entry is right-click-openable.
+     */
+    journalId?: string;
   }
 
   let command = $state('');
@@ -31,6 +39,9 @@
   let contextKind = $state<string | null>(null);
   let running = $state(false);
   let messages = $state<ChatEntry[]>([]);
+
+  // Tiny custom context menu shown on right-click of a journalled entry.
+  let menu = $state<{ x: number; y: number; id: string } | null>(null);
 
   let transcriptEl: HTMLDivElement | undefined = $state();
 
@@ -57,6 +68,41 @@
     }
   }
 
+  /**
+   * Tag the trailing turn (last assistant entry + the user entry immediately
+   * before it) with the journal id from a completed live run, making the live
+   * bubble clickable without a reload.
+   */
+  function attachJournalId(id: string): void {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === 'assistant') {
+        messages[i] = { ...messages[i], journalId: id };
+        if (i > 0 && messages[i - 1].role === 'user') {
+          messages[i - 1] = { ...messages[i - 1], journalId: id };
+        }
+        messages = messages;
+        return;
+      }
+    }
+  }
+
+  /** Right-click a journalled entry: show a one-item "open record" menu. */
+  function onEntryContextMenu(event: MouseEvent, entry: ChatEntry): void {
+    if (!entry.journalId) {
+      return;
+    }
+    event.preventDefault();
+    menu = { x: event.clientX, y: event.clientY, id: entry.journalId };
+  }
+
+  /** Open the record for the menu's entry and dismiss the menu. */
+  function openJournalRecord(): void {
+    if (menu) {
+      transport.post({ type: 'openJournal', id: menu.id });
+      menu = null;
+    }
+  }
+
   onMount(() => {
     const unsubscribe = transport.subscribe((msg) => {
       if (msg.type === 'context') {
@@ -64,14 +110,50 @@
         contextKind = msg.kind;
       } else if (msg.type === 'briefRunning') {
         // The host confirms the loop started; the pending assistant entry is
-        // already showing the running indicator, so this is a no-op reaffirm.
-        running = true;
+        // already showing the running indicator, so this is a no-op reaffirm —
+        // but only for the scope on screen (ignore a run from a scope the user
+        // has since switched away from).
+        if (isCurrentScope(msg.scope, scopeKeyFor(contextSlug))) {
+          running = true;
+        }
       } else if (msg.type === 'brief') {
-        running = false;
-        resolvePending({ html: md.render(msg.markdown), state: 'done' });
+        // Only fold a finished brief into the transcript when its run's scope is
+        // still the one displayed; otherwise the record is already persisted and
+        // will replay on next hydrate of that scope (mid-run scope-switch guard).
+        if (isCurrentScope(msg.scope, scopeKeyFor(contextSlug))) {
+          running = false;
+          resolvePending({ html: md.render(msg.markdown), state: 'done' });
+        }
       } else if (msg.type === 'briefError') {
+        if (isCurrentScope(msg.scope, scopeKeyFor(contextSlug))) {
+          running = false;
+          resolvePending({ text: msg.message, state: 'error' });
+        }
+      } else if (msg.type === 'hydrate') {
+        // Replay replaces the in-memory transcript so switching scope shows that
+        // scope's chat and a reload restores it. Briefs render via markdown-it
+        // (html:false) exactly like a live brief. Both entries of a turn carry
+        // the journal id so either can be right-clicked to open the record.
         running = false;
-        resolvePending({ text: msg.message, state: 'error' });
+        menu = null;
+        messages = msg.turns.flatMap((turn): ChatEntry[] => [
+          { role: 'user', text: turn.command, html: '', state: 'done', journalId: turn.id },
+          {
+            role: 'assistant',
+            text: '',
+            html: md.render(turn.brief),
+            state: 'done',
+            journalId: turn.id,
+          },
+        ]);
+      } else if (msg.type === 'attachJournalId') {
+        // Tag the just-created live turn (its trailing user+assistant pair)
+        // with the journal id so it's immediately openable — but only when the
+        // run's scope is still on screen (a scope-switch replaced the transcript
+        // via hydrate, so there's no live turn here to tag).
+        if (isCurrentScope(msg.scope, scopeKeyFor(contextSlug))) {
+          attachJournalId(msg.id);
+        }
       }
     });
     transport.post({ type: 'ready' });
@@ -116,11 +198,23 @@
       <div class="messages">
         {#each messages as entry, i (i)}
           {#if entry.role === 'user'}
-            <div class="entry user">
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="entry user"
+              class:journalled={entry.journalId}
+              title={entry.journalId ? 'Right-click to open its CommandJournal record' : undefined}
+              oncontextmenu={(e) => onEntryContextMenu(e, entry)}
+            >
               <div class="bubble">{entry.text}</div>
             </div>
           {:else}
-            <div class="entry assistant">
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="entry assistant"
+              class:journalled={entry.journalId}
+              title={entry.journalId ? 'Right-click to open its CommandJournal record' : undefined}
+              oncontextmenu={(e) => onEntryContextMenu(e, entry)}
+            >
               {#if entry.state === 'running'}
                 <div class="bubble running">
                   <span class="spinner codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
@@ -167,6 +261,25 @@
       </button>
     </div>
   </div>
+
+  {#if menu}
+    <!-- One-item context menu; a full-screen backdrop dismisses it on any click. -->
+    <div
+      class="menu-backdrop"
+      role="presentation"
+      onclick={() => (menu = null)}
+      oncontextmenu={(e) => {
+        e.preventDefault();
+        menu = null;
+      }}
+    ></div>
+    <div class="context-menu" style="left: {menu.x}px; top: {menu.y}px;">
+      <button type="button" onclick={openJournalRecord}>
+        <span class="codicon codicon-go-to-file" aria-hidden="true"></span>
+        Open CommandJournal record
+      </button>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -266,6 +379,44 @@
     border-color: var(--vscode-inputValidation-errorBorder);
     color: var(--vscode-foreground);
     white-space: pre-wrap;
+  }
+
+  /* Full-screen transparent catcher that dismisses the menu on any click. */
+  .menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+  }
+
+  .context-menu {
+    position: fixed;
+    z-index: 11;
+    background: var(--vscode-menu-background, var(--vscode-editor-background));
+    color: var(--vscode-menu-foreground, var(--vscode-foreground));
+    border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border, transparent));
+    border-radius: 5px;
+    box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+    padding: 4px;
+    min-width: 200px;
+  }
+  .context-menu button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    cursor: pointer;
+  }
+  .context-menu button:hover {
+    background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+    color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
   }
 
   .composer {
