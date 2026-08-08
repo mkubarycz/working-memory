@@ -64,12 +64,12 @@
         "workingMemory.localModel.baseUrl": {
           "type": "string",
           "default": "http://localhost:11434",
-          "markdownDescription": "Base URL of the local Ollama/Llama server that powers the right-rail command widget. The widget POSTs to `${baseUrl}/api/chat` (native tool-calling)."
+          "markdownDescription": "Base URL of the local Ollama/Llama server that powers the right-rail command widget. The widget POSTs to `${baseUrl}/api/chat` with constrained decoding (a JSON-schema `format` grammar that forces schema-valid tool-call args)."
         },
         "workingMemory.localModel.model": {
           "type": "string",
-          "default": "qwen2.5:14b",
-          "markdownDescription": "Model tag the command widget asks the local server to run. Must be a tool-capable model (e.g. `qwen2.5:14b`)."
+          "default": "qwen3:14b",
+          "markdownDescription": "Model tag the command widget asks the local server to run. Must be a tool-capable model. Default **`qwen3:14b`**; **`qwen2.5:14b`** is a known-good fallback."
         },
         "workingMemory.localModel.maxIterations": {
           "type": "number",

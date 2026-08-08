@@ -43,6 +43,52 @@ function required(value: string | undefined, name: string): string {
 }
 
 /**
+ * Normalize an arbitrary string into a control-plane-valid slug: lowercase,
+ * ASCII words separated by single dashes, must start with a letter (the kind's
+ * `validateMetadata` regex is `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`). Returns `''`
+ * when nothing usable remains (e.g. a title of only punctuation).
+ */
+function normalizeSlug(input: string): string {
+  const slug = input
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[^a-z]+/, ''); // must start with a letter
+  return slug;
+}
+
+/**
+ * Resolve the slug to use for a create: prefer a (normalized) model-provided
+ * slug; else derive one from `title`. This is the host-side belt-and-suspenders
+ * behind constrained decoding — a create never hard-fails on a missing/blank
+ * slug. `probe` uniquifies against existing docs (topics reject duplicate slugs;
+ * a slugless workstream would be read-only). Throws only when `title` is empty.
+ */
+async function resolveCreateSlug(
+  provided: string | undefined,
+  title: string,
+  fallbackPrefix: string,
+  probe: (slug: string) => Promise<boolean>,
+): Promise<string> {
+  let base = provided ? normalizeSlug(provided) : '';
+  if (base === '') {
+    base = normalizeSlug(title);
+  }
+  if (base === '') {
+    base = fallbackPrefix;
+  }
+  for (let i = 0; i < 20; i += 1) {
+    const candidate = i === 0 ? base : `${base}-${i + 1}`;
+    if (!(await probe(candidate))) {
+      return candidate;
+    }
+  }
+  return `${base}-${Date.now().toString(36)}`;
+}
+
+/**
  * Build a {@link ToolExecutor} whose named tools map onto the control-plane
  * client's `ws-*` domain methods. Tool names mirror `wmToolLoop.WM_TOOLS`.
  */
@@ -62,8 +108,16 @@ export function createControlPlaneToolExecutor(
             return { ok: true, result: topics };
           }
           case 'topic_create': {
+            const title = required(s(args, 'title'), 'title');
+            const slug = await resolveCreateSlug(
+              s(args, 'slug'),
+              title,
+              'topic',
+              async (cand) => (await client.topicRead({ slug: cand })).length > 0,
+            );
             const topic = await client.topicCreate({
-              title: required(s(args, 'title'), 'title'),
+              title,
+              slug,
               body: s(args, 'body'),
               topicType: s(args, 'topicType'),
               workstreams: sa(args, 'workstreams'),
@@ -88,8 +142,16 @@ export function createControlPlaneToolExecutor(
             return { ok: true, result: rows };
           }
           case 'workstream_create': {
+            const title = required(s(args, 'title'), 'title');
+            const slug = await resolveCreateSlug(
+              s(args, 'slug'),
+              title,
+              'workstream',
+              async (cand) => (await client.wsRead({ slug: cand })).length > 0,
+            );
             const ws = await client.wsCreate({
-              title: required(s(args, 'title'), 'title'),
+              title,
+              slug,
               status: s(args, 'status'),
             });
             return { ok: true, result: ws };
@@ -152,7 +214,7 @@ export function buildBrief(input: {
   error?: string;
 }): string {
   const lines: string[] = [];
-  const summary = input.finalText.trim();
+  const summary = stripToolScaffolding(input.finalText);
   lines.push(summary.length > 0 ? summary : defaultSummary(input.stopReason));
 
   if (input.stopReason === 'error') {
@@ -192,6 +254,33 @@ export function buildBrief(input: {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Strip tool-call scaffolding a small local model may leak into its final text:
+ * `<tool_call>…</tool_call>` blocks, stray opening/closing tags, and embedded
+ * `{"name":…,"arguments":…}` / `{"tool":…,"args":…}` tool JSON. This is
+ * belt-and-suspenders behind constrained decoding — the constrained path emits
+ * clean text, but a legacy/native response (or a model that ignores the grammar)
+ * can still leak. Returns the trimmed remainder; the caller falls back to a
+ * default summary when nothing meaningful is left.
+ */
+export function stripToolScaffolding(text: string): string {
+  if (typeof text !== 'string') {
+    return '';
+  }
+  let out = text;
+  // Whole <tool_call>…</tool_call> blocks (with or without a closing tag).
+  out = out.replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/gi, ' ');
+  // Any remaining stray tags (<tool_call>, </tool_call>, <function=…>, etc.).
+  out = out.replace(/<\/?(?:tool_call|tool_response|function)[^>]*>/gi, ' ');
+  // Embedded tool JSON objects: {"name":…,"arguments":…} or {"tool":…,"args":…}.
+  out = out.replace(
+    /\{\s*"(?:name|tool)"\s*:[\s\S]*?"(?:arguments|args)"\s*:\s*\{[\s\S]*?\}\s*\}/gi,
+    ' ',
+  );
+  // Collapse the whitespace the removals leave behind.
+  return out.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function defaultSummary(stopReason: 'final' | 'max-iterations' | 'error'): string {

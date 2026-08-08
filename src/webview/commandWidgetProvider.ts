@@ -114,7 +114,7 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
 
     const cfg = vscode.workspace.getConfiguration('workingMemory');
     const baseUrl = cfg.get<string>('localModel.baseUrl', 'http://localhost:11434');
-    const model = cfg.get<string>('localModel.model', 'qwen2.5:14b');
+    const model = cfg.get<string>('localModel.model', 'qwen3:14b');
     const maxIterations = cfg.get<number>('localModel.maxIterations', 8);
 
     const llama = new LlamaClient({ baseUrl, model });
@@ -127,7 +127,9 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
 
     try {
       const result = await runToolLoop({
-        chat: (messages, tools) => llama.chat(messages, tools),
+        // Constrained decoding: the model's tool-call args are grammar-forced to
+        // each tool's JSON schema (kills scaffolding leaks + missing `slug`).
+        chat: (messages, tools) => llama.chatConstrained(messages, tools),
         executor,
         command: trimmed,
         contextSlug,

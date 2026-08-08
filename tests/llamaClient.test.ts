@@ -2,7 +2,10 @@ import { test, expect } from 'vitest';
 import {
   LlamaClient,
   parseChatResponse,
+  parseEnvelopeResponse,
+  buildToolEnvelopeSchema,
   type FetchLike,
+  type LlamaToolDef,
 } from '../src/llamaClient';
 
 // --- parseChatResponse -----------------------------------------------------
@@ -119,4 +122,133 @@ test('chat throws on a non-2xx response', async () => {
   await expect(client.chat([{ role: 'user', content: 'hi' }], [])).rejects.toThrow(
     /HTTP 500/,
   );
+});
+
+// --- constrained decoding: envelope schema + parsing -----------------------
+
+const CREATE_TOOLS: LlamaToolDef[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'topic_create',
+      description: 'Create a topic.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          slug: { type: 'string' },
+        },
+        required: ['title', 'slug'],
+        additionalProperties: false,
+      },
+    },
+  },
+];
+
+test('buildToolEnvelopeSchema wraps each tool + a respond branch under action.anyOf', () => {
+  const schema = buildToolEnvelopeSchema(CREATE_TOOLS) as {
+    properties: { action: { anyOf: Array<Record<string, unknown>> } };
+    required: string[];
+  };
+  const branches = schema.properties.action.anyOf;
+  expect(schema.required).toEqual(['action']);
+  // One branch per tool + the respond branch.
+  expect(branches).toHaveLength(2);
+  const toolBranch = branches[0] as {
+    properties: { tool: { const: string }; args: unknown };
+    required: string[];
+  };
+  expect(toolBranch.properties.tool.const).toBe('topic_create');
+  // The tool's own parameters schema (with required slug) is carried as `args`.
+  expect(toolBranch.properties.args).toEqual(CREATE_TOOLS[0].function.parameters);
+  const respondBranch = branches[1] as { properties: { tool: { const: string } } };
+  expect(respondBranch.properties.tool.const).toBe('respond');
+});
+
+test('parseEnvelopeResponse maps a tool branch to a synthesized tool_call', () => {
+  const raw = JSON.stringify({
+    message: {
+      role: 'assistant',
+      content: JSON.stringify({
+        action: {
+          tool: 'topic_create',
+          args: { title: 'Product Roadmap', slug: 'product-roadmap' },
+        },
+      }),
+    },
+    done_reason: 'stop',
+  });
+  const res = parseEnvelopeResponse(raw);
+  expect(res.message.tool_calls).toHaveLength(1);
+  expect(res.message.tool_calls?.[0].function).toEqual({
+    name: 'topic_create',
+    arguments: { title: 'Product Roadmap', slug: 'product-roadmap' },
+  });
+  expect(res.message.content).toBe('');
+  expect(res.doneReason).toBe('stop');
+});
+
+test('parseEnvelopeResponse maps a respond branch to final content (no tool_calls)', () => {
+  const raw = JSON.stringify({
+    message: {
+      role: 'assistant',
+      content: JSON.stringify({ action: { tool: 'respond', message: 'All done.' } }),
+    },
+  });
+  const res = parseEnvelopeResponse(raw);
+  expect(res.message.tool_calls).toBeUndefined();
+  expect(res.message.content).toBe('All done.');
+});
+
+test('parseEnvelopeResponse tolerates a top-level action (no wrapper)', () => {
+  const raw = JSON.stringify({
+    message: {
+      role: 'assistant',
+      content: JSON.stringify({ tool: 'topic_read', args: { slug: 'foo' } }),
+    },
+  });
+  const res = parseEnvelopeResponse(raw);
+  expect(res.message.tool_calls?.[0].function).toEqual({
+    name: 'topic_read',
+    arguments: { slug: 'foo' },
+  });
+});
+
+test('parseEnvelopeResponse falls back to raw content when it is not an envelope', () => {
+  const raw = JSON.stringify({
+    message: { role: 'assistant', content: 'just some plain text' },
+  });
+  const res = parseEnvelopeResponse(raw);
+  expect(res.message.tool_calls).toBeUndefined();
+  expect(res.message.content).toBe('just some plain text');
+});
+
+test('chatConstrained posts `format` (not `tools`) and parses the envelope', async () => {
+  const seen: { init?: Parameters<FetchLike>[1] } = {};
+  const fetchImpl: FetchLike = async (_url, init) => {
+    seen.init = init;
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      async text() {
+        return JSON.stringify({
+          message: {
+            role: 'assistant',
+            content: JSON.stringify({
+              action: { tool: 'topic_create', args: { title: 'X', slug: 'x-topic' } },
+            }),
+          },
+        });
+      },
+    };
+  };
+  const client = new LlamaClient({ baseUrl: 'http://localhost:11434', model: 'qwen3:14b', fetchImpl });
+  const res = await client.chatConstrained([{ role: 'user', content: 'make x' }], CREATE_TOOLS);
+
+  const body = JSON.parse(seen.init?.body ?? '{}');
+  expect(body.format).toBeDefined();
+  expect(body.tools).toBeUndefined();
+  expect(body.format.properties.action.anyOf).toHaveLength(2);
+  expect(res.message.tool_calls?.[0].function.name).toBe('topic_create');
 });

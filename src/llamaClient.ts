@@ -9,11 +9,19 @@
  * tool-calling behavior is exercised end-to-end and its failure modes surface
  * for the Nanite roadmap.
  *
- * Empirically discovered on Michael's Mac: Ollama at `http://localhost:11434`
- * serving `qwen2.5:14b`, whose `capabilities` include `tools` — i.e. it speaks
- * the OpenAI-style function/tool-calling API natively (`/api/chat` accepts a
- * `tools` array and returns `message.tool_calls`). So we use native tool-calling
- * rather than a hand-rolled JSON harness.
+ * CONSTRAINED DECODING (WM 14.2.1 "constrained-decoding-tool-calls"): native
+ * `tools` + `format` don't compose reliably on Ollama, and unconstrained native
+ * tool-calling on small local models leaks `<tool_call>` scaffolding / garbled
+ * (Cyrillic) tokens into `message.content` and drops required args (the missing
+ * `slug` bug). So `chatConstrained()` drives a SINGLE grammar-constrained JSON
+ * envelope instead: it passes `format` = a JSON schema that is an `anyOf` over
+ * one branch per tool (each carrying that tool's own `parameters` schema, so
+ * required args like `slug` are forced) plus a `respond` branch for the final
+ * answer. Ollama compiles that schema to a llama.cpp grammar, so the model's
+ * output is guaranteed schema-valid — no scaffolding, no missing required args.
+ * We then map the envelope back onto the same {@link LlamaChatResult} shape
+ * (synthesizing `tool_calls`) so `wmToolLoop.ts` needs no change. The legacy
+ * native path (`chat()` + {@link parseChatResponse}) is retained for reference.
  *
  * This module is intentionally VS Code-free and takes an injectable `fetch` so
  * it can be unit-tested against a fake server without a live daemon.
@@ -105,27 +113,52 @@ export class LlamaClient {
   }
 
   /**
-   * Send one chat turn. `tools` exposes the available functions; the returned
-   * `message` either carries `tool_calls` (the model wants to act) or plain
-   * `content` (its final answer). Throws on transport / non-2xx / parse errors
-   * so the loop can surface a clear failure.
+   * Send one chat turn via NATIVE tool-calling (legacy path). `tools` exposes
+   * the available functions; the returned `message` either carries `tool_calls`
+   * or plain `content`. Retained for reference/tests — the widget now uses
+   * {@link chatConstrained}. Throws on transport / non-2xx / parse errors.
    */
   async chat(
     messages: LlamaMessage[],
     tools: LlamaToolDef[],
   ): Promise<LlamaChatResult> {
-    const url = `${this.baseUrl}/api/chat`;
-    const body = JSON.stringify({
+    const raw = await this.post({
       model: this.model,
       messages,
       tools,
       stream: false,
       options: { temperature: this.temperature },
     });
+    return parseChatResponse(raw);
+  }
 
+  /**
+   * Send one chat turn with CONSTRAINED DECODING: instead of native `tools`, we
+   * pass `format` = the {@link buildToolEnvelopeSchema} JSON schema so Ollama
+   * grammar-constrains the output to a valid tool-call (or `respond`) envelope.
+   * The envelope is mapped back onto {@link LlamaChatResult} (with synthesized
+   * `tool_calls`) so the loop consumes it identically to the native path.
+   */
+  async chatConstrained(
+    messages: LlamaMessage[],
+    tools: LlamaToolDef[],
+  ): Promise<LlamaChatResult> {
+    const raw = await this.post({
+      model: this.model,
+      messages,
+      format: buildToolEnvelopeSchema(tools),
+      stream: false,
+      options: { temperature: this.temperature },
+    });
+    return parseEnvelopeResponse(raw);
+  }
+
+  /** POST a JSON body to `/api/chat` (non-streaming) and return the raw text. */
+  private async post(payload: Record<string, unknown>): Promise<string> {
+    const url = `${this.baseUrl}/api/chat`;
+    const body = JSON.stringify(payload);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let raw: string;
     try {
       const res = await this.fetchImpl(url, {
         method: 'POST',
@@ -133,21 +166,148 @@ export class LlamaClient {
         body,
         signal: controller.signal,
       });
-      raw = await res.text();
+      const raw = await res.text();
       if (!res.ok) {
         throw new Error(
           `Local model HTTP ${res.status} ${res.statusText}: ${raw.slice(0, 500)}`,
         );
       }
+      return raw;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Local model request to ${url} failed: ${msg}`);
     } finally {
       clearTimeout(timer);
     }
-
-    return parseChatResponse(raw);
   }
+}
+
+/**
+ * Build the JSON schema passed as Ollama's `format` for constrained decoding: a
+ * single top-level object `{ action: <anyOf> }` where each `anyOf` branch is
+ * one tool (a `const` discriminator `tool` + that tool's own `parameters`
+ * schema as `args`, so required args like `slug` are grammar-forced) plus a
+ * `respond` branch `{ tool: "respond", message }` for the final answer.
+ * Exported for unit tests.
+ */
+export function buildToolEnvelopeSchema(tools: LlamaToolDef[]): Record<string, unknown> {
+  const branches: unknown[] = tools.map((t) => ({
+    type: 'object',
+    properties: {
+      tool: { const: t.function.name },
+      args: t.function.parameters,
+    },
+    required: ['tool', 'args'],
+    additionalProperties: false,
+  }));
+  branches.push({
+    type: 'object',
+    properties: {
+      tool: { const: 'respond' },
+      message: { type: 'string', description: 'Final plain-text answer to the user.' },
+    },
+    required: ['tool', 'message'],
+    additionalProperties: false,
+  });
+  return {
+    type: 'object',
+    properties: { action: { anyOf: branches } },
+    required: ['action'],
+    additionalProperties: false,
+  };
+}
+
+/** The decoded envelope: either a tool call or a final `respond` message. */
+interface ToolEnvelope {
+  tool: string;
+  args?: Record<string, unknown>;
+  message?: string;
+}
+
+/**
+ * Pull the `{ action: {...} }` envelope out of a constrained response's
+ * `content`. Tolerant of the model emitting the action at the top level. Returns
+ * `null` when the content is not a recognizable envelope (the caller then falls
+ * back to treating the raw content as final text).
+ */
+function extractEnvelope(content: string): ToolEnvelope | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  const root = parsed as { action?: unknown; tool?: unknown };
+  const action = (root.action ?? root) as { tool?: unknown; args?: unknown; message?: unknown };
+  if (!action || typeof action.tool !== 'string') {
+    return null;
+  }
+  const env: ToolEnvelope = { tool: action.tool };
+  if (action.args && typeof action.args === 'object' && !Array.isArray(action.args)) {
+    env.args = action.args as Record<string, unknown>;
+  }
+  if (typeof action.message === 'string') {
+    env.message = action.message;
+  }
+  return env;
+}
+
+/**
+ * Parse a constrained `/api/chat` response into a {@link LlamaChatResult}. The
+ * envelope in `message.content` becomes either a synthesized `tool_calls` entry
+ * (tool branch) or a plain-text `content` (the `respond` branch). If the content
+ * is somehow not a valid envelope, the raw content is returned as final text
+ * (the brief sanitizer strips any residual scaffolding downstream). Exported for
+ * unit tests.
+ */
+export function parseEnvelopeResponse(raw: string): LlamaChatResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`Local model returned non-JSON response: ${raw.slice(0, 300)}`);
+  }
+  const obj = parsed as {
+    message?: { role?: string; content?: unknown };
+    done_reason?: unknown;
+    prompt_eval_count?: unknown;
+    eval_count?: unknown;
+    error?: unknown;
+  };
+  if (typeof obj.error === 'string') {
+    throw new Error(`Local model error: ${obj.error}`);
+  }
+  if (!obj.message || typeof obj.message !== 'object') {
+    throw new Error('Local model response missing `message`');
+  }
+  const content = typeof obj.message.content === 'string' ? obj.message.content : '';
+  const doneReason = typeof obj.done_reason === 'string' ? obj.done_reason : undefined;
+  const promptEvalCount =
+    typeof obj.prompt_eval_count === 'number' ? obj.prompt_eval_count : undefined;
+  const evalCount = typeof obj.eval_count === 'number' ? obj.eval_count : undefined;
+
+  const envelope = extractEnvelope(content);
+  if (envelope && envelope.tool !== 'respond') {
+    const message: LlamaMessage = {
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        { function: { name: envelope.tool, arguments: envelope.args ?? {} } },
+      ],
+    };
+    return { message, doneReason, promptEvalCount, evalCount };
+  }
+
+  const finalText =
+    envelope && envelope.tool === 'respond' && typeof envelope.message === 'string'
+      ? envelope.message
+      : content;
+  return {
+    message: { role: 'assistant', content: finalText },
+    doneReason,
+    promptEvalCount,
+    evalCount,
+  };
 }
 
 /**

@@ -123,10 +123,11 @@ export const WM_TOOLS: LlamaToolDef[] = [
   }),
   fn('topic_create', 'Create a new topic. Returns the created topic (with its slug).', {
     title: str('Topic title (required).'),
+    slug: str('Required unique slug: lowercase words separated by dashes, 3–5 words, e.g. "product-roadmap". Derive it from the title.'),
     body: str('Markdown body describing the topic.'),
     topicType: str('Topic type slug, e.g. feature | bug | task | user-story.'),
     workstreams: arr('Workstream slugs this topic belongs to.'),
-  }, ['title']),
+  }, ['title', 'slug']),
   fn('topic_update', 'Update an existing topic identified by slug. Only provided fields change.', {
     slug: str('Slug of the topic to update (required).'),
     title: str('New title.'),
@@ -142,8 +143,9 @@ export const WM_TOOLS: LlamaToolDef[] = [
   }),
   fn('workstream_create', 'Create a new workstream. Returns the created workstream.', {
     title: str('Workstream title (required).'),
+    slug: str('Required unique slug: lowercase words separated by dashes, 3–5 words, e.g. "product-roadmap". Derive it from the title.'),
     status: str('Lifecycle status: queue | progress | backlog | closed.'),
-  }, ['title']),
+  }, ['title', 'slug']),
   fn('workstream_update', 'Update a workstream identified by slug. Only provided fields change.', {
     slug: str('Slug of the workstream to update (required).'),
     title: str('New title.'),
@@ -169,10 +171,17 @@ export const WM_TOOLS: LlamaToolDef[] = [
 
 /**
  * Build the system prompt: describes the assistant's job, the sticky context
- * scope, and the stop condition. Threading the context slug here (and into the
- * user turn) is what makes commands default to the selected WM doc.
+ * scope, the available tools, and the stop condition. Constrained decoding
+ * drops the native `tools` array, so the tool catalog is carried here in the
+ * prompt (the JSON envelope grammar enforces the shape; the prompt supplies the
+ * meaning). Threading the context slug here (and into the user turn) is what
+ * makes commands default to the selected WM doc.
  */
-export function buildSystemPrompt(contextSlug: string | null, contextKind?: string | null): string {
+export function buildSystemPrompt(
+  contextSlug: string | null,
+  contextKind?: string | null,
+  tools: LlamaToolDef[] = WM_TOOLS,
+): string {
   const scope = contextSlug
     ? `The user is currently focused on the ${contextKind ?? 'document'} "${contextSlug}". ` +
       `Treat that as the default scope: if a command is ambiguous about which topic/workstream it means, assume "${contextSlug}".`
@@ -180,14 +189,35 @@ export function buildSystemPrompt(contextSlug: string | null, contextKind?: stri
   return [
     'You are the Working Memory command assistant. You translate the user\'s command into Working Memory tool calls (create, read, update, delete of topics, workstreams, and alerts).',
     scope,
+    'You respond with ONE JSON action per turn: either a tool call `{ "action": { "tool": <name>, "args": { … } } }`, or, when finished, `{ "action": { "tool": "respond", "message": <short summary> } }`.',
+    'Available tools:',
+    buildToolCatalog(tools),
     'Rules:',
     '- Prefer reading (topic_read / workstream_read) to discover exact slugs BEFORE updating or deleting.',
-    '- Slugs are lowercase-hyphenated. Never invent a slug for update/delete — look it up first.',
+    '- Slugs are lowercase-hyphenated. Never invent a slug for update/delete — look it up first. For create, derive a fresh slug from the title.',
     '- Make as many tool calls as needed, one logical step at a time.',
     '- Create or delete each object at most once per request unless the user explicitly asks for multiple; never repeat a create you have already made in this conversation.',
     '- Deletes are soft/recoverable but still destructive — only delete when the user clearly asked.',
-    '- When the task is complete, STOP calling tools and reply with a short plain-text summary of what you did. Do not call any tool in that final message.',
+    '- When the task is complete, STOP calling tools and use the `respond` tool with a short plain-text summary of what you did.',
   ].join('\n');
+}
+
+/** One-line-per-tool catalog (name + required args + description) for the prompt. */
+function buildToolCatalog(tools: LlamaToolDef[]): string {
+  return tools
+    .map((t) => {
+      const params = (t.function.parameters ?? {}) as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      const names = Object.keys(params.properties ?? {});
+      const req = new Set(params.required ?? []);
+      const argList = names
+        .map((n) => (req.has(n) ? `${n}*` : n))
+        .join(', ');
+      return `- ${t.function.name}(${argList}): ${t.function.description}`;
+    })
+    .join('\n');
 }
 
 /**

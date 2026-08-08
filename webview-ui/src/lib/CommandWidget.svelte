@@ -93,9 +93,10 @@
     transport.post({ type: 'submitCommand', command: trimmed, contextSlug });
   }
 
-  // Cmd/Ctrl+Enter submits; plain Enter inserts a newline (multi-line commands).
+  // Enter submits; Shift+Enter inserts a newline (multi-line commands).
+  // Cmd/Ctrl+Enter is kept as an alias that also submits.
   function onKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submit();
     }
@@ -109,28 +110,33 @@
         Tell Working Memory what to do. Commands stack here as a running
         back-and-forth.
       </div>
-    {/if}
-    {#each messages as entry, i (i)}
-      {#if entry.role === 'user'}
-        <div class="entry user">
-          <div class="bubble">{entry.text}</div>
-        </div>
-      {:else}
-        <div class="entry assistant">
-          {#if entry.state === 'running'}
-            <div class="bubble running">
-              <span class="spinner codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
-              Running the local model tool-calling loop…
+    {:else}
+      <!-- margin-top:auto anchors a short history to the bottom (chat style);
+           when it overflows the auto margin collapses and the transcript scrolls. -->
+      <div class="messages">
+        {#each messages as entry, i (i)}
+          {#if entry.role === 'user'}
+            <div class="entry user">
+              <div class="bubble">{entry.text}</div>
             </div>
-          {:else if entry.state === 'error'}
-            <div class="bubble error">{entry.text}</div>
           {:else}
-            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-            <div class="bubble brief-body">{@html entry.html}</div>
+            <div class="entry assistant">
+              {#if entry.state === 'running'}
+                <div class="bubble running">
+                  <span class="spinner codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span>
+                  Running the local model tool-calling loop…
+                </div>
+              {:else if entry.state === 'error'}
+                <div class="bubble error">{entry.text}</div>
+              {:else}
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                <div class="bubble brief-body">{@html entry.html}</div>
+              {/if}
+            </div>
           {/if}
-        </div>
-      {/if}
-    {/each}
+        {/each}
+      </div>
+    {/if}
   </div>
 
   <div class="composer">
@@ -155,7 +161,7 @@
     ></textarea>
 
     <div class="actions">
-      <span class="hint">⌘/Ctrl + Enter</span>
+      <span class="hint">Enter to send, Shift+Enter for newline</span>
       <button type="button" onclick={submit} disabled={running || command.trim().length === 0}>
         {running ? 'Working…' : 'Run command'}
       </button>
@@ -164,21 +170,47 @@
 </main>
 
 <style>
+  /* Size the webview to its CONTAINER, not the viewport. In a WebviewView the
+     viewport isn't the whole editor, so `100vh` overflows and phantom-scrolls.
+     Scoped via :global here (only the command webview mounts CommandWidget, so
+     the shared document editor's #app padding/max-width is untouched). */
+  :global(html),
+  :global(body),
+  :global(#app) {
+    height: 100%;
+    margin: 0;
+  }
+  :global(#app) {
+    padding: 0;
+    max-width: none;
+  }
+
   main {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    height: 100%;
+    overflow: hidden;
     box-sizing: border-box;
     font-family: var(--vscode-font-family);
     font-size: var(--vscode-font-size);
     color: var(--vscode-foreground);
   }
 
-  /* Transcript scrolls; composer is pinned to the bottom. */
+  /* Only the transcript scrolls; composer stays pinned. min-height:0 lets the
+     flex child shrink so overflow-y actually engages. */
   .transcript {
     flex: 1;
     overflow-y: auto;
+    min-height: 0;
     padding: 10px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Newest at the bottom: auto top-margin rests a short history against the
+     composer and collapses once the list overflows into scroll. */
+  .messages {
+    margin-top: auto;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -241,6 +273,7 @@
     flex-direction: column;
     gap: 6px;
     padding: 8px 10px;
+    box-sizing: border-box;
     border-top: 1px solid var(--vscode-panel-border, var(--vscode-input-border, transparent));
     background: var(--vscode-sideBar-background, var(--vscode-editor-background));
   }
