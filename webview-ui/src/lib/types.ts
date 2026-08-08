@@ -167,7 +167,13 @@ export type SaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 export type ExtToWebview =
   | { type: 'document'; data: DocumentVM }
   | { type: 'saved'; resourceVersion?: number }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  // Non-terminal startup state: the control plane isn't connected yet, so the
+  // webview shows "connecting…" and waits for a refresh to heal it (Bug B).
+  | { type: 'connecting' }
+  // A newer server version exists but the user has unsaved edits — surface a
+  // "content changed — reload" affordance instead of overwriting (Bug A).
+  | { type: 'staleReload' };
 
 /** A topic edit patch (title / status / body). */
 export interface TopicPatch {
@@ -185,4 +191,10 @@ export type WebviewToExt =
   | { type: 'openWorkstream'; slug: string }
   | { type: 'openDocument'; id: string }
   | { type: 'invoke'; command: string; args: unknown[] }
-  | { type: 'togglePinTopic'; slug: string };
+  | { type: 'togglePinTopic'; slug: string }
+  // Reports whether the webview currently holds un-flushed local edits so the
+  // host's refresh decision won't stomp in-progress work (Bug A).
+  | { type: 'editState'; hasPendingEdits: boolean }
+  // The user clicked the reload banner: discard local edits + take the server
+  // version.
+  | { type: 'discardAndReload' };

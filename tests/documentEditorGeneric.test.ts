@@ -121,3 +121,17 @@ describe('buildGenericVM', () => {
     expect(vm.title).toBe('slug-1');
   });
 });
+
+describe('hashVm', () => {
+  test('same VM hashes identically; a field change changes the hash', async () => {
+    const { buildGenericVM, hashVm } = await import(
+      '../src/webview/documentEditorProvider'
+    );
+    const a = buildGenericVM(envelope({ status: 'open' }));
+    const b = buildGenericVM(envelope({ status: 'open' }));
+    const c = buildGenericVM(envelope({ status: 'closed' }));
+    expect(hashVm(a)).toBe(hashVm(b));
+    expect(hashVm(a)).not.toBe(hashVm(c));
+  });
+});
+

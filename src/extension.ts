@@ -245,13 +245,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // THROUGH the control-plane client (never the DB); dispatches its UI by kind
   // (workstream / topic / generic fallback). Opened via a synthetic
   // `working-memory:/<kind>/<id>.working-memory` URI from the panel rail.
+  const documentEditorProvider = new DocumentEditorProvider(
+    context.extensionUri,
+    () => controlPlaneClient,
+  );
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(
       DocumentEditorProvider.viewType,
-      new DocumentEditorProvider(
-        context.extensionUri,
-        () => controlPlaneClient,
-      ),
+      documentEditorProvider,
       {
         supportsMultipleEditorsPerDocument: false,
         webviewOptions: { retainContextWhenHidden: true },
@@ -262,6 +263,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const refresh = (): void => {
     panelProvider.refresh();
     contentProvider.refresh();
+    // Re-fetch + re-push any open document editors so they live-update on
+    // external store writes (Bug A) and self-heal from "connecting…" once the
+    // control-plane daemon is up (Bug B). Rides the same debounced signal.
+    void documentEditorProvider.refreshOpen();
   };
 
   // The nanite EXECUTION DISPATCHER — the centralized execution plane. Polls the

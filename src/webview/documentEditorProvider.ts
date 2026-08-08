@@ -16,6 +16,7 @@ import {
   type PanelTopic,
   type PanelTopicsGroup,
 } from '../panelData';
+import { decideRefreshAction } from './refreshDecision';
 
 /**
  * The unified Working Memory document custom editor (WM 14.2
@@ -160,12 +161,51 @@ type WebviewToExt =
   | { type: 'openWorkstream'; slug: string }
   | { type: 'openDocument'; id: string }
   | { type: 'invoke'; command: string; args: unknown[] }
-  | { type: 'togglePinTopic'; slug: string };
+  | { type: 'togglePinTopic'; slug: string }
+  // The webview reports whether it currently holds un-flushed local edits so the
+  // host's refresh decision can avoid stomping in-progress work (Bug A).
+  | { type: 'editState'; hasPendingEdits: boolean }
+  // The user clicked the "content changed — reload" banner: discard local edits
+  // and re-push the current server version.
+  | { type: 'discardAndReload' };
 
 type ExtToWebview =
   | { type: 'document'; data: DocumentVM }
   | { type: 'saved'; resourceVersion?: number }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  // Non-terminal startup state: the control plane isn't connected yet, so the
+  // webview shows "connecting…" and waits for a refresh to heal it (Bug B).
+  | { type: 'connecting' }
+  // A newer server version exists but the user has unsaved edits — the webview
+  // surfaces a reload affordance instead of overwriting (Bug A).
+  | { type: 'staleReload' };
+
+/** Outcome of loading a document: distinguishes "not ready" from a genuine 404. */
+type LoadOutcome =
+  | { status: 'ok'; vm: DocumentVM }
+  | { status: 'notFound' }
+  | { status: 'notReady'; message?: string };
+
+/**
+ * Per-open-editor state the provider tracks so it can re-fetch + re-push each
+ * live webview when the store changes out-of-process (Bug A) and heal editors
+ * that failed their first load because the daemon wasn't up yet (Bug B).
+ */
+interface OpenEditorEntry {
+  ref: ParsedRef;
+  post: (msg: ExtToWebview) => void;
+  /** The `hashVm` of the view-model currently displayed, or null when unloaded. */
+  loadedSignal: string | null;
+  /** True while showing an error / connecting state or not yet loaded. */
+  errored: boolean;
+  /** True while the webview holds un-flushed local edits. */
+  hasPendingEdits: boolean;
+  /**
+   * Whether this editor's panel is currently visible. Hidden editors are
+   * skipped by `refreshOpen()` and revalidated when they become visible again.
+   */
+  visible: boolean;
+}
 
 /** The parsed kind hint + identifier from a `.working-memory` URI. */
 interface ParsedRef {
@@ -219,6 +259,11 @@ function makeNonce(): string {
   return randomBytes(16).toString('base64');
 }
 
+/** Extract a human-readable message from an unknown thrown value. */
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Decide whether toggling a topic's pin in this workstream should SET focus
  * (true) or CLEAR it (false): set when the workstream isn't already in the
@@ -237,6 +282,10 @@ const NANITE_TREE_COMMANDS = new Set([
   'workingMemory.nanite.reset',
   'workingMemory.nanite.restart',
 ]);
+
+/** Bounded backoff for the initial "connecting…" retry on first load (Bug B). */
+const LOAD_RETRY_LIMIT = 5;
+const LOAD_RETRY_DELAY_MS = 600;
 
 /** Best-effort string coercion for a `spec` value. */
 export function asString(v: unknown): string {
@@ -274,6 +323,20 @@ export function buildGenericVM(doc: DocumentEnvelope): GenericDocVM {
     resourceVersion: doc.metadata.resourceVersion,
     spec,
   };
+}
+
+/**
+ * Host-side change-detection hash over an ENTIRE view-model. The workstream
+ * screen is a COMPOSITE — it embeds its child topic + nanite tree — but the
+ * workstream's own `resourceVersion` only moves when the workstream document
+ * itself changes. Closing a child topic bumps the TOPIC's version, not the
+ * workstream's, so a plain version compare misses it. Hashing the whole VM
+ * (which includes that tree) catches every child-only change too, so no bespoke
+ * composite fingerprint is needed. `JSON.stringify` is stable here: the VM is
+ * built deterministically (sorted rows/tree) from the same inputs each fetch.
+ */
+export function hashVm(vm: DocumentVM): string {
+  return JSON.stringify(vm);
 }
 
 /** Parse a topic slug out of a `working-memory:/topic/<slug>.working-memory` uri. */
@@ -356,6 +419,13 @@ export class DocumentEditorProvider
   >();
   readonly onDidChangeCustomDocument = this._onDidChangeCustomDocument.event;
 
+  /**
+   * Live registry of open webview panels so external store changes can re-fetch
+   * + re-push each one (Bug A) and stuck "connecting" editors can self-heal once
+   * the daemon comes up (Bug B). Cleared per-entry on `onDidDispose`.
+   */
+  private readonly openEditors = new Set<OpenEditorEntry>();
+
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly getClient: () => ControlPlaneClient | null,
@@ -380,15 +450,61 @@ export class DocumentEditorProvider
       void webview.postMessage(msg);
     };
 
-    const load = async (): Promise<void> => {
-      const vm = await this.loadDocument(document.ref);
-      if (vm) {
-        post({ type: 'document', data: vm });
-      } else {
+    // Register this panel so `refreshOpen()` can re-fetch + re-push it when the
+    // store changes out-of-process, and heal it if the daemon wasn't up yet.
+    const entry: OpenEditorEntry = {
+      ref: document.ref,
+      post,
+      loadedSignal: null,
+      errored: true,
+      hasPendingEdits: false,
+      visible: webviewPanel.visible,
+    };
+    this.openEditors.add(entry);
+    webviewPanel.onDidDispose(() => {
+      this.openEditors.delete(entry);
+    });
+
+    // Track panel visibility so `refreshOpen()` can skip hidden editors, and
+    // revalidate an editor the moment it becomes visible again (hidden panels
+    // don't get live store updates, so they'd otherwise show stale content).
+    webviewPanel.onDidChangeViewState(() => {
+      const wasVisible = entry.visible;
+      entry.visible = webviewPanel.visible;
+      if (!wasVisible && entry.visible) {
+        void this.refreshEntry(entry);
+      }
+    });
+
+    // Initial load with a short bounded backoff: if the control plane isn't
+    // connected yet, show a NON-terminal "connecting…" state and retry a few
+    // times. The primary heal is still the CP-ready `refresh()` → `refreshOpen()`
+    // signal, but this covers the case where no store write follows startup.
+    const load = async (attempt = 0): Promise<void> => {
+      const outcome = await this.loadDocument(document.ref);
+      if (outcome.status === 'ok') {
+        this.pushDocument(entry, outcome.vm);
+        return;
+      }
+      if (outcome.status === 'notFound') {
+        entry.errored = true;
+        entry.loadedSignal = null;
         post({
           type: 'error',
-          message: `Document "${document.ref.identifier}" not found, or the control plane is not running.`,
+          message: `Document "${document.ref.identifier}" was not found.`,
         });
+        return;
+      }
+      // notReady: daemon not connected yet — stay non-terminal and retry.
+      entry.errored = true;
+      entry.loadedSignal = null;
+      post({ type: 'connecting' });
+      if (attempt < LOAD_RETRY_LIMIT) {
+        setTimeout(() => {
+          if (this.openEditors.has(entry)) {
+            void load(attempt + 1);
+          }
+        }, LOAD_RETRY_DELAY_MS);
       }
     };
 
@@ -429,10 +545,18 @@ export class DocumentEditorProvider
           }
           return;
         case 'save':
-          await this.saveWorkstream(document.ref, msg.patch ?? {}, post);
+          await this.saveWorkstream(entry, msg.patch ?? {});
           return;
         case 'saveTopic':
-          await this.saveTopic(document.ref, msg.patch ?? {}, post);
+          await this.saveTopic(entry, msg.patch ?? {});
+          return;
+        case 'editState':
+          entry.hasPendingEdits = msg.hasPendingEdits === true;
+          return;
+        case 'discardAndReload':
+          // The user chose to discard local edits and take the server version.
+          entry.hasPendingEdits = false;
+          await load();
           return;
         case 'invoke':
           // Nanite lifecycle actions ported from the rail — same commands, run
@@ -451,11 +575,74 @@ export class DocumentEditorProvider
           return;
         case 'togglePinTopic':
           if (typeof msg.slug === 'string' && msg.slug.length > 0) {
-            await this.togglePinTopic(document.ref, msg.slug, load, post);
+            await this.togglePinTopic(entry, msg.slug);
           }
           return;
       }
     });
+  }
+
+  /** Push a fresh view-model to an editor and mark it loaded (clears errors). */
+  private pushDocument(entry: OpenEditorEntry, vm: DocumentVM): void {
+    entry.errored = false;
+    entry.loadedSignal = hashVm(vm);
+    entry.post({ type: 'document', data: vm });
+  }
+
+  /**
+   * Re-fetch every open editor's document and reconcile it with what's shown.
+   * Rides the extension's existing `refresh()` signal (store-file watcher + poll
+   * + control-plane-ready), so it heals stuck "connecting" editors after the
+   * daemon comes up (Bug B) and live-updates open editors on external writes
+   * (Bug A) — without stomping unsaved local edits. Only VISIBLE editors are
+   * reconciled here; hidden ones revalidate when they become visible again (see
+   * `onDidChangeViewState` in `resolveCustomEditor`).
+   */
+  public async refreshOpen(): Promise<void> {
+    for (const entry of this.openEditors) {
+      if (!entry.visible) {
+        continue;
+      }
+      await this.refreshEntry(entry);
+    }
+  }
+
+  /**
+   * Re-fetch a single editor's document and reconcile it with what's displayed.
+   * Change-detection compares a hash of the whole fetched VM against the hash of
+   * the displayed one, so a child-only change (e.g. a closed child topic, which
+   * doesn't move the workstream's own version) still triggers a re-push.
+   */
+  private async refreshEntry(entry: OpenEditorEntry): Promise<void> {
+    const outcome = await this.loadDocument(entry.ref);
+    if (outcome.status === 'notReady') {
+      // Still not connected — leave the current state; a later signal retries.
+      return;
+    }
+    if (outcome.status === 'notFound') {
+      // A genuine miss is terminal (e.g. the document was deleted).
+      entry.errored = true;
+      entry.loadedSignal = null;
+      entry.post({
+        type: 'error',
+        message: `Document "${entry.ref.identifier}" was not found.`,
+      });
+      return;
+    }
+    const action = decideRefreshAction({
+      errored: entry.errored,
+      displayedSignal: entry.loadedSignal,
+      fetchedSignal: hashVm(outcome.vm),
+      hasPendingEdits: entry.hasPendingEdits,
+    });
+    if (action === 'apply' || action === 'retry') {
+      this.pushDocument(entry, outcome.vm);
+    } else if (action === 'reload-banner') {
+      // Newer server version + unsaved local edits: offer a reload instead of
+      // overwriting. Displayed version is left unchanged until the user acts.
+      entry.post({ type: 'staleReload' });
+    }
+    // noop: nothing to do.
   }
 
   /**
@@ -464,17 +651,26 @@ export class DocumentEditorProvider
    * `ws-*` methods); every other kind falls back to a generic envelope VM
    * (loaded via `wm-document-read`). NO database access.
    */
-  private async loadDocument(ref: ParsedRef): Promise<DocumentVM | null> {
+  private async loadDocument(ref: ParsedRef): Promise<LoadOutcome> {
     const client = this.getClient();
     if (!client) {
-      return null;
+      // No client yet == the daemon isn't connected. NON-terminal (Bug B).
+      return { status: 'notReady' };
     }
     const cpKind = controlPlaneKindFor(ref.kindHint);
-    if (cpKind === 'Workstream') {
-      return this.loadWorkstream(client, ref.identifier);
-    }
-    if (cpKind === 'Topic') {
-      return this.loadTopic(client, ref.identifier);
+    if (cpKind === 'Workstream' || cpKind === 'Topic') {
+      // The typed `ws-*` reads THROW only on a dead/dropped daemon; a genuine
+      // miss returns an empty result (no throw). So a thrown error here means
+      // "not ready", while a null VM means "not found".
+      try {
+        const vm =
+          cpKind === 'Workstream'
+            ? await this.loadWorkstream(client, ref.identifier)
+            : await this.loadTopic(client, ref.identifier);
+        return vm ? { status: 'ok', vm } : { status: 'notFound' };
+      } catch (err) {
+        return { status: 'notReady', message: messageOf(err) };
+      }
     }
     return this.loadGeneric(client, ref.identifier, cpKind);
   }
@@ -564,23 +760,15 @@ export class DocumentEditorProvider
     client: ControlPlaneClient,
     identifier: string,
   ): Promise<Workstream | null> {
-    try {
-      const bySlug = await client.wsRead({ slug: identifier });
-      if (bySlug[0]) {
-        return bySlug[0];
-      }
-    } catch {
-      // fall through to id lookup
+    // A miss returns an EMPTY array (no throw), so we fall through to the id
+    // lookup; a dead/dropped daemon THROWS, which propagates to `loadDocument`
+    // where it is classified as "not ready" (vs. this null → "not found").
+    const bySlug = await client.wsRead({ slug: identifier });
+    if (bySlug[0]) {
+      return bySlug[0];
     }
-    try {
-      const byId = await client.wsRead({ id: identifier });
-      if (byId[0]) {
-        return byId[0];
-      }
-    } catch {
-      // not resolvable
-    }
-    return null;
+    const byId = await client.wsRead({ id: identifier });
+    return byId[0] ?? null;
   }
 
   // ---- Topic (kind = topic) -------------------------------------------------
@@ -632,23 +820,14 @@ export class DocumentEditorProvider
     client: ControlPlaneClient,
     identifier: string,
   ): Promise<Topic | null> {
-    try {
-      const bySlug = await client.topicRead({ slug: identifier });
-      if (bySlug[0]) {
-        return bySlug[0];
-      }
-    } catch {
-      // fall through to id lookup
+    // A miss returns an EMPTY array (no throw); a dead daemon THROWS and
+    // propagates so `loadDocument` classifies it as "not ready" (not 404).
+    const bySlug = await client.topicRead({ slug: identifier });
+    if (bySlug[0]) {
+      return bySlug[0];
     }
-    try {
-      const byId = await client.topicRead({ id: identifier });
-      if (byId[0]) {
-        return byId[0];
-      }
-    } catch {
-      // not resolvable
-    }
-    return null;
+    const byId = await client.topicRead({ id: identifier });
+    return byId[0] ?? null;
   }
 
   /**
@@ -706,20 +885,28 @@ export class DocumentEditorProvider
     client: ControlPlaneClient,
     identifier: string,
     cpKind: string | null,
-  ): Promise<GenericDocVM | null> {
+  ): Promise<LoadOutcome> {
     // Try by id first (the `/document/<id>` form), then by slug (+ kind).
+    // `available:false` == daemon down (NON-terminal); `available:true` +
+    // no document == genuine 404 (terminal).
     let result = await client.getDocument(
       cpKind ? { id: identifier, kind: cpKind } : { id: identifier },
     );
-    if (result.available && !result.document) {
+    if (!result.available) {
+      return { status: 'notReady', message: result.error };
+    }
+    if (!result.document) {
       result = await client.getDocument(
         cpKind ? { slug: identifier, kind: cpKind } : { slug: identifier },
       );
+      if (!result.available) {
+        return { status: 'notReady', message: result.error };
+      }
     }
-    if (!result.available || !result.document) {
-      return null;
+    if (!result.document) {
+      return { status: 'notFound' };
     }
-    return this.buildGeneric(result.document);
+    return { status: 'ok', vm: this.buildGeneric(result.document) };
   }
 
   private buildGeneric(doc: DocumentEnvelope): GenericDocVM {
@@ -729,10 +916,11 @@ export class DocumentEditorProvider
   // ---- Autosave -------------------------------------------------------------
 
   private async saveWorkstream(
-    ref: ParsedRef,
+    entry: OpenEditorEntry,
     patch: { title?: string; status?: string },
-    post: (msg: ExtToWebview) => void,
   ): Promise<void> {
+    const post = entry.post;
+    const ref = entry.ref;
     const client = this.getClient();
     if (!client) {
       post({
@@ -741,7 +929,13 @@ export class DocumentEditorProvider
       });
       return;
     }
-    const ws = await this.readWorkstream(client, ref.identifier);
+    let ws: Workstream | null;
+    try {
+      ws = await this.readWorkstream(client, ref.identifier);
+    } catch (err) {
+      post({ type: 'error', message: `Save failed: ${messageOf(err)}` });
+      return;
+    }
     if (!ws || !ws.slug) {
       post({
         type: 'error',
@@ -763,13 +957,13 @@ export class DocumentEditorProvider
     } catch (err) {
       post({
         type: 'error',
-        message: `Save failed: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Save failed: ${messageOf(err)}`,
       });
       return;
     }
     const vm = await this.loadWorkstream(client, ref.identifier);
     if (vm) {
-      post({ type: 'document', data: vm });
+      this.pushDocument(entry, vm);
     }
     // Explicit host-confirmed ack — the webview flips its indicator green only
     // on THIS, never merely on posting the patch.
@@ -784,11 +978,11 @@ export class DocumentEditorProvider
    * (`topicSetFocus` / `topicClearFocus`), then reloads + re-pushes the tree.
    */
   private async togglePinTopic(
-    ref: ParsedRef,
+    entry: OpenEditorEntry,
     topicSlug: string,
-    reload: () => Promise<void>,
-    post: (msg: ExtToWebview) => void,
   ): Promise<void> {
+    const post = entry.post;
+    const ref = entry.ref;
     const client = this.getClient();
     if (!client) {
       post({
@@ -797,7 +991,19 @@ export class DocumentEditorProvider
       });
       return;
     }
-    const ws = await this.readWorkstream(client, ref.identifier);
+    let ws: Workstream | null;
+    let topic: Topic | null;
+    try {
+      ws = await this.readWorkstream(client, ref.identifier);
+      if (ws && ws.slug) {
+        topic = await this.readTopic(client, topicSlug);
+      } else {
+        topic = null;
+      }
+    } catch (err) {
+      post({ type: 'error', message: `Pin failed: ${messageOf(err)}` });
+      return;
+    }
     if (!ws || !ws.slug) {
       post({
         type: 'error',
@@ -805,7 +1011,6 @@ export class DocumentEditorProvider
       });
       return;
     }
-    const topic = await this.readTopic(client, topicSlug);
     if (!topic || !topic.slug) {
       post({ type: 'error', message: `Topic "${topicSlug}" could not be resolved.` });
       return;
@@ -819,18 +1024,22 @@ export class DocumentEditorProvider
     } catch (err) {
       post({
         type: 'error',
-        message: `Pin failed: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Pin failed: ${messageOf(err)}`,
       });
       return;
     }
-    await reload();
+    const vm = await this.loadWorkstream(client, ref.identifier);
+    if (vm) {
+      this.pushDocument(entry, vm);
+    }
   }
 
   private async saveTopic(
-    ref: ParsedRef,
+    entry: OpenEditorEntry,
     patch: TopicPatch,
-    post: (msg: ExtToWebview) => void,
   ): Promise<void> {
+    const post = entry.post;
+    const ref = entry.ref;
     const client = this.getClient();
     if (!client) {
       post({
@@ -839,7 +1048,13 @@ export class DocumentEditorProvider
       });
       return;
     }
-    const topic = await this.readTopic(client, ref.identifier);
+    let topic: Topic | null;
+    try {
+      topic = await this.readTopic(client, ref.identifier);
+    } catch (err) {
+      post({ type: 'error', message: `Save failed: ${messageOf(err)}` });
+      return;
+    }
     if (!topic || !topic.slug) {
       post({
         type: 'error',
@@ -867,13 +1082,13 @@ export class DocumentEditorProvider
     } catch (err) {
       post({
         type: 'error',
-        message: `Save failed: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Save failed: ${messageOf(err)}`,
       });
       return;
     }
     const vm = await this.loadTopic(client, ref.identifier);
     if (vm) {
-      post({ type: 'document', data: vm });
+      this.pushDocument(entry, vm);
     }
     // Explicit host-confirmed ack — the webview flips its indicator green only
     // on THIS, never merely on posting the patch.
