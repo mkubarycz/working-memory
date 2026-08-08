@@ -591,6 +591,14 @@ export interface ControlPlaneClientOptions {
    * sandbox daemon. Ignored when `resolveUrl` is supplied.
    */
   allowEnvOverride?: boolean;
+  /**
+   * Sink for transport-level errors surfaced by the MCP SDK (SSE stream
+   * disconnects, failed reconnection attempts). Best-effort observability only:
+   * these fire when the daemon dies while a stream is open and are expected
+   * during a control-plane restart/shutdown. Defaults to a no-op (keeps this
+   * module VS Code-free / unit-testable).
+   */
+  onError?: (err: unknown) => void;
 }
 
 /** MCP text content shape (a subset of the SDK's `CallToolResult.content`). */
@@ -689,12 +697,28 @@ function defaultResolveUrl(allowEnvOverride: boolean): string | null {
 }
 
 /**
+ * Declines the SDK's standalone GET SSE notification stream (405) so it never
+ * opens — we don't use notifications, and its socket is what rejected undici's
+ * uncatchable `TypeError: terminated`. POST/DELETE fall through to real `fetch`.
+ */
+const sseDecliningFetch = (url: string | URL, init?: RequestInit): Promise<Response> => {
+  const method = (init?.method ?? 'GET').toUpperCase();
+  if (method === 'GET') {
+    return Promise.resolve(
+      new Response(null, { status: 405, statusText: 'SSE notification stream disabled by client' }),
+    );
+  }
+  return fetch(url, init);
+};
+
+/**
  * Lazy-singleton MCP client for the control-plane. Connects on first use and
  * reuses the session across calls; a failed call drops the client so the next
  * one reconnects (handling daemon restarts / dropped connections).
  */
 export class ControlPlaneClient {
   private readonly resolveUrl: () => string | null;
+  private readonly onError: (err: unknown) => void;
   private client: Client | null = null;
   private transport: StreamableHTTPClientTransport | null = null;
   /** In-flight connect, so concurrent calls share one handshake. */
@@ -704,6 +728,7 @@ export class ControlPlaneClient {
   constructor(options: ControlPlaneClientOptions = {}) {
     this.resolveUrl =
       options.resolveUrl ?? (() => defaultResolveUrl(options.allowEnvOverride ?? false));
+    this.onError = options.onError ?? (() => {});
   }
 
   /** List documents via `wm-document-read` (list mode), optionally filtered by `kind`. */
@@ -1567,6 +1592,16 @@ export class ControlPlaneClient {
     this.client = null;
     this.transport = null;
     this.connecting = null;
+    // Abort the transport's in-flight streams SYNCHRONOUSLY (transport.close()
+    // aborts before its first await) so a control-plane kill that follows can't
+    // RST an open SSE/HTTP stream — the source of the unhandled undici
+    // "TypeError: terminated". An aborted stream surfaces as an intentional
+    // AbortError the SDK does not try to reconnect.
+    try {
+      void transport?.close();
+    } catch {
+      // ignore
+    }
     await closeQuietly(client, transport);
   }
 
@@ -1600,10 +1635,20 @@ export class ControlPlaneClient {
     const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
     let transport: StreamableHTTPClientTransport;
     try {
-      transport = new StreamableHTTPClientTransport(new URL(url));
+      // Pass a fetch that 405s the standalone GET SSE stream so it never opens —
+      // eliminating the undici "TypeError: terminated" unhandled rejection on
+      // daemon restart/shutdown. See {@link sseDecliningFetch}.
+      transport = new StreamableHTTPClientTransport(new URL(url), { fetch: sseDecliningFetch });
     } catch {
       return null;
     }
+    // Route SDK transport/protocol errors to the injected sink. The SDK keeps a
+    // standalone GET SSE stream open for notifications; when the daemon dies
+    // that stream errors here (SSE disconnect / failed reconnection) rather than
+    // through a callTool await. Logging keeps it observable and out of the
+    // "unhandled rejection" path.
+    transport.onerror = (err) => this.onError(err);
+    client.onerror = (err) => this.onError(err);
     try {
       // connect() performs the MCP initialize handshake.
       await client.connect(transport);

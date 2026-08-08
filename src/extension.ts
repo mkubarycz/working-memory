@@ -209,6 +209,11 @@ export function activate(context: vscode.ExtensionContext): void {
       const port = host.endpointPort;
       return port === undefined ? null : `http://127.0.0.1:${port}/mcp`;
     },
+    // Best-effort observability: the MCP SDK keeps a standalone SSE stream open
+    // for notifications; when the daemon restarts/dies that stream errors here.
+    // Log at debug (Extension Host output) instead of dropping it silently.
+    onError: (err) =>
+      console.debug('[working-memory] control-plane transport error:', err),
   });
 
   // Start supervising/probing now that the client is wired to its owned port.
@@ -1085,14 +1090,12 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  try {
-    if (controlPlaneHost) {
-      controlPlaneHost.dispose();
-      controlPlaneHost = null;
-    }
-  } catch (err) {
-    console.error('[working-memory] control-plane host dispose failed:', err);
-  }
+  // Close the control-plane CLIENT before killing the daemon. The MCP SDK's
+  // Streamable-HTTP transport keeps an open SSE/HTTP stream; disposing the
+  // client aborts it cleanly. If we killed the daemon first (host.dispose),
+  // that death would RST the in-flight undici stream and surface as an
+  // unhandled "TypeError: terminated" (a dependency-level rejection with no
+  // frames of ours). Order matters — client first, then host.
   try {
     if (controlPlaneClient) {
       void controlPlaneClient.dispose();
@@ -1100,5 +1103,13 @@ export function deactivate(): void {
     }
   } catch (err) {
     console.error('[working-memory] control-plane client dispose failed:', err);
+  }
+  try {
+    if (controlPlaneHost) {
+      controlPlaneHost.dispose();
+      controlPlaneHost = null;
+    }
+  } catch (err) {
+    console.error('[working-memory] control-plane host dispose failed:', err);
   }
 }
