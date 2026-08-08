@@ -149,7 +149,7 @@ export interface PanelNaniteRow {
   tooltip: string;
   /** Codicon id. */
   icon: string;
-  /** `working-memory:/document/<id>.md` virtual-doc URI (generic envelope route). */
+  /** `working-memory:/document/<id>.working-memory` unified-editor URI (generic envelope route). */
   openUri: string;
   /** Lifecycle phase. */
   phase: 'Pending' | 'Queued' | 'Running' | 'Succeeded' | 'Failed';
@@ -206,7 +206,7 @@ export interface PanelDocumentRow {
   tooltip: string;
   /** Codicon id. */
   icon: string;
-  /** `working-memory:/document/<id>.md` virtual-doc URI. */
+  /** `working-memory:/document/<id>.working-memory` unified-editor URI. */
   openUri: string;
 }
 
@@ -227,7 +227,7 @@ export interface PanelTopicType {
   /** Codicon id (the type's own icon, falling back to the shape icon). */
   icon: string;
   tooltip: string;
-  /** `working-memory:/topic-type/<slug>.md` virtual-doc URI. */
+  /** `working-memory:/topic-type/<slug>.working-memory` unified-editor URI. */
   openUri: string;
 }
 
@@ -242,7 +242,7 @@ export interface PanelAlert {
   /** Codicon id. */
   icon: string;
   tooltip: string;
-  /** `working-memory:/alert/<id>.md` virtual-doc URI. */
+  /** `working-memory:/alert/<id>.working-memory` unified-editor URI. */
   openUri: string;
 }
 
@@ -454,7 +454,7 @@ function buildControlPlaneTopicRow(
     description: describeControlPlaneTopic(t),
     tooltip: `${t.title} (${slug}) — ${t.status}`,
     icon: iconForType(t.topicType, typeMap),
-    openUri: `working-memory:/topic/${slug}.md`,
+    openUri: `working-memory:/topic/${slug}.working-memory`,
     status: t.status,
     recentEntryCount: 0,
     actions: topicActions(slug),
@@ -554,8 +554,8 @@ function buildNaniteRow(
     description: n.phase,
     tooltip: `${label} — ${n.phase}${phaseHint ? `\n${phaseHint}` : ''}`,
     icon: NANITE_PHASE_ICON[n.phase],
-    // Generic envelope route — a dedicated `/nanite/` renderer is a next step.
-    openUri: `working-memory:/document/${n.id}.md`,
+    // Generic envelope route — the unified editor's generic DocumentView.
+    openUri: `working-memory:/document/${n.id}.working-memory`,
     phase: n.phase,
     templateId: n.templateId,
     deleted: false,
@@ -653,7 +653,7 @@ function buildNaniteTemplateRow(t: NaniteTemplate): PanelNaniteTemplateRow {
     description: t.enabled ? '' : 'disabled',
     tooltip: `${t.title}${t.slug ? ` (${t.slug})` : ''}`,
     icon: t.enabled ? 'symbol-class' : 'circle-slash',
-    openUri: `working-memory:/document/${t.id}.md`,
+    openUri: `working-memory:/document/${t.id}.working-memory`,
     enabled: t.enabled,
   };
 }
@@ -691,9 +691,9 @@ export function buildNanitesPanel(input: {
   };
 }
 
-/** Slug of a topic row, parsed from its `working-memory:/topic/<slug>.md` openUri. */
+/** Slug of a topic row, parsed from its `working-memory:/topic/<slug>.working-memory` openUri. */
 function topicSlugFromRow(row: PanelTopicRow): string | null {
-  const m = /^working-memory:\/topic\/(.+)\.md$/.exec(row.openUri);
+  const m = /^working-memory:\/topic\/(.+)\.working-memory$/.exec(row.openUri);
   return m ? m[1] : null;
 }
 
@@ -812,7 +812,7 @@ function buildControlPlaneCardTopics(
       description: describeControlPlaneTopic(t),
       tooltip: `${t.title} (${slug}) — ${t.status}`,
       icon: iconForType(t.topicType, typeMap),
-      openUri: `working-memory:/topic/${slug}.md`,
+      openUri: `working-memory:/topic/${slug}.working-memory`,
       status: t.status,
       focused: (t.focusedWorkstreams ?? []).includes(wsSlug),
       recentEntryCount: 0,
@@ -895,6 +895,79 @@ function buildControlPlaneCardTopics(
 }
 
 /**
+ * The nested tree groups a workstream renders: the "Topics (N)" group (member
+ * topics nested by their in-set parents, each carrying its nanite runs) plus a
+ * top-level "Nanites (N)" group of orphan nanites. This is the SHARED
+ * composition the left-rail workstream card renders AND the Svelte workstream
+ * editor mirrors below its flat topics list — pure, a function of already-
+ * fetched control-plane values.
+ */
+export interface WorkstreamTree {
+  /** [Topics group, Nanites group?] — same order the rail card renders. */
+  groups: PanelTopicsGroup[];
+  /** Member topics flagged `focused` (drives the card's pinned row). */
+  focusedTopics: PanelTopic[];
+  /** Membership-filtered member topics (for the caller's alert rollup). */
+  members: ControlPlaneTopic[];
+}
+
+/**
+ * Compose a workstream's {@link WorkstreamTree}. Extracted from
+ * {@link buildDomainWorkstreamCard} so the rail card and the Svelte workstream
+ * editor build the SAME nested topic/nanite structure from the same inputs.
+ */
+export function buildWorkstreamTree(
+  wsId: string,
+  wsSlug: string,
+  tab: 'active' | 'archive',
+  topics: ControlPlaneTopic[] | undefined,
+  typeMap: Map<string, TopicType>,
+  alerts: ControlPlaneAlert[],
+  nanites: Nanite[] = [],
+  naniteTemplates: NaniteTemplate[] = [],
+): WorkstreamTree {
+  const groups: PanelTopicsGroup[] = [];
+  const members =
+    topics !== undefined && wsSlug.length > 0
+      ? topics.filter((t) => t.workstreams.includes(wsSlug))
+      : [];
+  const memberTopicSlugs = new Set(
+    members.map((m) => m.slug ?? '').filter((s) => s !== ''),
+  );
+  const myNanites =
+    wsSlug.length > 0 ? nanites.filter((n) => n.workstream === wsSlug) : [];
+  // A nanite whose input topic is a member of this workstream nests under that
+  // topic; the rest surface in the top-level "Nanites" group.
+  const nestedNanites = myNanites.filter((n) => memberTopicSlugs.has(n.inputTopic));
+  const orphanNanites = myNanites.filter((n) => !memberTopicSlugs.has(n.inputTopic));
+  let focusedTopics: PanelTopic[] = [];
+  if (topics !== undefined && wsSlug.length > 0) {
+    const { group, orderedTopics } = buildControlPlaneCardTopics(
+      wsSlug,
+      wsId,
+      tab,
+      members,
+      typeMap,
+      alerts,
+      nestedNanites,
+      naniteTemplates,
+    );
+    groups.push(group);
+    focusedTopics = orderedTopics.filter((t) => t.focused);
+  }
+  const nanitesGroup = buildWorkstreamNanitesGroup(
+    wsId,
+    tab,
+    orphanNanites,
+    naniteTemplates,
+  );
+  if (nanitesGroup) {
+    groups.push(nanitesGroup);
+  }
+  return { groups, focusedTopics, members };
+}
+
+/**
  * Build an Active/Archive workstream CARD from a control-plane Workstream. The
  * per-workstream "Topics" group is populated from control-plane topic membership
  * (`spec.workstreams`) when `topics` is supplied; absent → the group is omitted.
@@ -931,43 +1004,16 @@ function buildDomainWorkstreamCard(
             },
           ]
         : sectionMoveActions({ slug, status });
-  const children: PanelTopicsGroup[] = [];
-  const members =
-    topics !== undefined && slug.length > 0
-      ? topics.filter((t) => t.workstreams.includes(slug))
-      : [];
-  const memberTopicSlugs = new Set(
-    members.map((m) => m.slug ?? '').filter((s) => s !== ''),
-  );
-  const myNanites = slug.length > 0 ? nanites.filter((n) => n.workstream === slug) : [];
-  // A nanite whose input topic is a member of this workstream nests under that
-  // topic; the rest surface in the card-level "Nanites" group.
-  const nestedNanites = myNanites.filter((n) => memberTopicSlugs.has(n.inputTopic));
-  const orphanNanites = myNanites.filter((n) => !memberTopicSlugs.has(n.inputTopic));
-  let focusedTopics: PanelTopic[] = [];
-  if (topics !== undefined && slug.length > 0) {
-    const { group, orderedTopics } = buildControlPlaneCardTopics(
-      slug,
-      ws.id,
-      tab,
-      members,
-      typeMap,
-      alerts,
-      nestedNanites,
-      naniteTemplates,
-    );
-    children.push(group);
-    focusedTopics = orderedTopics.filter((t) => t.focused);
-  }
-  const nanitesGroup = buildWorkstreamNanitesGroup(
+  const { groups: children, focusedTopics, members } = buildWorkstreamTree(
     ws.id,
+    slug,
     tab,
-    orphanNanites,
+    topics,
+    typeMap,
+    alerts,
+    nanites,
     naniteTemplates,
   );
-  if (nanitesGroup) {
-    children.push(nanitesGroup);
-  }
   const memberSlugs = members
     .map((t) => t.slug ?? '')
     .filter((s) => s !== '');
@@ -979,7 +1025,7 @@ function buildDomainWorkstreamCard(
     label: ws.title,
     description,
     tooltip,
-    openUri: `working-memory:/document/${encodeURIComponent(ws.id)}.md`,
+    openUri: `working-memory:/workstream/${encodeURIComponent(ws.slug ?? ws.id)}.working-memory`,
     recentEntryCount: 0,
     ...(tab === 'active' ? { section: sectionForStatus(status) } : {}),
     alertCount: wsBubble.count,
@@ -1077,7 +1123,7 @@ function buildDocumentRow(doc: DocumentEnvelope): PanelDocumentRow {
     description: `v${rv} • ${idShort}`,
     tooltip: `${doc.kind} ${id}${slug ? ` (${slug})` : ''} — resourceVersion ${rv}`,
     icon: DOCUMENT_ROW_ICON,
-    openUri: `working-memory:/document/${encodeURIComponent(id)}.md`,
+    openUri: `working-memory:/document/${encodeURIComponent(id)}.working-memory`,
   };
 }
 
@@ -1111,7 +1157,7 @@ function buildAlertRow(alert: ControlPlaneAlert): PanelAlert {
     status: alert.status,
     icon,
     tooltip,
-    openUri: `working-memory:/alert/${encodeURIComponent(alert.id)}.md`,
+    openUri: `working-memory:/alert/${encodeURIComponent(alert.id)}.working-memory`,
   };
 }
 
@@ -1156,7 +1202,7 @@ function buildTopicTypeRow(tt: TopicType): PanelTopicType {
     description: slug,
     icon: tt.icon || FALLBACK_TOPIC_ICON,
     tooltip: tt.description || tt.label || slug,
-    openUri: `working-memory:/topic-type/${encodeURIComponent(slug)}.md`,
+    openUri: `working-memory:/topic-type/${encodeURIComponent(slug)}.working-memory`,
   };
 }
 

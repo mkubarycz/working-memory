@@ -132,4 +132,42 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
       await client.dispose();
     }
   });
+
+  it('swallows a transport failure when the daemon dies mid-session (no unhandled rejection)', async () => {
+    server = await startServer({ port: 0 });
+    const mcpUrl = `${server.url}/mcp`;
+
+    const transportErrors: unknown[] = [];
+    const client = new ControlPlaneClient({
+      resolveUrl: () => mcpUrl,
+      onError: (err) => transportErrors.push(err),
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      // Establish the session (opens the SDK's standalone SSE stream).
+      const first = await client.listDocuments();
+      expect(first.available).toBe(true);
+
+      // Kill the daemon while the client is connected, then call again.
+      await server.close();
+      server = null;
+
+      const afterKill = await client.listDocuments();
+      // The dropped connection is caught + surfaced as unavailable, not thrown.
+      expect(afterKill.available).toBe(false);
+      expect(afterKill.error).toBeTruthy();
+
+      // Let any transport-level rejection settle within the unhandled window.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      await client.dispose();
+    }
+  });
 });

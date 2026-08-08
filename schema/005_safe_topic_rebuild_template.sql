@@ -46,8 +46,8 @@
 --   - The migration runner in db.ts wraps every migration in BEGIN/COMMIT, so
 --     a migration that needs steps 1/11 must either bypass the runner or call
 --     the PRAGMAs and emit BEGIN/COMMIT itself (and the runner needs to be
---     taught to not double-wrap). When in doubt, snapshot the DB first via
---     scripts/release.sh and inspect afterward.
+--     taught to not double-wrap). When in doubt, snapshot the DB first (copy
+--     the journal.sqlite* files aside) and inspect afterward.
 --
 -- ============================================================================
 -- Body: no-op. The migration runner records this version as applied; the
