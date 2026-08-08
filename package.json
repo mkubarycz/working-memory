@@ -215,6 +215,7 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.0.0",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.5.0",
     "@types/vscode": "^1.95.0",
     "@vscode/codicons": "^0.0.45",
@@ -225,6 +226,7 @@
     "vitest": "^4.1.8"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "markdown-it": "^14.3.0"
   }
 }
