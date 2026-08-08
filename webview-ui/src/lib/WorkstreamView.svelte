@@ -3,6 +3,7 @@
   import type { WorkstreamVM, TreeTopicVM, TreeNaniteVM } from './types';
   import type { SaveState } from './types';
   import { defaultExpandedIds, cascadeExpandIds, type ExpandableNode } from './treeExpansion';
+  import { sortTreeChildren } from './treeSort';
   import SaveStatus from './SaveStatus.svelte';
 
   interface Props {
@@ -252,6 +253,7 @@
         <button
           class="tree-link"
           class:pinned={node.pinned}
+          class:closed={node.status === 'closed'}
           onclick={() => onOpenTopic(node.slug)}
           oncontextmenu={(e) => openMenu(e, topicMenu(node))}
         >
@@ -268,7 +270,7 @@
       </div>
       {#if hasChildren && open}
         <ul class="tree-children">
-          {#each node.children as child (child.id)}
+          {#each sortTreeChildren(node.children) as child (child.id)}
             {@render treeNode(child)}
           {/each}
         </ul>
@@ -280,10 +282,15 @@
         <span class="twistie-spacer"></span>
         <button
           class="tree-link nanite"
+          class:failed={node.phase === 'Failed'}
           onclick={() => onOpenNanite(node.openId)}
           oncontextmenu={(e) => openMenu(e, naniteMenu(node))}
         >
-          <span class="codicon codicon-{node.icon}"></span>
+          {#if node.phase === 'Failed'}
+            <span class="codicon codicon-error nanite-fail-icon" title="Failed"></span>
+          {:else}
+            <span class="codicon codicon-{node.icon}"></span>
+          {/if}
           <span class="tree-label">{node.label}</span>
           <span class="tree-meta">{node.phase}</span>
         </button>
@@ -314,7 +321,7 @@
       {#if groupHasChildren}
         {#if groupOpen}
           <ul class="tree-list">
-            {#each group.children as node (node.id)}
+            {#each sortTreeChildren(group.children) as node (node.id)}
               {@render treeNode(node)}
             {/each}
           </ul>
@@ -515,6 +522,28 @@
 
   .tree-link.nanite {
     color: var(--vscode-descriptionForeground);
+  }
+
+  /* Closed topics recede: mute the row so completed work reads as done. Applies
+     only to the row button, not the child <ul>, so nested state cues stay vivid.
+     Pinned wins over closed (a pinned closed topic keeps its glow). */
+  .tree-link.closed:not(.pinned) {
+    color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+    opacity: 0.6;
+  }
+
+  .tree-link.closed:not(.pinned) .topic-slug {
+    opacity: 0.85;
+  }
+
+  /* Failed nanite runs get a red X so failures pop in either theme. */
+  .nanite-fail-icon {
+    color: var(--vscode-errorForeground, var(--vscode-charts-red, #f14c4c));
+  }
+
+  .tree-link.nanite.failed .tree-meta {
+    color: var(--vscode-errorForeground, var(--vscode-charts-red, #f14c4c));
+    font-style: normal;
   }
 
   /* Pinned topics get a warm-yellow glow-up so focus reads at a glance. Uses
