@@ -113,6 +113,7 @@ type WebviewToExt =
 
 type ExtToWebview =
   | { type: 'document'; data: DocumentVM }
+  | { type: 'saved'; resourceVersion?: number }
   | { type: 'error'; message: string };
 
 /** The parsed kind hint + identifier from a `.working-memory` URI. */
@@ -564,11 +565,15 @@ export class DocumentEditorProvider
         type: 'error',
         message: `Save failed: ${err instanceof Error ? err.message : String(err)}`,
       });
+      return;
     }
     const vm = await this.loadWorkstream(client, ref.identifier);
     if (vm) {
       post({ type: 'document', data: vm });
     }
+    // Explicit host-confirmed ack — the webview flips its indicator green only
+    // on THIS, never merely on posting the patch.
+    post({ type: 'saved', resourceVersion: vm?.resourceVersion });
   }
 
   private async saveTopic(
@@ -614,11 +619,15 @@ export class DocumentEditorProvider
         type: 'error',
         message: `Save failed: ${err instanceof Error ? err.message : String(err)}`,
       });
+      return;
     }
     const vm = await this.loadTopic(client, ref.identifier);
     if (vm) {
       post({ type: 'document', data: vm });
     }
+    // Explicit host-confirmed ack — the webview flips its indicator green only
+    // on THIS, never merely on posting the patch.
+    post({ type: 'saved', resourceVersion: vm?.resourceVersion });
   }
 
   // ---- Inert CustomDocument hooks (autosave-through-API: never dirty) --------

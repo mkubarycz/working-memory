@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { createVsCodeTransport } from './lib/transport';
-  import type { DocumentVM, TopicPatch } from './lib/types';
+  import type { DocumentVM, SaveState, TopicPatch } from './lib/types';
+  import { createPendingPatch } from './lib/pendingPatch';
   import { resolveView } from './lib/viewRegistry';
   import WorkstreamView from './lib/WorkstreamView.svelte';
   import TopicView from './lib/TopicView.svelte';
@@ -11,47 +12,78 @@
 
   let doc = $state<DocumentVM | null>(null);
   let error = $state<string | null>(null);
-  let saving = $state(false);
+  let saveState = $state<SaveState>('idle');
 
+  // One accumulator + ONE flush timer shared across all fields. Editing title
+  // then status inside the debounce window merges into a single patch, so the
+  // whole thing persists in one write and nothing is dropped.
+  const pending = createPendingPatch<TopicPatch>();
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const DEBOUNCE_MS = 400;
 
   onMount(() => {
     const unsubscribe = transport.subscribe((msg) => {
       if (msg.type === 'document') {
-        doc = msg.data;
+        // Echo-stomp guard: while the user has un-flushed edits pending, ignore
+        // the document echo so a stale VM can't clobber fields being typed. A
+        // clean load (pending empty — e.g. initial render) always applies.
+        if (pending.isEmpty()) {
+          doc = msg.data;
+          error = null;
+        }
+      } else if (msg.type === 'saved') {
         error = null;
-        saving = false;
+        // Green only when the write is fully settled — a new edit queued after
+        // the flush keeps us amber until its own confirmation arrives.
+        if (pending.isEmpty()) {
+          saveState = 'saved';
+        }
       } else if (msg.type === 'error') {
         error = msg.message;
-        saving = false;
+        saveState = 'error';
       }
     });
     transport.post({ type: 'ready' });
     return unsubscribe;
   });
 
-  // Debounced autosave — no dirty state, no save prompt. The host persists
-  // through the control-plane API and echoes the fresh view-model back.
-  function debounce(fn: () => void): void {
-    saving = true;
+  // Debounced autosave — no dirty state, no save prompt. Each edit merges into
+  // the pending patch and (re)arms ONE timer; the flush posts the whole patch.
+  function queueEdit(fields: TopicPatch): void {
+    pending.merge(fields);
+    saveState = 'pending';
     if (saveTimer) {
       clearTimeout(saveTimer);
     }
-    saveTimer = setTimeout(fn, 400);
+    saveTimer = setTimeout(flush, DEBOUNCE_MS);
+  }
+
+  function flush(): void {
+    const patch = pending.flush();
+    if (!patch) {
+      return;
+    }
+    saveState = 'saving';
+    if (doc?.kind === 'workstream') {
+      transport.post({ type: 'save', patch });
+    } else if (doc?.kind === 'topic') {
+      transport.post({ type: 'saveTopic', patch });
+    }
   }
 
   function saveWorkstream(patch: { title?: string; status?: string }): void {
     if (doc?.kind !== 'workstream' || !doc.editable) {
       return;
     }
-    debounce(() => transport.post({ type: 'save', patch }));
+    queueEdit(patch);
   }
 
   function saveTopic(patch: TopicPatch): void {
     if (doc?.kind !== 'topic' || !doc.editable) {
       return;
     }
-    debounce(() => transport.post({ type: 'saveTopic', patch }));
+    queueEdit(patch);
   }
 
   function openTopic(slug: string): void {
@@ -75,11 +107,11 @@
   {#if !doc}
     <div class="loading">Loading document…</div>
   {:else if view === 'workstream' && doc.kind === 'workstream'}
-    <WorkstreamView ws={doc} {saving} onSave={saveWorkstream} onOpenTopic={openTopic} />
+    <WorkstreamView ws={doc} {saveState} onSave={saveWorkstream} onOpenTopic={openTopic} />
   {:else if view === 'topic' && doc.kind === 'topic'}
     <TopicView
       topic={doc}
-      {saving}
+      {saveState}
       onSaveTopic={saveTopic}
       onOpenTopic={openTopic}
       onOpenWorkstream={openWorkstream}

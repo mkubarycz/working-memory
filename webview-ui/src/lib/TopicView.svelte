@@ -1,16 +1,17 @@
 <script lang="ts">
-  import type { RelationVM, TopicPatch, TopicVM } from './types';
+  import type { RelationVM, SaveState, TopicPatch, TopicVM } from './types';
   import { getTopicTypeConfig, iconForTopic } from './viewRegistry';
+  import SaveStatus from './SaveStatus.svelte';
 
   interface Props {
     topic: TopicVM;
-    saving: boolean;
+    saveState: SaveState;
     onSaveTopic: (patch: TopicPatch) => void;
     onOpenTopic: (slug: string) => void;
     onOpenWorkstream: (slug: string) => void;
   }
 
-  let { topic, saving, onSaveTopic, onOpenTopic, onOpenWorkstream }: Props =
+  let { topic, saveState, onSaveTopic, onOpenTopic, onOpenWorkstream }: Props =
     $props();
 
   const STATUSES = ['open', 'closed'];
@@ -63,7 +64,7 @@
   {:else}
     <h1 class="title">{topic.title}</h1>
   {/if}
-  {#if saving}<span class="saving">saving…</span>{/if}
+  <SaveStatus state={saveState} />
 </header>
 
 <section class="attrs" aria-label="Topic attributes">
@@ -181,11 +182,6 @@
   .title-input:focus {
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: -1px;
-  }
-
-  .saving {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.85em;
   }
 
   .attrs {

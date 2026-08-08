@@ -1,14 +1,16 @@
 <script lang="ts">
   import type { WorkstreamVM } from './types';
+  import type { SaveState } from './types';
+  import SaveStatus from './SaveStatus.svelte';
 
   interface Props {
     ws: WorkstreamVM;
-    saving: boolean;
+    saveState: SaveState;
     onSave: (patch: { title?: string; status?: string }) => void;
     onOpenTopic: (slug: string) => void;
   }
 
-  let { ws, saving, onSave, onOpenTopic }: Props = $props();
+  let { ws, saveState, onSave, onOpenTopic }: Props = $props();
 
   const STATUSES = ['queue', 'progress', 'backlog', 'closed'];
 
@@ -48,7 +50,7 @@
   {:else}
     <h1 class="title">{ws.title}</h1>
   {/if}
-  {#if saving}<span class="saving">saving…</span>{/if}
+  <SaveStatus state={saveState} />
 </header>
 
 <section class="attrs" aria-label="Workstream attributes">
@@ -163,11 +165,6 @@
   .title-input:focus {
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: -1px;
-  }
-
-  .saving {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.85em;
   }
 
   .attrs {

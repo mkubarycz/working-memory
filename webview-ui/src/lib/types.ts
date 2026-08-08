@@ -101,9 +101,16 @@ export interface GenericDocVM {
 /** The discriminated document view-model pushed from the extension host. */
 export type DocumentVM = WorkstreamVM | TopicVM | GenericDocVM;
 
+/**
+ * Save-status the header indicator renders. `saved` (green) only ever fires on
+ * a host-confirmed write (the `saved` ack), never merely on posting a patch.
+ */
+export type SaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+
 /** Messages the extension host sends TO the webview. */
 export type ExtToWebview =
   | { type: 'document'; data: DocumentVM }
+  | { type: 'saved'; resourceVersion?: number }
   | { type: 'error'; message: string };
 
 /** A topic edit patch (title / status / body). */
