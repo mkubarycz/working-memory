@@ -62,6 +62,10 @@ function interfaceFields(source: string, name: string): string[] {
 // The VMs that exist on BOTH sides of the postMessage contract.
 const SHARED_VMS = [
   'WorkstreamTopicVM',
+  'TreeActionVM',
+  'TreeNaniteVM',
+  'TreeTopicVM',
+  'TreeGroupVM',
   'WorkstreamVM',
   'RelationVM',
   'TopicTypeMetaVM',

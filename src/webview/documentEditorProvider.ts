@@ -3,10 +3,19 @@ import { randomBytes } from 'node:crypto';
 import type {
   ControlPlaneClient,
   DocumentEnvelope,
+  Nanite,
+  NaniteTemplate,
   Topic,
   TopicType,
   Workstream,
 } from '../controlPlaneClient';
+import {
+  buildWorkstreamTree,
+  type PanelAction,
+  type PanelNaniteRow,
+  type PanelTopic,
+  type PanelTopicsGroup,
+} from '../panelData';
 
 /**
  * The unified Working Memory document custom editor (WM 14.2
@@ -38,6 +47,44 @@ interface WorkstreamTopicVM {
   pinned: boolean;
 }
 
+interface TreeActionVM {
+  command: string;
+  title: string;
+  icon: string;
+  args: unknown[];
+  enabled: boolean;
+}
+
+interface TreeNaniteVM {
+  kind: 'nanite';
+  id: string;
+  label: string;
+  icon: string;
+  phase: string;
+  openId: string;
+  actions: TreeActionVM[];
+}
+
+interface TreeTopicVM {
+  kind: 'topic';
+  id: string;
+  label: string;
+  icon: string;
+  status: string;
+  slug: string;
+  pinned: boolean;
+  children: Array<TreeTopicVM | TreeNaniteVM>;
+  actions: TreeActionVM[];
+}
+
+interface TreeGroupVM {
+  kind: 'group';
+  id: string;
+  label: string;
+  icon: string;
+  children: Array<TreeTopicVM | TreeNaniteVM>;
+}
+
 interface WorkstreamVM {
   kind: 'workstream';
   title: string;
@@ -49,6 +96,7 @@ interface WorkstreamVM {
   resourceVersion: number;
   editable: boolean;
   topics: WorkstreamTopicVM[];
+  tree: TreeGroupVM[];
 }
 
 interface RelationVM {
@@ -109,7 +157,10 @@ type WebviewToExt =
   | { type: 'save'; patch: { title?: string; status?: string } }
   | { type: 'saveTopic'; patch: TopicPatch }
   | { type: 'openTopic'; slug: string }
-  | { type: 'openWorkstream'; slug: string };
+  | { type: 'openWorkstream'; slug: string }
+  | { type: 'openDocument'; id: string }
+  | { type: 'invoke'; command: string; args: unknown[] }
+  | { type: 'togglePinTopic'; slug: string };
 
 type ExtToWebview =
   | { type: 'document'; data: DocumentVM }
@@ -168,6 +219,25 @@ function makeNonce(): string {
   return randomBytes(16).toString('base64');
 }
 
+/**
+ * Decide whether toggling a topic's pin in this workstream should SET focus
+ * (true) or CLEAR it (false): set when the workstream isn't already in the
+ * topic's `focusedWorkstreams`. Pure so the toggle decision is unit-testable.
+ */
+export function shouldSetFocus(
+  focusedWorkstreams: readonly string[],
+  wsSlug: string,
+): boolean {
+  return !focusedWorkstreams.includes(wsSlug);
+}
+
+/** Nanite lifecycle commands the tree may invoke on the host (allow-list). */
+const NANITE_TREE_COMMANDS = new Set([
+  'workingMemory.nanite.run',
+  'workingMemory.nanite.reset',
+  'workingMemory.nanite.restart',
+]);
+
 /** Best-effort string coercion for a `spec` value. */
 export function asString(v: unknown): string {
   if (v === null || v === undefined) {
@@ -203,6 +273,68 @@ export function buildGenericVM(doc: DocumentEnvelope): GenericDocVM {
     updatedAt: doc.metadata.updatedAt,
     resourceVersion: doc.metadata.resourceVersion,
     spec,
+  };
+}
+
+/** Parse a topic slug out of a `working-memory:/topic/<slug>.working-memory` uri. */
+function topicSlugFromUri(uri: string): string {
+  const m = /^working-memory:\/topic\/(.+)\.working-memory$/.exec(uri);
+  return m ? m[1] : '';
+}
+
+/** Parse a document id out of a `working-memory:/document/<id>.working-memory` uri. */
+function documentIdFromUri(uri: string): string {
+  const m = /^working-memory:\/document\/(.+)\.working-memory$/.exec(uri);
+  return m ? m[1] : '';
+}
+
+/** Map a rail Panel topic/nanite row to the editor's minimal tree node VM. */
+function toTreeNode(
+  row: PanelTopic | PanelNaniteRow,
+): TreeTopicVM | TreeNaniteVM {
+  if (row.kind === 'nanite') {
+    return {
+      kind: 'nanite',
+      id: row.id,
+      label: row.label,
+      icon: row.icon,
+      phase: row.phase,
+      openId: documentIdFromUri(row.openUri),
+      actions: toTreeActions(row.actions),
+    };
+  }
+  return {
+    kind: 'topic',
+    id: row.id,
+    label: row.label,
+    icon: row.icon,
+    status: row.status,
+    slug: topicSlugFromUri(row.openUri),
+    pinned: row.focused,
+    children: (row.children ?? []).map(toTreeNode),
+    actions: toTreeActions(row.actions),
+  };
+}
+
+/** Map rail PanelAction[] to the tree's minimal action VMs (dropping description). */
+function toTreeActions(actions: PanelAction[] | undefined): TreeActionVM[] {
+  return (actions ?? []).map((a) => ({
+    command: a.command,
+    title: a.title,
+    icon: a.icon ?? '',
+    args: Array.isArray(a.args) ? a.args : [],
+    enabled: a.enabled !== false,
+  }));
+}
+
+/** Map a rail Panel topics-group to the editor's tree group VM. */
+function toTreeGroup(group: PanelTopicsGroup): TreeGroupVM {
+  return {
+    kind: 'group',
+    id: group.id,
+    label: group.label,
+    icon: group.icon,
+    children: group.children.map(toTreeNode),
   };
 }
 
@@ -284,11 +416,43 @@ export class DocumentEditorProvider
             });
           }
           return;
+        case 'openDocument':
+          // Nanites (and any generic doc) open straight through the unified
+          // editor — `working-memory.open` whitelists only the named kinds, so
+          // route the generic `document` kind via openWith like the rail does.
+          if (typeof msg.id === 'string' && msg.id.length > 0) {
+            void vscode.commands.executeCommand(
+              'vscode.openWith',
+              DocumentEditorProvider.uriFor('document', msg.id),
+              DocumentEditorProvider.viewType,
+            );
+          }
+          return;
         case 'save':
           await this.saveWorkstream(document.ref, msg.patch ?? {}, post);
           return;
         case 'saveTopic':
           await this.saveTopic(document.ref, msg.patch ?? {}, post);
+          return;
+        case 'invoke':
+          // Nanite lifecycle actions ported from the rail — same commands, run
+          // via executeCommand. Allow-listed so the webview can't invoke
+          // arbitrary commands. Reload after so phase changes reflect.
+          if (
+            typeof msg.command === 'string' &&
+            NANITE_TREE_COMMANDS.has(msg.command)
+          ) {
+            await vscode.commands.executeCommand(
+              msg.command,
+              ...(Array.isArray(msg.args) ? msg.args : []),
+            );
+            await load();
+          }
+          return;
+        case 'togglePinTopic':
+          if (typeof msg.slug === 'string' && msg.slug.length > 0) {
+            await this.togglePinTopic(document.ref, msg.slug, load, post);
+          }
           return;
       }
     });
@@ -346,6 +510,41 @@ export class DocumentEditorProvider
       ...rows.filter((r) => r.pinned),
       ...rows.filter((r) => !r.pinned),
     ];
+    // Full nested topic + nanite tree — the SAME composition the left rail's
+    // workstream card renders. All inputs come through the control-plane client.
+    let nanites: Nanite[] = [];
+    let naniteTemplates: NaniteTemplate[] = [];
+    let topicTypes: TopicType[] = [];
+    if (slug) {
+      try {
+        nanites = await client.naniteRead({ workstream: slug });
+      } catch {
+        nanites = [];
+      }
+      try {
+        naniteTemplates = await client.naniteTemplateRead();
+      } catch {
+        naniteTemplates = [];
+      }
+      try {
+        topicTypes = await client.topicTypeRead();
+      } catch {
+        topicTypes = [];
+      }
+    }
+    const typeMap = new Map<string, TopicType>(
+      topicTypes.map((t) => [t.slug ?? t.id, t]),
+    );
+    const { groups } = buildWorkstreamTree(
+      ws.id,
+      slug ?? '',
+      'active',
+      slug ? topics : undefined,
+      typeMap,
+      [],
+      nanites,
+      naniteTemplates,
+    );
     return {
       kind: 'workstream',
       title: ws.title,
@@ -357,6 +556,7 @@ export class DocumentEditorProvider
       resourceVersion: ws.resourceVersion,
       editable: Boolean(slug),
       topics: ordered,
+      tree: groups.map(toTreeGroup),
     };
   }
 
@@ -574,6 +774,56 @@ export class DocumentEditorProvider
     // Explicit host-confirmed ack — the webview flips its indicator green only
     // on THIS, never merely on posting the patch.
     post({ type: 'saved', resourceVersion: vm?.resourceVersion });
+  }
+
+  /**
+   * Pin or unpin a topic in THIS workstream (ported from the rail's Add/Remove
+   * to Focus). The document being edited is the workstream, so its slug is the
+   * focus target; the topic's current `focusedWorkstreams` decides direction.
+   * Toggles via the same control-plane methods the rail uses
+   * (`topicSetFocus` / `topicClearFocus`), then reloads + re-pushes the tree.
+   */
+  private async togglePinTopic(
+    ref: ParsedRef,
+    topicSlug: string,
+    reload: () => Promise<void>,
+    post: (msg: ExtToWebview) => void,
+  ): Promise<void> {
+    const client = this.getClient();
+    if (!client) {
+      post({
+        type: 'error',
+        message: 'Control plane is not running — changes were not saved.',
+      });
+      return;
+    }
+    const ws = await this.readWorkstream(client, ref.identifier);
+    if (!ws || !ws.slug) {
+      post({
+        type: 'error',
+        message: 'This workstream has no slug, so topics cannot be pinned to it.',
+      });
+      return;
+    }
+    const topic = await this.readTopic(client, topicSlug);
+    if (!topic || !topic.slug) {
+      post({ type: 'error', message: `Topic "${topicSlug}" could not be resolved.` });
+      return;
+    }
+    try {
+      if (shouldSetFocus(topic.focusedWorkstreams, ws.slug)) {
+        await client.topicSetFocus({ slug: topic.slug, workstream: ws.slug });
+      } else {
+        await client.topicClearFocus({ slug: topic.slug, workstream: ws.slug });
+      }
+    } catch (err) {
+      post({
+        type: 'error',
+        message: `Pin failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+    await reload();
   }
 
   private async saveTopic(

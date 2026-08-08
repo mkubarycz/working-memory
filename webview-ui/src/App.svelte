@@ -94,6 +94,18 @@
     transport.post({ type: 'openWorkstream', slug });
   }
 
+  function openNanite(id: string): void {
+    transport.post({ type: 'openDocument', id });
+  }
+
+  function invokeAction(command: string, args: unknown[]): void {
+    transport.post({ type: 'invoke', command, args });
+  }
+
+  function togglePinTopic(slug: string): void {
+    transport.post({ type: 'togglePinTopic', slug });
+  }
+
   // The view registry keyed by kind: workstream / topic get bespoke views; any
   // other kind falls back to the generic DocumentView so nothing is unopenable.
   const view = $derived(doc ? resolveView(doc.kind) : null);
@@ -107,7 +119,7 @@
   {#if !doc}
     <div class="loading">Loading document…</div>
   {:else if view === 'workstream' && doc.kind === 'workstream'}
-    <WorkstreamView ws={doc} {saveState} onSave={saveWorkstream} onOpenTopic={openTopic} />
+    <WorkstreamView ws={doc} {saveState} onSave={saveWorkstream} onOpenTopic={openTopic} onOpenNanite={openNanite} onInvoke={invokeAction} onTogglePin={togglePinTopic} />
   {:else if view === 'topic' && doc.kind === 'topic'}
     <TopicView
       topic={doc}

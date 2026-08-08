@@ -1,6 +1,8 @@
 <script lang="ts">
-  import type { WorkstreamVM } from './types';
+  import { SvelteSet } from 'svelte/reactivity';
+  import type { WorkstreamVM, TreeTopicVM, TreeNaniteVM } from './types';
   import type { SaveState } from './types';
+  import { defaultExpandedIds, cascadeExpandIds, type ExpandableNode } from './treeExpansion';
   import SaveStatus from './SaveStatus.svelte';
 
   interface Props {
@@ -8,11 +10,148 @@
     saveState: SaveState;
     onSave: (patch: { title?: string; status?: string }) => void;
     onOpenTopic: (slug: string) => void;
+    onOpenNanite: (id: string) => void;
+    onInvoke: (command: string, args: unknown[]) => void;
+    onTogglePin: (slug: string) => void;
   }
 
-  let { ws, saveState, onSave, onOpenTopic }: Props = $props();
+  let {
+    ws,
+    saveState,
+    onSave,
+    onOpenTopic,
+    onOpenNanite,
+    onInvoke,
+    onTogglePin,
+  }: Props = $props();
 
   const STATUSES = ['queue', 'progress', 'backlog', 'closed'];
+
+  // How many EXTRA levels a single expand cascades open (children + grandchildren).
+  const CASCADE_LEVELS = 2;
+
+  // Per-node expansion state, keyed by the node's stable id. Absent = collapsed.
+  // Seeded to the top-level groups so only the first level of topics is visible
+  // by default; deeper subtrees stay collapsed until expanded.
+  const expanded = new SvelteSet<string>();
+
+  // Re-seed defaults only on a fresh document load (slug change), not on every
+  // data echo, so the user's manual expand/collapse survives re-renders.
+  let seededFor = $state<string | null>(null);
+  $effect(() => {
+    const key = ws.slug ?? ws.title;
+    if (key === seededFor) {
+      return;
+    }
+    seededFor = key;
+    expanded.clear();
+    for (const id of defaultExpandedIds(ws.tree)) {
+      expanded.add(id);
+    }
+  });
+
+  function isExpanded(id: string): boolean {
+    return expanded.has(id);
+  }
+
+  function toggleExpand(node: ExpandableNode): void {
+    if (expanded.has(node.id)) {
+      // Collapse just this node; its subtree hides because the parent is closed.
+      expanded.delete(node.id);
+    } else {
+      // Expanding cascades two more levels of descendants open in one action.
+      for (const id of cascadeExpandIds(node, CASCADE_LEVELS)) {
+        expanded.add(id);
+      }
+      collapsed.add(id);
+    }
+  }
+
+  // --- Custom right-click context menu (webviews get no native tree menu) ---
+  interface MenuItem {
+    label: string;
+    icon: string;
+    disabled: boolean;
+    run: () => void;
+  }
+
+  let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  let menuEl = $state<HTMLElement | undefined>();
+
+  function topicMenu(node: TreeTopicVM): MenuItem[] {
+    const items: MenuItem[] = [
+      {
+        label: node.pinned ? 'Unpin from Workstream' : 'Pin to Workstream',
+        icon: node.pinned ? 'pinned' : 'pin',
+        disabled: false,
+        run: () => onTogglePin(node.slug),
+      },
+    ];
+    for (const a of node.actions) {
+      items.push({
+        label: a.title,
+        icon: a.icon,
+        disabled: !a.enabled,
+        run: () => onInvoke(a.command, a.args),
+      });
+    }
+    return items;
+  }
+
+  function naniteMenu(node: TreeNaniteVM): MenuItem[] {
+    return node.actions.map((a) => ({
+      label: a.title,
+      icon: a.icon,
+      disabled: !a.enabled,
+      run: () => onInvoke(a.command, a.args),
+    }));
+  }
+
+  function openMenu(event: MouseEvent, items: MenuItem[]): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (items.length === 0) {
+      menu = null;
+      return;
+    }
+    // Clamp so the menu stays on-screen (rough size estimate is fine — the box
+    // is small and the clamp only nudges it away from the far edges).
+    const estWidth = 220;
+    const estHeight = items.length * 28 + 8;
+    const x = Math.min(event.clientX, window.innerWidth - estWidth - 4);
+    const y = Math.min(event.clientY, window.innerHeight - estHeight - 4);
+    menu = { x: Math.max(4, x), y: Math.max(4, y), items };
+  }
+
+  function closeMenu(): void {
+    menu = null;
+  }
+
+  function runItem(item: MenuItem): void {
+    if (item.disabled) {
+      return;
+    }
+    item.run();
+    closeMenu();
+  }
+
+  function onWindowClick(event: MouseEvent): void {
+    if (
+      menu &&
+      menuEl &&
+      event.target instanceof Element &&
+      menuEl.contains(event.target)
+    ) {
+      return;
+    }
+    closeMenu();
+  }
+
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      closeMenu();
+    }
+  }
 
   function onTitleInput(event: Event): void {
     ws.title = (event.currentTarget as HTMLInputElement).value;
@@ -34,10 +173,9 @@
       return String(ts);
     }
   }
-
-  const pinnedTopics = $derived(ws.topics.filter((t) => t.pinned));
-  const otherTopics = $derived(ws.topics.filter((t) => !t.pinned));
 </script>
+
+<svelte:window onclick={onWindowClick} onkeydown={onWindowKeydown} />
 
 <header class="head">
   {#if ws.editable}
@@ -94,44 +232,126 @@
   </div>
 </section>
 
-<section class="topics" aria-label="Topics">
-  <h2>Topics <span class="count">{ws.topics.length}</span></h2>
-  {#if ws.topics.length === 0}
-    <p class="empty">No topics in this workstream yet.</p>
+{#snippet treeNode(node: TreeTopicVM | TreeNaniteVM)}
+  {#if node.kind === 'topic'}
+    {@const hasChildren = node.children.length > 0}
+    {@const open = isExpanded(node.id)}
+    <li class="tree-node">
+      <div class="row-wrap">
+        {#if hasChildren}
+          <button
+            class="twistie"
+            aria-expanded={open}
+            aria-label={open ? 'Collapse' : 'Expand'}
+            onclick={() => toggleExpand(node)}
+          >
+            <span class="codicon codicon-chevron-{open ? 'down' : 'right'}"></span>
+          </button>
+        {:else}
+          <span class="twistie-spacer"></span>
+        {/if}
+        <button
+          class="tree-link"
+          class:pinned={node.pinned}
+          onclick={() => onOpenTopic(node.slug)}
+          oncontextmenu={(e) => openMenu(e, topicMenu(node))}
+        >
+          <span class="codicon codicon-{node.icon}"></span>
+          <span class="tree-label">{node.label}</span>
+          <span class="topic-slug mono">{node.slug}</span>
+          {#if node.pinned}
+            <span class="codicon codicon-pinned pin-badge" title="Pinned to this workstream"></span>
+          {/if}
+          {#if node.status !== 'open'}
+            <span class="tree-meta">{node.status}</span>
+          {/if}
+        </button>
+      </div>
+      {#if hasChildren && open}
+        <ul class="tree-children">
+          {#each node.children as child (child.id)}
+            {@render treeNode(child)}
+          {/each}
+        </ul>
+      {/if}
+    </li>
   {:else}
-    {#if pinnedTopics.length > 0}
-      <ul class="topic-list">
-        {#each pinnedTopics as t (t.slug)}
-          <li class="topic pinned">
-            <button class="topic-link" onclick={() => onOpenTopic(t.slug)}>
-              <span class="pin" title="Pinned to this workstream">★</span>
-              <span class="topic-title">{t.title}</span>
-              <span class="topic-slug mono">{t.slug}</span>
-              {#if t.status !== 'open'}
-                <span class="topic-status">{t.status}</span>
-              {/if}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-    {#if otherTopics.length > 0}
-      <ul class="topic-list">
-        {#each otherTopics as t (t.slug)}
-          <li class="topic">
-            <button class="topic-link" onclick={() => onOpenTopic(t.slug)}>
-              <span class="topic-title">{t.title}</span>
-              <span class="topic-slug mono">{t.slug}</span>
-              {#if t.status !== 'open'}
-                <span class="topic-status">{t.status}</span>
-              {/if}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <li class="tree-node">
+      <div class="row-wrap">
+        <span class="twistie-spacer"></span>
+        <button
+          class="tree-link nanite"
+          onclick={() => onOpenNanite(node.openId)}
+          oncontextmenu={(e) => openMenu(e, naniteMenu(node))}
+        >
+          <span class="codicon codicon-{node.icon}"></span>
+          <span class="tree-label">{node.label}</span>
+          <span class="tree-meta">{node.phase}</span>
+        </button>
+      </div>
+    </li>
   {/if}
-</section>
+{/snippet}
+
+{#if ws.tree.length > 0}
+  <section class="tree" aria-label="Topics and nanites tree">
+    {#each ws.tree as group (group.id)}
+      {@const groupHasChildren = group.children.length > 0}
+      {@const groupOpen = isExpanded(group.id)}
+      <h2>
+        {#if groupHasChildren}
+          <button
+            class="twistie"
+            aria-expanded={groupOpen}
+            aria-label={groupOpen ? 'Collapse' : 'Expand'}
+            onclick={() => toggleExpand(group)}
+          >
+            <span class="codicon codicon-chevron-{groupOpen ? 'down' : 'right'}"></span>
+          </button>
+        {/if}
+        <span class="codicon codicon-{group.icon}"></span>
+        {group.label}
+      </h2>
+      {#if groupHasChildren}
+        {#if groupOpen}
+          <ul class="tree-list">
+            {#each group.children as node (node.id)}
+              {@render treeNode(node)}
+            {/each}
+          </ul>
+        {/if}
+      {:else}
+        <p class="empty">Empty.</p>
+      {/if}
+    {/each}
+  </section>
+{/if}
+
+{#if menu}
+  <div
+    class="ctx-menu"
+    role="menu"
+    tabindex="-1"
+    bind:this={menuEl}
+    style="left: {menu.x}px; top: {menu.y}px;"
+  >
+    {#each menu.items as item}
+      <button
+        class="ctx-item"
+        role="menuitem"
+        disabled={item.disabled}
+        onclick={() => runItem(item)}
+      >
+        {#if item.icon}
+          <span class="codicon codicon-{item.icon}"></span>
+        {:else}
+          <span class="ctx-icon-spacer"></span>
+        {/if}
+        <span class="ctx-label">{item.label}</span>
+      </button>
+    {/each}
+  </div>
+{/if}
 
 <style>
   .empty {
@@ -213,38 +433,75 @@
     padding: 2px 6px;
   }
 
-  .topics h2 {
+  .topic-slug {
+    color: var(--vscode-descriptionForeground);
+    font-size: 0.85em;
+  }
+
+  .tree h2 {
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 1.05em;
-    margin: 0 0 10px;
+    margin: 18px 0 8px;
   }
 
-  .topics .count {
-    font-size: 0.75em;
-    color: var(--vscode-badge-foreground);
-    background: var(--vscode-badge-background);
-    border-radius: 10px;
-    padding: 1px 8px;
-  }
-
-  .topic-list {
+  .tree-list,
+  .tree-children {
     list-style: none;
-    margin: 0 0 12px;
+    margin: 0;
     padding: 0;
+  }
+
+  .tree-children {
+    margin-left: 16px;
+    border-left: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+    padding-left: 6px;
+  }
+
+  .row-wrap {
     display: flex;
-    flex-direction: column;
+    align-items: center;
     gap: 2px;
   }
 
-  .topic-link {
+  .twistie {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--vscode-icon-foreground, var(--vscode-foreground));
+    cursor: pointer;
+    border-radius: 4px;
+  }
+
+  .twistie:hover {
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  }
+
+  .twistie:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+  }
+
+  .twistie-spacer {
+    flex: 0 0 auto;
+    width: 20px;
+  }
+
+  .tree-link {
     display: flex;
     align-items: center;
     gap: 8px;
-    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
     text-align: left;
-    padding: 6px 10px;
+    padding: 4px 8px;
     border: none;
     border-radius: 4px;
     background: transparent;
@@ -253,27 +510,94 @@
     font-size: 0.95em;
   }
 
-  .topic-link:hover {
+  .tree-link:hover {
     background: var(--vscode-list-hoverBackground);
   }
 
-  .topic.pinned .topic-link {
-    background: var(--vscode-list-inactiveSelectionBackground);
-  }
-
-  .pin {
-    color: var(--vscode-charts-yellow, #e2c08d);
-  }
-
-  .topic-slug {
+  .tree-link.nanite {
     color: var(--vscode-descriptionForeground);
+  }
+
+  /* Pinned topics get a warm-yellow glow-up so focus reads at a glance. Uses
+     color-mix over theme tokens so it stays legible in light + dark themes. */
+  .tree-link.pinned {
+    color: var(--vscode-charts-yellow, #d7ba7d);
+    background: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 12%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 35%, transparent);
+    text-shadow: 0 0 6px
+      color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 45%, transparent);
+    font-weight: 600;
+  }
+
+  .tree-link.pinned:hover {
+    background: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 20%, transparent);
+  }
+
+  .tree-link.pinned .topic-slug {
+    color: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 70%, var(--vscode-descriptionForeground));
+  }
+
+  .pin-badge {
+    color: var(--vscode-charts-yellow, #d7ba7d);
     font-size: 0.85em;
   }
 
-  .topic-status {
+  .tree-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tree-meta {
     margin-left: auto;
     font-size: 0.8em;
     color: var(--vscode-descriptionForeground);
     font-style: italic;
+  }
+
+  /* Custom right-click context menu — webviews get no native tree menu. */
+  .ctx-menu {
+    position: fixed;
+    z-index: 50;
+    min-width: 180px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+    color: var(--vscode-menu-foreground, var(--vscode-foreground));
+    border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.35)));
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+
+  .ctx-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    padding: 5px 10px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.9em;
+  }
+
+  .ctx-item:hover:not(:disabled) {
+    background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground));
+    color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground));
+  }
+
+  .ctx-item:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .ctx-icon-spacer {
+    width: 16px;
   }
 </style>

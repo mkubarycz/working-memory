@@ -895,6 +895,79 @@ function buildControlPlaneCardTopics(
 }
 
 /**
+ * The nested tree groups a workstream renders: the "Topics (N)" group (member
+ * topics nested by their in-set parents, each carrying its nanite runs) plus a
+ * top-level "Nanites (N)" group of orphan nanites. This is the SHARED
+ * composition the left-rail workstream card renders AND the Svelte workstream
+ * editor mirrors below its flat topics list — pure, a function of already-
+ * fetched control-plane values.
+ */
+export interface WorkstreamTree {
+  /** [Topics group, Nanites group?] — same order the rail card renders. */
+  groups: PanelTopicsGroup[];
+  /** Member topics flagged `focused` (drives the card's pinned row). */
+  focusedTopics: PanelTopic[];
+  /** Membership-filtered member topics (for the caller's alert rollup). */
+  members: ControlPlaneTopic[];
+}
+
+/**
+ * Compose a workstream's {@link WorkstreamTree}. Extracted from
+ * {@link buildDomainWorkstreamCard} so the rail card and the Svelte workstream
+ * editor build the SAME nested topic/nanite structure from the same inputs.
+ */
+export function buildWorkstreamTree(
+  wsId: string,
+  wsSlug: string,
+  tab: 'active' | 'archive',
+  topics: ControlPlaneTopic[] | undefined,
+  typeMap: Map<string, TopicType>,
+  alerts: ControlPlaneAlert[],
+  nanites: Nanite[] = [],
+  naniteTemplates: NaniteTemplate[] = [],
+): WorkstreamTree {
+  const groups: PanelTopicsGroup[] = [];
+  const members =
+    topics !== undefined && wsSlug.length > 0
+      ? topics.filter((t) => t.workstreams.includes(wsSlug))
+      : [];
+  const memberTopicSlugs = new Set(
+    members.map((m) => m.slug ?? '').filter((s) => s !== ''),
+  );
+  const myNanites =
+    wsSlug.length > 0 ? nanites.filter((n) => n.workstream === wsSlug) : [];
+  // A nanite whose input topic is a member of this workstream nests under that
+  // topic; the rest surface in the top-level "Nanites" group.
+  const nestedNanites = myNanites.filter((n) => memberTopicSlugs.has(n.inputTopic));
+  const orphanNanites = myNanites.filter((n) => !memberTopicSlugs.has(n.inputTopic));
+  let focusedTopics: PanelTopic[] = [];
+  if (topics !== undefined && wsSlug.length > 0) {
+    const { group, orderedTopics } = buildControlPlaneCardTopics(
+      wsSlug,
+      wsId,
+      tab,
+      members,
+      typeMap,
+      alerts,
+      nestedNanites,
+      naniteTemplates,
+    );
+    groups.push(group);
+    focusedTopics = orderedTopics.filter((t) => t.focused);
+  }
+  const nanitesGroup = buildWorkstreamNanitesGroup(
+    wsId,
+    tab,
+    orphanNanites,
+    naniteTemplates,
+  );
+  if (nanitesGroup) {
+    groups.push(nanitesGroup);
+  }
+  return { groups, focusedTopics, members };
+}
+
+/**
  * Build an Active/Archive workstream CARD from a control-plane Workstream. The
  * per-workstream "Topics" group is populated from control-plane topic membership
  * (`spec.workstreams`) when `topics` is supplied; absent → the group is omitted.
@@ -931,43 +1004,16 @@ function buildDomainWorkstreamCard(
             },
           ]
         : sectionMoveActions({ slug, status });
-  const children: PanelTopicsGroup[] = [];
-  const members =
-    topics !== undefined && slug.length > 0
-      ? topics.filter((t) => t.workstreams.includes(slug))
-      : [];
-  const memberTopicSlugs = new Set(
-    members.map((m) => m.slug ?? '').filter((s) => s !== ''),
-  );
-  const myNanites = slug.length > 0 ? nanites.filter((n) => n.workstream === slug) : [];
-  // A nanite whose input topic is a member of this workstream nests under that
-  // topic; the rest surface in the card-level "Nanites" group.
-  const nestedNanites = myNanites.filter((n) => memberTopicSlugs.has(n.inputTopic));
-  const orphanNanites = myNanites.filter((n) => !memberTopicSlugs.has(n.inputTopic));
-  let focusedTopics: PanelTopic[] = [];
-  if (topics !== undefined && slug.length > 0) {
-    const { group, orderedTopics } = buildControlPlaneCardTopics(
-      slug,
-      ws.id,
-      tab,
-      members,
-      typeMap,
-      alerts,
-      nestedNanites,
-      naniteTemplates,
-    );
-    children.push(group);
-    focusedTopics = orderedTopics.filter((t) => t.focused);
-  }
-  const nanitesGroup = buildWorkstreamNanitesGroup(
+  const { groups: children, focusedTopics, members } = buildWorkstreamTree(
     ws.id,
+    slug,
     tab,
-    orphanNanites,
+    topics,
+    typeMap,
+    alerts,
+    nanites,
     naniteTemplates,
   );
-  if (nanitesGroup) {
-    children.push(nanitesGroup);
-  }
   const memberSlugs = members
     .map((t) => t.slug ?? '')
     .filter((s) => s !== '');

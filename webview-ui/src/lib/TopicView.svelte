@@ -50,6 +50,12 @@
   const extraSettings = $derived(
     getTopicTypeConfig(topic.topicType).extraSettings ?? [],
   );
+
+  // Slugs of workstreams this topic is focused/pinned in — drives the glow-up
+  // treatment on the merged Workstreams list.
+  const focusedSlugs = $derived(
+    new Set(topic.focusedWorkstreams.map((w) => w.slug)),
+  );
 </script>
 
 <header class="head">
@@ -128,16 +134,31 @@
   {/if}
 </section>
 
-{#snippet relationGroup(label: string, rows: RelationVM[], open: (slug: string) => void)}
+{#snippet relationGroup(
+  label: string,
+  rows: RelationVM[],
+  open: (slug: string) => void,
+  pinnedSlugs?: Set<string>,
+)}
   {#if rows.length > 0}
     <section class="relations" aria-label={label}>
       <h2>{label} <span class="count">{rows.length}</span></h2>
       <ul class="relation-list">
         {#each rows as r (r.slug)}
           <li class="relation">
-            <button class="relation-link" onclick={() => open(r.slug)}>
+            <button
+              class="relation-link"
+              class:pinned={pinnedSlugs?.has(r.slug)}
+              onclick={() => open(r.slug)}
+            >
               <span class="relation-title">{r.title}</span>
               <span class="relation-slug mono">{r.slug}</span>
+              {#if pinnedSlugs?.has(r.slug)}
+                <span
+                  class="codicon codicon-pinned pin-badge"
+                  title="Focused in this workstream"
+                ></span>
+              {/if}
             </button>
           </li>
         {/each}
@@ -147,8 +168,7 @@
 {/snippet}
 
 {@render relationGroup('Parents', topic.parents, onOpenTopic)}
-{@render relationGroup('Workstreams', topic.workstreams, onOpenWorkstream)}
-{@render relationGroup('Focused in', topic.focusedWorkstreams, onOpenWorkstream)}
+{@render relationGroup('Workstreams', topic.workstreams, onOpenWorkstream, focusedSlugs)}
 
 <style>
   .head {
@@ -304,6 +324,31 @@
 
   .relation-link:hover {
     background: var(--vscode-list-hoverBackground);
+  }
+
+  /* Pinned/focused workstreams get the same warm-yellow glow-up as pinned
+     topics in WorkstreamView's tree — kept identical for visual consistency. */
+  .relation-link.pinned {
+    color: var(--vscode-charts-yellow, #d7ba7d);
+    background: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 12%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 35%, transparent);
+    text-shadow: 0 0 6px
+      color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 45%, transparent);
+    font-weight: 600;
+  }
+
+  .relation-link.pinned:hover {
+    background: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 20%, transparent);
+  }
+
+  .relation-link.pinned .relation-slug {
+    color: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 70%, var(--vscode-descriptionForeground));
+  }
+
+  .pin-badge {
+    color: var(--vscode-charts-yellow, #d7ba7d);
+    font-size: 0.85em;
   }
 
   .relation-slug {

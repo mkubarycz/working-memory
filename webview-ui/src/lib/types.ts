@@ -20,6 +20,60 @@ export interface WorkstreamTopicVM {
   pinned: boolean;
 }
 
+/** A context-menu action ported from the rail (a VS Code command + args). */
+export interface TreeActionVM {
+  command: string;
+  title: string;
+  /** Codicon id (empty string when the rail action had none). */
+  icon: string;
+  args: unknown[];
+  enabled: boolean;
+}
+
+/** A nanite run rendered as a leaf in the workstream tree (mirrors the rail). */
+export interface TreeNaniteVM {
+  kind: 'nanite';
+  /** Stable row id (composed by the rail's builder). */
+  id: string;
+  label: string;
+  /** Codicon id for the run's lifecycle phase. */
+  icon: string;
+  /** Lifecycle phase text (Pending / Queued / Running / Succeeded / Failed). */
+  phase: string;
+  /** Raw nanite id used to open its generic document view. */
+  openId: string;
+  /** Right-click lifecycle actions ported from the rail (run / reset / restart). */
+  actions: TreeActionVM[];
+}
+
+/** A topic node in the workstream tree — nests child topics + its nanite runs. */
+export interface TreeTopicVM {
+  kind: 'topic';
+  id: string;
+  label: string;
+  /** Codicon id sourced from the topic type. */
+  icon: string;
+  status: string;
+  /** Topic slug used to open it. */
+  slug: string;
+  /** True when this topic is pinned/focused in THIS workstream. */
+  pinned: boolean;
+  /** Nested child topics and this topic's nanite runs. */
+  children: Array<TreeTopicVM | TreeNaniteVM>;
+  /** Right-click actions ported from the rail (currently topic updates). */
+  actions: TreeActionVM[];
+}
+
+/** A top-level group in the workstream tree ("Topics (N)" / "Nanites (N)"). */
+export interface TreeGroupVM {
+  kind: 'group';
+  id: string;
+  label: string;
+  /** Codicon id for the group header. */
+  icon: string;
+  children: Array<TreeTopicVM | TreeNaniteVM>;
+}
+
 /** The workstream detail view-model (kind = workstream). */
 export interface WorkstreamVM {
   kind: 'workstream';
@@ -33,6 +87,8 @@ export interface WorkstreamVM {
   /** False for slugless workstreams (can't be edited via the ws-* API yet). */
   editable: boolean;
   topics: WorkstreamTopicVM[];
+  /** Full nested topic + nanite tree, mirroring the left rail's card. */
+  tree: TreeGroupVM[];
 }
 
 /** A related document reference (parent topic, member workstream, …). */
@@ -126,4 +182,7 @@ export type WebviewToExt =
   | { type: 'save'; patch: { title?: string; status?: string } }
   | { type: 'saveTopic'; patch: TopicPatch }
   | { type: 'openTopic'; slug: string }
-  | { type: 'openWorkstream'; slug: string };
+  | { type: 'openWorkstream'; slug: string }
+  | { type: 'openDocument'; id: string }
+  | { type: 'invoke'; command: string; args: unknown[] }
+  | { type: 'togglePinTopic'; slug: string };
