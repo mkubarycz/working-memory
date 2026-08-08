@@ -1,8 +1,9 @@
 <script lang="ts">
-  import type { RelationVM, SaveState, TopicPatch, TopicVM } from './types';
+  import type { AlertVM, SaveState, TopicPatch, TopicVM } from './types';
   import { getTopicTypeConfig, iconForTopic } from './viewRegistry';
   import { renderMarkdown } from './markdown';
   import SaveStatus from './SaveStatus.svelte';
+  import AlertCallouts from './AlertCallouts.svelte';
 
   interface Props {
     topic: TopicVM;
@@ -10,10 +11,17 @@
     onSaveTopic: (patch: TopicPatch) => void;
     onOpenTopic: (slug: string) => void;
     onOpenWorkstream: (slug: string) => void;
+    onSetAlertStatus: (id: string, status: AlertVM['status']) => void;
   }
 
-  let { topic, saveState, onSaveTopic, onOpenTopic, onOpenWorkstream }: Props =
-    $props();
+  let {
+    topic,
+    saveState,
+    onSaveTopic,
+    onOpenTopic,
+    onOpenWorkstream,
+    onSetAlertStatus,
+  }: Props = $props();
 
   const STATUSES = ['open', 'closed'];
 
@@ -61,6 +69,39 @@
   // Body view mode: default to Preview (reading-first); flip to Edit to modify.
   let bodyMode = $state<'preview' | 'edit'>('preview');
   const renderedBody = $derived(renderMarkdown(topic.body || ''));
+
+  // Family-tree scroll cues: show top/bottom fades only when there's more to
+  // scroll in that direction, so the lineage reads as scrollable.
+  let scrollEl = $state<HTMLDivElement | null>(null);
+  let canUp = $state(false);
+  let canDown = $state(false);
+
+  function updateScrollCues(): void {
+    const el = scrollEl;
+    if (!el) {
+      canUp = false;
+      canDown = false;
+      return;
+    }
+    canUp = el.scrollTop > 1;
+    canDown = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+  }
+
+  $effect(() => {
+    const el = scrollEl;
+    // Re-run when the lineage changes so cues track the new content height.
+    void topic.parents;
+    void topic.children;
+    if (!el) {
+      canUp = false;
+      canDown = false;
+      return;
+    }
+    updateScrollCues();
+    const ro = new ResizeObserver(() => updateScrollCues());
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
 </script>
 
 <header class="head">
@@ -71,25 +112,25 @@
       value={topic.title}
       oninput={onTitleInput}
       aria-label="Topic title"
+      title={topic.title}
     />
   {:else}
-    <h1 class="title">{topic.title}</h1>
+    <h1 class="title" title={topic.title}>{topic.title}</h1>
   {/if}
+  <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
   <SaveStatus state={saveState} />
 </header>
 
+<div class="head-meta">
+  <span class="mono">{topic.slug ?? '—'}</span>
+  <span class="hm-dot">·</span>
+  <span>Created {fmtTs(topic.createdAt)}</span>
+  <span class="hm-dot">·</span>
+  <span>Updated {fmtTs(topic.updatedAt)}</span>
+</div>
+
+<div class="header-grid">
 <section class="attrs" aria-label="Topic attributes">
-  <div class="attr">
-    <span class="k">Type</span>
-    <span class="v type-value">
-      <span class="codicon codicon-{icon}"></span>
-      {typeLabel}
-    </span>
-  </div>
-  <div class="attr">
-    <span class="k">Slug</span>
-    <span class="v mono">{topic.slug ?? '—'}</span>
-  </div>
   <div class="attr">
     <span class="k">Status</span>
     <span class="v">
@@ -105,16 +146,23 @@
     </span>
   </div>
   <div class="attr">
-    <span class="k">Created</span>
-    <span class="v">{fmtTs(topic.createdAt)}</span>
-  </div>
-  <div class="attr">
-    <span class="k">Updated</span>
-    <span class="v">{fmtTs(topic.updatedAt)}</span>
-  </div>
-  <div class="attr">
-    <span class="k">Resource version</span>
-    <span class="v mono">{topic.resourceVersion}</span>
+    <span class="k">Workstreams</span>
+    <span class="v ws-cell">
+      {#each topic.workstreams as w (w.slug)}
+        <button
+          class="ws-chip"
+          class:pinned={focusedSlugs.has(w.slug)}
+          onclick={() => onOpenWorkstream(w.slug)}
+          title={w.slug}
+        >
+          <span class="ws-chip-title">{w.title}</span>
+          {#if focusedSlugs.has(w.slug)}
+            <span class="codicon codicon-pinned pin-badge" title="Focused here"></span>
+          {/if}
+        </button>
+      {/each}
+      {#if topic.workstreams.length === 0}—{/if}
+    </span>
   </div>
   {#each extraSettings as setting (setting.label)}
     <div class="attr">
@@ -123,6 +171,61 @@
     </div>
   {/each}
 </section>
+
+  <aside class="family" aria-label="Family tree">
+    <h2 class="family-title">
+      <span class="codicon codicon-type-hierarchy"></span>
+      Family tree
+    </h2>
+    <div class="family-scroll" bind:this={scrollEl} onscroll={updateScrollCues}>
+      {#if topic.parents.length > 0}
+        <div class="fam-group">
+          <span class="fam-label">Parents</span>
+          {#each topic.parents as p (p.slug)}
+            <button class="fam-row" onclick={() => onOpenTopic(p.slug)} title={p.slug}>
+              <span class="fam-row-title">{p.title}</span>
+              {#if p.alertCount > 0}
+                <span
+                  class="alert-count"
+                  class:sev-alert={p.alertSeverity === 'alert'}
+                  title="{p.alertCount} open alert{p.alertCount === 1 ? '' : 's'}"
+                >{p.alertCount}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      {#if topic.children.length > 0}
+        <div class="fam-group">
+          <span class="fam-label">Children</span>
+          {#each topic.children as c (c.slug)}
+            <button class="fam-row" onclick={() => onOpenTopic(c.slug)} title={c.slug}>
+              <span class="fam-row-title">{c.title}</span>
+              {#if c.alertCount > 0}
+                <span
+                  class="alert-count"
+                  class:sev-alert={c.alertSeverity === 'alert'}
+                  title="{c.alertCount} open alert{c.alertCount === 1 ? '' : 's'}"
+                >{c.alertCount}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      {#if topic.parents.length === 0 && topic.children.length === 0}
+        <p class="fam-empty">No lineage.</p>
+      {/if}
+    </div>
+    <div class="fam-fade fam-fade-top" class:show={canUp} aria-hidden="true"></div>
+    <div class="fam-fade fam-fade-bottom" class:show={canDown} aria-hidden="true">
+      <span class="codicon codicon-chevron-down fam-fade-chevron"></span>
+    </div>
+  </aside>
+</div>
+
+<AlertCallouts alerts={topic.alerts} {onSetAlertStatus} />
 
 <section class="body-section" aria-label="Topic body">
   <div class="tab-panel">
@@ -179,47 +282,27 @@
   </div>
 </section>
 
-{#snippet relationGroup(
-  label: string,
-  rows: RelationVM[],
-  open: (slug: string) => void,
-  pinnedSlugs?: Set<string>,
-)}
-  {#if rows.length > 0}
-    <section class="relations" aria-label={label}>
-      <h2>{label} <span class="count">{rows.length}</span></h2>
-      <ul class="relation-list">
-        {#each rows as r (r.slug)}
-          <li class="relation">
-            <button
-              class="relation-link"
-              class:pinned={pinnedSlugs?.has(r.slug)}
-              onclick={() => open(r.slug)}
-            >
-              <span class="relation-title">{r.title}</span>
-              <span class="relation-slug mono">{r.slug}</span>
-              {#if pinnedSlugs?.has(r.slug)}
-                <span
-                  class="codicon codicon-pinned pin-badge"
-                  title="Focused in this workstream"
-                ></span>
-              {/if}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-{/snippet}
-
-{@render relationGroup('Parents', topic.parents, onOpenTopic)}
-{@render relationGroup('Workstreams', topic.workstreams, onOpenWorkstream, focusedSlugs)}
-
 <style>
   .head {
     display: flex;
     align-items: center;
     gap: 12px;
+  }
+
+  /* Slug + timestamps as a compact plain-text subline under the title bar,
+     freeing those cells out of the attributes grid. */
+  .head-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 0 6px;
+    font-size: 0.8em;
+    color: var(--vscode-descriptionForeground);
+  }
+
+  .hm-dot {
+    opacity: 0.5;
   }
 
   .type-icon {
@@ -250,21 +333,17 @@
   }
 
   .attrs {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 1px;
-    background: var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
-    border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
-    border-radius: 6px;
-    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--vscode-editor-background);
   }
 
   .attr {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 10px 14px;
-    background: var(--vscode-editor-background);
   }
 
   .attr .k {
@@ -277,12 +356,6 @@
   .attr .v {
     font-size: 0.95em;
     word-break: break-word;
-  }
-
-  .type-value {
-    display: flex;
-    align-items: center;
-    gap: 6px;
   }
 
   .mono {
@@ -504,61 +577,221 @@
     max-width: 100%;
   }
 
-  .relation-list {
-    list-style: none;
+  /* Header grid: the attributes table + the family-tree column read as ONE
+     bordered table — the 1px gap over a border-colored background draws the
+     seams as gridlines. The family column spans the full height of the attrs
+     rows (grid stretch). Collapses to a single column when the editor is narrow. */
+  .header-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+    background: var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+    border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+    border-radius: 6px;
+    overflow: hidden;
+    align-items: stretch;
+  }
+
+  @media (min-width: 720px) {
+    .header-grid {
+      grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+    }
+  }
+
+  /* The family column stretches to the attributes table's height (grid stretch).
+     The scroll list is absolutely positioned so it is OUT of flow and never adds
+     to the row height — the table is sized by the attributes alone, and the
+     lineage scrolls inside whatever height that gives us. min-height keeps it
+     usable when the layout collapses to a single column (family stacks below). */
+  .family {
+    position: relative;
+    background: var(--vscode-editor-background);
+    padding: 10px 12px;
+    min-width: 0;
+    min-height: 160px;
+    overflow: hidden;
+  }
+
+  .family-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     margin: 0;
-    padding: 0;
+    font-size: 0.95em;
+  }
+
+  .family-scroll {
+    position: absolute;
+    top: 34px;
+    left: 12px;
+    right: 12px;
+    bottom: 10px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* Scroll affordances: a fade at the top/bottom of the family list, shown only
+     when there's more lineage to scroll in that direction. The bottom one holds
+     a down-chevron so the cue reads unambiguously. Aligned to .family-scroll's
+     insets; pointer-events:none so they never block clicks. */
+  .fam-fade {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    height: 22px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+
+  .fam-fade.show {
+    opacity: 1;
+  }
+
+  .fam-fade-top {
+    top: 34px;
+    background: linear-gradient(to bottom, var(--vscode-editor-background), transparent);
+  }
+
+  .fam-fade-bottom {
+    bottom: 10px;
+    background: linear-gradient(to top, var(--vscode-editor-background), transparent);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+
+  .fam-fade-chevron {
+    font-size: 0.9em;
+    color: var(--vscode-descriptionForeground);
+  }
+
+  .fam-group {
     display: flex;
     flex-direction: column;
     gap: 2px;
   }
 
-  .relation-link {
+  .fam-label {
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--vscode-descriptionForeground);
+  }
+
+  .fam-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     width: 100%;
     text-align: left;
-    padding: 6px 10px;
+    padding: 4px 6px;
     border: none;
     border-radius: 4px;
     background: transparent;
-    color: var(--vscode-foreground);
+    color: var(--vscode-textLink-foreground);
+    cursor: pointer;
+    font-size: 0.88em;
+  }
+
+  .fam-row:hover {
+    background: var(--vscode-list-hoverBackground);
+    text-decoration: underline;
+  }
+
+  .fam-row-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Open-alert count bubble on a family-tree row (neutral / red for actionable). */
+  .alert-count {
+    margin-left: auto;
+    flex: none;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 5px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    font-size: 0.72em;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--vscode-badge-foreground, #fff);
+    background: var(--vscode-badge-background, #4d4d4d);
+  }
+
+  .alert-count.sev-alert {
+    color: #fff;
+    background: var(--vscode-editorError-foreground, #f14c4c);
+  }
+
+  .fam-empty {
+    margin: 0;
+    color: var(--vscode-descriptionForeground);
+    font-style: italic;
+    font-size: 0.88em;
+  }
+
+  /* Workstreams live in the attributes grid (where resource-version used to be),
+     rendered as small clickable chips with the same warm-yellow pin glow. */
+  .ws-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: flex-start;
+  }
+
+  .ws-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    text-align: left;
+    padding: 2px 6px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--vscode-textLink-foreground);
     cursor: pointer;
     font-size: 0.95em;
   }
 
-  .relation-link:hover {
+  .ws-chip:hover {
     background: var(--vscode-list-hoverBackground);
+    text-decoration: underline;
   }
 
-  /* Pinned/focused workstreams get the same warm-yellow glow-up as pinned
-     topics in WorkstreamView's tree — kept identical for visual consistency. */
-  .relation-link.pinned {
+  .ws-chip-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ws-chip.pinned {
     color: var(--vscode-charts-yellow, #d7ba7d);
     background: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 12%, transparent);
-    box-shadow: inset 0 0 0 1px
-      color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 35%, transparent);
-    text-shadow: 0 0 6px
-      color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 45%, transparent);
     font-weight: 600;
   }
 
-  .relation-link.pinned:hover {
+  .ws-chip.pinned:hover {
     background: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 20%, transparent);
-  }
-
-  .relation-link.pinned .relation-slug {
-    color: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 70%, var(--vscode-descriptionForeground));
   }
 
   .pin-badge {
     color: var(--vscode-charts-yellow, #d7ba7d);
     font-size: 0.85em;
+    flex: none;
   }
 
-  .relation-slug {
+  .rv-label {
+    font-size: 0.8em;
     color: var(--vscode-descriptionForeground);
-    font-size: 0.85em;
+    white-space: nowrap;
   }
 </style>

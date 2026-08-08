@@ -68,6 +68,7 @@ const SHARED_VMS = [
   'TreeGroupVM',
   'WorkstreamVM',
   'RelationVM',
+  'AlertVM',
   'TopicTypeMetaVM',
   'TopicVM',
   'GenericFieldVM',

@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import type {
   ControlPlaneClient,
   DocumentEnvelope,
+  Alert,
   Nanite,
   NaniteTemplate,
   Topic,
@@ -17,6 +18,7 @@ import {
   type PanelTopicsGroup,
 } from '../panelData';
 import { decideRefreshAction } from './refreshDecision';
+import { buildAlertVMs, RECENT_CLOSED_ALERT_MS, alertBubbleForTopic } from './alertVms';
 
 /**
  * The unified Working Memory document custom editor (WM 14.2
@@ -74,6 +76,8 @@ interface TreeTopicVM {
   status: string;
   slug: string;
   pinned: boolean;
+  alertCount: number;
+  alertSeverity: 'alert' | 'informational' | null;
   children: Array<TreeTopicVM | TreeNaniteVM>;
   actions: TreeActionVM[];
 }
@@ -98,11 +102,24 @@ interface WorkstreamVM {
   editable: boolean;
   topics: WorkstreamTopicVM[];
   tree: TreeGroupVM[];
+  alerts: AlertVM[];
 }
 
 interface RelationVM {
   slug: string;
   title: string;
+  alertCount: number;
+  alertSeverity: 'alert' | 'informational' | null;
+}
+
+interface AlertVM {
+  id: string;
+  title: string;
+  description: string;
+  recommendedAction: string;
+  status: 'alert' | 'informational' | 'closed';
+  updatedAt: number;
+  dimmed: boolean;
 }
 
 interface TopicTypeMetaVM {
@@ -125,8 +142,10 @@ interface TopicVM {
   resourceVersion: number;
   editable: boolean;
   parents: RelationVM[];
+  children: RelationVM[];
   workstreams: RelationVM[];
   focusedWorkstreams: RelationVM[];
+  alerts: AlertVM[];
 }
 
 interface GenericFieldVM {
@@ -162,6 +181,9 @@ type WebviewToExt =
   | { type: 'openDocument'; id: string }
   | { type: 'invoke'; command: string; args: unknown[] }
   | { type: 'togglePinTopic'; slug: string }
+  // Transition an alert's lifecycle status from a callout button, routed to
+  // `ws-alert-update` via the control-plane client.
+  | { type: 'setAlertStatus'; id: string; status: 'alert' | 'informational' | 'closed' }
   // The webview reports whether it currently holds un-flushed local edits so the
   // host's refresh decision can avoid stomping in-progress work (Bug A).
   | { type: 'editState'; hasPendingEdits: boolean }
@@ -374,6 +396,8 @@ function toTreeNode(
     status: row.status,
     slug: topicSlugFromUri(row.openUri),
     pinned: row.focused,
+    alertCount: row.alertCount ?? 0,
+    alertSeverity: row.alertSeverity ?? null,
     children: (row.children ?? []).map(toTreeNode),
     actions: toTreeActions(row.actions),
   };
@@ -578,6 +602,17 @@ export class DocumentEditorProvider
             await this.togglePinTopic(entry, msg.slug);
           }
           return;
+        case 'setAlertStatus':
+          if (
+            typeof msg.id === 'string' &&
+            msg.id.length > 0 &&
+            (msg.status === 'alert' ||
+              msg.status === 'informational' ||
+              msg.status === 'closed')
+          ) {
+            await this.setAlertStatus(entry, msg.id, msg.status);
+          }
+          return;
       }
     });
   }
@@ -741,6 +776,16 @@ export class DocumentEditorProvider
       nanites,
       naniteTemplates,
     );
+    // Alerts relevant to this workstream = alerts referencing any member topic.
+    const memberSlugs = topics
+      .map((t) => t.slug)
+      .filter((s): s is string => Boolean(s));
+    let alerts: Alert[] = [];
+    try {
+      alerts = await client.alertRead();
+    } catch {
+      alerts = [];
+    }
     return {
       kind: 'workstream',
       title: ws.title,
@@ -753,6 +798,7 @@ export class DocumentEditorProvider
       editable: Boolean(slug),
       topics: ordered,
       tree: groups.map(toTreeGroup),
+      alerts: buildAlertVMs(alerts, memberSlugs, Date.now()),
     };
   }
 
@@ -782,22 +828,56 @@ export class DocumentEditorProvider
       return null;
     }
     const typeMeta = await this.readTopicTypeMeta(client, topic.topicType);
-    // Relations resolve slug → title via a title map built from all topics /
-    // workstreams (best-effort; a missing title falls back to the slug).
-    const topicTitles = await this.titleMap(
-      () => client.topicRead(),
-      (t) => t.slug,
-      (t) => t.title,
-    );
+    // Fetch all topics ONCE: drives both the relation title map and the child
+    // lineage (topics whose `parents` include this one — the DAG below it).
+    let allTopics: Topic[] = [];
+    try {
+      allTopics = await client.topicRead();
+    } catch {
+      allTopics = [];
+    }
+    const topicTitles = new Map<string, string>();
+    for (const t of allTopics) {
+      if (t.slug) {
+        topicTitles.set(t.slug, t.title);
+      }
+    }
     const wsTitles = await this.titleMap(
       () => client.wsRead(),
       (w) => w.slug,
       (w) => w.title,
     );
+    // Alerts whose `topics` reference THIS topic's slug (drives the callouts AND
+    // the per-relation alert badges on the family tree).
+    let alertsRaw: Alert[] = [];
+    try {
+      alertsRaw = await client.alertRead();
+    } catch {
+      alertsRaw = [];
+    }
+    // Non-topic relation (a workstream) — never carries a topic alert badge.
     const rel = (slug: string, titles: Map<string, string>): RelationVM => ({
       slug,
       title: titles.get(slug) ?? slug,
+      alertCount: 0,
+      alertSeverity: null,
     });
+    // Topic relation (parent / child) — tagged with its open-alert bubble.
+    const topicRel = (slug: string, title: string): RelationVM => {
+      const b = alertBubbleForTopic(alertsRaw, slug);
+      return { slug, title, alertCount: b.count, alertSeverity: b.severity };
+    };
+    const children: RelationVM[] = topic.slug
+      ? allTopics
+          .filter((t) => t.slug && t.parents.includes(topic.slug as string))
+          .map((t) => topicRel(t.slug as string, t.title))
+          .sort((a, b) => a.title.localeCompare(b.title))
+      : [];
+    const alerts = buildAlertVMs(
+      alertsRaw,
+      topic.slug ? [topic.slug] : [],
+      Date.now(),
+    );
     return {
       kind: 'topic',
       title: topic.title,
@@ -810,9 +890,11 @@ export class DocumentEditorProvider
       updatedAt: topic.updated_at,
       resourceVersion: topic.resourceVersion,
       editable: Boolean(topic.slug),
-      parents: topic.parents.map((s) => rel(s, topicTitles)),
+      parents: topic.parents.map((s) => topicRel(s, topicTitles.get(s) ?? s)),
+      children,
       workstreams: topic.workstreams.map((s) => rel(s, wsTitles)),
       focusedWorkstreams: topic.focusedWorkstreams.map((s) => rel(s, wsTitles)),
+      alerts,
     };
   }
 
@@ -1031,6 +1113,38 @@ export class DocumentEditorProvider
     const vm = await this.loadWorkstream(client, ref.identifier);
     if (vm) {
       this.pushDocument(entry, vm);
+    }
+  }
+
+  /**
+   * Transition an alert's lifecycle status (resolve / escalate / close / reopen)
+   * from a callout button. Persists via the control-plane `ws-alert-update`
+   * tool (NO DB), then reloads the editor's document so the refreshed callouts
+   * (and any dimming / hiding of a now-closed alert) re-render.
+   */
+  private async setAlertStatus(
+    entry: OpenEditorEntry,
+    id: string,
+    status: 'alert' | 'informational' | 'closed',
+  ): Promise<void> {
+    const post = entry.post;
+    const client = this.getClient();
+    if (!client) {
+      post({
+        type: 'error',
+        message: 'Control plane is not running — the alert was not updated.',
+      });
+      return;
+    }
+    try {
+      await client.alertUpdate({ id, status });
+    } catch (err) {
+      post({ type: 'error', message: `Alert update failed: ${messageOf(err)}` });
+      return;
+    }
+    const outcome = await this.loadDocument(entry.ref);
+    if (outcome.status === 'ok') {
+      this.pushDocument(entry, outcome.vm);
     }
   }
 

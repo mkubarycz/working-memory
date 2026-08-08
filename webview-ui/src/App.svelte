@@ -153,6 +153,13 @@
     transport.post({ type: 'togglePinTopic', slug });
   }
 
+  function setAlertStatus(
+    id: string,
+    status: 'alert' | 'informational' | 'closed',
+  ): void {
+    transport.post({ type: 'setAlertStatus', id, status });
+  }
+
   // The view registry keyed by kind: workstream / topic get bespoke views; any
   // other kind falls back to the generic DocumentView so nothing is unopenable.
   const view = $derived(doc ? resolveView(doc.kind) : null);
@@ -179,7 +186,7 @@
       <div class="loading">Loading document…</div>
     {/if}
   {:else if view === 'workstream' && doc.kind === 'workstream'}
-    <WorkstreamView ws={doc} {saveState} onSave={saveWorkstream} onOpenTopic={openTopic} onOpenNanite={openNanite} onInvoke={invokeAction} onTogglePin={togglePinTopic} />
+    <WorkstreamView ws={doc} {saveState} onSave={saveWorkstream} onOpenTopic={openTopic} onOpenNanite={openNanite} onInvoke={invokeAction} onTogglePin={togglePinTopic} onSetAlertStatus={setAlertStatus} />
   {:else if view === 'topic' && doc.kind === 'topic'}
     <TopicView
       topic={doc}
@@ -187,6 +194,7 @@
       onSaveTopic={saveTopic}
       onOpenTopic={openTopic}
       onOpenWorkstream={openWorkstream}
+      onSetAlertStatus={setAlertStatus}
     />
   {:else if doc.kind !== 'workstream' && doc.kind !== 'topic'}
     <DocumentView doc={doc} />

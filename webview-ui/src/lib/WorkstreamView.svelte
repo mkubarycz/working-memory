@@ -1,10 +1,11 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
-  import type { WorkstreamVM, TreeTopicVM, TreeNaniteVM } from './types';
+  import type { WorkstreamVM, TreeTopicVM, TreeNaniteVM, AlertVM } from './types';
   import type { SaveState } from './types';
   import { defaultExpandedIds, cascadeExpandIds, type ExpandableNode } from './treeExpansion';
   import { sortTreeChildren } from './treeSort';
   import SaveStatus from './SaveStatus.svelte';
+  import AlertCallouts from './AlertCallouts.svelte';
 
   interface Props {
     ws: WorkstreamVM;
@@ -14,6 +15,7 @@
     onOpenNanite: (id: string) => void;
     onInvoke: (command: string, args: unknown[]) => void;
     onTogglePin: (slug: string) => void;
+    onSetAlertStatus: (id: string, status: AlertVM['status']) => void;
   }
 
   let {
@@ -24,6 +26,7 @@
     onOpenNanite,
     onInvoke,
     onTogglePin,
+    onSetAlertStatus,
   }: Props = $props();
 
   const STATUSES = ['queue', 'progress', 'backlog', 'closed'];
@@ -232,6 +235,8 @@
   </div>
 </section>
 
+<AlertCallouts alerts={ws.alerts} {onSetAlertStatus} />
+
 {#snippet treeNode(node: TreeTopicVM | TreeNaniteVM)}
   {#if node.kind === 'topic'}
     {@const hasChildren = node.children.length > 0}
@@ -265,6 +270,13 @@
           {/if}
           {#if node.status !== 'open'}
             <span class="tree-meta">{node.status}</span>
+          {/if}
+          {#if node.alertCount > 0}
+            <span
+              class="alert-count"
+              class:sev-alert={node.alertSeverity === 'alert'}
+              title="{node.alertCount} open alert{node.alertCount === 1 ? '' : 's'}"
+            >{node.alertCount}</span>
           {/if}
         </button>
       </div>
@@ -582,6 +594,32 @@
     font-size: 0.8em;
     color: var(--vscode-descriptionForeground);
     font-style: italic;
+  }
+
+  /* Open-alert count bubble on a topic row. Neutral badge for informational,
+     red for actionable ('alert'). margin-left:auto right-aligns it when there's
+     no trailing status meta. */
+  .alert-count {
+    margin-left: auto;
+    flex: none;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 5px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    font-size: 0.72em;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--vscode-badge-foreground, #fff);
+    background: var(--vscode-badge-background, #4d4d4d);
+  }
+
+  .alert-count.sev-alert {
+    color: #fff;
+    background: var(--vscode-editorError-foreground, #f14c4c);
   }
 
   /* Custom right-click context menu — webviews get no native tree menu. */

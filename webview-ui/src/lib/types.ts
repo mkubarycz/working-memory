@@ -58,6 +58,10 @@ export interface TreeTopicVM {
   slug: string;
   /** True when this topic is pinned/focused in THIS workstream. */
   pinned: boolean;
+  /** Open-alert count for the bubble on this tree row; 0 hides it. */
+  alertCount: number;
+  /** Max open-alert severity, driving the badge color; null when count is 0. */
+  alertSeverity: 'alert' | 'informational' | null;
   /** Nested child topics and this topic's nanite runs. */
   children: Array<TreeTopicVM | TreeNaniteVM>;
   /** Right-click actions ported from the rail (currently topic updates). */
@@ -89,6 +93,8 @@ export interface WorkstreamVM {
   topics: WorkstreamTopicVM[];
   /** Full nested topic + nanite tree, mirroring the left rail's card. */
   tree: TreeGroupVM[];
+  /** Alerts relevant to this workstream (union of its topics' alerts). */
+  alerts: AlertVM[];
 }
 
 /** A related document reference (parent topic, member workstream, …). */
@@ -96,6 +102,29 @@ export interface RelationVM {
   /** Slug or id used to build the open request. */
   slug: string;
   title: string;
+  /** Open-alert count for the related topic (0 for workstreams / no alerts). */
+  alertCount: number;
+  /** Max open-alert severity, driving the badge color; null when count is 0. */
+  alertSeverity: 'alert' | 'informational' | null;
+}
+
+/**
+ * A single alert rendered as a callout on the workstream / topic views. Mirrors
+ * the control-plane Alert kind (see `Alert` in the control-plane client) but
+ * flattened + scoped for display: `dimmed` is true for a recently-closed alert
+ * kept visible only so its Reopen actions remain reachable.
+ */
+export interface AlertVM {
+  /** Alert document id (uuid) — the handle for status transitions. */
+  id: string;
+  title: string;
+  description: string;
+  recommendedAction: string;
+  /** Authored lifecycle status driving the callout color + button set. */
+  status: 'alert' | 'informational' | 'closed';
+  updatedAt: number;
+  /** True for a closed-but-recent alert (shown muted, still reopenable). */
+  dimmed: boolean;
 }
 
 /**
@@ -127,8 +156,12 @@ export interface TopicVM {
   /** False for slugless topics (can't be edited via ws-topic-update yet). */
   editable: boolean;
   parents: RelationVM[];
+  /** Child topics — topics whose `parents` include this topic (the DAG below). */
+  children: RelationVM[];
   workstreams: RelationVM[];
   focusedWorkstreams: RelationVM[];
+  /** Alerts whose `topics` include this topic's slug. */
+  alerts: AlertVM[];
 }
 
 /** A flattened `spec` field rendered by the generic fallback view. */
@@ -192,6 +225,10 @@ export type WebviewToExt =
   | { type: 'openDocument'; id: string }
   | { type: 'invoke'; command: string; args: unknown[] }
   | { type: 'togglePinTopic'; slug: string }
+  // Transition an alert's lifecycle status (resolve / escalate / close / reopen)
+  // from a callout button. Routed to `ws-alert-update` via the control-plane
+  // client; the live-refresh then re-pushes the updated callouts.
+  | { type: 'setAlertStatus'; id: string; status: 'alert' | 'informational' | 'closed' }
   // Reports whether the webview currently holds un-flushed local edits so the
   // host's refresh decision won't stomp in-progress work (Bug A).
   | { type: 'editState'; hasPendingEdits: boolean }
