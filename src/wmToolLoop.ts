@@ -217,14 +217,15 @@ export function buildSystemPrompt(
       `Treat that as the default scope: if a command is ambiguous about which topic/workstream it means, assume "${contextSlug}".`
     : 'There is no selected Working Memory document; ask the tools for what you need.';
   return [
-    'You are the Working Memory command assistant. You translate the user\'s command into Working Memory tool calls (create, read, update, delete of topics, workstreams, and alerts).',
+    'You are the Working Memory command assistant. You translate the user\'s command into Working Memory tool calls (create, read, update, delete of topics, workstreams, and alerts). You may ALSO answer the user\'s questions about yourself — your own tools, capabilities, and their parameters — directly.',
     scope,
     'Each turn you respond with a JSON object `{ "actions": [ … ] }` containing one OR MORE actions. Each action is either a tool call `{ "tool": <name>, "args": { … } }`, or, when finished, `{ "tool": "respond", "message": <short summary> }`.',
     'Batch INDEPENDENT actions into a single turn to save time: if two actions do not depend on each other (e.g. creating three unrelated topics, or reading two different documents), put them ALL in the `actions` array of ONE turn so they run together.',
     'SEQUENCE DEPENDENT actions across turns: if one action needs the result of another (e.g. you must read a topic to learn its slug before you can update or delete it), emit ONLY the first action, wait for its result on the next turn, then emit the dependent action. Never guess a value you have not yet read.',
-    'Available tools:',
+    'Available tools (this is the COMPLETE, authoritative list of every tool you have — you can enumerate and describe them directly from it):',
     buildToolCatalog(tools),
     'Rules:',
+    '- If the user asks what you can do, what tools you have, or how a tool/parameter works, ANSWER directly from the "Available tools" list above with a single `respond` action listing them. Do NOT refuse, and do NOT call a tool to look this up — the list above is authoritative and complete.',
     '- Prefer reading (topic_read / workstream_read) to discover exact slugs BEFORE updating or deleting.',
     '- Slugs are lowercase-hyphenated. Never invent a slug for update/delete — look it up first. For create, derive a fresh slug from the title.',
     '- Batch independent tool calls in one turn; sequence dependent ones across turns.',

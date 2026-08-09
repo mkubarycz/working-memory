@@ -1,12 +1,13 @@
 import { test, expect } from 'vitest';
 import {
   runToolLoop,
+  buildSystemPrompt,
   type ChatFn,
   type ToolExecutor,
   type ToolResult,
   type TraceEvent,
 } from '../src/wmToolLoop';
-import type { LlamaMessage } from '../src/llamaClient';
+import type { LlamaMessage, LlamaToolDef } from '../src/llamaClient';
 
 /** A `chat` seam that returns a scripted sequence of assistant turns. */
 function scriptedChat(
@@ -564,4 +565,34 @@ test('(n) dedup still applies WITHIN a single batch (distinct + duplicate mixed)
   expect(result.toolCalls).toHaveLength(3);
   expect(result.toolCalls[2].deduped).toBe(true);
 });
+
+test('(n) the system prompt grants permission to answer meta-questions about its own tools from the catalog', () => {
+  const tools: LlamaToolDef[] = [
+    {
+      type: 'function',
+      function: {
+        name: 'topic_read',
+        description: 'Read a topic by slug.',
+        parameters: {
+          type: 'object',
+          properties: { slug: { type: 'string' } },
+          required: ['slug'],
+        },
+      },
+    },
+  ];
+
+  const prompt = buildSystemPrompt('my-topic', 'topic', tools);
+
+  // The framing permits answering questions about its own tools directly...
+  expect(prompt).toContain('answer the user\'s questions about yourself');
+  // ...the catalog is framed as the authoritative, complete list...
+  expect(prompt).toContain('COMPLETE, authoritative list');
+  // ...and there is an explicit rule to respond (not refuse, not look it up).
+  expect(prompt).toContain('what tools you have');
+  expect(prompt).toContain('Do NOT refuse');
+  // The projected tool still appears in the catalog it can enumerate from.
+  expect(prompt).toContain('topic_read(slug*)');
+});
+
 
