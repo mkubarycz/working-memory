@@ -77,6 +77,11 @@
           "minimum": 1,
           "maximum": 50,
           "markdownDescription": "Maximum tool-calling turns the command widget's agentic loop takes before it gives up (the classic small-model \"never stops\" guard)."
+        },
+        "workingMemory.localModel.disableThinking": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Send `think: false` on command-widget chat requests to disable a reasoning model's hidden `<think>` tokens. This is an **Ollama-specific** extension — leave it **on** for the default Ollama endpoint, but turn it **off** if `#workingMemory.localModel.baseUrl#` points at a non-Ollama server that may reject the unknown `think` field."
         }
       }
     },

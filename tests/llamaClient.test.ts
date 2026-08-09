@@ -257,6 +257,72 @@ test('chatConstrained posts `format` (not `tools`) and parses the envelope', asy
   expect(res.message.tool_calls?.[0].function.name).toBe('topic_create');
 });
 
+// --- think: false opt-out (non-Ollama backends) ---------------------------
+
+/** Capture the parsed request body of one chat/chatConstrained call. */
+function captureBody(): { fetchImpl: FetchLike; body(): Record<string, unknown> } {
+  const seen: { init?: Parameters<FetchLike>[1] } = {};
+  const fetchImpl: FetchLike = async (_url, init) => {
+    seen.init = init;
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      async text() {
+        return JSON.stringify({
+          message: {
+            role: 'assistant',
+            content: JSON.stringify({ action: { tool: 'respond', message: 'done' } }),
+          },
+        });
+      },
+    };
+  };
+  return { fetchImpl, body: () => JSON.parse(seen.init?.body ?? '{}') };
+}
+
+test('disableThinking defaults to true: think:false is on both chat + chatConstrained', async () => {
+  const chatCap = captureBody();
+  const chatClient = new LlamaClient({
+    baseUrl: 'http://localhost:11434',
+    model: 'qwen3:14b',
+    fetchImpl: chatCap.fetchImpl,
+  });
+  await chatClient.chat([{ role: 'user', content: 'hi' }], CREATE_TOOLS);
+  expect(chatCap.body().think).toBe(false);
+
+  const constrainedCap = captureBody();
+  const constrainedClient = new LlamaClient({
+    baseUrl: 'http://localhost:11434',
+    model: 'qwen3:14b',
+    fetchImpl: constrainedCap.fetchImpl,
+  });
+  await constrainedClient.chatConstrained([{ role: 'user', content: 'hi' }], CREATE_TOOLS);
+  expect(constrainedCap.body().think).toBe(false);
+});
+
+test('disableThinking=false omits the think key from both chat + chatConstrained', async () => {
+  const chatCap = captureBody();
+  const chatClient = new LlamaClient({
+    baseUrl: 'http://localhost:11434',
+    model: 'qwen3:14b',
+    fetchImpl: chatCap.fetchImpl,
+    disableThinking: false,
+  });
+  await chatClient.chat([{ role: 'user', content: 'hi' }], CREATE_TOOLS);
+  expect('think' in chatCap.body()).toBe(false);
+
+  const constrainedCap = captureBody();
+  const constrainedClient = new LlamaClient({
+    baseUrl: 'http://localhost:11434',
+    model: 'qwen3:14b',
+    fetchImpl: constrainedCap.fetchImpl,
+    disableThinking: false,
+  });
+  await constrainedClient.chatConstrained([{ role: 'user', content: 'hi' }], CREATE_TOOLS);
+  expect('think' in constrainedCap.body()).toBe(false);
+});
+
 // --- multi-action envelope (WM 14.2.1 multiple-tool-calls-per-turn) ---------
 
 test('parseEnvelopeResponse maps a multi-action envelope to one tool_call per action', () => {

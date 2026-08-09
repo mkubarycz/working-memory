@@ -220,8 +220,9 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
     const baseUrl = cfg.get<string>('localModel.baseUrl', 'http://localhost:11434');
     const model = cfg.get<string>('localModel.model', 'qwen3:14b');
     const maxIterations = cfg.get<number>('localModel.maxIterations', 8);
+    const disableThinking = cfg.get<boolean>('localModel.disableThinking', true);
 
-    const llama = new LlamaClient({ baseUrl, model });
+    const llama = new LlamaClient({ baseUrl, model, disableThinking });
 
     // Derive the local model's tool catalog from the control-plane's canonical
     // registry (single source of truth). Resolved BEFORE the first model call;

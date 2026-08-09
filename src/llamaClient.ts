@@ -93,6 +93,12 @@ export interface LlamaClientOptions {
   fetchImpl?: FetchLike;
   /** Per-request timeout in ms (default 120s — local models can be slow). */
   timeoutMs?: number;
+  /**
+   * Send Ollama's `think: false` extension to disable a reasoning model's
+   * hidden `<think>` tokens (default `true`). Turn OFF for non-Ollama backends
+   * that may reject the unknown `think` field — then it's omitted entirely.
+   */
+  disableThinking?: boolean;
 }
 
 /**
@@ -105,6 +111,7 @@ export class LlamaClient {
   private readonly temperature: number;
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number;
+  private readonly disableThinking: boolean;
 
   constructor(options: LlamaClientOptions) {
     // Trim a trailing slash so `${baseUrl}/api/chat` never doubles up.
@@ -113,6 +120,7 @@ export class LlamaClient {
     this.temperature = options.temperature ?? 0;
     this.fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
     this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.disableThinking = options.disableThinking ?? true;
   }
 
   /**
@@ -131,8 +139,9 @@ export class LlamaClient {
       tools,
       stream: false,
       // qwen3 is a reasoning model; hidden <think> tokens add ~250 tokens/~8s
-      // per call for zero benefit on tool-selection. Disable them.
-      think: false,
+      // per call for zero benefit on tool-selection. Disable them via Ollama's
+      // `think` extension — omitted entirely for non-Ollama backends.
+      ...(this.disableThinking ? { think: false } : {}),
       options: { temperature: this.temperature },
     });
     return parseChatResponse(raw);
@@ -156,8 +165,9 @@ export class LlamaClient {
       format: buildToolEnvelopeSchema(tools),
       stream: false,
       // qwen3 is a reasoning model; hidden <think> tokens add ~250 tokens/~8s
-      // per call for zero benefit on tool-selection. Disable them.
-      think: false,
+      // per call for zero benefit on tool-selection. Disable them via Ollama's
+      // `think` extension — omitted entirely for non-Ollama backends.
+      ...(this.disableThinking ? { think: false } : {}),
       options: { temperature: this.temperature },
     });
     return parseEnvelopeResponse(raw);
