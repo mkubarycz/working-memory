@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.14.2",
+  "version": "0.14.3",
   "publisher": "kubarycz",
   "private": true,
   "repository": {
@@ -60,6 +60,28 @@
           "minimum": 1,
           "maximum": 20,
           "markdownDescription": "How many `Queued` nanites the dispatcher runs at once. Start at **1**; raise to run more background nanites in parallel (each is a live model call, so higher values cost more)."
+        },
+        "workingMemory.localModel.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "markdownDescription": "Base URL of the local Ollama/Llama server that powers the right-rail command widget. The widget POSTs to `${baseUrl}/api/chat` with constrained decoding (a JSON-schema `format` grammar that forces schema-valid tool-call args)."
+        },
+        "workingMemory.localModel.model": {
+          "type": "string",
+          "default": "qwen3:14b",
+          "markdownDescription": "Model tag the command widget asks the local server to run. Must be a tool-capable model. Default **`qwen3:14b`**; **`qwen2.5:14b`** is a known-good fallback."
+        },
+        "workingMemory.localModel.maxIterations": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 50,
+          "markdownDescription": "Maximum tool-calling turns the command widget's agentic loop takes before it gives up (the classic small-model \"never stops\" guard)."
+        },
+        "workingMemory.localModel.disableThinking": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Send `think: false` on command-widget chat requests to disable a reasoning model's hidden `<think>` tokens. This is an **Ollama-specific** extension — leave it **on** for the default Ollama endpoint, but turn it **off** if `#workingMemory.localModel.baseUrl#` points at a non-Ollama server that may reject the unknown `think` field."
         }
       }
     },
@@ -83,6 +105,11 @@
         {
           "id": "workingMemory.workstreams",
           "name": "Workstreams",
+          "type": "webview"
+        },
+        {
+          "id": "workingMemory.commandWidget",
+          "name": "Working Memory Command",
           "type": "webview"
         }
       ]

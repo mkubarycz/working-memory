@@ -113,6 +113,69 @@ describe('ControlPlaneClient write methods', () => {
     }
   });
 
+  it('two-phase CommandJournal: create (running) → update (succeeded) via CAS', async () => {
+    server = await startServer({ port: 0 });
+    const mcpUrl = `${server.url}/mcp`;
+    const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
+    try {
+      // Phase 1: request-only `running` record, created on submit.
+      const created = await client.commandJournalCreate({
+        workstream: 'ws-scope',
+        status: 'running',
+        request: { command: 'do the thing', ts: 100 },
+        response: { brief: '', toolCalls: [], corrections: [], stopReason: 'running' },
+      });
+      expect(created.available).toBe(true);
+      expect(created.document?.spec.status).toBe('running');
+      const id = created.document!.metadata.id;
+      const version = created.document!.metadata.resourceVersion;
+      expect(version).toBe(1);
+
+      // Phase 2: overwrite response + status using the version from the create
+      // (no extra read). A successful CAS bumps the version to 2.
+      const finalized = await client.commandJournalUpdate(
+        id,
+        {
+          workstream: 'ws-scope',
+          status: 'succeeded',
+          request: { command: 'do the thing', ts: 100 },
+          response: { brief: 'all done', toolCalls: [], corrections: [], stopReason: 'final' },
+        },
+        version,
+      );
+      expect(finalized.available).toBe(true);
+      expect(finalized.document?.metadata.resourceVersion).toBe(2);
+      expect(finalized.document?.spec.status).toBe('succeeded');
+      expect((finalized.document?.spec.response as { brief: string }).brief).toBe('all done');
+    } finally {
+      await client.dispose();
+    }
+  });
+
+  it('commandJournalUpdate reads the current version when none is supplied', async () => {
+    server = await startServer({ port: 0 });
+    const mcpUrl = `${server.url}/mcp`;
+    const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
+    try {
+      const created = await client.commandJournalCreate({
+        workstream: 'ws-scope',
+        status: 'running',
+        request: { command: 'cmd', ts: 1 },
+        response: { brief: '', toolCalls: [], corrections: [], stopReason: 'running' },
+      });
+      const id = created.document!.metadata.id;
+      // No expectedResourceVersion → the client reads the doc for its version.
+      const finalized = await client.commandJournalUpdate(id, {
+        status: 'failed',
+        response: { brief: 'nope', toolCalls: [], corrections: [], stopReason: 'error' },
+      });
+      expect(finalized.available).toBe(true);
+      expect(finalized.document?.spec.status).toBe('failed');
+    } finally {
+      await client.dispose();
+    }
+  });
+
   it('attaches then detaches a workstream via the topic read→update path', async () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;

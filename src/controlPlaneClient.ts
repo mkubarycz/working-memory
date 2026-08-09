@@ -33,6 +33,12 @@ import {
   parsePortInfo,
   resolveControlPlaneHome,
 } from './controlPlaneShared';
+import {
+  COMMAND_JOURNAL_KIND,
+  filterAndSortJournals,
+  type CommandJournalDoc,
+  type CommandJournalSpec,
+} from './commandJournal';
 
 /** Client identity advertised to the control-plane during the MCP handshake. */
 const CLIENT_NAME = 'working-memory-extension';
@@ -382,6 +388,27 @@ export interface AlertUpdateInput {
 }
 
 /**
+ * Fields for `ws-alert-create`. Alerts have NO slug — the control-plane returns
+ * the created alert (whose `id` is the handle for later update/delete). Only
+ * `description` is required by the kind; the rest default server-side.
+ */
+export interface AlertCreateInput {
+  description: string;
+  title?: string;
+  recommended_action?: string;
+  status?: 'alert' | 'informational' | 'closed';
+  dedupe_key?: string | null;
+  created_by?: string;
+  topics?: string[];
+}
+
+/** Fields for `ws-alert-delete` (identified by `id`; `restore` undeletes). */
+export interface AlertDeleteInput {
+  id: string;
+  restore?: boolean;
+}
+
+/**
  * The Nanite Template shape returned by the control-plane `ws-nanitetemplate-*`
  * domain API. Kept structurally identical to
  * `control-plane/src/kinds/naniteTemplate/naniteTemplate.ts::INaniteTemplate`.
@@ -599,6 +626,35 @@ export interface ControlPlaneClientOptions {
    * module VS Code-free / unit-testable).
    */
   onError?: (err: unknown) => void;
+}
+
+/**
+ * One canonical tool as advertised by the control-plane's MCP `tools/list`. The
+ * command widget derives its LOCAL tool catalog from these so the control-plane
+ * kind files are the single source of truth (WM 14.2.1
+ * "derive-local-tools-from-canonical-registry"). `inputSchema` is already JSON
+ * Schema (the SDK converts the kind's zod shape), so it maps almost directly
+ * into a local `LlamaToolDef.function.parameters`.
+ */
+export interface CanonicalToolDef {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+/**
+ * Structured outcome of the generic {@link ControlPlaneClient.callTool} used by
+ * the command widget's generic dispatch. Unlike the typed `ws-*` domain methods
+ * (which throw), this mirrors the read-result pattern: `ok:false` for a dead
+ * daemon OR a tool-level rejection (`isError`), `ok:true` with the parsed JSON
+ * payload otherwise.
+ */
+export interface ToolCallOutcome {
+  ok: boolean;
+  /** Parsed JSON payload from the tool's text content on success. */
+  result?: unknown;
+  /** Error message when the daemon is unreachable or the tool rejected the call. */
+  error?: string;
 }
 
 /** MCP text content shape (a subset of the SDK's `CallToolResult.content`). */
@@ -858,6 +914,164 @@ export class ControlPlaneClient {
       this.resetConnection();
       return { available: false, document: null, error: messageOf(err) };
     }
+  }
+
+  // ----- Canonical tool catalog (command-widget single-source-of-truth) -----
+  //
+  // The command widget's local model is driven by the SAME tool registry an
+  // agent sees. These thin wrappers expose the MCP `tools/list` and generic
+  // `tools/call` so the widget can derive + dispatch its catalog at runtime
+  // (WM 14.2.1 "derive-local-tools-from-canonical-registry") instead of a
+  // hand-written table. Persistence still flows through the control-plane only.
+
+  /**
+   * Fetch the control-plane's canonical tool catalog via MCP `tools/list`.
+   * Throws a {@link ControlPlaneClientError} when the daemon is unreachable or
+   * the request fails (also resetting the connection so the next call
+   * reconnects), mirroring the typed domain methods.
+   */
+  async listTools(): Promise<CanonicalToolDef[]> {
+    const client = await this.ensureConnected();
+    if (!client) {
+      throw new ControlPlaneClientError('Control plane not running');
+    }
+    let res: unknown;
+    try {
+      res = await client.listTools();
+    } catch (err) {
+      this.resetConnection();
+      throw new ControlPlaneClientError(messageOf(err));
+    }
+    const tools = (res as { tools?: unknown }).tools;
+    if (!Array.isArray(tools)) {
+      return [];
+    }
+    return tools
+      .map((t) => {
+        const tool = t as { name?: unknown; description?: unknown; inputSchema?: unknown };
+        return {
+          name: typeof tool.name === 'string' ? tool.name : '',
+          description: typeof tool.description === 'string' ? tool.description : undefined,
+          inputSchema:
+            tool.inputSchema && typeof tool.inputSchema === 'object'
+              ? (tool.inputSchema as Record<string, unknown>)
+              : undefined,
+        };
+      })
+      .filter((t) => t.name.length > 0);
+  }
+
+  /**
+   * Generic `tools/call` used by the command widget's generic dispatch: invoke
+   * any canonical `ws-*`/`wm-*` tool by name. Never throws — a dead daemon or an
+   * `isError` result comes back as `{ ok:false, error }`; a success parses the
+   * tool's single text content block as JSON into `result`.
+   */
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolCallOutcome> {
+    const client = await this.ensureConnected();
+    if (!client) {
+      return { ok: false, error: 'Control plane not running' };
+    }
+    let result: unknown;
+    try {
+      result = await client.callTool({ name, arguments: args });
+    } catch (err) {
+      this.resetConnection();
+      return { ok: false, error: messageOf(err) };
+    }
+    if ((result as { isError?: unknown }).isError === true) {
+      return { ok: false, error: errorTextOf(result) };
+    }
+    const parsed = parseToolText(result);
+    return { ok: true, result: parsed ?? result };
+  }
+
+  // ----- CommandJournal (per-workstream command-widget chat) ----------------
+  //
+  // Thin typed wrappers over the GENERIC `wm-document-*` surface — the POC only
+  // needs create + read-by-kind, so no bespoke `ws-commandjournal-*` tools are
+  // added. Persistence goes through the control-plane client ONLY (guardrail).
+
+  /**
+   * Persist one command-widget request/response cycle as a `CommandJournal`
+   * document (via `wm-document-create`). Returns the write result; on success
+   * the `document` envelope carries BOTH `metadata.id` and
+   * `metadata.resourceVersion`, so the caller can drive the two-phase update
+   * without an extra read. The caller decides how to surface a failure
+   * (journaling is best-effort).
+   */
+  async commandJournalCreate(spec: CommandJournalSpec): Promise<WriteDocumentResult> {
+    return this.createDocument({
+      kind: COMMAND_JOURNAL_KIND,
+      spec: spec as unknown as Record<string, unknown>,
+    });
+  }
+
+  /**
+   * Update a `CommandJournal` document (two-phase write, phase 2) via the
+   * generic `wm-document-update` compare-and-swap. `spec` is a PARTIAL patch
+   * shallow-merged onto the current spec server-side, so passing `{ status,
+   * response }` overwrites those top-level keys while `workstream`/`request`
+   * carry through.
+   *
+   * The CAS needs an `expectedResourceVersion`: pass the version the create
+   * returned to skip a read. On a version conflict (a concurrent write bumped
+   * the row) this does ONE re-read + retry with the fresh version; any other
+   * rejection is returned as-is. Journaling is best-effort, so the caller logs
+   * and moves on rather than throwing.
+   */
+  async commandJournalUpdate(
+    id: string,
+    spec: Partial<CommandJournalSpec>,
+    expectedResourceVersion?: number,
+  ): Promise<WriteDocumentResult> {
+    const patch = spec as unknown as Record<string, unknown>;
+    // Resolve the version to CAS against: the caller's (from create) or a read.
+    let version = expectedResourceVersion;
+    if (version === undefined) {
+      const current = await this.getDocument({ id });
+      if (!current.available) {
+        return { available: false, document: null, error: current.error };
+      }
+      if (!current.document) {
+        return { available: true, document: null, error: `CommandJournal ${id} not found` };
+      }
+      version = current.document.metadata.resourceVersion;
+    }
+
+    const first = await this.updateDocument({ id, expectedResourceVersion: version, spec: patch });
+    // Only a version conflict is worth retrying (a concurrent bump); every other
+    // rejection — not-found, validation — would just fail again.
+    const isConflict =
+      first.available && !first.document && /conflict/i.test(first.error ?? '');
+    if (!isConflict) {
+      return first;
+    }
+    const reread = await this.getDocument({ id });
+    if (!reread.available || !reread.document) {
+      return first;
+    }
+    return this.updateDocument({
+      id,
+      expectedResourceVersion: reread.document.metadata.resourceVersion,
+      spec: patch,
+    });
+  }
+
+  /**
+   * Read this scope's command-widget chat: list `CommandJournal` docs, filter to
+   * `workstream`, and return them OLDEST→NEWEST (replay order). Returns `[]` when
+   * the daemon is down or the read fails (journaling/replay is non-critical).
+   */
+  async commandJournalReadByWorkstream(workstream: string): Promise<CommandJournalDoc[]> {
+    const result = await this.listDocuments(COMMAND_JOURNAL_KIND);
+    if (!result.available) {
+      return [];
+    }
+    return filterAndSortJournals(result.documents, workstream);
   }
 
   // ----- Workstream domain API (`ws-*`) -------------------------------------
@@ -1364,6 +1578,52 @@ export class ControlPlaneClient {
       args.topics = input.topics;
     }
     return this.parseAlert(await this.callDomainTool('ws-alert-update', args));
+  }
+
+  /**
+   * Create an alert via `ws-alert-create` (WM 14.2.1 "poc-command-widget" — the
+   * right-rail agentic loop needs to raise alerts, and the read-only alert
+   * wrapper predates that). Only `description` is required; the rest default
+   * server-side. Returns the created alert (its `id` is the update/delete handle).
+   */
+  async alertCreate(input: AlertCreateInput): Promise<Alert> {
+    const args: Record<string, unknown> = { description: input.description };
+    if (input.title !== undefined) {
+      args.title = input.title;
+    }
+    if (input.recommended_action !== undefined) {
+      args.recommended_action = input.recommended_action;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    if (input.dedupe_key !== undefined) {
+      args.dedupe_key = input.dedupe_key;
+    }
+    if (input.created_by !== undefined) {
+      args.created_by = input.created_by;
+    }
+    if (input.topics !== undefined) {
+      args.topics = input.topics;
+    }
+    return this.parseAlert(await this.callDomainTool('ws-alert-create', args));
+  }
+
+  /**
+   * Soft-delete (or, with `restore: true`, undelete) an alert via
+   * `ws-alert-delete` (identified by `id`). Returns `{ ok, id }`.
+   */
+  async alertDelete(input: AlertDeleteInput): Promise<{ ok: boolean; id: string }> {
+    const args: Record<string, unknown> = { id: input.id };
+    if (input.restore !== undefined) {
+      args.restore = input.restore;
+    }
+    const result = await this.callDomainTool('ws-alert-delete', args);
+    const parsed = parseToolText(result) as { ok?: unknown; id?: unknown } | null;
+    return {
+      ok: parsed?.ok === true,
+      id: typeof parsed?.id === 'string' ? parsed.id : input.id,
+    };
   }
 
   // ----- Nanite Template domain API (`ws-nanitetemplate-*`) -----------------

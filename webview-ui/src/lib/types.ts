@@ -206,7 +206,27 @@ export type ExtToWebview =
   | { type: 'connecting' }
   // A newer server version exists but the user has unsaved edits — surface a
   // "content changed — reload" affordance instead of overwriting (Bug A).
-  | { type: 'staleReload' };
+  | { type: 'staleReload' }
+  // ---- Right-rail command widget (WM 14.2.1) --------------------------------
+  // The sticky-context slug (currently/last-selected WM doc), pushed so the
+  // command box can show + default its scope.
+  | { type: 'context'; slug: string | null; kind: string | null }
+  // The agentic tool-calling loop started running for the submitted command.
+  // `scope` is the run's scope key — the webview drops the message if the user
+  // has since switched to a different scope (mid-run scope-display guard).
+  | { type: 'briefRunning'; scope: string }
+  // The loop finished: a markdown brief of what was done + the tool-call trail.
+  | { type: 'brief'; markdown: string; scope: string }
+  // The command could not run (control plane down, transport error, …).
+  | { type: 'briefError'; message: string; scope: string }
+  // Replay a scope's persisted CommandJournal chat: replaces the in-memory
+  // transcript with these turns (oldest→newest) on load / scope-change. Each
+  // turn carries the CommandJournal doc `id` so its bubbles can open the record.
+  | { type: 'hydrate'; turns: { id: string; command: string; brief: string }[] }
+  // Tag the just-completed live turn with its freshly-created CommandJournal doc
+  // id, so it's right-click-openable without waiting for a reload/hydrate.
+  // `scope` guards against tagging a turn that's no longer displayed.
+  | { type: 'attachJournalId'; id: string; scope: string };
 
 /** A topic edit patch (title / status / body). */
 export interface TopicPatch {
@@ -234,4 +254,11 @@ export type WebviewToExt =
   | { type: 'editState'; hasPendingEdits: boolean }
   // The user clicked the reload banner: discard local edits + take the server
   // version.
-  | { type: 'discardAndReload' };
+  | { type: 'discardAndReload' }
+  // ---- Right-rail command widget (WM 14.2.1) --------------------------------
+  // Run a natural-language command through the local-model tool-calling loop,
+  // scoped to the sticky-context slug (or null when nothing is selected).
+  | { type: 'submitCommand'; command: string; contextSlug: string | null }
+  // Open a transcript entry's underlying CommandJournal record in working-memory's
+  // generic document view (right-click → "Open CommandJournal record").
+  | { type: 'openJournal'; id: string };
