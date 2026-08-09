@@ -121,6 +121,14 @@ export interface ToolLoopInput {
   chat: ChatFn;
   executor: ToolExecutor;
   command: string;
+  /**
+   * The PROJECTED tool catalog derived at runtime from the control-plane
+   * (WM 14.2.1 "derive-local-tools-from-canonical-registry"). Passed to the
+   * `chat` seam (drives the constrained envelope grammar), the system prompt,
+   * and the self-correction hints. Defaults to `[]` so the pure loop stays
+   * testable with a scripted model that ignores the catalog.
+   */
+  tools?: LlamaToolDef[];
   /** Sticky context: the currently/last-selected WM doc slug (or null). */
   contextSlug: string | null;
   /** Optional context kind (`topic` / `workstream`) for a richer prompt. */
@@ -189,77 +197,20 @@ export interface ToolLoopResult {
 const DEFAULT_MAX_ITERATIONS = 8;
 
 /**
- * The Working Memory tool surface exposed to the local model. Kept deliberately
- * SMALL (11 tools) and flat — small local models degrade fast as the schema
- * grows. Names use underscores (broadest cross-server compatibility) and map to
- * `ws-*` control-plane operations in {@link createControlPlaneToolExecutor}.
- */
-export const WM_TOOLS: LlamaToolDef[] = [
-  fn('topic_read', 'Read Working Memory topics. With no slug, lists topics (optionally filtered by `query` substring or `workstream` membership). Use this to find the exact slug before updating or deleting.', {
-    slug: str('Exact topic slug to fetch one topic.'),
-    query: str('Substring to search topic titles/bodies.'),
-    workstream: str('Only topics that are members of this workstream slug.'),
-  }),
-  fn('topic_create', 'Create a new topic. Returns the created topic (with its slug).', {
-    title: str('Topic title (required).'),
-    slug: str('Required unique slug: lowercase words separated by dashes, 3–5 words, e.g. "product-roadmap". Derive it from the title.'),
-    body: str('Markdown body describing the topic.'),
-    topicType: str('Topic type slug, e.g. feature | bug | task | user-story.'),
-    workstreams: arr('Workstream slugs this topic belongs to.'),
-  }, ['title', 'slug']),
-  fn('topic_update', 'Update an existing topic identified by slug. Only provided fields change.', {
-    slug: str('Slug of the topic to update (required).'),
-    title: str('New title.'),
-    body: str('New markdown body.'),
-    status: str('New status: open | closed.'),
-  }, ['slug']),
-  fn('topic_delete', 'Soft-delete a topic by slug (recoverable). Destructive — only when clearly asked.', {
-    slug: str('Slug of the topic to delete (required).'),
-  }, ['slug']),
-  fn('workstream_read', 'Read workstreams. With no slug, lists all live workstreams (optionally filtered by `query`).', {
-    slug: str('Exact workstream slug to fetch one.'),
-    query: str('Substring to search workstream titles.'),
-  }),
-  fn('workstream_create', 'Create a new workstream. Returns the created workstream.', {
-    title: str('Workstream title (required).'),
-    slug: str('Required unique slug: lowercase words separated by dashes, 3–5 words, e.g. "product-roadmap". Derive it from the title.'),
-    status: str('Lifecycle status: queue | progress | backlog | closed.'),
-  }, ['title', 'slug']),
-  fn('workstream_update', 'Update a workstream identified by slug. Only provided fields change.', {
-    slug: str('Slug of the workstream to update (required).'),
-    title: str('New title.'),
-    status: str('New lifecycle status: queue | progress | backlog | closed.'),
-  }, ['slug']),
-  fn('workstream_delete', 'Soft-delete a workstream by slug (recoverable). Destructive — only when clearly asked.', {
-    slug: str('Slug of the workstream to delete (required).'),
-  }, ['slug']),
-  fn('alert_read', 'Read alerts (needs-attention items). With no args, lists all open alerts.', {
-    query: str('Substring to search alert titles/descriptions.'),
-  }),
-  fn('alert_create', 'Raise an alert for a risk, blocker, or follow-up. Returns the created alert (with its id).', {
-    title: str('Short alert title.'),
-    description: str('What the alert is about (required).'),
-    recommended_action: str('Suggested next step.'),
-    topics: arr('Topic slugs this alert relates to.'),
-  }, ['description']),
-  fn('alert_update', 'Update an alert by id (e.g. close it). Only provided fields change.', {
-    id: str('Alert id (required).'),
-    status: str('New status: alert | informational | closed.'),
-  }, ['id']),
-];
-
-/**
  * Build the system prompt: describes the assistant's job, the sticky context
  * scope, the available tools, and the stop condition. Constrained decoding
  * drops the native `tools` array, so the tool catalog is carried here in the
  * prompt (the JSON envelope grammar enforces the shape; the prompt supplies the
  * meaning). Threading the context slug here (and into the user turn) is what
- * makes commands default to the selected WM doc.
+ * makes commands default to the selected WM doc. The `tools` are the PROJECTED
+ * catalog derived from the control-plane at runtime (WM 14.2.1
+ * "derive-local-tools-from-canonical-registry"); it defaults to `[]` so the
+ * pure loop stays testable without a catalog.
  */
 export function buildSystemPrompt(
   contextSlug: string | null,
   contextKind?: string | null,
-  tools: LlamaToolDef[] = WM_TOOLS,
+  tools: LlamaToolDef[] = [],
 ): string {
   const scope = contextSlug
     ? `The user is currently focused on the ${contextKind ?? 'document'} "${contextSlug}". ` +
@@ -311,6 +262,7 @@ export async function runToolLoop(input: ToolLoopInput): Promise<ToolLoopResult>
   const maxIterations = input.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   const trace = input.trace ?? (() => {});
   const now = input.now ?? Date.now;
+  const tools = input.tools ?? [];
   const toolCalls: ToolCallRecord[] = [];
   const corrections: Correction[] = [];
   // The last unrecovered failure per tool → the same object reference stored in
@@ -319,7 +271,7 @@ export async function runToolLoop(input: ToolLoopInput): Promise<ToolLoopResult>
   const tokens: TokenUsage = { promptTokens: 0, evalTokens: 0, calls: 0 };
   const timings: ToolLoopTimings = { modelMs: 0, modelCalls: 0, perCallMs: [] };
   const messages: LlamaMessage[] = [
-    { role: 'system', content: buildSystemPrompt(input.contextSlug, input.contextKind) },
+    { role: 'system', content: buildSystemPrompt(input.contextSlug, input.contextKind, tools) },
   ];
   // Context carryover (baseline A): replay this scope's prior turns as chat
   // history so the model sees the ongoing conversation. Oldest→newest.
@@ -339,7 +291,7 @@ export async function runToolLoop(input: ToolLoopInput): Promise<ToolLoopResult>
     let message: LlamaMessage;
     try {
       const callStart = now();
-      const res = await input.chat(messages, WM_TOOLS);
+      const res = await input.chat(messages, tools);
       const perCallMs = now() - callStart;
       timings.modelMs += perCallMs;
       timings.modelCalls += 1;
@@ -442,7 +394,7 @@ export async function runToolLoop(input: ToolLoopInput): Promise<ToolLoopResult>
         // Self-correction: feed back the tool's schema + a corrective hint so
         // the model can retry a CORRECTED call (rather than repeat the broken
         // one), and journal the failure so we can see where it got stuck.
-        const { hint, schema } = buildCorrectiveHint(name, result.error ?? 'tool failed');
+        const { hint, schema } = buildCorrectiveHint(name, result.error ?? 'tool failed', tools);
         const correction: Correction = {
           tool: name,
           failedArgs: args,
@@ -538,7 +490,7 @@ function dedupedToolContent(prior: ToolResult): string {
 
 /**
  * Build the self-correction hint + schema for a FAILED tool call: look up the
- * tool's parameter schema from {@link WM_TOOLS} and pair it with a terse
+ * tool's parameter schema from the PROJECTED catalog and pair it with a terse
  * corrective instruction, so the model can retry a CORRECTED call within the
  * run instead of blindly repeating the broken one. Returns the human hint plus
  * the raw JSON-schema (fed back verbatim to the model).
@@ -546,7 +498,7 @@ function dedupedToolContent(prior: ToolResult): string {
 export function buildCorrectiveHint(
   name: string,
   error: string,
-  tools: LlamaToolDef[] = WM_TOOLS,
+  tools: LlamaToolDef[] = [],
 ): { hint: string; schema?: Record<string, unknown> } {
   const tool = tools.find((t) => t.function.name === name);
   const schema = tool?.function.parameters as
@@ -619,7 +571,11 @@ function stableStringify(value: unknown): string {
 /**
  * Shrink a tool payload before feeding it back to a small local model: keep the
  * fields that matter for chaining (slug, id, title, status) and drop verbose
- * bodies so the context window doesn't blow up mid-loop.
+ * bodies so the context window doesn't blow up mid-loop. Now that dispatch is
+ * generic (WM 14.2.1 "derive-local-tools-from-canonical-registry"), a read comes
+ * back as a list envelope like `{ count, topics: [ … ] }` rather than a bare
+ * array — so when no known key matches we RECURSE into the object's values,
+ * trimming any nested arrays instead of returning the whole (possibly huge) blob.
  */
 function trimForModel(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -634,8 +590,16 @@ function trimForModel(value: unknown): unknown {
         out[k] = obj[k];
       }
     }
-    // If none of the known keys matched, fall back to the raw object.
-    return Object.keys(out).length > 0 ? out : obj;
+    if (Object.keys(out).length > 0) {
+      return out;
+    }
+    // No known keys (e.g. a `{ count, topics: [...] }` list envelope): recurse
+    // into each value so nested arrays get sliced/trimmed too.
+    const rec: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      rec[k] = trimForModel(v);
+    }
+    return rec;
   }
   return value;
 }
@@ -645,35 +609,4 @@ function buildUserTurn(command: string, contextSlug: string | null): string {
     return `${command}\n\n[context: ${contextSlug}]`;
   }
   return command;
-}
-
-// ---- tiny JSON-schema helpers (keep the tool table readable) ---------------
-
-function fn(
-  name: string,
-  description: string,
-  props: Record<string, unknown>,
-  required: string[] = [],
-): LlamaToolDef {
-  return {
-    type: 'function',
-    function: {
-      name,
-      description,
-      parameters: {
-        type: 'object',
-        properties: props,
-        required,
-        additionalProperties: false,
-      },
-    },
-  };
-}
-
-function str(description: string): Record<string, unknown> {
-  return { type: 'string', description };
-}
-
-function arr(description: string): Record<string, unknown> {
-  return { type: 'array', items: { type: 'string' }, description };
 }

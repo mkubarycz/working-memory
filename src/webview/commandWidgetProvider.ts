@@ -4,6 +4,7 @@ import type { ControlPlaneClient } from '../controlPlaneClient';
 import { LlamaClient } from '../llamaClient';
 import { runToolLoop } from '../wmToolLoop';
 import { buildBrief, createControlPlaneToolExecutor } from '../wmToolExecutor';
+import { projectCatalog, type ProjectedCatalog } from '../wmToolProjection';
 import { DocumentEditorProvider } from './documentEditorProvider';
 import {
   buildInitialJournalSpec,
@@ -55,6 +56,13 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
   private context: WidgetContext | null = null;
   /** Per-turn trace log for the tool-calling loop (parallel-vs-repeat diagnostics). */
   private readonly output: vscode.OutputChannel;
+  /**
+   * The projected tool catalog derived from the control-plane's canonical MCP
+   * registry, fetched once and cached for the session (WM 14.2.1
+   * "derive-local-tools-from-canonical-registry"). Null until the first
+   * successful fetch; a fetch failure leaves it null so the next command retries.
+   */
+  private catalog: ProjectedCatalog | null = null;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -214,7 +222,35 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
     const maxIterations = cfg.get<number>('localModel.maxIterations', 8);
 
     const llama = new LlamaClient({ baseUrl, model });
-    const executor = createControlPlaneToolExecutor(client);
+
+    // Derive the local model's tool catalog from the control-plane's canonical
+    // registry (single source of truth). Resolved BEFORE the first model call;
+    // a failure (daemon down / fetch error) fails the run with a friendly brief
+    // rather than throwing.
+    const catalog = await this.ensureCatalog(client);
+    if (!catalog) {
+      const markdown =
+        '⚠️ Could not load the Working Memory tool catalog from the control-plane ' +
+        '(is the daemon running?). No command was executed.';
+      this.view?.webview.postMessage({ type: 'brief', markdown, scope: scopeKey });
+      await this.finalizeJournal(
+        journal,
+        buildJournalSpec({
+          workstream: scopeKey,
+          command: trimmed,
+          contextSlug,
+          contextKind,
+          brief: markdown,
+          toolCalls: [],
+          corrections: [],
+          stopReason: 'error',
+          status: 'failed',
+        }),
+        client,
+      );
+      return;
+    }
+    const executor = createControlPlaneToolExecutor(client, catalog.localToCanonical);
 
     this.output.appendLine(
       `\n[${new Date().toISOString()}] command: ${JSON.stringify(trimmed)} ` +
@@ -248,6 +284,7 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
         command: trimmed,
         contextSlug,
         contextKind,
+        tools: catalog.tools,
         history,
         maxIterations: Math.max(1, Math.floor(maxIterations)),
         trace: (event) => {
@@ -336,6 +373,39 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
         }),
         client,
       );
+    }
+  }
+
+  /**
+   * Fetch + project the control-plane's canonical tool catalog once, caching it
+   * for the session (WM 14.2.1 "derive-local-tools-from-canonical-registry").
+   * Returns the cached catalog on subsequent calls. Returns `null` (logged to
+   * the "Working Memory Command" channel) when the daemon is down / the fetch
+   * fails / the projection is empty, so the caller can fail the run gracefully.
+   */
+  private async ensureCatalog(
+    client: ControlPlaneClient,
+  ): Promise<ProjectedCatalog | null> {
+    if (this.catalog) {
+      return this.catalog;
+    }
+    try {
+      const canonical = await client.listTools();
+      const projected = projectCatalog(canonical);
+      if (projected.tools.length === 0) {
+        this.output.appendLine('  tool catalog fetch returned no usable tools');
+        return null;
+      }
+      this.catalog = projected;
+      this.output.appendLine(
+        `  tool catalog: ${projected.tools.length} tool(s) derived from the control-plane`,
+      );
+      return projected;
+    } catch (err) {
+      this.output.appendLine(
+        `  tool catalog fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
     }
   }
 

@@ -435,6 +435,20 @@ test('(j) a tool that fails then succeeds records a recovered Correction and fee
     executor,
     command: 'create a topic',
     contextSlug: null,
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'topic_create',
+          description: 'Create a topic.',
+          parameters: {
+            type: 'object',
+            properties: { title: { type: 'string' }, slug: { type: 'string' } },
+            required: ['title'],
+          },
+        },
+      },
+    ],
   });
 
   expect(result.stopReason).toBe('final');

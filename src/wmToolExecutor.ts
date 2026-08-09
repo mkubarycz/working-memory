@@ -15,186 +15,58 @@
 import type { ControlPlaneClient } from './controlPlaneClient';
 import type { ToolCallRecord, ToolExecutor, ToolResult } from './wmToolLoop';
 
-/** Coerce a tool arg to a trimmed string, or undefined when absent/blank. */
-function s(args: Record<string, unknown>, key: string): string | undefined {
-  const v = args[key];
-  if (typeof v !== 'string') {
-    return undefined;
-  }
-  const t = v.trim();
-  return t.length > 0 ? t : undefined;
-}
-
-/** Coerce a tool arg to a string array (dropping non-strings), or undefined. */
-function sa(args: Record<string, unknown>, key: string): string[] | undefined {
-  const v = args[key];
-  if (!Array.isArray(v)) {
-    return undefined;
-  }
-  const out = v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
-  return out.length > 0 ? out : undefined;
-}
-
-function required(value: string | undefined, name: string): string {
-  if (value === undefined) {
-    throw new Error(`missing required argument "${name}"`);
-  }
-  return value;
-}
-
 /**
- * Normalize an arbitrary string into a control-plane-valid slug: lowercase,
- * ASCII words separated by single dashes, must start with a letter (the kind's
- * `validateMetadata` regex is `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`). Returns `''`
- * when nothing usable remains (e.g. a title of only punctuation).
+ * Drop nullish / blank-string args before dispatch so the control-plane sees a
+ * clean payload (a blank `slug` shouldn't reach a kind's validation as `''`).
  */
-function normalizeSlug(input: string): string {
-  const slug = input
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/-{2,}/g, '-')
-    .replace(/^[^a-z]+/, ''); // must start with a letter
-  return slug;
-}
-
-/**
- * Resolve the slug to use for a create: prefer a (normalized) model-provided
- * slug; else derive one from `title`. This is the host-side belt-and-suspenders
- * behind constrained decoding — a create never hard-fails on a missing/blank
- * slug. `probe` uniquifies against existing docs (topics reject duplicate slugs;
- * a slugless workstream would be read-only). Throws only when `title` is empty.
- */
-async function resolveCreateSlug(
-  provided: string | undefined,
-  title: string,
-  fallbackPrefix: string,
-  probe: (slug: string) => Promise<boolean>,
-): Promise<string> {
-  let base = provided ? normalizeSlug(provided) : '';
-  if (base === '') {
-    base = normalizeSlug(title);
-  }
-  if (base === '') {
-    base = fallbackPrefix;
-  }
-  for (let i = 0; i < 20; i += 1) {
-    const candidate = i === 0 ? base : `${base}-${i + 1}`;
-    if (!(await probe(candidate))) {
-      return candidate;
+function cleanArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (v === undefined || v === null) {
+      continue;
     }
+    if (typeof v === 'string' && v.trim().length === 0) {
+      continue;
+    }
+    out[k] = v;
   }
-  return `${base}-${Date.now().toString(36)}`;
+  return out;
+}
+
+/** A canonical tool whose name ends in `-delete` mutates the store (soft-delete). */
+function isDestructive(canonicalName: string): boolean {
+  return /-delete$/.test(canonicalName);
 }
 
 /**
- * Build a {@link ToolExecutor} whose named tools map onto the control-plane
- * client's `ws-*` domain methods. Tool names mirror `wmToolLoop.WM_TOOLS`.
+ * Build a {@link ToolExecutor} that dispatches GENERICALLY: the model's local
+ * tool name is mapped back to its canonical `ws-*`/`wm-*` name via the
+ * projection's reverse map and invoked through the control-plane's generic
+ * `callTool` (WM 14.2.1 "derive-local-tools-from-canonical-registry"). No
+ * per-tool `switch` — adding a control-plane tool exposes it automatically.
+ * HARD GUARDRAIL unchanged: every write flows through the {@link
+ * ControlPlaneClient}; this module never touches SQLite.
  */
 export function createControlPlaneToolExecutor(
   client: ControlPlaneClient,
+  localToCanonical: Map<string, string>,
 ): ToolExecutor {
   return {
     async execute(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+      const canonical = localToCanonical.get(name);
+      if (!canonical) {
+        return { ok: false, error: `unknown tool "${name}"` };
+      }
       try {
-        switch (name) {
-          case 'topic_read': {
-            const topics = await client.topicRead({
-              slug: s(args, 'slug'),
-              query: s(args, 'query'),
-              workstream: s(args, 'workstream'),
-            });
-            return { ok: true, result: topics };
-          }
-          case 'topic_create': {
-            const title = required(s(args, 'title'), 'title');
-            const slug = await resolveCreateSlug(
-              s(args, 'slug'),
-              title,
-              'topic',
-              async (cand) => (await client.topicRead({ slug: cand })).length > 0,
-            );
-            const topic = await client.topicCreate({
-              title,
-              slug,
-              body: s(args, 'body'),
-              topicType: s(args, 'topicType'),
-              workstreams: sa(args, 'workstreams'),
-            });
-            return { ok: true, result: topic };
-          }
-          case 'topic_update': {
-            const topic = await client.topicUpdate({
-              slug: required(s(args, 'slug'), 'slug'),
-              title: s(args, 'title'),
-              body: s(args, 'body'),
-              status: s(args, 'status'),
-            });
-            return { ok: true, result: topic };
-          }
-          case 'topic_delete': {
-            const res = await client.topicDelete({ slug: required(s(args, 'slug'), 'slug') });
-            return { ok: res.ok, result: res, destructive: true };
-          }
-          case 'workstream_read': {
-            const rows = await client.wsRead({ slug: s(args, 'slug'), query: s(args, 'query') });
-            return { ok: true, result: rows };
-          }
-          case 'workstream_create': {
-            const title = required(s(args, 'title'), 'title');
-            const slug = await resolveCreateSlug(
-              s(args, 'slug'),
-              title,
-              'workstream',
-              async (cand) => (await client.wsRead({ slug: cand })).length > 0,
-            );
-            const ws = await client.wsCreate({
-              title,
-              slug,
-              status: s(args, 'status'),
-            });
-            return { ok: true, result: ws };
-          }
-          case 'workstream_update': {
-            const ws = await client.wsUpdate({
-              slug: required(s(args, 'slug'), 'slug'),
-              title: s(args, 'title'),
-              status: s(args, 'status'),
-            });
-            return { ok: true, result: ws };
-          }
-          case 'workstream_delete': {
-            const res = await client.wsDelete({ slug: required(s(args, 'slug'), 'slug') });
-            return { ok: res.ok, result: res, destructive: true };
-          }
-          case 'alert_read': {
-            const alerts = await client.alertRead({ query: s(args, 'query') });
-            return { ok: true, result: alerts };
-          }
-          case 'alert_create': {
-            const alert = await client.alertCreate({
-              description: required(s(args, 'description'), 'description'),
-              title: s(args, 'title'),
-              recommended_action: s(args, 'recommended_action'),
-              topics: sa(args, 'topics'),
-            });
-            return { ok: true, result: alert };
-          }
-          case 'alert_update': {
-            const status = s(args, 'status');
-            const alert = await client.alertUpdate({
-              id: required(s(args, 'id'), 'id'),
-              status:
-                status === 'alert' || status === 'informational' || status === 'closed'
-                  ? status
-                  : undefined,
-            });
-            return { ok: true, result: alert };
-          }
-          default:
-            return { ok: false, error: `unknown tool "${name}"` };
+        const outcome = await client.callTool(canonical, cleanArgs(args));
+        if (!outcome.ok) {
+          return { ok: false, error: outcome.error ?? 'tool failed' };
         }
+        return {
+          ok: true,
+          result: outcome.result,
+          destructive: isDestructive(canonical) ? true : undefined,
+        };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }

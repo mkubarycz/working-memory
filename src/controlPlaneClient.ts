@@ -628,6 +628,35 @@ export interface ControlPlaneClientOptions {
   onError?: (err: unknown) => void;
 }
 
+/**
+ * One canonical tool as advertised by the control-plane's MCP `tools/list`. The
+ * command widget derives its LOCAL tool catalog from these so the control-plane
+ * kind files are the single source of truth (WM 14.2.1
+ * "derive-local-tools-from-canonical-registry"). `inputSchema` is already JSON
+ * Schema (the SDK converts the kind's zod shape), so it maps almost directly
+ * into a local `LlamaToolDef.function.parameters`.
+ */
+export interface CanonicalToolDef {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+/**
+ * Structured outcome of the generic {@link ControlPlaneClient.callTool} used by
+ * the command widget's generic dispatch. Unlike the typed `ws-*` domain methods
+ * (which throw), this mirrors the read-result pattern: `ok:false` for a dead
+ * daemon OR a tool-level rejection (`isError`), `ok:true` with the parsed JSON
+ * payload otherwise.
+ */
+export interface ToolCallOutcome {
+  ok: boolean;
+  /** Parsed JSON payload from the tool's text content on success. */
+  result?: unknown;
+  /** Error message when the daemon is unreachable or the tool rejected the call. */
+  error?: string;
+}
+
 /** MCP text content shape (a subset of the SDK's `CallToolResult.content`). */
 interface TextContentLike {
   type: string;
@@ -885,6 +914,79 @@ export class ControlPlaneClient {
       this.resetConnection();
       return { available: false, document: null, error: messageOf(err) };
     }
+  }
+
+  // ----- Canonical tool catalog (command-widget single-source-of-truth) -----
+  //
+  // The command widget's local model is driven by the SAME tool registry an
+  // agent sees. These thin wrappers expose the MCP `tools/list` and generic
+  // `tools/call` so the widget can derive + dispatch its catalog at runtime
+  // (WM 14.2.1 "derive-local-tools-from-canonical-registry") instead of a
+  // hand-written table. Persistence still flows through the control-plane only.
+
+  /**
+   * Fetch the control-plane's canonical tool catalog via MCP `tools/list`.
+   * Throws a {@link ControlPlaneClientError} when the daemon is unreachable or
+   * the request fails (also resetting the connection so the next call
+   * reconnects), mirroring the typed domain methods.
+   */
+  async listTools(): Promise<CanonicalToolDef[]> {
+    const client = await this.ensureConnected();
+    if (!client) {
+      throw new ControlPlaneClientError('Control plane not running');
+    }
+    let res: unknown;
+    try {
+      res = await client.listTools();
+    } catch (err) {
+      this.resetConnection();
+      throw new ControlPlaneClientError(messageOf(err));
+    }
+    const tools = (res as { tools?: unknown }).tools;
+    if (!Array.isArray(tools)) {
+      return [];
+    }
+    return tools
+      .map((t) => {
+        const tool = t as { name?: unknown; description?: unknown; inputSchema?: unknown };
+        return {
+          name: typeof tool.name === 'string' ? tool.name : '',
+          description: typeof tool.description === 'string' ? tool.description : undefined,
+          inputSchema:
+            tool.inputSchema && typeof tool.inputSchema === 'object'
+              ? (tool.inputSchema as Record<string, unknown>)
+              : undefined,
+        };
+      })
+      .filter((t) => t.name.length > 0);
+  }
+
+  /**
+   * Generic `tools/call` used by the command widget's generic dispatch: invoke
+   * any canonical `ws-*`/`wm-*` tool by name. Never throws — a dead daemon or an
+   * `isError` result comes back as `{ ok:false, error }`; a success parses the
+   * tool's single text content block as JSON into `result`.
+   */
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolCallOutcome> {
+    const client = await this.ensureConnected();
+    if (!client) {
+      return { ok: false, error: 'Control plane not running' };
+    }
+    let result: unknown;
+    try {
+      result = await client.callTool({ name, arguments: args });
+    } catch (err) {
+      this.resetConnection();
+      return { ok: false, error: messageOf(err) };
+    }
+    if ((result as { isError?: unknown }).isError === true) {
+      return { ok: false, error: errorTextOf(result) };
+    }
+    const parsed = parseToolText(result);
+    return { ok: true, result: parsed ?? result };
   }
 
   // ----- CommandJournal (per-workstream command-widget chat) ----------------

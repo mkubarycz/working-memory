@@ -1,10 +1,10 @@
-import { test, expect } from 'vitest';
+import { test, expect, vi } from 'vitest';
 import {
   buildBrief,
   createControlPlaneToolExecutor,
   stripToolScaffolding,
 } from '../src/wmToolExecutor';
-import type { ControlPlaneClient } from '../src/controlPlaneClient';
+import type { ControlPlaneClient, ToolCallOutcome } from '../src/controlPlaneClient';
 import type { ToolCallRecord } from '../src/wmToolLoop';
 
 test('buildBrief flags destructive deletes and lists the tool-call trail', () => {
@@ -42,96 +42,93 @@ test('buildBrief marks a deduped call as skipped (duplicate)', () => {
   expect(brief).toContain('skipped (duplicate)');
 });
 
-test('an unknown tool name resolves to { ok: false }', async () => {
-  // 'bogus' short-circuits before touching the client, so a stub is fine.
-  const executor = createControlPlaneToolExecutor({} as unknown as ControlPlaneClient);
+// --- generic dispatch ------------------------------------------------------
+
+/** The reverse map the projection hands the executor for these tests. */
+function reverseMap(): Map<string, string> {
+  return new Map<string, string>([
+    ['topic_read', 'ws-topic-read'],
+    ['topic_create', 'ws-topic-create'],
+    ['topic_delete', 'ws-topic-delete'],
+    ['document_delete', 'wm-document-delete'],
+  ]);
+}
+
+/** A client stub whose `callTool` returns a canned outcome and records the call. */
+function stubClient(outcome: ToolCallOutcome): {
+  client: ControlPlaneClient;
+  callTool: ReturnType<typeof vi.fn>;
+} {
+  const callTool = vi.fn(async () => outcome);
+  const client = { callTool } as unknown as ControlPlaneClient;
+  return { client, callTool };
+}
+
+test('an unknown local tool name resolves to { ok: false } without calling the client', async () => {
+  const { client, callTool } = stubClient({ ok: true });
+  const executor = createControlPlaneToolExecutor(client, reverseMap());
   const res = await executor.execute('bogus', {});
   expect(res.ok).toBe(false);
   expect(res.error).toContain('unknown tool');
+  expect(callTool).not.toHaveBeenCalled();
 });
 
-// --- host-side slug fallback -----------------------------------------------
-
-/** A client stub that records the topicCreate/wsCreate input and reports no
- * existing slugs (so uniquify accepts the first candidate). */
-function createStubClient(): {
-  client: ControlPlaneClient;
-  topicCreateArgs: Array<Record<string, unknown>>;
-  wsCreateArgs: Array<Record<string, unknown>>;
-} {
-  const topicCreateArgs: Array<Record<string, unknown>> = [];
-  const wsCreateArgs: Array<Record<string, unknown>> = [];
-  const client = {
-    async topicRead() {
-      return [];
-    },
-    async wsRead() {
-      return [];
-    },
-    async topicCreate(input: Record<string, unknown>) {
-      topicCreateArgs.push(input);
-      return { id: 'id-1', slug: input.slug, title: input.title };
-    },
-    async wsCreate(input: Record<string, unknown>) {
-      wsCreateArgs.push(input);
-      return { id: 'id-2', slug: input.slug, title: input.title };
-    },
-  } as unknown as ControlPlaneClient;
-  return { client, topicCreateArgs, wsCreateArgs };
-}
-
-test('topic_create derives a slug from the title when the model omits it', async () => {
-  const { client, topicCreateArgs } = createStubClient();
-  const executor = createControlPlaneToolExecutor(client);
-  const res = await executor.execute('topic_create', { title: 'Product Roadmap' });
+test('dispatch maps the local name to the canonical name and forwards cleaned args', async () => {
+  const { client, callTool } = stubClient({ ok: true, result: { slug: 'roadmap' } });
+  const executor = createControlPlaneToolExecutor(client, reverseMap());
+  const res = await executor.execute('topic_create', {
+    title: 'Roadmap',
+    slug: '   ', // blank → dropped by cleanArgs
+    body: undefined, // nullish → dropped
+  });
   expect(res.ok).toBe(true);
-  expect(topicCreateArgs[0].slug).toBe('product-roadmap');
+  expect(res.result).toEqual({ slug: 'roadmap' });
+  expect(callTool).toHaveBeenCalledWith('ws-topic-create', { title: 'Roadmap' });
 });
 
-test('topic_create normalizes a blank slug arg by deriving from the title', async () => {
-  const { client, topicCreateArgs } = createStubClient();
-  const executor = createControlPlaneToolExecutor(client);
-  await executor.execute('topic_create', { title: 'My Cool Feature', slug: '   ' });
-  expect(topicCreateArgs[0].slug).toBe('my-cool-feature');
-});
-
-test('topic_create normalizes a malformed provided slug', async () => {
-  const { client, topicCreateArgs } = createStubClient();
-  const executor = createControlPlaneToolExecutor(client);
-  await executor.execute('topic_create', { title: 'X', slug: 'Product Roadmap!!' });
-  expect(topicCreateArgs[0].slug).toBe('product-roadmap');
-});
-
-test('workstream_create also derives a slug from the title', async () => {
-  const { client, wsCreateArgs } = createStubClient();
-  const executor = createControlPlaneToolExecutor(client);
-  await executor.execute('workstream_create', { title: 'Q3 Planning' });
-  expect(wsCreateArgs[0].slug).toBe('q3-planning');
-});
-
-test('topic_create uniquifies when the derived slug already exists', async () => {
-  const topicCreateArgs: Array<Record<string, unknown>> = [];
-  const client = {
-    async topicRead(input: { slug?: string }) {
-      // The base slug is taken; the -2 variant is free.
-      return input.slug === 'product-roadmap' ? [{ id: 'existing' }] : [];
-    },
-    async topicCreate(input: Record<string, unknown>) {
-      topicCreateArgs.push(input);
-      return { id: 'id', slug: input.slug, title: input.title };
-    },
-  } as unknown as ControlPlaneClient;
-  const executor = createControlPlaneToolExecutor(client);
-  await executor.execute('topic_create', { title: 'Product Roadmap' });
-  expect(topicCreateArgs[0].slug).toBe('product-roadmap-2');
-});
-
-test('topic_create rejects when the title is empty (no slug derivable)', async () => {
-  const { client } = createStubClient();
-  const executor = createControlPlaneToolExecutor(client);
-  const res = await executor.execute('topic_create', { body: 'orphan' });
+test('a tool-level rejection maps to { ok: false, error }', async () => {
+  const { client } = stubClient({ ok: false, error: 'slug already exists' });
+  const executor = createControlPlaneToolExecutor(client, reverseMap());
+  const res = await executor.execute('topic_create', { title: 'X', slug: 'x' });
   expect(res.ok).toBe(false);
-  expect(res.error).toContain('title');
+  expect(res.error).toBe('slug already exists');
+});
+
+test('a -delete tool is flagged destructive on success', async () => {
+  const { client, callTool } = stubClient({ ok: true, result: { ok: true } });
+  const executor = createControlPlaneToolExecutor(client, reverseMap());
+  const res = await executor.execute('topic_delete', { slug: 'foo' });
+  expect(res.ok).toBe(true);
+  expect(res.destructive).toBe(true);
+  expect(callTool).toHaveBeenCalledWith('ws-topic-delete', { slug: 'foo' });
+});
+
+test('the generic wm-document-delete is reachable and flagged destructive', async () => {
+  const { client, callTool } = stubClient({ ok: true, result: { ok: true } });
+  const executor = createControlPlaneToolExecutor(client, reverseMap());
+  const res = await executor.execute('document_delete', { id: 'doc-1' });
+  expect(res.ok).toBe(true);
+  expect(res.destructive).toBe(true);
+  expect(callTool).toHaveBeenCalledWith('wm-document-delete', { id: 'doc-1' });
+});
+
+test('a non-delete tool is NOT flagged destructive', async () => {
+  const { client } = stubClient({ ok: true, result: [] });
+  const executor = createControlPlaneToolExecutor(client, reverseMap());
+  const res = await executor.execute('topic_read', {});
+  expect(res.ok).toBe(true);
+  expect(res.destructive).toBeUndefined();
+});
+
+test('an unexpected throw from callTool is caught as { ok: false }', async () => {
+  const callTool = vi.fn(async () => {
+    throw new Error('boom');
+  });
+  const client = { callTool } as unknown as ControlPlaneClient;
+  const executor = createControlPlaneToolExecutor(client, reverseMap());
+  const res = await executor.execute('topic_read', {});
+  expect(res.ok).toBe(false);
+  expect(res.error).toBe('boom');
 });
 
 // --- brief sanitizer -------------------------------------------------------

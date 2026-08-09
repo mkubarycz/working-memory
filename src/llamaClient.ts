@@ -130,6 +130,9 @@ export class LlamaClient {
       messages,
       tools,
       stream: false,
+      // qwen3 is a reasoning model; hidden <think> tokens add ~250 tokens/~8s
+      // per call for zero benefit on tool-selection. Disable them.
+      think: false,
       options: { temperature: this.temperature },
     });
     return parseChatResponse(raw);
@@ -152,6 +155,9 @@ export class LlamaClient {
       messages,
       format: buildToolEnvelopeSchema(tools),
       stream: false,
+      // qwen3 is a reasoning model; hidden <think> tokens add ~250 tokens/~8s
+      // per call for zero benefit on tool-selection. Disable them.
+      think: false,
       options: { temperature: this.temperature },
     });
     return parseEnvelopeResponse(raw);
