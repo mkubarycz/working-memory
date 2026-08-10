@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import type {
+  NaniteContainer,
   NaniteConversation,
   NaniteConversationSeed,
   NaniteJudgeRequest,
@@ -24,6 +25,11 @@ import type {
   RunnerToken,
 } from './types';
 import { matchesToolName, resolveToolPlan, stripPrivilegedNaniteArgs } from './toolNames';
+import {
+  registerContainerTools,
+  isContainerTool,
+  invokeContainerTool,
+} from '../tools/NaniteDevContainer';
 
 function asCancellation(token: RunnerToken): vscode.CancellationToken {
   // `vscode.lm` needs a real CancellationToken (with an `onCancellationRequested`
@@ -225,8 +231,18 @@ class VscodeConversation implements NaniteConversation {
 }
 
 export class VscodeLmBridge implements NaniteLmBridge {
+  /**
+   * The dev container attached to the CURRENT run, set at {@link start}. The
+   * bridge is created PER RUN (see `runNaniteInstance` in extension.ts), so this
+   * is safe — one bridge instance never straddles two concurrent runs.
+   * TODO(devcontainer-terminal-commands): revisit if a warm-pool/shared-bridge
+   * model is introduced, which would need per-conversation container scoping.
+   */
+  private activeContainer: NaniteContainer | null = null;
+
   async start(seed: NaniteConversationSeed): Promise<NaniteConversation> {
     const model = await this.selectModel(seed.model);
+    this.activeContainer = seed.container ?? null;
     // Resolve the tool policy against the live catalog: allow ∩ available −
     // deny (with `*` = all), plus the allow-list entries that resolved to
     // nothing (missing). The model is offered granted tools under their clean
@@ -244,11 +260,20 @@ export class VscodeLmBridge implements NaniteLmBridge {
         tools.push({ name: g.offer, description: info.description, inputSchema: info.inputSchema });
       }
     }
+    const granted = plan.granted.map((g) => g.offer);
+    // Offer the per-run container tools (`run_command`, and `expose_port` when
+    // the container supports it) ONLY when this run has a container.
+    if (this.activeContainer) {
+      for (const tool of registerContainerTools(this.activeContainer)) {
+        tools.push(tool);
+        granted.push(tool.name);
+      }
+    }
     return new VscodeConversation(
       model,
       tools,
       seed,
-      plan.granted.map((g) => g.offer),
+      granted,
       plan.missing,
     );
   }
@@ -258,6 +283,14 @@ export class VscodeLmBridge implements NaniteLmBridge {
     input: unknown,
     token: RunnerToken,
   ): Promise<string> {
+    // The per-run container tools are not `vscode.lm` tools — route them to
+    // this run's dev container instead of the LM tool registry.
+    if (isContainerTool(name)) {
+      if (!this.activeContainer) {
+        throw new Error(`${name} was called but no dev container is attached to this run`);
+      }
+      return invokeContainerTool(this.activeContainer, name, input, token);
+    }
     const result = await vscode.lm.invokeTool(
       this.resolveRegisteredToolName(name),
       {

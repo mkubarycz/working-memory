@@ -13,6 +13,7 @@ import {
 import type {
   NaniteConversation,
   NaniteConversationSeed,
+  NaniteContainer,
   NaniteJudgeRequest,
   NaniteJudgeResult,
   NaniteLmBridge,
@@ -779,6 +780,129 @@ describe('ExtensionHostNaniteRunner error handling', () => {
     // The run DID flip to Running and DID attempt the terminal write.
     expect(runCalls[0]).toEqual({ id: 'n1', begin: true });
     expect(runCalls.some((c) => c.outcome === 'succeeded')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dev-container lifecycle: the runner brings a container up before the model
+// loop and tears it down after — but ONLY when the template grants run_command,
+// and honoring the keep-on-failure teardown policy. No Docker required (the
+// container is a fake injected via `containerFactory`).
+// ---------------------------------------------------------------------------
+class FakeContainer implements NaniteContainer {
+  public upCalls = 0;
+  public downCalls: Array<{ failed: boolean }> = [];
+  public readonly execCalls: Array<{ command: string; cwd?: string }> = [];
+  async up(): Promise<void> {
+    this.upCalls++;
+  }
+  async exec(
+    command: string,
+    opts: { cwd?: string },
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    this.execCalls.push({ command, cwd: opts.cwd });
+    return { stdout: '', stderr: '', exitCode: 0 };
+  }
+  async down(opts: { failed: boolean }): Promise<void> {
+    this.downCalls.push(opts);
+  }
+}
+
+describe('ExtensionHostNaniteRunner dev container', () => {
+  test('provisions a container (up → seed → down) when the template grants run_command', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['run_command'] }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const container = new FakeContainer();
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: () => container,
+    });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.status).toBe('succeeded');
+    // Brought up exactly once, before the model loop, and passed into the seed.
+    expect(container.upCalls).toBe(1);
+    expect(bridge.started?.container).toBe(container);
+    // Auto-removed on success (failed: false).
+    expect(container.downCalls).toEqual([{ failed: false }]);
+  });
+
+  test('does NOT provision a container when the template omits run_command', async () => {
+    const client = new FakeClient(fakeTemplate(), fakeTopic());
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const container = new FakeContainer();
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: () => container,
+    });
+
+    await runner.run(fakeNanite());
+
+    expect(container.upCalls).toBe(0);
+    expect(container.downCalls).toEqual([]);
+    expect(bridge.started?.container ?? null).toBeNull();
+  });
+
+  test('keep-on-failure: a failed run tears down with failed:true', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['run_command'] }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge([{ text: 'Nope.', toolCalls: [] }], undefined, {
+      judge: {
+        request_summary: 'r',
+        response_summary: 'r',
+        pass: false,
+        confidence: 10,
+        rationale: 'missed it',
+        model: 'test-model',
+        tokens: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+    });
+    const container = new FakeContainer();
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: () => container,
+    });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.status).toBe('failed');
+    // down() is still called on failure — the container itself enforces the
+    // keep-on-failure policy from the failed flag.
+    expect(container.downCalls).toEqual([{ failed: true }]);
+  });
+
+  test('a container that fails to come up fails the run (and never leaves it Running)', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['run_command'] }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const container = new FakeContainer();
+    container.up = async () => {
+      throw new Error('docker daemon not running');
+    };
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: () => container,
+    });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/docker daemon not running/);
+    // The model loop never started; teardown was still attempted.
+    expect(bridge.started).toBeUndefined();
+    expect(container.downCalls).toEqual([{ failed: true }]);
   });
 });
 

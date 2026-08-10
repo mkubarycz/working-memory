@@ -30,6 +30,7 @@ import {
   NaniteDispatcher,
   NaniteRunnerRegistry,
   VscodeLmBridge,
+  DevContainer,
   providerFromSettings,
 } from './nanites';
 
@@ -38,9 +39,31 @@ type AlertStatus = 'alert' | 'informational' | 'closed';
 
 let controlPlaneClient: ControlPlaneClient | null = null;
 let controlPlaneHost: ControlPlaneHost | null = null;
-// The `vscode.lm`-backed model bridge, shared by every extension-host nanite
-// run. Stateless — one instance is enough.
-const naniteLmBridge = new VscodeLmBridge();
+/**
+ * Absolute path to the extension's global storage, captured at activation. Used
+ * as the root for per-run nanite dev-container scratch workspaces. Null until
+ * `activate` runs (nanites can't execute before that anyway).
+ */
+let naniteStorageDir: string | null = null;
+
+/**
+ * STUB(nanite-container-credentials): trivially reuse the editor's existing
+ * GitHub session token when one is already granted, so a nanite container can
+ * clone/push. NEVER prompts (createIfNone: false). The full per-run credential
+ * story — scoped tokens, secret handling, revocation — is tracked by the
+ * `nanite-container-credentials` child story and is intentionally not solved
+ * here. Returns null when no session is trivially available.
+ */
+async function resolveSessionGithubToken(): Promise<string | null> {
+  try {
+    const session = await vscode.authentication.getSession('github', ['repo'], {
+      createIfNone: false,
+    });
+    return session?.accessToken ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /** Read the dispatcher's concurrency cap from settings (>= 1, default 1). */
 function naniteMaxConcurrent(): number {
@@ -67,8 +90,31 @@ async function runNaniteInstance(
     provider = providerFromSettings(template?.executionSettings);
   }
   const registry = new NaniteRunnerRegistry(EXTENSION_HOST_RUNNER_ID);
+  // A per-run GitHub token (best-effort) + the container factory, wired only
+  // when we know where global storage lives. The bridge is created PER RUN so
+  // its per-run `run_command` container reference never straddles two runs.
+  const githubToken = await resolveSessionGithubToken();
+  const storageDir = naniteStorageDir;
+  const containerFactory = storageDir
+    ? (n: Nanite): DevContainer =>
+        new DevContainer({
+          id: n.id,
+          storageDir,
+          // Attributable, non-personal identity for automated commits.
+          gitUserName: 'Working Memory Nanite',
+          gitUserEmail: 'nanite@working-memory.local',
+          // STUB(nanite-container-credentials): plumb a token only if present.
+          githubToken,
+          // Policy: keep the container on failure so a human can attach + debug.
+          keepOnFailure: true,
+        })
+    : undefined;
   registry.register(
-    new ExtensionHostNaniteRunner({ client, bridge: naniteLmBridge }),
+    new ExtensionHostNaniteRunner({
+      client,
+      bridge: new VscodeLmBridge(),
+      containerFactory,
+    }),
   );
   await registry.resolve(provider).run(nanite);
 }
@@ -171,6 +217,8 @@ function runCommand(command: 'gh' | 'code', args: string[]): Promise<void> {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Root for per-run nanite dev-container scratch workspaces.
+  naniteStorageDir = context.globalStorageUri.fsPath;
   // Register the FileSystemProvider for the working-memory: scheme
   // synchronously and first — before any DB access — so that restored
   // Markdown Preview webview editors can resolve working-memory: URIs

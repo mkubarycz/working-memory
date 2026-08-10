@@ -77,6 +77,7 @@ export async function runNanite(
       allowlist,
       denylist,
       model: options.model ?? null,
+      container: options.container ?? null,
     });
     // The bridge resolved the policy (allow ∩ available − deny). Enforce tool
     // calls against the RESOLVED grant, not the raw allow-list, so `*` and the

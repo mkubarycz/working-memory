@@ -19,6 +19,42 @@ export interface RunnerToken {
   isCancellationRequested: boolean;
 }
 
+/** The result of one shell command run inside a run's dev container. */
+export interface NaniteContainerExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+/**
+ * A per-run execution container (backed by the devcontainer CLI in production;
+ * faked in tests). The runner owns its lifecycle: {@link up} once before the
+ * model loop, {@link exec} for each `run_command` tool call, {@link down} in a
+ * finally (respecting the keep-on-failure policy). Kept `vscode`-free so the
+ * runner core and tests never depend on Docker.
+ */
+export interface NaniteContainer {
+  up(token: RunnerToken): Promise<void>;
+  exec(
+    command: string,
+    opts: { cwd?: string; token?: RunnerToken },
+  ): Promise<NaniteContainerExecResult>;
+  down(opts: { failed: boolean }): Promise<void>;
+  /**
+   * Resolve this run's container to a host-reachable URL at runtime, with no
+   * pre-declaration (see the `expose-dev-container-ports-to-host` story). Under
+   * OrbStack this is the bare per-container HTTPS domain
+   * (`https://<name>.orb.local/`) — the port is informational only, never a
+   * `:port` suffix on the host. Optional so lightweight fakes need not
+   * implement it; the bridge only offers the `expose_port` tool when the
+   * attached container provides this method.
+   */
+  exposePort?(
+    port?: number,
+    opts?: { token?: RunnerToken },
+  ): Promise<{ url: string; name?: string }>;
+}
+
 export interface NaniteToolCall {
   callId: string;
   name: string;
@@ -68,6 +104,12 @@ export interface NaniteConversationSeed {
   /** Tool names the run may NEVER use (subtracted from the allow-list). */
   denylist: string[];
   model: string | null;
+  /**
+   * The run's dev container, when one was provisioned. When present the bridge
+   * offers the per-run `run_command` tool alongside the resolved MCP tools and
+   * routes it to {@link NaniteContainer.exec}.
+   */
+  container?: NaniteContainer | null;
 }
 
 /**
@@ -179,6 +221,11 @@ export interface RunNaniteOptions {
   acceptanceThreshold: number;
   /** Model family to run with (null ⇒ bridge default). */
   model?: string | null;
+  /**
+   * The run's dev container, when provisioned by the runner. Threaded into the
+   * seed so the bridge can offer + route the per-run `run_command` tool.
+   */
+  container?: NaniteContainer | null;
   /** Safety cap on model turns. Defaults to 12. */
   maxIterations?: number;
   token?: RunnerToken;

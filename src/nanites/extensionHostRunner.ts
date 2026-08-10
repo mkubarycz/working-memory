@@ -22,11 +22,13 @@ import type {
 } from '../controlPlaneClient';
 import { runNanite } from './runner';
 import type {
+  NaniteContainer,
   NaniteLmBridge,
   NaniteRunResult,
   NaniteRunner,
   RunnerToken,
 } from './types';
+import { RUN_COMMAND_TOOL } from '../tools/NaniteDevContainer';
 
 /** The provider id the extension-host runner registers under. */
 export const EXTENSION_HOST_RUNNER_ID = 'extension-host';
@@ -46,6 +48,13 @@ export interface NaniteRunnerClient {
 export interface ExtensionHostRunnerDeps {
   client: NaniteRunnerClient;
   bridge: NaniteLmBridge;
+  /**
+   * Factory for the run's execution container, invoked ONLY when the template
+   * grants the `run_command` tool. Injected so tests (and hosts without Docker)
+   * can opt out entirely — absent ⇒ no container is ever provisioned. In
+   * production this builds a {@link DevContainer} rooted in global storage.
+   */
+  containerFactory?: (nanite: Nanite) => NaniteContainer;
   /** Safety cap on model turns (forwarded to the core). */
   maxIterations?: number;
   /** Wall-clock cap for a run before it's forced to Failed. Default 120s. */
@@ -186,6 +195,21 @@ function modelFromSettings(settings: Record<string, unknown> | undefined): strin
 }
 
 /**
+ * Whether the template opts this run into the per-run `run_command` tool — the
+ * gate for provisioning a dev container. A container is expensive (and needs
+ * Docker), so it is spun up ONLY when the template's allow-list actually grants
+ * `run_command` (explicitly or via `*`) and the deny-list doesn't block it.
+ */
+function templateGrantsRunCommand(template: NaniteTemplate | null): boolean {
+  const allow = template?.toolAllowlist ?? [];
+  const deny = template?.toolDenylist ?? [];
+  if (deny.includes(RUN_COMMAND_TOOL)) {
+    return false;
+  }
+  return allow.includes(RUN_COMMAND_TOOL) || allow.includes('*');
+}
+
+/**
  * Load a Nanite Template by its `templateId`, which may be a slug OR a document
  * id — try slug first, then fall back to id. Returns null when the nanite has
  * no template or none is found.
@@ -298,6 +322,11 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
       isCancellationRequested: this.deps.token?.isCancellationRequested ?? false,
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // The run's dev container, provisioned lazily inside the timed section (only
+    // when the template grants `run_command`). Torn down in the finally,
+    // honoring the keep-on-failure policy via the container's own `down`.
+    let container: NaniteContainer | undefined;
+    let succeeded = false;
     try {
       const result = await new Promise<NaniteRunResult>((resolve, reject) => {
         timer = setTimeout(() => {
@@ -306,18 +335,29 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
             new Error(`nanite run timed out after ${Math.round(timeoutMs / 1000)}s`),
           );
         }, timeoutMs);
-        runNanite(bridge, {
-          instructions: seededInstructions,
-          prompt,
-          allowlist: template?.toolAllowlist ?? [],
-          denylist: template?.toolDenylist ?? [],
-          acceptanceCriteria: template?.acceptanceCriteria ?? '',
-          acceptanceThreshold: template?.acceptanceThreshold ?? 60,
-          model: modelFromSettings(template?.executionSettings),
-          maxIterations: this.deps.maxIterations,
-          token: cancel,
-        }).then(resolve, reject);
+        void (async () => {
+          // Bring the container up BEFORE the model loop, time-boxed by the same
+          // cancellation token. Gated so ordinary nanites (no `run_command`)
+          // never pay the Docker cost.
+          if (this.deps.containerFactory && templateGrantsRunCommand(template)) {
+            container = this.deps.containerFactory(nanite);
+            await container.up(cancel);
+          }
+          return runNanite(bridge, {
+            instructions: seededInstructions,
+            prompt,
+            allowlist: template?.toolAllowlist ?? [],
+            denylist: template?.toolDenylist ?? [],
+            acceptanceCriteria: template?.acceptanceCriteria ?? '',
+            acceptanceThreshold: template?.acceptanceThreshold ?? 60,
+            model: modelFromSettings(template?.executionSettings),
+            container,
+            maxIterations: this.deps.maxIterations,
+            token: cancel,
+          });
+        })().then(resolve, reject);
       });
+      succeeded = result.status === 'succeeded';
 
       // Persist the terminal phase + result (Running → Succeeded | Failed).
       // Time-boxed so a hung write can't leave the nanite stuck in Running.
@@ -360,6 +400,17 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     } finally {
       if (timer) {
         clearTimeout(timer);
+      }
+      // Tear the container down last. Policy: auto-remove on SUCCESS, keep on
+      // failure (the container's `down` enforces keep-on-failure) so a human can
+      // attach VS Code and debug. Best-effort — the run outcome already stands.
+      if (container) {
+        try {
+          await container.down({ failed: !succeeded });
+        } catch {
+          // ignore teardown errors; a stranded container is a lesser evil than
+          // masking the run's real outcome.
+        }
       }
     }
   }
