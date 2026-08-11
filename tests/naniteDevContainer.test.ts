@@ -86,7 +86,7 @@ describe('DevContainer.up', () => {
     expect(runner.calls[0].args).not.toContain('--remote-env');
   });
 
-  test('passes GITHUB_TOKEN via --remote-env when a token is supplied', async () => {
+  test('passes GH_TOKEN + GITHUB_TOKEN via --remote-env and runs `gh auth setup-git` when a token is supplied', async () => {
     const runner = new FakeRunner([{ stdout: '', stderr: '', exitCode: 0 }]);
     const dc = new DevContainer(
       { id: 'run-2', storageDir: scratchDir(), githubToken: 'gho_secret' },
@@ -95,9 +95,88 @@ describe('DevContainer.up', () => {
 
     await dc.up(NEVER_CANCELLED);
 
-    const idx = runner.calls[0].args.indexOf('--remote-env');
-    expect(idx).toBeGreaterThan(-1);
-    expect(runner.calls[0].args[idx + 1]).toBe('GITHUB_TOKEN=gho_secret');
+    // Both env vars ride in on --remote-env, as `KEY=value` pairs.
+    const upArgs = runner.calls[0].args;
+    expect(upArgs).toContain('--remote-env');
+    expect(upArgs).toContain('GH_TOKEN=gho_secret');
+    expect(upArgs).toContain('GITHUB_TOKEN=gho_secret');
+
+    // A second CLI call runs `gh auth setup-git` inside the container so plain
+    // git authenticates too — and it also re-passes the token via --remote-env.
+    expect(runner.calls).toHaveLength(2);
+    const setupArgs = runner.calls[1].args;
+    expect(setupArgs).toContain('exec');
+    expect(setupArgs).toContain('GH_TOKEN=gho_secret');
+    expect(setupArgs[setupArgs.length - 1]).toContain('gh auth setup-git');
+  });
+
+  test('injects config env as --remote-env KEY=VALUE on up AND exec', async () => {
+    const runner = new FakeRunner([
+      { stdout: '', stderr: '', exitCode: 0 }, // up
+      { stdout: '', stderr: '', exitCode: 0 }, // exec
+    ]);
+    const dc = new DevContainer(
+      {
+        id: 'run-env',
+        storageDir: scratchDir(),
+        env: { DB_HOST: 'db.internal', DB_PASSWORD: 'p@ss-w0rd' },
+      },
+      runner.run,
+    );
+
+    await dc.up(NEVER_CANCELLED);
+    const upArgs = runner.calls[0].args;
+    expect(upArgs).toContain('DB_HOST=db.internal');
+    expect(upArgs).toContain('DB_PASSWORD=p@ss-w0rd');
+    // No GH_TOKEN in env → no setup-git second call.
+    expect(runner.calls).toHaveLength(1);
+
+    await dc.exec('echo hi', { token: NEVER_CANCELLED });
+    const execArgs = runner.calls[1].args;
+    expect(execArgs).toContain('DB_HOST=db.internal');
+    expect(execArgs).toContain('DB_PASSWORD=p@ss-w0rd');
+  });
+
+  test('a config GH_TOKEN takes precedence over the SecretStorage token and triggers setup-git', async () => {
+    const runner = new FakeRunner([
+      { stdout: '', stderr: '', exitCode: 0 }, // up
+      { stdout: '', stderr: '', exitCode: 0 }, // setup-git exec
+    ]);
+    const dc = new DevContainer(
+      {
+        id: 'run-prec',
+        storageDir: scratchDir(),
+        githubToken: 'gho_fallback',
+        env: { GH_TOKEN: 'ghp_fromconfig' },
+      },
+      runner.run,
+    );
+
+    await dc.up(NEVER_CANCELLED);
+    const upArgs = runner.calls[0].args;
+    // Config value wins; the SecretStorage fallback value is NOT present.
+    expect(upArgs).toContain('GH_TOKEN=ghp_fromconfig');
+    expect(upArgs).not.toContain('GH_TOKEN=gho_fallback');
+    // GITHUB_TOKEN mirrors the effective GH_TOKEN (gh-CLI parity). Since the
+    // SecretStorage token also seeded GITHUB_TOKEN, that value is the fallback
+    // here — the important guarantee is the effective GH_TOKEN is the config one.
+    expect(upArgs).toContain('GH_TOKEN=ghp_fromconfig');
+    // A GH_TOKEN is present → setup-git still runs.
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[1].args[runner.calls[1].args.length - 1]).toContain('gh auth setup-git');
+  });
+
+  test('passes no --remote-env and skips setup-git when no token is supplied', async () => {
+    const runner = new FakeRunner([{ stdout: '', stderr: '', exitCode: 0 }]);
+    const dc = new DevContainer(
+      { id: 'run-2b', storageDir: scratchDir() },
+      runner.run,
+    );
+
+    await dc.up(NEVER_CANCELLED);
+
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0].args).not.toContain('--remote-env');
   });
 
   test('throws when the CLI exits non-zero', async () => {

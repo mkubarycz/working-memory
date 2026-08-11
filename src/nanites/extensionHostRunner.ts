@@ -14,12 +14,17 @@
  */
 
 import type {
+  Config,
   Nanite,
   NaniteRunInput,
   NaniteTemplate,
   Topic,
+  WriteDocumentResult,
   Workstream,
 } from '../controlPlaneClient';
+import type { CommandJournalSpec } from '../commandJournal';
+import { buildNaniteCompletionSpec } from './completionMessage';
+import { redactRunResult, redactSecrets } from './redact';
 import { runNanite } from './runner';
 import type {
   NaniteContainer,
@@ -43,6 +48,18 @@ export interface NaniteRunnerClient {
   topicRead(input: { slug?: string; workstream?: string }): Promise<Topic[]>;
   wsRead(input: { slug?: string }): Promise<Workstream[]>;
   naniteRun(input: NaniteRunInput): Promise<Nanite>;
+  /**
+   * Read a configmap by slug or id (for env injection). Optional so lightweight
+   * test fakes can omit it — absent ⇒ the nanite's `configs` resolve to an empty
+   * env. The real `ControlPlaneClient` provides it.
+   */
+  configRead?(input: { slug?: string; id?: string }): Promise<Config[]>;
+  /**
+   * Post a turn to the command-widget chat (the `CommandJournal` kind). Optional
+   * so lightweight test fakes can omit it — absent ⇒ the completion turn is
+   * simply skipped. In production the real `ControlPlaneClient` provides it.
+   */
+  commandJournalCreate?(spec: CommandJournalSpec): Promise<WriteDocumentResult>;
 }
 
 export interface ExtensionHostRunnerDeps {
@@ -52,9 +69,18 @@ export interface ExtensionHostRunnerDeps {
    * Factory for the run's execution container, invoked ONLY when the template
    * grants the `run_command` tool. Injected so tests (and hosts without Docker)
    * can opt out entirely — absent ⇒ no container is ever provisioned. In
-   * production this builds a {@link DevContainer} rooted in global storage.
+   * production this builds a {@link DevContainer} rooted in global storage. The
+   * `env` argument is the nanite's merged configmap data, injected into the
+   * container as `--remote-env` variables.
    */
-  containerFactory?: (nanite: Nanite) => NaniteContainer;
+  containerFactory?: (nanite: Nanite, env: Record<string, string>) => NaniteContainer;
+  /**
+   * The GitHub token injected into the run's container (from SecretStorage), if
+   * any. Used ONLY to redact the token value from the persisted run record —
+   * the runner never transports it; the container factory owns injection. Absent
+   * ⇒ redaction still scrubs the `GH_TOKEN=…` / `x-access-token@` patterns.
+   */
+  githubToken?: string | null;
   /** Safety cap on model turns (forwarded to the core). */
   maxIterations?: number;
   /** Wall-clock cap for a run before it's forced to Failed. Default 120s. */
@@ -63,8 +89,22 @@ export interface ExtensionHostRunnerDeps {
   readTimeoutMs?: number;
   /** Cap for each control-plane WRITE (lifecycle persist). Default 15s. */
   persistTimeoutMs?: number;
+  /**
+   * Whether the runner posts its own completion turn to the command-widget
+   * chat (the `nanite-completion-message-to-chat` write-back). Defaults to
+   * `true` — the dispatcher path relies on it to land the result on the input
+   * topic / workstream. The chat-directed AGENT path sets this `false` because
+   * the command widget owns journaling under the agent's own scope, so the
+   * runner must not also post (which would land on the wrong scope).
+   */
+  postCompletion?: boolean;
   /** Clock for the run prompt's Context section (injectable for tests). */
   now?: () => Date;
+  /**
+   * Sink for non-fatal warnings (e.g. a referenced configmap that couldn't be
+   * read). Injectable so tests can capture it; defaults to `console.warn`.
+   */
+  log?: (message: string) => void;
   token?: RunnerToken;
 }
 
@@ -74,6 +114,8 @@ const DEFAULT_RUN_TIMEOUT_MS = 120_000;
 const DEFAULT_READ_TIMEOUT_MS = 20_000;
 /** Default cap on each lifecycle persist so a hung write can't strand a nanite. */
 const DEFAULT_PERSIST_TIMEOUT_MS = 15_000;
+/** Cap on the best-effort completion-turn post so a hung chat write can't block. */
+const COMPLETION_POST_TIMEOUT_MS = 10_000;
 
 /**
  * Appended to every run's system instructions: the model must not fake success
@@ -229,6 +271,46 @@ async function loadTemplate(
   return byId[0] ?? null;
 }
 
+/**
+ * Resolve a nanite's `configs` (configmap slugs/ids) into ONE merged env map.
+ * Each configmap's `data` is overlaid in order, so a LATER config wins on a key
+ * collision. Best-effort: a config that is missing or fails to read is skipped
+ * with a logged warning (never a hard failure), and a client without
+ * `configRead` yields an empty map. Each read is time-boxed.
+ */
+async function resolveConfigEnv(
+  client: NaniteRunnerClient,
+  configs: string[],
+  readTimeoutMs: number,
+  log: (message: string) => void,
+): Promise<Record<string, string>> {
+  const merged: Record<string, string> = {};
+  if (!client.configRead || configs.length === 0) {
+    return merged;
+  }
+  for (const ref of configs) {
+    try {
+      const bySlug = await withTimeout(
+        client.configRead({ slug: ref }),
+        readTimeoutMs,
+        `read config ${ref}`,
+      );
+      const found =
+        bySlug[0] ??
+        (await withTimeout(client.configRead({ id: ref }), readTimeoutMs, `read config ${ref}`))[0];
+      if (!found) {
+        log(`nanite config "${ref}" not found — skipping its env injection`);
+        continue;
+      }
+      Object.assign(merged, found.data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log(`nanite config "${ref}" could not be read — skipping: ${message}`);
+    }
+  }
+  return merged;
+}
+
 export class ExtensionHostNaniteRunner implements NaniteRunner {
   readonly id = EXTENSION_HOST_RUNNER_ID;
 
@@ -300,6 +382,20 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
       ? `${seededInstructions}\n\n---\n\n${prompt}`
       : prompt;
 
+    // Resolve the nanite's referenced configmaps into one merged env map (later
+    // configs win). Best-effort — a missing/unreadable config is skipped with a
+    // warning. These VALUES are injected into the container AND scrubbed from
+    // the persisted run record alongside the GitHub token. Only worth the reads
+    // when the nanite actually references configs.
+    const log = this.deps.log ?? ((m: string) => console.warn(m));
+    const configEnv =
+      nanite.configs.length > 0
+        ? await resolveConfigEnv(client, nanite.configs, readTimeoutMs, log)
+        : {};
+    // The secret set fed to every redaction pass: the GitHub token (value +
+    // patterns) plus every injected config value (keys stay visible).
+    const secrets = { token: this.deps.githubToken, config: configEnv };
+
     // Phase 2 — flip to Running (time-boxed). If this write fails the nanite is
     // still Pending, so a retry is safe; don't proceed to the model call.
     try {
@@ -323,10 +419,10 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     // The run's dev container, provisioned lazily inside the timed section (only
-    // when the template grants `run_command`). Torn down in the finally,
-    // honoring the keep-on-failure policy via the container's own `down`.
+    // when the template grants `run_command`). Deliberately NOT torn down when
+    // the run ends — the container persists so a served app stays reachable via
+    // its OrbStack link. Cleanup is manual (`DevContainer.down()` on demand).
     let container: NaniteContainer | undefined;
-    let succeeded = false;
     try {
       const result = await new Promise<NaniteRunResult>((resolve, reject) => {
         timer = setTimeout(() => {
@@ -340,7 +436,7 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
           // cancellation token. Gated so ordinary nanites (no `run_command`)
           // never pay the Docker cost.
           if (this.deps.containerFactory && templateGrantsRunCommand(template)) {
-            container = this.deps.containerFactory(nanite);
+            container = this.deps.containerFactory(nanite, configEnv);
             await container.up(cancel);
           }
           return runNanite(bridge, {
@@ -357,7 +453,13 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
           });
         })().then(resolve, reject);
       });
-      succeeded = result.status === 'succeeded';
+
+      // Redact any injected GitHub token AND every injected config value from
+      // every persisted free-text field BEFORE it touches the run record or the
+      // completion chat — no secret may appear in `prompt` / `output` / `steps`
+      // or the brief.
+      const safeResult = redactRunResult(result, secrets);
+      const safePrompt = redactSecrets(fullRequest, secrets);
 
       // Persist the terminal phase + result (Running → Succeeded | Failed).
       // Time-boxed so a hung write can't leave the nanite stuck in Running.
@@ -365,15 +467,15 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
         await withTimeout(
           client.naniteRun({
             id: nanite.id,
-            outcome: result.status,
-            error: result.error,
-            prompt: fullRequest,
-            output: result.output,
-            acceptance: result.acceptance ?? null,
-            toolCalls: result.toolCalls,
-            steps: result.steps,
-            missingTools: result.missingTools ?? [],
-            tokens: result.tokens ?? null,
+            outcome: safeResult.status,
+            error: safeResult.error,
+            prompt: safePrompt,
+            output: safeResult.output,
+            acceptance: safeResult.acceptance ?? null,
+            toolCalls: safeResult.toolCalls,
+            steps: safeResult.steps,
+            missingTools: safeResult.missingTools ?? [],
+            tokens: safeResult.tokens ?? null,
           }),
           persistTimeoutMs,
           'persist result',
@@ -382,14 +484,33 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
         const message = persistErr instanceof Error ? persistErr.message : String(persistErr);
         return failedResult(`nanite finished but its result could not be saved: ${message}`);
       }
-      return result;
+      // Best-effort: mirror the outcome into the command-widget chat, scoped to
+      // the nanite's input topic (or workstream). Fully isolated — the run has
+      // already persisted, so a failure here must never alter its outcome.
+      // Suppressed on the chat-directed agent path (the widget journals under
+      // the agent's own scope instead).
+      if (this.deps.postCompletion !== false) {
+        await this.postCompletionTurn(nanite, template, safeResult);
+      }
+      return safeResult;
     } catch (err) {
       // Timeout or an unexpected throw: force the nanite to Failed so it is
-      // never stranded in Running. Best-effort, time-boxed persist.
-      const message = err instanceof Error ? err.message : String(err);
+      // never stranded in Running. Best-effort, time-boxed persist. The failure
+      // message can carry `devcontainer up` stderr (which echoes `--remote-env`
+      // GH_TOKEN=… and any config value), so redact it — and the prompt —
+      // before persisting.
+      const message = redactSecrets(
+        err instanceof Error ? err.message : String(err),
+        secrets,
+      );
       try {
         await withTimeout(
-          client.naniteRun({ id: nanite.id, outcome: 'failed', error: message, prompt: fullRequest }),
+          client.naniteRun({
+            id: nanite.id,
+            outcome: 'failed',
+            error: message,
+            prompt: redactSecrets(fullRequest, secrets),
+          }),
           persistTimeoutMs,
           'persist failure',
         );
@@ -401,17 +522,41 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
       if (timer) {
         clearTimeout(timer);
       }
-      // Tear the container down last. Policy: auto-remove on SUCCESS, keep on
-      // failure (the container's `down` enforces keep-on-failure) so a human can
-      // attach VS Code and debug. Best-effort — the run outcome already stands.
-      if (container) {
-        try {
-          await container.down({ failed: !succeeded });
-        } catch {
-          // ignore teardown errors; a stranded container is a lesser evil than
-          // masking the run's real outcome.
-        }
+      // The container is intentionally left running after the run (success or
+      // failure) so a served app stays reachable via its OrbStack link.
+      // Teardown is a manual, out-of-band action — see `DevContainer.down()`.
+    }
+  }
+
+  /**
+   * Post the run's outcome to the command-widget chat as one `CommandJournal`
+   * turn, scoped to the nanite's input topic (or workstream). Best-effort and
+   * fully isolated: swallows every error and is time-boxed, because the run has
+   * already persisted its terminal phase — a chat-post failure must never fail
+   * or alter the nanite's outcome.
+   */
+  private async postCompletionTurn(
+    nanite: Nanite,
+    template: NaniteTemplate | null,
+    result: NaniteRunResult,
+  ): Promise<void> {
+    try {
+      const create = this.deps.client.commandJournalCreate?.bind(this.deps.client);
+      if (!create) {
+        return;
       }
+      const spec = buildNaniteCompletionSpec({
+        nanite,
+        result,
+        templateLabel: template?.title ?? template?.slug ?? null,
+      });
+      if (!spec) {
+        return; // no input topic and no workstream — nothing to scope to.
+      }
+      await withTimeout(create(spec), COMPLETION_POST_TIMEOUT_MS, 'post completion turn');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`nanite completion chat post failed (ignored): ${message}`);
     }
   }
 }

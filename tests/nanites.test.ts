@@ -24,12 +24,15 @@ import type {
   RunNaniteOptions,
 } from '../src/nanites/types';
 import type {
+  Config,
   Nanite,
   NaniteRunInput,
   NaniteTemplate,
   Topic,
   Workstream,
 } from '../src/controlPlaneClient';
+import type { CommandJournalSpec } from '../src/commandJournal';
+import type { WriteDocumentResult } from '../src/controlPlaneClient';
 
 // ---------------------------------------------------------------------------
 // Scripted fake bridge: deterministic stand-in for the vscode.lm loop. The
@@ -447,6 +450,7 @@ function fakeNanite(over: Partial<Nanite> = {}): Nanite {
     templateId: 'tpl',
     workstream: 'ws',
     inputTopic: 'topic-a',
+    configs: [],
     request: '',
     phase: 'Pending',
     startedAt: null,
@@ -485,10 +489,12 @@ function fakeTopic(over: Partial<Topic> = {}): Topic {
 
 class FakeClient implements NaniteRunnerClient {
   public readonly runCalls: NaniteRunInput[] = [];
+  public readonly journalCalls: CommandJournalSpec[] = [];
   constructor(
     private readonly template: NaniteTemplate | null,
     private readonly topic: Topic | null,
     private readonly workstreamTopics: Topic[] = [],
+    private readonly configs: Record<string, Record<string, string>> = {},
   ) {}
   async naniteTemplateRead(input: { slug?: string; id?: string }): Promise<NaniteTemplate[]> {
     if (!this.template) {
@@ -515,9 +521,48 @@ class FakeClient implements NaniteRunnerClient {
     const ws = fakeWorkstream();
     return input.slug === ws.slug ? [ws] : [];
   }
+  async configRead(input: { slug?: string; id?: string }): Promise<Config[]> {
+    const key = input.slug ?? input.id;
+    const data = key !== undefined ? this.configs[key] : undefined;
+    if (!data) {
+      return [];
+    }
+    return [
+      {
+        id: `cfg-${key}`,
+        slug: input.slug ?? null,
+        name: '',
+        data,
+        status: '',
+        created_at: 0,
+        updated_at: 0,
+        resourceVersion: 1,
+      },
+    ];
+  }
   async naniteRun(input: NaniteRunInput): Promise<Nanite> {
     this.runCalls.push(input);
     return fakeNanite();
+  }
+  async commandJournalCreate(spec: CommandJournalSpec): Promise<WriteDocumentResult> {
+    this.journalCalls.push(spec);
+    return {
+      available: true,
+      document: {
+        kind: 'CommandJournal',
+        metadata: {
+          id: `journal-${this.journalCalls.length}`,
+          slug: null,
+          labels: {},
+          createdAt: 0,
+          updatedAt: 0,
+          deletedAt: null,
+          resourceVersion: 1,
+        },
+        spec: spec as unknown as Record<string, unknown>,
+        status: {},
+      },
+    };
   }
 }
 
@@ -550,6 +595,23 @@ describe('ExtensionHostNaniteRunner', () => {
     expect(prompt).toContain('Current time: 2026-07-31T15:30:00.000Z');
     // Context leads the prompt, before the workstream/topic/task.
     expect(prompt.indexOf('# Context')).toBeLessThan(prompt.indexOf('# Task'));
+  });
+
+  test('posts a completion turn to the chat scoped to the input topic', async () => {
+    const client = new FakeClient(fakeTemplate(), fakeTopic());
+    const bridge = new ScriptedBridge([{ text: 'All done.', toolCalls: [] }]);
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    await runner.run(fakeNanite({ inputTopic: 'topic-a', workstream: 'ws' }));
+
+    expect(client.journalCalls).toHaveLength(1);
+    const spec = client.journalCalls[0];
+    expect(spec.workstream).toBe('topic-a');
+    expect(spec.request.contextKind).toBe('topic');
+    expect(spec.status).toBe('succeeded');
+    expect(spec.response.brief).toContain('Nanite succeeded');
+    // The chat post happens AFTER the terminal persist, never before.
+    expect(client.runCalls.at(-1)?.outcome).toBe('succeeded');
   });
 
   test('reads topic body as prompt + template config, persists Running then terminal', async () => {
@@ -785,9 +847,10 @@ describe('ExtensionHostNaniteRunner error handling', () => {
 
 // ---------------------------------------------------------------------------
 // Dev-container lifecycle: the runner brings a container up before the model
-// loop and tears it down after — but ONLY when the template grants run_command,
-// and honoring the keep-on-failure teardown policy. No Docker required (the
-// container is a fake injected via `containerFactory`).
+// loop — but ONLY when the template grants run_command — and deliberately does
+// NOT tear it down afterward. The container persists past the run (success or
+// failure) so a served app stays reachable; cleanup is manual. No Docker
+// required (the container is a fake injected via `containerFactory`).
 // ---------------------------------------------------------------------------
 class FakeContainer implements NaniteContainer {
   public upCalls = 0;
@@ -809,7 +872,7 @@ class FakeContainer implements NaniteContainer {
 }
 
 describe('ExtensionHostNaniteRunner dev container', () => {
-  test('provisions a container (up → seed → down) when the template grants run_command', async () => {
+  test('provisions a container (up → seed) but never tears it down when the template grants run_command', async () => {
     const client = new FakeClient(
       fakeTemplate({ toolAllowlist: ['run_command'] }),
       fakeTopic(),
@@ -828,8 +891,43 @@ describe('ExtensionHostNaniteRunner dev container', () => {
     // Brought up exactly once, before the model loop, and passed into the seed.
     expect(container.upCalls).toBe(1);
     expect(bridge.started?.container).toBe(container);
-    // Auto-removed on success (failed: false).
-    expect(container.downCalls).toEqual([{ failed: false }]);
+    // The container persists past the run — the runner never tears it down.
+    expect(container.downCalls).toEqual([]);
+  });
+
+  test('resolves nanite.configs into merged container env (later config wins) and skips a missing config', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['run_command'] }),
+      fakeTopic(),
+      [],
+      {
+        'cfg-a': { SHARED: 'from-a', ONLY_A: 'a' },
+        'cfg-b': { SHARED: 'from-b', ONLY_B: 'b' },
+      },
+    );
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const container = new FakeContainer();
+    let capturedEnv: Record<string, string> | undefined;
+    const warnings: string[] = [];
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: (_n, env) => {
+        capturedEnv = env;
+        return container;
+      },
+      log: (m) => warnings.push(m),
+    });
+
+    const result = await runner.run(
+      fakeNanite({ configs: ['cfg-a', 'cfg-b', 'cfg-missing'] }),
+    );
+
+    expect(result.status).toBe('succeeded');
+    // Later config wins on a key collision; both configs' unique keys survive.
+    expect(capturedEnv).toEqual({ SHARED: 'from-b', ONLY_A: 'a', ONLY_B: 'b' });
+    // The missing config is skipped best-effort, with a warning — not a failure.
+    expect(warnings.join('\n')).toMatch(/cfg-missing/);
   });
 
   test('does NOT provision a container when the template omits run_command', async () => {
@@ -849,7 +947,7 @@ describe('ExtensionHostNaniteRunner dev container', () => {
     expect(bridge.started?.container ?? null).toBeNull();
   });
 
-  test('keep-on-failure: a failed run tears down with failed:true', async () => {
+  test('a failed run leaves the container running (no teardown)', async () => {
     const client = new FakeClient(
       fakeTemplate({ toolAllowlist: ['run_command'] }),
       fakeTopic(),
@@ -875,9 +973,8 @@ describe('ExtensionHostNaniteRunner dev container', () => {
     const result = await runner.run(fakeNanite());
 
     expect(result.status).toBe('failed');
-    // down() is still called on failure — the container itself enforces the
-    // keep-on-failure policy from the failed flag.
-    expect(container.downCalls).toEqual([{ failed: true }]);
+    // The container persists even on failure — the runner never tears it down.
+    expect(container.downCalls).toEqual([]);
   });
 
   test('a container that fails to come up fails the run (and never leaves it Running)', async () => {
@@ -900,9 +997,9 @@ describe('ExtensionHostNaniteRunner dev container', () => {
 
     expect(result.status).toBe('failed');
     expect(result.error).toMatch(/docker daemon not running/);
-    // The model loop never started; teardown was still attempted.
+    // The model loop never started; the container is never torn down.
     expect(bridge.started).toBeUndefined();
-    expect(container.downCalls).toEqual([{ failed: true }]);
+    expect(container.downCalls).toEqual([]);
   });
 });
 

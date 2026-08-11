@@ -308,6 +308,52 @@ export interface TopicTypeCreateInput {
   body_template?: string;
 }
 
+/**
+ * A "configmap": a named bag of string key-value pairs (`data`), identified by
+ * a registry-key `slug`. A nanite references configmaps by slug/id and, on run,
+ * their merged `data` is injected into its dev container as environment
+ * variables. `data` values are always strings.
+ */
+export interface Config {
+  id: string;
+  slug: string | null;
+  name: string;
+  /** The key-value pairs. Values are always strings. */
+  data: Record<string, string>;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  /** CAS counter from the envelope, for a subsequent update. */
+  resourceVersion: number;
+}
+
+export interface ConfigReadInput {
+  slug?: string;
+  id?: string;
+  query?: string;
+  limit?: number;
+}
+
+export interface ConfigCreateInput {
+  slug?: string;
+  name?: string;
+  data: Record<string, string>;
+  status?: string;
+}
+
+export interface ConfigUpdateInput {
+  slug: string;
+  name?: string;
+  /** Key-value pairs to MERGE onto the existing map. */
+  data?: Record<string, string>;
+  status?: string;
+}
+
+export interface ConfigDeleteInput {
+  slug: string;
+  restore?: boolean;
+}
+
 export interface TopicDeleteInput {
   slug: string;
   restore?: boolean;
@@ -532,6 +578,8 @@ export interface Nanite {
   templateId: string | null;
   workstream: string;
   inputTopic: string;
+  /** Configmap slugs/ids whose merged `data` is injected into the run's container as env. */
+  configs: string[];
   request: string;
   phase: NanitePhase;
   /** Unix seconds the nanite was enqueued for dispatch (null until Queued). */
@@ -570,6 +618,18 @@ export interface NaniteCreateInput {
   workstream: string;
   inputTopic?: string;
   templateId?: string;
+  /** Configmap slugs/ids injected as dev-container env (immutable at creation). */
+  configs?: string[];
+  request?: string;
+}
+
+export interface NaniteUpdateInput {
+  id: string;
+  /** Optional CAS guard — the resourceVersion the caller last read. */
+  expectedResourceVersion?: number;
+  /** Replacement configmap slugs/ids injected as dev-container env. */
+  configs?: string[];
+  /** New free-text request/prompt for this execution. */
   request?: string;
 }
 
@@ -1408,6 +1468,100 @@ export class ControlPlaneClient {
     return parsed;
   }
 
+  // ----- Config domain API (`ws-config-*`) ----------------------------------
+  //
+  // Typed wrappers over the control-plane's Config kind API, mirroring the
+  // ws-topictype-* methods: each parses the tool's JSON text result into the
+  // owned {@link Config} shape and THROWS {@link ControlPlaneClientError} on a
+  // dead daemon, a dropped connection, or an `isError` tool result. A configmap
+  // is a named bag of string key-value pairs referenced by a nanite for env
+  // injection.
+
+  /**
+   * Read configs via `ws-config-read`. A by-slug/id read yields a 0-or-1 element
+   * array; list mode (no slug/id) returns all live configs.
+   */
+  async configRead(input: ConfigReadInput = {}): Promise<Config[]> {
+    const args: Record<string, unknown> = {};
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.id !== undefined) {
+      args.id = input.id;
+    }
+    if (input.query !== undefined) {
+      args.query = input.query;
+    }
+    if (input.limit !== undefined) {
+      args.limit = input.limit;
+    }
+    const result = await this.callDomainTool('ws-config-read', args);
+    const parsed = parseToolText(result) as { configs?: unknown } | null;
+    const list = Array.isArray(parsed?.configs) ? parsed!.configs : [];
+    return list as Config[];
+  }
+
+  /** Create a config via `ws-config-create`. Returns the created config. */
+  async configCreate(input: ConfigCreateInput): Promise<Config> {
+    const args: Record<string, unknown> = { data: input.data };
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.name !== undefined) {
+      args.name = input.name;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    return this.parseConfig(await this.callDomainTool('ws-config-create', args));
+  }
+
+  /**
+   * Update a config via `ws-config-update` (identified by `slug`; `data` is
+   * merged onto the existing map, `name`/`status` replace when provided). The
+   * control-plane reads the current doc for its CAS guard. Returns the updated
+   * config.
+   */
+  async configUpdate(input: ConfigUpdateInput): Promise<Config> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.name !== undefined) {
+      args.name = input.name;
+    }
+    if (input.data !== undefined) {
+      args.data = input.data;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    return this.parseConfig(await this.callDomainTool('ws-config-update', args));
+  }
+
+  /**
+   * Soft-delete (or, with `restore: true`, undelete) a config via
+   * `ws-config-delete` (identified by `slug`). Returns `{ ok, slug }`.
+   */
+  async configDelete(input: ConfigDeleteInput): Promise<{ ok: boolean; slug: string }> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.restore !== undefined) {
+      args.restore = input.restore;
+    }
+    const result = await this.callDomainTool('ws-config-delete', args);
+    const parsed = parseToolText(result) as { ok?: unknown; slug?: unknown } | null;
+    return {
+      ok: parsed?.ok === true,
+      slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
+    };
+  }
+
+  /** Parse a `ws-config-*` success result into the owned {@link Config} shape. */
+  private parseConfig(result: unknown): Config {
+    const parsed = parseToolText(result) as Config | null;
+    if (!parsed || typeof parsed.id !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane config response');
+    }
+    return parsed;
+  }
+
   /**
    * Attach a workstream to a topic's membership (idempotent). Topic↔workstream
    * membership is edited via `ws-topic-update` over the topic's
@@ -1735,8 +1889,8 @@ export class ControlPlaneClient {
   //
   // Typed wrappers over the control-plane's Nanite kind API — ONE execution
   // instance of a NaniteTemplate (id-based, mirroring ws-alert-*). `run`
-  // transitions the lifecycle phase; there is no generic update (workstream +
-  // inputTopic are immutable).
+  // transitions the lifecycle phase; `update` patches only the mutable
+  // `configs` + `request` (workstream + inputTopic + lifecycle stay immutable).
 
   /** Parse a `ws-nanite-*` success result into the owned {@link Nanite}. */
   private parseNanite(result: unknown): Nanite {
@@ -1782,10 +1936,33 @@ export class ControlPlaneClient {
     if (input.templateId !== undefined) {
       args.templateId = input.templateId;
     }
+    if (input.configs !== undefined) {
+      args.configs = input.configs;
+    }
     if (input.request !== undefined) {
       args.request = input.request;
     }
     return this.parseNanite(await this.callDomainTool('ws-nanite-create', args));
+  }
+
+  /**
+   * Patch a nanite's mutable fields via `ws-nanite-update` (by id). Only
+   * `configs` + `request` are patchable; `workstream`, `inputTopic`, and all
+   * lifecycle/result fields are immutable. Optionally supply
+   * `expectedResourceVersion` for a compare-and-swap guard.
+   */
+  async naniteUpdate(input: NaniteUpdateInput): Promise<Nanite> {
+    const args: Record<string, unknown> = { id: input.id };
+    if (input.expectedResourceVersion !== undefined) {
+      args.expectedResourceVersion = input.expectedResourceVersion;
+    }
+    if (input.configs !== undefined) {
+      args.configs = input.configs;
+    }
+    if (input.request !== undefined) {
+      args.request = input.request;
+    }
+    return this.parseNanite(await this.callDomainTool('ws-nanite-update', args));
   }
 
   /** Kick off (or finish) a nanite via `ws-nanite-run`. */

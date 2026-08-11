@@ -26,6 +26,7 @@ import type { Store } from '../../store.js';
 import { NANITE_KIND } from './nanite.js';
 import { registerWsNaniteCreate } from './create.js';
 import { registerWsNaniteRead } from './read.js';
+import { registerWsNaniteUpdate } from './update.js';
 import { registerWsNaniteRun } from './run.js';
 import { registerWsNaniteDelete } from './delete.js';
 
@@ -46,6 +47,9 @@ const nanite: KindModule = {
         // Input topic slug — OPTIONAL, immutable after creation. When set, the
         // topic IS the input; when empty the Nanite runs workstream-wide.
         inputTopic: z.string().default(''),
+        // Configmap slugs/ids whose merged `data` is injected into this run's
+        // dev container as environment variables — IMMUTABLE after creation.
+        configs: z.array(z.string()).default([]),
         // Free-text request/prompt for this execution.
         request: z.string().default(''),
         // Lifecycle phase — AUTHORED-style spec field (mirrors Topic/Alert
@@ -115,13 +119,15 @@ const nanite: KindModule = {
 };
 
 /**
- * Register the Nanite domain API (`ws-nanite-*`): create / read / run / delete.
- * There is no generic update tool by design (workstream + inputTopic are
- * immutable; the lifecycle is driven by `ws-nanite-run`).
+ * Register the Nanite domain API (`ws-nanite-*`): create / read / update / run /
+ * delete. `ws-nanite-update` patches ONLY the mutable spec fields (`configs`,
+ * `request`); `workstream` + `inputTopic` + all lifecycle fields stay immutable
+ * (the lifecycle is driven by `ws-nanite-run`).
  */
 function registerNaniteApi(server: McpServer, store: Store): void {
   registerWsNaniteCreate(server, store);
   registerWsNaniteRead(server, store);
+  registerWsNaniteUpdate(server, store);
   registerWsNaniteRun(server, store);
   registerWsNaniteDelete(server, store);
 }

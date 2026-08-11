@@ -16,6 +16,7 @@ import { DocumentEditorProvider } from './webview/documentEditorProvider';
 import { CommandWidgetProvider } from './webview/commandWidgetProvider';
 import {
   resolveRevealFromTabs,
+  resolveDocumentIdFromTabs,
   type TabDescriptor,
 } from './panelReveal';
 import { findLatestVsix } from './vsix';
@@ -32,6 +33,7 @@ import {
   VscodeLmBridge,
   DevContainer,
   providerFromSettings,
+  type NaniteRunResult,
 } from './nanites';
 
 /** Authored alert lifecycle status, mirroring the control-plane Alert kind. */
@@ -47,19 +49,27 @@ let controlPlaneHost: ControlPlaneHost | null = null;
 let naniteStorageDir: string | null = null;
 
 /**
- * STUB(nanite-container-credentials): trivially reuse the editor's existing
- * GitHub session token when one is already granted, so a nanite container can
- * clone/push. NEVER prompts (createIfNone: false). The full per-run credential
- * story — scoped tokens, secret handling, revocation — is tracked by the
- * `nanite-container-credentials` child story and is intentionally not solved
- * here. Returns null when no session is trivially available.
+ * The extension's SecretStorage, captured at activation. Holds the repo-scoped
+ * GitHub PAT that gets injected into nanite dev containers. Null until
+ * `activate` runs.
  */
-async function resolveSessionGithubToken(): Promise<string | null> {
+let extensionSecrets: vscode.SecretStorage | null = null;
+
+/** SecretStorage key for the nanite dev-container GitHub token. */
+const GITHUB_TOKEN_SECRET_KEY = 'workingMemory.githubToken';
+
+/**
+ * Read the repo-scoped GitHub PAT from SecretStorage (set via the
+ * `workingMemory.setGithubToken` command). This is the credential injected into
+ * a nanite's dev container as `GH_TOKEN` so it can clone/branch/push/open PRs.
+ * Returns null when no token is stored — the container is then brought up
+ * without credentials and GitHub ops fail with GitHub's own auth error, which
+ * is acceptable for now (we never fabricate a broad session token).
+ */
+async function readStoredGithubToken(): Promise<string | null> {
   try {
-    const session = await vscode.authentication.getSession('github', ['repo'], {
-      createIfNone: false,
-    });
-    return session?.accessToken ?? null;
+    const value = await extensionSecrets?.get(GITHUB_TOKEN_SECRET_KEY);
+    return value && value.trim() ? value : null;
   } catch {
     return null;
   }
@@ -89,22 +99,41 @@ async function runNaniteInstance(
       tpl ?? (await client.naniteTemplateRead({ id: nanite.templateId }))[0];
     provider = providerFromSettings(template?.executionSettings);
   }
+  const registry = await buildNaniteRunnerRegistry(client);
+  await registry.resolve(provider).run(nanite);
+}
+
+/**
+ * Build a runner registry with the extension-host runner wired up (per-run
+ * GitHub token + dev-container factory + `vscode.lm` bridge). Shared by the
+ * dispatcher/manual run path ({@link runNaniteInstance}) and the chat-directed
+ * agent path ({@link directAgent}). `postCompletion:false` suppresses the
+ * runner's own chat write-back so the agent path can journal under its own
+ * scope instead.
+ */
+async function buildNaniteRunnerRegistry(
+  client: ControlPlaneClient,
+  opts?: { postCompletion?: boolean },
+): Promise<NaniteRunnerRegistry> {
   const registry = new NaniteRunnerRegistry(EXTENSION_HOST_RUNNER_ID);
-  // A per-run GitHub token (best-effort) + the container factory, wired only
-  // when we know where global storage lives. The bridge is created PER RUN so
-  // its per-run `run_command` container reference never straddles two runs.
-  const githubToken = await resolveSessionGithubToken();
+  // A per-run GitHub token (from SecretStorage) + the container factory, wired
+  // only when we know where global storage lives. The bridge is created PER RUN
+  // so its per-run `run_command` container reference never straddles two runs.
+  const githubToken = await readStoredGithubToken();
   const storageDir = naniteStorageDir;
   const containerFactory = storageDir
-    ? (n: Nanite): DevContainer =>
+    ? (n: Nanite, env: Record<string, string>): DevContainer =>
         new DevContainer({
           id: n.id,
           storageDir,
           // Attributable, non-personal identity for automated commits.
           gitUserName: 'Working Memory Nanite',
           gitUserEmail: 'nanite@working-memory.local',
-          // STUB(nanite-container-credentials): plumb a token only if present.
+          // Repo-scoped PAT from SecretStorage; injected as GH_TOKEN +
+          // GITHUB_TOKEN. A configmap GH_TOKEN in `env` takes precedence.
           githubToken,
+          // Merged configmap data → --remote-env KEY=VALUE (config wins).
+          env,
           // Policy: keep the container on failure so a human can attach + debug.
           keepOnFailure: true,
         })
@@ -114,9 +143,53 @@ async function runNaniteInstance(
       client,
       bridge: new VscodeLmBridge(),
       containerFactory,
+      // Redact this token from the persisted run record (value + patterns).
+      githubToken,
+      postCompletion: opts?.postCompletion,
     }),
   );
-  await registry.resolve(provider).run(nanite);
+  return registry;
+}
+
+/**
+ * The chat-directed AGENT path (`nanites-as-longlived-chattable-agents`): run a
+ * long-lived nanite once with a fresh directive as its request, returning the
+ * run result so the caller (the command widget) can journal the exchange under
+ * the agent's own scope. Re-directable — a terminal (Succeeded/Failed) agent is
+ * reset to Pending before the run; a still-Running agent is refused as busy.
+ *
+ * NOTE (increment 1): the directive overrides the in-memory `request` used to
+ * build the prompt, but the stored `spec.request` is left as-is — the durable
+ * record of the back-and-forth is the agent's chat, not the nanite doc.
+ */
+async function directAgent(
+  client: ControlPlaneClient,
+  naniteId: string,
+  directive: string,
+): Promise<NaniteRunResult> {
+  const [nanite] = await client.naniteRead({ id: naniteId });
+  if (!nanite) {
+    throw new Error(`No agent with id ${naniteId.slice(0, 8)}.`);
+  }
+  if (nanite.phase === 'Running') {
+    throw new Error('This agent is busy with another directive — wait for it to finish.');
+  }
+  // A terminal (or otherwise non-runnable) agent must return to Pending before
+  // the runner's `begin` will start it. Pending/Queued can start as-is.
+  let ready = nanite;
+  if (nanite.phase !== 'Pending' && nanite.phase !== 'Queued') {
+    const reset = await client.naniteRun({ id: naniteId, reset: true });
+    ready = reset ?? nanite;
+  }
+  let provider: string | null = null;
+  if (ready.templateId) {
+    const [tpl] = await client.naniteTemplateRead({ slug: ready.templateId });
+    const template =
+      tpl ?? (await client.naniteTemplateRead({ id: ready.templateId }))[0];
+    provider = providerFromSettings(template?.executionSettings);
+  }
+  const registry = await buildNaniteRunnerRegistry(client, { postCompletion: false });
+  return registry.resolve(provider).run({ ...ready, request: directive });
 }
 
 // Last-seen newest mtime across the control-plane store files, used by the
@@ -219,6 +292,8 @@ function runCommand(command: 'gh' | 'code', args: string[]): Promise<void> {
 export function activate(context: vscode.ExtensionContext): void {
   // Root for per-run nanite dev-container scratch workspaces.
   naniteStorageDir = context.globalStorageUri.fsPath;
+  // SecretStorage holding the repo-scoped GitHub PAT injected into containers.
+  extensionSecrets = context.secrets;
   // Register the FileSystemProvider for the working-memory: scheme
   // synchronously and first — before any DB access — so that restored
   // Markdown Preview webview editors can resolve working-memory: URIs
@@ -323,6 +398,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const commandWidgetProvider = new CommandWidgetProvider(
     context.extensionUri,
     () => controlPlaneClient,
+    (naniteId, directive) =>
+      directAgent(controlPlaneClient as ControlPlaneClient, naniteId, directive),
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -501,18 +578,49 @@ export function activate(context: vscode.ExtensionContext): void {
     return { kind: 'other' };
   };
 
+  // Monotonic token guarding the async nanite-scope resolution below against
+  // out-of-order completion when the active tab changes rapidly.
+  let revealScopeToken = 0;
   const pushActiveRevealTarget = (): void => {
     const activeTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
-    const target = resolveRevealFromTabs(classifyTab(activeTab));
+    const tab = classifyTab(activeTab);
+    const target = resolveRevealFromTabs(tab);
     panelProvider.reveal(target);
     // Sticky context for the command widget: mirror the same active-tab signal.
-    // Only topic/workstream targets are a meaningful command scope; anything
-    // else (session, topic-type, or no WM doc) clears the widget's scope.
+    // A topic/workstream target is directly a command scope.
     if (target && (target.kind === 'topic' || target.kind === 'workstream')) {
       commandWidgetProvider.setContext({ slug: target.id, kind: target.kind });
-    } else {
-      commandWidgetProvider.setContext(null);
+      return;
     }
+    // Slug-less docs (nanites/agents) open via the generic by-id route
+    // (`working-memory:/document/<id>`), so the reveal parser can't classify
+    // them by kind. If the active tab is such a doc, resolve its kind through
+    // the control plane: `ws-nanite-read` is kind-scoped, so a hit means the
+    // doc is a Nanite → scope the widget to that agent (mirroring the
+    // topic/workstream branch). Anything else clears the scope. A monotonic
+    // token drops stale async results from rapid tab switches.
+    const docId = resolveDocumentIdFromTabs(tab);
+    const client = controlPlaneClient;
+    if (docId && client) {
+      const token = ++revealScopeToken;
+      void (async () => {
+        try {
+          const [nanite] = await client.naniteRead({ id: docId });
+          if (token !== revealScopeToken) {
+            return;
+          }
+          commandWidgetProvider.setContext(
+            nanite ? { slug: docId, kind: 'nanite' } : null,
+          );
+        } catch {
+          if (token === revealScopeToken) {
+            commandWidgetProvider.setContext(null);
+          }
+        }
+      })();
+      return;
+    }
+    commandWidgetProvider.setContext(null);
   };
 
   const pickOpenWorkstreamSlug = async (): Promise<string | null> => {
@@ -592,6 +700,30 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('working-memory.refresh', refresh),
     vscode.commands.registerCommand('working-memory.reloadWindow', () => {
       vscode.commands.executeCommand('workbench.action.reloadWindow');
+    }),
+    vscode.commands.registerCommand('workingMemory.setGithubToken', async () => {
+      const token = await vscode.window.showInputBox({
+        title: 'Working Memory: Set GitHub Token for Nanites',
+        prompt:
+          'Paste a repo-scoped fine-grained GitHub PAT (Contents + Pull requests: read/write). Leave blank to clear the stored token.',
+        password: true,
+        ignoreFocusOut: true,
+        placeHolder: 'github_pat_… (blank to clear)',
+      });
+      if (token === undefined) {
+        return; // cancelled — leave the stored value untouched.
+      }
+      if (token.trim() === '') {
+        await extensionSecrets?.delete(GITHUB_TOKEN_SECRET_KEY);
+        vscode.window.showInformationMessage(
+          'Working Memory: nanite GitHub token cleared.',
+        );
+        return;
+      }
+      await extensionSecrets?.store(GITHUB_TOKEN_SECRET_KEY, token.trim());
+      vscode.window.showInformationMessage(
+        'Working Memory: nanite GitHub token saved.',
+      );
     }),
     vscode.commands.registerCommand(
       'working-memory.updateToLatest',

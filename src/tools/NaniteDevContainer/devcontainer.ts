@@ -126,13 +126,24 @@ export interface DevContainerConfig {
   gitUserName?: string;
   gitUserEmail?: string;
   /**
-   * STUB(nanite-container-credentials): an optional GitHub token plumbed into
-   * the container via `--remote-env GITHUB_TOKEN=…` when one is trivially
-   * available. The full per-run credential story (scoped tokens, secret
-   * handling, revocation) is tracked by the `nanite-container-credentials`
-   * child story and is intentionally NOT solved here.
+   * A GitHub token (a repo-scoped fine-grained PAT, from VS Code SecretStorage)
+   * injected into the container via `--remote-env` as both `GH_TOKEN` (the `gh`
+   * CLI's var) and `GITHUB_TOKEN` (read by other tooling). It is NEVER written
+   * into `devcontainer.json`. After `up`, `gh auth setup-git` is run once so
+   * plain `git clone/push` authenticate through it too. Absent ⇒ no token is
+   * passed and GitHub ops fail with GitHub's own auth error (acceptable).
    */
   githubToken?: string | null;
+  /**
+   * Arbitrary environment injected into the container via `--remote-env`
+   * (KEY=VALUE) on BOTH `up` and every `exec`, alongside the git-token handling.
+   * In production this is the merged `data` of the nanite's referenced
+   * configmaps. A configmap `GH_TOKEN` here takes PRECEDENCE over
+   * {@link githubToken} (which is the SecretStorage fallback); a present
+   * effective `GH_TOKEN` still triggers `gh auth setup-git`. Never written into
+   * `devcontainer.json`; never logged.
+   */
+  env?: Record<string, string>;
   /** Keep the container on failure so a human can attach + debug (default). */
   keepOnFailure?: boolean;
   /** CLI binary for the devcontainer CLI (default `devcontainer`). */
@@ -169,6 +180,49 @@ export class DevContainer implements NaniteContainer {
 
   private idLabel(): string {
     return `${ID_LABEL_KEY}=${this.config.id}`;
+  }
+
+  /**
+   * The effective environment injected into the container: the SecretStorage
+   * GitHub token expanded to `GH_TOKEN` + `GITHUB_TOKEN`, then the config `env`
+   * overlaid on top. Configmap values WIN on key collision — so a configmap
+   * `GH_TOKEN` overrides the SecretStorage token (SecretStorage is the
+   * fallback). For `gh`-CLI parity, a `GH_TOKEN` present without an explicit
+   * `GITHUB_TOKEN` is mirrored to `GITHUB_TOKEN` (matching how the SecretStorage
+   * token sets both today). Empty values are dropped.
+   */
+  private effectiveEnv(): Record<string, string> {
+    const env: Record<string, string> = {};
+    const token = this.config.githubToken;
+    if (token) {
+      env.GH_TOKEN = token;
+      env.GITHUB_TOKEN = token;
+    }
+    for (const [key, value] of Object.entries(this.config.env ?? {})) {
+      if (typeof value === 'string' && value.length > 0) {
+        env[key] = value;
+      }
+    }
+    if (env.GH_TOKEN && !env.GITHUB_TOKEN) {
+      env.GITHUB_TOKEN = env.GH_TOKEN;
+    }
+    return env;
+  }
+
+  /**
+   * The `--remote-env KEY=VALUE` flags carrying the effective environment
+   * (git token + injected config env) into the container. Empty when there is
+   * nothing to inject. Threaded into BOTH `up` and every `exec` so the values
+   * are present wherever git/gh (and the nanite's own commands) run — they live
+   * only in the process arg list, never in `devcontainer.json`. NEVER log these
+   * args (they can contain a token or other secret config values).
+   */
+  private remoteEnvArgs(): string[] {
+    const args: string[] = [];
+    for (const [key, value] of Object.entries(this.effectiveEnv())) {
+      args.push('--remote-env', `${key}=${value}`);
+    }
+    return args;
   }
 
   /** The generated `.devcontainer/devcontainer.json` for this run. */
@@ -217,11 +271,10 @@ export class DevContainer implements NaniteContainer {
       this.workspaceDir,
       '--id-label',
       this.idLabel(),
+      // Inject the GitHub token (if any) as GH_TOKEN + GITHUB_TOKEN. Kept out of
+      // devcontainer.json; never logged.
+      ...this.remoteEnvArgs(),
     ];
-    // STUB(nanite-container-credentials): pass a token through only if present.
-    if (this.config.githubToken) {
-      args.push('--remote-env', `GITHUB_TOKEN=${this.config.githubToken}`);
-    }
     const res = await this.run(this.devcontainerBin, args, { token });
     if (res.exitCode !== 0) {
       const detail = (res.stderr || res.stdout).trim().slice(-500);
@@ -230,6 +283,15 @@ export class DevContainer implements NaniteContainer {
       );
     }
     this.upDone = true;
+    // With a GH_TOKEN present (from the configmap env or the SecretStorage
+    // fallback), teach git to authenticate via `gh` so plain `git clone/push`
+    // work, not just the `gh` CLI. `--remote-env` values are visible here
+    // because `exec` re-passes them (see `exec`). Best-effort: a setup-git
+    // failure shouldn't strand the container, but it means git pushes will fail
+    // loudly later — surface it in the exec result the caller sees.
+    if (this.effectiveEnv().GH_TOKEN) {
+      await this.exec('gh auth setup-git', { token });
+    }
   }
 
   /** Run one shell command inside the container via `bash -lc`. */
@@ -244,6 +306,9 @@ export class DevContainer implements NaniteContainer {
       this.workspaceDir,
       '--id-label',
       this.idLabel(),
+      // Re-pass the GitHub token so GH_TOKEN/GITHUB_TOKEN are set for git/gh in
+      // this exec. Kept out of devcontainer.json; never logged.
+      ...this.remoteEnvArgs(),
       '--',
       'bash',
       '-lc',

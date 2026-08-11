@@ -17,6 +17,7 @@
  *   - `templateId`   ← `spec.templateId` (owning template slug/id; absent → null)
  *   - `workstream`   ← `spec.workstream` (owning workstream slug; REQUIRED, immutable)
  *   - `inputTopic`   ← `spec.inputTopic` (input topic slug; REQUIRED, immutable)
+ *   - `configs`      ← `spec.configs`    (configmap slugs/ids for env injection; immutable)
  *   - `request`      ← `spec.request`   (the free-text request/prompt)
  *   - `phase`        ← `spec.phase`     (Pending | Running | Succeeded | Failed)
  *   - `startedAt`    ← `spec.startedAt` (unix seconds when Run began; else null)
@@ -93,6 +94,8 @@ export interface INanite {
   templateId: string | null;
   workstream: string;
   inputTopic: string;
+  /** Configmap slugs/ids injected into the run's dev container as env. */
+  configs: string[];
   request: string;
   phase: NanitePhase;
   /** Unix seconds the nanite was enqueued for dispatch (null until Queued). */
@@ -126,6 +129,7 @@ export class Nanite implements INanite {
   templateId: string | null;
   workstream: string;
   inputTopic: string;
+  configs: string[];
   request: string;
   phase: NanitePhase;
   queuedAt: number | null;
@@ -150,6 +154,9 @@ export class Nanite implements INanite {
     this.templateId = typeof spec.templateId === 'string' ? spec.templateId : null;
     this.workstream = typeof spec.workstream === 'string' ? spec.workstream : '';
     this.inputTopic = typeof spec.inputTopic === 'string' ? spec.inputTopic : '';
+    this.configs = Array.isArray(spec.configs)
+      ? spec.configs.filter((x): x is string => typeof x === 'string')
+      : [];
     this.request = typeof spec.request === 'string' ? spec.request : '';
     this.phase = (spec.phase as NanitePhase | undefined) ?? 'Pending';
     this.queuedAt = typeof spec.queuedAt === 'number' ? spec.queuedAt : null;

@@ -14,6 +14,8 @@ import {
   scopeKeyFor,
   type CommandJournalSpec,
 } from '../commandJournal';
+import { buildNaniteCompletionBrief } from '../nanites/completionMessage';
+import type { NaniteRunResult } from '../nanites/types';
 import type { PriorTurn } from '../wmToolLoop';
 
 /**
@@ -43,11 +45,18 @@ export interface WidgetContext {
   slug: string;
   kind: string;
 }
-
 type WidgetInbound =
   | { type: 'ready' }
   | { type: 'submitCommand'; command: string; contextSlug: string | null }
   | { type: 'openJournal'; id: string };
+
+/**
+ * Runs a long-lived AGENT (nanite) once with a chat directive as its request,
+ * resolving to the run result so the widget can journal the exchange under the
+ * agent's own scope. Injected by `extension.ts` (the runner lives in the
+ * extension host). See `nanites-as-longlived-chattable-agents`.
+ */
+export type DirectAgentFn = (naniteId: string, directive: string) => Promise<NaniteRunResult>;
 
 export class CommandWidgetProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'workingMemory.commandWidget';
@@ -67,6 +76,12 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly getClient: () => ControlPlaneClient | null,
+    /**
+     * Runs a nanite agent with a chat directive (the AGENT path). Optional so
+     * tests can omit it — absent ⇒ an agent-scoped message reports that agent
+     * direction isn't wired.
+     */
+    private readonly directAgent?: DirectAgentFn,
   ) {
     this.output = vscode.window.createOutputChannel('Working Memory Command');
   }
@@ -121,8 +136,14 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
    * widget's default scope follows the selected topic/workstream.
    */
   setContext(context: WidgetContext | null): void {
-    // Only topic/workstream make sense as a command scope; ignore others.
-    if (context && context.kind !== 'topic' && context.kind !== 'workstream') {
+    // A command scope is a topic, a workstream, or a long-lived AGENT (nanite);
+    // ignore anything else (e.g. topic-type / alert).
+    if (
+      context &&
+      context.kind !== 'topic' &&
+      context.kind !== 'workstream' &&
+      context.kind !== 'nanite'
+    ) {
       return;
     }
     const prevScope = scopeKeyFor(this.context?.slug ?? null);
@@ -185,6 +206,14 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
         type: 'briefError',
         message: 'The Working Memory control plane is not running, so no commands can be executed.',
       });
+      return;
+    }
+
+    // AGENT path: when the scope is a long-lived agent (nanite), a message is a
+    // DIRECTIVE — run the agent (extension-host runner) rather than the local
+    // WM tool-calling loop, and journal the exchange under the agent's scope.
+    if (this.context?.kind === 'nanite') {
+      await this.runAgentDirective(this.context.slug, trimmed, client);
       return;
     }
 
@@ -366,6 +395,93 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
           command: trimmed,
           contextSlug,
           contextKind,
+          brief: message,
+          toolCalls: [],
+          corrections: [],
+          stopReason: 'error',
+          status: 'failed',
+        }),
+        client,
+      );
+    }
+  }
+
+  /**
+   * The AGENT path: treat the message as a directive for a long-lived agent
+   * (nanite). Runs the agent through the injected extension-host runner and
+   * journals the directive + result as one `CommandJournal` turn scoped to the
+   * agent's id — the same two-phase write the local-model path uses, so the
+   * turn replays like any other and is right-click-openable. The agent's own
+   * completion write-back is suppressed (runner `postCompletion:false`) so the
+   * result lands here, on the agent's conversation, not on a topic/workstream.
+   */
+  private async runAgentDirective(
+    agentId: string,
+    directive: string,
+    client: ControlPlaneClient,
+  ): Promise<void> {
+    const scopeKey = scopeKeyFor(agentId);
+    this.view?.webview.postMessage({ type: 'briefRunning', scope: scopeKey });
+
+    if (!this.directAgent) {
+      this.view?.webview.postMessage({
+        type: 'briefError',
+        message: 'Agent direction is not available in this build.',
+        scope: scopeKey,
+      });
+      return;
+    }
+
+    // Phase 1 — journal the directive as `running` so the bubble persists + is
+    // openable immediately (mirrors the local-model path).
+    const journal = await this.createInitialJournal(
+      buildInitialJournalSpec({
+        workstream: scopeKey,
+        command: directive,
+        contextSlug: agentId,
+        contextKind: 'nanite',
+      }),
+      client,
+    );
+    if (journal) {
+      this.view?.webview.postMessage({ type: 'attachJournalId', id: journal.id, scope: scopeKey });
+    }
+
+    this.output.appendLine(
+      `\n[${new Date().toISOString()}] agent directive: ${JSON.stringify(directive)} ` +
+        `(agent: ${agentId})`,
+    );
+
+    try {
+      const result = await this.directAgent(agentId, directive);
+      const markdown = buildNaniteCompletionBrief(result);
+      this.view?.webview.postMessage({ type: 'brief', markdown, scope: scopeKey });
+      // Phase 2 — overwrite the `running` record with the run's outcome.
+      await this.finalizeJournal(
+        journal,
+        buildJournalSpec({
+          workstream: scopeKey,
+          command: directive,
+          contextSlug: agentId,
+          contextKind: 'nanite',
+          brief: markdown,
+          toolCalls: [],
+          corrections: [],
+          stopReason: result.status,
+          status: result.status === 'succeeded' ? 'succeeded' : 'failed',
+        }),
+        client,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.view?.webview.postMessage({ type: 'briefError', message, scope: scopeKey });
+      await this.finalizeJournal(
+        journal,
+        buildJournalSpec({
+          workstream: scopeKey,
+          command: directive,
+          contextSlug: agentId,
+          contextKind: 'nanite',
           brief: message,
           toolCalls: [],
           corrections: [],
