@@ -171,6 +171,215 @@ export interface GenericFieldVM {
 }
 
 /**
+ * One row in a Nanite doc's run-history list (its NaniteJournals), rendered at
+ * the bottom of the nanite page styled like a workstream card's topic rows.
+ * Structural mirror of `NaniteJournalRowVM` in
+ * `src/webview/documentEditorProvider.ts`.
+ */
+export interface NaniteJournalRowVM {
+  /** The NaniteJournal doc id — opens `working-memory:/document/<id>`. */
+  id: string;
+  /** Terminal outcome driving the row icon (null ⇒ still running/unknown). */
+  outcome: 'succeeded' | 'failed' | null;
+  /** Lifecycle phase text (Succeeded / Failed / Running / …). */
+  phase: string;
+  /** A short one-line summary of the run (or its error). */
+  summary: string;
+  /** Unix seconds the run ended (0 when unknown); the webview formats it. */
+  endedAt: number;
+  /** Human run duration (e.g. "2.3s", "1m 4s"), or '' when unknown. */
+  duration: string;
+}
+
+/**
+ * A link-out from a NaniteJournal detail view to a related document (the owning
+ * Nanite or its NaniteTemplate). Both open via the by-id `/document/<id>` route
+ * the panel already uses. `id` is empty when the reference couldn't be resolved
+ * (e.g. a nanite with no template), so the view hides the link.
+ */
+export interface NaniteJournalLinkVM {
+  /** Document id used to open it (empty ⇒ unresolved, link hidden). */
+  id: string;
+  /** Friendly label for the link. */
+  title: string;
+}
+
+/**
+ * One linked item in a multi-result {@link FriendlyReadVM} (list mode). Each
+ * item renders as its own clickable link opened via the panel's `onOpenRoute`.
+ * Structural mirror of `FriendlyReadItemVM` in
+ * `src/webview/documentEditorProvider.ts`.
+ */
+export interface FriendlyReadItemVM {
+  /** Human label (title → name → slug → id), truncated. */
+  label: string;
+  /** working-memory route to open the item (`/topic/<slug>.working-memory`, …). */
+  route: string;
+}
+
+/**
+ * A friendly summary of a Working-Memory document-READ tool step, derived
+ * host-side by `friendlyReadStep` from the step's parsed `result`/`input`. When
+ * present, the Execution trace renders a clickable one-line summary instead of
+ * raw JSON; the raw INPUT/RESULT stay available on the step's disclosure.
+ *
+ * Discriminated by `mode`:
+ * - `'single'` — a by-slug/id or count-1 read; renders `read <tool>
+ *   [<label> (v<version>)]`. `label`/`version`/`route` carry the item; the list
+ *   fields are empty (`scope: ''`, `items: []`, `moreCount: 0`).
+ * - `'list'`  — a multi-item read; renders `read <tool> <scope> → [A] [B] …`.
+ *   `scope` is the input-derived leading text (workstream slug / query, may be
+ *   `''`), `items` the linked results (capped), `moreCount` the overflow count;
+ *   the single fields are empty (`label: ''`, `version: 0`, `route: ''`).
+ *
+ * Fields are kept non-optional (with empty sentinels for the unused mode) so
+ * the webview↔host contract-parity guard stays a plain field-name comparison.
+ * Structural mirror of `FriendlyReadVM` in `src/webview/documentEditorProvider.ts`.
+ */
+export interface FriendlyReadVM {
+  /** Always `'read'` — the friendly verb shown before the tool name. */
+  verb: 'read';
+  /** The WM read tool that produced the result (e.g. `ws-topic-read`). */
+  tool: string;
+  /** `'single'` ⇒ label/version/route set; `'list'` ⇒ scope/items/moreCount set. */
+  mode: 'single' | 'list';
+  /** Single mode: human label for the item (title/name/slug/id), truncated. */
+  label: string;
+  /** Single mode: the item's `resourceVersion`. */
+  version: number;
+  /** Single mode: route to open the item (`/topic/<slug>.working-memory`, …). */
+  route: string;
+  /** List mode: leading scope text derived from input (workstream / query). */
+  scope: string;
+  /** List mode: the linked result items (capped for readability). */
+  items: FriendlyReadItemVM[];
+  /** List mode: count of items omitted beyond the cap (0 ⇒ none). */
+  moreCount: number;
+}
+
+/**
+ * One step in a NaniteJournal's execution trace, projected for the expandable
+ * per-step disclosure. `kind` labels assistant narration vs a tool call; for a
+ * tool step `ok` is its success flag (null for assistant steps).
+ */
+export interface NaniteJournalStepVM {
+  kind: 'assistant' | 'tool';
+  /** Display label — "Assistant" for narration, the tool name for a tool call. */
+  label: string;
+  /** Tool success flag (true/false); null for an assistant step. */
+  ok: boolean | null;
+  /** Assistant narration text (empty for a tool step). */
+  text: string;
+  /** Tool-call input, pretty-printed (empty when absent). */
+  input: string;
+  /** Tool-call result, pretty-printed (empty when absent). */
+  result: string;
+  /** Step error text (empty when the step didn't error). */
+  error: string;
+  /** Friendly WM-read summary (null ⇒ render the raw step). */
+  friendly: FriendlyReadVM | null;
+}
+
+/**
+ * One ROUND TRIP (model turn) in a NaniteJournal's execution trace — the
+ * top-level unit of the grouped Execution view. `narration` is the assistant's
+ * text for that turn (shown expanded); `toolSteps` are the tool calls it made
+ * that turn (each individually collapsible). Structural mirror of
+ * `NaniteJournalRoundVM` in `src/webview/documentEditorProvider.ts`.
+ */
+export interface NaniteJournalRoundVM {
+  /** The model-turn index this round represents (1-based when known). */
+  round: number;
+  /** The assistant narration for this round (may be empty). */
+  narration: string;
+  /** The tool calls the model made in this round (individually expandable). */
+  toolSteps: NaniteJournalStepVM[];
+}
+
+/** The acceptance-judge verdict rendered on a NaniteJournal detail view. */
+export interface NaniteJournalAcceptanceVM {
+  summary: string;
+  confidence: number;
+  threshold: number;
+  passed: boolean;
+}
+
+/**
+ * The single top-of-body callout on a NaniteJournal detail view. Consolidates
+ * the former run-error banner + separate acceptance card into one treatment.
+ * Structural mirror of `NaniteJournalCalloutVM` in
+ * `src/webview/documentEditorProvider.ts`.
+ */
+export interface NaniteJournalCalloutVM {
+  /** Visual variant: acceptance verdict, or a plain run-error banner. */
+  variant: 'accepted' | 'rejected' | 'failed';
+  /** Headline verdict text ("Accepted" | "Rejected"); empty for 'failed'. */
+  verdict: string;
+  /** "confidence X · threshold Y" for acceptance variants; empty otherwise. */
+  score: string;
+  /** Body text — the acceptance summary (reason), or the run's error message. */
+  reason: string;
+}
+
+/**
+ * The dedicated NaniteJournal detail view-model — ONE immutable record of a
+ * single nanite run, surfaced when a `NaniteJournal` document is focused. Built
+ * host-side by `projectNaniteJournalDetail` and carried on {@link GenericDocVM}
+ * (`naniteJournal`) so the generic editor can branch to a bespoke layout while
+ * keeping the shared document envelope (title / kind badge / timestamps).
+ * Structural mirror of `NaniteJournalDetailVM` in
+ * `src/webview/documentEditorProvider.ts`.
+ */
+/**
+ * One parsed segment of a journal prompt: literal `text`, or a document-sourced
+ * `block` extracted from a `// START BLOCK <route>#<field>?v<version>` …
+ * `// END BLOCK` span. Mirror of `PromptSegmentVM` in
+ * `src/webview/documentEditorProvider.ts`.
+ */
+export type PromptSegmentVM =
+  | { kind: 'text'; text: string }
+  | { kind: 'block'; route: string; field: string; version: string; content: string };
+
+export interface NaniteJournalDetailVM {
+  /** Terminal outcome (null ⇒ still running/unknown). */
+  outcome: 'succeeded' | 'failed' | null;
+  /** Lifecycle phase text (Succeeded / Failed / Running / …). */
+  phase: string;
+  /** Unix seconds the run was enqueued (0 when unknown). */
+  queuedAt: number;
+  /** Unix seconds the run started (0 when unknown). */
+  startedAt: number;
+  /** Unix seconds the run ended (0 when unknown). */
+  endedAt: number;
+  /** Human run duration (e.g. "2.3s", "1m 4s"), or '' when unknown. */
+  duration: string;
+  /** The full request text sent to the model that run. */
+  request: string;
+  /**
+   * The `request` parsed into ordered segments: plain text, or a
+   * document-sourced block the view renders as a collapsible link-out. Mirror
+   * of `PromptSegmentVM` in `src/webview/documentEditorProvider.ts`.
+   */
+  promptSegments: PromptSegmentVM[];
+  /** The ordered execution trace (assistant + tool steps). */
+  steps: NaniteJournalStepVM[];
+  /** The execution trace grouped into ordered round trips (model turns). */
+  rounds: NaniteJournalRoundVM[];
+  /** The run's failure message (empty when it didn't error). */
+  error: string;
+  /** Plain-language summary of what the run did. */
+  summary: string;
+  /** The acceptance-judge verdict, or null when never judged. */
+  acceptance: NaniteJournalAcceptanceVM | null;
+  /** The single top callout (null ⇒ nothing to flag). */
+  callout: NaniteJournalCalloutVM | null;
+  /** Link-out to the owning Nanite. */
+  nanite: NaniteJournalLinkVM;
+  /** Link-out to the owning NaniteTemplate (id empty when none). */
+  template: NaniteJournalLinkVM;
+}
+
+/**
  * The generic fallback view-model — rendered for ANY kind that has no bespoke
  * view, so nothing is ever unopenable. Carries the shared envelope + a readable
  * list of `spec` fields.
@@ -185,6 +394,13 @@ export interface GenericDocVM {
   updatedAt: number;
   resourceVersion: number;
   spec: GenericFieldVM[];
+  /** For a Nanite doc: its run history (newest-first). Absent for other kinds. */
+  journals?: NaniteJournalRowVM[];
+  /**
+   * For a `NaniteJournal` doc: the dedicated run-record detail. Present only for
+   * that kind, so the generic view branches to the bespoke journal layout.
+   */
+  naniteJournal?: NaniteJournalDetailVM;
 }
 
 /** The discriminated document view-model pushed from the extension host. */
@@ -243,6 +459,10 @@ export type WebviewToExt =
   | { type: 'openTopic'; slug: string }
   | { type: 'openWorkstream'; slug: string }
   | { type: 'openDocument'; id: string }
+  // Open a document by its working-memory route, parsed from a journal prompt
+  // block marker's link-out (`/document/<id>.working-memory` or
+  // `/topic/<slug>.working-memory`).
+  | { type: 'openRoute'; route: string }
   | { type: 'invoke'; command: string; args: unknown[] }
   | { type: 'togglePinTopic'; slug: string }
   // Transition an alert's lifecycle status (resolve / escalate / close / reopen)

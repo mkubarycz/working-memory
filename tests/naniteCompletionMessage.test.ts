@@ -2,8 +2,10 @@ import { describe, expect, test } from 'vitest';
 import {
   buildNaniteCompletionBrief,
   buildNaniteCompletionSpec,
+  buildNaniteCompletionSpecs,
   extractExposedAppUrl,
   naniteCompletionScope,
+  naniteSessionScope,
   type NaniteCompletionSource,
 } from '../src/nanites/completionMessage';
 import type { NaniteRunResult, NaniteRunStep } from '../src/nanites/types';
@@ -41,6 +43,70 @@ describe('naniteCompletionScope', () => {
 
   test('returns null when neither scope is set', () => {
     expect(naniteCompletionScope({ inputTopic: '', workstream: '', request: 'x' })).toBeNull();
+  });
+});
+
+describe('naniteSessionScope', () => {
+  test('scopes to the nanite id with contextKind nanite', () => {
+    expect(naniteSessionScope({ ...NANITE, id: 'nanite-42' })).toEqual({
+      scopeKey: 'nanite-42',
+      kind: 'nanite',
+    });
+  });
+
+  test('returns null when the source carries no id', () => {
+    expect(naniteSessionScope(NANITE)).toBeNull();
+    expect(naniteSessionScope({ ...NANITE, id: '  ' })).toBeNull();
+  });
+});
+
+describe('buildNaniteCompletionSpecs', () => {
+  test('posts the nanite session FIRST, then the input-topic ticket', () => {
+    const specs = buildNaniteCompletionSpecs({
+      nanite: { ...NANITE, id: 'nanite-42' },
+      result: result({ output: 'ok' }),
+    });
+    expect(specs.map((s) => [s.workstream, s.request.contextKind])).toEqual([
+      ['nanite-42', 'nanite'],
+      ['ship-the-thing', 'topic'],
+    ]);
+  });
+
+  test('falls back to the workstream ticket when there is no input topic', () => {
+    const specs = buildNaniteCompletionSpecs({
+      nanite: { id: 'nanite-42', inputTopic: '', workstream: 'product', request: 'x' },
+      result: result(),
+    });
+    expect(specs.map((s) => [s.workstream, s.request.contextKind])).toEqual([
+      ['nanite-42', 'nanite'],
+      ['product', 'workstream'],
+    ]);
+  });
+
+  test('emits only the session post when the nanite has no ticket scope', () => {
+    const specs = buildNaniteCompletionSpecs({
+      nanite: { id: 'nanite-42', inputTopic: '', workstream: '', request: 'x' },
+      result: result(),
+    });
+    expect(specs).toHaveLength(1);
+    expect(specs[0].request.contextKind).toBe('nanite');
+  });
+
+  test('dedupes when the id equals the ticket scope key', () => {
+    const specs = buildNaniteCompletionSpecs({
+      nanite: { id: 'ship-the-thing', inputTopic: 'ship-the-thing', workstream: 'product', request: 'x' },
+      result: result(),
+    });
+    expect(specs).toHaveLength(1);
+    expect(specs[0].workstream).toBe('ship-the-thing');
+  });
+
+  test('emits nothing when the nanite has neither an id nor a ticket scope', () => {
+    const specs = buildNaniteCompletionSpecs({
+      nanite: { inputTopic: '', workstream: '', request: 'x' },
+      result: result(),
+    });
+    expect(specs).toHaveLength(0);
   });
 });
 

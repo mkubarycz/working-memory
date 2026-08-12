@@ -24,6 +24,30 @@ import { validateSpec } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Nanite, NANITE_KIND } from './nanite.js';
 
+/**
+ * Run-result keys that used to live on the Nanite spec but moved to the
+ * NaniteJournal kind. An old nanite document may still carry them; the strict
+ * Nanite schema now rejects them, so they're dropped before re-validation.
+ */
+const LEGACY_RUN_KEYS = [
+  'prompt',
+  'output',
+  'missingTools',
+  'acceptance',
+  'toolCalls',
+  'steps',
+  'tokens',
+] as const;
+
+/** Return a copy of `spec` with the legacy run-result keys removed. */
+function stripLegacyRunKeys(spec: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...spec };
+  for (const key of LEGACY_RUN_KEYS) {
+    delete out[key];
+  }
+  return out;
+}
+
 /** Register the `ws-nanite-update` tool. */
 export function registerWsNaniteUpdate(server: McpServer, store: Store): void {
   server.registerTool(
@@ -85,7 +109,11 @@ export function registerWsNaniteUpdate(server: McpServer, store: Store): void {
       }
       let validatedSpec: Record<string, unknown>;
       try {
-        validatedSpec = validateSpec(NANITE_KIND, { ...existing.spec, ...patch });
+        // Strip legacy run-result keys that moved to the NaniteJournal kind:
+        // an old nanite document (written before the trim) may still carry
+        // them, and the strict Nanite schema would now reject the merge.
+        const merged = stripLegacyRunKeys({ ...existing.spec, ...patch });
+        validatedSpec = validateSpec(NANITE_KIND, merged);
       } catch (err) {
         return asError((err as Error).message);
       }

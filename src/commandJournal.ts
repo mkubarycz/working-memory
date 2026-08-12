@@ -53,6 +53,13 @@ export interface CommandJournalResponse {
   tokens?: { promptTokens?: number; evalTokens?: number; calls?: number };
   /** Wall-clock timing for the run (benchmarking story). Optional/back-compat. */
   timings?: CommandJournalTimings;
+  /**
+   * When this turn is a nanite run, the document id of the run's
+   * {@link NaniteJournal} record. The transcript turn links out to THAT record
+   * (the full run trace) instead of this CommandJournal doc, so a nanite turn
+   * opens its run journal. Absent for ordinary command turns.
+   */
+  naniteJournalId?: string;
 }
 
 /**
@@ -115,6 +122,12 @@ export interface BuildJournalSpecInput {
    * throw). Never `running` here — that's the INITIAL spec's job.
    */
   status?: Exclude<CommandJournalStatus, 'running'>;
+  /**
+   * When this turn is a nanite run, the run's {@link NaniteJournal} document id
+   * so the transcript turn links out to that record. Omitted for ordinary
+   * command turns.
+   */
+  naniteJournalId?: string;
   /** Injectable clock (defaults to `Date.now`) for deterministic tests. */
   now?: number;
 }
@@ -189,6 +202,9 @@ export function buildJournalSpec(input: BuildJournalSpecInput): CommandJournalSp
   if (input.timings) {
     response.timings = input.timings;
   }
+  if (input.naniteJournalId) {
+    response.naniteJournalId = input.naniteJournalId;
+  }
 
   return {
     workstream: input.workstream,
@@ -242,16 +258,24 @@ export function filterAndSortJournals(
 
 /** One replayable transcript turn for the webview (user command + brief). */
 export interface JournalTurn {
-  /** The underlying CommandJournal document id (for opening the record). */
+  /**
+   * The document id the turn opens (right-click → open record). For a nanite
+   * run this is its {@link NaniteJournal} id (the full run trace); otherwise the
+   * underlying CommandJournal document id.
+   */
   id: string;
   command: string;
   brief: string;
 }
 
-/** Map ordered journal docs into webview replay turns (oldest→newest). */
+/**
+ * Map ordered journal docs into webview replay turns (oldest→newest). A nanite
+ * turn opens its linked NaniteJournal record (`response.naniteJournalId`) rather
+ * than the CommandJournal doc, so the transcript links out to the run trace.
+ */
 export function journalsToTurns(docs: CommandJournalDoc[]): JournalTurn[] {
   return docs.map((d) => ({
-    id: d.id,
+    id: d.spec.response.naniteJournalId ?? d.id,
     command: d.spec.request.command,
     brief: d.spec.response.brief,
   }));

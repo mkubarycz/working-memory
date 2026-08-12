@@ -14,7 +14,6 @@
  */
 
 import type { NaniteRunResult, NaniteRunStep } from './types';
-
 /** The placeholder every redacted secret collapses to. */
 const MASK = '***';
 
@@ -118,8 +117,12 @@ function redactStep(step: NaniteRunStep, secrets?: RedactionSecrets): NaniteRunS
 
 /**
  * Return a copy of `result` with every persisted free-text field scrubbed:
- * `output`, `error`, and each step's narration / arg / result / error preview.
- * Structural fields (status, counts, tool-call names) are left untouched.
+ * `output`, `error`, each step's narration / arg / result / error preview, the
+ * acceptance verdict's `summary`, and every tool-call trail `error`. Structural
+ * fields (status, counts, tool-call names) are left untouched. The acceptance
+ * summary + tool-call errors are echoes of run text that can carry a leaked
+ * token / config value, so they must be scrubbed before landing in the journal
+ * or the completion brief (redaction gap, `nanite-journal`).
  */
 export function redactRunResult(
   result: NaniteRunResult,
@@ -130,5 +133,12 @@ export function redactRunResult(
     output: redactSecrets(result.output, secrets),
     error: result.error === undefined ? undefined : redactSecrets(result.error, secrets),
     steps: result.steps.map((step) => redactStep(step, secrets)),
+    acceptance:
+      result.acceptance === undefined
+        ? undefined
+        : { ...result.acceptance, summary: redactSecrets(result.acceptance.summary, secrets) },
+    toolCalls: result.toolCalls.map((call) =>
+      call.error === undefined ? call : { ...call, error: redactSecrets(call.error, secrets) },
+    ),
   };
 }

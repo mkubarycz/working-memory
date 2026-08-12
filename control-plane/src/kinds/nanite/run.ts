@@ -4,10 +4,12 @@
  * Walks the lifecycle Pending → Running → (Succeeded | Failed), stamping
  * `startedAt` / `endedAt`. It is a persistence PRIMITIVE, not the engine: the
  * real headless engine (the extension-host runner in `src/nanites/`) drives the
- * model + tools, then calls this tool's finishing step to record the terminal
- * phase plus the run RESULT (`output`, `acceptance`, `toolCalls`, `tokens`).
- * Refuses when the Nanite is not currently `Pending`/`Running` (idempotent
- * guard — a Nanite runs once).
+ * model + tools, appends the run's {@link NaniteJournal} record, then calls this
+ * tool's finishing step to record the terminal phase plus a light
+ * `latestJournalId` pointer to that record. The run RESULT itself (output,
+ * steps, acceptance, toolCalls, tokens, …) NEVER lands on the nanite spec —
+ * only the pointer does. Refuses when the Nanite is not currently
+ * `Pending`/`Running` (idempotent guard — a Nanite runs once).
  */
 
 import { z } from 'zod';
@@ -44,8 +46,9 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
         'approval (`approved: true`, set by the Run action) OR when the owning template sets ' +
         '`allowRunWithoutHuman` — otherwise it is rejected (the nanite stays Pending). `begin: true` ' +
         '(dispatcher/engine only) starts execution (→ Running); the control plane cannot run models. ' +
-        'The finishing call (Running → terminal) carries `outcome` + the run RESULT (`output`, ' +
-        '`acceptance`, `toolCalls`, `tokens`). `reset` returns to Pending. Returns the updated nanite.',
+        'The finishing call (Running → terminal) carries `outcome` + a light `latestJournalId` ' +
+        'pointer to the run\'s NaniteJournal record (the run RESULT lives in that record, never ' +
+        'on the nanite spec). `reset` returns to Pending. Returns the updated nanite.',
       inputSchema: {
         id: z.string().describe('Document id of the nanite to run (required).'),
         approved: z
@@ -61,68 +64,17 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           .optional()
           .describe("Terminal phase to land in (default 'succeeded')."),
         error: z.string().optional().describe('Failure message (used when outcome is failed).'),
-        prompt: z
+        latestJournalId: z
           .string()
           .optional()
-          .describe('The full request text sent to the model, instructions + context (finishing call).'),
-        output: z
-          .string()
-          .optional()
-          .describe('The run\'s verbatim final text (finishing call).'),
-        acceptance: z
-          .object({
-            summary: z.string(),
-            confidence: z.number(),
-            threshold: z.number(),
-            passed: z.boolean(),
-          })
-          .nullable()
-          .optional()
-          .describe('The acceptance-judge verdict (finishing call).'),
-        toolCalls: z
-          .array(
-            z.object({
-              name: z.string(),
-              ok: z.boolean(),
-              error: z.string().optional(),
-            }),
-          )
-          .optional()
-          .describe('The run\'s tool-call trail (finishing call).'),
-        steps: z
-          .array(
-            z.object({
-              kind: z.enum(['assistant', 'tool']),
-              text: z.string().optional(),
-              name: z.string().optional(),
-              ok: z.boolean().optional(),
-              input: z.string().optional(),
-              result: z.string().optional(),
-              error: z.string().optional(),
-            }),
-          )
-          .optional()
-          .describe('The run\'s ordered execution trace — model narration interleaved with each tool call, in execution order (finishing call).'),
-        missingTools: z
-          .array(z.string())
-          .optional()
-          .describe('Allow-list entries that were unavailable at run time (finishing call).'),
-        tokens: z
-          .object({
-            input_tokens: z.number(),
-            output_tokens: z.number(),
-            total_tokens: z.number(),
-          })
-          .nullable()
-          .optional()
-          .describe('Approximate token usage, loop + judge (finishing call).'),
+          .describe("Document id of the run's NaniteJournal record (finishing call). Stored as a light pointer to the newest run; the result itself lives in that journal."),
         reset: z
           .boolean()
           .optional()
-          .describe('Reset the nanite back to Pending from ANY phase (clears timings + result) so it can be re-run. Use to clear a stuck Running nanite.'),
+          .describe('Reset the nanite back to Pending from ANY phase (clears timings + latest-run pointer) so it can be re-run. Use to clear a stuck Running nanite.'),
       },
     },
-    async ({ id, begin, approved, outcome, error, prompt, output, acceptance, toolCalls, steps, missingTools, tokens, reset }) => {
+    async ({ id, begin, approved, outcome, error, latestJournalId, reset }) => {
       const existing = store.getDocument({ id, kind: NANITE_KIND });
       if (!existing || existing.kind !== NANITE_KIND) {
         return asError(`Unknown nanite id: "${id}". No live nanite with that id.`);
@@ -134,7 +86,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
       // ENQUEUES (gated by human approval / the template flag).
       let mergedSpec: Record<string, unknown>;
       if (reset) {
-        // Return to Pending from any phase (clears a stuck run).
+        // Return to Pending from any phase (clears a stuck run + its pointer).
         mergedSpec = {
           ...existing.spec,
           phase: 'Pending',
@@ -142,12 +94,7 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           startedAt: null,
           endedAt: null,
           error: '',
-          output: '',
-          acceptance: null,
-          toolCalls: [],
-          steps: [],
-          missingTools: [],
-          tokens: null,
+          latestJournalId: null,
         };
       } else if (begin) {
         // The extension-host engine is STARTING execution (Pending|Queued → Running).
@@ -164,21 +111,14 @@ export function registerWsNaniteRun(server: McpServer, store: Store): void {
           error: '',
         };
       } else if (phase === 'Running') {
-        // Finishing call (Running → terminal), carrying the run result.
+        // Finishing call (Running → terminal). The run RESULT lives in the
+        // run's NaniteJournal record; the nanite keeps only a light pointer.
         mergedSpec = {
           ...existing.spec,
           phase: outcome === 'failed' ? 'Failed' : 'Succeeded',
           endedAt: nowSeconds(),
           error: outcome === 'failed' ? (error ?? 'Nanite failed.') : '',
-          // Persist the run result carried by the finishing call. Absent fields
-          // fall back to whatever the spec already held (defaults on create).
-          ...(prompt !== undefined ? { prompt } : {}),
-          ...(output !== undefined ? { output } : {}),
-          ...(acceptance !== undefined ? { acceptance } : {}),
-          ...(toolCalls !== undefined ? { toolCalls } : {}),
-          ...(steps !== undefined ? { steps } : {}),
-          ...(missingTools !== undefined ? { missingTools } : {}),
-          ...(tokens !== undefined ? { tokens } : {}),
+          ...(latestJournalId !== undefined ? { latestJournalId } : {}),
         };
       } else if (phase === 'Queued') {
         // Already queued — a bare re-enqueue is an idempotent no-op.

@@ -234,7 +234,7 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
     }
   });
 
-  it('persists the run result — output, toolCalls, and the ordered steps trace — and reads it back', async () => {
+  it('stamps the latestJournalId pointer on the finishing call and reads it back', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       await client.callTool({
@@ -255,43 +255,47 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id } });
       await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id, begin: true } });
 
-      const steps = [
-        { kind: 'assistant', text: 'Listing topics first.' },
-        { kind: 'tool', name: 'wm_list_topics', ok: true, input: '{"status":"open"}', result: '[]' },
-        { kind: 'tool', name: 'wm_delete_topic', ok: false, input: '{"slug":"a"}', error: 'not granted' },
-      ];
+      // The run RESULT lives in a NaniteJournal record; the nanite only keeps a
+      // light pointer to it. Append the journal, then finish with its id.
+      const journal = jsonOf<{ id: string }>(
+        await client.callTool({
+          name: 'ws-nanitejournal-create',
+          arguments: {
+            naniteId: created.id,
+            workstream: 'ws-trace',
+            status: { phase: 'Succeeded', outcome: 'succeeded' },
+            results: { summary: 'all done' },
+          },
+        }),
+      );
       const finished = jsonOf<INanite>(
         await client.callTool({
           name: 'ws-nanite-run',
           arguments: {
             id: created.id,
             outcome: 'succeeded',
-            output: 'all done',
-            toolCalls: [
-              { name: 'wm_list_topics', ok: true },
-              { name: 'wm_delete_topic', ok: false, error: 'not granted' },
-            ],
-            steps,
+            latestJournalId: journal.id,
           },
         }),
       );
 
       expect(finished.phase).toBe('Succeeded');
-      expect(finished.output).toBe('all done');
-      // The ordered trace survives the strict spec schema round-trip.
-      expect(finished.steps).toEqual(steps);
+      // The run result is NOT on the nanite — only the journal pointer is.
+      expect(finished.latestJournalId).toBe(journal.id);
+      expect((finished as Record<string, unknown>).output).toBeUndefined();
+      expect((finished as Record<string, unknown>).steps).toBeUndefined();
 
-      // And it's still there on a fresh read.
+      // And the pointer is still there on a fresh read.
       const reread = jsonOf<{ nanites: INanite[] }>(
         await client.callTool({ name: 'ws-nanite-read', arguments: { id: created.id } }),
       );
-      expect(reread.nanites[0]?.steps).toEqual(steps);
+      expect(reread.nanites[0]?.latestJournalId).toBe(journal.id);
     } finally {
       await close();
     }
   });
 
-  it('reset clears the steps trace back to empty', async () => {
+  it('reset clears the latestJournalId pointer back to null', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       await client.callTool({
@@ -310,20 +314,22 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       );
       await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id } });
       await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id, begin: true } });
+      const journal = jsonOf<{ id: string }>(
+        await client.callTool({
+          name: 'ws-nanitejournal-create',
+          arguments: { naniteId: created.id, results: { summary: 'x' } },
+        }),
+      );
       await client.callTool({
         name: 'ws-nanite-run',
-        arguments: {
-          id: created.id,
-          outcome: 'succeeded',
-          steps: [{ kind: 'tool', name: 'wm_list_topics', ok: true }],
-        },
+        arguments: { id: created.id, outcome: 'succeeded', latestJournalId: journal.id },
       });
 
       const reset = jsonOf<INanite>(
         await client.callTool({ name: 'ws-nanite-run', arguments: { id: created.id, reset: true } }),
       );
       expect(reset.phase).toBe('Pending');
-      expect(reset.steps).toEqual([]);
+      expect(reset.latestJournalId).toBeNull();
     } finally {
       await close();
     }

@@ -180,8 +180,30 @@ export interface ToolCallOutcome {
  * what came back. Previews (`input`/`result`) are pre-stringified and truncated
  * by the runner so the persisted trace stays bounded.
  */
+/** A body-free identity projection of one item from a WM read tool result. */
+export interface NaniteReadDigestItem {
+  id?: string;
+  slug?: string;
+  title?: string;
+  name?: string;
+  resourceVersion?: number;
+}
+
+/**
+ * A compact, body-free digest of a Working-Memory READ tool result, captured at
+ * record time from the FULL (untruncated) result so the friendly Execution
+ * rendering never depends on the truncated `result` preview. `count` is the true
+ * total; `items` carries only identity fields (no bodies) and is capped.
+ */
+export interface NaniteReadResultDigest {
+  count: number;
+  items: NaniteReadDigestItem[];
+}
+
 export interface NaniteRunStep {
   kind: 'assistant' | 'tool';
+  /** Model-turn index this step occurred in (the run's round / round-trip). */
+  round?: number;
   /** Assistant narration for this step (`kind: 'assistant'`). */
   text?: string;
   /** Tool name (`kind: 'tool'`). */
@@ -194,6 +216,12 @@ export interface NaniteRunStep {
   result?: string;
   /** Failure message (`kind: 'tool'`, when the call errored or was denied). */
   error?: string;
+  /**
+   * Compact, body-free digest of a WM READ tool result (`kind: 'tool'`, success
+   * only), captured from the FULL result before {@link result} was truncated.
+   * Absent for non-WM-read tools or unparseable results.
+   */
+  resultDigest?: NaniteReadResultDigest;
 }
 
 /** The acceptance-judge verdict, surfaced on (and persisted with) a run. */
@@ -266,6 +294,13 @@ export interface NaniteRunResult {
   responseSummary?: string;
   /** Failure message (present when status is 'failed'). */
   error?: string;
+  /**
+   * Document id of the {@link NaniteJournal} record the runner appended for this
+   * run (set on the finishing path). Threaded into the completion chat turn so
+   * it links out to the specific run record. Absent when no journal was written
+   * (e.g. a client without `naniteJournalCreate`).
+   */
+  journalId?: string;
 }
 
 /**

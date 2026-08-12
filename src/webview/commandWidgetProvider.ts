@@ -469,6 +469,9 @@ export class CommandWidgetProvider implements vscode.WebviewViewProvider {
           corrections: [],
           stopReason: result.status,
           status: result.status === 'succeeded' ? 'succeeded' : 'failed',
+          // Link the turn out to the run's NaniteJournal record (the full run
+          // trace) when the runner wrote one, instead of this CommandJournal doc.
+          naniteJournalId: result.journalId,
         }),
         client,
       );

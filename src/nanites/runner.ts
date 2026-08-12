@@ -19,6 +19,8 @@
 import type {
   NaniteAcceptance,
   NaniteLmBridge,
+  NaniteReadDigestItem,
+  NaniteReadResultDigest,
   NaniteRunResult,
   NaniteRunStep,
   RunNaniteOptions,
@@ -30,6 +32,85 @@ const NEVER_CANCELLED: RunnerToken = { isCancellationRequested: false };
 
 /** Cap on each persisted arg/result preview so the trace stays bounded. */
 const MAX_STEP_PREVIEW = 800;
+
+/**
+ * WM document-READ tool names whose `{ count, <array> }` results are digested
+ * into a compact, body-free {@link NaniteReadResultDigest} at record time.
+ * Mirrors the view's `WM_READ_TOOLS` set (documentEditorProvider.ts).
+ */
+const WM_READ_TOOL_NAMES = new Set([
+  'ws-topic-read',
+  'ws-workstream-read',
+  'ws-topictype-read',
+  'ws-config-read',
+  'ws-alert-read',
+  'ws-nanite-read',
+  'ws-nanitejournal-read',
+]);
+
+/** Max identity items stored in a read digest (`count` preserves the true total). */
+const MAX_DIGEST_ITEMS = 12;
+/** Clip length for a digest item's `title`/`name`. */
+const MAX_DIGEST_LABEL = 80;
+
+/**
+ * Build a compact, body-free digest from a WM READ tool's FULL (untruncated)
+ * result string. Returns `undefined` (never throws) for a non-WM-read tool, an
+ * unparseable result, or a shape that isn't `{ count: number, <array> }`. Takes
+ * the first array-valued property as the items and keeps ONLY identity fields
+ * (`id`/`slug`/`title`/`name`/`resourceVersion`) — no bodies — so the digest
+ * survives the {@link MAX_STEP_PREVIEW} truncation of `result`.
+ */
+function buildReadResultDigest(
+  name: string,
+  resultText: string,
+): NaniteReadResultDigest | undefined {
+  if (!WM_READ_TOOL_NAMES.has(name)) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(resultText);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return undefined;
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.count !== 'number') {
+    return undefined;
+  }
+  const arr = Object.values(obj).find((v) => Array.isArray(v)) as unknown[] | undefined;
+  if (!arr) {
+    return undefined;
+  }
+  const items: NaniteReadDigestItem[] = [];
+  for (const raw of arr.slice(0, MAX_DIGEST_ITEMS)) {
+    if (!raw || typeof raw !== 'object') {
+      continue;
+    }
+    const r = raw as Record<string, unknown>;
+    const item: NaniteReadDigestItem = {};
+    if (typeof r.id === 'string') {
+      item.id = r.id;
+    }
+    if (typeof r.slug === 'string') {
+      item.slug = r.slug;
+    }
+    if (typeof r.title === 'string') {
+      item.title = r.title.slice(0, MAX_DIGEST_LABEL);
+    }
+    if (typeof r.name === 'string') {
+      item.name = r.name.slice(0, MAX_DIGEST_LABEL);
+    }
+    if (typeof r.resourceVersion === 'number') {
+      item.resourceVersion = r.resourceVersion;
+    }
+    items.push(item);
+  }
+  return { count: obj.count, items };
+}
 
 /** Stringify + truncate a value for a step preview (compact JSON for objects). */
 function stepPreview(value: unknown): string {
@@ -89,6 +170,10 @@ export async function runNanite(
         throw new Error('run cancelled');
       }
       iterations++;
+      // The round/round-trip this turn's steps belong to — the model-completion
+      // counter, tagged onto every step so the view can group by round trip
+      // without re-inferring boundaries from narration.
+      const round = iterations;
       const turn = await convo.next(token);
 
       if (!turn.toolCalls.length) {
@@ -102,7 +187,7 @@ export async function runNanite(
         // Record the between-tool narration in the execution trace so the
         // rendered workflow shows what the model was reasoning before it
         // reached for the tools below.
-        steps.push({ kind: 'assistant', text: turn.text.trim() });
+        steps.push({ kind: 'assistant', round, text: turn.text.trim() });
       }
 
       for (const call of turn.toolCalls) {
@@ -111,6 +196,7 @@ export async function runNanite(
           toolCalls.push({ name: call.name, ok: false, error: err });
           steps.push({
             kind: 'tool',
+            round,
             name: call.name,
             ok: false,
             input: stepPreview(call.input),
@@ -126,19 +212,28 @@ export async function runNanite(
         try {
           const resultText = await bridge.invokeTool(call.name, call.input, token);
           toolCalls.push({ name: call.name, ok: true });
-          steps.push({
+          const toolStep: NaniteRunStep = {
             kind: 'tool',
+            round,
             name: call.name,
             ok: true,
             input: stepPreview(call.input),
             result: stepPreview(resultText),
-          });
+          };
+          // Digest the FULL result before `stepPreview` truncates `result`, so
+          // the friendly read rendering never depends on the truncated preview.
+          const digest = buildReadResultDigest(call.name, resultText);
+          if (digest) {
+            toolStep.resultDigest = digest;
+          }
+          steps.push(toolStep);
           convo.addToolResult(call.callId, call.name, resultText);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           toolCalls.push({ name: call.name, ok: false, error: message });
           steps.push({
             kind: 'tool',
+            round,
             name: call.name,
             ok: false,
             input: stepPreview(call.input),

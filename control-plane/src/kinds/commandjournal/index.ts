@@ -109,6 +109,13 @@ const commandJournal: KindModule = {
               })
               .strip()
               .optional(),
+            /**
+             * When this turn is a nanite run, the run's NaniteJournal document
+             * id — the transcript turn links out to that record. Absent for
+             * ordinary command turns. (Must be declared: the spec is `.strip()`,
+             * so an undeclared field would be dropped on write.)
+             */
+            naniteJournalId: z.string().optional(),
           })
           .strip(),
       })
