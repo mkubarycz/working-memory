@@ -27,6 +27,19 @@ export interface NaniteContainerExecResult {
 }
 
 /**
+ * A body-free identity of the dev container a run (and its container-backed tool
+ * steps) executed inside. `id` is the run's container id (the `wm-nanite`
+ * id-label value); `name`/`host` are the OrbStack per-container name and its
+ * `<name>.orb.local` domain, present only when resolvable cheaply. Carries NO
+ * secrets, so it is safe to persist onto the run trace and render in the view.
+ */
+export interface NaniteContainerIdentity {
+  id: string;
+  name?: string;
+  host?: string;
+}
+
+/**
  * A per-run execution container (backed by the devcontainer CLI in production;
  * faked in tests). The runner owns its lifecycle: {@link up} once before the
  * model loop, {@link exec} for each `run_command` tool call, {@link down} in a
@@ -53,6 +66,16 @@ export interface NaniteContainer {
     port?: number,
     opts?: { token?: RunnerToken },
   ): Promise<{ url: string; name?: string }>;
+  /**
+   * Resolve this run's container identity — its id (the `wm-nanite` id-label
+   * value) plus, best-effort, the OrbStack name + `<name>.orb.local` host. Used
+   * ONCE after {@link up} so container-backed tool steps can record WHICH
+   * container they ran inside. Optional so lightweight fakes need not implement
+   * it. Implementations must NOT add a per-step Docker round-trip: resolve (and
+   * cache) the OrbStack name at most once, returning just `{ id }` when it can't
+   * be resolved cheaply.
+   */
+  describe?(opts?: { token?: RunnerToken }): Promise<NaniteContainerIdentity>;
 }
 
 export interface NaniteToolCall {
@@ -222,6 +245,13 @@ export interface NaniteRunStep {
    * Absent for non-WM-read tools or unparseable results.
    */
   resultDigest?: NaniteReadResultDigest;
+  /**
+   * The dev container this step ran inside — stamped ONLY on container-backed
+   * tool steps (`run_command` / `expose_port`), absent for every other tool and
+   * for assistant narration. Lets the Execution view show WHICH container the
+   * step touched (and link out to its host).
+   */
+  container?: NaniteContainerIdentity;
 }
 
 /** The acceptance-judge verdict, surfaced on (and persisted with) a run. */
@@ -254,6 +284,13 @@ export interface RunNaniteOptions {
    * seed so the bridge can offer + route the per-run `run_command` tool.
    */
   container?: NaniteContainer | null;
+  /**
+   * The container's body-free identity (id + best-effort OrbStack name/host),
+   * captured ONCE after {@link NaniteContainer.up} by the wrapping runner. When
+   * present, the core stamps it onto every container-backed tool step
+   * (`run_command` / `expose_port`) so the trace records which container ran it.
+   */
+  containerIdentity?: NaniteContainerIdentity | null;
   /** Safety cap on model turns. Defaults to 12. */
   maxIterations?: number;
   token?: RunnerToken;

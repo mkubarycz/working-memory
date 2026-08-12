@@ -75,6 +75,18 @@ export interface NaniteReadResultDigest {
 }
 
 /**
+ * A body-free identity of the dev container a container-backed tool step ran
+ * inside: the run's container `id` (the `wm-nanite` id-label value) plus, when
+ * cheaply resolvable, the OrbStack `name` + `<name>.orb.local` `host`. Carries
+ * NO secrets, so it is safe to persist and render.
+ */
+export interface NaniteContainerIdentity {
+  id: string;
+  name?: string;
+  host?: string;
+}
+
+/**
  * One ordered step in a run's execution trace: the model's narration
  * (`kind: 'assistant'`) or a single tool call (`kind: 'tool'`), in execution
  * order. Richer than {@link NaniteToolCallOutcome} — it also carries between-tool
@@ -96,6 +108,11 @@ export interface NaniteRunStep {
    * only), captured from the FULL result before `result` was truncated.
    */
   resultDigest?: NaniteReadResultDigest;
+  /**
+   * The dev container this step ran inside — stamped ONLY on container-backed
+   * tool steps (`run_command` / `expose_port`).
+   */
+  container?: NaniteContainerIdentity;
 }
 
 /** Approximate token usage (loop + judge) recorded on a finished Nanite. */

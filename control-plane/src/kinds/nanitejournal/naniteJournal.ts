@@ -24,6 +24,7 @@
 import type { DocumentEnvelope } from '../../store.js';
 import type {
   NaniteAcceptance,
+  NaniteContainerIdentity,
   NanitePhase,
   NaniteReadDigestItem,
   NaniteReadResultDigest,
@@ -228,9 +229,32 @@ function readSteps(value: unknown): NaniteRunStep[] {
     if (digest) {
       step.resultDigest = digest;
     }
+    const container = readContainerIdentity(v.container);
+    if (container) {
+      step.container = container;
+    }
     out.push(step);
   }
   return out;
+}
+
+/** Reconstruct a step's container identity (undefined on absent/foreign shape). */
+function readContainerIdentity(value: unknown): NaniteContainerIdentity | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const v = value as Record<string, unknown>;
+  if (typeof v.id !== 'string' || v.id === '') {
+    return undefined;
+  }
+  const identity: NaniteContainerIdentity = { id: v.id };
+  if (typeof v.name === 'string') {
+    identity.name = v.name;
+  }
+  if (typeof v.host === 'string') {
+    identity.host = v.host;
+  }
+  return identity;
 }
 
 /** Reconstruct a step's body-free read digest (undefined on absent/foreign shape). */

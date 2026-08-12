@@ -7,9 +7,11 @@
     onOpenDocument: (id: string) => void;
     /** Open a document by its working-memory route (prompt block link-out). */
     onOpenRoute: (route: string) => void;
+    /** Open an external URL (e.g. a container's https host) in the browser. */
+    onOpenExternal: (url: string) => void;
   }
 
-  let { doc, onOpenDocument, onOpenRoute }: Props = $props();
+  let { doc, onOpenDocument, onOpenRoute, onOpenExternal }: Props = $props();
 
   function fmtTs(ts: number): string {
     if (!ts) {
@@ -248,6 +250,24 @@
                   {:else}
                     <span class="nj-step-kind tool">tool</span>
                     <span class="nj-step-label mono">{step.label}</span>
+                    {#if step.container}
+                      {@const c = step.container}
+                      <span class="nj-step-container-sep">·</span>
+                      {#if c.host}
+                        <a
+                          class="nj-block-link nj-step-container"
+                          href={`https://${c.host}`}
+                          title={`Open https://${c.host}`}
+                          onclick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onOpenExternal(`https://${c.host}`);
+                          }}
+                        >{c.name || c.id}</a>
+                      {:else}
+                        <span class="nj-step-container mono">{c.name || c.id}</span>
+                      {/if}
+                    {/if}
                   {/if}
                 {:else}
                   <span class="codicon codicon-hubot nj-step-status assistant"></span>
@@ -941,6 +961,19 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 0.9em;
+  }
+
+  .nj-step-container-sep {
+    opacity: 0.5;
+    font-size: 0.9em;
+  }
+
+  .nj-step-container {
+    font-size: 0.85em;
+    color: var(--vscode-descriptionForeground);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .nj-step-body {

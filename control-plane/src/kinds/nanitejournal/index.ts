@@ -66,6 +66,13 @@ const steps = z
             .default([]),
         })
         .optional(),
+      container: z
+        .object({
+          id: z.string(),
+          name: z.string().optional(),
+          host: z.string().optional(),
+        })
+        .optional(),
     }),
   )
   .default([]);

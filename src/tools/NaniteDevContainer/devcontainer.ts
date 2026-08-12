@@ -27,6 +27,7 @@ import { join } from 'node:path';
 import type {
   NaniteContainer,
   NaniteContainerExecResult,
+  NaniteContainerIdentity,
   RunnerToken,
 } from '../../nanites/types';
 
@@ -168,6 +169,8 @@ export class DevContainer implements NaniteContainer {
   private readonly devcontainerBin: string;
   private readonly dockerBin: string;
   private upDone = false;
+  /** Resolved OrbStack per-container name, cached after the first lookup. */
+  private cachedOrbStackName: string | null = null;
 
   constructor(
     private readonly config: DevContainerConfig,
@@ -371,6 +374,48 @@ export class DevContainer implements NaniteContainer {
   }
 
   /**
+   * Resolve — and cache — this run's OrbStack per-container name (`ps` by label
+   * → `inspect .Name`). At most ONE docker round-trip pair per run: a resolved
+   * name is memoized so repeat callers (`describe` + every `exposePort`) never
+   * re-shell. Returns `''` when no container is up or the name is empty (not
+   * cached, so a later call can retry once the container exists).
+   */
+  private async resolveOrbStackName(token?: RunnerToken): Promise<string> {
+    if (this.cachedOrbStackName) {
+      return this.cachedOrbStackName;
+    }
+    const id = await this.runningContainerId(token);
+    if (!id) {
+      return '';
+    }
+    const name = await this.orbStackName(id, token);
+    if (name) {
+      this.cachedOrbStackName = name;
+    }
+    return name;
+  }
+
+  /**
+   * This run's body-free container identity: the config id (the `wm-nanite`
+   * id-label value) plus, best-effort, the OrbStack name + `<name>.orb.local`
+   * host. Adds at most ONE cached name lookup (never a per-step round-trip);
+   * returns just `{ id }` when the name can't be resolved cheaply. Never throws.
+   */
+  async describe(opts: { token?: RunnerToken } = {}): Promise<NaniteContainerIdentity> {
+    const identity: NaniteContainerIdentity = { id: this.config.id };
+    try {
+      const name = await this.resolveOrbStackName(opts.token);
+      if (name) {
+        identity.name = name;
+        identity.host = `${name}.orb.local`;
+      }
+    } catch {
+      // Best-effort: identity degrades to just the id when Docker is unreachable.
+    }
+    return identity;
+  }
+
+  /**
    * Resolve this run's container to a host-reachable URL at runtime — no
    * pre-declaration, no container recreation.
    *
@@ -395,12 +440,13 @@ export class DevContainer implements NaniteContainer {
     if (!id) {
       throw new Error('cannot expose port: no running container for this run');
     }
-    const name = await this.orbStackName(id, opts.token);
+    const name = this.cachedOrbStackName ?? (await this.orbStackName(id, opts.token));
     if (!name) {
       throw new Error(
         'could not expose port: the container name (OrbStack domain) is unavailable',
       );
     }
+    this.cachedOrbStackName = name;
     return { url: `https://${name}.orb.local/`, name };
   }
 }

@@ -79,6 +79,13 @@ export function registerWsNaniteJournalCreate(server: McpServer, store: Store): 
                         .optional(),
                     })
                     .optional(),
+                  container: z
+                    .object({
+                      id: z.string(),
+                      name: z.string().optional(),
+                      host: z.string().optional(),
+                    })
+                    .optional(),
                 }),
               )
               .optional(),

@@ -574,6 +574,16 @@ export interface NaniteRunStep {
       resourceVersion?: number;
     }>;
   };
+  /**
+   * The dev container this step ran inside — present ONLY on container-backed
+   * tool steps (`run_command` / `expose_port`). Mirror of the control-plane
+   * `NaniteContainerIdentity`.
+   */
+  container?: {
+    id: string;
+    name?: string;
+    host?: string;
+  };
 }
 
 /** Approximate token usage (loop + judge) recorded on a finished Nanite. */

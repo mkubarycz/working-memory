@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { runNanite } from '../src/nanites/runner';
 import {
   ExtensionHostNaniteRunner,
+  resolveRunLimits,
   type NaniteRunnerClient,
 } from '../src/nanites/extensionHostRunner';
 import { matchesToolName, resolveToolPlan } from '../src/nanites/toolNames';
@@ -1127,6 +1128,129 @@ describe('ExtensionHostNaniteRunner dev container', () => {
     // The model loop never started; the container is never torn down.
     expect(bridge.started).toBeUndefined();
     expect(container.downCalls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Configurable per-run caps: resolveRunLimits (pure) + threading integration
+// ---------------------------------------------------------------------------
+describe('resolveRunLimits (per-run caps)', () => {
+  test('tool-only template with empty executionSettings → 12 rounds / 120s', () => {
+    expect(resolveRunLimits(fakeTemplate())).toEqual({
+      maxIterations: 12,
+      timeoutMs: 120_000,
+    });
+  });
+
+  test('container-granting template with empty executionSettings → 40 rounds / 900s', () => {
+    const tpl = fakeTemplate({ toolAllowlist: ['run_command'] });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 40, timeoutMs: 900_000 });
+  });
+
+  test('a wildcard allow-list counts as container-backed (roomier defaults)', () => {
+    const tpl = fakeTemplate({ toolAllowlist: ['*'] });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 40, timeoutMs: 900_000 });
+  });
+
+  test('run_command on the deny-list falls back to tool-only defaults', () => {
+    const tpl = fakeTemplate({ toolAllowlist: ['*'], toolDenylist: ['run_command'] });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 12, timeoutMs: 120_000 });
+  });
+
+  test('explicit executionSettings override the type defaults (after clamping)', () => {
+    const tpl = fakeTemplate({
+      toolAllowlist: ['run_command'],
+      executionSettings: { maxIterations: 5, runTimeoutSeconds: 60 },
+    });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 5, timeoutMs: 60_000 });
+  });
+
+  test('out-of-range values clamp to bounds (rounds [1,200], timeout [30,3600]s)', () => {
+    const tooBig = fakeTemplate({
+      executionSettings: { maxIterations: 9999, runTimeoutSeconds: 100_000 },
+    });
+    expect(resolveRunLimits(tooBig)).toEqual({ maxIterations: 200, timeoutMs: 3_600_000 });
+
+    const tooSmall = fakeTemplate({
+      executionSettings: { maxIterations: 0, runTimeoutSeconds: 5 },
+    });
+    expect(resolveRunLimits(tooSmall)).toEqual({ maxIterations: 1, timeoutMs: 30_000 });
+  });
+
+  test('fractional values round to an integer before clamping', () => {
+    const tpl = fakeTemplate({
+      executionSettings: { maxIterations: 7.8, runTimeoutSeconds: 45.4 },
+    });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 8, timeoutMs: 45_000 });
+  });
+
+  test('foreign / non-number / absent executionSettings fall back to type defaults', () => {
+    const foreign = fakeTemplate({
+      toolAllowlist: ['run_command'],
+      executionSettings: { maxIterations: 'lots', runTimeoutSeconds: null, model: 'gpt' },
+    });
+    expect(resolveRunLimits(foreign)).toEqual({ maxIterations: 40, timeoutMs: 900_000 });
+
+    // A null template resolves to tool-only defaults (no run_command grant).
+    expect(resolveRunLimits(null)).toEqual({ maxIterations: 12, timeoutMs: 120_000 });
+  });
+
+  test('NaN / Infinity are treated as absent (not clamped) → type default', () => {
+    const tpl = fakeTemplate({
+      executionSettings: { maxIterations: Number.POSITIVE_INFINITY, runTimeoutSeconds: NaN },
+    });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 12, timeoutMs: 120_000 });
+  });
+});
+
+describe('ExtensionHostNaniteRunner run-cap threading', () => {
+  // A conversation that always asks for a granted tool never completes, so the
+  // loop runs until it hits the resolved round cap — a proxy for the resolved
+  // maxIterations threaded into runNanite.
+  function alwaysToolTurns(count: number) {
+    return Array.from({ length: count }, () => ({
+      text: '',
+      toolCalls: [{ callId: 'c', name: 'wm_create_alert', input: {} }],
+    }));
+  }
+
+  test('executionSettings.maxIterations override is threaded into the run loop', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ executionSettings: { maxIterations: 5, runTimeoutSeconds: 60 } }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge(alwaysToolTurns(20));
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.iterations).toBe(5);
+    expect(result.hitIterationCap).toBe(true);
+  });
+
+  test('tool-only default (12) is threaded when executionSettings is empty', async () => {
+    const client = new FakeClient(fakeTemplate(), fakeTopic());
+    const bridge = new ScriptedBridge(alwaysToolTurns(30));
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.iterations).toBe(12);
+    expect(result.hitIterationCap).toBe(true);
+  });
+
+  test('explicit deps.maxIterations still overrides the resolved cap', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ executionSettings: { maxIterations: 40 } }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge(alwaysToolTurns(20));
+    const runner = new ExtensionHostNaniteRunner({ client, bridge, maxIterations: 2 });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.iterations).toBe(2);
+    expect(result.hitIterationCap).toBe(true);
   });
 });
 

@@ -241,6 +241,21 @@ interface FriendlyReadVM {
 }
 
 /**
+ * The dev container a container-backed tool step ran inside. Structural mirror
+ * of `NaniteJournalContainerVM` in `webview-ui/src/lib/types.ts`. Fields use
+ * empty-string sentinels (never optional) so the contract-parity guard stays a
+ * plain field-name comparison; `host` empty ⇒ render the label as plain text.
+ */
+interface NaniteJournalContainerVM {
+  /** The run's container id (the `wm-nanite` id-label value). */
+  id: string;
+  /** OrbStack per-container name (empty when unresolved). */
+  name: string;
+  /** `<name>.orb.local` host (empty when unresolved) — a clickable https link. */
+  host: string;
+}
+
+/**
  * One step in a NaniteJournal's execution trace. Structural mirror of
  * `NaniteJournalStepVM` in `webview-ui/src/lib/types.ts`.
  */
@@ -254,6 +269,8 @@ interface NaniteJournalStepVM {
   error: string;
   /** Friendly WM-read summary (null ⇒ render the raw step). */
   friendly: FriendlyReadVM | null;
+  /** The dev container this step ran inside (null ⇒ not container-backed). */
+  container: NaniteJournalContainerVM | null;
 }
 
 /**
@@ -362,6 +379,9 @@ type WebviewToExt =
   // or `/topic/<slug>.working-memory`), parsed from a journal prompt block
   // marker's link-out.
   | { type: 'openRoute'; route: string }
+  // Open an external URL in the default browser (e.g. a container's OrbStack
+  // `<name>.orb.local` https host, which is not a working-memory route).
+  | { type: 'openExternal'; url: string }
   | { type: 'invoke'; command: string; args: unknown[] }
   | { type: 'togglePinTopic'; slug: string }
   // Transition an alert's lifecycle status from a callout button, routed to
@@ -909,7 +929,26 @@ type RawRunStep = {
   error?: string;
   /** Body-free digest of a WM read result (preferred source for `friendly`). */
   resultDigest?: { count?: number; items?: unknown[] } | null;
+  /** Identity of the dev container a container-backed tool step ran inside. */
+  container?: { id?: string; name?: string; host?: string } | null;
 };
+
+/**
+ * Project a raw step's container identity into its VM. Returns null unless the
+ * step carries a non-empty container `id` (only container-backed tool steps do).
+ */
+function containerToVM(
+  c: { id?: string; name?: string; host?: string } | null | undefined,
+): NaniteJournalContainerVM | null {
+  if (!c || typeof c.id !== 'string' || c.id === '') {
+    return null;
+  }
+  return {
+    id: c.id,
+    name: typeof c.name === 'string' ? c.name : '',
+    host: typeof c.host === 'string' ? c.host : '',
+  };
+}
 
 /** Project one raw execution step into its per-step disclosure VM. */
 function stepToVM(s: RawRunStep): NaniteJournalStepVM {
@@ -922,6 +961,7 @@ function stepToVM(s: RawRunStep): NaniteJournalStepVM {
     result: asString(s.result ?? ''),
     error: asString(s.error ?? ''),
     friendly: friendlyReadStep(s),
+    container: containerToVM(s.container),
   };
 }
 
@@ -1278,6 +1318,21 @@ export class DocumentEditorProvider
               vscode.Uri.parse(`working-memory:${msg.route}`),
               DocumentEditorProvider.viewType,
             );
+          }
+          return;
+        case 'openExternal':
+          // A container host link-out: open the https URL in the default
+          // browser. Guard to https only so the webview can't drive the host
+          // to open arbitrary schemes.
+          if (typeof msg.url === 'string') {
+            try {
+              const uri = vscode.Uri.parse(msg.url, true);
+              if (uri.scheme === 'https') {
+                void vscode.env.openExternal(uri);
+              }
+            } catch {
+              // Malformed URL — ignore.
+            }
           }
           return;
         case 'save':

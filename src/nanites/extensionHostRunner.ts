@@ -30,6 +30,7 @@ import { redactRunResult, redactSecrets } from './redact';
 import { runNanite } from './runner';
 import type {
   NaniteContainer,
+  NaniteContainerIdentity,
   NaniteLmBridge,
   NaniteRunResult,
   NaniteRunner,
@@ -92,9 +93,17 @@ export interface ExtensionHostRunnerDeps {
    * ⇒ redaction still scrubs the `GH_TOKEN=…` / `x-access-token@` patterns.
    */
   githubToken?: string | null;
-  /** Safety cap on model turns (forwarded to the core). */
+  /**
+   * Safety cap on model turns (forwarded to the core). When set, OVERRIDES the
+   * per-run cap resolved from the template's `executionSettings` /
+   * {@link resolveRunLimits} defaults. Nanites leave this unset.
+   */
   maxIterations?: number;
-  /** Wall-clock cap for a run before it's forced to Failed. Default 120s. */
+  /**
+   * Wall-clock cap for a run before it's forced to Failed. When set, OVERRIDES
+   * the per-run timeout resolved from the template's `executionSettings` /
+   * {@link resolveRunLimits} defaults. Nanites leave this unset.
+   */
   timeoutMs?: number;
   /** Cap for each control-plane READ during input resolution. Default 20s. */
   readTimeoutMs?: number;
@@ -302,6 +311,44 @@ function modelFromSettings(settings: Record<string, unknown> | undefined): strin
   return typeof model === 'string' && model.trim() ? model : null;
 }
 
+/** Sane bounds for the per-run round cap (`executionSettings.maxIterations`). */
+const MIN_ITERATIONS = 1;
+const MAX_ITERATIONS = 200;
+/** Sane bounds (seconds) for the per-run wall-clock (`executionSettings.runTimeoutSeconds`). */
+const MIN_RUN_TIMEOUT_SECONDS = 30;
+const MAX_RUN_TIMEOUT_SECONDS = 3600;
+
+/** Roomier defaults for a container-backed (coding) run — see {@link resolveRunLimits}. */
+const CONTAINER_DEFAULT_ITERATIONS = 40;
+const CONTAINER_DEFAULT_TIMEOUT_MS = 900_000; // 15 min
+/** Defaults for a tool-only run (unchanged from the historical hardcoded caps). */
+const TOOL_DEFAULT_ITERATIONS = 12;
+const TOOL_DEFAULT_TIMEOUT_MS = DEFAULT_RUN_TIMEOUT_MS; // 120s
+
+/**
+ * Read a finite number from `executionSettings[key]` defensively — absent,
+ * non-number, `NaN`, or `±Infinity` all yield null (mirrors
+ * {@link modelFromSettings}). Range validation is the caller's job (clamp).
+ */
+function numberFromSettings(
+  settings: Record<string, unknown> | undefined,
+  key: string,
+): number | null {
+  const value = settings?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** Clamp `value` into the inclusive `[min, max]` range, rounded to an integer. */
+function clampInt(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/** The resolved per-run caps: model turns and wall-clock (ms). */
+export interface ResolvedRunLimits {
+  maxIterations: number;
+  timeoutMs: number;
+}
+
 /**
  * Whether the template opts this run into the per-run `run_command` tool — the
  * gate for provisioning a dev container. A container is expensive (and needs
@@ -315,6 +362,37 @@ function templateGrantsRunCommand(template: NaniteTemplate | null): boolean {
     return false;
   }
   return allow.includes(RUN_COMMAND_TOOL) || allow.includes('*');
+}
+
+/**
+ * Resolve the run's round cap + wall-clock from the template's
+ * `executionSettings`, falling back to defaults keyed on run TYPE:
+ * container-backed runs (template grants `run_command`) get roomier defaults
+ * (40 rounds / 15 min) than tool-only runs (12 rounds / 120s), because a coding
+ * run provisions a container and does real work. An explicit
+ * `executionSettings.maxIterations` / `runTimeoutSeconds` OVERRIDES the default
+ * and is clamped to sane bounds; absent / non-number / foreign values fall
+ * through to the type default.
+ */
+export function resolveRunLimits(template: NaniteTemplate | null): ResolvedRunLimits {
+  const container = templateGrantsRunCommand(template);
+  const defaultIterations = container ? CONTAINER_DEFAULT_ITERATIONS : TOOL_DEFAULT_ITERATIONS;
+  const defaultTimeoutMs = container ? CONTAINER_DEFAULT_TIMEOUT_MS : TOOL_DEFAULT_TIMEOUT_MS;
+
+  const settings = template?.executionSettings;
+  const rawIterations = numberFromSettings(settings, 'maxIterations');
+  const rawTimeoutSeconds = numberFromSettings(settings, 'runTimeoutSeconds');
+
+  return {
+    maxIterations:
+      rawIterations !== null
+        ? clampInt(rawIterations, MIN_ITERATIONS, MAX_ITERATIONS)
+        : defaultIterations,
+    timeoutMs:
+      rawTimeoutSeconds !== null
+        ? clampInt(rawTimeoutSeconds, MIN_RUN_TIMEOUT_SECONDS, MAX_RUN_TIMEOUT_SECONDS) * 1000
+        : defaultTimeoutMs,
+  };
 }
 
 /**
@@ -469,7 +547,13 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     // model call, or a hung terminal write) MUST land a terminal phase, or the
     // nanite strands in Running forever. Race the pure run against a wall-clock
     // timeout (which also cancels the loop), then persist the outcome.
-    const timeoutMs = this.deps.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+    //
+    // Resolve the per-run caps from the template's executionSettings (roomier
+    // defaults for container-backed coding runs). Explicit deps override the
+    // resolved values so tests / hosts can still force a cap.
+    const limits = resolveRunLimits(template);
+    const maxIterations = this.deps.maxIterations ?? limits.maxIterations;
+    const timeoutMs = this.deps.timeoutMs ?? limits.timeoutMs;
     const cancel: RunnerToken & { isCancellationRequested: boolean } = {
       isCancellationRequested: this.deps.token?.isCancellationRequested ?? false,
     };
@@ -491,9 +575,15 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
           // Bring the container up BEFORE the model loop, time-boxed by the same
           // cancellation token. Gated so ordinary nanites (no `run_command`)
           // never pay the Docker cost.
+          let containerIdentity: NaniteContainerIdentity | undefined;
           if (this.deps.containerFactory && templateGrantsRunCommand(template)) {
             container = this.deps.containerFactory(nanite, configEnv);
             await container.up(cancel);
+            // Capture the container's identity ONCE (a single cached name lookup,
+            // never a per-step round-trip) so container-backed tool steps can
+            // record WHICH container ran them. Best-effort — the run proceeds
+            // even if identity can't be resolved.
+            containerIdentity = await container.describe?.({ token: cancel });
           }
           return runNanite(bridge, {
             instructions: seededInstructions,
@@ -504,7 +594,8 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
             acceptanceThreshold: template?.acceptanceThreshold ?? 60,
             model: modelFromSettings(template?.executionSettings),
             container,
-            maxIterations: this.deps.maxIterations,
+            containerIdentity,
+            maxIterations,
             token: cancel,
           });
         })().then(resolve, reject);

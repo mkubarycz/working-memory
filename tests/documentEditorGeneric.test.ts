@@ -413,10 +413,36 @@ describe('projectNaniteJournalDetail', () => {
     ];
     const vm = projectNaniteJournalDetail(j, nanite(), template());
     expect(vm.steps).toEqual([
-      { kind: 'assistant', label: 'Assistant', ok: null, text: 'Thinking…', input: '', result: '', error: '', friendly: null },
-      { kind: 'tool', label: 'run_command', ok: true, text: '', input: '{"cmd":"ls"}', result: 'ok', error: '', friendly: null },
-      { kind: 'tool', label: 'write_file', ok: false, text: '', input: '', result: '', error: 'permission denied', friendly: null },
+      { kind: 'assistant', label: 'Assistant', ok: null, text: 'Thinking…', input: '', result: '', error: '', friendly: null, container: null },
+      { kind: 'tool', label: 'run_command', ok: true, text: '', input: '{"cmd":"ls"}', result: 'ok', error: '', friendly: null, container: null },
+      { kind: 'tool', label: 'write_file', ok: false, text: '', input: '', result: '', error: 'permission denied', friendly: null, container: null },
     ]);
+  });
+
+  test('projects a container-backed tool step onto its step VM', async () => {
+    const { projectNaniteJournalDetail } = await import(
+      '../src/webview/documentEditorProvider'
+    );
+    const j = journal();
+    j.execution.steps = [
+      {
+        kind: 'tool',
+        name: 'run_command',
+        ok: true,
+        input: '{"cmd":"npm test"}',
+        result: 'ok',
+        container: { id: 'nanite-abc', name: 'wm-nanite-abc', host: 'wm-nanite-abc.orb.local' },
+      },
+      // A non-container step keeps `container: null`.
+      { kind: 'tool', name: 'wm_list_topics', ok: true, result: '{"count":0,"topics":[]}' },
+    ];
+    const vm = projectNaniteJournalDetail(j, nanite(), template());
+    expect(vm.steps[0].container).toEqual({
+      id: 'nanite-abc',
+      name: 'wm-nanite-abc',
+      host: 'wm-nanite-abc.orb.local',
+    });
+    expect(vm.steps[1].container).toBeNull();
   });
 
   test('builds link-outs to the owning nanite and its template', async () => {

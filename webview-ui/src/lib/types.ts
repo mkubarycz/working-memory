@@ -258,6 +258,21 @@ export interface FriendlyReadVM {
 }
 
 /**
+ * The dev container a container-backed tool step ran inside. Structural mirror
+ * of `NaniteJournalContainerVM` in `src/webview/documentEditorProvider.ts`.
+ * Fields use empty-string sentinels (never optional); `host` empty ⇒ render the
+ * label as plain text rather than a clickable link.
+ */
+export interface NaniteJournalContainerVM {
+  /** The run's container id (the `wm-nanite` id-label value). */
+  id: string;
+  /** OrbStack per-container name (empty when unresolved). */
+  name: string;
+  /** `<name>.orb.local` host (empty when unresolved) — a clickable https link. */
+  host: string;
+}
+
+/**
  * One step in a NaniteJournal's execution trace, projected for the expandable
  * per-step disclosure. `kind` labels assistant narration vs a tool call; for a
  * tool step `ok` is its success flag (null for assistant steps).
@@ -278,6 +293,8 @@ export interface NaniteJournalStepVM {
   error: string;
   /** Friendly WM-read summary (null ⇒ render the raw step). */
   friendly: FriendlyReadVM | null;
+  /** The dev container this step ran inside (null ⇒ not container-backed). */
+  container: NaniteJournalContainerVM | null;
 }
 
 /**

@@ -18,6 +18,7 @@
 
 import type {
   NaniteAcceptance,
+  NaniteContainerIdentity,
   NaniteLmBridge,
   NaniteReadDigestItem,
   NaniteReadResultDigest,
@@ -52,6 +53,14 @@ const WM_READ_TOOL_NAMES = new Set([
 const MAX_DIGEST_ITEMS = 12;
 /** Clip length for a digest item's `title`/`name`. */
 const MAX_DIGEST_LABEL = 80;
+
+/**
+ * Tool names that execute INSIDE the run's dev container. Their steps carry the
+ * captured {@link NaniteContainerIdentity} so the Execution view can show which
+ * container ran them. Mirrors the clean tool names in `tools/NaniteDevContainer`
+ * (`RUN_COMMAND_TOOL` / `EXPOSE_PORT_TOOL`).
+ */
+const CONTAINER_TOOL_NAMES = new Set(['run_command', 'expose_port']);
 
 /**
  * Build a compact, body-free digest from a WM READ tool's FULL (untruncated)
@@ -147,6 +156,10 @@ export async function runNanite(
 
   const toolCalls: ToolCallOutcome[] = [];
   const steps: NaniteRunStep[] = [];
+  // The container identity (id + best-effort OrbStack name/host) captured once
+  // by the wrapping runner after `container.up()`. Stamped onto container-backed
+  // tool steps below so the trace records which container ran them.
+  const containerIdentity: NaniteContainerIdentity | null = options.containerIdentity ?? null;
   let iterations = 0;
   let hitCap = false;
   let finalText = '';
@@ -226,19 +239,26 @@ export async function runNanite(
           if (digest) {
             toolStep.resultDigest = digest;
           }
+          if (containerIdentity && CONTAINER_TOOL_NAMES.has(call.name)) {
+            toolStep.container = containerIdentity;
+          }
           steps.push(toolStep);
           convo.addToolResult(call.callId, call.name, resultText);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           toolCalls.push({ name: call.name, ok: false, error: message });
-          steps.push({
+          const failedStep: NaniteRunStep = {
             kind: 'tool',
             round,
             name: call.name,
             ok: false,
             input: stepPreview(call.input),
             error: message,
-          });
+          };
+          if (containerIdentity && CONTAINER_TOOL_NAMES.has(call.name)) {
+            failedStep.container = containerIdentity;
+          }
+          steps.push(failedStep);
           convo.addToolResult(
             call.callId,
             call.name,
