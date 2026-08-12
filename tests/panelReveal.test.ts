@@ -1,7 +1,9 @@
 import { test, expect } from 'vitest';
 import {
   parsePanelRevealTarget,
+  parseDocumentRevealId,
   resolveRevealFromTabs,
+  resolveDocumentIdFromTabs,
   WM_DOCUMENT_EDITOR_VIEW_TYPE,
   type TabDescriptor,
 } from '../src/panelReveal';
@@ -107,4 +109,49 @@ test('clears for a non-revealable custom-editor kind (e.g. document/alert)', () 
 test('other/unknown active tab or none → null', () => {
   expect(resolveRevealFromTabs(otherTab())).toBeNull();
   expect(resolveRevealFromTabs(null)).toBeNull();
+});
+
+// --- parseDocumentRevealId / resolveDocumentIdFromTabs ---------------------
+
+test('parses the generic by-id document route into an id', () => {
+  const id = '6ab6a0b9-4f7b-4600-ae1b-45c7ee42fc4a';
+  expect(parseDocumentRevealId(`working-memory:/document/${id}.working-memory`)).toBe(id);
+});
+
+test('decodes percent-encoded document ids', () => {
+  expect(parseDocumentRevealId('working-memory:/document/a%2Fb.working-memory')).toBe('a/b');
+});
+
+test('document-id parser returns null for non-document routes and junk', () => {
+  expect(parseDocumentRevealId('working-memory:/topic/foo.working-memory')).toBeNull();
+  expect(parseDocumentRevealId('working-memory:/document/.working-memory')).toBeNull();
+  expect(parseDocumentRevealId('file:///tmp/document/abc.working-memory')).toBeNull();
+  expect(parseDocumentRevealId('')).toBeNull();
+});
+
+test('resolves the active WM document tab to its id (nanite/agent scope)', () => {
+  const id = '6ab6a0b9-4f7b-4600-ae1b-45c7ee42fc4a';
+  expect(resolveDocumentIdFromTabs(customTab(`/document/${id}.working-memory`))).toBe(id);
+});
+
+test('document-id tab resolver ignores kinded, foreign, and non-WM tabs', () => {
+  expect(resolveDocumentIdFromTabs(customTab('/topic/foo.working-memory'))).toBeNull();
+  expect(
+    resolveDocumentIdFromTabs({
+      kind: 'custom',
+      scheme: 'working-memory',
+      path: '/document/abc.working-memory',
+      viewType: 'some.other.editor',
+    }),
+  ).toBeNull();
+  expect(
+    resolveDocumentIdFromTabs({
+      kind: 'custom',
+      scheme: 'file',
+      path: '/tmp/document/abc.working-memory',
+      viewType: WM_DOCUMENT_EDITOR_VIEW_TYPE,
+    }),
+  ).toBeNull();
+  expect(resolveDocumentIdFromTabs(otherTab())).toBeNull();
+  expect(resolveDocumentIdFromTabs(null)).toBeNull();
 });

@@ -73,6 +73,14 @@ const SHARED_VMS = [
   'TopicVM',
   'GenericFieldVM',
   'GenericDocVM',
+  'NaniteJournalRowVM',
+  'NaniteJournalLinkVM',
+  'FriendlyReadItemVM',
+  'FriendlyReadVM',
+  'NaniteJournalStepVM',
+  'NaniteJournalRoundVM',
+  'NaniteJournalAcceptanceVM',
+  'NaniteJournalDetailVM',
 ];
 
 describe('webview↔host document VM contract parity', () => {

@@ -2,7 +2,7 @@
   "name": "working-memory",
   "displayName": "Working Memory",
   "description": "Workstream-aware session journal for Michael's hub workspace.",
-  "version": "0.14.3",
+  "version": "0.14.4",
   "publisher": "kubarycz",
   "private": true,
   "repository": {
@@ -196,6 +196,11 @@
       {
         "command": "workingMemory.nanite.restart",
         "title": "Restart Nanite",
+        "category": "Working Memory"
+      },
+      {
+        "command": "workingMemory.setGithubToken",
+        "title": "Set GitHub Token for Nanites",
         "category": "Working Memory"
       }
     ],

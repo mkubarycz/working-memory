@@ -228,6 +228,38 @@ async function connect(store: Store): Promise<{
     }
   });
 
+  it('ws-topic-read returns resourceVersion (plus id/slug/title) per item so callers can build friendly link-outs', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({
+        name: 'ws-topic-create',
+        arguments: { slug: 'versioned', title: 'Versioned topic', workstreams: ['ws-v'] },
+      });
+
+      // Read one — the projected item must carry resourceVersion + identity.
+      const one = jsonOf<TopicList>(
+        await client.callTool({ name: 'ws-topic-read', arguments: { slug: 'versioned' } }),
+      );
+      expect(one.count).toBe(1);
+      const item = one.topics[0];
+      expect(item).toBeDefined();
+      expect(typeof item!.resourceVersion).toBe('number');
+      expect(item!.resourceVersion).toBeGreaterThanOrEqual(1);
+      expect(item!.slug).toBe('versioned');
+      expect(item!.title).toBe('Versioned topic');
+      expect(typeof item!.id).toBe('string');
+      expect(item!.id.length).toBeGreaterThan(0);
+
+      // List mode carries it too.
+      const list = jsonOf<TopicList>(
+        await client.callTool({ name: 'ws-topic-read', arguments: {} }),
+      );
+      expect(typeof list.topics[0]?.resourceVersion).toBe('number');
+    } finally {
+      await close();
+    }
+  });
+
   it('ws-topic-create + ws-topic-update persist focusedWorkstreams; ws-topic-read returns it', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {

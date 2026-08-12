@@ -144,6 +144,8 @@ export interface PanelTopicRow {
 export interface PanelNaniteRow {
   kind: 'nanite';
   id: string;
+  /** The bare nanite document id (its agent id), used to open the agent chat. */
+  naniteId: string;
   label: string;
   description: string;
   tooltip: string;
@@ -550,6 +552,7 @@ function buildNaniteRow(
   return {
     kind: 'nanite',
     id: `${rowIdPrefix}:${n.id}`,
+    naniteId: n.id,
     label,
     description: n.phase,
     tooltip: `${label} — ${n.phase}${phaseHint ? `\n${phaseHint}` : ''}`,

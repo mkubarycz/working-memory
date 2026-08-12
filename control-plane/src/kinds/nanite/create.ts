@@ -26,7 +26,9 @@ export function registerWsNaniteCreate(server: McpServer, store: Store): void {
         'Create a Nanite — ONE execution instance. REQUIRES `workstream` (a live workstream slug ' +
         'that owns it). `inputTopic` (a live topic slug — the topic IS the input) is OPTIONAL: omit ' +
         'it to run the Nanite workstream-wide. Both refs are immutable at creation. Optional ' +
-        '`templateId` (owning Nanite Template) and `request` (free-text prompt). The Nanite starts ' +
+        '`templateId` (owning Nanite Template), `request` (free-text prompt), and `configs` ' +
+        '(configmap slugs/ids whose merged data is injected as dev-container env, immutable). ' +
+        'The Nanite starts ' +
         'Pending and renders under its input topic (or in the workstream-card Nanites group when ' +
         'topic-less); run it with ws-nanite-run. Returns the created nanite.',
       inputSchema: {
@@ -36,10 +38,14 @@ export function registerWsNaniteCreate(server: McpServer, store: Store): void {
           .optional()
           .describe('Input topic slug — the topic IS the input (optional; omit to run workstream-wide, immutable).'),
         templateId: z.string().optional().describe('Owning Nanite Template slug/id (optional).'),
+        configs: z
+          .array(z.string())
+          .optional()
+          .describe('Configmap slugs/ids whose merged data is injected as container env (optional, immutable).'),
         request: z.string().optional().describe('Free-text request/prompt for this execution.'),
       },
     },
-    async ({ workstream, inputTopic, templateId, request }) => {
+    async ({ workstream, inputTopic, templateId, configs, request }) => {
       // Validate the owning workstream exists so the Nanite renders under a
       // real workstream (mirrors the topic-membership guard in
       // ws-topic-create). The input topic, when supplied, must also be live.
@@ -59,6 +65,9 @@ export function registerWsNaniteCreate(server: McpServer, store: Store): void {
       }
       if (templateId !== undefined) {
         specInput.templateId = templateId;
+      }
+      if (configs !== undefined) {
+        specInput.configs = configs;
       }
       if (request !== undefined) {
         specInput.request = request;

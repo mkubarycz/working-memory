@@ -6,6 +6,8 @@
 
 export type {
   NaniteAcceptance,
+  NaniteContainer,
+  NaniteContainerExecResult,
   NaniteLmBridge,
   NaniteRunResult,
   NaniteRunner,
@@ -15,6 +17,26 @@ export type {
 } from './types';
 export { runNanite } from './runner';
 export { VscodeLmBridge } from './vscodeBridge';
+export {
+  DevContainer,
+  defaultProcessRunner,
+  registerContainerTools,
+  isContainerTool,
+  invokeContainerTool,
+  type ContainerToolDefinition,
+  type DevContainerConfig,
+  type ProcessRunner,
+  type ProcessRunResult,
+  RUN_COMMAND_TOOL,
+  isRunCommandTool,
+  parseRunCommandInput,
+  formatRunCommandResult,
+  invokeContainerCommand,
+  EXPOSE_PORT_TOOL,
+  isExposePortTool,
+  parseExposePortInput,
+  invokeExposePort,
+} from '../tools/NaniteDevContainer';
 export {
   EXTENSION_HOST_RUNNER_ID,
   ExtensionHostNaniteRunner,

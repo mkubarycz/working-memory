@@ -143,6 +143,14 @@
     transport.post({ type: 'openDocument', id });
   }
 
+  function openRoute(route: string): void {
+    transport.post({ type: 'openRoute', route });
+  }
+
+  function openExternal(url: string): void {
+    transport.post({ type: 'openExternal', url });
+  }
+
   function invokeAction(command: string, args: unknown[]): void {
     // args live inside the `doc` $state proxy; postMessage's structured clone
     // throws DataCloneError on a Svelte proxy, so snapshot to a plain value.
@@ -197,7 +205,7 @@
       onSetAlertStatus={setAlertStatus}
     />
   {:else if doc.kind !== 'workstream' && doc.kind !== 'topic'}
-    <DocumentView doc={doc} />
+    <DocumentView doc={doc} onOpenDocument={openNanite} onOpenRoute={openRoute} onOpenExternal={openExternal} />
   {/if}
 </main>
 

@@ -308,6 +308,52 @@ export interface TopicTypeCreateInput {
   body_template?: string;
 }
 
+/**
+ * A "configmap": a named bag of string key-value pairs (`data`), identified by
+ * a registry-key `slug`. A nanite references configmaps by slug/id and, on run,
+ * their merged `data` is injected into its dev container as environment
+ * variables. `data` values are always strings.
+ */
+export interface Config {
+  id: string;
+  slug: string | null;
+  name: string;
+  /** The key-value pairs. Values are always strings. */
+  data: Record<string, string>;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  /** CAS counter from the envelope, for a subsequent update. */
+  resourceVersion: number;
+}
+
+export interface ConfigReadInput {
+  slug?: string;
+  id?: string;
+  query?: string;
+  limit?: number;
+}
+
+export interface ConfigCreateInput {
+  slug?: string;
+  name?: string;
+  data: Record<string, string>;
+  status?: string;
+}
+
+export interface ConfigUpdateInput {
+  slug: string;
+  name?: string;
+  /** Key-value pairs to MERGE onto the existing map. */
+  data?: Record<string, string>;
+  status?: string;
+}
+
+export interface ConfigDeleteInput {
+  slug: string;
+  restore?: boolean;
+}
+
 export interface TopicDeleteInput {
   slug: string;
   restore?: boolean;
@@ -505,12 +551,39 @@ export interface NaniteToolCallOutcome {
  */
 export interface NaniteRunStep {
   kind: 'assistant' | 'tool';
+  /** Model-turn index this step occurred in (the run's round / round-trip). */
+  round?: number;
   text?: string;
   name?: string;
   ok?: boolean;
   input?: string;
   result?: string;
   error?: string;
+  /**
+   * Compact, body-free digest of a WM READ tool result (`kind: 'tool'`, success
+   * only), captured from the FULL result before `result` was truncated. Mirror
+   * of the control-plane `NaniteReadResultDigest`.
+   */
+  resultDigest?: {
+    count: number;
+    items: Array<{
+      id?: string;
+      slug?: string;
+      title?: string;
+      name?: string;
+      resourceVersion?: number;
+    }>;
+  };
+  /**
+   * The dev container this step ran inside — present ONLY on container-backed
+   * tool steps (`run_command` / `expose_port`). Mirror of the control-plane
+   * `NaniteContainerIdentity`.
+   */
+  container?: {
+    id: string;
+    name?: string;
+    host?: string;
+  };
 }
 
 /** Approximate token usage (loop + judge) recorded on a finished Nanite. */
@@ -532,6 +605,8 @@ export interface Nanite {
   templateId: string | null;
   workstream: string;
   inputTopic: string;
+  /** Configmap slugs/ids whose merged `data` is injected into the run's container as env. */
+  configs: string[];
   request: string;
   phase: NanitePhase;
   /** Unix seconds the nanite was enqueued for dispatch (null until Queued). */
@@ -539,20 +614,13 @@ export interface Nanite {
   startedAt: number | null;
   endedAt: number | null;
   error: string;
-  /** The full request text actually sent to the model (instructions + context). */
-  prompt: string;
-  /** The run's verbatim final text (empty until it finishes). */
-  output: string;
-  /** Allow-list entries that weren't available at run time. */
-  missingTools: string[];
-  /** The acceptance verdict (null until the run is judged). */
-  acceptance: NaniteAcceptance | null;
-  /** The run's tool-call trail, in execution order. */
-  toolCalls: NaniteToolCallOutcome[];
-  /** The run's ordered execution trace (narration + tool calls). */
-  steps: NaniteRunStep[];
-  /** Approximate token usage (loop + judge), or null before the run finishes. */
-  tokens: NaniteTokenUsage | null;
+  /**
+   * Light pointer to the newest {@link NaniteJournal} record for this nanite
+   * (null until the first run). The run RESULT — prompt/output/steps/acceptance/
+   * tokens/missingTools — lives in that journal document, NEVER on the
+   * nanite spec.
+   */
+  latestJournalId: string | null;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -570,6 +638,18 @@ export interface NaniteCreateInput {
   workstream: string;
   inputTopic?: string;
   templateId?: string;
+  /** Configmap slugs/ids injected as dev-container env (immutable at creation). */
+  configs?: string[];
+  request?: string;
+}
+
+export interface NaniteUpdateInput {
+  id: string;
+  /** Optional CAS guard — the resourceVersion the caller last read. */
+  expectedResourceVersion?: number;
+  /** Replacement configmap slugs/ids injected as dev-container env. */
+  configs?: string[];
+  /** New free-text request/prompt for this execution. */
   request?: string;
 }
 
@@ -581,20 +661,12 @@ export interface NaniteRunInput {
   begin?: boolean;
   outcome?: 'succeeded' | 'failed';
   error?: string;
-  /** The full request text sent to the model, instructions + context (finishing call). */
-  prompt?: string;
-  /** The run's verbatim final text (finishing call). */
-  output?: string;
-  /** The acceptance-judge verdict (finishing call). */
-  acceptance?: NaniteAcceptance | null;
-  /** The run's tool-call trail (finishing call). */
-  toolCalls?: NaniteToolCallOutcome[];
-  /** The run's ordered execution trace — narration + tool calls (finishing call). */
-  steps?: NaniteRunStep[];
-  /** Allow-list entries that were unavailable at run time (finishing call). */
-  missingTools?: string[];
-  /** Approximate token usage, loop + judge (finishing call). */
-  tokens?: NaniteTokenUsage | null;
+  /**
+   * Document id of the run's {@link NaniteJournal} record (finishing call).
+   * Stored as a light pointer to the newest run; the run RESULT itself lives in
+   * that journal document, never on the nanite spec.
+   */
+  latestJournalId?: string;
   /** Reset the nanite back to Pending from any phase (clears a stuck run). */
   reset?: boolean;
 }
@@ -603,6 +675,82 @@ export interface NaniteDeleteInput {
   id: string;
   restore?: boolean;
 }
+
+/** A run's terminal outcome (null until it finishes). */
+export type NaniteRunOutcome = 'succeeded' | 'failed' | null;
+
+/** Section 1 of a {@link NaniteJournal} — lifecycle phase/outcome + timing. */
+export interface NaniteJournalStatus {
+  phase: NanitePhase;
+  outcome: NaniteRunOutcome;
+  queuedAt: number | null;
+  startedAt: number | null;
+  endedAt: number | null;
+}
+
+/** Section 2 of a {@link NaniteJournal} — the full run input handed to the model. */
+export interface NaniteJournalPrompt {
+  request: string;
+}
+
+/** Section 3 of a {@link NaniteJournal} — the turn trace + any error. */
+export interface NaniteJournalExecution {
+  steps: NaniteRunStep[];
+  error: string;
+}
+
+/** Section 4 of a {@link NaniteJournal} — summary, verdict, and stats. */
+export interface NaniteJournalResults {
+  summary: string;
+  acceptance: NaniteAcceptance | null;
+  tokens: NaniteTokenUsage | null;
+  missingTools: string[];
+}
+
+/**
+ * The NaniteJournal shape returned by the control-plane `ws-nanitejournal-*`
+ * domain API — ONE immutable record of a single {@link Nanite} run. Kept
+ * structurally identical to
+ * `control-plane/src/kinds/nanitejournal/naniteJournal.ts::INaniteJournal`.
+ */
+export interface NaniteJournal {
+  id: string;
+  slug: string | null;
+  /** The owning nanite's document id (REQUIRED). */
+  naniteId: string;
+  /** The owning workstream slug (scope). */
+  workstream: string;
+  /** The input topic slug (scope; empty for a workstream-wide run). */
+  inputTopic: string;
+  status: NaniteJournalStatus;
+  prompt: NaniteJournalPrompt;
+  execution: NaniteJournalExecution;
+  results: NaniteJournalResults;
+  created_at: number;
+  updated_at: number;
+  resourceVersion: number;
+}
+
+export interface NaniteJournalCreateInput {
+  /** The owning nanite's document id (required). */
+  naniteId: string;
+  workstream?: string;
+  inputTopic?: string;
+  status?: Partial<NaniteJournalStatus>;
+  prompt?: Partial<NaniteJournalPrompt>;
+  execution?: Partial<NaniteJournalExecution>;
+  results?: Partial<NaniteJournalResults>;
+}
+
+export interface NaniteJournalReadInput {
+  /** Read ONE journal by document id. */
+  id?: string;
+  /** List a single nanite's run history (its document id), newest-first. */
+  naniteId?: string;
+  /** Max journals to return (list mode). */
+  limit?: number;
+}
+
 
 export interface ControlPlaneClientOptions {
   /**
@@ -1408,6 +1556,100 @@ export class ControlPlaneClient {
     return parsed;
   }
 
+  // ----- Config domain API (`ws-config-*`) ----------------------------------
+  //
+  // Typed wrappers over the control-plane's Config kind API, mirroring the
+  // ws-topictype-* methods: each parses the tool's JSON text result into the
+  // owned {@link Config} shape and THROWS {@link ControlPlaneClientError} on a
+  // dead daemon, a dropped connection, or an `isError` tool result. A configmap
+  // is a named bag of string key-value pairs referenced by a nanite for env
+  // injection.
+
+  /**
+   * Read configs via `ws-config-read`. A by-slug/id read yields a 0-or-1 element
+   * array; list mode (no slug/id) returns all live configs.
+   */
+  async configRead(input: ConfigReadInput = {}): Promise<Config[]> {
+    const args: Record<string, unknown> = {};
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.id !== undefined) {
+      args.id = input.id;
+    }
+    if (input.query !== undefined) {
+      args.query = input.query;
+    }
+    if (input.limit !== undefined) {
+      args.limit = input.limit;
+    }
+    const result = await this.callDomainTool('ws-config-read', args);
+    const parsed = parseToolText(result) as { configs?: unknown } | null;
+    const list = Array.isArray(parsed?.configs) ? parsed!.configs : [];
+    return list as Config[];
+  }
+
+  /** Create a config via `ws-config-create`. Returns the created config. */
+  async configCreate(input: ConfigCreateInput): Promise<Config> {
+    const args: Record<string, unknown> = { data: input.data };
+    if (input.slug !== undefined) {
+      args.slug = input.slug;
+    }
+    if (input.name !== undefined) {
+      args.name = input.name;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    return this.parseConfig(await this.callDomainTool('ws-config-create', args));
+  }
+
+  /**
+   * Update a config via `ws-config-update` (identified by `slug`; `data` is
+   * merged onto the existing map, `name`/`status` replace when provided). The
+   * control-plane reads the current doc for its CAS guard. Returns the updated
+   * config.
+   */
+  async configUpdate(input: ConfigUpdateInput): Promise<Config> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.name !== undefined) {
+      args.name = input.name;
+    }
+    if (input.data !== undefined) {
+      args.data = input.data;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    return this.parseConfig(await this.callDomainTool('ws-config-update', args));
+  }
+
+  /**
+   * Soft-delete (or, with `restore: true`, undelete) a config via
+   * `ws-config-delete` (identified by `slug`). Returns `{ ok, slug }`.
+   */
+  async configDelete(input: ConfigDeleteInput): Promise<{ ok: boolean; slug: string }> {
+    const args: Record<string, unknown> = { slug: input.slug };
+    if (input.restore !== undefined) {
+      args.restore = input.restore;
+    }
+    const result = await this.callDomainTool('ws-config-delete', args);
+    const parsed = parseToolText(result) as { ok?: unknown; slug?: unknown } | null;
+    return {
+      ok: parsed?.ok === true,
+      slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
+    };
+  }
+
+  /** Parse a `ws-config-*` success result into the owned {@link Config} shape. */
+  private parseConfig(result: unknown): Config {
+    const parsed = parseToolText(result) as Config | null;
+    if (!parsed || typeof parsed.id !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane config response');
+    }
+    return parsed;
+  }
+
   /**
    * Attach a workstream to a topic's membership (idempotent). Topic↔workstream
    * membership is edited via `ws-topic-update` over the topic's
@@ -1735,8 +1977,8 @@ export class ControlPlaneClient {
   //
   // Typed wrappers over the control-plane's Nanite kind API — ONE execution
   // instance of a NaniteTemplate (id-based, mirroring ws-alert-*). `run`
-  // transitions the lifecycle phase; there is no generic update (workstream +
-  // inputTopic are immutable).
+  // transitions the lifecycle phase; `update` patches only the mutable
+  // `configs` + `request` (workstream + inputTopic + lifecycle stay immutable).
 
   /** Parse a `ws-nanite-*` success result into the owned {@link Nanite}. */
   private parseNanite(result: unknown): Nanite {
@@ -1782,10 +2024,33 @@ export class ControlPlaneClient {
     if (input.templateId !== undefined) {
       args.templateId = input.templateId;
     }
+    if (input.configs !== undefined) {
+      args.configs = input.configs;
+    }
     if (input.request !== undefined) {
       args.request = input.request;
     }
     return this.parseNanite(await this.callDomainTool('ws-nanite-create', args));
+  }
+
+  /**
+   * Patch a nanite's mutable fields via `ws-nanite-update` (by id). Only
+   * `configs` + `request` are patchable; `workstream`, `inputTopic`, and all
+   * lifecycle/result fields are immutable. Optionally supply
+   * `expectedResourceVersion` for a compare-and-swap guard.
+   */
+  async naniteUpdate(input: NaniteUpdateInput): Promise<Nanite> {
+    const args: Record<string, unknown> = { id: input.id };
+    if (input.expectedResourceVersion !== undefined) {
+      args.expectedResourceVersion = input.expectedResourceVersion;
+    }
+    if (input.configs !== undefined) {
+      args.configs = input.configs;
+    }
+    if (input.request !== undefined) {
+      args.request = input.request;
+    }
+    return this.parseNanite(await this.callDomainTool('ws-nanite-update', args));
   }
 
   /** Kick off (or finish) a nanite via `ws-nanite-run`. */
@@ -1803,26 +2068,8 @@ export class ControlPlaneClient {
     if (input.error !== undefined) {
       args.error = input.error;
     }
-    if (input.prompt !== undefined) {
-      args.prompt = input.prompt;
-    }
-    if (input.output !== undefined) {
-      args.output = input.output;
-    }
-    if (input.acceptance !== undefined) {
-      args.acceptance = input.acceptance;
-    }
-    if (input.toolCalls !== undefined) {
-      args.toolCalls = input.toolCalls;
-    }
-    if (input.steps !== undefined) {
-      args.steps = input.steps;
-    }
-    if (input.missingTools !== undefined) {
-      args.missingTools = input.missingTools;
-    }
-    if (input.tokens !== undefined) {
-      args.tokens = input.tokens;
+    if (input.latestJournalId !== undefined) {
+      args.latestJournalId = input.latestJournalId;
     }
     if (input.reset !== undefined) {
       args.reset = input.reset;
@@ -1842,6 +2089,67 @@ export class ControlPlaneClient {
       ok: parsed?.ok === true,
       id: typeof parsed?.id === 'string' ? parsed.id : input.id,
     };
+  }
+
+  // ----- Nanite Journal domain API (`ws-nanitejournal-*`) -------------------
+  //
+  // Typed wrappers over the control-plane's NaniteJournal kind API — ONE
+  // immutable record per nanite run. A run appends a journal (create) and the
+  // nanite keeps only a light `latestJournalId` pointer; records are read by id
+  // or listed by `naniteId` (a nanite's run history, newest-first).
+
+  /** Parse a `ws-nanitejournal-*` success result into the owned {@link NaniteJournal}. */
+  private parseNaniteJournal(result: unknown): NaniteJournal {
+    const parsed = parseToolText(result) as NaniteJournal | null;
+    if (!parsed || typeof parsed.id !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane nanite journal response');
+    }
+    return parsed;
+  }
+
+  /** Append one immutable run record via `ws-nanitejournal-create`. */
+  async naniteJournalCreate(input: NaniteJournalCreateInput): Promise<NaniteJournal> {
+    const args: Record<string, unknown> = { naniteId: input.naniteId };
+    if (input.workstream !== undefined) {
+      args.workstream = input.workstream;
+    }
+    if (input.inputTopic !== undefined) {
+      args.inputTopic = input.inputTopic;
+    }
+    if (input.status !== undefined) {
+      args.status = input.status;
+    }
+    if (input.prompt !== undefined) {
+      args.prompt = input.prompt;
+    }
+    if (input.execution !== undefined) {
+      args.execution = input.execution;
+    }
+    if (input.results !== undefined) {
+      args.results = input.results;
+    }
+    return this.parseNaniteJournal(await this.callDomainTool('ws-nanitejournal-create', args));
+  }
+
+  /**
+   * Read nanite journals via `ws-nanitejournal-read`: one by `id`, or a single
+   * nanite's run history by `naniteId` (newest-first), else all journals.
+   */
+  async naniteJournalRead(input: NaniteJournalReadInput = {}): Promise<NaniteJournal[]> {
+    const args: Record<string, unknown> = {};
+    if (input.id !== undefined) {
+      args.id = input.id;
+    }
+    if (input.naniteId !== undefined) {
+      args.naniteId = input.naniteId;
+    }
+    if (input.limit !== undefined) {
+      args.limit = input.limit;
+    }
+    const result = await this.callDomainTool('ws-nanitejournal-read', args);
+    const parsed = parseToolText(result) as { journals?: unknown } | null;
+    const list = Array.isArray(parsed?.journals) ? parsed!.journals : [];
+    return list as NaniteJournal[];
   }
 
   /** Close the client + transport and release the singleton. */

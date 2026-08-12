@@ -17,6 +17,7 @@
  *   - `templateId`   ← `spec.templateId` (owning template slug/id; absent → null)
  *   - `workstream`   ← `spec.workstream` (owning workstream slug; REQUIRED, immutable)
  *   - `inputTopic`   ← `spec.inputTopic` (input topic slug; REQUIRED, immutable)
+ *   - `configs`      ← `spec.configs`    (configmap slugs/ids for env injection; immutable)
  *   - `request`      ← `spec.request`   (the free-text request/prompt)
  *   - `phase`        ← `spec.phase`     (Pending | Running | Succeeded | Failed)
  *   - `startedAt`    ← `spec.startedAt` (unix seconds when Run began; else null)
@@ -53,6 +54,38 @@ export interface NaniteToolCallOutcome {
   error?: string;
 }
 
+/** A body-free identity projection of one item from a WM read tool result. */
+export interface NaniteReadDigestItem {
+  id?: string;
+  slug?: string;
+  title?: string;
+  name?: string;
+  resourceVersion?: number;
+}
+
+/**
+ * A compact, body-free digest of a Working-Memory READ tool result, captured at
+ * record time so the friendly Execution rendering never depends on the
+ * truncated `result` preview. `count` is the true total; `items` is capped and
+ * carries only identity fields (no bodies).
+ */
+export interface NaniteReadResultDigest {
+  count: number;
+  items: NaniteReadDigestItem[];
+}
+
+/**
+ * A body-free identity of the dev container a container-backed tool step ran
+ * inside: the run's container `id` (the `wm-nanite` id-label value) plus, when
+ * cheaply resolvable, the OrbStack `name` + `<name>.orb.local` `host`. Carries
+ * NO secrets, so it is safe to persist and render.
+ */
+export interface NaniteContainerIdentity {
+  id: string;
+  name?: string;
+  host?: string;
+}
+
 /**
  * One ordered step in a run's execution trace: the model's narration
  * (`kind: 'assistant'`) or a single tool call (`kind: 'tool'`), in execution
@@ -62,12 +95,24 @@ export interface NaniteToolCallOutcome {
  */
 export interface NaniteRunStep {
   kind: 'assistant' | 'tool';
+  /** Zero/one-based model-turn index this step occurred in (the run's round). */
+  round?: number;
   text?: string;
   name?: string;
   ok?: boolean;
   input?: string;
   result?: string;
   error?: string;
+  /**
+   * Compact, body-free digest of a WM READ tool result (`kind: 'tool'`, success
+   * only), captured from the FULL result before `result` was truncated.
+   */
+  resultDigest?: NaniteReadResultDigest;
+  /**
+   * The dev container this step ran inside — stamped ONLY on container-backed
+   * tool steps (`run_command` / `expose_port`).
+   */
+  container?: NaniteContainerIdentity;
 }
 
 /** Approximate token usage (loop + judge) recorded on a finished Nanite. */
@@ -93,6 +138,8 @@ export interface INanite {
   templateId: string | null;
   workstream: string;
   inputTopic: string;
+  /** Configmap slugs/ids injected into the run's dev container as env. */
+  configs: string[];
   request: string;
   phase: NanitePhase;
   /** Unix seconds the nanite was enqueued for dispatch (null until Queued). */
@@ -100,20 +147,8 @@ export interface INanite {
   startedAt: number | null;
   endedAt: number | null;
   error: string;
-  /** The full request text actually sent to the model (instructions + context). */
-  prompt: string;
-  /** The run's verbatim final text (empty until it finishes). */
-  output: string;
-  /** Allow-list entries that weren't available at run time. */
-  missingTools: string[];
-  /** The acceptance verdict (null until the run is judged). */
-  acceptance: NaniteAcceptance | null;
-  /** The run's tool-call trail, in execution order. */
-  toolCalls: NaniteToolCallOutcome[];
-  /** The run's ordered execution trace (narration + tool calls). */
-  steps: NaniteRunStep[];
-  /** Approximate token usage (loop + judge), or null before the run finishes. */
-  tokens: NaniteTokenUsage | null;
+  /** Light pointer to the newest {@link NaniteJournal} for this nanite (null until first run). */
+  latestJournalId: string | null;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -126,19 +161,14 @@ export class Nanite implements INanite {
   templateId: string | null;
   workstream: string;
   inputTopic: string;
+  configs: string[];
   request: string;
   phase: NanitePhase;
   queuedAt: number | null;
   startedAt: number | null;
   endedAt: number | null;
   error: string;
-  prompt: string;
-  output: string;
-  missingTools: string[];
-  acceptance: NaniteAcceptance | null;
-  toolCalls: NaniteToolCallOutcome[];
-  steps: NaniteRunStep[];
-  tokens: NaniteTokenUsage | null;
+  latestJournalId: string | null;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -150,108 +180,19 @@ export class Nanite implements INanite {
     this.templateId = typeof spec.templateId === 'string' ? spec.templateId : null;
     this.workstream = typeof spec.workstream === 'string' ? spec.workstream : '';
     this.inputTopic = typeof spec.inputTopic === 'string' ? spec.inputTopic : '';
+    this.configs = Array.isArray(spec.configs)
+      ? spec.configs.filter((x): x is string => typeof x === 'string')
+      : [];
     this.request = typeof spec.request === 'string' ? spec.request : '';
     this.phase = (spec.phase as NanitePhase | undefined) ?? 'Pending';
     this.queuedAt = typeof spec.queuedAt === 'number' ? spec.queuedAt : null;
     this.startedAt = typeof spec.startedAt === 'number' ? spec.startedAt : null;
     this.endedAt = typeof spec.endedAt === 'number' ? spec.endedAt : null;
     this.error = typeof spec.error === 'string' ? spec.error : '';
-    this.prompt = typeof spec.prompt === 'string' ? spec.prompt : '';
-    this.output = typeof spec.output === 'string' ? spec.output : '';
-    this.missingTools = Array.isArray(spec.missingTools)
-      ? spec.missingTools.filter((x): x is string => typeof x === 'string')
-      : [];
-    this.acceptance = readAcceptance(spec.acceptance);
-    this.toolCalls = readToolCalls(spec.toolCalls);
-    this.steps = readSteps(spec.steps);
-    this.tokens = readTokens(spec.tokens);
+    this.latestJournalId =
+      typeof spec.latestJournalId === 'string' ? spec.latestJournalId : null;
     this.created_at = env.metadata.createdAt;
     this.updated_at = env.metadata.updatedAt;
     this.resourceVersion = env.metadata.resourceVersion;
   }
-}
-
-/** Reconstruct the acceptance verdict from a spec blob (null on absent/foreign). */
-function readAcceptance(value: unknown): NaniteAcceptance | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-  const v = value as Record<string, unknown>;
-  return {
-    summary: typeof v.summary === 'string' ? v.summary : '',
-    confidence: typeof v.confidence === 'number' ? v.confidence : 0,
-    threshold: typeof v.threshold === 'number' ? v.threshold : 0,
-    passed: v.passed === true,
-  };
-}
-
-/** Reconstruct the tool-call trail from a spec blob (empty on absent/foreign). */
-function readToolCalls(value: unknown): NaniteToolCallOutcome[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const out: NaniteToolCallOutcome[] = [];
-  for (const item of value) {
-    if (item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string') {
-      const v = item as Record<string, unknown>;
-      out.push({
-        name: v.name as string,
-        ok: v.ok === true,
-        ...(typeof v.error === 'string' ? { error: v.error } : {}),
-      });
-    }
-  }
-  return out;
-}
-
-/** Reconstruct the ordered execution trace from a spec blob (empty on absent/foreign). */
-function readSteps(value: unknown): NaniteRunStep[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const out: NaniteRunStep[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== 'object') {
-      continue;
-    }
-    const v = item as Record<string, unknown>;
-    const kind = v.kind === 'assistant' || v.kind === 'tool' ? v.kind : null;
-    if (!kind) {
-      continue;
-    }
-    const step: NaniteRunStep = { kind };
-    if (typeof v.text === 'string') {
-      step.text = v.text;
-    }
-    if (typeof v.name === 'string') {
-      step.name = v.name;
-    }
-    if (typeof v.ok === 'boolean') {
-      step.ok = v.ok;
-    }
-    if (typeof v.input === 'string') {
-      step.input = v.input;
-    }
-    if (typeof v.result === 'string') {
-      step.result = v.result;
-    }
-    if (typeof v.error === 'string') {
-      step.error = v.error;
-    }
-    out.push(step);
-  }
-  return out;
-}
-
-/** Reconstruct approximate token usage from a spec blob (null on absent/foreign). */
-function readTokens(value: unknown): NaniteTokenUsage | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-  const v = value as Record<string, unknown>;
-  return {
-    input_tokens: typeof v.input_tokens === 'number' ? v.input_tokens : 0,
-    output_tokens: typeof v.output_tokens === 'number' ? v.output_tokens : 0,
-    total_tokens: typeof v.total_tokens === 'number' ? v.total_tokens : 0,
-  };
 }

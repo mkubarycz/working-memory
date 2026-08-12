@@ -5,6 +5,7 @@ import type {
   DocumentEnvelope,
   Alert,
   Nanite,
+  NaniteJournal,
   NaniteTemplate,
   Topic,
   TopicType,
@@ -153,6 +154,197 @@ interface GenericFieldVM {
   value: string;
 }
 
+/**
+ * One row in a Nanite doc's run-history list (its {@link NaniteJournal}s),
+ * rendered at the bottom of the nanite page styled like a workstream card's
+ * topic rows. Structural mirror of `NaniteJournalRowVM` in
+ * `webview-ui/src/lib/types.ts`.
+ */
+interface NaniteJournalRowVM {
+  /** The NaniteJournal doc id — opens `working-memory:/document/<id>`. */
+  id: string;
+  /** Terminal outcome driving the row icon (null ⇒ still running/unknown). */
+  outcome: 'succeeded' | 'failed' | null;
+  /** Lifecycle phase text (Succeeded / Failed / Running / …). */
+  phase: string;
+  /** A short one-line summary of the run (or its error). */
+  summary: string;
+  /** Unix seconds the run ended (0 when unknown); the webview formats it. */
+  endedAt: number;
+  /** Human run duration (e.g. "2.3s", "1m 4s"), or '' when unknown. */
+  duration: string;
+}
+
+/**
+ * A link-out from a NaniteJournal detail view to a related document (the owning
+ * Nanite or its NaniteTemplate). Structural mirror of `NaniteJournalLinkVM` in
+ * `webview-ui/src/lib/types.ts`.
+ */
+interface NaniteJournalLinkVM {
+  /** Document id used to open it (empty ⇒ unresolved, link hidden). */
+  id: string;
+  /** Friendly label for the link. */
+  title: string;
+}
+
+/**
+ * One linked item in a multi-result {@link FriendlyReadVM} (list mode). Each
+ * item renders as its own clickable link that opens the underlying document via
+ * the panel's `onOpenRoute`. Structural mirror of `FriendlyReadItemVM` in
+ * `webview-ui/src/lib/types.ts`.
+ */
+interface FriendlyReadItemVM {
+  /** Human label (title → name → slug → id), truncated. */
+  label: string;
+  /** working-memory route to open the item (`/topic/<slug>.working-memory`, …). */
+  route: string;
+}
+
+/**
+ * A friendly summary of a Working-Memory document-READ tool step, derived from
+ * the step's parsed `result`/`input` (see {@link friendlyReadStep}). When
+ * present, the Execution trace renders a clickable one-line summary instead of
+ * raw JSON, while the raw INPUT/RESULT stay available on the step's disclosure.
+ *
+ * Discriminated by `mode`:
+ * - `'single'` — a by-slug/id or count-1 read; renders `read <tool>
+ *   [<label> (v<version>)]`. `label`/`version`/`route` carry the item; the list
+ *   fields are empty (`scope: ''`, `items: []`, `moreCount: 0`).
+ * - `'list'`  — a multi-item read; renders `read <tool> <scope> → [A] [B] …`.
+ *   `scope` is the leading input-derived text (workstream slug / query, may be
+ *   `''`), `items` the linked results (capped), `moreCount` the overflow count;
+ *   the single fields are empty (`label: ''`, `version: 0`, `route: ''`).
+ *
+ * Fields are kept non-optional (with empty sentinels for the unused mode) so
+ * the webview↔host contract-parity guard stays a plain field-name comparison.
+ * Structural mirror of `FriendlyReadVM` in `webview-ui/src/lib/types.ts`.
+ */
+interface FriendlyReadVM {
+  /** Always `'read'` — the friendly verb shown before the tool name. */
+  verb: 'read';
+  /** The WM read tool that produced the result (e.g. `ws-topic-read`). */
+  tool: string;
+  /** `'single'` ⇒ label/version/route set; `'list'` ⇒ scope/items/moreCount set. */
+  mode: 'single' | 'list';
+  /** Single mode: human label for the item (title/name/slug/id), truncated. */
+  label: string;
+  /** Single mode: the item's `resourceVersion`. */
+  version: number;
+  /** Single mode: route to open the item (`/topic/<slug>.working-memory`, …). */
+  route: string;
+  /** List mode: leading scope text derived from input (workstream / query). */
+  scope: string;
+  /** List mode: the linked result items (capped for readability). */
+  items: FriendlyReadItemVM[];
+  /** List mode: count of items omitted beyond the cap (0 ⇒ none). */
+  moreCount: number;
+}
+
+/**
+ * The dev container a container-backed tool step ran inside. Structural mirror
+ * of `NaniteJournalContainerVM` in `webview-ui/src/lib/types.ts`. Fields use
+ * empty-string sentinels (never optional) so the contract-parity guard stays a
+ * plain field-name comparison; `host` empty ⇒ render the label as plain text.
+ */
+interface NaniteJournalContainerVM {
+  /** The run's container id (the `wm-nanite` id-label value). */
+  id: string;
+  /** OrbStack per-container name (empty when unresolved). */
+  name: string;
+  /** `<name>.orb.local` host (empty when unresolved) — a clickable https link. */
+  host: string;
+}
+
+/**
+ * One step in a NaniteJournal's execution trace. Structural mirror of
+ * `NaniteJournalStepVM` in `webview-ui/src/lib/types.ts`.
+ */
+interface NaniteJournalStepVM {
+  kind: 'assistant' | 'tool';
+  label: string;
+  ok: boolean | null;
+  text: string;
+  input: string;
+  result: string;
+  error: string;
+  /** Friendly WM-read summary (null ⇒ render the raw step). */
+  friendly: FriendlyReadVM | null;
+  /** The dev container this step ran inside (null ⇒ not container-backed). */
+  container: NaniteJournalContainerVM | null;
+}
+
+/**
+ * One ROUND TRIP (model turn) in a NaniteJournal's execution trace. Top-level
+ * unit of the grouped Execution view: the assistant's `narration` for that turn
+ * (shown expanded) plus the `toolSteps` it made that turn (each individually
+ * collapsible). Structural mirror of `NaniteJournalRoundVM` in
+ * `webview-ui/src/lib/types.ts`.
+ */
+interface NaniteJournalRoundVM {
+  /** The model-turn index this round represents (1-based when known). */
+  round: number;
+  /** The assistant narration for this round (may be empty). */
+  narration: string;
+  /** The tool calls the model made in this round (individually expandable). */
+  toolSteps: NaniteJournalStepVM[];
+}
+
+/** The acceptance verdict on a journal detail. Mirror of the webview VM. */
+interface NaniteJournalAcceptanceVM {
+  summary: string;
+  confidence: number;
+  threshold: number;
+  passed: boolean;
+}
+
+/**
+ * The single top-of-body callout descriptor. Consolidates what used to be two
+ * redundant treatments (a run-error banner + a separate acceptance card) into
+ * one: an accepted/rejected acceptance verdict, or — when the run was never
+ * judged — the run's error, or null when there's nothing to flag. Mirror of the
+ * webview VM.
+ */
+interface NaniteJournalCalloutVM {
+  /** Visual variant: acceptance verdict, or a plain run-error banner. */
+  variant: 'accepted' | 'rejected' | 'failed';
+  /** Headline verdict text ("Accepted" | "Rejected"); empty for 'failed'. */
+  verdict: string;
+  /** "confidence X · threshold Y" for acceptance variants; empty otherwise. */
+  score: string;
+  /** Body text — the acceptance summary (reason), or the run's error message. */
+  reason: string;
+}
+
+/**
+ * The dedicated NaniteJournal detail view-model. Structural mirror of
+ * `NaniteJournalDetailVM` in `webview-ui/src/lib/types.ts`.
+ */
+interface NaniteJournalDetailVM {
+  outcome: 'succeeded' | 'failed' | null;
+  phase: string;
+  queuedAt: number;
+  startedAt: number;
+  endedAt: number;
+  duration: string;
+  request: string;
+  /**
+   * The `request` parsed into ordered segments: plain text, or a
+   * document-sourced block (a `// START BLOCK … // END BLOCK` span) the view
+   * renders as a collapsible link-out to its source.
+   */
+  promptSegments: PromptSegmentVM[];
+  steps: NaniteJournalStepVM[];
+  /** The execution trace grouped into ordered round trips (model turns). */
+  rounds: NaniteJournalRoundVM[];
+  error: string;
+  summary: string;
+  acceptance: NaniteJournalAcceptanceVM | null;
+  /** The single top callout (null ⇒ nothing to flag). */
+  callout: NaniteJournalCalloutVM | null;
+  nanite: NaniteJournalLinkVM;
+  template: NaniteJournalLinkVM;
+}
+
 interface GenericDocVM {
   kind: string;
   id: string;
@@ -162,6 +354,10 @@ interface GenericDocVM {
   updatedAt: number;
   resourceVersion: number;
   spec: GenericFieldVM[];
+  /** For a Nanite doc: its run history (newest-first). Absent for other kinds. */
+  journals?: NaniteJournalRowVM[];
+  /** For a `NaniteJournal` doc: the dedicated run-record detail. */
+  naniteJournal?: NaniteJournalDetailVM;
 }
 
 type DocumentVM = WorkstreamVM | TopicVM | GenericDocVM;
@@ -179,6 +375,13 @@ type WebviewToExt =
   | { type: 'openTopic'; slug: string }
   | { type: 'openWorkstream'; slug: string }
   | { type: 'openDocument'; id: string }
+  // Open a document by its working-memory route (`/document/<id>.working-memory`
+  // or `/topic/<slug>.working-memory`), parsed from a journal prompt block
+  // marker's link-out.
+  | { type: 'openRoute'; route: string }
+  // Open an external URL in the default browser (e.g. a container's OrbStack
+  // `<name>.orb.local` https host, which is not a working-memory route).
+  | { type: 'openExternal'; url: string }
   | { type: 'invoke'; command: string; args: unknown[] }
   | { type: 'togglePinTopic'; slug: string }
   // Transition an alert's lifecycle status from a callout button, routed to
@@ -321,14 +524,38 @@ export function asString(v: unknown): string {
 }
 
 /**
+ * Legacy run-result keys that used to live on a Nanite `spec` before the run
+ * record was split out into its own immutable `NaniteJournal` (feature
+ * `nanite-run-journal-document`). New nanites never carry these, but nanites
+ * created before the split still do — so the generic doc view filters them out,
+ * leaving only the nanite's DESIRED STATE (request, configs, template, scope,
+ * phase/timings). Run history now lives in the journal list at the bottom of
+ * the nanite page.
+ */
+const NANITE_RUN_REMNANT_KEYS = new Set([
+  'prompt',
+  'output',
+  'steps',
+  'acceptance',
+  'toolCalls',
+  'tokens',
+  'missingTools',
+  'iterations',
+  'hitIterationCap',
+]);
+
+/**
  * Build the generic fallback view-model from a document envelope: flatten +
  * sort the `spec` into readable fields and derive a title. Pure — no client,
- * no VS Code APIs — so it can be unit-tested directly.
+ * no VS Code APIs — so it can be unit-tested directly. For a `Nanite` doc the
+ * legacy run-result keys ({@link NANITE_RUN_REMNANT_KEYS}) are dropped so the
+ * view shows only desired state; the run record lives in its NaniteJournal.
  */
 export function buildGenericVM(doc: DocumentEnvelope): GenericDocVM {
-  const spec: GenericFieldVM[] = Object.entries(doc.spec ?? {}).map(
-    ([key, value]) => ({ key, value: asString(value) }),
-  );
+  const isNanite = doc.kind === 'Nanite';
+  const spec: GenericFieldVM[] = Object.entries(doc.spec ?? {})
+    .filter(([key]) => !(isNanite && NANITE_RUN_REMNANT_KEYS.has(key)))
+    .map(([key, value]) => ({ key, value: asString(value) }));
   spec.sort((a, b) => a.key.localeCompare(b.key));
   const title =
     asString(doc.spec?.title) ||
@@ -344,6 +571,515 @@ export function buildGenericVM(doc: DocumentEnvelope): GenericDocVM {
     updatedAt: doc.metadata.updatedAt,
     resourceVersion: doc.metadata.resourceVersion,
     spec,
+  };
+}
+
+/** Clip a summary/error to one readable line for a journal row. */
+function clipSummary(text: string, max = 140): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max).trimEnd()}…`;
+}
+
+/** Format a run duration (seconds → "2.3s" / "1m 4s"); '' when unknown. */
+function formatDuration(startedAt: number | null, endedAt: number | null): string {
+  if (!startedAt || !endedAt || endedAt < startedAt) {
+    return '';
+  }
+  const secs = endedAt - startedAt;
+  if (secs < 60) {
+    return `${secs}s`;
+  }
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+/**
+ * Project a nanite's {@link NaniteJournal} records into the run-history rows
+ * rendered at the bottom of its doc page — NEWEST-FIRST (by end time, falling
+ * back to start time then created-at). Pure so the ordering + row shaping are
+ * unit-testable. Each row's summary is the run's result summary, or its error
+ * on a failed run with no summary.
+ */
+export function projectNaniteJournals(journals: NaniteJournal[]): NaniteJournalRowVM[] {
+  const sortKey = (j: NaniteJournal): number =>
+    j.status.endedAt ?? j.status.startedAt ?? j.created_at ?? 0;
+  return [...journals]
+    .sort((a, b) => sortKey(b) - sortKey(a))
+    .map((j) => {
+      const summary = j.results.summary.trim() || j.execution.error.trim();
+      return {
+        id: j.id,
+        outcome: j.status.outcome,
+        phase: j.status.phase,
+        summary: clipSummary(summary),
+        endedAt: j.status.endedAt ?? 0,
+        duration: formatDuration(j.status.startedAt, j.status.endedAt),
+      };
+    });
+}
+
+/** Friendly label for a nanite link-out (its request, else a short id). */
+function naniteLinkTitle(naniteId: string, nanite: Nanite | null): string {
+  const request = nanite?.request.trim() ?? '';
+  if (request) {
+    return clipSummary(request, 80);
+  }
+  return `Nanite ${naniteId.slice(0, 8)}`;
+}
+
+/**
+ * Choose the SINGLE top-of-body callout for a journal, collapsing the former
+ * pair of redundant treatments (a run-error banner + a low acceptance card)
+ * into one. An acceptance verdict wins when present — its `summary` becomes the
+ * reason and the confidence/threshold the score, so a rejection reads fully at
+ * the top with no duplicate low card. With no verdict we fall back to the run's
+ * error (the run outcome, as before); a clean run yields `null` (no callout).
+ * Pure so the choice is unit-testable.
+ */
+export function naniteJournalCallout(
+  acceptance: NaniteJournalAcceptanceVM | null,
+  error: string,
+): NaniteJournalCalloutVM | null {
+  if (acceptance) {
+    return {
+      variant: acceptance.passed ? 'accepted' : 'rejected',
+      verdict: acceptance.passed ? 'Accepted' : 'Rejected',
+      score: `confidence ${acceptance.confidence} · threshold ${acceptance.threshold}`,
+      reason: acceptance.summary,
+    };
+  }
+  if (error) {
+    return { variant: 'failed', verdict: '', score: '', reason: error };
+  }
+  return null;
+}
+
+/**
+ * One parsed segment of a journal prompt: literal `text`, or a document-sourced
+ * `block` extracted from a `// START BLOCK <route>#<field>?v<version>` …
+ * `// END BLOCK` span. Structural mirror of `PromptSegmentVM` in
+ * `webview-ui/src/lib/types.ts`.
+ */
+export type PromptSegmentVM =
+  | { kind: 'text'; text: string }
+  | { kind: 'block'; route: string; field: string; version: string; content: string };
+
+/** Push a text segment, trimming outer blank lines + dropping empty / separator-only runs. */
+function pushPromptText(segments: PromptSegmentVM[], raw: string): void {
+  const text = raw.replace(/^\n+/, '').replace(/\n+$/, '');
+  const trimmed = text.trim();
+  if (!trimmed || /^-{3,}$/.test(trimmed)) {
+    return;
+  }
+  segments.push({ kind: 'text', text });
+}
+
+/**
+ * Parse `// START BLOCK <route>#<field>?v<version>` … `// END BLOCK` spans out of
+ * a journal prompt into an ordered list of segments. Well-formed spans become
+ * `block` segments (rendered as link-outs); everything else — including a
+ * malformed or unclosed marker — stays as literal `text`, so a bad marker
+ * degrades to raw text instead of crashing the view. Pure + string-only, so the
+ * parsing is unit-testable.
+ */
+export function parsePromptBlocks(request: string): PromptSegmentVM[] {
+  const segments: PromptSegmentVM[] = [];
+  const re = /\/\/ START BLOCK ([^#\s]+)#([^?\s]+)\?v([^\s]+)\n([\s\S]*?)\n\/\/ END BLOCK/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(request)) !== null) {
+    if (m.index > last) {
+      pushPromptText(segments, request.slice(last, m.index));
+    }
+    segments.push({ kind: 'block', route: m[1], field: m[2], version: m[3], content: m[4] });
+    last = m.index + m[0].length;
+  }
+  if (last < request.length) {
+    pushPromptText(segments, request.slice(last));
+  }
+  if (segments.length === 0) {
+    segments.push({ kind: 'text', text: request });
+  }
+  return segments;
+}
+
+/**
+ * Working-Memory document-READ tool names whose `{ count, <plural>: [...] }`
+ * results can be summarized into a friendly clickable line.
+ */
+const WM_READ_TOOLS = new Set([
+  'ws-topic-read',
+  'ws-workstream-read',
+  'ws-topictype-read',
+  'ws-config-read',
+  'ws-alert-read',
+  'ws-nanite-read',
+  'ws-nanitejournal-read',
+]);
+
+/** The two slug-addressable read tools; every other WM read opens by document id. */
+const WM_READ_SLUG_ROUTE: Record<string, 'topic' | 'workstream'> = {
+  'ws-topic-read': 'topic',
+  'ws-workstream-read': 'workstream',
+};
+
+/** Max inline links shown for a list read before collapsing into "+K more". */
+const WM_READ_LIST_CAP = 6;
+
+/**
+ * Derive the leading scope text for a list read from the step's INPUT JSON:
+ * prefer the `workstream` slug, else the `query`, else `''`. Never throws.
+ */
+function friendlyReadScope(input?: string): string {
+  if (typeof input !== 'string' || input.trim() === '') {
+    return '';
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch {
+    return '';
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return '';
+  }
+  const obj = parsed as Record<string, unknown>;
+  const ws = typeof obj.workstream === 'string' ? obj.workstream.trim() : '';
+  if (ws) {
+    return ws;
+  }
+  const query = typeof obj.query === 'string' ? obj.query.trim() : '';
+  return query || '';
+}
+
+/**
+ * Project one raw result item into `{ label, route, version }`, deriving the
+ * label (title → name → slug → id) and a working-memory route (`/topic/<slug>`
+ * or `/workstream/<slug>`, else `/document/<id>`). Returns `null` when the item
+ * has no usable label or no addressable route. `version` is `0` when absent.
+ */
+function friendlyReadItem(
+  raw: unknown,
+  slugKind: 'topic' | 'workstream' | undefined,
+): { label: string; route: string; version: number } | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const item = raw as Record<string, unknown>;
+  const id = typeof item.id === 'string' ? item.id : '';
+  const slug = typeof item.slug === 'string' ? item.slug : '';
+  const title = typeof item.title === 'string' ? item.title.trim() : '';
+  const name = typeof item.name === 'string' ? item.name.trim() : '';
+  const rawLabel = title || name || slug || id;
+  if (!rawLabel) {
+    return null;
+  }
+  const route =
+    slugKind && slug
+      ? `/${slugKind}/${encodeURIComponent(slug)}.working-memory`
+      : id
+        ? `/document/${encodeURIComponent(id)}.working-memory`
+        : '';
+  if (!route) {
+    return null;
+  }
+  const version = typeof item.resourceVersion === 'number' ? item.resourceVersion : 0;
+  return { label: rawLabel, route, version };
+}
+
+/**
+ * Build a {@link FriendlyReadVM} from an already-extracted item array. Shared by
+ * the digest path (preferred) and the raw-JSON fallback. `totalCount` is the
+ * TRUE result total (the digest's `count`, or the array length for the fallback)
+ * so `moreCount` reflects results omitted beyond both the storage + display cap.
+ * Returns `null` for an empty list or an unaddressable single item.
+ */
+function friendlyReadFromItems(
+  tool: string,
+  slugKind: 'topic' | 'workstream' | undefined,
+  rawItems: unknown[],
+  input: string | undefined,
+  totalCount: number,
+): FriendlyReadVM | null {
+  if (rawItems.length === 0) {
+    return null;
+  }
+
+  // Single-item read keeps the versioned single form (requires resourceVersion).
+  if (totalCount === 1 && rawItems.length === 1) {
+    const built = friendlyReadItem(rawItems[0], slugKind);
+    if (!built || typeof (rawItems[0] as Record<string, unknown>).resourceVersion !== 'number') {
+      return null;
+    }
+    return {
+      verb: 'read',
+      tool,
+      mode: 'single',
+      label: clipSummary(built.label, 60),
+      version: built.version,
+      route: built.route,
+      scope: '',
+      items: [],
+      moreCount: 0,
+    };
+  }
+
+  // Multi-item read → scope + one link per result, capped for readability.
+  const built = rawItems
+    .map((raw) => friendlyReadItem(raw, slugKind))
+    .filter((x): x is { label: string; route: string; version: number } => x !== null);
+  if (built.length === 0) {
+    return null;
+  }
+  const shown = built.slice(0, WM_READ_LIST_CAP);
+  return {
+    verb: 'read',
+    tool,
+    mode: 'list',
+    label: '',
+    version: 0,
+    route: '',
+    scope: friendlyReadScope(input),
+    items: shown.map((b) => ({ label: clipSummary(b.label, 40), route: b.route })),
+    moreCount: Math.max(0, totalCount - shown.length),
+  };
+}
+
+/**
+ * Try to summarize a WM document-READ tool step into a friendly, clickable
+ * line. Recognizes the WM read tools ({@link WM_READ_TOOLS}) and prefers the
+ * step's compact, body-free {@link FriendlyReadVM} source in priority order:
+ *
+ * 1. `resultDigest` (PREFERRED) — the runner captures this from the FULL result
+ *    before truncation, so it is complete + never depends on the (possibly
+ *    truncated) `result` string. Its `count` drives `moreCount`.
+ * 2. `result` JSON (FALLBACK) — for older, pre-digest journals: parse the
+ *    (possibly truncated) `result` best-effort as `{ count, <plural>: [...] }`
+ *    and take the first array-valued property as the items.
+ *
+ * - A **single-item** result yields a `mode: 'single'` VM with the item's label
+ *   (truncated) + `resourceVersion` + route — the versioned form.
+ * - A **multi-item** result yields a `mode: 'list'` VM: a `scope` derived from
+ *   the step's INPUT (workstream slug / query), each item as its own linked
+ *   `{ label, route }` (labels truncated, versions omitted to stay uncluttered),
+ *   capped at {@link WM_READ_LIST_CAP} with the overflow in `moreCount`.
+ *
+ * Returns `null` for a non-WM step, a non-tool step, an empty result, or any
+ * malformed/unparseable input so the caller falls back to the raw rendering.
+ * Pure + string-only, so it is unit-testable and never throws.
+ */
+export function friendlyReadStep(step: {
+  kind?: string;
+  name?: string;
+  input?: string;
+  result?: string;
+  resultDigest?: { count?: number; items?: unknown[] } | null;
+}): FriendlyReadVM | null {
+  if (step.kind !== 'tool') {
+    return null;
+  }
+  const tool = (step.name ?? '').trim();
+  if (!WM_READ_TOOLS.has(tool)) {
+    return null;
+  }
+  const slugKind = WM_READ_SLUG_ROUTE[tool];
+
+  // PREFERRED: render from the body-free digest captured at record time.
+  const digest = step.resultDigest;
+  if (digest && Array.isArray(digest.items) && digest.items.length > 0) {
+    const total = typeof digest.count === 'number' ? digest.count : digest.items.length;
+    return friendlyReadFromItems(tool, slugKind, digest.items, step.input, total);
+  }
+
+  // FALLBACK: best-effort parse of the raw (possibly truncated) result JSON so
+  // pre-digest journals still render when their result happened to fit.
+  if (typeof step.result !== 'string' || step.result.trim() === '') {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(step.result);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return null;
+  }
+  // The item list is the first array-valued property (`topics` / `workstreams`
+  // / `alerts` / …); taking it by shape avoids hard-coding each plural key.
+  const rawItems = Object.values(parsed as Record<string, unknown>).find((v) => Array.isArray(v)) as
+    | unknown[]
+    | undefined;
+  if (!rawItems || rawItems.length === 0) {
+    return null;
+  }
+  return friendlyReadFromItems(tool, slugKind, rawItems, step.input, rawItems.length);
+}
+
+/** The shape of a raw execution step read off a journal (round + kind + previews). */
+type RawRunStep = {
+  kind: 'assistant' | 'tool';
+  round?: number;
+  text?: string;
+  name?: string;
+  ok?: boolean;
+  input?: string;
+  result?: string;
+  error?: string;
+  /** Body-free digest of a WM read result (preferred source for `friendly`). */
+  resultDigest?: { count?: number; items?: unknown[] } | null;
+  /** Identity of the dev container a container-backed tool step ran inside. */
+  container?: { id?: string; name?: string; host?: string } | null;
+};
+
+/**
+ * Project a raw step's container identity into its VM. Returns null unless the
+ * step carries a non-empty container `id` (only container-backed tool steps do).
+ */
+function containerToVM(
+  c: { id?: string; name?: string; host?: string } | null | undefined,
+): NaniteJournalContainerVM | null {
+  if (!c || typeof c.id !== 'string' || c.id === '') {
+    return null;
+  }
+  return {
+    id: c.id,
+    name: typeof c.name === 'string' ? c.name : '',
+    host: typeof c.host === 'string' ? c.host : '',
+  };
+}
+
+/** Project one raw execution step into its per-step disclosure VM. */
+function stepToVM(s: RawRunStep): NaniteJournalStepVM {
+  return {
+    kind: s.kind,
+    label: s.kind === 'tool' ? (s.name ?? '').trim() || 'tool' : 'Assistant',
+    ok: s.kind === 'tool' ? s.ok ?? null : null,
+    text: asString(s.text ?? ''),
+    input: asString(s.input ?? ''),
+    result: asString(s.result ?? ''),
+    error: asString(s.error ?? ''),
+    friendly: friendlyReadStep(s),
+    container: containerToVM(s.container),
+  };
+}
+
+/**
+ * Group a flat execution trace into ordered ROUND TRIPS (model turns). Each
+ * round carries the assistant `narration` for that turn (shown expanded in the
+ * view) and the `toolSteps` made that turn (each individually collapsible).
+ *
+ * Pure and unit-tested. Two grouping strategies:
+ *  - When steps carry a `round` index (the runner tags every step), group by it
+ *    in first-seen order — the accurate path.
+ *  - BACK-COMPAT: older journals predate `round`, so infer boundaries from the
+ *    trace shape: an `assistant` step opens a new round and subsequent `tool`
+ *    steps attach to it; leading tool steps before any narration form round 1.
+ *
+ * The number of returned rounds is what the Execution badge counts.
+ */
+export function groupStepsIntoRounds(steps: RawRunStep[]): NaniteJournalRoundVM[] {
+  const hasRound = steps.some((s) => typeof s.round === 'number');
+
+  if (hasRound) {
+    const byRound = new Map<number, NaniteJournalRoundVM>();
+    const order: number[] = [];
+    for (const s of steps) {
+      const idx = typeof s.round === 'number' ? s.round : 0;
+      let round = byRound.get(idx);
+      if (!round) {
+        round = { round: idx, narration: '', toolSteps: [] };
+        byRound.set(idx, round);
+        order.push(idx);
+      }
+      if (s.kind === 'assistant') {
+        const text = asString(s.text ?? '');
+        round.narration = round.narration ? `${round.narration}\n\n${text}` : text;
+      } else {
+        round.toolSteps.push(stepToVM(s));
+      }
+    }
+    return order.map((idx) => byRound.get(idx)!);
+  }
+
+  // Back-compat: no round tags → infer round trips from narration boundaries.
+  const rounds: NaniteJournalRoundVM[] = [];
+  let current: NaniteJournalRoundVM | null = null;
+  let next = 1;
+  for (const s of steps) {
+    if (s.kind === 'assistant') {
+      current = { round: next++, narration: asString(s.text ?? ''), toolSteps: [] };
+      rounds.push(current);
+    } else {
+      if (!current) {
+        current = { round: next++, narration: '', toolSteps: [] };
+        rounds.push(current);
+      }
+      current.toolSteps.push(stepToVM(s));
+    }
+  }
+  return rounds;
+}
+
+/**
+ * Project ONE {@link NaniteJournal} into the dedicated run-record detail VM,
+ * resolving link-outs to its owning {@link Nanite} (`nanite`) and that nanite's
+ * {@link NaniteTemplate} (`template`). Both link-outs open by document id via
+ * the panel's `/document/<id>` route; an unresolved reference yields an empty
+ * `id` so the view hides the link. Pure — no client / VS Code APIs — so the
+ * shaping is unit-testable. Each execution step is labelled assistant vs tool
+ * (tool steps carry the tool name + ok/failed flag) with its input / result /
+ * error kept for the webview's per-step disclosure.
+ */
+export function projectNaniteJournalDetail(
+  journal: NaniteJournal,
+  nanite: Nanite | null,
+  template: NaniteTemplate | null,
+): NaniteJournalDetailVM {
+  const steps: NaniteJournalStepVM[] = journal.execution.steps.map(stepToVM);
+  const rounds = groupStepsIntoRounds(journal.execution.steps);
+  const acceptance = journal.results.acceptance;
+  return {
+    outcome: journal.status.outcome,
+    phase: journal.status.phase,
+    queuedAt: journal.status.queuedAt ?? 0,
+    startedAt: journal.status.startedAt ?? 0,
+    endedAt: journal.status.endedAt ?? 0,
+    duration: formatDuration(journal.status.startedAt, journal.status.endedAt),
+    request: journal.prompt.request,
+    promptSegments: parsePromptBlocks(journal.prompt.request),
+    steps,
+    rounds,
+    error: journal.execution.error,
+    summary: journal.results.summary,
+    acceptance: acceptance
+      ? {
+          summary: acceptance.summary,
+          confidence: acceptance.confidence,
+          threshold: acceptance.threshold,
+          passed: acceptance.passed,
+        }
+      : null,
+    callout: naniteJournalCallout(
+      acceptance
+        ? {
+            summary: acceptance.summary,
+            confidence: acceptance.confidence,
+            threshold: acceptance.threshold,
+            passed: acceptance.passed,
+          }
+        : null,
+      journal.execution.error,
+    ),
+    nanite: {
+      id: journal.naniteId,
+      title: naniteLinkTitle(journal.naniteId, nanite),
+    },
+    template: {
+      id: template?.id ?? '',
+      title: template?.title ?? '',
+    },
   };
 }
 
@@ -566,6 +1302,37 @@ export class DocumentEditorProvider
               DocumentEditorProvider.uriFor('document', msg.id),
               DocumentEditorProvider.viewType,
             );
+          }
+          return;
+        case 'openRoute':
+          // A prompt-block link-out: open the referenced document straight
+          // through the unified editor via its working-memory route. Validate
+          // the shape so only well-formed `working-memory:` paths are parsed.
+          if (
+            typeof msg.route === 'string' &&
+            msg.route.startsWith('/') &&
+            msg.route.endsWith('.working-memory')
+          ) {
+            void vscode.commands.executeCommand(
+              'vscode.openWith',
+              vscode.Uri.parse(`working-memory:${msg.route}`),
+              DocumentEditorProvider.viewType,
+            );
+          }
+          return;
+        case 'openExternal':
+          // A container host link-out: open the https URL in the default
+          // browser. Guard to https only so the webview can't drive the host
+          // to open arbitrary schemes.
+          if (typeof msg.url === 'string') {
+            try {
+              const uri = vscode.Uri.parse(msg.url, true);
+              if (uri.scheme === 'https') {
+                void vscode.env.openExternal(uri);
+              }
+            } catch {
+              // Malformed URL — ignore.
+            }
           }
           return;
         case 'save':
@@ -988,7 +1755,45 @@ export class DocumentEditorProvider
     if (!result.document) {
       return { status: 'notFound' };
     }
-    return { status: 'ok', vm: this.buildGeneric(result.document) };
+    const vm = this.buildGeneric(result.document);
+    // A nanite carries its run history as separate NaniteJournal docs — fetch
+    // them (newest-first) and attach so the page can render the journal list at
+    // the bottom. Read-only; a fetch failure just leaves the list absent.
+    if (result.document.kind === 'Nanite') {
+      try {
+        const journals = await client.naniteJournalRead({
+          naniteId: result.document.metadata.id,
+        });
+        vm.journals = projectNaniteJournals(journals);
+      } catch {
+        // Leave `journals` absent so the webview simply omits the section.
+      }
+    }
+    // A NaniteJournal is ONE immutable run record — surface its dedicated detail
+    // (status/prompt/trace/results) plus link-outs to the owning nanite + its
+    // template (both by-id). Best-effort: a fetch failure leaves the detail
+    // absent so the view falls back to the generic spec dump.
+    if (result.document.kind === 'NaniteJournal') {
+      try {
+        const [journal] = await client.naniteJournalRead({
+          id: result.document.metadata.id,
+        });
+        if (journal) {
+          const nanite = (await client.naniteRead({ id: journal.naniteId }))[0] ?? null;
+          let template: NaniteTemplate | null = null;
+          if (nanite?.templateId) {
+            template =
+              (await client.naniteTemplateRead({ slug: nanite.templateId }))[0] ??
+              (await client.naniteTemplateRead({ id: nanite.templateId }))[0] ??
+              null;
+          }
+          vm.naniteJournal = projectNaniteJournalDetail(journal, nanite, template);
+        }
+      } catch {
+        // Leave `naniteJournal` absent so the webview omits the bespoke layout.
+      }
+    }
+    return { status: 'ok', vm };
   }
 
   private buildGeneric(doc: DocumentEnvelope): GenericDocVM {

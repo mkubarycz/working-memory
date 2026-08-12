@@ -26,6 +26,7 @@ import type { Store } from '../../store.js';
 import { NANITE_KIND } from './nanite.js';
 import { registerWsNaniteCreate } from './create.js';
 import { registerWsNaniteRead } from './read.js';
+import { registerWsNaniteUpdate } from './update.js';
 import { registerWsNaniteRun } from './run.js';
 import { registerWsNaniteDelete } from './delete.js';
 
@@ -46,6 +47,9 @@ const nanite: KindModule = {
         // Input topic slug — OPTIONAL, immutable after creation. When set, the
         // topic IS the input; when empty the Nanite runs workstream-wide.
         inputTopic: z.string().default(''),
+        // Configmap slugs/ids whose merged `data` is injected into this run's
+        // dev container as environment variables — IMMUTABLE after creation.
+        configs: z.array(z.string()).default([]),
         // Free-text request/prompt for this execution.
         request: z.string().default(''),
         // Lifecycle phase — AUTHORED-style spec field (mirrors Topic/Alert
@@ -57,56 +61,12 @@ const nanite: KindModule = {
         startedAt: z.number().nullable().default(null),
         endedAt: z.number().nullable().default(null),
         error: z.string().default(''),
-        // Run RESULT (written by ws-nanite-run's finishing call). The real
-        // engine runs in the extension host; these carry its output back.
-        prompt: z.string().default(''),
-        output: z.string().default(''),
-        // Allow-list entries that weren't available at run time (typo / not
-        // installed / MCP server down) — surfaced so a run explains itself.
-        missingTools: z.array(z.string()).default([]),
-        acceptance: z
-          .object({
-            summary: z.string(),
-            confidence: z.number(),
-            threshold: z.number(),
-            passed: z.boolean(),
-          })
-          .nullable()
-          .default(null),
-        toolCalls: z
-          .array(
-            z.object({
-              name: z.string(),
-              ok: z.boolean(),
-              error: z.string().optional(),
-            }),
-          )
-          .default([]),
-        // Ordered execution trace: the model's narration interleaved with each
-        // tool call, in order. Richer than `toolCalls` — carries between-tool
-        // narration and truncated arg/result previews so the full workflow can
-        // be rendered inline with the response.
-        steps: z
-          .array(
-            z.object({
-              kind: z.enum(['assistant', 'tool']),
-              text: z.string().optional(),
-              name: z.string().optional(),
-              ok: z.boolean().optional(),
-              input: z.string().optional(),
-              result: z.string().optional(),
-              error: z.string().optional(),
-            }),
-          )
-          .default([]),
-        tokens: z
-          .object({
-            input_tokens: z.number(),
-            output_tokens: z.number(),
-            total_tokens: z.number(),
-          })
-          .nullable()
-          .default(null),
+        // Light pointer to the newest NaniteJournal document for this nanite —
+        // the ONLY run trace the nanite keeps. The run RESULT (output, steps,
+        // acceptance, toolCalls, tokens, …) lives in the NaniteJournal record,
+        // NOT here: a run appends a journal and stamps this pointer instead of
+        // mutating desired-state.
+        latestJournalId: z.string().nullable().default(null),
       })
       .strict(),
     fts: (r) => `${r.spec.request}\n${r.spec.inputTopic}\n${r.spec.workstream}`,
@@ -115,13 +75,15 @@ const nanite: KindModule = {
 };
 
 /**
- * Register the Nanite domain API (`ws-nanite-*`): create / read / run / delete.
- * There is no generic update tool by design (workstream + inputTopic are
- * immutable; the lifecycle is driven by `ws-nanite-run`).
+ * Register the Nanite domain API (`ws-nanite-*`): create / read / update / run /
+ * delete. `ws-nanite-update` patches ONLY the mutable spec fields (`configs`,
+ * `request`); `workstream` + `inputTopic` + all lifecycle fields stay immutable
+ * (the lifecycle is driven by `ws-nanite-run`).
  */
 function registerNaniteApi(server: McpServer, store: Store): void {
   registerWsNaniteCreate(server, store);
   registerWsNaniteRead(server, store);
+  registerWsNaniteUpdate(server, store);
   registerWsNaniteRun(server, store);
   registerWsNaniteDelete(server, store);
 }

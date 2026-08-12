@@ -19,6 +19,65 @@ export interface RunnerToken {
   isCancellationRequested: boolean;
 }
 
+/** The result of one shell command run inside a run's dev container. */
+export interface NaniteContainerExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+/**
+ * A body-free identity of the dev container a run (and its container-backed tool
+ * steps) executed inside. `id` is the run's container id (the `wm-nanite`
+ * id-label value); `name`/`host` are the OrbStack per-container name and its
+ * `<name>.orb.local` domain, present only when resolvable cheaply. Carries NO
+ * secrets, so it is safe to persist onto the run trace and render in the view.
+ */
+export interface NaniteContainerIdentity {
+  id: string;
+  name?: string;
+  host?: string;
+}
+
+/**
+ * A per-run execution container (backed by the devcontainer CLI in production;
+ * faked in tests). The runner owns its lifecycle: {@link up} once before the
+ * model loop, {@link exec} for each `run_command` tool call, {@link down} in a
+ * finally (respecting the keep-on-failure policy). Kept `vscode`-free so the
+ * runner core and tests never depend on Docker.
+ */
+export interface NaniteContainer {
+  up(token: RunnerToken): Promise<void>;
+  exec(
+    command: string,
+    opts: { cwd?: string; token?: RunnerToken },
+  ): Promise<NaniteContainerExecResult>;
+  down(opts: { failed: boolean }): Promise<void>;
+  /**
+   * Resolve this run's container to a host-reachable URL at runtime, with no
+   * pre-declaration (see the `expose-dev-container-ports-to-host` story). Under
+   * OrbStack this is the bare per-container HTTPS domain
+   * (`https://<name>.orb.local/`) — the port is informational only, never a
+   * `:port` suffix on the host. Optional so lightweight fakes need not
+   * implement it; the bridge only offers the `expose_port` tool when the
+   * attached container provides this method.
+   */
+  exposePort?(
+    port?: number,
+    opts?: { token?: RunnerToken },
+  ): Promise<{ url: string; name?: string }>;
+  /**
+   * Resolve this run's container identity — its id (the `wm-nanite` id-label
+   * value) plus, best-effort, the OrbStack name + `<name>.orb.local` host. Used
+   * ONCE after {@link up} so container-backed tool steps can record WHICH
+   * container they ran inside. Optional so lightweight fakes need not implement
+   * it. Implementations must NOT add a per-step Docker round-trip: resolve (and
+   * cache) the OrbStack name at most once, returning just `{ id }` when it can't
+   * be resolved cheaply.
+   */
+  describe?(opts?: { token?: RunnerToken }): Promise<NaniteContainerIdentity>;
+}
+
 export interface NaniteToolCall {
   callId: string;
   name: string;
@@ -68,6 +127,12 @@ export interface NaniteConversationSeed {
   /** Tool names the run may NEVER use (subtracted from the allow-list). */
   denylist: string[];
   model: string | null;
+  /**
+   * The run's dev container, when one was provisioned. When present the bridge
+   * offers the per-run `run_command` tool alongside the resolved MCP tools and
+   * routes it to {@link NaniteContainer.exec}.
+   */
+  container?: NaniteContainer | null;
 }
 
 /**
@@ -138,8 +203,30 @@ export interface ToolCallOutcome {
  * what came back. Previews (`input`/`result`) are pre-stringified and truncated
  * by the runner so the persisted trace stays bounded.
  */
+/** A body-free identity projection of one item from a WM read tool result. */
+export interface NaniteReadDigestItem {
+  id?: string;
+  slug?: string;
+  title?: string;
+  name?: string;
+  resourceVersion?: number;
+}
+
+/**
+ * A compact, body-free digest of a Working-Memory READ tool result, captured at
+ * record time from the FULL (untruncated) result so the friendly Execution
+ * rendering never depends on the truncated `result` preview. `count` is the true
+ * total; `items` carries only identity fields (no bodies) and is capped.
+ */
+export interface NaniteReadResultDigest {
+  count: number;
+  items: NaniteReadDigestItem[];
+}
+
 export interface NaniteRunStep {
   kind: 'assistant' | 'tool';
+  /** Model-turn index this step occurred in (the run's round / round-trip). */
+  round?: number;
   /** Assistant narration for this step (`kind: 'assistant'`). */
   text?: string;
   /** Tool name (`kind: 'tool'`). */
@@ -152,6 +239,19 @@ export interface NaniteRunStep {
   result?: string;
   /** Failure message (`kind: 'tool'`, when the call errored or was denied). */
   error?: string;
+  /**
+   * Compact, body-free digest of a WM READ tool result (`kind: 'tool'`, success
+   * only), captured from the FULL result before {@link result} was truncated.
+   * Absent for non-WM-read tools or unparseable results.
+   */
+  resultDigest?: NaniteReadResultDigest;
+  /**
+   * The dev container this step ran inside — stamped ONLY on container-backed
+   * tool steps (`run_command` / `expose_port`), absent for every other tool and
+   * for assistant narration. Lets the Execution view show WHICH container the
+   * step touched (and link out to its host).
+   */
+  container?: NaniteContainerIdentity;
 }
 
 /** The acceptance-judge verdict, surfaced on (and persisted with) a run. */
@@ -179,6 +279,18 @@ export interface RunNaniteOptions {
   acceptanceThreshold: number;
   /** Model family to run with (null ⇒ bridge default). */
   model?: string | null;
+  /**
+   * The run's dev container, when provisioned by the runner. Threaded into the
+   * seed so the bridge can offer + route the per-run `run_command` tool.
+   */
+  container?: NaniteContainer | null;
+  /**
+   * The container's body-free identity (id + best-effort OrbStack name/host),
+   * captured ONCE after {@link NaniteContainer.up} by the wrapping runner. When
+   * present, the core stamps it onto every container-backed tool step
+   * (`run_command` / `expose_port`) so the trace records which container ran it.
+   */
+  containerIdentity?: NaniteContainerIdentity | null;
   /** Safety cap on model turns. Defaults to 12. */
   maxIterations?: number;
   token?: RunnerToken;
@@ -219,6 +331,13 @@ export interface NaniteRunResult {
   responseSummary?: string;
   /** Failure message (present when status is 'failed'). */
   error?: string;
+  /**
+   * Document id of the {@link NaniteJournal} record the runner appended for this
+   * run (set on the finishing path). Threaded into the completion chat turn so
+   * it links out to the specific run record. Absent when no journal was written
+   * (e.g. a client without `naniteJournalCreate`).
+   */
+  journalId?: string;
 }
 
 /**

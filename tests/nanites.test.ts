@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { runNanite } from '../src/nanites/runner';
 import {
   ExtensionHostNaniteRunner,
+  resolveRunLimits,
   type NaniteRunnerClient,
 } from '../src/nanites/extensionHostRunner';
 import { matchesToolName, resolveToolPlan } from '../src/nanites/toolNames';
@@ -13,6 +14,7 @@ import {
 import type {
   NaniteConversation,
   NaniteConversationSeed,
+  NaniteContainer,
   NaniteJudgeRequest,
   NaniteJudgeResult,
   NaniteLmBridge,
@@ -23,12 +25,17 @@ import type {
   RunNaniteOptions,
 } from '../src/nanites/types';
 import type {
+  Config,
   Nanite,
+  NaniteJournal,
+  NaniteJournalCreateInput,
   NaniteRunInput,
   NaniteTemplate,
   Topic,
   Workstream,
 } from '../src/controlPlaneClient';
+import type { CommandJournalSpec } from '../src/commandJournal';
+import type { WriteDocumentResult } from '../src/controlPlaneClient';
 
 // ---------------------------------------------------------------------------
 // Scripted fake bridge: deterministic stand-in for the vscode.lm loop. The
@@ -221,6 +228,46 @@ describe('runNanite (core)', () => {
     expect(deniedStep?.result).toBeUndefined();
   });
 
+  test('tags every step with the model-turn (round) index across turns', async () => {
+    const bridge = new ScriptedBridge(
+      [
+        {
+          text: 'Round one narration.',
+          toolCalls: [{ callId: '1', name: 'wm_list_topics', input: {} }],
+        },
+        {
+          text: 'Round two narration.',
+          toolCalls: [
+            { callId: '2', name: 'wm_create_alert', input: {} },
+            { callId: '3', name: 'wm_list_topics', input: {} },
+          ],
+        },
+        { text: 'Done.', toolCalls: [] },
+      ],
+      (name) => JSON.stringify({ ok: true, tool: name }),
+    );
+
+    const result = await runNanite(bridge, {
+      ...BASE_OPTS,
+      allowlist: ['wm_list_topics', 'wm_create_alert'],
+    });
+
+    // Round 1: narration + its single tool. Round 2: narration + two tools.
+    // The final (tool-less) turn is NOT recorded as a step.
+    expect(result.steps.map((s) => ({ kind: s.kind, round: s.round }))).toEqual([
+      { kind: 'assistant', round: 1 },
+      { kind: 'tool', round: 1 },
+      { kind: 'assistant', round: 2 },
+      { kind: 'tool', round: 2 },
+      { kind: 'tool', round: 2 },
+    ]);
+    // The round index is monotonically non-decreasing in trace order.
+    const rounds = result.steps.map((s) => s.round ?? 0);
+    for (let i = 1; i < rounds.length; i++) {
+      expect(rounds[i]).toBeGreaterThanOrEqual(rounds[i - 1]);
+    }
+  });
+
   test('truncates oversized step previews so the persisted trace stays bounded', async () => {
     const huge = 'x'.repeat(5000);
     const bridge = new ScriptedBridge(
@@ -238,6 +285,57 @@ describe('runNanite (core)', () => {
     expect(step?.input).toMatch(/truncated/);
     expect(step?.result?.length).toBeLessThan(huge.length);
     expect(step?.result).toMatch(/truncated/);
+  });
+
+  // bug: friendly-step-list-read-rendering — a WM read whose bodies are huge
+  // truncates `result` into invalid JSON, so the friendly rendering can't parse
+  // it. The runner must capture a body-free digest from the FULL result first.
+  test('captures a body-free resultDigest for a WM read even when result is truncated', async () => {
+    const longBody = 'lorem ipsum dolor sit amet '.repeat(200);
+    const readResult = JSON.stringify({
+      count: 2,
+      topics: [
+        { id: 't-1', slug: 'topic-a', title: 'Topic A', body: longBody, resourceVersion: 5 },
+        { id: 't-2', slug: 'topic-b', title: 'Topic B', body: longBody, resourceVersion: 6 },
+      ],
+    });
+    const bridge = new ScriptedBridge(
+      [
+        { text: '', toolCalls: [{ callId: '1', name: 'ws-topic-read', input: { workstream: 'wf' } }] },
+        { text: 'Done.', toolCalls: [] },
+      ],
+      () => readResult,
+    );
+
+    const result = await runNanite(bridge, { ...BASE_OPTS, allowlist: ['ws-topic-read'] });
+
+    const step = result.steps.find((s) => s.name === 'ws-topic-read');
+    // The raw result preview is truncated (invalid JSON) — proving the digest
+    // is the only reliable render source.
+    expect(step?.result?.length).toBeLessThan(readResult.length);
+    expect(step?.result).toMatch(/truncated/);
+    // The digest carries the TRUE count and body-free identity items only.
+    expect(step?.resultDigest?.count).toBe(2);
+    expect(step?.resultDigest?.items).toEqual([
+      { id: 't-1', slug: 'topic-a', title: 'Topic A', resourceVersion: 5 },
+      { id: 't-2', slug: 'topic-b', title: 'Topic B', resourceVersion: 6 },
+    ]);
+    for (const item of step!.resultDigest!.items) {
+      expect(item).not.toHaveProperty('body');
+    }
+  });
+
+  test('does not attach a resultDigest for a non-WM-read tool', async () => {
+    const bridge = new ScriptedBridge(
+      [
+        { text: '', toolCalls: [{ callId: '1', name: 'wm_list_topics', input: {} }] },
+        { text: 'Done.', toolCalls: [] },
+      ],
+      () => JSON.stringify({ count: 1, topics: [{ id: 'x', slug: 'x', resourceVersion: 1 }] }),
+    );
+    const result = await runNanite(bridge, { ...BASE_OPTS, allowlist: ['wm_list_topics'] });
+    const step = result.steps.find((s) => s.name === 'wm_list_topics');
+    expect(step?.resultDigest).toBeUndefined();
   });
 
   // bug: acceptance-evaluator-requires-tool-evidence — the judge must be told
@@ -446,17 +544,14 @@ function fakeNanite(over: Partial<Nanite> = {}): Nanite {
     templateId: 'tpl',
     workstream: 'ws',
     inputTopic: 'topic-a',
+    configs: [],
     request: '',
     phase: 'Pending',
+    queuedAt: null,
     startedAt: null,
     endedAt: null,
     error: '',
-    prompt: '',
-    output: '',
-    missingTools: [],
-    acceptance: null,
-    toolCalls: [],
-    tokens: null,
+    latestJournalId: null,
     created_at: 0,
     updated_at: 0,
     resourceVersion: 1,
@@ -484,10 +579,13 @@ function fakeTopic(over: Partial<Topic> = {}): Topic {
 
 class FakeClient implements NaniteRunnerClient {
   public readonly runCalls: NaniteRunInput[] = [];
+  public readonly journalCalls: CommandJournalSpec[] = [];
+  public readonly journalCreateCalls: NaniteJournalCreateInput[] = [];
   constructor(
     private readonly template: NaniteTemplate | null,
     private readonly topic: Topic | null,
     private readonly workstreamTopics: Topic[] = [],
+    private readonly configs: Record<string, Record<string, string>> = {},
   ) {}
   async naniteTemplateRead(input: { slug?: string; id?: string }): Promise<NaniteTemplate[]> {
     if (!this.template) {
@@ -514,9 +612,77 @@ class FakeClient implements NaniteRunnerClient {
     const ws = fakeWorkstream();
     return input.slug === ws.slug ? [ws] : [];
   }
+  async configRead(input: { slug?: string; id?: string }): Promise<Config[]> {
+    const key = input.slug ?? input.id;
+    const data = key !== undefined ? this.configs[key] : undefined;
+    if (!data) {
+      return [];
+    }
+    return [
+      {
+        id: `cfg-${key}`,
+        slug: input.slug ?? null,
+        name: '',
+        data,
+        status: '',
+        created_at: 0,
+        updated_at: 0,
+        resourceVersion: 1,
+      },
+    ];
+  }
   async naniteRun(input: NaniteRunInput): Promise<Nanite> {
     this.runCalls.push(input);
     return fakeNanite();
+  }
+  async naniteJournalCreate(input: NaniteJournalCreateInput): Promise<NaniteJournal> {
+    this.journalCreateCalls.push(input);
+    const id = `njournal-${this.journalCreateCalls.length}`;
+    return {
+      id,
+      slug: null,
+      naniteId: input.naniteId,
+      workstream: input.workstream ?? '',
+      inputTopic: input.inputTopic ?? '',
+      status: {
+        phase: input.status?.phase ?? 'Succeeded',
+        outcome: input.status?.outcome ?? 'succeeded',
+        queuedAt: input.status?.queuedAt ?? null,
+        startedAt: input.status?.startedAt ?? null,
+        endedAt: input.status?.endedAt ?? null,
+      },
+      prompt: { request: input.prompt?.request ?? '' },
+      execution: { steps: input.execution?.steps ?? [], error: input.execution?.error ?? '' },
+      results: {
+        summary: input.results?.summary ?? '',
+        acceptance: input.results?.acceptance ?? null,
+        tokens: input.results?.tokens ?? null,
+        missingTools: input.results?.missingTools ?? [],
+      },
+      created_at: 0,
+      updated_at: 0,
+      resourceVersion: 1,
+    };
+  }
+  async commandJournalCreate(spec: CommandJournalSpec): Promise<WriteDocumentResult> {
+    this.journalCalls.push(spec);
+    return {
+      available: true,
+      document: {
+        kind: 'CommandJournal',
+        metadata: {
+          id: `journal-${this.journalCalls.length}`,
+          slug: null,
+          labels: {},
+          createdAt: 0,
+          updatedAt: 0,
+          deletedAt: null,
+          resourceVersion: 1,
+        },
+        spec: spec as unknown as Record<string, unknown>,
+        status: {},
+      },
+    };
   }
 }
 
@@ -551,6 +717,44 @@ describe('ExtensionHostNaniteRunner', () => {
     expect(prompt.indexOf('# Context')).toBeLessThan(prompt.indexOf('# Task'));
   });
 
+  test('posts completion turns to the nanite session AND the input topic', async () => {
+    const client = new FakeClient(fakeTemplate(), fakeTopic());
+    const bridge = new ScriptedBridge([{ text: 'All done.', toolCalls: [] }]);
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    await runner.run(fakeNanite({ inputTopic: 'topic-a', workstream: 'ws' }));
+
+    // Two posts: the nanite's OWN session (scope = its id, contextKind
+    // 'nanite') FIRST — the mandatory channel a focused nanite doc replays —
+    // then the input topic so the ticket carries the outcome too.
+    expect(client.journalCalls).toHaveLength(2);
+    const [session, ticket] = client.journalCalls;
+    expect(session.workstream).toBe('n1');
+    expect(session.request.contextKind).toBe('nanite');
+    expect(session.status).toBe('succeeded');
+    expect(session.response.brief).toContain('Nanite succeeded');
+    expect(ticket.workstream).toBe('topic-a');
+    expect(ticket.request.contextKind).toBe('topic');
+    // The chat post happens AFTER the terminal persist, never before.
+    expect(client.runCalls.at(-1)?.outcome).toBe('succeeded');
+  });
+
+  test('workstream-wide run posts to the nanite session AND the workstream', async () => {
+    const client = new FakeClient(fakeTemplate(), null);
+    const bridge = new ScriptedBridge([{ text: 'All done.', toolCalls: [] }]);
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    // No input topic → the ticket scope falls back to the workstream.
+    await runner.run(fakeNanite({ inputTopic: '', workstream: 'ws' }));
+
+    expect(client.journalCalls).toHaveLength(2);
+    const [session, ticket] = client.journalCalls;
+    expect(session.workstream).toBe('n1');
+    expect(session.request.contextKind).toBe('nanite');
+    expect(ticket.workstream).toBe('ws');
+    expect(ticket.request.contextKind).toBe('workstream');
+  });
+
   test('reads topic body as prompt + template config, persists Running then terminal', async () => {
     const client = new FakeClient(fakeTemplate(), fakeTopic());
     const bridge = new ScriptedBridge([
@@ -563,13 +767,13 @@ describe('ExtensionHostNaniteRunner', () => {
 
     expect(result.status).toBe('succeeded');
     // The runner seeded the bridge with the TEMPLATE's config (plus the
-    // standard self-report directive) and a prompt carrying the workstream +
-    // input topic context.
+    // standard self-report directive) and a prompt carrying the input topic
+    // context. The workstream section is no longer inlined.
     expect(bridge.started?.instructions).toContain('Scan open topics and raise deduped alerts.');
     expect(bridge.started?.instructions).toContain('do NOT claim'); // self-report directive
     expect(bridge.started?.prompt).toContain('Do the thing described here.'); // topic body
     expect(bridge.started?.prompt).toContain('Topic A'); // topic title
-    expect(bridge.started?.prompt).toContain('Peanut Harvest'); // workstream context
+    expect(bridge.started?.prompt).not.toContain('# Workstream'); // no inline workstream
     expect(bridge.started?.allowlist).toEqual(['wm_create_alert']);
     // The allow-listed tool was actually invoked.
     expect(bridge.invoked.map((i) => i.name)).toEqual(['wm_create_alert']);
@@ -581,14 +785,18 @@ describe('ExtensionHostNaniteRunner', () => {
     const finish = client.runCalls[1];
     expect(finish.id).toBe('n1');
     expect(finish.outcome).toBe('succeeded');
-    expect(finish.output).toBe('Done.');
-    expect(finish.acceptance).toMatchObject({ passed: true, threshold: 60 });
-    expect(finish.toolCalls?.map((t) => t.name)).toEqual(['wm_create_alert']);
-    // The ordered execution trace is persisted alongside the flat tool-call
-    // trail so the workflow can render inline with the response.
-    expect(finish.steps?.map((s) => (s.kind === 'tool' ? `tool:${s.name}` : 'say'))).toEqual([
-      'tool:wm_create_alert',
-    ]);
+    // The run RESULT lives in the immutable NaniteJournal record; the terminal
+    // call carries only a light pointer to it, never the result itself.
+    expect(finish.latestJournalId).toBe('njournal-1');
+    const journal = client.journalCreateCalls[0];
+    expect(journal.results?.summary).toBe('Done.');
+    expect(journal.results?.acceptance).toMatchObject({ passed: true, threshold: 60 });
+    // The ordered execution trace is the persisted tool trail — each tool step
+    // (with its name + ok/error) lands in `execution.steps`; there is no longer
+    // a redundant `results.toolCalls`.
+    expect(
+      journal.execution?.steps?.map((s) => (s.kind === 'tool' ? `tool:${s.name}` : 'say')),
+    ).toEqual(['tool:wm_create_alert']);
   });
 
   test('no template → runs against the topic with empty instructions/allowlist', async () => {
@@ -606,12 +814,13 @@ describe('ExtensionHostNaniteRunner', () => {
     expect(bridge.started?.prompt).toContain('Do the thing described here.');
   });
 
-  test('workstream-wide nanite (no input topic) seeds a topic INDEX, not a body', async () => {
+  test('workstream-wide nanite (no input topic) seeds a terse tool pointer, no inline topics', async () => {
     const topics = [
       fakeTopic({ slug: 'topic-a', title: 'Topic A', body: 'body a' }),
       fakeTopic({ slug: 'topic-b', title: 'Topic B', body: 'body b' }),
     ];
-    // Template grants a topic-read tool → the index + tool-call path is used.
+    // Even with a topic-read tool granted, no topic data is inlined — the
+    // prompt just points the model at the discovery tools.
     const client = new FakeClient(
       fakeTemplate({ toolAllowlist: ['ws-topic-read'] }),
       null,
@@ -623,37 +832,18 @@ describe('ExtensionHostNaniteRunner', () => {
     const result = await runner.run(fakeNanite({ inputTopic: '' }));
 
     expect(result.status).toBe('succeeded');
-    // The prompt lists the workstream's topics as an INDEX (title + slug +
-    // status) and invites a ws-topic-read tool call — it does NOT inline bodies.
-    expect(bridge.started?.prompt).toContain('# Topics in this workstream');
-    expect(bridge.started?.prompt).toContain('Topic A (topic-a) — open');
-    expect(bridge.started?.prompt).toContain('Topic B (topic-b) — open');
-    expect(bridge.started?.prompt).toContain('ws-topic-read');
+    // The prompt tells the model this is a workstream-wide run and to use the
+    // discovery tools — it does NOT list topics or inline any content.
+    expect(bridge.started?.prompt).toContain('# Input topics');
+    expect(bridge.started?.prompt).toContain('This Nanite runs workstream-wide');
+    expect(bridge.started?.prompt).toContain('ws-workstream-read and ws-topic-read');
+    expect(bridge.started?.prompt).not.toContain('# Topics in this workstream');
+    expect(bridge.started?.prompt).not.toContain('Topic A');
     expect(bridge.started?.prompt).not.toContain('body a');
-    expect(bridge.started?.prompt).not.toContain('# Input topic');
-    // Workstream context is still present.
-    expect(bridge.started?.prompt).toContain('Peanut Harvest');
-  });
-
-  test('workstream-wide nanite with NO topic-read tool inlines topic bodies', async () => {
-    const topics = [
-      fakeTopic({ slug: 'topic-a', title: 'Topic A', body: 'body a' }),
-      fakeTopic({ slug: 'topic-b', title: 'Topic B', body: 'body b' }),
-    ];
-    // Default template grants only wm_create_alert → no way to fetch bodies, so
-    // the runner inlines each topic's full content instead of promising a tool.
-    const client = new FakeClient(fakeTemplate(), null, topics);
-    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
-    const runner = new ExtensionHostNaniteRunner({ client, bridge });
-
-    const result = await runner.run(fakeNanite({ inputTopic: '' }));
-
-    expect(result.status).toBe('succeeded');
-    expect(bridge.started?.prompt).toContain('# Topics in this workstream');
-    // Full bodies are inlined; the tool-call invite is NOT present.
-    expect(bridge.started?.prompt).toContain('body a');
-    expect(bridge.started?.prompt).toContain('body b');
-    expect(bridge.started?.prompt).not.toContain('ws-topic-read tool call');
+    expect(bridge.started?.prompt).not.toContain('# Input topic\n');
+    // The workstream section is no longer emitted.
+    expect(bridge.started?.prompt).not.toContain('# Workstream');
+    expect(bridge.started?.prompt).not.toContain('Peanut Harvest');
   });
 
   test('persists missingTools on the terminal call', async () => {
@@ -669,8 +859,8 @@ describe('ExtensionHostNaniteRunner', () => {
 
     await runner.run(fakeNanite());
 
-    const finish = client.runCalls[1];
-    expect(finish.missingTools).toEqual(['ws-gone']);
+    // missingTools is part of the run result → persisted on the journal record.
+    expect(client.journalCreateCalls[0].results?.missingTools).toEqual(['ws-gone']);
   });
 
   test('failed acceptance is persisted as a Failed terminal call', async () => {
@@ -694,7 +884,8 @@ describe('ExtensionHostNaniteRunner', () => {
     const finish = client.runCalls[1];
     expect(finish.outcome).toBe('failed');
     expect(finish.error).toBe('Acceptance Criteria Not Matched');
-    expect(finish.acceptance).toMatchObject({ passed: false });
+    // The acceptance verdict is part of the run result → journal record.
+    expect(client.journalCreateCalls[0].results?.acceptance).toMatchObject({ passed: false });
   });
 });
 
@@ -725,8 +916,8 @@ describe('ExtensionHostNaniteRunner error handling', () => {
     const runCalls: NaniteRunInput[] = [];
     const client = makeClient({
       runCalls,
-      // The workstream-wide topic-index read hangs forever.
-      topicRead: async (input) => (input.workstream !== undefined ? HANG<Topic[]>() : []),
+      // The workstream read hangs forever.
+      wsRead: async () => HANG<Workstream[]>(),
       naniteRun: async (i) => {
         runCalls.push(i);
         return fakeNanite();
@@ -739,7 +930,7 @@ describe('ExtensionHostNaniteRunner error handling', () => {
 
     expect(result.status).toBe('failed');
     expect(result.error).toMatch(/could not resolve nanite inputs/);
-    expect(result.error).toMatch(/read workstream topics timed out/);
+    expect(result.error).toMatch(/read workstream timed out/);
     // Never flipped to Running — no persist happened, so a retry is safe.
     expect(runCalls).toHaveLength(0);
     expect(bridge.started).toBeUndefined();
@@ -779,6 +970,287 @@ describe('ExtensionHostNaniteRunner error handling', () => {
     // The run DID flip to Running and DID attempt the terminal write.
     expect(runCalls[0]).toEqual({ id: 'n1', begin: true });
     expect(runCalls.some((c) => c.outcome === 'succeeded')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dev-container lifecycle: the runner brings a container up before the model
+// loop — but ONLY when the template grants run_command — and deliberately does
+// NOT tear it down afterward. The container persists past the run (success or
+// failure) so a served app stays reachable; cleanup is manual. No Docker
+// required (the container is a fake injected via `containerFactory`).
+// ---------------------------------------------------------------------------
+class FakeContainer implements NaniteContainer {
+  public upCalls = 0;
+  public downCalls: Array<{ failed: boolean }> = [];
+  public readonly execCalls: Array<{ command: string; cwd?: string }> = [];
+  async up(): Promise<void> {
+    this.upCalls++;
+  }
+  async exec(
+    command: string,
+    opts: { cwd?: string },
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    this.execCalls.push({ command, cwd: opts.cwd });
+    return { stdout: '', stderr: '', exitCode: 0 };
+  }
+  async down(opts: { failed: boolean }): Promise<void> {
+    this.downCalls.push(opts);
+  }
+}
+
+describe('ExtensionHostNaniteRunner dev container', () => {
+  test('provisions a container (up → seed) but never tears it down when the template grants run_command', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['run_command'] }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const container = new FakeContainer();
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: () => container,
+    });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.status).toBe('succeeded');
+    // Brought up exactly once, before the model loop, and passed into the seed.
+    expect(container.upCalls).toBe(1);
+    expect(bridge.started?.container).toBe(container);
+    // The container persists past the run — the runner never tears it down.
+    expect(container.downCalls).toEqual([]);
+  });
+
+  test('resolves nanite.configs into merged container env (later config wins) and skips a missing config', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['run_command'] }),
+      fakeTopic(),
+      [],
+      {
+        'cfg-a': { SHARED: 'from-a', ONLY_A: 'a' },
+        'cfg-b': { SHARED: 'from-b', ONLY_B: 'b' },
+      },
+    );
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const container = new FakeContainer();
+    let capturedEnv: Record<string, string> | undefined;
+    const warnings: string[] = [];
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: (_n, env) => {
+        capturedEnv = env;
+        return container;
+      },
+      log: (m) => warnings.push(m),
+    });
+
+    const result = await runner.run(
+      fakeNanite({ configs: ['cfg-a', 'cfg-b', 'cfg-missing'] }),
+    );
+
+    expect(result.status).toBe('succeeded');
+    // Later config wins on a key collision; both configs' unique keys survive.
+    expect(capturedEnv).toEqual({ SHARED: 'from-b', ONLY_A: 'a', ONLY_B: 'b' });
+    // The missing config is skipped best-effort, with a warning — not a failure.
+    expect(warnings.join('\n')).toMatch(/cfg-missing/);
+  });
+
+  test('does NOT provision a container when the template omits run_command', async () => {
+    const client = new FakeClient(fakeTemplate(), fakeTopic());
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const container = new FakeContainer();
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: () => container,
+    });
+
+    await runner.run(fakeNanite());
+
+    expect(container.upCalls).toBe(0);
+    expect(container.downCalls).toEqual([]);
+    expect(bridge.started?.container ?? null).toBeNull();
+  });
+
+  test('a failed run leaves the container running (no teardown)', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['run_command'] }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge([{ text: 'Nope.', toolCalls: [] }], undefined, {
+      judge: {
+        request_summary: 'r',
+        response_summary: 'r',
+        pass: false,
+        confidence: 10,
+        rationale: 'missed it',
+        model: 'test-model',
+        tokens: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+    });
+    const container = new FakeContainer();
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: () => container,
+    });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.status).toBe('failed');
+    // The container persists even on failure — the runner never tears it down.
+    expect(container.downCalls).toEqual([]);
+  });
+
+  test('a container that fails to come up fails the run (and never leaves it Running)', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ toolAllowlist: ['run_command'] }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge([{ text: 'Done.', toolCalls: [] }]);
+    const container = new FakeContainer();
+    container.up = async () => {
+      throw new Error('docker daemon not running');
+    };
+    const runner = new ExtensionHostNaniteRunner({
+      client,
+      bridge,
+      containerFactory: () => container,
+    });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/docker daemon not running/);
+    // The model loop never started; the container is never torn down.
+    expect(bridge.started).toBeUndefined();
+    expect(container.downCalls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Configurable per-run caps: resolveRunLimits (pure) + threading integration
+// ---------------------------------------------------------------------------
+describe('resolveRunLimits (per-run caps)', () => {
+  test('tool-only template with empty executionSettings → 12 rounds / 120s', () => {
+    expect(resolveRunLimits(fakeTemplate())).toEqual({
+      maxIterations: 12,
+      timeoutMs: 120_000,
+    });
+  });
+
+  test('container-granting template with empty executionSettings → 40 rounds / 900s', () => {
+    const tpl = fakeTemplate({ toolAllowlist: ['run_command'] });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 40, timeoutMs: 900_000 });
+  });
+
+  test('a wildcard allow-list counts as container-backed (roomier defaults)', () => {
+    const tpl = fakeTemplate({ toolAllowlist: ['*'] });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 40, timeoutMs: 900_000 });
+  });
+
+  test('run_command on the deny-list falls back to tool-only defaults', () => {
+    const tpl = fakeTemplate({ toolAllowlist: ['*'], toolDenylist: ['run_command'] });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 12, timeoutMs: 120_000 });
+  });
+
+  test('explicit executionSettings override the type defaults (after clamping)', () => {
+    const tpl = fakeTemplate({
+      toolAllowlist: ['run_command'],
+      executionSettings: { maxIterations: 5, runTimeoutSeconds: 60 },
+    });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 5, timeoutMs: 60_000 });
+  });
+
+  test('out-of-range values clamp to bounds (rounds [1,200], timeout [30,3600]s)', () => {
+    const tooBig = fakeTemplate({
+      executionSettings: { maxIterations: 9999, runTimeoutSeconds: 100_000 },
+    });
+    expect(resolveRunLimits(tooBig)).toEqual({ maxIterations: 200, timeoutMs: 3_600_000 });
+
+    const tooSmall = fakeTemplate({
+      executionSettings: { maxIterations: 0, runTimeoutSeconds: 5 },
+    });
+    expect(resolveRunLimits(tooSmall)).toEqual({ maxIterations: 1, timeoutMs: 30_000 });
+  });
+
+  test('fractional values round to an integer before clamping', () => {
+    const tpl = fakeTemplate({
+      executionSettings: { maxIterations: 7.8, runTimeoutSeconds: 45.4 },
+    });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 8, timeoutMs: 45_000 });
+  });
+
+  test('foreign / non-number / absent executionSettings fall back to type defaults', () => {
+    const foreign = fakeTemplate({
+      toolAllowlist: ['run_command'],
+      executionSettings: { maxIterations: 'lots', runTimeoutSeconds: null, model: 'gpt' },
+    });
+    expect(resolveRunLimits(foreign)).toEqual({ maxIterations: 40, timeoutMs: 900_000 });
+
+    // A null template resolves to tool-only defaults (no run_command grant).
+    expect(resolveRunLimits(null)).toEqual({ maxIterations: 12, timeoutMs: 120_000 });
+  });
+
+  test('NaN / Infinity are treated as absent (not clamped) → type default', () => {
+    const tpl = fakeTemplate({
+      executionSettings: { maxIterations: Number.POSITIVE_INFINITY, runTimeoutSeconds: NaN },
+    });
+    expect(resolveRunLimits(tpl)).toEqual({ maxIterations: 12, timeoutMs: 120_000 });
+  });
+});
+
+describe('ExtensionHostNaniteRunner run-cap threading', () => {
+  // A conversation that always asks for a granted tool never completes, so the
+  // loop runs until it hits the resolved round cap — a proxy for the resolved
+  // maxIterations threaded into runNanite.
+  function alwaysToolTurns(count: number) {
+    return Array.from({ length: count }, () => ({
+      text: '',
+      toolCalls: [{ callId: 'c', name: 'wm_create_alert', input: {} }],
+    }));
+  }
+
+  test('executionSettings.maxIterations override is threaded into the run loop', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ executionSettings: { maxIterations: 5, runTimeoutSeconds: 60 } }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge(alwaysToolTurns(20));
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.iterations).toBe(5);
+    expect(result.hitIterationCap).toBe(true);
+  });
+
+  test('tool-only default (12) is threaded when executionSettings is empty', async () => {
+    const client = new FakeClient(fakeTemplate(), fakeTopic());
+    const bridge = new ScriptedBridge(alwaysToolTurns(30));
+    const runner = new ExtensionHostNaniteRunner({ client, bridge });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.iterations).toBe(12);
+    expect(result.hitIterationCap).toBe(true);
+  });
+
+  test('explicit deps.maxIterations still overrides the resolved cap', async () => {
+    const client = new FakeClient(
+      fakeTemplate({ executionSettings: { maxIterations: 40 } }),
+      fakeTopic(),
+    );
+    const bridge = new ScriptedBridge(alwaysToolTurns(20));
+    const runner = new ExtensionHostNaniteRunner({ client, bridge, maxIterations: 2 });
+
+    const result = await runner.run(fakeNanite());
+
+    expect(result.iterations).toBe(2);
+    expect(result.hitIterationCap).toBe(true);
   });
 });
 
