@@ -247,10 +247,10 @@
           <button
             class="twistie"
             aria-expanded={open}
-            aria-label={open ? 'Collapse' : 'Expand'}
+            aria-label="{open ? 'Collapse' : 'Expand'} {node.label}"
             onclick={() => toggleExpand(node)}
           >
-            <span class="codicon codicon-chevron-{open ? 'down' : 'right'}"></span>
+            <span aria-hidden="true" class="codicon codicon-chevron-{open ? 'down' : 'right'}"></span>
           </button>
         {:else}
           <span class="twistie-spacer"></span>
@@ -321,10 +321,10 @@
           <button
             class="twistie"
             aria-expanded={groupOpen}
-            aria-label={groupOpen ? 'Collapse' : 'Expand'}
+            aria-label="{groupOpen ? 'Collapse' : 'Expand'} {group.label}"
             onclick={() => toggleExpand(group)}
           >
-            <span class="codicon codicon-chevron-{groupOpen ? 'down' : 'right'}"></span>
+            <span aria-hidden="true" class="codicon codicon-chevron-{groupOpen ? 'down' : 'right'}"></span>
           </button>
         {/if}
         <span class="codicon codicon-{group.icon}"></span>
