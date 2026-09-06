@@ -59,6 +59,19 @@ describe('desktop model tools', () => {
     ]));
   });
 
+  it('retains Chat Completions provider metadata and content details', () => {
+    expect(parseModelTurn('chat-completions', {
+      id: 'chatcmpl_1',
+      choices: [{ finish_reason: 'stop', message: { content: 'Done.', reasoning_content: 'Checked state.' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+    })).toMatchObject({
+      id: 'chatcmpl_1',
+      finishReason: 'stop',
+      usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+      contentParts: [{ type: 'reasoning', text: 'Checked state.' }, { type: 'text', text: 'Done.' }],
+    });
+  });
+
   it('continues Responses with previous_response_id and function outputs', () => {
     const conversation = createModelConversation({
       mode: 'responses', model: 'test', systemPrompt: 'system', userMessage: 'read', tools,
@@ -74,6 +87,20 @@ describe('desktop model tools', () => {
         { type: 'function_call_output', call_id: 'a' },
         { type: 'function_call_output', call_id: 'b' },
       ],
+    });
+  });
+
+  it('retains Responses provider metadata and nested content details', () => {
+    expect(parseModelTurn('responses', {
+      id: 'resp_2',
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'Done.' }, { type: 'reasoning_text', text: 'Checked state.' }] }],
+      usage: { input_tokens: 8, output_tokens: 3, total_tokens: 11 },
+    })).toMatchObject({
+      id: 'resp_2',
+      finishReason: 'completed',
+      usage: { inputTokens: 8, outputTokens: 3, totalTokens: 11 },
+      contentParts: [{ type: 'text', text: 'Done.' }, { type: 'reasoning', text: 'Checked state.' }],
     });
   });
 });

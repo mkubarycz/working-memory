@@ -49,6 +49,12 @@ export interface ListDocumentsInput {
   kind?: string;
 }
 
+export interface CreationOrderedDocument {
+  document: DocumentEnvelope;
+  /** SQLite insertion sequence; immutable for the lifetime of the stored row. */
+  creationSequence: number;
+}
+
 export interface GetDocumentInput {
   id?: string;
   slug?: string;
@@ -157,6 +163,8 @@ export interface Store {
   createDocument(input: CreateDocumentInput): DocumentEnvelope;
   /** List non-deleted documents (newest first), optionally filtered by kind. */
   listDocuments(input?: ListDocumentsInput): DocumentEnvelope[];
+  /** List live documents by immutable creation time and insertion sequence, newest first. */
+  listDocumentsByCreation(input?: ListDocumentsInput): CreationOrderedDocument[];
   /** Fetch one document by id, or by slug (optionally scoped by kind). Live rows
    * only unless `includeDeleted` is set (used to locate a doc for undelete). */
   getDocument(input: GetDocumentInput): DocumentEnvelope | null;
@@ -184,6 +192,10 @@ interface ResourceRow {
   updated_at: number;
   deleted_at: number | null;
   resource_version: number;
+}
+
+interface CreationOrderedResourceRow extends ResourceRow {
+  creation_sequence: number;
 }
 
 function loadSqlite(): typeof import('node:sqlite') {
@@ -350,6 +362,32 @@ export function openStore(dbFilePath: string): Store {
             .all()
     ) as unknown as ResourceRow[];
     return rows.map(rowToEnvelope);
+  }
+
+  function listDocumentsByCreation(
+    input: ListDocumentsInput = {},
+  ): CreationOrderedDocument[] {
+    const rows = (
+      input.kind
+        ? db
+            .prepare(
+              `SELECT *, rowid AS creation_sequence FROM resources
+               WHERE deleted_at IS NULL AND kind = ?
+               ORDER BY created_at DESC, rowid DESC`,
+            )
+            .all(input.kind)
+        : db
+            .prepare(
+              `SELECT *, rowid AS creation_sequence FROM resources
+               WHERE deleted_at IS NULL
+               ORDER BY created_at DESC, rowid DESC`,
+            )
+            .all()
+    ) as unknown as CreationOrderedResourceRow[];
+    return rows.map((row) => ({
+      document: rowToEnvelope(row),
+      creationSequence: row.creation_sequence,
+    }));
   }
 
   function getDocument(input: GetDocumentInput): DocumentEnvelope | null {
@@ -563,6 +601,7 @@ export function openStore(dbFilePath: string): Store {
     path: dbFilePath,
     createDocument,
     listDocuments,
+    listDocumentsByCreation,
     getDocument,
     updateDocument,
     deleteDocument,

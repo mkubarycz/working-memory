@@ -103,4 +103,42 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.composer-context[^}]*text-overflow:\s*ellipsis/s);
     expect(styles).toMatch(/\.composer-shell[^}]*background:\s*#ceced2/s);
   });
+
+  it('persists an environment-scoped unsent composer draft and uses instructional placeholder text', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+
+    expect(app).not.toContain('Show me the 0.15.0 roadmap workstream');
+    expect(app).toContain('placeholder="Write a command to interact with Working Memory"');
+    expect(app).toContain('oninput={(event) => updateComposerDraft(event.currentTarget.value)}');
+    expect(app).toContain('readComposerDraft(localStorage, selectedEnvironment?.id)');
+    expect(app).toContain("writeComposerDraft(localStorage, selectedEnvironment?.id, '')");
+  });
+
+  it('keeps the chat pinned only while the reader remains at the bottom', () => {
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+
+    expect(app).toContain('bind:this={conversationElement}');
+    expect(app).toContain('onscroll={handleConversationScroll}');
+    expect(app).toContain('if (shouldStick) scrollConversationToBottom()');
+    expect(app).toContain('class="new-message-indicator"');
+    expect(app).toContain('aria-label="Jump to newest message"');
+    expect(styles).toMatch(/\.conversation-shell[^}]*position:\s*relative/s);
+    expect(styles).toMatch(/\.new-message-indicator[^}]*position:\s*absolute/s);
+  });
+
+  it('shows the selected port instead of Active and rediscovers before environment selection', () => {
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+    const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+
+    expect(activeRail).not.toContain('<strong>Active</strong>');
+    expect(activeRail).toContain("{selectedEnvironment?.displayName ?? 'No server'}");
+    expect(activeRail).toContain('class="environment-trigger"');
+    expect(activeRail).toContain('await onDiscoverEnvironments()');
+    expect(activeRail).toContain('role="menuitemradio"');
+    expect(app).toContain('window.workingMemory.switchEnvironment(mcpUrl)');
+    expect(app).toContain('reloadEnvironmentBoundData(refreshActive, () => loadHistory())');
+    expect(styles).toMatch(/\.environment-trigger[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\) 14px/s);
+  });
 });

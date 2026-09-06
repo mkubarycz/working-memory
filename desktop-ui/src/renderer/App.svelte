@@ -1,25 +1,57 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
   import WorkstreamView from '../../../webview-ui/src/lib/WorkstreamView.svelte';
   import TopicView from '../../../webview-ui/src/lib/TopicView.svelte';
   import DocumentView from '../../../webview-ui/src/lib/DocumentView.svelte';
   import type { AlertVM, DocumentVM, SaveState, TopicPatch } from '../../../webview-ui/src/lib/types';
   import { chatContextForDocument } from '../shared/contracts';
-  import type { ChatResult, DesktopResourceKind, PendingConfirmation, PublicConfig, ToolProgress } from '../shared/contracts';
+  import type {
+    ChatResult,
+    DesktopEnvironment,
+    DesktopEnvironmentState,
+    DesktopResourceKind,
+    PendingConfirmation,
+    PublicConfig,
+  } from '../shared/contracts';
+  import type { CommandJournalScopeRef } from '../../../src/controlPlaneClient';
   import type { PanelAction, PanelData } from '../../../src/panelData';
   import { invokeActiveAction } from './activeContextMenu';
+  import { isChatAtBottom } from './chatScroll';
+  import { readComposerDraft, writeComposerDraft } from './composerDraft';
+  import { renderMarkdown } from './markdown';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import type { RailSide, RailWidths } from './railLayout';
+  import {
+    emptyEnvironmentBoundRendererState,
+    reloadEnvironmentBoundData,
+    type SelectedTool,
+  } from './environmentState';
+  import {
+    createLiveRun,
+    formatDetailValue,
+    journalToSummary,
+    mergeHistoryRuns,
+    reconcileLiveRun,
+    targetForRef,
+    toolDetail,
+    type ChatRun,
+    type ChatToolRow,
+    type ToolDetail,
+  } from './chatHistory';
 
   type Page = 'workspace' | 'settings';
-  type Turn = { role: 'user' | 'assistant'; text: string; progress?: ToolProgress[] };
+  const HISTORY_PAGE_SIZE = 30;
 
   let page = $state<Page>('workspace');
-  let input = $state('Show me the 0.15.0 roadmap workstream');
-  let turns = $state<Turn[]>([
-    { role: 'assistant', text: 'Ask me to open a Working Memory workstream.' },
-  ]);
+  let input = $state('');
+  let chatRuns = $state<ChatRun[]>([]);
+  let historyLoading = $state(true);
+  let historyError = $state('');
+  let historyCursor = $state<string | undefined>();
+  let selectedTool = $state<SelectedTool | null>(null);
+  let toolInspectorElement = $state<HTMLElement | null>(null);
+  let pendingRunKey = $state<string | null>(null);
   let documents = $state<DocumentVM[]>([]);
   let saveState = $state<SaveState>('idle');
   let documentError = $state('');
@@ -33,6 +65,10 @@
   let saving = $state(false);
   let testing = $state(false);
   let pendingConfirmation = $state<PendingConfirmation | null>(null);
+  let environments = $state<DesktopEnvironment[]>([]);
+  let selectedEnvironment = $state<DesktopEnvironment | null>(null);
+  let environmentLoading = $state(false);
+  let environmentError = $state('');
   let activePanel = $state<PanelData | null>(null);
   let activeLoading = $state(false);
   let activeError = $state('');
@@ -42,6 +78,10 @@
   let chatRailWidth = $state(RAIL_LAYOUT.chat.default);
   let viewportWidth = $state(1280);
   let railDrag: { side: RailSide; startX: number; widths: RailWidths } | null = null;
+  let conversationElement = $state<HTMLDivElement | null>(null);
+  let conversationPinned = true;
+  let hasUnseenMessages = $state(false);
+  let environmentGeneration = 0;
   const activeDocument = $derived(documents.at(-1) ?? null);
   const currentChatContext = $derived(chatContextForDocument(activeDocument));
   const resolvedRailWidths = $derived(resolveRailWidths(
@@ -55,16 +95,113 @@
     chat: 'working-memory.desktop.chat-rail-width',
   } as const;
 
-  function applyChatResult(result: ChatResult): void {
-    turns = [...turns, { role: 'assistant', text: result.message, progress: result.progress }];
+  async function applyChatResult(result: ChatResult, runKey: string): Promise<void> {
+    chatRuns = reconcileLiveRun(chatRuns, runKey, result);
     pendingConfirmation = result.pendingConfirmation ?? null;
+    pendingRunKey = result.pendingConfirmation ? (result.journalId ?? runKey) : null;
     const document = result.document ?? result.workstream;
     if (document) {
       documents = [document];
       documentError = '';
     }
+    if (result.journalId) await refreshJournal(result.journalId);
     void refreshActive();
   }
+
+  function liveScope(): CommandJournalScopeRef {
+    return currentChatContext
+      ? { kind: currentChatContext.kind, id: currentChatContext.identifier, title: currentChatContext.title }
+      : { kind: 'DesktopChat', id: 'desktop-chat' };
+  }
+
+  async function refreshJournal(id: string): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      const journal = await window.workingMemory.getChatJournal(id);
+      if (generation !== environmentGeneration) return;
+      if (journal) chatRuns = mergeHistoryRuns(chatRuns, [journalToSummary(journal)]);
+    } catch {
+      // The live result remains usable while a transient history refresh fails.
+    }
+  }
+
+  async function loadHistory(older = false): Promise<void> {
+    if (historyLoading && older) return;
+    const previousHeight = conversationElement?.scrollHeight ?? 0;
+    const previousTop = conversationElement?.scrollTop ?? 0;
+    historyLoading = true;
+    historyError = '';
+    const generation = environmentGeneration;
+    try {
+      const historyPage = await window.workingMemory.getChatHistory({
+        limit: HISTORY_PAGE_SIZE,
+        ...(older && historyCursor ? { cursor: historyCursor } : {}),
+      });
+      if (generation !== environmentGeneration) return;
+      chatRuns = mergeHistoryRuns(chatRuns, historyPage.journals);
+      historyCursor = historyPage.nextCursor;
+      if (older) {
+        await tick();
+        if (conversationElement) {
+          conversationElement.scrollTop = previousTop + conversationElement.scrollHeight - previousHeight;
+          conversationPinned = false;
+        }
+      }
+    } catch (error) {
+      if (generation !== environmentGeneration) return;
+      historyError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (generation === environmentGeneration) historyLoading = false;
+    }
+  }
+
+  async function openToolDetail(row: ChatToolRow): Promise<void> {
+    selectedTool = { row, loading: true, error: '' };
+    await tick();
+    toolInspectorElement?.focus();
+    try {
+      const journal = await window.workingMemory.getChatJournal(row.journalId);
+      const detail = journal ? toolDetail(journal, row.sequence) : undefined;
+      selectedTool = detail
+        ? { row, detail, loading: false, error: '' }
+        : { row, loading: false, error: 'This tool event is no longer available.' };
+    } catch (error) {
+      selectedTool = { row, loading: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  function assistantFallback(run: ChatRun): string {
+    if (run.status === 'awaiting_confirmation') return 'Awaiting confirmation.';
+    if (run.status === 'running' || run.status === 'submitting') return 'Running…';
+    if (run.status === 'interrupted') return 'Interrupted before an assistant response.';
+    if (run.status === 'cancelled') return 'Cancelled before an assistant response.';
+    if (run.status === 'failed') return 'Failed before an assistant response.';
+    return 'Completed without an assistant response.';
+  }
+
+  function handleConversationScroll(): void {
+    if (!conversationElement) return;
+    conversationPinned = isChatAtBottom(conversationElement);
+    if (conversationPinned) hasUnseenMessages = false;
+  }
+
+  function scrollConversationToBottom(behavior: ScrollBehavior = 'auto'): void {
+    if (!conversationElement) return;
+    conversationElement.scrollTo({ top: conversationElement.scrollHeight, behavior });
+    conversationPinned = true;
+    hasUnseenMessages = false;
+  }
+
+  $effect(() => {
+    void chatRuns.length;
+    void busy;
+    void pendingConfirmation;
+    const shouldStick = conversationPinned;
+    void tick().then(() => {
+      if (shouldStick) scrollConversationToBottom();
+      else hasUnseenMessages = true;
+    });
+  });
 
   onMount(() => {
     activeRailWidth = parseStoredRailWidth(localStorage.getItem(RAIL_STORAGE_KEYS.active), 'active');
@@ -73,7 +210,9 @@
     const handleResize = () => { viewportWidth = window.innerWidth; };
     window.addEventListener('resize', handleResize);
     void window.workingMemory.getConfig().then(loadConfig);
+    void discoverEnvironments(true);
     void refreshActive();
+    void loadHistory();
     return () => {
       window.removeEventListener('resize', handleResize);
       document.body.classList.remove('resizing-rails');
@@ -138,15 +277,78 @@
     if (activeLoading) return;
     activeLoading = true;
     activeError = '';
+    const generation = environmentGeneration;
     try {
-      activePanel = await window.workingMemory.getActivePanel();
+      const panel = await window.workingMemory.getActivePanel();
+      if (generation !== environmentGeneration) return;
+      activePanel = panel;
       if (activePanel.items.length === 0 && activePanel.emptyMessage !== 'No active workstreams.') {
         activeError = activePanel.emptyMessage;
       }
     } catch (error) {
+      if (generation !== environmentGeneration) return;
       activeError = error instanceof Error ? error.message : String(error);
     } finally {
-      activeLoading = false;
+      if (generation === environmentGeneration) activeLoading = false;
+    }
+  }
+
+  function applyEnvironmentState(state: DesktopEnvironmentState): void {
+    environments = state.environments;
+    selectedEnvironment = state.selected;
+  }
+
+  async function discoverEnvironments(restoreDraft = false): Promise<void> {
+    environmentLoading = true;
+    environmentError = '';
+    try {
+      applyEnvironmentState(await window.workingMemory.discoverEnvironments());
+      if (restoreDraft) input = readComposerDraft(localStorage, selectedEnvironment?.id);
+    } catch (error) {
+      environmentError = error instanceof Error ? error.message : String(error);
+    } finally {
+      environmentLoading = false;
+    }
+  }
+
+  function resetEnvironmentState(): void {
+    const reset = emptyEnvironmentBoundRendererState();
+    window.clearTimeout(saveTimer);
+    saveTimer = undefined;
+    input = reset.input;
+    documents = reset.documents;
+    saveState = reset.saveState;
+    documentError = reset.documentError;
+    chatRuns = reset.chatRuns;
+    historyLoading = reset.historyLoading;
+    historyError = reset.historyError;
+    historyCursor = reset.historyCursor;
+    selectedTool = reset.selectedTool;
+    pendingRunKey = reset.pendingRunKey;
+    busy = reset.busy;
+    pendingConfirmation = reset.pendingConfirmation;
+    activePanel = reset.activePanel;
+    activeLoading = reset.activeLoading;
+    activeError = reset.activeError;
+    hasUnseenMessages = reset.hasUnseenMessages;
+    conversationPinned = true;
+    page = 'workspace';
+  }
+
+  async function switchEnvironment(mcpUrl: string): Promise<void> {
+    environmentLoading = true;
+    environmentError = '';
+    try {
+      const state = await window.workingMemory.switchEnvironment(mcpUrl);
+      environmentGeneration += 1;
+      resetEnvironmentState();
+      applyEnvironmentState(state);
+      input = readComposerDraft(localStorage, selectedEnvironment?.id);
+      await reloadEnvironmentBoundData(refreshActive, () => loadHistory());
+    } catch (error) {
+      environmentError = error instanceof Error ? error.message : String(error);
+    } finally {
+      environmentLoading = false;
     }
   }
 
@@ -160,32 +362,47 @@
   async function send(): Promise<void> {
     const message = input.trim();
     if (!message || busy || pendingConfirmation) return;
-    turns = [...turns, { role: 'user', text: message }];
+    const runKey = crypto.randomUUID();
+    chatRuns = [...chatRuns, createLiveRun(runKey, message, liveScope(), Date.now())];
     input = '';
+    writeComposerDraft(localStorage, selectedEnvironment?.id, '');
     busy = true;
+    const generation = environmentGeneration;
     try {
-      applyChatResult(await window.workingMemory.sendChat(message, currentChatContext));
+      const result = await window.workingMemory.sendChat(message, currentChatContext);
+      if (generation === environmentGeneration) await applyChatResult(result, runKey);
     } catch (error) {
-      turns = [...turns, {
-        role: 'assistant',
-        text: `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}`,
-      }];
+      if (generation !== environmentGeneration) return;
+      chatRuns = chatRuns.map((run) => run.key === runKey
+        ? { ...run, status: 'failed', assistantText: `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}` }
+        : run);
     } finally {
-      busy = false;
+      if (generation === environmentGeneration) busy = false;
     }
+  }
+
+  function updateComposerDraft(value: string): void {
+    input = value;
+    writeComposerDraft(localStorage, selectedEnvironment?.id, value);
   }
 
   async function resolveConfirmation(confirmed: boolean): Promise<void> {
     const pending = pendingConfirmation;
-    if (!pending || busy) return;
+    const runKey = pendingRunKey;
+    if (!pending || !runKey || busy) return;
     busy = true;
     pendingConfirmation = null;
+    const generation = environmentGeneration;
     try {
-      applyChatResult(await window.workingMemory.resolveChatConfirmation(pending.id, confirmed, currentChatContext));
+      const result = await window.workingMemory.resolveChatConfirmation(pending.id, confirmed, currentChatContext);
+      if (generation === environmentGeneration) await applyChatResult(result, runKey);
     } catch (error) {
-      turns = [...turns, { role: 'assistant', text: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}` }];
+      if (generation !== environmentGeneration) return;
+      chatRuns = chatRuns.map((run) => run.key === runKey || run.journalId === runKey
+        ? { ...run, status: 'failed', assistantText: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}` }
+        : run);
     } finally {
-      busy = false;
+      if (generation === environmentGeneration) busy = false;
     }
   }
 
@@ -351,7 +568,10 @@
   }
 </script>
 
-<svelte:window onclick={handleDocumentClick} />
+<svelte:window
+  onclick={handleDocumentClick}
+  onkeydown={(event) => { if (event.key === 'Escape' && selectedTool) selectedTool = null; }}
+/>
 
 <div
   class="shell"
@@ -368,17 +588,25 @@
         onclick={() => (activeRailCollapsed = false)}
       ><span aria-hidden="true" class="codicon codicon-chevron-right"></span></button>
     {:else}
-      <ActiveRail
-        data={activePanel}
-        loading={activeLoading}
-        error={activeError}
-        onRefresh={() => void refreshActive()}
-        onSettings={() => (page = page === 'settings' ? 'workspace' : 'settings')}
-        onCollapse={() => (activeRailCollapsed = true)}
-        onOpen={openRoute}
-        onToggleFocus={toggleActiveFocus}
-        onAction={runActiveAction}
-      />
+      {#key selectedEnvironment?.id ?? 'no-environment'}
+        <ActiveRail
+          {environments}
+          {selectedEnvironment}
+          {environmentLoading}
+          {environmentError}
+          data={activePanel}
+          loading={activeLoading}
+          error={activeError}
+          onDiscoverEnvironments={discoverEnvironments}
+          onSwitchEnvironment={switchEnvironment}
+          onRefresh={() => void refreshActive()}
+          onSettings={() => (page = page === 'settings' ? 'workspace' : 'settings')}
+          onCollapse={() => (activeRailCollapsed = true)}
+          onOpen={openRoute}
+          onToggleFocus={toggleActiveFocus}
+          onAction={runActiveAction}
+        />
+      {/key}
     {/if}
   </aside>
 
@@ -512,19 +740,77 @@
         ><span aria-hidden="true" class="codicon codicon-chevron-right"></span></button>
       </header>
 
-      <div class="conversation" aria-live="polite">
-      {#each turns as turn}
-        <div class="turn" class:user={turn.role === 'user'}>
-          <span>{turn.role === 'user' ? 'You' : 'WM'}</span>
-          <p>{turn.text}</p>
-          {#if turn.progress?.length}
+      <div class="conversation-shell">
+      <div bind:this={conversationElement} class="conversation" aria-live="polite" onscroll={handleConversationScroll}>
+      {#if historyCursor}
+        <button class="load-older" disabled={historyLoading} onclick={() => void loadHistory(true)}>
+          {historyLoading ? 'Loading…' : 'Load older'}
+        </button>
+      {/if}
+      {#if historyLoading && chatRuns.length === 0}
+        <div class="history-state">Loading history…</div>
+      {:else if historyError && chatRuns.length === 0}
+        <div class="history-state history-error" role="alert">{historyError}</div>
+      {:else if chatRuns.length === 0}
+        <div class="history-state">No chat history.</div>
+      {/if}
+      {#if historyError && chatRuns.length > 0}
+        <div class="history-state history-error" role="alert">{historyError}</div>
+      {/if}
+      {#each chatRuns as run (run.key)}
+        {@const scopeTarget = targetForRef(run.scope)}
+        <article class="chat-run" data-journal-id={run.journalId}>
+          <section class="user-entry">
+            {#if scopeTarget}
+              <button class="user-scope" onclick={() => void openResource(scopeTarget.kind, scopeTarget.identifier)}>
+                <span aria-hidden="true" class="codicon codicon-link"></span>
+                {run.scope.title ?? run.scope.slug ?? run.scope.id}
+              </button>
+            {:else}
+              <span class="user-scope unsupported">{run.scope.title ?? run.scope.slug ?? run.scope.id}</span>
+            {/if}
+            <pre>{run.userText}</pre>
+          </section>
+
+          {#if run.tools.length}
+            <ol class="tool-rows" aria-label="Tool activity">
+              {#each run.tools as tool (`${tool.journalId}:${tool.sequence}`)}
+                <li class:failed={tool.status === 'failure'} class:cancelled={tool.status === 'cancelled'}>
+                  <button class="tool-row-main" onclick={() => void openToolDetail(tool)} aria-label={`Inspect ${tool.toolName}`}>
+                    <span aria-hidden="true" class={`codicon codicon-${tool.mode === 'write' ? 'edit' : 'book'}`}></span>
+                    <span>{tool.toolName}</span>
+                    <span class="tool-status">{tool.status}</span>
+                  </button>
+                  {#if tool.entity?.target}
+                    <button
+                      class="tool-entity"
+                      title={`Open ${tool.entity.label}`}
+                      onclick={() => void openResource(tool.entity!.target!.kind, tool.entity!.target!.identifier)}
+                    >{tool.entity.label}</button>
+                  {:else if tool.entity}
+                    <span class="tool-entity unsupported">{tool.entity.label}</span>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+          {:else if run.progress?.length}
             <ul class="tool-progress">
-              {#each turn.progress as item}
+              {#each run.progress as item}
                 <li class:failed={item.status === 'failed'}>{item.name}: {item.summary}</li>
               {/each}
             </ul>
           {/if}
-        </div>
+
+          <section class="assistant-entry" class:partial={!run.assistantText}>
+            <span>WM</span>
+            {#if run.assistantText}
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              <div class="assistant-markdown">{@html renderMarkdown(run.assistantText)}</div>
+            {:else}
+              <p>{assistantFallback(run)}</p>
+            {/if}
+          </section>
+        </article>
       {/each}
       {#if pendingConfirmation}
         <section class="confirmation" aria-label="Destructive action confirmation">
@@ -538,6 +824,78 @@
       {/if}
       {#if busy}<div class="thinking">Resolving…</div>{/if}
       </div>
+      {#if hasUnseenMessages}
+        <button class="new-message-indicator" aria-label="Jump to newest message" title="Jump to newest message" onclick={() => scrollConversationToBottom('smooth')}>
+          <span aria-hidden="true" class="codicon codicon-chevron-down"></span>
+          <span>New messages</span>
+        </button>
+      {/if}
+      </div>
+
+      {#if selectedTool}
+        <div class="tool-inspector-backdrop" role="presentation" onclick={() => (selectedTool = null)}>
+          <div
+            bind:this={toolInspectorElement}
+            class="tool-inspector"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="tool-inspector-title"
+            tabindex="-1"
+            onclick={(event) => event.stopPropagation()}
+            onkeydown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span>{selectedTool.row.mode}</span>
+                <h2 id="tool-inspector-title">{selectedTool.row.toolName}</h2>
+              </div>
+              <button class="icon-button" title="Close" aria-label="Close tool detail" onclick={() => (selectedTool = null)}>
+                <span aria-hidden="true" class="codicon codicon-close"></span>
+              </button>
+            </header>
+            {#if selectedTool.loading}
+              <div class="inspector-state">Loading…</div>
+            {:else if selectedTool.error}
+              <div class="inspector-state history-error" role="alert">{selectedTool.error}</div>
+            {:else if selectedTool.detail}
+              {@const detail = selectedTool.detail}
+              <dl class="tool-metadata">
+                <div><dt>Status</dt><dd>{detail.result?.status ?? 'missing'}</dd></div>
+                <div><dt>Duration</dt><dd>{detail.result ? `${detail.result.durationMs} ms` : 'unavailable'}</dd></div>
+                {#if detail.call.retryOfCallId}<div><dt>Retry of</dt><dd>{detail.call.retryOfCallId}</dd></div>{/if}
+                {#if detail.call.dedupedOfCallId}<div><dt>Deduped from</dt><dd>{detail.call.dedupedOfCallId}</dd></div>{/if}
+              </dl>
+              <section>
+                <h3>Arguments</h3>
+                {#if detail.call.argumentParseError}
+                  <pre class="detail-error">{detail.call.argumentParseError}</pre>
+                {:else}
+                  <pre>{formatDetailValue(detail.call.arguments)}</pre>
+                {/if}
+              </section>
+              {#if detail.confirmation}
+                <section>
+                  <h3>Confirmation</h3>
+                  <p>{detail.confirmation.requested?.prompt ?? 'Confirmation requested'}</p>
+                  <p>{detail.confirmation.resolved?.resolution ?? 'Unresolved'}</p>
+                </section>
+              {/if}
+              <section>
+                <h3>{detail.result?.status === 'failure' ? 'Error' : detail.result?.status === 'cancelled' ? 'Cancelled' : 'Result'}</h3>
+                {#if detail.partial}
+                  <p class="partial-detail">No result was persisted. This run is partial or was interrupted.</p>
+                {:else if detail.result?.status === 'failure'}
+                  <pre class="detail-error">{formatDetailValue(detail.result.error)}</pre>
+                {:else if detail.result?.status === 'cancelled'}
+                  <pre>{formatDetailValue(detail.result.error) || 'Cancelled'}</pre>
+                {:else}
+                  <pre>{formatDetailValue(detail.result?.result)}</pre>
+                {/if}
+              </section>
+            {/if}
+          </div>
+        </div>
+      {/if}
 
       <div class="composer-shell">
         {#if currentChatContext}
@@ -550,7 +908,13 @@
           <div class="composer-context composer-context-empty">No document selected</div>
         {/if}
         <form class="composer" onsubmit={(event) => { event.preventDefault(); void send(); }}>
-          <textarea bind:value={input} rows="3" aria-label="Message" onkeydown={(event) => {
+          <textarea
+            value={input}
+            rows="3"
+            aria-label="Message"
+            placeholder="Write a command to interact with Working Memory"
+            oninput={(event) => updateComposerDraft(event.currentTarget.value)}
+            onkeydown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); }
           }}></textarea>
           <button class="send" disabled={busy || pendingConfirmation !== null || !input.trim()} title="Send" aria-label="Send">↑</button>

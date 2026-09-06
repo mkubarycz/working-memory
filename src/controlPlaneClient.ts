@@ -33,12 +33,6 @@ import {
   parsePortInfo,
   resolveControlPlaneHome,
 } from './controlPlaneShared';
-import {
-  COMMAND_JOURNAL_KIND,
-  filterAndSortJournals,
-  type CommandJournalDoc,
-  type CommandJournalSpec,
-} from './commandJournal';
 
 /** Client identity advertised to the control-plane during the MCP handshake. */
 const CLIENT_NAME = 'working-memory-extension';
@@ -751,6 +745,123 @@ export interface NaniteJournalReadInput {
   limit?: number;
 }
 
+export type CommandJournalStatus =
+  | 'running'
+  | 'awaiting_confirmation'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+export interface CommandJournalScopeRef {
+  kind: string;
+  id: string;
+  slug?: string;
+  title?: string;
+}
+
+export interface CommandJournalEntityRef extends CommandJournalScopeRef {
+  relation: 'referenced' | 'mutated';
+}
+
+export type CommandJournalEvent =
+  | { id: string; sequence: number; timestamp: number; type: 'model_turn'; role: 'assistant' | 'system'; iteration: number; assistantText?: string; contentParts?: Array<{ type: 'text' | 'reasoning'; text: string }>; providerResponseId?: string; finishReason?: string; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number }; durationMs: number }
+  | ({ id: string; sequence: number; timestamp: number; type: 'tool_call'; modelTurnId: string; callId: string; toolName: string; retryOfCallId?: string; dedupedOfCallId?: string } & ({ arguments: unknown; argumentParseError?: never } | { arguments?: never; argumentParseError: string }))
+  | { id: string; sequence: number; timestamp: number; type: 'tool_result'; callId: string; status: 'success' | 'failure' | 'cancelled'; result?: unknown; error?: unknown; durationMs: number }
+  | { id: string; sequence: number; timestamp: number; type: 'confirmation_requested'; confirmationId: string; callId?: string; prompt: string; payload?: unknown }
+  | { id: string; sequence: number; timestamp: number; type: 'confirmation_resolved'; confirmationId: string; callId?: string; resolution: 'approved' | 'rejected' | 'cancelled' }
+  | { id: string; sequence: number; timestamp: number; type: 'run_error'; stage: string; message: string; code?: string; retryable?: boolean; details?: unknown };
+
+export interface CommandJournalCompletion {
+  finalAssistantText: string;
+  stopReason: string;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  timing?: { totalMs: number; modelMs?: number; toolsMs?: number };
+  mutated: boolean;
+  navigationTarget?: CommandJournalScopeRef;
+}
+
+export interface CommandJournal {
+  id: string;
+  resourceVersion: number;
+  createdAt: number;
+  updatedAt: number;
+  schemaVersion: 2;
+  status: CommandJournalStatus;
+  startedAt: number;
+  completedAt?: number;
+  provider: { endpoint: string; mode: string; model: string };
+  request: { userText: string };
+  primaryScope: CommandJournalScopeRef;
+  entityRefs: CommandJournalEntityRef[];
+  events: CommandJournalEvent[];
+  completion?: CommandJournalCompletion;
+}
+
+export interface CommandJournalCreateInput {
+  startedAt: number;
+  provider: CommandJournal['provider'];
+  request: CommandJournal['request'];
+  primaryScope: CommandJournalScopeRef;
+  entityRefs?: CommandJournalEntityRef[];
+}
+
+export interface CommandJournalAppendInput {
+  id: string;
+  expectedResourceVersion: number;
+  events: CommandJournalEvent[];
+  entityRefs?: CommandJournalEntityRef[];
+}
+
+export interface CommandJournalFinalizeInput {
+  id: string;
+  expectedResourceVersion: number;
+  status: Exclude<CommandJournalStatus, 'running' | 'awaiting_confirmation'>;
+  completedAt: number;
+  completion: CommandJournalCompletion;
+  entityRefs?: CommandJournalEntityRef[];
+}
+
+export interface CommandJournalToolEventSummary {
+  sequence: number;
+  timestamp: number;
+  toolName: string;
+  callId: string;
+  status: 'pending' | 'success' | 'failure' | 'cancelled';
+}
+
+export interface CommandJournalSummary {
+  id: string;
+  resourceVersion: number;
+  createdAt: number;
+  startedAt: number;
+  completedAt?: number;
+  status: CommandJournalStatus;
+  request: CommandJournal['request'];
+  primaryScope: CommandJournalScopeRef;
+  entityRefs: CommandJournalEntityRef[];
+  completion?: Pick<CommandJournalCompletion, 'finalAssistantText' | 'stopReason' | 'mutated' | 'navigationTarget'>;
+  eventSummaries: CommandJournalToolEventSummary[];
+}
+
+export interface CommandJournalHistoryInput {
+  limit?: number;
+  cursor?: string;
+  primaryScope?: Pick<CommandJournalScopeRef, 'kind' | 'id'>;
+  entityRef?: Pick<CommandJournalEntityRef, 'kind' | 'id'> &
+    Partial<Pick<CommandJournalEntityRef, 'relation'>>;
+}
+
+export interface CommandJournalHistoryPage {
+  /** Newest-first; reverse accumulated pages when rendering chronological history. */
+  journals: CommandJournalSummary[];
+  nextCursor?: string;
+}
+
+export interface CommandJournalDetailInput {
+  id: string;
+}
+
 
 export interface ControlPlaneClientOptions {
   /**
@@ -1135,91 +1246,6 @@ export class ControlPlaneClient {
     }
     const parsed = parseToolText(result);
     return { ok: true, result: parsed ?? result };
-  }
-
-  // ----- CommandJournal (per-workstream command-widget chat) ----------------
-  //
-  // Thin typed wrappers over the GENERIC `wm-document-*` surface — the POC only
-  // needs create + read-by-kind, so no bespoke `ws-commandjournal-*` tools are
-  // added. Persistence goes through the control-plane client ONLY (guardrail).
-
-  /**
-   * Persist one command-widget request/response cycle as a `CommandJournal`
-   * document (via `wm-document-create`). Returns the write result; on success
-   * the `document` envelope carries BOTH `metadata.id` and
-   * `metadata.resourceVersion`, so the caller can drive the two-phase update
-   * without an extra read. The caller decides how to surface a failure
-   * (journaling is best-effort).
-   */
-  async commandJournalCreate(spec: CommandJournalSpec): Promise<WriteDocumentResult> {
-    return this.createDocument({
-      kind: COMMAND_JOURNAL_KIND,
-      spec: spec as unknown as Record<string, unknown>,
-    });
-  }
-
-  /**
-   * Update a `CommandJournal` document (two-phase write, phase 2) via the
-   * generic `wm-document-update` compare-and-swap. `spec` is a PARTIAL patch
-   * shallow-merged onto the current spec server-side, so passing `{ status,
-   * response }` overwrites those top-level keys while `workstream`/`request`
-   * carry through.
-   *
-   * The CAS needs an `expectedResourceVersion`: pass the version the create
-   * returned to skip a read. On a version conflict (a concurrent write bumped
-   * the row) this does ONE re-read + retry with the fresh version; any other
-   * rejection is returned as-is. Journaling is best-effort, so the caller logs
-   * and moves on rather than throwing.
-   */
-  async commandJournalUpdate(
-    id: string,
-    spec: Partial<CommandJournalSpec>,
-    expectedResourceVersion?: number,
-  ): Promise<WriteDocumentResult> {
-    const patch = spec as unknown as Record<string, unknown>;
-    // Resolve the version to CAS against: the caller's (from create) or a read.
-    let version = expectedResourceVersion;
-    if (version === undefined) {
-      const current = await this.getDocument({ id });
-      if (!current.available) {
-        return { available: false, document: null, error: current.error };
-      }
-      if (!current.document) {
-        return { available: true, document: null, error: `CommandJournal ${id} not found` };
-      }
-      version = current.document.metadata.resourceVersion;
-    }
-
-    const first = await this.updateDocument({ id, expectedResourceVersion: version, spec: patch });
-    // Only a version conflict is worth retrying (a concurrent bump); every other
-    // rejection — not-found, validation — would just fail again.
-    const isConflict =
-      first.available && !first.document && /conflict/i.test(first.error ?? '');
-    if (!isConflict) {
-      return first;
-    }
-    const reread = await this.getDocument({ id });
-    if (!reread.available || !reread.document) {
-      return first;
-    }
-    return this.updateDocument({
-      id,
-      expectedResourceVersion: reread.document.metadata.resourceVersion,
-      spec: patch,
-    });
-  }
-
-  /**
-   * Read this scope's command-widget chat: list `CommandJournal` docs, filter to
-   * `workstream`, and return them OLDEST→NEWEST (replay order). Returns `[]` when
-   * the daemon is down or the read fails (journaling/replay is non-critical).
-   */
-  async commandJournalReadByWorkstream(workstream: string): Promise<CommandJournalDoc[]> {
-    const result = await this.listDocuments(COMMAND_JOURNAL_KIND);
-    if (!result.available) {
-      return [];
-    }
-    return filterAndSortJournals(result.documents, workstream);
   }
 
   // ----- Workstream domain API (`ws-*`) -------------------------------------
@@ -2150,6 +2176,67 @@ export class ControlPlaneClient {
     const parsed = parseToolText(result) as { journals?: unknown } | null;
     const list = Array.isArray(parsed?.journals) ? parsed!.journals : [];
     return list as NaniteJournal[];
+  }
+
+  // ----- Command Journal domain API (`ws-commandjournal-*`) ----------------
+
+  private parseCommandJournal(result: unknown): CommandJournal {
+    const parsed = parseToolText(result) as CommandJournal | null;
+    if (!parsed || typeof parsed.id !== 'string' || parsed.schemaVersion !== 2) {
+      throw new ControlPlaneClientError('Malformed control-plane command journal response');
+    }
+    return parsed;
+  }
+
+  /** Read one full journal by id, or a stable newest-first page of lightweight history. */
+  async commandJournalRead(input: CommandJournalDetailInput): Promise<CommandJournal | null>;
+  async commandJournalRead(input?: CommandJournalHistoryInput): Promise<CommandJournalHistoryPage>;
+  async commandJournalRead(
+    input: CommandJournalDetailInput | CommandJournalHistoryInput = {},
+  ): Promise<CommandJournal | null | CommandJournalHistoryPage> {
+    const result = await this.callDomainTool('ws-commandjournal-read', { ...input });
+    const parsed = parseToolText(result) as {
+      journal?: unknown;
+      journals?: unknown;
+      nextCursor?: unknown;
+    } | null;
+    if ('id' in input) {
+      if (parsed?.journal === null) {
+        return null;
+      }
+      if (!parsed?.journal || typeof (parsed.journal as { id?: unknown }).id !== 'string') {
+        throw new ControlPlaneClientError('Malformed control-plane command journal detail response');
+      }
+      return parsed.journal as CommandJournal;
+    }
+    if (!Array.isArray(parsed?.journals)) {
+      throw new ControlPlaneClientError('Malformed control-plane command journal history response');
+    }
+    return {
+      journals: parsed.journals as CommandJournalSummary[],
+      ...(typeof parsed.nextCursor === 'string' ? { nextCursor: parsed.nextCursor } : {}),
+    };
+  }
+
+  /** Create the running journal for one submitted user request. */
+  async commandJournalCreate(input: CommandJournalCreateInput): Promise<CommandJournal> {
+    return this.parseCommandJournal(
+      await this.callDomainTool('ws-commandjournal-create', { ...input }),
+    );
+  }
+
+  /** Atomically append one or more canonically sequenced events under CAS. */
+  async commandJournalAppend(input: CommandJournalAppendInput): Promise<CommandJournal> {
+    return this.parseCommandJournal(
+      await this.callDomainTool('ws-commandjournal-append', { ...input }),
+    );
+  }
+
+  /** Finalize an active journal exactly once under CAS. */
+  async commandJournalFinalize(input: CommandJournalFinalizeInput): Promise<CommandJournal> {
+    return this.parseCommandJournal(
+      await this.callDomainTool('ws-commandjournal-finalize', { ...input }),
+    );
   }
 
   /** Close the client + transport and release the singleton. */

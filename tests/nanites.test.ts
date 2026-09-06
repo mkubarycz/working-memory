@@ -34,8 +34,6 @@ import type {
   Topic,
   Workstream,
 } from '../src/controlPlaneClient';
-import type { CommandJournalSpec } from '../src/commandJournal';
-import type { WriteDocumentResult } from '../src/controlPlaneClient';
 
 // ---------------------------------------------------------------------------
 // Scripted fake bridge: deterministic stand-in for the vscode.lm loop. The
@@ -579,7 +577,6 @@ function fakeTopic(over: Partial<Topic> = {}): Topic {
 
 class FakeClient implements NaniteRunnerClient {
   public readonly runCalls: NaniteRunInput[] = [];
-  public readonly journalCalls: CommandJournalSpec[] = [];
   public readonly journalCreateCalls: NaniteJournalCreateInput[] = [];
   constructor(
     private readonly template: NaniteTemplate | null,
@@ -664,26 +661,6 @@ class FakeClient implements NaniteRunnerClient {
       resourceVersion: 1,
     };
   }
-  async commandJournalCreate(spec: CommandJournalSpec): Promise<WriteDocumentResult> {
-    this.journalCalls.push(spec);
-    return {
-      available: true,
-      document: {
-        kind: 'CommandJournal',
-        metadata: {
-          id: `journal-${this.journalCalls.length}`,
-          slug: null,
-          labels: {},
-          createdAt: 0,
-          updatedAt: 0,
-          deletedAt: null,
-          resourceVersion: 1,
-        },
-        spec: spec as unknown as Record<string, unknown>,
-        status: {},
-      },
-    };
-  }
 }
 
 function fakeWorkstream(over: Partial<Workstream> = {}): Workstream {
@@ -715,44 +692,6 @@ describe('ExtensionHostNaniteRunner', () => {
     expect(prompt).toContain('Current time: 2026-07-31T15:30:00.000Z');
     // Context leads the prompt, before the workstream/topic/task.
     expect(prompt.indexOf('# Context')).toBeLessThan(prompt.indexOf('# Task'));
-  });
-
-  test('posts completion turns to the nanite session AND the input topic', async () => {
-    const client = new FakeClient(fakeTemplate(), fakeTopic());
-    const bridge = new ScriptedBridge([{ text: 'All done.', toolCalls: [] }]);
-    const runner = new ExtensionHostNaniteRunner({ client, bridge });
-
-    await runner.run(fakeNanite({ inputTopic: 'topic-a', workstream: 'ws' }));
-
-    // Two posts: the nanite's OWN session (scope = its id, contextKind
-    // 'nanite') FIRST — the mandatory channel a focused nanite doc replays —
-    // then the input topic so the ticket carries the outcome too.
-    expect(client.journalCalls).toHaveLength(2);
-    const [session, ticket] = client.journalCalls;
-    expect(session.workstream).toBe('n1');
-    expect(session.request.contextKind).toBe('nanite');
-    expect(session.status).toBe('succeeded');
-    expect(session.response.brief).toContain('Nanite succeeded');
-    expect(ticket.workstream).toBe('topic-a');
-    expect(ticket.request.contextKind).toBe('topic');
-    // The chat post happens AFTER the terminal persist, never before.
-    expect(client.runCalls.at(-1)?.outcome).toBe('succeeded');
-  });
-
-  test('workstream-wide run posts to the nanite session AND the workstream', async () => {
-    const client = new FakeClient(fakeTemplate(), null);
-    const bridge = new ScriptedBridge([{ text: 'All done.', toolCalls: [] }]);
-    const runner = new ExtensionHostNaniteRunner({ client, bridge });
-
-    // No input topic → the ticket scope falls back to the workstream.
-    await runner.run(fakeNanite({ inputTopic: '', workstream: 'ws' }));
-
-    expect(client.journalCalls).toHaveLength(2);
-    const [session, ticket] = client.journalCalls;
-    expect(session.workstream).toBe('n1');
-    expect(session.request.contextKind).toBe('nanite');
-    expect(ticket.workstream).toBe('ws');
-    expect(ticket.request.contextKind).toBe('workstream');
   });
 
   test('reads topic body as prompt + template config, persists Running then terminal', async () => {

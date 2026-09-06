@@ -2,7 +2,14 @@ import { app, BrowserWindow, ipcMain, safeStorage, screen, shell } from 'electro
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ControlPlaneClient } from '../../../src/controlPlaneClient';
-import type { ChatContext, ChatResult, DesktopResourceKind, SaveConfigInput } from '../shared/contracts';
+import type {
+  ChatContext,
+  ChatResult,
+  DesktopEnvironmentState,
+  DesktopResourceKind,
+  SaveConfigInput,
+} from '../shared/contracts';
+import type { CommandJournalHistoryInput } from '../../../src/controlPlaneClient';
 import type { DocumentVM, TopicPatch } from '../../../webview-ui/src/lib/types';
 import {
   modelAuthHeaders,
@@ -13,6 +20,11 @@ import {
   type StoredConfig,
 } from './config';
 import { DesktopChatAgent, type DesktopAgentResult, type ModelHttpRequest } from './desktopChatAgent';
+import {
+  DesktopEnvironmentManager,
+  readPersistedEnvironment,
+  writePersistedEnvironment,
+} from './environments';
 import { parseModelTurn } from './modelTools';
 import {
   readWindowBounds,
@@ -30,21 +42,52 @@ import {
   toGenericDocumentViewModel,
 } from './resolver';
 
-const controlPlane = new ControlPlaneClient();
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
 const MODEL_TIMEOUT_MS = 20_000;
 const WINDOW_DEFAULTS = { defaultWidth: 1280, defaultHeight: 820, minWidth: 900, minHeight: 600 };
 const WINDOW_STATE_SAVE_DELAY_MS = 250;
 let configFile = '';
+let environmentFile = '';
 let windowStateFile = '';
 let mainWindow: BrowserWindow | null = null;
 let mainWindowCreation: Promise<BrowserWindow> | null = null;
 let windowStateSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
+const environmentManager = new DesktopEnvironmentManager<ControlPlaneClient>({
+  createClient: (mcpUrl) => new ControlPlaneClient({ resolveUrl: () => mcpUrl }),
+  readPersistedSelection: () => readPersistedEnvironment(environmentFile),
+  writePersistedSelection: (mcpUrl) => writePersistedEnvironment(environmentFile, mcpUrl),
+});
+
+function controlPlane(): ControlPlaneClient {
+  return environmentManager.currentClient;
+}
+
+function environmentState(environments = [] as DesktopEnvironmentState['environments']): DesktopEnvironmentState {
+  return { environments, selected: environmentManager.currentEnvironment };
+}
+
 const chatAgent = new DesktopChatAgent({
-  listTools: () => controlPlane.listTools(),
-  callTool: (name, args) => controlPlane.callTool(name, args),
+  listTools: () => controlPlane().listTools(),
+  callTool: (name, args) => controlPlane().callTool(name, args),
   callModel: requestModel,
+  journal: {
+    create: (input) => controlPlane().commandJournalCreate(input),
+    append: (input) => controlPlane().commandJournalAppend(input),
+    finalize: (input) => controlPlane().commandJournalFinalize(input),
+  },
+  resolveDependencies: () => {
+    const client = controlPlane();
+    return {
+      listTools: () => client.listTools(),
+      callTool: (name, args) => client.callTool(name, args),
+      journal: {
+        create: (input) => client.commandJournalCreate(input),
+        append: (input) => client.commandJournalAppend(input),
+        finalize: (input) => client.commandJournalFinalize(input),
+      },
+    };
+  },
 });
 
 function decryptApiKey(config: StoredConfig): string {
@@ -73,14 +116,14 @@ async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
 }
 
 async function openWorkstream(query: string): Promise<ChatResult> {
-  const workstreams = await controlPlane.wsRead({ limit: 200 });
+  const workstreams = await controlPlane().wsRead({ limit: 200 });
   const workstream = chooseWorkstream(query, workstreams);
   if (!workstream) {
     return { message: `I couldn't find a workstream matching “${query}”.` };
   }
   return {
     message: `Opened ${workstream.title}.`,
-    workstream: (await loadWorkstreamViewModel(controlPlane, workstream.slug ?? workstream.id)) ?? undefined,
+    workstream: (await loadWorkstreamViewModel(controlPlane(), workstream.slug ?? workstream.id)) ?? undefined,
   };
 }
 
@@ -90,16 +133,16 @@ async function loadResource(
 ): Promise<DocumentVM> {
   if (!identifier.trim()) throw new Error('A document identifier is required.');
   if (kind === 'workstream') {
-    const document = await loadWorkstreamViewModel(controlPlane, identifier);
+    const document = await loadWorkstreamViewModel(controlPlane(), identifier);
     if (document) return document;
   } else if (kind === 'topic') {
-    const document = await loadTopicViewModel(controlPlane, identifier);
+    const document = await loadTopicViewModel(controlPlane(), identifier);
     if (document) return document;
   } else {
     const controlPlaneKind = kind === 'alert' ? 'Alert' : kind === 'topic-type' ? 'TopicType' : undefined;
-    let result = await controlPlane.getDocument({ id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) });
+    let result = await controlPlane().getDocument({ id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) });
     if (result.available && !result.document && controlPlaneKind) {
-      result = await controlPlane.getDocument({ slug: identifier, kind: controlPlaneKind });
+      result = await controlPlane().getDocument({ slug: identifier, kind: controlPlaneKind });
     }
     if (!result.available) throw new Error(result.error ?? 'Control plane is unavailable.');
     if (result.document) return toGenericDocumentViewModel(result.document);
@@ -110,17 +153,17 @@ async function loadResource(
 async function invokeAction(workstream: string, command: string, args: unknown[]): Promise<DocumentVM> {
   const action = resolveDesktopAction(command, args, workstream);
   if (action.kind === 'workstream') {
-    await controlPlane.wsUpdate({ slug: action.slug, status: action.section });
+    await controlPlane().wsUpdate({ slug: action.slug, status: action.section });
   } else if (action.kind === 'topic') {
-    if (action.operation === 'attach') await controlPlane.topicAttachWorkstream(action);
-    else await controlPlane.topicDetachWorkstream(action);
+    if (action.operation === 'attach') await controlPlane().topicAttachWorkstream(action);
+    else await controlPlane().topicDetachWorkstream(action);
   } else if (action.operation === 'run') {
-    await controlPlane.naniteRun({ id: action.id, approved: true });
+    await controlPlane().naniteRun({ id: action.id, approved: true });
   } else if (action.operation === 'reset') {
-    await controlPlane.naniteRun({ id: action.id, reset: true });
+    await controlPlane().naniteRun({ id: action.id, reset: true });
   } else {
-    await controlPlane.naniteRun({ id: action.id, reset: true });
-    await controlPlane.naniteRun({ id: action.id, approved: true });
+    await controlPlane().naniteRun({ id: action.id, reset: true });
+    await controlPlane().naniteRun({ id: action.id, approved: true });
   }
   return loadResource('workstream', workstream);
 }
@@ -182,6 +225,7 @@ async function presentAgentResult(result: DesktopAgentResult, context?: ChatCont
     }
   }
   return {
+    journalId: result.journalId,
     message: result.message,
     progress: result.progress,
     pendingConfirmation: result.pendingConfirmation,
@@ -204,7 +248,12 @@ async function testConfiguredModel(config: StoredConfig): Promise<string> {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('active:get', () => loadActivePanelData(controlPlane));
+  ipcMain.handle('environment:discover', async () => environmentState(await environmentManager.discover()));
+  ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
+    await environmentManager.switchTo(mcpUrl, () => chatAgent.reset());
+    return environmentState(environmentManager.availableEnvironments);
+  });
+  ipcMain.handle('active:get', () => loadActivePanelData(controlPlane()));
   ipcMain.handle('config:get', async () => publicConfig(await readStoredConfig(configFile)));
   ipcMain.handle('config:save', async (_event, input: SaveConfigInput) => publicConfig(await saveConfig(input)));
   ipcMain.handle('config:test', async (_event, input: SaveConfigInput) => {
@@ -235,6 +284,12 @@ function registerIpc(): void {
       return { message: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}` };
     }
   });
+  ipcMain.handle('chat:history', (_event, input: CommandJournalHistoryInput = {}) =>
+    controlPlane().commandJournalRead(input));
+  ipcMain.handle('chat:journal', (_event, id: string) => {
+    if (!id.trim()) throw new Error('A command journal id is required.');
+    return controlPlane().commandJournalRead({ id });
+  });
   ipcMain.handle('workstream:open', async (_event, query: string) => {
     try {
       return await openWorkstream(query);
@@ -249,29 +304,29 @@ function registerIpc(): void {
     return loadResource(kind, identifier);
   });
   ipcMain.handle('workstream:save', async (_event, identifier: string, patch: { title?: string; status?: string }) => {
-    const current = await loadWorkstreamViewModel(controlPlane, identifier);
+    const current = await loadWorkstreamViewModel(controlPlane(), identifier);
     if (!current?.slug) throw new Error('This workstream cannot be edited.');
-    await controlPlane.wsUpdate({ slug: current.slug, ...patch });
+    await controlPlane().wsUpdate({ slug: current.slug, ...patch });
     return loadResource('workstream', current.slug);
   });
   ipcMain.handle('topic:save', async (_event, identifier: string, patch: TopicPatch) => {
-    const current = await loadTopicViewModel(controlPlane, identifier);
+    const current = await loadTopicViewModel(controlPlane(), identifier);
     if (!current?.slug) throw new Error('This topic cannot be edited.');
-    await controlPlane.topicUpdate({ slug: current.slug, ...patch });
+    await controlPlane().topicUpdate({ slug: current.slug, ...patch });
     return loadResource('topic', current.slug);
   });
   ipcMain.handle('topic:toggle-pin', async (_event, workstream: string, topic: string) => {
-    const [current] = await controlPlane.topicRead({ slug: topic });
+    const [current] = await controlPlane().topicRead({ slug: topic });
     if (!current?.slug) throw new Error(`Topic "${topic}" was not found.`);
     if (current.focusedWorkstreams.includes(workstream)) {
-      await controlPlane.topicClearFocus({ slug: current.slug, workstream });
+      await controlPlane().topicClearFocus({ slug: current.slug, workstream });
     } else {
-      await controlPlane.topicSetFocus({ slug: current.slug, workstream });
+      await controlPlane().topicSetFocus({ slug: current.slug, workstream });
     }
     return loadResource('workstream', workstream);
   });
   ipcMain.handle('alert:set-status', async (_event, context, id, status) => {
-    await controlPlane.alertUpdate({ id, status });
+    await controlPlane().alertUpdate({ id, status });
     return loadResource(context.kind, context.identifier);
   });
   ipcMain.handle('action:invoke', (_event, workstream, command, args) => invokeAction(workstream, command, args));
@@ -377,7 +432,9 @@ if (!ownsSingleInstanceLock) {
 
   void app.whenReady().then(async () => {
     configFile = join(app.getPath('userData'), 'config.json');
+    environmentFile = join(app.getPath('userData'), 'environment.json');
     windowStateFile = join(app.getPath('userData'), 'window-state.json');
+    await environmentManager.initialize();
     registerIpc();
     await ensureWindow();
     app.on('activate', () => {
@@ -393,6 +450,6 @@ if (!ownsSingleInstanceLock) {
 
   app.on('before-quit', () => {
     if (mainWindow) saveWindowState(mainWindow, true);
-    void controlPlane.dispose();
+    void environmentManager.dispose();
   });
 }

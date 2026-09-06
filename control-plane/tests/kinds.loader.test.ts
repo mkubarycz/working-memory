@@ -22,8 +22,8 @@ describe('kind loader', () => {
         'NaniteTemplate',
         'Nanite',
         'NaniteJournal',
-        'CommandJournal',
         'Config',
+        'CommandJournal',
       ]),
     );
     expect(registered).toHaveLength(9);

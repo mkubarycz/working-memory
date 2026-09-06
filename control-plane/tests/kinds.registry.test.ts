@@ -105,4 +105,19 @@ describe('kind registry', () => {
     expect(validateSpec('Job', { prompt: 'do it' })).toEqual({ prompt: 'do it' });
     expect(defaultStatus('Job')).toEqual({ phase: 'Pending' });
   });
+
+  it('preserves child object refinements while composing with Base', () => {
+    registerKind('Refined', {
+      extends: Base,
+      spec: z.object({ count: z.number() }).strict().superRefine((value, context) => {
+        if (value.count !== 2) {
+          context.addIssue({ code: z.ZodIssueCode.custom, message: 'count must be two' });
+        }
+      }),
+    });
+
+    expect(validateSpec('Refined', { count: 2 })).toEqual({ count: 2 });
+    expect(() => validateSpec('Refined', { count: 1 })).toThrow(/count must be two/);
+    expect(() => validateSpec('Refined', { count: 2, extra: true })).toThrow(/extra/);
+  });
 });

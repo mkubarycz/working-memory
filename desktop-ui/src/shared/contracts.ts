@@ -1,5 +1,10 @@
 import type { AlertVM, DocumentVM, TopicPatch, WorkstreamVM } from '../../../webview-ui/src/lib/types';
 import type { PanelData } from '../../../src/panelData';
+import type {
+  CommandJournal,
+  CommandJournalHistoryInput,
+  CommandJournalHistoryPage,
+} from '../../../src/controlPlaneClient';
 
 export interface PublicConfig {
   endpoint: string;
@@ -16,6 +21,19 @@ export interface SaveConfigInput {
 export interface ConnectionResult {
   ok: boolean;
   message: string;
+}
+
+export interface DesktopEnvironment {
+  id: string;
+  port: number;
+  displayName: string;
+  mcpUrl: string;
+  source: 'production' | 'override' | 'sandbox';
+}
+
+export interface DesktopEnvironmentState {
+  environments: DesktopEnvironment[];
+  selected: DesktopEnvironment | null;
 }
 
 export interface ChatContext {
@@ -55,6 +73,7 @@ export interface PendingConfirmation {
 }
 
 export interface ChatResult {
+  journalId?: string;
   message: string;
   workstream?: WorkstreamVM;
   document?: DocumentVM;
@@ -65,12 +84,16 @@ export interface ChatResult {
 export type DesktopResourceKind = 'workstream' | 'topic' | 'document' | 'alert' | 'topic-type';
 
 export interface DesktopApi {
+  discoverEnvironments(): Promise<DesktopEnvironmentState>;
+  switchEnvironment(mcpUrl: string): Promise<DesktopEnvironmentState>;
   getActivePanel(): Promise<PanelData>;
   getConfig(): Promise<PublicConfig>;
   saveConfig(input: SaveConfigInput): Promise<PublicConfig>;
   testConnection(input: SaveConfigInput): Promise<ConnectionResult>;
   sendChat(message: string, context?: ChatContext): Promise<ChatResult>;
   resolveChatConfirmation(id: string, confirmed: boolean, context?: ChatContext): Promise<ChatResult>;
+  getChatHistory(input?: CommandJournalHistoryInput): Promise<CommandJournalHistoryPage>;
+  getChatJournal(id: string): Promise<CommandJournal | null>;
   openWorkstream(query: string): Promise<ChatResult>;
   openResource(kind: DesktopResourceKind, identifier: string): Promise<DocumentVM>;
   saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;

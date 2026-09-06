@@ -113,64 +113,42 @@ describe('ControlPlaneClient write methods', () => {
     }
   });
 
-  it('two-phase CommandJournal: create (running) → update (succeeded) via CAS', async () => {
+  it('creates, appends, and finalizes a CommandJournal through typed methods', async () => {
     server = await startServer({ port: 0 });
-    const mcpUrl = `${server.url}/mcp`;
-    const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
-    try {
-      // Phase 1: request-only `running` record, created on submit.
-      const created = await client.commandJournalCreate({
-        workstream: 'ws-scope',
-        status: 'running',
-        request: { command: 'do the thing', ts: 100 },
-        response: { brief: '', toolCalls: [], corrections: [], stopReason: 'running' },
-      });
-      expect(created.available).toBe(true);
-      expect(created.document?.spec.status).toBe('running');
-      const id = created.document!.metadata.id;
-      const version = created.document!.metadata.resourceVersion;
-      expect(version).toBe(1);
-
-      // Phase 2: overwrite response + status using the version from the create
-      // (no extra read). A successful CAS bumps the version to 2.
-      const finalized = await client.commandJournalUpdate(
-        id,
-        {
-          workstream: 'ws-scope',
-          status: 'succeeded',
-          request: { command: 'do the thing', ts: 100 },
-          response: { brief: 'all done', toolCalls: [], corrections: [], stopReason: 'final' },
-        },
-        version,
-      );
-      expect(finalized.available).toBe(true);
-      expect(finalized.document?.metadata.resourceVersion).toBe(2);
-      expect(finalized.document?.spec.status).toBe('succeeded');
-      expect((finalized.document?.spec.response as { brief: string }).brief).toBe('all done');
-    } finally {
-      await client.dispose();
-    }
-  });
-
-  it('commandJournalUpdate reads the current version when none is supplied', async () => {
-    server = await startServer({ port: 0 });
-    const mcpUrl = `${server.url}/mcp`;
-    const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server!.url}/mcp` });
     try {
       const created = await client.commandJournalCreate({
-        workstream: 'ws-scope',
-        status: 'running',
-        request: { command: 'cmd', ts: 1 },
-        response: { brief: '', toolCalls: [], corrections: [], stopReason: 'running' },
+        startedAt: 1_000,
+        provider: { endpoint: 'http://127.0.0.1:11434', mode: 'local', model: 'qwen3:14b' },
+        request: { userText: 'Read the selected topic.' },
+        primaryScope: { kind: 'Topic', id: 'topic-1', slug: 'selected-topic' },
       });
-      const id = created.document!.metadata.id;
-      // No expectedResourceVersion → the client reads the doc for its version.
-      const finalized = await client.commandJournalUpdate(id, {
-        status: 'failed',
-        response: { brief: 'nope', toolCalls: [], corrections: [], stopReason: 'error' },
+      const appended = await client.commandJournalAppend({
+        id: created.id,
+        expectedResourceVersion: created.resourceVersion,
+        events: [
+          { id: 'turn-1', sequence: 1, timestamp: 1_010, type: 'model_turn', role: 'assistant', iteration: 1, assistantText: 'Done.', durationMs: 10 },
+        ],
       });
-      expect(finalized.available).toBe(true);
-      expect(finalized.document?.spec.status).toBe('failed');
+      const finalized = await client.commandJournalFinalize({
+        id: created.id,
+        expectedResourceVersion: appended.resourceVersion,
+        status: 'succeeded',
+        completedAt: 1_020,
+        completion: { finalAssistantText: 'Done.', stopReason: 'stop', mutated: false },
+      });
+
+      expect(finalized.status).toBe('succeeded');
+      expect(finalized.events).toHaveLength(1);
+      expect(finalized.resourceVersion).toBe(3);
+
+      const page = await client.commandJournalRead({ limit: 1 });
+      expect(page.journals).toHaveLength(1);
+      expect(page.journals[0]).toMatchObject({ id: created.id, status: 'succeeded' });
+      expect(page.journals[0]).not.toHaveProperty('events');
+
+      const detail = await client.commandJournalRead({ id: created.id });
+      expect(detail).toMatchObject({ id: created.id, events: [{ id: 'turn-1' }] });
     } finally {
       await client.dispose();
     }

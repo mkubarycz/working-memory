@@ -10,16 +10,22 @@
     PanelWorkstream,
     PanelWorkstreamSection,
   } from '../../../src/panelData';
+  import type { DesktopEnvironment } from '../shared/contracts';
   import { activeContextMenuItems, topicSlugFromOpenUri, type ActiveContextMenuItem } from './activeContextMenu';
   import {
     resizeActiveSections,
     type ActiveSectionBoundary,
     type ActiveSectionHeights,
   } from './activeSectionLayout';
+  import { setResourceDragData } from './resourceDrag';
   import { setSubtreeExpanded, type ExpandableTreeNode } from './treeExpansion';
   import { workstreamColorClass } from './workstreamColor';
 
   interface Props {
+    environments: DesktopEnvironment[];
+    selectedEnvironment: DesktopEnvironment | null;
+    environmentLoading: boolean;
+    environmentError: string;
     data: PanelData | null;
     loading: boolean;
     error: string;
@@ -29,15 +35,22 @@
     onOpen: (uri: string) => void;
     onToggleFocus: (workstream: string, topic: string) => void;
     onAction: (workstream: string, action: PanelAction) => void;
+    onDiscoverEnvironments: () => Promise<void>;
+    onSwitchEnvironment: (mcpUrl: string) => Promise<void>;
   }
 
-  let { data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction }: Props = $props();
+  let {
+    environments, selectedEnvironment, environmentLoading, environmentError,
+    data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction,
+    onDiscoverEnvironments, onSwitchEnvironment,
+  }: Props = $props();
   const expanded = new SvelteSet<string>();
   let seeded = $state(false);
   let menu = $state<{ x: number; y: number; workstream: string; items: ActiveContextMenuItem[] } | null>(null);
   let menuElement = $state<HTMLDivElement | null>(null);
   let sectionsElement = $state<HTMLDivElement | null>(null);
   let sectionHeights = $state<ActiveSectionHeights | null>(null);
+  let environmentMenuOpen = $state(false);
   let sectionDrag: { boundary: ActiveSectionBoundary; startY: number; initial: ActiveSectionHeights } | null = null;
 
   const sections = $derived(
@@ -62,6 +75,22 @@
     if (recursive) setSubtreeExpanded(expanded, node, nextExpanded);
     else if (nextExpanded) expanded.add(node.id);
     else expanded.delete(node.id);
+  }
+
+  async function toggleEnvironmentMenu(event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    if (environmentMenuOpen) {
+      environmentMenuOpen = false;
+      return;
+    }
+    await onDiscoverEnvironments();
+    environmentMenuOpen = true;
+  }
+
+  async function chooseEnvironment(event: MouseEvent, mcpUrl: string): Promise<void> {
+    event.stopPropagation();
+    environmentMenuOpen = false;
+    if (mcpUrl !== selectedEnvironment?.mcpUrl) await onSwitchEnvironment(mcpUrl);
   }
 
   async function openMenu(event: MouseEvent, workstream: string, items: ActiveContextMenuItem[]): Promise<void> {
@@ -148,6 +177,10 @@
     document.body.classList.remove('resizing-active-sections');
   }
 
+  function startResourceDrag(event: DragEvent, openUri: string, label: string): void {
+    setResourceDragData(event.dataTransfer, openUri, label);
+  }
+
   function resizeSectionWithKeyboard(boundary: ActiveSectionBoundary, event: KeyboardEvent): void {
     if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
     const initial = measuredSectionHeights();
@@ -161,7 +194,12 @@
   }
 </script>
 
-<svelte:window onclick={() => (menu = null)} onkeydown={(event) => event.key === 'Escape' && (menu = null)} />
+<svelte:window
+  onclick={() => { menu = null; environmentMenuOpen = false; }}
+  onkeydown={(event) => {
+    if (event.key === 'Escape') { menu = null; environmentMenuOpen = false; }
+  }}
+/>
 
 {#snippet alertBubble(count?: number, severity?: 'alert' | 'informational' | null)}
   {#if count && count > 0}
@@ -194,7 +232,13 @@
       {:else}
         <span class="active-twistie-spacer"></span>
       {/if}
-      <button class="active-open" title={node.tooltip} onclick={() => onOpen(node.openUri)}>
+      <button
+        class="active-open"
+        title={node.tooltip}
+        draggable="true"
+        ondragstart={(event) => startResourceDrag(event, node.openUri, node.label)}
+        onclick={() => onOpen(node.openUri)}
+      >
         <span aria-hidden="true" class="codicon codicon-{node.icon}"></span>
         <span class="active-label">{node.label}</span>
         {#if node.kind === 'nanite'}
@@ -257,7 +301,13 @@
       {:else}
         <span class="active-twistie-spacer"></span>
       {/if}
-      <button class="active-open workstream-open" title={workstream.tooltip} onclick={() => onOpen(workstream.openUri)}>
+      <button
+        class="active-open workstream-open"
+        title={workstream.tooltip}
+        draggable="true"
+        ondragstart={(event) => startResourceDrag(event, workstream.openUri, workstream.label)}
+        onclick={() => onOpen(workstream.openUri)}
+      >
         <span aria-hidden="true" class="codicon codicon-briefcase"></span>
         <span class="active-label">{workstream.label}</span>
       </button>
@@ -269,6 +319,8 @@
           <button
             class="focused-topic"
             title={topic.tooltip}
+            draggable="true"
+            ondragstart={(event) => startResourceDrag(event, topic.openUri, topic.label)}
             onclick={() => onOpen(topic.openUri)}
             oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', activeContextMenuItems(topic.actions, { topic: topicSlugFromOpenUri(topic.openUri), focused: topic.focused }))}
           >
@@ -287,7 +339,51 @@
 <div class="active-rail-inner">
   <header class="active-rail-header">
     <div class="mark">WM</div>
-    <div class="active-heading"><strong>Active</strong><span>Working Memory</span></div>
+    <div class="environment-selector">
+      <button
+        class="environment-trigger"
+        aria-haspopup="menu"
+        aria-expanded={environmentMenuOpen}
+        title="Switch Working Memory environment"
+        onclick={(event) => void toggleEnvironmentMenu(event)}
+      >
+        <span aria-hidden="true" class="codicon codicon-server"></span>
+        <span class="active-heading"><strong>{selectedEnvironment?.displayName ?? 'No server'}</strong><span>Working Memory</span></span>
+        <span aria-hidden="true" class="codicon codicon-chevron-down" class:codicon-modifier-spin={environmentLoading}></span>
+      </button>
+      {#if environmentMenuOpen}
+        <div
+          class="environment-menu"
+          role="menu"
+          aria-label="Working Memory environments"
+          tabindex="-1"
+          onclick={(event) => event.stopPropagation()}
+          onkeydown={(event) => event.stopPropagation()}
+        >
+          {#if environmentError}
+            <p class="environment-state" role="alert">{environmentError}</p>
+          {:else if environmentLoading}
+            <p class="environment-state">Discovering servers…</p>
+          {:else if environments.length === 0}
+            <p class="environment-state">No healthy servers found.</p>
+          {:else}
+            {#each environments as environment (environment.id)}
+              <button
+                role="menuitemradio"
+                aria-checked={environment.mcpUrl === selectedEnvironment?.mcpUrl}
+                onclick={(event) => void chooseEnvironment(event, environment.mcpUrl)}
+              >
+                <span aria-hidden="true" class="codicon codicon-plug"></span>
+                <span>{environment.displayName}</span>
+                {#if environment.mcpUrl === selectedEnvironment?.mcpUrl}
+                  <span aria-hidden="true" class="codicon codicon-check"></span>
+                {/if}
+              </button>
+            {/each}
+          {/if}
+        </div>
+      {/if}
+    </div>
     <button class="active-header-button" title="Refresh Active" aria-label="Refresh Active" onclick={onRefresh}>
       <span aria-hidden="true" class="codicon codicon-refresh" class:codicon-modifier-spin={loading}></span>
     </button>

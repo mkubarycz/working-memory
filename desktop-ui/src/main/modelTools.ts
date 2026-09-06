@@ -13,6 +13,13 @@ export interface ParsedModelTurn {
   text: string;
   calls: ModelToolCall[];
   assistantMessage?: Record<string, unknown>;
+  finishReason?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  };
+  contentParts?: Array<{ type: 'text' | 'reasoning'; text: string }>;
 }
 
 export interface ModelConversation {
@@ -106,11 +113,32 @@ function parseArguments(value: unknown): { arguments: Record<string, unknown>; e
   }
 }
 
+function tokenUsage(value: unknown): ParsedModelTurn['usage'] {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  const inputTokens = record.input_tokens ?? record.prompt_tokens;
+  const outputTokens = record.output_tokens ?? record.completion_tokens;
+  const totalTokens = record.total_tokens;
+  const usage = {
+    ...(typeof inputTokens === 'number' && Number.isInteger(inputTokens) && inputTokens >= 0 ? { inputTokens } : {}),
+    ...(typeof outputTokens === 'number' && Number.isInteger(outputTokens) && outputTokens >= 0 ? { outputTokens } : {}),
+    ...(typeof totalTokens === 'number' && Number.isInteger(totalTokens) && totalTokens >= 0 ? { totalTokens } : {}),
+  };
+  return Object.keys(usage).length ? usage : undefined;
+}
+
+function boundedContentPart(type: 'text' | 'reasoning', text: unknown): { type: 'text' | 'reasoning'; text: string } | undefined {
+  return typeof text === 'string' ? { type, text: text.slice(0, 32_768) } : undefined;
+}
+
 export function parseModelTurn(mode: ModelEndpointMode, payload: unknown): ParsedModelTurn {
   if (!payload || typeof payload !== 'object') return { text: '', calls: [] };
   if (mode === 'responses') {
     const response = payload as {
       id?: unknown;
+      status?: unknown;
+      incomplete_details?: { reason?: unknown };
+      usage?: unknown;
       output_text?: unknown;
       output?: Array<{ type?: unknown; call_id?: unknown; name?: unknown; arguments?: unknown; content?: Array<{ type?: unknown; text?: unknown }> }>;
     };
@@ -132,14 +160,40 @@ export function parseModelTurn(mode: ModelEndpointMode, payload: unknown): Parse
       : typeof nestedText === 'string'
         ? nestedText
         : '';
+    const contentParts = (response.output ?? []).flatMap((item) => (item.content ?? []).flatMap((part) => {
+      if (part.type === 'output_text') return boundedContentPart('text', part.text) ?? [];
+      if (part.type === 'reasoning_text' || part.type === 'reasoning') return boundedContentPart('reasoning', part.text) ?? [];
+      return [];
+    }));
+    const incompleteReason = response.incomplete_details?.reason;
+    const usage = tokenUsage(response.usage);
     return {
       id: typeof response.id === 'string' ? response.id : undefined,
       text: text.trim(),
       calls,
+      ...(typeof incompleteReason === 'string'
+        ? { finishReason: incompleteReason }
+        : typeof response.status === 'string'
+          ? { finishReason: response.status }
+          : {}),
+      ...(usage ? { usage } : {}),
+      ...(contentParts.length ? { contentParts } : {}),
     };
   }
-  const response = payload as { choices?: Array<{ message?: Record<string, unknown> & { content?: unknown; tool_calls?: Array<{ id?: unknown; function?: { name?: unknown; arguments?: unknown } }> } }> };
-  const message = response.choices?.[0]?.message;
+  const response = payload as {
+    id?: unknown;
+    usage?: unknown;
+    choices?: Array<{
+      finish_reason?: unknown;
+      message?: Record<string, unknown> & {
+        content?: unknown;
+        reasoning_content?: unknown;
+        tool_calls?: Array<{ id?: unknown; function?: { name?: unknown; arguments?: unknown } }>;
+      };
+    }>;
+  };
+  const choice = response.choices?.[0];
+  const message = choice?.message;
   const calls = (message?.tool_calls ?? []).flatMap((call, index) => {
     if (typeof call.function?.name !== 'string') return [];
     const parsed = parseArguments(call.function.arguments);
@@ -150,10 +204,19 @@ export function parseModelTurn(mode: ModelEndpointMode, payload: unknown): Parse
       ...(parsed.error ? { argumentError: parsed.error } : {}),
     }];
   });
+  const contentParts = [
+    boundedContentPart('reasoning', message?.reasoning_content),
+    boundedContentPart('text', message?.content),
+  ].filter((part): part is { type: 'text' | 'reasoning'; text: string } => part !== undefined);
+  const usage = tokenUsage(response.usage);
   return {
+    id: typeof response.id === 'string' ? response.id : undefined,
     text: typeof message?.content === 'string' ? message.content.trim() : '',
     calls,
     ...(message ? { assistantMessage: message } : {}),
+    ...(typeof choice?.finish_reason === 'string' ? { finishReason: choice.finish_reason } : {}),
+    ...(usage ? { usage } : {}),
+    ...(contentParts.length ? { contentParts } : {}),
   };
 }
 
