@@ -9,7 +9,7 @@
 
 import { describe, test, expect } from 'vitest';
 import { buildWorkstreamTree } from '../src/panelData';
-import type { Nanite, Topic } from '../src/controlPlaneClient';
+import type { Nanite, Topic, TopicType } from '../src/controlPlaneClient';
 
 function topic(partial: Partial<Topic> & { slug: string; title: string }): Topic {
   return {
@@ -110,5 +110,41 @@ describe('buildWorkstreamTree', () => {
     const topicsGroup = tree.groups[0];
     const labels = topicsGroup.children.map((c) => c.label);
     expect(labels).not.toContain('Other');
+  });
+
+  test('retains closed members but includes only open focused topics in the pinned strip', () => {
+    const typeMap = new Map<string, TopicType>([
+      ['feature', {
+        id: 'type-feature',
+        slug: 'feature',
+        label: 'Feature',
+        icon: 'lightbulb',
+        description: '',
+        body_template: '',
+        created_at: 0,
+        updated_at: 0,
+        resourceVersion: 1,
+      }],
+    ]);
+    const activeTree = buildWorkstreamTree(
+      'ws-id',
+      'ws',
+      'active',
+      [
+        topic({ slug: 'closed-focused', title: 'Closed focused', status: 'closed', workstreams: ['ws'], focusedWorkstreams: ['ws'] }),
+        topic({ slug: 'open-focused', title: 'Open focused', workstreams: ['ws'], focusedWorkstreams: ['ws'] }),
+      ],
+      typeMap,
+      [],
+    );
+
+    const topicsGroup = activeTree.groups[0];
+    expect(topicsGroup.label).toBe('Topics (2)');
+    expect(topicsGroup.children.map((child) => child.label)).toEqual([
+      'Closed focused',
+      'Open focused',
+    ]);
+    expect(activeTree.focusedTopics.map((focused) => focused.label)).toEqual(['Open focused']);
+    expect(activeTree.focusedTopics[0].icon).toBe('lightbulb');
   });
 });

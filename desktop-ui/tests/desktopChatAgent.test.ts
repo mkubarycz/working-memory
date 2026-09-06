@@ -287,6 +287,46 @@ describe('DesktopChatAgent', () => {
     expect(result.message).toBe('Fixed.');
   });
 
+  it('links a corrected call to the preceding failed call and executes it', async () => {
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', tool_calls: [{ id: 'failed', function: { name: 'ws-topic-create', arguments: '{}' } }] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', tool_calls: [{ id: 'corrected', function: { name: 'ws-topic-create', arguments: '{"title":"Fixed"}' } }] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Done.' } }] });
+    const callTool = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: 'title is required' })
+      .mockResolvedValueOnce({ ok: true, result: { slug: 'fixed' } });
+    const journal = journalHarness();
+    await new DesktopChatAgent(options(callModel, callTool, journal)).start({
+      mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'create', headers: {},
+    });
+
+    expect(callTool).toHaveBeenCalledTimes(2);
+    const calls = journal.current()?.events.filter((event) => event.type === 'tool_call');
+    expect(calls?.[1]).toMatchObject({ callId: 'corrected', retryOfCallId: 'failed' });
+    expect(calls?.[1]).not.toHaveProperty('dedupedOfCallId');
+  });
+
+  it('chains repeated corrected failures to the immediately preceding failed call in Responses mode', async () => {
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ id: 'resp_1', output: [{ type: 'function_call', call_id: 'failed', name: 'ws-topic-create', arguments: '{}' }] })
+      .mockResolvedValueOnce({ id: 'resp_2', output: [{ type: 'function_call', call_id: 'correction-1', name: 'ws-topic-create', arguments: '{"title":"First"}' }] })
+      .mockResolvedValueOnce({ id: 'resp_3', output: [{ type: 'function_call', call_id: 'correction-2', name: 'ws-topic-create', arguments: '{"title":"Second"}' }] })
+      .mockResolvedValueOnce({ id: 'resp_4', output_text: 'Done.' });
+    const callTool = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: 'title is required' })
+      .mockResolvedValueOnce({ ok: false, error: 'title already exists' })
+      .mockResolvedValueOnce({ ok: true, result: { slug: 'second' } });
+    const journal = journalHarness();
+    await new DesktopChatAgent(options(callModel, callTool, journal)).start({
+      mode: 'responses', url: 'https://example.test', model: 'test', message: 'create', headers: {},
+    });
+
+    expect(callTool).toHaveBeenCalledTimes(3);
+    const calls = journal.current()?.events.filter((event) => event.type === 'tool_call');
+    expect(calls?.[1]).toMatchObject({ callId: 'correction-1', retryOfCallId: 'failed' });
+    expect(calls?.[2]).toMatchObject({ callId: 'correction-2', retryOfCallId: 'correction-1' });
+  });
+
   it('stops at the iteration cap', async () => {
     const callModel = vi.fn(async () => ({ choices: [{ message: { role: 'assistant', tool_calls: [
       { id: crypto.randomUUID(), function: { name: 'ws-workstream-read', arguments: '{}' } },
@@ -297,7 +337,7 @@ describe('DesktopChatAgent', () => {
     expect(result.message).toContain('Stopped after 2 model turns');
   });
 
-  it('does not re-execute an identical create call', async () => {
+  it('keeps an exact successful mutation repeat dedupe-only', async () => {
     const repeated = { id: 'a', function: { name: 'ws-topic-create', arguments: '{"title":"One"}' } };
     const callModel = vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', tool_calls: [repeated] } }] })
@@ -311,6 +351,7 @@ describe('DesktopChatAgent', () => {
     expect(result.progress.at(-1)?.summary).toBe('Skipped duplicate call');
     const calls = journal.current()?.events.filter((event) => event.type === 'tool_call');
     expect(calls?.[1]).toMatchObject({ dedupedOfCallId: 'a' });
+    expect(calls?.[1]).not.toHaveProperty('retryOfCallId');
   });
 
   it('returns a bounded result when a model HTTP call fails', async () => {

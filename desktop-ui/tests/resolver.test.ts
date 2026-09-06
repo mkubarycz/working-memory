@@ -71,13 +71,21 @@ describe('workstream resolver', () => {
       topicType: 'feature', parents: [], workstreams: [roadmap.slug!],
       focusedWorkstreams: [roadmap.slug!], created_at: 1, updated_at: 2, resourceVersion: 3,
     };
+    const closedTopic: Topic = {
+      ...topic,
+      id: 'topic-closed',
+      slug: 'completed-desktop-work',
+      title: 'Completed desktop work',
+      status: 'closed',
+      focusedWorkstreams: [roadmap.slug!],
+    };
     const alert: Alert = {
       id: 'alert-1', slug: null, title: 'Verify desktop', description: 'Links must work',
       recommended_action: 'Click a topic', status: 'alert', topics: [topic.slug!],
       dedupe_key: null, created_by: 'test', created_at: 1, updated_at: 10, resourceVersion: 1,
     };
     const client = {
-      wsRead: async () => [roadmap], topicRead: async () => [topic], alertRead: async () => [alert],
+      wsRead: async () => [roadmap], topicRead: async () => [topic, closedTopic], alertRead: async () => [alert],
       topicTypeRead: async () => [], naniteRead: async () => [], naniteTemplateRead: async () => [],
     } as never;
 
@@ -94,7 +102,10 @@ describe('workstream resolver', () => {
         slug: roadmap.slug,
         alertCount: 1,
         focused_topics: [{ label: 'Desktop parity', focused: true }],
-        children: [{ children: [{ kind: 'topic', label: 'Desktop parity', alertCount: 1 }] }],
+        children: [{ children: [
+          { kind: 'topic', label: 'Desktop parity', alertCount: 1 },
+          { kind: 'topic', label: 'Completed desktop work', status: 'closed', focused: true },
+        ] }],
       }],
     });
   });

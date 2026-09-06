@@ -316,17 +316,33 @@
     {#if hasDetails && open}
       <div class="active-card-body">
         {#each workstream.focused_topics as topic (topic.id)}
-          <button
+          {@const topicSlug = topicSlugFromOpenUri(topic.openUri)}
+          <div
             class="focused-topic"
-            title={topic.tooltip}
+            role="group"
             draggable="true"
             ondragstart={(event) => startResourceDrag(event, topic.openUri, topic.label)}
-            onclick={() => onOpen(topic.openUri)}
-            oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', activeContextMenuItems(topic.actions, { topic: topicSlugFromOpenUri(topic.openUri), focused: topic.focused }))}
+            oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', activeContextMenuItems(topic.actions, { topic: topicSlug, focused: topic.focused }))}
           >
-            <span>{topic.label}</span>
-            {@render alertBubble(topic.alertCount, topic.alertSeverity)}
-          </button>
+            <button
+              class="focused-topic-open"
+              title={topic.tooltip}
+              onclick={() => onOpen(topic.openUri)}
+            >
+              <span aria-hidden="true" class="codicon codicon-{topic.icon}"></span>
+              <span class="active-label">{topic.label}</span>
+              {@render alertBubble(topic.alertCount, topic.alertSeverity)}
+            </button>
+            <button
+              class="focused-topic-pin"
+              title="Unpin from workstream"
+              aria-label="Unpin {topic.label} from {workstream.label}"
+              onclick={(event) => {
+                event.stopPropagation();
+                onToggleFocus(workstream.slug ?? '', topicSlug);
+              }}
+            ><span aria-hidden="true" class="codicon codicon-pinned"></span></button>
+          </div>
         {/each}
         {#each workstream.children as group (group.id)}
           {@render topicGroup(group, workstream.slug ?? '')}

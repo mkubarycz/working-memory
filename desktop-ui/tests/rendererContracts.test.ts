@@ -40,7 +40,7 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('class:chat-collapsed={chatRailCollapsed}');
   });
 
-  it('moves Active row actions and pinning into an accessible context menu', () => {
+  it('keeps Active row actions in a context menu and gives focused topics a separate pin control', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
 
@@ -54,7 +54,14 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain("event.key === 'Escape'");
     expect(activeRail).not.toContain('class="active-actions"');
     expect(activeRail).not.toContain('class="active-icon-button focus-button"');
-    expect(activeRail).not.toContain('class="codicon codicon-pinned"');
+    expect(activeRail).toContain('class="codicon codicon-{topic.icon}"');
+    expect(activeRail).toContain('class="focused-topic-open"');
+    expect(activeRail).toContain('onclick={() => onOpen(topic.openUri)}');
+    expect(activeRail).toContain('class="focused-topic-pin"');
+    expect(activeRail).toContain('event.stopPropagation();');
+    expect(activeRail).toContain("onToggleFocus(workstream.slug ?? '', topicSlug);");
+    expect(activeRail).toContain('class="codicon codicon-pinned"');
+    expect(activeRail).not.toMatch(/focused-topic-pin[\s\S]*?onOpen\(/);
     expect(styles).toMatch(/\.active-context-menu[^}]*position:\s*fixed/s);
   });
 

@@ -100,6 +100,7 @@ interface Session {
   usage: NonNullable<CommandJournal['completion']>['usage'];
   cancelled: boolean;
   executed: Map<string, { callId: string; output: unknown }>;
+  lastExecutionByTool: Map<string, { callId: string; key: string; status: 'success' | 'failure' }>;
   journalCallIds: Map<ModelToolCall, string>;
   usedCallIds: Set<string>;
   navigation?: NavigationHint;
@@ -220,6 +221,7 @@ export class DesktopChatAgent {
       usage: undefined,
       cancelled: false,
       executed: new Map(),
+      lastExecutionByTool: new Map(),
       journalCallIds: new Map(),
       usedCallIds: new Set(),
     };
@@ -337,6 +339,7 @@ export class DesktopChatAgent {
         const callId = this.journalCallId(session, call);
         const key = executionKey(call);
         const duplicate = session.executed.get(key);
+        const previous = session.lastExecutionByTool.get(call.name);
         events.push({
           id: `${session.journal.id}:event:${session.journal.events.length + events.length + 1}`,
           sequence: session.journal.events.length + events.length + 1,
@@ -349,6 +352,9 @@ export class DesktopChatAgent {
             ? { argumentParseError: call.argumentError.slice(0, 32_768) }
             : { arguments: sanitizeForJournal(cleanArguments(call.arguments), secretValues) }),
           ...(duplicate ? { dedupedOfCallId: duplicate.callId } : {}),
+          ...(!duplicate && previous?.status === 'failure' && previous.key !== key
+            ? { retryOfCallId: previous.callId }
+            : {}),
         });
       }
       await this.append(session, events, sanitizeEntityRefs(entityRefsForCalls(turn.calls, 'referenced'), secretValues));
@@ -445,7 +451,9 @@ export class DesktopChatAgent {
         schema,
       };
       session.progress.push({ name: call.name, status: 'failed', summary: concise(outcome.error ?? 'Failed') });
-      session.executed.set(key, { callId: this.journalCallId(session, call), output });
+      const callId = this.journalCallId(session, call);
+      session.executed.set(key, { callId, output });
+      session.lastExecutionByTool.set(call.name, { callId, key, status: 'failure' });
       await this.persistToolResult(session, call, output, 'failure', durationMs);
       return output;
     }
@@ -454,7 +462,9 @@ export class DesktopChatAgent {
     session.navigation = navigationHint(call.name, call.arguments, outcome.result) ?? session.navigation;
     session.progress.push({ name: call.name, status: 'completed', summary: mutating ? 'Updated Working Memory' : 'Read Working Memory' });
     const output = { ok: true, result: trimResult(outcome.result) };
-    session.executed.set(key, { callId: this.journalCallId(session, call), output });
+    const callId = this.journalCallId(session, call);
+    session.executed.set(key, { callId, output });
+    session.lastExecutionByTool.set(call.name, { callId, key, status: 'success' });
     await this.persistToolResult(session, call, output, 'success', durationMs, entityRefsForTool(call, outcome.result, mutating ? 'mutated' : 'referenced'));
     return output;
   }

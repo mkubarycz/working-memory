@@ -242,7 +242,7 @@
     {@const hasChildren = node.children.length > 0}
     {@const open = isExpanded(node.id)}
     <li class="tree-node">
-      <div class="row-wrap">
+      <div class="row-wrap" role="group" oncontextmenu={(e) => openMenu(e, topicMenu(node))}>
         {#if hasChildren}
           <button
             class="twistie"
@@ -260,14 +260,10 @@
           class:pinned={node.pinned}
           class:closed={node.status === 'closed'}
           onclick={() => onOpenTopic(node.slug)}
-          oncontextmenu={(e) => openMenu(e, topicMenu(node))}
         >
           <span class="codicon codicon-{node.icon}"></span>
           <span class="tree-label">{node.label}</span>
           <span class="topic-slug mono">{node.slug}</span>
-          {#if node.pinned}
-            <span class="codicon codicon-pinned pin-badge" title="Pinned to this workstream"></span>
-          {/if}
           {#if node.status !== 'open'}
             <span class="tree-meta">{node.status}</span>
           {/if}
@@ -279,6 +275,17 @@
             >{node.alertCount}</span>
           {/if}
         </button>
+        {#if node.pinned}
+          <button
+            class="pin-badge"
+            title="Unpin from workstream"
+            aria-label="Unpin {node.label} from this workstream"
+            onclick={(event) => {
+              event.stopPropagation();
+              onTogglePin(node.slug);
+            }}
+          ><span aria-hidden="true" class="codicon codicon-pinned"></span></button>
+        {/if}
       </div>
       {#if hasChildren && open}
         <ul class="tree-children">
@@ -579,8 +586,27 @@
   }
 
   .pin-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 28px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
     color: var(--vscode-charts-yellow, #d7ba7d);
-    font-size: 0.85em;
+    cursor: pointer;
+  }
+
+  .pin-badge:hover {
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  }
+
+  .pin-badge:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
   }
 
   .tree-label {
