@@ -30,9 +30,11 @@ describe('desktop tree icon contract', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
 
-    expect(styles).toMatch(/\.active-tree-node[^}]*padding-left:\s*4px/s);
+    expect(styles).toMatch(/\.active-card-body[^}]*--active-tree-control-width:\s*22px/s);
+    expect(styles).toMatch(/\.active-tree-node[^}]*padding-left:\s*0/s);
     expect(styles).toMatch(/\.active-tree \.active-tree[^}]*border-left:\s*1px solid #454545/s);
-    expect(styles).toMatch(/\.active-tree-node::before[^}]*width:\s*8px[^}]*height:\s*1px/s);
+    expect(styles).toMatch(/\.active-tree-node::before[^}]*left:\s*3px[^}]*width:\s*8px[^}]*height:\s*1px/s);
+    expect(styles).toMatch(/\.active-tree-node > \.active-row > :is\(\.active-twistie, \.active-twistie-spacer\)[^}]*width:\s*var\(--active-tree-control-width\)/s);
     expect(styles).toMatch(/\.active-card-header, \.active-row[^}]*min-height:\s*32px/s);
     expect(styles).toMatch(/\.shell\.active-collapsed[^}]*grid-template-columns:\s*36px/s);
     expect(styles).toMatch(/\.shell\.chat-collapsed[^}]*36px/s);
