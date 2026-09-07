@@ -180,8 +180,13 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('No messages for this scope.');
     expect(app).toContain('chatRailCollapsed = false;');
     expect(app).toContain('const target = document.getElementById(chatRunDomId(run));');
-    expect(app).toContain("target?.scrollIntoView({ behavior: 'smooth', block: 'center' });");
-    expect(app).toContain('target?.focus({ preventScroll: true });');
+    expect(app).toContain("scroller.addEventListener('scrollend', finish, { once: true });");
+    expect(app).toContain('idleTimer = window.setTimeout(finish, 120);');
+    expect(app).toContain('const needsScroll = scrollerBounds');
+    expect(app).toContain('scroller && needsScroll ? waitForScrollEnd(scroller) : Promise.resolve()');
+    expect(app).toContain("target.scrollIntoView({ behavior: 'smooth', block: 'center' });");
+    expect(app).toContain('await scrollFinished;');
+    expect(app).toContain('target.focus({ preventScroll: true });');
     expect(app).toContain("target.classList.remove('preview-attention');");
     expect(app).toContain('void target.offsetWidth;');
     expect(app).toContain("target.classList.add('preview-attention');");
@@ -189,10 +194,10 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain("target?.classList.remove('preview-attention');");
     expect(app).toContain('id={chatRunDomId(run)}');
     expect(app).toContain('tabindex="-1"');
-    expect(styles).toMatch(/\.chat-run\.preview-attention[^}]*animation:\s*chat-run-attention \.55s ease-in-out 2/s);
+    expect(styles).toMatch(/\.chat-run\.preview-attention::after[^}]*z-index:\s*2[^}]*border:\s*2px solid var\(--desktop-accent-strong\)[^}]*animation:\s*chat-run-attention \.55s ease-in-out 2/s);
     expect(styles).toContain('@keyframes chat-run-attention');
-    expect(styles).toMatch(/@keyframes chat-run-attention[^]*50%[^}]*box-shadow:[^}]*var\(--desktop-accent-strong\)/s);
-    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[^{]*{[^}]*\.chat-run\.preview-attention[^}]*animation:\s*none/s);
+    expect(styles).toMatch(/@keyframes chat-run-attention[^]*50%[^}]*opacity:\s*1/s);
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[^{]*{[^}]*\.chat-run\.preview-attention::after[^}]*animation:\s*none/s);
   });
 
   it('persists an environment-scoped unsent composer draft and uses instructional placeholder text', () => {

@@ -623,13 +623,48 @@
     previewAttentionTimer = window.setTimeout(finish, 1400);
   }
 
+  function waitForScrollEnd(scroller: Element): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let fallbackTimer = 0;
+      let idleTimer = 0;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        scroller.removeEventListener('scroll', handleScroll);
+        scroller.removeEventListener('scrollend', finish);
+        window.clearTimeout(fallbackTimer);
+        window.clearTimeout(idleTimer);
+        resolve();
+      };
+      const handleScroll = () => {
+        window.clearTimeout(idleTimer);
+        idleTimer = window.setTimeout(finish, 120);
+      };
+
+      scroller.addEventListener('scroll', handleScroll, { passive: true });
+      scroller.addEventListener('scrollend', finish, { once: true });
+      fallbackTimer = window.setTimeout(finish, 2000);
+    });
+  }
+
   async function focusChatRun(run: ChatRun): Promise<void> {
     chatRailCollapsed = false;
     await tick();
     const target = document.getElementById(chatRunDomId(run));
-    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    target?.focus({ preventScroll: true });
-    if (target) restartPreviewAttention(target);
+    if (!target) return;
+    const scroller = target.closest('.conversation');
+    const targetBounds = target.getBoundingClientRect();
+    const scrollerBounds = scroller?.getBoundingClientRect();
+    const needsScroll = scrollerBounds
+      ? Math.abs(targetBounds.top + targetBounds.height / 2 - (scrollerBounds.top + scrollerBounds.height / 2)) > 1
+      : false;
+    const scrollFinished = scroller && needsScroll ? waitForScrollEnd(scroller) : Promise.resolve();
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await scrollFinished;
+    target.focus({ preventScroll: true });
+    restartPreviewAttention(target);
   }
 </script>
 
