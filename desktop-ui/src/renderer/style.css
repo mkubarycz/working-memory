@@ -107,10 +107,10 @@ button { cursor: pointer; }
 .chat-run.preview-attention { animation: chat-run-attention .55s ease-in-out 2; }
 @keyframes chat-run-attention {
   0%, 100% { box-shadow: inset 0 0 0 2px transparent; }
-  50% { box-shadow: inset 0 0 0 2px var(--desktop-accent-strong), 0 0 0 2px rgba(189, 31, 102, .2); }
+  50% { box-shadow: inset 0 0 0 2px #505054, 0 0 0 1px rgba(36, 36, 38, .16); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat-run.preview-attention { animation: none; box-shadow: inset 0 0 0 2px var(--desktop-accent-strong); }
+  .chat-run.preview-attention { animation: none; box-shadow: inset 0 0 0 2px #505054; }
 }
 .user-entry { padding: 11px 18px 13px; background: var(--desktop-accent); color: #24151c; }
 .user-scope { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; margin: 0 0 7px; padding: 0; border: 0; background: transparent; color: #4f1730; font-size: 10px; font-weight: 800; text-align: left; text-decoration: underline; text-underline-offset: 2px; }
@@ -291,8 +291,8 @@ button { cursor: pointer; }
 .graph-node-control[aria-expanded="true"] .graph-node-dot { background: var(--graph-color); box-shadow: inset 0 0 0 2px var(--ws-card-bg); }
 .active-tree { position: relative; margin: 0; padding: 0; list-style: none; }
 .branch-tree { margin-left: 17px; }
-.branch-tree::before { content: ""; position: absolute; z-index: 0; top: -17px; left: -7px; width: 17px; height: 32px; border-bottom: 2px solid var(--graph-color); border-left: 2px solid var(--graph-color); border-bottom-left-radius: 11px; }
-.active-group:not(:last-child) > .branch-tree::after, .active-tree-node:not(:last-child) > .branch-tree::after { content: ""; position: absolute; z-index: 0; right: auto; bottom: -15px; left: -7px; width: 17px; height: 31px; border-right: 2px solid var(--graph-color); border-bottom: 2px solid var(--graph-color); border-bottom-right-radius: 11px; }
+.branch-tree::before { content: ""; position: absolute; z-index: 0; top: -17px; left: -7px; width: 17px; height: 32px; border-bottom: 2px solid var(--graph-color); border-left: 2px solid var(--graph-color); border-bottom-left-radius: 17px 24px; }
+.active-group:not(:last-child) > .branch-tree::after, .active-tree-node:not(:last-child) > .branch-tree::after { content: ""; position: absolute; z-index: 0; right: auto; bottom: -15px; left: -7px; width: 17px; height: 31px; border-right: 2px solid var(--graph-color); border-bottom: 2px solid var(--graph-color); border-bottom-right-radius: 17px 24px; }
 .branch-tree > :first-child::before, .branch-tree > :last-child::after { display: none; }
 .active-tree-node { position: relative; min-width: 0; padding-left: 0; }
 .active-tree-node > .active-row > .graph-node-control { flex-basis: var(--active-tree-control-width); width: var(--active-tree-control-width); }

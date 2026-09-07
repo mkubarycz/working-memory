@@ -37,8 +37,8 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.topic-tree[^}]*--graph-color:\s*var\(--ws-card-border\)/s);
     expect(styles).toMatch(/\.graph-node-dot[^}]*border:\s*2px solid var\(--graph-color\)[^}]*border-radius:\s*50%/s);
     expect(styles).toMatch(/\.branch-tree[^}]*margin-left:\s*17px/s);
-    expect(styles).toMatch(/\.branch-tree::before[^}]*border-bottom:\s*2px solid var\(--graph-color\)[^}]*border-left:\s*2px solid var\(--graph-color\)[^}]*border-bottom-left-radius:\s*11px/s);
-    expect(styles).toMatch(/\.active-tree-node:not\(:last-child\) > \.branch-tree::after[^}]*border-right:\s*2px solid var\(--graph-color\)[^}]*border-bottom-right-radius:\s*11px/s);
+    expect(styles).toMatch(/\.branch-tree::before[^}]*border-bottom:\s*2px solid var\(--graph-color\)[^}]*border-left:\s*2px solid var\(--graph-color\)[^}]*border-bottom-left-radius:\s*17px 24px/s);
+    expect(styles).toMatch(/\.active-tree-node:not\(:last-child\) > \.branch-tree::after[^}]*border-right:\s*2px solid var\(--graph-color\)[^}]*border-bottom-right-radius:\s*17px 24px/s);
     expect(styles).toMatch(/\.active-tree-node\.expanded::after[^}]*display:\s*none/s);
     expect(styles).not.toContain('.topic-tree::before');
     expect(styles).toMatch(/\.active-tree-node > \.active-row > \.graph-node-control[^}]*width:\s*var\(--active-tree-control-width\)/s);
@@ -79,7 +79,7 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.pinned-topics[^}]*border-bottom:\s*1px/s);
     expect(styles).toMatch(/\.focused-topic-pin[^}]*width:\s*30px[^}]*height:\s*30px/s);
     expect(styles).not.toContain('.focused-topic::before');
-    expect(styles).toMatch(/\.branch-tree::before[^}]*border-bottom-left-radius:\s*11px/s);
+    expect(styles).toMatch(/\.branch-tree::before[^}]*border-bottom-left-radius:\s*17px 24px/s);
   });
 
   it('renders queue and backlog as summaries while progress alone owns disclosure and graph details', () => {
@@ -191,6 +191,7 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('tabindex="-1"');
     expect(styles).toMatch(/\.chat-run\.preview-attention[^}]*animation:\s*chat-run-attention \.55s ease-in-out 2/s);
     expect(styles).toContain('@keyframes chat-run-attention');
+    expect(styles).toMatch(/@keyframes chat-run-attention[^]*50%[^}]*box-shadow:[^}]*#505054/s);
     expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[^{]*{[^}]*\.chat-run\.preview-attention[^}]*animation:\s*none/s);
   });
 
