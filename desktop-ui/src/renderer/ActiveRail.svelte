@@ -18,8 +18,10 @@
     type ActiveSectionHeights,
   } from './activeSectionLayout';
   import { setResourceDragData } from './resourceDrag';
+  import { attachTreeConnector } from './treeConnector';
   import { setSubtreeExpanded, type ExpandableTreeNode } from './treeExpansion';
   import { workstreamColorClass } from './workstreamColor';
+  import { workstreamDropIndex } from './workstreamReorder';
 
   interface Props {
     environments: DesktopEnvironment[];
@@ -35,13 +37,14 @@
     onOpen: (uri: string) => void;
     onToggleFocus: (workstream: string, topic: string) => void;
     onAction: (workstream: string, action: PanelAction) => void;
+    onReorder: (slug: string, section: PanelWorkstreamSection['section'], index: number) => Promise<void>;
     onDiscoverEnvironments: () => Promise<void>;
     onSwitchEnvironment: (mcpUrl: string) => Promise<void>;
   }
 
   let {
     environments, selectedEnvironment, environmentLoading, environmentError,
-    data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction,
+    data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder,
     onDiscoverEnvironments, onSwitchEnvironment,
   }: Props = $props();
   const expanded = new SvelteSet<string>();
@@ -52,6 +55,8 @@
   let sectionHeights = $state<ActiveSectionHeights | null>(null);
   let environmentMenuOpen = $state(false);
   let sectionDrag: { boundary: ActiveSectionBoundary; startY: number; initial: ActiveSectionHeights } | null = null;
+  let workstreamDrag = $state<{ slug: string; section: PanelWorkstreamSection['section'] } | null>(null);
+  let dropTarget = $state<{ section: PanelWorkstreamSection['section']; index: number } | null>(null);
 
   const sections = $derived(
     (data?.items.filter((item): item is PanelWorkstreamSection => item.kind === 'workstream-section')) ?? [],
@@ -180,6 +185,49 @@
     setResourceDragData(event.dataTransfer, openUri, label);
   }
 
+  function startWorkstreamDrag(
+    event: DragEvent,
+    workstream: PanelWorkstream,
+    section: PanelWorkstreamSection['section'],
+  ): void {
+    const slug = workstream.slug ?? '';
+    if (!slug) return;
+    event.stopPropagation();
+    startResourceDrag(event, workstream.openUri, workstream.label);
+    workstreamDrag = { slug, section };
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  }
+
+  function updateDropTarget(
+    event: DragEvent,
+    section: PanelWorkstreamSection['section'],
+  ): void {
+    if (!workstreamDrag) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    const boundaries = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('.active-card')]
+      .map((card) => {
+        const bounds = card.querySelector<HTMLElement>('.active-card-header')?.getBoundingClientRect()
+          ?? card.getBoundingClientRect();
+        return { top: bounds.top, height: bounds.height };
+      });
+    dropTarget = { section, index: workstreamDropIndex(boundaries, event.clientY) };
+  }
+
+  function finishWorkstreamDrag(): void {
+    workstreamDrag = null;
+    dropTarget = null;
+  }
+
+  async function dropWorkstream(event: DragEvent, section: PanelWorkstreamSection['section']): Promise<void> {
+    if (!workstreamDrag || dropTarget?.section !== section) return;
+    event.preventDefault();
+    const { slug } = workstreamDrag;
+    const { index } = dropTarget;
+    finishWorkstreamDrag();
+    await onReorder(slug, section, index);
+  }
+
   function resizeSectionWithKeyboard(boundary: ActiveSectionBoundary, event: KeyboardEvent): void {
     if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
     const initial = measuredSectionHeights();
@@ -291,8 +339,16 @@
   {@const hasDetails = workstream.focused_topics.length > 0 || workstream.children.length > 0}
   {@const expandable = sectionStatus === 'progress' && hasDetails}
   {@const menuItems = activeContextMenuItems(workstream.actions)}
-  <article class="active-card {workstreamColorClass(workstream.id)}" class:compact class:summary={sectionStatus !== 'progress'} data-section-status={sectionStatus} data-workstream={workstream.slug ?? workstream.id}>
-    <div class="active-card-header" role="group" oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', menuItems)}>
+  <article class="active-card {workstreamColorClass(workstream.id)}" class:compact class:summary={sectionStatus !== 'progress'} class:dragging={workstreamDrag?.slug === workstream.slug} data-section-status={sectionStatus} data-workstream={workstream.slug ?? workstream.id}>
+    <div
+      class="active-card-header"
+      role="group"
+      draggable="true"
+      title="Drag to reorder {workstream.label}"
+      ondragstart={(event) => startWorkstreamDrag(event, workstream, sectionStatus)}
+      ondragend={finishWorkstreamDrag}
+      oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', menuItems)}
+    >
       {#if expandable}
         <button
           class="active-twistie"
@@ -307,8 +363,6 @@
       <button
         class="active-open workstream-open"
         title={workstream.tooltip}
-        draggable="true"
-        ondragstart={(event) => startResourceDrag(event, workstream.openUri, workstream.label)}
         onclick={() => onOpen(workstream.openUri)}
       >
         <span aria-hidden="true" class="codicon codicon-briefcase"></span>
@@ -352,7 +406,7 @@
           </section>
         {/if}
         {#if workstream.children.length > 0}
-          <div class="topic-tree">
+          <div class="topic-tree" use:attachTreeConnector>
             {#each workstream.children as group (group.id)}
               {@render topicGroup(group, workstream.slug ?? '')}
             {/each}
@@ -433,7 +487,7 @@
     {#if error}<p class="active-error" role="alert">{error}</p>{/if}
     {#if !data && loading}<p class="active-empty">Loading active work…</p>{/if}
     {#each sections as section (section.id)}
-      <section class="active-section section-{section.section}" aria-label={section.label}>
+      <section class="active-section section-{section.section}" class:drop-target={dropTarget?.section === section.section} aria-label={section.label}>
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <header
           class="active-section-header"
@@ -451,13 +505,29 @@
         >
           <span>{section.label}</span><span>{section.workstreams.length}</span>
         </header>
-        <div class="active-section-content">
+        <div
+          class="active-section-content"
+          role="group"
+          aria-label={`${section.label} workstreams`}
+          ondragover={(event) => updateDropTarget(event, section.section)}
+          ondrop={(event) => void dropWorkstream(event, section.section)}
+        >
           {#if section.workstreams.length === 0}
-            <p class="active-empty">{section.emptyMessage}</p>
+            {#if dropTarget?.section === section.section}
+              <div class="active-drop-indicator" aria-hidden="true"></div>
+            {:else}
+              <p class="active-empty">{section.emptyMessage}</p>
+            {/if}
           {:else}
-            {#each section.workstreams as workstream (workstream.id)}
+            {#each section.workstreams as workstream, index (workstream.id)}
+              {#if dropTarget?.section === section.section && dropTarget.index === index}
+                <div class="active-drop-indicator" aria-hidden="true"></div>
+              {/if}
               {@render workstreamCard(workstream, section.section, section.display === 'shelf')}
             {/each}
+            {#if dropTarget?.section === section.section && dropTarget.index === section.workstreams.length}
+              <div class="active-drop-indicator" aria-hidden="true"></div>
+            {/if}
           {/if}
         </div>
       </section>

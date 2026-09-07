@@ -27,7 +27,7 @@ export function registerWsWorkstreamUpdate(server: McpServer, store: Store): voi
       title: 'Workstream: Update',
       description:
         'Update a Workstream identified by `slug`. Pass only the fields you are changing ' +
-        '(`title`, `status`, `closure`). Reads the current document for its id + resourceVersion, ' +
+        '(`title`, `status`, `closure`, `position`). Reads the current document for its id + resourceVersion, ' +
         'then does a compare-and-swap write of the merged, re-validated spec. Unknown slug and ' +
         'version conflicts are surfaced clearly. Returns the updated workstream.',
       inputSchema: {
@@ -38,9 +38,10 @@ export function registerWsWorkstreamUpdate(server: McpServer, store: Store): voi
           .optional()
           .describe("New lifecycle status: 'queue' | 'progress' | 'backlog' | 'closed'."),
         closure: z.string().optional().describe('New closure note.'),
+        position: z.number().finite().optional().describe('Sort position within the lifecycle section.'),
       },
     },
-    async ({ slug, title, status, closure }) => {
+    async ({ slug, title, status, closure, position }) => {
       const existing = store.getDocument({ slug, kind: WORKSTREAM_KIND });
       if (!existing) {
         return asError(`Unknown workstream slug: "${slug}". No live workstream with that slug.`);
@@ -54,6 +55,9 @@ export function registerWsWorkstreamUpdate(server: McpServer, store: Store): voi
       }
       if (closure !== undefined) {
         patch.closure = closure;
+      }
+      if (position !== undefined) {
+        patch.position = position;
       }
       if (Object.keys(patch).length === 0) {
         // Nothing to change: return the current mapped workstream rather than a

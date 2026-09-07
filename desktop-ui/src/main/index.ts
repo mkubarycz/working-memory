@@ -35,6 +35,7 @@ import {
 import {
   chooseWorkstream,
   loadActivePanelData,
+  persistWorkstreamReorder,
   loadTopicViewModel,
   loadWorkstreamViewModel,
   localWorkstreamQuery,
@@ -254,6 +255,7 @@ function registerIpc(): void {
     return environmentState(environmentManager.availableEnvironments);
   });
   ipcMain.handle('active:get', () => loadActivePanelData(controlPlane()));
+  ipcMain.handle('active:reorder', (_event, updates) => persistWorkstreamReorder(controlPlane(), updates));
   ipcMain.handle('config:get', async () => publicConfig(await readStoredConfig(configFile)));
   ipcMain.handle('config:save', async (_event, input: SaveConfigInput) => publicConfig(await saveConfig(input)));
   ipcMain.handle('config:test', async (_event, input: SaveConfigInput) => {

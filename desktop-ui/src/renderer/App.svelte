@@ -29,6 +29,8 @@
   } from './documentTabs';
   import { chatRunDomId, recentRunsForContext } from './scopedChat';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
+  import { planWorkstreamReorder } from './workstreamReorder';
+  import type { WorkstreamSection } from '../../../src/panelData';
   import type { RailSide, RailWidths } from './railLayout';
   import {
     emptyEnvironmentBoundRendererState,
@@ -512,6 +514,33 @@
     void mutateFromRail(workstream, () => invokeActiveAction(window.workingMemory.invokeAction, workstream, action));
   }
 
+  async function reorderActiveWorkstream(
+    slug: string,
+    targetSection: WorkstreamSection,
+    targetIndex: number,
+  ): Promise<void> {
+    if (!activePanel) return;
+    const order = { queue: [] as string[], progress: [] as string[], backlog: [] as string[] };
+    for (const item of activePanel.items) {
+      if (item.kind !== 'workstream-section') continue;
+      order[item.section] = item.workstreams
+        .map((workstream) => workstream.slug ?? '')
+        .filter(Boolean);
+    }
+    const updates = planWorkstreamReorder(order, slug, targetSection, targetIndex);
+    if (updates.length === 0) return;
+    activeLoading = true;
+    activeError = '';
+    try {
+      await window.workingMemory.reorderWorkstreams(updates);
+    } catch (error) {
+      activeError = error instanceof Error ? error.message : String(error);
+    } finally {
+      activeLoading = false;
+      await refreshActive();
+    }
+  }
+
   function toggleActiveFocus(workstream: string, topic: string): void {
     if (!workstream || !topic) return;
     void mutateFromRail(workstream, () => window.workingMemory.togglePin(workstream, topic));
@@ -705,6 +734,7 @@
           onOpen={openRoute}
           onToggleFocus={toggleActiveFocus}
           onAction={runActiveAction}
+          onReorder={reorderActiveWorkstream}
         />
       {/key}
     {/if}
@@ -814,10 +844,9 @@
     </div>
 
     {#if page === 'workspace'}
-      <section class="scope-preview" aria-label="Related messages for selected document">
+      <section class="scope-preview" aria-label="Recent messages">
         <div class="scope-preview-heading">
-          <span>Related messages</span>
-          <strong title={currentChatContext?.title}>Selected file: {currentChatContext?.title ?? 'No document selected'}</strong>
+          <span>Recent messages</span>
         </div>
         {#if scopedRecentRuns.length === 0}
           <p>No messages for this scope.</p>

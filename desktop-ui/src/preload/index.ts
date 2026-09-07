@@ -10,6 +10,7 @@ const api: DesktopApi = {
   discoverEnvironments: () => invoke('environment:discover'),
   switchEnvironment: (mcpUrl) => invoke('environment:switch', mcpUrl),
   getActivePanel: () => invoke('active:get'),
+  reorderWorkstreams: (updates) => invoke('active:reorder', updates),
   getConfig: () => invoke('config:get'),
   saveConfig: (input: SaveConfigInput) => invoke('config:save', input),
   testConnection: (input: SaveConfigInput) => invoke('config:test', input),

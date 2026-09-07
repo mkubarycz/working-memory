@@ -2,6 +2,7 @@ import type { ControlPlaneClient, DocumentEnvelope, Topic, Workstream } from '..
 import { buildWorkstreamPanels, type PanelData, type WorkstreamSection } from '../../../src/panelData';
 import { alertBubbleForTopic, buildAlertVMs } from '../../../src/webview/alertVms';
 import type { GenericDocVM, RelationVM, TopicVM } from '../../../webview-ui/src/lib/types';
+import type { DesktopWorkstreamReorderUpdate } from '../shared/contracts';
 export { loadWorkstreamViewModel } from '../../../src/webview/workstreamViewModel';
 
 export async function loadActivePanelData(client: ControlPlaneClient): Promise<PanelData> {
@@ -29,6 +30,23 @@ export async function loadActivePanelData(client: ControlPlaneClient): Promise<P
       workstreams: [],
       error: error instanceof Error ? error.message : String(error),
     }).active;
+  }
+}
+
+export async function persistWorkstreamReorder(
+  client: ControlPlaneClient,
+  updates: DesktopWorkstreamReorderUpdate[],
+): Promise<void> {
+  for (const update of updates) {
+    if (!update.slug.trim() || !Number.isFinite(update.position) ||
+      !['queue', 'progress', 'backlog'].includes(update.section)) {
+      throw new Error('Invalid workstream reorder request.');
+    }
+    await client.wsUpdate({
+      slug: update.slug,
+      status: update.section,
+      position: update.position,
+    });
   }
 }
 

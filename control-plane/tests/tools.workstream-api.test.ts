@@ -38,6 +38,7 @@ interface IWorkstream {
   title: string;
   status: string;
   closure: string | null;
+  position: number;
   opened_at: number;
   updated_at: number;
   closed_at: number | null;
@@ -91,6 +92,7 @@ interface IWorkstream {
       expect(created.slug).toBe('cp');
       expect(created.title).toBe('Control Plane');
       expect(created.status).toBe('progress');
+      expect(created.position).toBe(0);
       expect(created.closed_at).toBeNull();
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
 
@@ -113,11 +115,12 @@ interface IWorkstream {
       const updated = jsonOf<IWorkstream>(
         await client.callTool({
           name: 'ws-workstream-update',
-          arguments: { slug: 'cp', title: 'Control Plane v2', status: 'closed' },
+          arguments: { slug: 'cp', title: 'Control Plane v2', status: 'closed', position: 12.5 },
         }),
       );
       expect(updated.title).toBe('Control Plane v2');
       expect(updated.status).toBe('closed');
+      expect(updated.position).toBe(12.5);
       expect(updated.closed_at).not.toBeNull();
 
       const afterUpdate = jsonOf<{ count: number; workstreams: IWorkstream[] }>(
@@ -125,6 +128,7 @@ interface IWorkstream {
       );
       expect(afterUpdate.workstreams[0]?.title).toBe('Control Plane v2');
       expect(afterUpdate.workstreams[0]?.status).toBe('closed');
+      expect(afterUpdate.workstreams[0]?.position).toBe(12.5);
 
       // delete — drops out of ws-workstream-read (both single + list).
       const del = jsonOf<{ ok: boolean; slug: string }>(

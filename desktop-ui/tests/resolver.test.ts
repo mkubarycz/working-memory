@@ -5,6 +5,7 @@ import {
   loadActivePanelData,
   loadWorkstreamViewModel,
   localWorkstreamQuery,
+  persistWorkstreamReorder,
   resolveDesktopAction,
   resolveDesktopResourceUri,
 } from '../src/main/resolver';
@@ -108,6 +109,38 @@ describe('workstream resolver', () => {
         ] }],
       }],
     });
+  });
+
+  it('orders Active workstreams by their persisted section position', async () => {
+    const client = {
+      wsRead: async () => [
+        { ...roadmap, slug: 'later', title: 'Later', position: 20 },
+        { ...roadmap, slug: 'first', title: 'First', position: 5 },
+      ],
+      topicRead: async () => [], alertRead: async () => [], topicTypeRead: async () => [],
+      naniteRead: async () => [], naniteTemplateRead: async () => [],
+    } as never;
+
+    const active = await loadActivePanelData(client);
+    const queue = active.items[0];
+    expect(queue.kind === 'workstream-section' && queue.workstreams.map((item) => item.slug))
+      .toEqual(['first', 'later']);
+  });
+
+  it('persists normalized section and position updates in order', async () => {
+    const writes: unknown[] = [];
+    const client = { wsUpdate: async (input: unknown) => { writes.push(input); } } as never;
+    await persistWorkstreamReorder(client, [
+      { slug: 'one', section: 'queue', position: 0 },
+      { slug: 'two', section: 'queue', position: 1 },
+    ]);
+    expect(writes).toEqual([
+      { slug: 'one', status: 'queue', position: 0 },
+      { slug: 'two', status: 'queue', position: 1 },
+    ]);
+    await expect(persistWorkstreamReorder(client, [
+      { slug: '', section: 'queue', position: 0 },
+    ])).rejects.toThrow('Invalid workstream reorder request');
   });
 
   it('decodes Active rail document routes and rejects non-document routes', () => {

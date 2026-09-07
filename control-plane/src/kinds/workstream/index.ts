@@ -11,7 +11,8 @@
  *   - `slug`       → `metadata.slug`
  *   - `opened_at`  → `metadata.createdAt`
  *   - `closed_at` / `updated_at` → `metadata` timestamps
- * So `spec` below is only the authored/domain fields (title, status, closure).
+ * So `spec` below is only the authored/domain fields (title, status, closure,
+ * position).
  * Workstreams have NO body — none is added here.
  *
  * Drop-in discovered by `loader.ts`; no registration list to edit.
@@ -57,6 +58,7 @@ const workstream: KindModule = {
         // The closure note, set when the workstream is closed (mirrors the
         // `closure` column). Optional — absent while the workstream is active.
         closure: z.string().optional(),
+        position: z.number().finite().default(0),
       })
       .strict(),
     // No envelope `status` schema → inherit Base (lifecycle-only, empty {}).

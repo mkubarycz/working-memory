@@ -31,15 +31,18 @@ describe('desktop tree icon contract', () => {
   it('uses compact single-color graph nesting and exposes accessible rail collapse controls', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
 
     expect(styles).toMatch(/\.active-card-body[^}]*--active-tree-control-width:\s*22px/s);
     expect(styles).toMatch(/\.active-tree-node[^}]*padding-left:\s*0/s);
     expect(styles).toMatch(/\.topic-tree[^}]*--graph-color:\s*var\(--ws-card-border\)/s);
     expect(styles).toMatch(/\.graph-node-dot[^}]*border:\s*2px solid var\(--graph-color\)[^}]*border-radius:\s*50%/s);
     expect(styles).toMatch(/\.branch-tree[^}]*margin-left:\s*17px/s);
-    expect(styles).toMatch(/\.branch-tree::before[^}]*border-bottom:\s*2px solid var\(--graph-color\)[^}]*border-left:\s*2px solid var\(--graph-color\)[^}]*border-bottom-left-radius:\s*17px 24px/s);
-    expect(styles).toMatch(/\.active-tree-node:not\(:last-child\) > \.branch-tree::after[^}]*border-right:\s*2px solid var\(--graph-color\)[^}]*border-bottom-right-radius:\s*17px 24px/s);
-    expect(styles).toMatch(/\.active-tree-node\.expanded::after[^}]*display:\s*none/s);
+    expect(styles).toMatch(/\.tree-connector path[^}]*stroke:\s*var\(--graph-color\)[^}]*stroke-width:\s*2px[^}]*stroke-linecap:\s*round/s);
+    expect(styles).not.toContain('.branch-tree::before');
+    expect(styles).not.toContain('.branch-tree::after');
+    expect(styles).not.toMatch(/\.active-tree-node::(?:before|after)/);
+    expect(activeRail).toContain('class="topic-tree" use:attachTreeConnector');
     expect(styles).not.toContain('.topic-tree::before');
     expect(styles).toMatch(/\.active-tree-node > \.active-row > \.graph-node-control[^}]*width:\s*var\(--active-tree-control-width\)/s);
     expect(styles).toMatch(/\.active-card-header, \.active-row[^}]*min-height:\s*32px/s);
@@ -79,7 +82,7 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.pinned-topics[^}]*border-bottom:\s*1px/s);
     expect(styles).toMatch(/\.focused-topic-pin[^}]*width:\s*30px[^}]*height:\s*30px/s);
     expect(styles).not.toContain('.focused-topic::before');
-    expect(styles).toMatch(/\.branch-tree::before[^}]*border-bottom-left-radius:\s*17px 24px/s);
+    expect(styles).toMatch(/\.tree-connector[^}]*pointer-events:\s*none/s);
   });
 
   it('renders queue and backlog as summaries while progress alone owns disclosure and graph details', () => {
@@ -99,6 +102,32 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).not.toMatch(/codicon-(?:add|remove)/);
     expect(styles).toMatch(/\.active-card\.summary[^}]*box-shadow:\s*none/s);
     expect(styles).toContain('--graph-color: var(--ws-card-border)');
+  });
+
+  it('renders workstream reorder drop targets and insertion feedback', () => {
+    const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+
+    expect(activeRail).toContain('startWorkstreamDrag');
+    expect(activeRail).toContain('ondragover=');
+    expect(activeRail).toContain('ondrop=');
+    expect(activeRail).toContain('class:drop-target=');
+    expect(activeRail).toContain('class="active-drop-indicator"');
+    expect(activeRail).toContain('await onReorder(slug, section, index)');
+    expect(activeRail).toContain(
+      'class="active-card-header"\n      role="group"\n      draggable="true"',
+    );
+    expect(activeRail).not.toContain('workstream-drag-handle');
+    expect(activeRail).not.toContain(
+      'class="active-open workstream-open"\n        title={workstream.tooltip}\n        draggable="true"',
+    );
+    expect(styles).toMatch(/\.active-card-header[^}]*cursor:\s*grab/);
+    expect(app).toContain('planWorkstreamReorder(order, slug, targetSection, targetIndex)');
+    expect(app).toContain('window.workingMemory.reorderWorkstreams(updates)');
+    expect(styles).toMatch(/\.active-section\.drop-target[^}]*var\(--desktop-accent\)/s);
+    expect(styles).toMatch(/\.active-drop-indicator[^}]*height:\s*0/s);
+    expect(styles).toMatch(/\.active-drop-indicator::after[^}]*height:\s*3px/s);
   });
 
   it('subdues closed topics without rendering topic status text or muting alerts', () => {
@@ -171,8 +200,10 @@ describe('desktop tree icon contract', () => {
     const chatRailIndex = app.indexOf('<aside class="chat-rail">');
 
     expect(app).toContain('recentRunsForContext(chatRuns, currentChatContext)');
-    expect(app).toContain('aria-label="Related messages for selected document"');
-    expect(app).toContain('<span>Related messages</span>');
+    expect(app).toContain('aria-label="Recent messages"');
+    expect(app).toContain('<span>Recent messages</span>');
+    expect(app).not.toContain('Selected file:');
+    expect(app).not.toContain('Current scope');
     expect(previewIndex).toBeGreaterThan(app.indexOf('<main class="main">'));
     expect(previewIndex).toBeLessThan(composerIndex);
     expect(composerIndex).toBeLessThan(chatRailIndex);

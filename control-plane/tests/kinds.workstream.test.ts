@@ -57,12 +57,12 @@ describe('Workstream kind registry', () => {
 
   it('parses a valid spec and applies the status default (progress)', () => {
     const parsed = validateSpec('Workstream', { title: 'Ship control plane' });
-    expect(parsed).toEqual({ title: 'Ship control plane', status: 'progress' });
+    expect(parsed).toEqual({ title: 'Ship control plane', status: 'progress', position: 0 });
   });
 
   it('accepts every lifecycle status value from migration 014', () => {
     for (const status of ['queue', 'progress', 'backlog', 'closed'] as const) {
-      expect(validateSpec('Workstream', { title: 'T', status })).toEqual({ title: 'T', status });
+      expect(validateSpec('Workstream', { title: 'T', status })).toEqual({ title: 'T', status, position: 0 });
     }
   });
 
@@ -71,6 +71,7 @@ describe('Workstream kind registry', () => {
       title: 'T',
       status: 'closed',
       closure: 'done',
+      position: 0,
     });
   });
 
@@ -133,7 +134,7 @@ describe('Workstream kind loader', () => {
       expect(names).toContain('Workstream');
       expect(names).toContain('Topic');
       const ws = result.kinds.find((k) => k.name === 'Workstream');
-      expect(ws?.specFields).toEqual(expect.arrayContaining(['title', 'status', 'closure']));
+      expect(ws?.specFields).toEqual(expect.arrayContaining(['title', 'status', 'closure', 'position']));
     } finally {
       await client.close();
       await server.close();
@@ -155,7 +156,7 @@ describe('Workstream kind loader', () => {
         }),
       );
       expect(created.kind).toBe('Workstream');
-      expect(created.spec).toEqual({ title: 'Control Plane', status: 'progress' });
+      expect(created.spec).toEqual({ title: 'Control Plane', status: 'progress', position: 0 });
       expect(created.status).toEqual({});
 
       const list = jsonOf<{ count: number; documents: Envelope[] }>(

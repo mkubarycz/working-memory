@@ -110,11 +110,11 @@ describe('ControlPlaneClient ws-* methods (mocked callTool)', () => {
     callToolMock.mockResolvedValueOnce(okText(updated));
     const client = makeClient();
 
-    const result = await client.wsUpdate({ slug: 'cp', title: 'v2', status: 'closed' });
+    const result = await client.wsUpdate({ slug: 'cp', title: 'v2', status: 'closed', position: 4 });
 
     expect(callToolMock).toHaveBeenCalledWith({
       name: 'ws-workstream-update',
-      arguments: { slug: 'cp', title: 'v2', status: 'closed' },
+      arguments: { slug: 'cp', title: 'v2', status: 'closed', position: 4 },
     });
     expect(result).toEqual(updated);
   });

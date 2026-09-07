@@ -146,6 +146,8 @@ export interface Workstream {
   title: string;
   status: WorkstreamLifecycleStatus;
   closure: string | null;
+  /** Stable sort position within the current Active lifecycle section. */
+  position?: number;
   opened_at: number;
   updated_at: number;
   closed_at: number | null;
@@ -189,6 +191,7 @@ export interface WsUpdateInput {
   title?: string;
   status?: string;
   closure?: string;
+  position?: number;
 }
 
 export interface WsDeleteInput {
@@ -1347,6 +1350,9 @@ export class ControlPlaneClient {
     }
     if (input.closure !== undefined) {
       args.closure = input.closure;
+    }
+    if (input.position !== undefined) {
+      args.position = input.position;
     }
     return this.parseWorkstream(await this.callDomainTool('ws-workstream-update', args));
   }

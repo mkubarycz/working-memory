@@ -1,5 +1,6 @@
 import type { AlertVM, DocumentVM, TopicPatch, WorkstreamVM } from '../../../webview-ui/src/lib/types';
 import type { PanelData } from '../../../src/panelData';
+import type { WorkstreamSection } from '../../../src/panelData';
 import type {
   CommandJournal,
   CommandJournalHistoryInput,
@@ -83,10 +84,17 @@ export interface ChatResult {
 
 export type DesktopResourceKind = 'workstream' | 'topic' | 'document' | 'alert' | 'topic-type';
 
+export interface DesktopWorkstreamReorderUpdate {
+  slug: string;
+  section: WorkstreamSection;
+  position: number;
+}
+
 export interface DesktopApi {
   discoverEnvironments(): Promise<DesktopEnvironmentState>;
   switchEnvironment(mcpUrl: string): Promise<DesktopEnvironmentState>;
   getActivePanel(): Promise<PanelData>;
+  reorderWorkstreams(updates: DesktopWorkstreamReorderUpdate[]): Promise<void>;
   getConfig(): Promise<PublicConfig>;
   saveConfig(input: SaveConfigInput): Promise<PublicConfig>;
   testConnection(input: SaveConfigInput): Promise<ConnectionResult>;
