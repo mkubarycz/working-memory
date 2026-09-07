@@ -63,7 +63,7 @@ describe('desktop chat history IPC contract', () => {
     expect(app).toContain('class="user-scope"');
     expect(app).toContain("tool.mode === 'write' ? 'edit' : 'book'");
     expect(app).toContain('class="tool-entity"');
-    expect(styles).toMatch(/\.user-entry\s*{[^}]*background:\s*var\(--desktop-accent\)/s);
+    expect(styles).toMatch(/\.user-entry\s*{[^}]*background:\s*#bfc0c4/s);
     expect(styles).toMatch(/\.user-entry pre[^}]*ui-monospace/s);
     expect(styles).toMatch(/\.tool-rows li[^}]*min-height:\s*27px/s);
   });

@@ -191,7 +191,7 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('tabindex="-1"');
     expect(styles).toMatch(/\.chat-run\.preview-attention[^}]*animation:\s*chat-run-attention \.55s ease-in-out 2/s);
     expect(styles).toContain('@keyframes chat-run-attention');
-    expect(styles).toMatch(/@keyframes chat-run-attention[^]*50%[^}]*box-shadow:[^}]*#505054/s);
+    expect(styles).toMatch(/@keyframes chat-run-attention[^]*50%[^}]*box-shadow:[^}]*var\(--desktop-accent-strong\)/s);
     expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[^{]*{[^}]*\.chat-run\.preview-attention[^}]*animation:\s*none/s);
   });
 
