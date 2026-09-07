@@ -14,8 +14,8 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.active-twistie[^}]*width:\s*26px[^}]*height:\s*26px/s);
     expect(activeRail).toContain('data-expandable="true"');
     expect(activeRail).toContain("aria-label=\"{open ? 'Collapse' : 'Expand'} {node.label}\"");
-    expect(activeRail).toContain("codicon-{open ? 'remove' : 'add'}");
-    expect(activeRail).not.toContain("codicon-chevron-{open ? 'down' : 'right'}");
+    expect(activeRail).not.toContain("codicon-{open ? 'remove' : 'add'}");
+    expect(activeRail).toContain("codicon-chevron-{open ? 'down' : 'right'}");
     expect(workstreamView).toContain("aria-label=\"{open ? 'Collapse' : 'Expand'} {node.label}\"");
     expect(workstreamView).toContain('codicon-chevron-');
   });
@@ -28,15 +28,17 @@ describe('desktop tree icon contract', () => {
     expect(styles).toContain("@import '../../../media/codicons/codicon.css'");
   });
 
-  it('uses compact connector-led tree nesting and exposes accessible rail collapse controls', () => {
+  it('uses compact single-color graph nesting and exposes accessible rail collapse controls', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
 
     expect(styles).toMatch(/\.active-card-body[^}]*--active-tree-control-width:\s*22px/s);
     expect(styles).toMatch(/\.active-tree-node[^}]*padding-left:\s*0/s);
-    expect(styles).toMatch(/\.active-tree \.active-tree[^}]*border-left:\s*1px solid #454545/s);
-    expect(styles).toMatch(/\.active-tree-node::before[^}]*left:\s*3px[^}]*width:\s*8px[^}]*height:\s*1px/s);
-    expect(styles).toMatch(/\.active-tree-node > \.active-row > :is\(\.active-twistie, \.active-twistie-spacer\)[^}]*width:\s*var\(--active-tree-control-width\)/s);
+    expect(styles).toMatch(/\.topic-tree[^}]*--graph-color:\s*var\(--ws-card-border\)/s);
+    expect(styles).toMatch(/\.topic-tree::before[^}]*width:\s*2px[^}]*background:\s*var\(--graph-color\)/s);
+    expect(styles).toMatch(/\.graph-node-dot[^}]*border:\s*2px solid var\(--graph-color\)[^}]*border-radius:\s*50%/s);
+    expect(styles).toMatch(/\.active-tree \.active-tree::before[^}]*background:\s*var\(--graph-color\)/s);
+    expect(styles).toMatch(/\.active-tree-node > \.active-row > \.graph-node-control[^}]*width:\s*var\(--active-tree-control-width\)/s);
     expect(styles).toMatch(/\.active-card-header, \.active-row[^}]*min-height:\s*32px/s);
     expect(styles).toMatch(/\.shell\.active-collapsed[^}]*grid-template-columns:\s*36px/s);
     expect(styles).toMatch(/\.shell\.chat-collapsed[^}]*36px/s);
@@ -74,7 +76,26 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.pinned-topics[^}]*border-bottom:\s*1px/s);
     expect(styles).toMatch(/\.focused-topic-pin[^}]*width:\s*30px[^}]*height:\s*30px/s);
     expect(styles).not.toContain('.focused-topic::before');
-    expect(styles).toMatch(/\.topic-tree::before[^}]*width:\s*1px/s);
+    expect(styles).toMatch(/\.topic-tree::before[^}]*width:\s*2px/s);
+  });
+
+  it('renders queue and backlog as summaries while progress alone owns disclosure and graph details', () => {
+    const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+
+    expect(activeRail).toContain("workstreamCard(workstream: PanelWorkstream, sectionStatus: PanelWorkstreamSection['section'], compact: boolean)");
+    expect(activeRail).toContain("const expandable = sectionStatus === 'progress' && hasDetails");
+    expect(activeRail).toContain("class:summary={sectionStatus !== 'progress'}");
+    expect(activeRail).toContain('data-section-status={sectionStatus}');
+    expect(activeRail).toContain("{:else if sectionStatus === 'progress'}");
+    expect(activeRail).toContain('{#if expandable && open}');
+    expect(activeRail).toContain('workstreamCard(workstream, section.section, section.display');
+    expect(activeRail).toContain('class="graph-node-control"');
+    expect(activeRail).toContain('class="graph-node-dot"');
+    expect(activeRail).toContain('class="graph-node-control graph-node-passive"');
+    expect(activeRail).not.toMatch(/codicon-(?:add|remove)/);
+    expect(styles).toMatch(/\.active-card\.summary[^}]*box-shadow:\s*none/s);
+    expect(styles).toContain('--graph-color: var(--ws-card-border)');
   });
 
   it('subdues closed topics without rendering topic status text or muting alerts', () => {
@@ -141,6 +162,7 @@ describe('desktop tree icon contract', () => {
 
   it('shows at most two current-scope messages and targets stable history elements', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const previewIndex = app.indexOf('<section class="scope-preview"');
     const composerIndex = app.indexOf('<div class="composer-shell">');
     const chatRailIndex = app.indexOf('<aside class="chat-rail">');
@@ -157,8 +179,16 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('const target = document.getElementById(chatRunDomId(run));');
     expect(app).toContain("target?.scrollIntoView({ behavior: 'smooth', block: 'center' });");
     expect(app).toContain('target?.focus({ preventScroll: true });');
+    expect(app).toContain("target.classList.remove('preview-attention');");
+    expect(app).toContain('void target.offsetWidth;');
+    expect(app).toContain("target.classList.add('preview-attention');");
+    expect(app).toContain("target.addEventListener('animationend', finish, { once: true });");
+    expect(app).toContain("target?.classList.remove('preview-attention');");
     expect(app).toContain('id={chatRunDomId(run)}');
     expect(app).toContain('tabindex="-1"');
+    expect(styles).toMatch(/\.chat-run\.preview-attention[^}]*animation:\s*chat-run-attention \.55s ease-in-out 2/s);
+    expect(styles).toContain('@keyframes chat-run-attention');
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[^{]*{[^}]*\.chat-run\.preview-attention[^}]*animation:\s*none/s);
   });
 
   it('persists an environment-scoped unsent composer draft and uses instructional placeholder text', () => {

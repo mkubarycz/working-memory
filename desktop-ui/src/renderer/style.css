@@ -104,6 +104,14 @@ button { cursor: pointer; }
 .load-older:disabled { cursor: default; opacity: .55; }
 .chat-run { margin: 0 0 22px; scroll-margin-block: 12px; }
 .chat-run:focus-visible { outline: 2px solid var(--desktop-accent-strong); outline-offset: -2px; }
+.chat-run.preview-attention { animation: chat-run-attention .55s ease-in-out 2; }
+@keyframes chat-run-attention {
+  0%, 100% { box-shadow: inset 0 0 0 2px transparent; }
+  50% { box-shadow: inset 0 0 0 2px var(--desktop-accent-strong), 0 0 0 2px rgba(189, 31, 102, .2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-run.preview-attention { animation: none; box-shadow: inset 0 0 0 2px var(--desktop-accent-strong); }
+}
 .user-entry { padding: 11px 18px 13px; background: var(--desktop-accent); color: #24151c; }
 .user-scope { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; margin: 0 0 7px; padding: 0; border: 0; background: transparent; color: #4f1730; font-size: 10px; font-weight: 800; text-align: left; text-decoration: underline; text-underline-offset: 2px; }
 .user-scope:hover { color: #24151c; }
@@ -223,7 +231,7 @@ button { cursor: pointer; }
 .active-heading span { color: var(--desktop-active-muted); font-size: 10px; text-transform: uppercase; }
 .active-header-button, .active-twistie { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #b7b7b7; }
 .active-header-button:hover, .active-twistie:hover { background: var(--desktop-active-hover); color: #ffffff; }
-.active-header-button:focus-visible, .active-twistie:focus-visible, .active-open:focus-visible, .focused-topic-open:focus-visible, .focused-topic-pin:focus-visible, .active-group-header:focus-visible { outline: 1px solid var(--desktop-accent); outline-offset: -1px; }
+.active-header-button:focus-visible, .active-twistie:focus-visible, .graph-node-control:focus-visible, .active-open:focus-visible, .focused-topic-open:focus-visible, .focused-topic-pin:focus-visible { outline: 1px solid var(--desktop-accent); outline-offset: -1px; }
 .active-sections { display: grid; grid-template-rows: minmax(76px, auto) minmax(120px, 1fr) minmax(76px, auto); min-height: 0; overflow: hidden; }
 .active-section { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; border-bottom: 1px solid var(--desktop-active-border); }
 .active-section:last-child { border-bottom: 0; }
@@ -251,32 +259,38 @@ button { cursor: pointer; }
 .ws-card-color-14 { --ws-card-bg: hsl(336, 18%, 12%); --ws-card-border: hsl(336, 22%, 36%); --ws-card-header-bg: hsl(336, 20%, 16%); --ws-card-glow: hsla(336, 35%, 55%, 0.22); }
 .active-card-header, .active-row { display: flex; align-items: center; min-width: 0; min-height: 32px; }
 .active-card-header { padding: 0 5px; background: var(--ws-card-header-bg); }
+.active-card.summary { border-block-color: color-mix(in srgb, var(--ws-card-border) 62%, transparent); border-left-color: color-mix(in srgb, var(--ws-card-border) 70%, transparent); background: color-mix(in srgb, var(--ws-card-bg) 72%, #181818); box-shadow: none; }
+.active-card.summary .active-card-header { min-height: 30px; padding-left: 7px; background: transparent; color: var(--desktop-active-muted); }
+.active-card.summary .workstream-open { min-height: 28px; }
 .active-card-body { --active-tree-control-width: 22px; border-top: 1px solid var(--ws-card-border); }
-.active-open, .focused-topic-open, .focused-topic-pin, .active-group-header { min-width: 0; border: 0; background: transparent; color: inherit; text-align: left; }
+.active-open, .focused-topic-open, .focused-topic-pin { min-width: 0; border: 0; background: transparent; color: inherit; text-align: left; }
 .active-open { display: flex; align-items: center; flex: 1 1 auto; gap: 7px; min-height: 30px; padding: 3px 4px; }
-.active-open:hover, .focused-topic-open:hover, .focused-topic-pin:hover, .active-group-header:hover { background: var(--desktop-active-hover); }
+.active-open:hover, .focused-topic-open:hover, .focused-topic-pin:hover { background: var(--desktop-active-hover); }
 .active-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workstream-open .active-label { font-size: 12px; font-weight: 650; }
 .active-description { flex: 0 0 auto; color: var(--desktop-active-muted); font-size: 10px; }
 .active-twistie-spacer { flex: 0 0 26px; width: 26px; height: 26px; }
-.active-twistie .codicon, .active-group-disclosure { width: 16px; height: 16px; font-size: 16px; line-height: 16px; }
+.active-twistie .codicon { width: 16px; height: 16px; font-size: 16px; line-height: 16px; }
 .active-alert { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px; background: #56565a; color: #ffffff; font-size: 10px; font-weight: 800; }
 .active-alert.severe { background: #c42b1c; }
 .pinned-topics { padding: 3px 4px; border-bottom: 1px solid color-mix(in srgb, var(--ws-card-border) 72%, transparent); background: color-mix(in srgb, var(--ws-card-header-bg) 78%, transparent); }
 .focused-topic { display: flex; align-items: center; width: 100%; min-height: 30px; color: var(--desktop-active-fg); font-weight: 600; }
 .focused-topic-open { display: flex; align-items: center; flex: 1 1 auto; gap: 7px; min-height: 30px; padding: 3px 6px; overflow: hidden; }
 .focused-topic-pin { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 0; color: var(--desktop-accent); }
-.topic-tree { position: relative; padding: 3px 4px 5px 8px; }
-.topic-tree::before { content: ""; position: absolute; top: 5px; bottom: 7px; left: 11px; width: 1px; background: color-mix(in srgb, var(--ws-card-border) 72%, transparent); }
+.topic-tree { position: relative; padding: 3px 4px 5px 8px; --graph-color: var(--ws-card-border); }
+.topic-tree::before { content: ""; position: absolute; top: 5px; bottom: 7px; left: 19px; width: 2px; background: var(--graph-color); }
 .active-group { min-width: 0; }
-.active-group-header { position: relative; display: flex; align-items: center; gap: 6px; width: 100%; min-height: 29px; padding: 3px 5px; color: #b8b8b8; font-size: 10px; font-weight: 700; text-transform: uppercase; }
-.active-group-header:disabled { cursor: default; opacity: .65; }
+.active-group-header { position: relative; display: flex; align-items: center; gap: 6px; width: 100%; min-height: 29px; padding: 3px 5px 3px 0; color: #b8b8b8; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.graph-node-control { position: relative; z-index: 1; display: inline-grid; place-items: center; flex: 0 0 var(--active-tree-control-width); width: var(--active-tree-control-width); height: 26px; padding: 0; border: 0; background: transparent; color: var(--graph-color); }
+.graph-node-control:not(.graph-node-passive):hover { background: color-mix(in srgb, var(--graph-color) 22%, transparent); }
+.graph-node-dot { width: 10px; height: 10px; border: 2px solid var(--graph-color); border-radius: 50%; background: var(--ws-card-bg); }
+.graph-node-control[aria-expanded="true"] .graph-node-dot { background: var(--graph-color); box-shadow: inset 0 0 0 2px var(--ws-card-bg); }
 .active-tree { position: relative; margin: 0; padding: 0; list-style: none; }
-.active-tree .active-tree { margin-left: 17px; border-left: 1px solid #454545; }
+.active-tree .active-tree { margin-left: 17px; }
+.active-tree .active-tree::before { content: ""; position: absolute; top: -4px; bottom: 0; left: 10px; width: 2px; background: var(--graph-color); }
 .active-tree-node { position: relative; min-width: 0; padding-left: 0; }
-.active-tree-node::before { content: ""; position: absolute; top: 16px; left: 3px; width: 8px; height: 1px; background: #4c4c4c; }
-.active-tree .active-tree > .active-tree-node::before { left: 0; width: 11px; }
-.active-tree-node > .active-row > :is(.active-twistie, .active-twistie-spacer) { flex-basis: var(--active-tree-control-width); width: var(--active-tree-control-width); }
+.active-tree-node::before { content: ""; position: absolute; top: 15px; left: 10px; width: 11px; height: 2px; background: var(--graph-color); }
+.active-tree-node > .active-row > .graph-node-control { flex-basis: var(--active-tree-control-width); width: var(--active-tree-control-width); }
 .active-tree-node > .active-row { padding-left: calc(min(var(--tree-depth), 1) * 2px); }
 .active-row.nanite { color: #a6a6a6; }
 .active-row.closed .active-open { color: var(--desktop-active-muted); }

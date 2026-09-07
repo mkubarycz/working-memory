@@ -90,6 +90,8 @@
   let conversationElement = $state<HTMLDivElement | null>(null);
   let conversationPinned = true;
   let hasUnseenMessages = $state(false);
+  let previewAttentionTarget: HTMLElement | null = null;
+  let previewAttentionTimer: number | undefined;
   let environmentGeneration = 0;
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
   const currentChatContext = $derived(chatContextForDocument(activeDocument));
@@ -228,6 +230,7 @@
     return () => {
       window.removeEventListener('resize', handleResize);
       document.body.classList.remove('resizing-rails');
+      clearPreviewAttention();
     };
   });
 
@@ -602,12 +605,31 @@
     documentError = '';
   }
 
+  function clearPreviewAttention(target = previewAttentionTarget): void {
+    if (previewAttentionTimer !== undefined) window.clearTimeout(previewAttentionTimer);
+    previewAttentionTimer = undefined;
+    target?.classList.remove('preview-attention');
+    if (target === previewAttentionTarget) previewAttentionTarget = null;
+  }
+
+  function restartPreviewAttention(target: HTMLElement): void {
+    clearPreviewAttention();
+    target.classList.remove('preview-attention');
+    void target.offsetWidth;
+    target.classList.add('preview-attention');
+    previewAttentionTarget = target;
+    const finish = () => clearPreviewAttention(target);
+    target.addEventListener('animationend', finish, { once: true });
+    previewAttentionTimer = window.setTimeout(finish, 1400);
+  }
+
   async function focusChatRun(run: ChatRun): Promise<void> {
     chatRailCollapsed = false;
     await tick();
     const target = document.getElementById(chatRunDomId(run));
     target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     target?.focus({ preventScroll: true });
+    if (target) restartPreviewAttention(target);
   }
 </script>
 

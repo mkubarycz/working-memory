@@ -61,7 +61,6 @@
     if (seeded || sections.length === 0) return;
     seeded = true;
     for (const section of sections) {
-      expanded.add(section.id);
       if (section.section === 'progress') {
         for (const workstream of section.workstreams) {
           setSubtreeExpanded(expanded, workstream, true);
@@ -223,14 +222,14 @@
     >
       {#if children.length > 0}
         <button
-          class="active-twistie"
+          class="graph-node-control"
           data-expandable="true"
           aria-expanded={open}
           aria-label="{open ? 'Collapse' : 'Expand'} {node.label}"
           onclick={() => toggle(node)}
-        ><span aria-hidden="true" class="codicon codicon-{open ? 'remove' : 'add'}"></span></button>
+        ><span aria-hidden="true" class="graph-node-dot"></span></button>
       {:else}
-        <span class="active-twistie-spacer"></span>
+        <span class="graph-node-control graph-node-passive" aria-hidden="true"><span class="graph-node-dot"></span></span>
       {/if}
       <button
         class="active-open"
@@ -262,25 +261,22 @@
 {#snippet topicGroup(group: PanelTopicsGroup, workstream: string)}
   {@const open = expanded.has(group.id)}
   <section class="active-group">
-    <button
-      class="active-group-header"
-      disabled={!group.collapsible}
-      data-expandable={group.collapsible ? 'true' : undefined}
-      aria-expanded={group.collapsible ? open : undefined}
-      aria-label={group.collapsible ? `${open ? 'Collapse' : 'Expand'} ${group.label}` : group.label}
-      onclick={() => group.collapsible && toggle(group)}
-    >
-      <span
-        aria-hidden="true"
-        class="active-group-disclosure"
-        class:codicon={group.collapsible}
-        class:codicon-remove={group.collapsible && open}
-        class:codicon-add={group.collapsible && !open}
-      ></span>
+    <div class="active-group-header">
+      {#if group.collapsible}
+        <button
+          class="graph-node-control"
+          data-expandable="true"
+          aria-expanded={open}
+          aria-label="{open ? 'Collapse' : 'Expand'} {group.label}"
+          onclick={() => toggle(group)}
+        ><span aria-hidden="true" class="graph-node-dot"></span></button>
+      {:else}
+        <span class="graph-node-control graph-node-passive" aria-hidden="true"><span class="graph-node-dot"></span></span>
+      {/if}
       <span aria-hidden="true" class="codicon codicon-{group.icon}"></span>
       <span>{group.label}</span>
-    </button>
-    {#if group.collapsible && open}
+    </div>
+    {#if !group.collapsible || open}
       <ul class="active-tree">
         {#each group.children as node (node.id)}
           {@render nodeRow(node, workstream, 0)}
@@ -290,21 +286,22 @@
   </section>
 {/snippet}
 
-{#snippet workstreamCard(workstream: PanelWorkstream, compact: boolean)}
+{#snippet workstreamCard(workstream: PanelWorkstream, sectionStatus: PanelWorkstreamSection['section'], compact: boolean)}
   {@const open = expanded.has(workstream.id)}
   {@const hasDetails = workstream.focused_topics.length > 0 || workstream.children.length > 0}
+  {@const expandable = sectionStatus === 'progress' && hasDetails}
   {@const menuItems = activeContextMenuItems(workstream.actions)}
-  <article class="active-card {workstreamColorClass(workstream.id)}" class:compact data-workstream={workstream.slug ?? workstream.id}>
+  <article class="active-card {workstreamColorClass(workstream.id)}" class:compact class:summary={sectionStatus !== 'progress'} data-section-status={sectionStatus} data-workstream={workstream.slug ?? workstream.id}>
     <div class="active-card-header" role="group" oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', menuItems)}>
-      {#if hasDetails}
+      {#if expandable}
         <button
           class="active-twistie"
           data-expandable="true"
           aria-expanded={open}
           aria-label="{open ? 'Collapse' : 'Expand'} {workstream.label}"
-          onclick={() => toggle(workstream, true)}
-        ><span aria-hidden="true" class="codicon codicon-{open ? 'remove' : 'add'}"></span></button>
-      {:else}
+          onclick={() => toggle(workstream)}
+        ><span aria-hidden="true" class="codicon codicon-chevron-{open ? 'down' : 'right'}"></span></button>
+      {:else if sectionStatus === 'progress'}
         <span class="active-twistie-spacer"></span>
       {/if}
       <button
@@ -319,7 +316,7 @@
       </button>
       {@render alertBubble(workstream.alertCount, workstream.alertSeverity)}
     </div>
-    {#if hasDetails && open}
+    {#if expandable && open}
       <div class="active-card-body">
         {#if workstream.focused_topics.length > 0}
           <section class="pinned-topics" aria-label={`Pinned topics in ${workstream.label}`}>
@@ -459,7 +456,7 @@
             <p class="active-empty">{section.emptyMessage}</p>
           {:else}
             {#each section.workstreams as workstream (workstream.id)}
-              {@render workstreamCard(workstream, section.display === 'shelf')}
+              {@render workstreamCard(workstream, section.section, section.display === 'shelf')}
             {/each}
           {/if}
         </div>
