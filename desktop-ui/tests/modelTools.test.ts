@@ -30,8 +30,8 @@ describe('desktop model tools', () => {
       'ws-nanite-run',
       'ws-nanitetemplate-create',
       'ws-nanitejournal-read',
-      'ws-config-read',
     ]);
+    expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('ws-config-read');
   });
 
   it('classifies delete and nanite reset calls as destructive', () => {

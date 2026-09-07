@@ -128,6 +128,26 @@ describe('DesktopChatAgent', () => {
     expect(journal.current()?.entityRefs).toContainEqual(expect.objectContaining({ kind: 'Topic', id: 'ship-it', relation: 'mutated' }));
   });
 
+  it('classifies workstream reorder calls as mutations', async () => {
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'a', function: { name: 'ws-workstream-reorder', arguments: '{"updates":[]}' } },
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Done.' } }] });
+    const journal = journalHarness();
+    const agent = new DesktopChatAgent({
+      ...options(callModel, undefined, journal),
+      listTools: async () => [
+        { name: 'ws-workstream-reorder', inputSchema: { type: 'object', properties: { updates: { type: 'array' } } } },
+      ],
+    });
+
+    const result = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'reorder', headers: {} });
+
+    expect(result.mutated).toBe(true);
+    expect(journal.current()?.completion?.mutated).toBe(true);
+  });
+
   it('creates the durable journal before the first model request and strips endpoint secrets', async () => {
     const order: string[] = [];
     const journal = journalHarness();

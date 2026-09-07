@@ -177,6 +177,8 @@ export interface Store {
    * exists.
    */
   updateDocument(input: UpdateDocumentInput): DocumentEnvelope;
+  /** Atomically apply multiple CAS updates; any failure rolls back the entire batch. */
+  updateDocuments(inputs: UpdateDocumentInput[]): DocumentEnvelope[];
   close(): void;
 }
 
@@ -487,6 +489,61 @@ export function openStore(dbFilePath: string): Store {
     }
   }
 
+  function updateDocuments(inputs: UpdateDocumentInput[]): DocumentEnvelope[] {
+    if (new Set(inputs.map((input) => input.id)).size !== inputs.length) {
+      throw new Error('Batch update contains duplicate document ids.');
+    }
+    const now = nowSeconds();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const updated: DocumentEnvelope[] = [];
+      for (const input of inputs) {
+        const live = db
+          .prepare('SELECT resource_version FROM resources WHERE id = ? AND deleted_at IS NULL')
+          .get(input.id) as unknown as { resource_version: number } | undefined;
+        if (!live) throw new NotFoundError(input.id);
+        if (live.resource_version !== input.expectedResourceVersion) {
+          throw new ConflictError(input.id, input.expectedResourceVersion, live.resource_version);
+        }
+
+        db.prepare("UPDATE store_meta SET value = value + 1 WHERE key = 'resource_version'").run();
+        const counter = db
+          .prepare("SELECT value FROM store_meta WHERE key = 'resource_version'")
+          .get() as unknown as { value: number } | undefined;
+        const next = counter?.value ?? 0;
+        const setCols = ['spec = ?', 'updated_at = ?', 'resource_version = ?'];
+        const params: unknown[] = [JSON.stringify(input.spec), now, next];
+        if (input.slug !== undefined) {
+          setCols.push('slug = ?');
+          params.push(input.slug);
+        }
+        if (input.labels !== undefined) {
+          setCols.push('labels = ?');
+          params.push(JSON.stringify(input.labels));
+        }
+        if (input.status !== undefined) {
+          setCols.push('status = ?');
+          params.push(JSON.stringify(input.status));
+        }
+        params.push(input.id, input.expectedResourceVersion);
+        const result = db.prepare(
+          `UPDATE resources SET ${setCols.join(', ')}
+           WHERE id = ? AND resource_version = ? AND deleted_at IS NULL`,
+        ).run(...(params as never[]));
+        if (Number(result.changes) === 0) {
+          throw new ConflictError(input.id, input.expectedResourceVersion, live.resource_version);
+        }
+        const row = db.prepare('SELECT * FROM resources WHERE id = ?').get(input.id) as unknown as ResourceRow;
+        updated.push(rowToEnvelope(row));
+      }
+      db.exec('COMMIT');
+      return updated;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   function deleteDocument(input: DeleteDocumentInput): DocumentEnvelope {
     const now = nowSeconds();
     const hasExpected = input.expectedResourceVersion !== undefined;
@@ -604,6 +661,7 @@ export function openStore(dbFilePath: string): Store {
     listDocumentsByCreation,
     getDocument,
     updateDocument,
+    updateDocuments,
     deleteDocument,
     restoreDocument,
     close(): void {

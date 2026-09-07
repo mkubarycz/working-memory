@@ -20,6 +20,7 @@
   import { isChatAtBottom } from './chatScroll';
   import { readComposerDraft, writeComposerDraft } from './composerDraft';
   import { renderMarkdown } from './markdown';
+  import { createDocumentSaveQueue } from './documentSaveQueue';
   import {
     closeDocumentTab,
     documentTabKey,
@@ -66,7 +67,8 @@
   let selectedDocumentKey = $state<string | null>(null);
   let saveState = $state<SaveState>('idle');
   let documentError = $state('');
-  let saveTimer: number | undefined;
+  let documentSaveStates = $state<Record<string, SaveState>>({});
+  let documentSaveErrors = $state<Record<string, string>>({});
   let busy = $state(false);
   let endpoint = $state('');
   let model = $state('');
@@ -97,6 +99,48 @@
   let environmentGeneration = 0;
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
   const currentChatContext = $derived(chatContextForDocument(activeDocument));
+
+  type DocumentPatch = TopicPatch & { status?: string };
+  const documentSaves = createDocumentSaveQueue<DocumentPatch, DocumentVM>({
+    delayMs: 350,
+    save: (key, patch) => {
+      const separator = key.indexOf(':');
+      const kind = key.slice(0, separator);
+      const identifier = key.slice(separator + 1);
+      return kind === 'workstream'
+        ? window.workingMemory.saveWorkstream(identifier, patch)
+        : window.workingMemory.saveTopic(identifier, patch);
+    },
+    onPending: (key) => {
+      documentSaveStates[key] = 'pending';
+      if (key === selectedDocumentKey) saveState = 'pending';
+    },
+    onSaving: (key) => {
+      documentSaveStates[key] = 'saving';
+      documentSaveErrors[key] = '';
+      if (key === selectedDocumentKey) {
+        saveState = 'saving';
+        documentError = '';
+      }
+    },
+    onSaved: (key, document) => {
+      replaceActive(document, key);
+      documentSaveStates[key] = 'saved';
+      documentSaveErrors[key] = '';
+      if (key === selectedDocumentKey) saveState = 'saved';
+      void refreshActive();
+    },
+    onError: (key, error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      documentSaveStates[key] = 'error';
+      documentSaveErrors[key] = message;
+      if (key === selectedDocumentKey) {
+        saveState = 'error';
+        documentError = message;
+      }
+      void refreshActive();
+    },
+  });
   const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
@@ -330,8 +374,9 @@
 
   function resetEnvironmentState(): void {
     const reset = emptyEnvironmentBoundRendererState();
-    window.clearTimeout(saveTimer);
-    saveTimer = undefined;
+    documentSaves.clear();
+    documentSaveStates = {};
+    documentSaveErrors = {};
     input = reset.input;
     documents = reset.documents;
     selectedDocumentKey = null;
@@ -357,6 +402,7 @@
     environmentLoading = true;
     environmentError = '';
     try {
+      await documentSaves.flushAll();
       const state = await window.workingMemory.switchEnvironment(mcpUrl);
       environmentGeneration += 1;
       resetEnvironmentState();
@@ -465,14 +511,18 @@
     selectedDocumentKey = next.selectedKey;
   }
 
+  function restoreDocumentSaveStatus(key: string | null): void {
+    saveState = key ? (documentSaveStates[key] ?? 'idle') : 'idle';
+    documentError = key ? (documentSaveErrors[key] ?? '') : '';
+  }
+
   async function openResource(kind: DesktopResourceKind, identifier: string): Promise<void> {
     try {
       const document = await window.workingMemory.openResource(kind, identifier);
       const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
-      documentError = '';
-      saveState = 'idle';
+      restoreDocumentSaveStatus(next.selectedKey);
     } catch (error) {
       documentError = error instanceof Error ? error.message : String(error);
     }
@@ -546,24 +596,16 @@
     void mutateFromRail(workstream, () => window.workingMemory.togglePin(workstream, topic));
   }
 
-  function scheduleSave(operation: () => Promise<DocumentVM>): void {
-    saveState = 'pending';
-    window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => void mutate(operation), 350);
-  }
-
   function saveWorkstream(patch: { title?: string; status?: string }): void {
     const document = activeDocument;
     if (document?.kind !== 'workstream' || !document.slug) return;
-    const identifier = document.slug;
-    scheduleSave(() => window.workingMemory.saveWorkstream(identifier, patch));
+    documentSaves.schedule(documentTabKey(document), patch);
   }
 
   function saveTopic(patch: TopicPatch): void {
     const document = activeDocument;
     if (document?.kind !== 'topic' || !document.slug) return;
-    const identifier = document.slug;
-    scheduleSave(() => window.workingMemory.saveTopic(identifier, patch));
+    documentSaves.schedule(documentTabKey(document), patch);
   }
 
   function setAlertStatus(id: string, status: AlertVM['status']): void {
@@ -623,7 +665,7 @@
   function selectDocument(key: string): void {
     if (documents.some((document) => documentTabKey(document) === key)) {
       selectedDocumentKey = key;
-      documentError = '';
+      restoreDocumentSaveStatus(key);
     }
   }
 
@@ -631,7 +673,7 @@
     const next = closeDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key);
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
-    documentError = '';
+    restoreDocumentSaveStatus(next.selectedKey);
   }
 
   function clearPreviewAttention(target = previewAttentionTarget): void {
@@ -800,7 +842,7 @@
             </div>
           {/each}
         </div>
-        <div class="document-host" role="tabpanel">
+        <div class="document-host" role="tabpanel" inert={environmentLoading}>
           <div class="document-toolbar">
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>

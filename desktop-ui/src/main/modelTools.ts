@@ -38,7 +38,6 @@ const DESKTOP_TOOL_FAMILIES = [
   'topic',
   'topictype',
   'alert',
-  'config',
   'nanite',
   'nanitetemplate',
   'nanitejournal',

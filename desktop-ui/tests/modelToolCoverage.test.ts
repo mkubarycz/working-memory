@@ -26,7 +26,7 @@ describe('desktop tool coverage', () => {
   it('projects every registered tool in the supported high-level ws families', async () => {
     const canonical = (await client.listTools()).tools;
     const projected = desktopToolDescriptors(canonical).map((tool) => tool.name);
-    const requestedFamilies = ['workstream', 'topic', 'topictype', 'alert', 'config', 'nanite', 'nanitetemplate', 'nanitejournal'];
+    const requestedFamilies = ['workstream', 'topic', 'topictype', 'alert', 'nanite', 'nanitetemplate', 'nanitejournal'];
     const expected = canonical
       .map((tool) => tool.name)
       .filter((name) => requestedFamilies.some((family) => name.startsWith(`ws-${family}-`)));
@@ -37,11 +37,11 @@ describe('desktop tool coverage', () => {
       'ws-topic',
       'ws-topictype',
       'ws-alert',
-      'ws-config',
       'ws-nanite',
       'ws-nanitetemplate',
       'ws-nanitejournal',
     ]));
+    expect(projected.some((name) => name.startsWith('ws-config-'))).toBe(false);
     expect(projected.some((name) => name.startsWith('wm-document-'))).toBe(false);
   });
 });

@@ -42,12 +42,15 @@ export async function persistWorkstreamReorder(
       !['queue', 'progress', 'backlog'].includes(update.section)) {
       throw new Error('Invalid workstream reorder request.');
     }
-    await client.wsUpdate({
+  }
+  if (updates.length === 0) return;
+  await client.wsReorder({
+    updates: updates.map((update) => ({
       slug: update.slug,
       status: update.section,
       position: update.position,
-    });
-  }
+    })),
+  });
 }
 
 export function resolveDesktopResourceUri(uri: string): {

@@ -37,6 +37,7 @@ import { registerWsWorkstreamCreate } from './create.js';
 import { registerWsWorkstreamRead } from './read.js';
 import { registerWsWorkstreamUpdate } from './update.js';
 import { registerWsWorkstreamDelete } from './delete.js';
+import { registerWsWorkstreamReorder } from './reorder.js';
 
 // Re-export the domain type + POCO interface so type consumers of the kind can
 // import them from the kind entry point (e.g. the default import in
@@ -83,6 +84,7 @@ function registerWorkstreamApi(server: McpServer, store: Store): void {
   registerWsWorkstreamRead(server, store);
   registerWsWorkstreamUpdate(server, store);
   registerWsWorkstreamDelete(server, store);
+  registerWsWorkstreamReorder(server, store);
 }
 
 export default workstream;

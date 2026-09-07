@@ -65,8 +65,55 @@ interface IWorkstream {
       expect(names).toContain('wm-document-read');
       // … PLUS the Workstream kind's domain API (registered via its registerApi).
       expect(names).toEqual(
-        expect.arrayContaining(['ws-workstream-create', 'ws-workstream-read', 'ws-workstream-update', 'ws-workstream-delete']),
+        expect.arrayContaining([
+          'ws-workstream-create',
+          'ws-workstream-read',
+          'ws-workstream-update',
+          'ws-workstream-delete',
+          'ws-workstream-reorder',
+        ]),
       );
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
+    }
+  });
+
+  it('reorders workstreams atomically', async () => {
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-cp-ws-reorder', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      await client.connect(transport);
+      await client.callTool({ name: 'ws-workstream-create', arguments: { slug: 'one', title: 'One' } });
+      await client.callTool({ name: 'ws-workstream-create', arguments: { slug: 'two', title: 'Two' } });
+
+      const reordered = jsonOf<IWorkstream[]>(await client.callTool({
+        name: 'ws-workstream-reorder',
+        arguments: { updates: [
+          { slug: 'two', status: 'progress', position: 0 },
+          { slug: 'one', status: 'progress', position: 1 },
+        ] },
+      }));
+      expect(reordered.map(({ slug, position }) => ({ slug, position }))).toEqual([
+        { slug: 'two', position: 0 },
+        { slug: 'one', position: 1 },
+      ]);
+
+      const failed = await client.callTool({
+        name: 'ws-workstream-reorder',
+        arguments: { updates: [
+          { slug: 'one', status: 'queue', position: 0 },
+          { slug: 'missing', status: 'queue', position: 1 },
+        ] },
+      });
+      expect(isErrorResult(failed)).toBe(true);
+      const afterFailure = jsonOf<{ workstreams: IWorkstream[] }>(
+        await client.callTool({ name: 'ws-workstream-read', arguments: { slug: 'one' } }),
+      );
+      expect(afterFailure.workstreams[0]).toMatchObject({ status: 'progress', position: 1 });
     } finally {
       await client.close();
       await server.close();

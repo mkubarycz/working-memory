@@ -194,6 +194,14 @@ export interface WsUpdateInput {
   position?: number;
 }
 
+export interface WsReorderInput {
+  updates: Array<{
+    slug: string;
+    status: 'queue' | 'progress' | 'backlog';
+    position: number;
+  }>;
+}
+
 export interface WsDeleteInput {
   slug: string;
   restore?: boolean;
@@ -1355,6 +1363,15 @@ export class ControlPlaneClient {
       args.position = input.position;
     }
     return this.parseWorkstream(await this.callDomainTool('ws-workstream-update', args));
+  }
+
+  async wsReorder(input: WsReorderInput): Promise<Workstream[]> {
+    const result = await this.callDomainTool('ws-workstream-reorder', { updates: input.updates });
+    const parsed = parseToolText(result);
+    if (!Array.isArray(parsed)) {
+      throw new ControlPlaneClientError('Malformed control-plane workstream reorder response');
+    }
+    return parsed as Workstream[];
   }
 
   /**

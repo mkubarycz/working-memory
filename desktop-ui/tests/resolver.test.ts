@@ -127,17 +127,17 @@ describe('workstream resolver', () => {
       .toEqual(['first', 'later']);
   });
 
-  it('persists normalized section and position updates in order', async () => {
+  it('persists normalized section and position updates atomically', async () => {
     const writes: unknown[] = [];
-    const client = { wsUpdate: async (input: unknown) => { writes.push(input); } } as never;
+    const client = { wsReorder: async (input: unknown) => { writes.push(input); } } as never;
     await persistWorkstreamReorder(client, [
       { slug: 'one', section: 'queue', position: 0 },
       { slug: 'two', section: 'queue', position: 1 },
     ]);
-    expect(writes).toEqual([
+    expect(writes).toEqual([{ updates: [
       { slug: 'one', status: 'queue', position: 0 },
       { slug: 'two', status: 'queue', position: 1 },
-    ]);
+    ] }]);
     await expect(persistWorkstreamReorder(client, [
       { slug: '', section: 'queue', position: 0 },
     ])).rejects.toThrow('Invalid workstream reorder request');

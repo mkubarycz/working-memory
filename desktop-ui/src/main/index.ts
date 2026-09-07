@@ -26,6 +26,7 @@ import {
   writePersistedEnvironment,
 } from './environments';
 import { parseModelTurn } from './modelTools';
+import { createGracefulShutdown } from './gracefulShutdown';
 import {
   readWindowBounds,
   resolveWindowBounds,
@@ -89,6 +90,13 @@ const chatAgent = new DesktopChatAgent({
       },
     };
   },
+});
+
+const gracefulShutdown = createGracefulShutdown({
+  resetAgent: () => chatAgent.reset(),
+  disposeEnvironment: () => environmentManager.dispose(),
+  quit: () => app.quit(),
+  onError: (error) => console.error('[desktop] graceful shutdown failed:', error),
 });
 
 function decryptApiKey(config: StoredConfig): string {
@@ -450,8 +458,8 @@ if (!ownsSingleInstanceLock) {
     if (process.platform !== 'darwin') app.quit();
   });
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
     if (mainWindow) saveWindowState(mainWindow, true);
-    void environmentManager.dispose();
+    void gracefulShutdown(event);
   });
 }
