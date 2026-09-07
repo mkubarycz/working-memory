@@ -20,6 +20,10 @@ import {
 } from '../panelData';
 import { decideRefreshAction } from './refreshDecision';
 import { buildAlertVMs, RECENT_CLOSED_ALERT_MS, alertBubbleForTopic } from './alertVms';
+import {
+  loadWorkstreamViewModel,
+  readWorkstream as readWorkstreamViewModel,
+} from './workstreamViewModel';
 
 /**
  * The unified Working Memory document custom editor (WM 14.2
@@ -1483,105 +1487,14 @@ export class DocumentEditorProvider
     client: ControlPlaneClient,
     identifier: string,
   ): Promise<WorkstreamVM | null> {
-    const ws = await this.readWorkstream(client, identifier);
-    if (!ws) {
-      return null;
-    }
-    const slug = ws.slug;
-    let topics: Topic[] = [];
-    if (slug) {
-      try {
-        topics = await client.topicRead({ workstream: slug });
-      } catch {
-        topics = [];
-      }
-    }
-    const rows: WorkstreamTopicVM[] = topics
-      .map((t) => ({
-        title: t.title,
-        slug: t.slug ?? t.id,
-        status: t.status,
-        pinned: slug ? t.focusedWorkstreams.includes(slug) : false,
-      }))
-      .sort((a, b) => a.title.localeCompare(b.title));
-    const ordered = [
-      ...rows.filter((r) => r.pinned),
-      ...rows.filter((r) => !r.pinned),
-    ];
-    // Full nested topic + nanite tree — the SAME composition the left rail's
-    // workstream card renders. All inputs come through the control-plane client.
-    let nanites: Nanite[] = [];
-    let naniteTemplates: NaniteTemplate[] = [];
-    let topicTypes: TopicType[] = [];
-    if (slug) {
-      try {
-        nanites = await client.naniteRead({ workstream: slug });
-      } catch {
-        nanites = [];
-      }
-      try {
-        naniteTemplates = await client.naniteTemplateRead();
-      } catch {
-        naniteTemplates = [];
-      }
-      try {
-        topicTypes = await client.topicTypeRead();
-      } catch {
-        topicTypes = [];
-      }
-    }
-    const typeMap = new Map<string, TopicType>(
-      topicTypes.map((t) => [t.slug ?? t.id, t]),
-    );
-    const { groups } = buildWorkstreamTree(
-      ws.id,
-      slug ?? '',
-      'active',
-      slug ? topics : undefined,
-      typeMap,
-      [],
-      nanites,
-      naniteTemplates,
-    );
-    // Alerts relevant to this workstream = alerts referencing any member topic.
-    const memberSlugs = topics
-      .map((t) => t.slug)
-      .filter((s): s is string => Boolean(s));
-    let alerts: Alert[] = [];
-    try {
-      alerts = await client.alertRead();
-    } catch {
-      alerts = [];
-    }
-    return {
-      kind: 'workstream',
-      title: ws.title,
-      slug,
-      status: ws.status,
-      createdAt: ws.opened_at,
-      updatedAt: ws.updated_at,
-      closure: ws.closure,
-      resourceVersion: ws.resourceVersion,
-      editable: Boolean(slug),
-      topics: ordered,
-      tree: groups.map(toTreeGroup),
-      alerts: buildAlertVMs(alerts, memberSlugs, Date.now()),
-    };
+    return loadWorkstreamViewModel(client, identifier);
   }
 
   private async readWorkstream(
     client: ControlPlaneClient,
     identifier: string,
   ): Promise<Workstream | null> {
-    // A miss returns an EMPTY array (no throw), so we fall through to the id
-    // lookup; a dead/dropped daemon THROWS, which propagates to `loadDocument`
-    // where it is classified as "not ready" (vs. this null → "not found").
-    const bySlug = await client.wsRead({ slug: identifier });
-    if (bySlug[0]) {
-      return bySlug[0];
-    }
-    const byId = await client.wsRead({ id: identifier });
-    return byId[0] ?? null;
+    return readWorkstreamViewModel(client, identifier);
   }
 
   // ---- Topic (kind = topic) -------------------------------------------------

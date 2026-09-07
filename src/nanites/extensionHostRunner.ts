@@ -21,11 +21,8 @@ import type {
   NaniteRunInput,
   NaniteTemplate,
   Topic,
-  WriteDocumentResult,
   Workstream,
 } from '../controlPlaneClient';
-import type { CommandJournalSpec } from '../commandJournal';
-import { buildNaniteCompletionSpecs } from './completionMessage';
 import { redactRunResult, redactSecrets } from './redact';
 import { runNanite } from './runner';
 import type {
@@ -66,12 +63,6 @@ export interface NaniteRunnerClient {
    * env. The real `ControlPlaneClient` provides it.
    */
   configRead?(input: { slug?: string; id?: string }): Promise<Config[]>;
-  /**
-   * Post a turn to the command-widget chat (the `CommandJournal` kind). Optional
-   * so lightweight test fakes can omit it — absent ⇒ the completion turn is
-   * simply skipped. In production the real `ControlPlaneClient` provides it.
-   */
-  commandJournalCreate?(spec: CommandJournalSpec): Promise<WriteDocumentResult>;
 }
 
 export interface ExtensionHostRunnerDeps {
@@ -109,15 +100,6 @@ export interface ExtensionHostRunnerDeps {
   readTimeoutMs?: number;
   /** Cap for each control-plane WRITE (lifecycle persist). Default 15s. */
   persistTimeoutMs?: number;
-  /**
-   * Whether the runner posts its own completion turn to the command-widget
-   * chat (the `nanite-completion-message-to-chat` write-back). Defaults to
-   * `true` — the dispatcher path relies on it to land the result on the input
-   * topic / workstream. The chat-directed AGENT path sets this `false` because
-   * the command widget owns journaling under the agent's own scope, so the
-   * runner must not also post (which would land on the wrong scope).
-   */
-  postCompletion?: boolean;
   /** Clock for the run prompt's Context section (injectable for tests). */
   now?: () => Date;
   /**
@@ -134,9 +116,6 @@ const DEFAULT_RUN_TIMEOUT_MS = 120_000;
 const DEFAULT_READ_TIMEOUT_MS = 20_000;
 /** Default cap on each lifecycle persist so a hung write can't strand a nanite. */
 const DEFAULT_PERSIST_TIMEOUT_MS = 15_000;
-/** Cap on the best-effort completion-turn post so a hung chat write can't block. */
-const COMPLETION_POST_TIMEOUT_MS = 10_000;
-
 /**
  * Appended to every run's system instructions: the model must not fake success
  * when it lacks a capability — it reports the gap (a soft request surfaced to
@@ -637,9 +616,6 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
       // already persisted, so a failure here must never alter its outcome.
       // Suppressed on the chat-directed agent path (the widget journals under
       // the agent's own scope instead).
-      if (this.deps.postCompletion !== false) {
-        await this.postCompletionTurn(nanite, template, safeResult);
-      }
       return safeResult;
     } catch (err) {
       // Timeout or an unexpected throw: force the nanite to Failed so it is
@@ -735,44 +711,4 @@ export class ExtensionHostNaniteRunner implements NaniteRunner {
     }
   }
 
-  /**
-   * Post the run's outcome to the command-widget chat as `CommandJournal`
-   * turns. ALWAYS journals under the nanite's OWN session (scope = its id,
-   * `contextKind: 'nanite'`) so the run's request + summary show up in the
-   * nanite's chat — the channel the widget renders for a focused nanite — and
-   * ADDITIONALLY under the run's input topic (or workstream) so the ticket
-   * carries the outcome too. Best-effort and fully isolated: swallows every
-   * error and is time-boxed per post, because the run has already persisted its
-   * terminal phase — a chat-post failure must never fail or alter the outcome.
-   */
-  private async postCompletionTurn(
-    nanite: Nanite,
-    template: NaniteTemplate | null,
-    result: NaniteRunResult,
-  ): Promise<void> {
-    try {
-      const create = this.deps.client.commandJournalCreate?.bind(this.deps.client);
-      if (!create) {
-        return;
-      }
-      const specs = buildNaniteCompletionSpecs({
-        nanite,
-        result,
-        templateLabel: template?.title ?? template?.slug ?? null,
-      });
-      for (const spec of specs) {
-        // Each post is independently best-effort — one failing scope must not
-        // skip the others (the nanite-session turn is the mandatory one).
-        try {
-          await withTimeout(create(spec), COMPLETION_POST_TIMEOUT_MS, 'post completion turn');
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn(`nanite completion chat post failed (ignored): ${message}`);
-        }
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn(`nanite completion chat post failed (ignored): ${message}`);
-    }
-  }
 }

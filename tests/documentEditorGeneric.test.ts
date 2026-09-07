@@ -128,7 +128,7 @@ describe('buildGenericVM', () => {
     // to prove the remnant filter only applies to nanites.
     const generic = buildGenericVM({
       ...envelope({ output: 'keep me', request: 'r' }),
-      kind: 'CommandJournal',
+      kind: 'Config',
     });
     expect(generic.spec.map((f) => f.key)).toEqual(['output', 'request']);
   });
