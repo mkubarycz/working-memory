@@ -26,12 +26,14 @@ describe('desktop tree icon contract', () => {
     expect(styles).toContain("@import '../../../media/codicons/codicon.css'");
   });
 
-  it('keeps tree nesting compact and exposes accessible rail collapse controls', () => {
+  it('uses compact connector-led tree nesting and exposes accessible rail collapse controls', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
 
     expect(styles).toMatch(/\.active-tree-node[^}]*padding-left:\s*4px/s);
-    expect(styles).not.toMatch(/\.active-tree-node[^}]*padding-left:\s*calc\(var\(--tree-depth\)/s);
+    expect(styles).toMatch(/\.active-tree \.active-tree[^}]*border-left:\s*1px solid #454545/s);
+    expect(styles).toMatch(/\.active-tree-node::before[^}]*width:\s*8px[^}]*height:\s*1px/s);
+    expect(styles).toMatch(/\.active-card-header, \.active-row[^}]*min-height:\s*32px/s);
     expect(styles).toMatch(/\.shell\.active-collapsed[^}]*grid-template-columns:\s*36px/s);
     expect(styles).toMatch(/\.shell\.chat-collapsed[^}]*36px/s);
     expect(app).toContain("aria-label={activeRailCollapsed ? 'Expand Active rail' : 'Collapse Active rail'}");
@@ -97,7 +99,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('resizeSectionWithKeyboard');
   });
 
-  it('keeps compact selected-document context attached to the chat composer', () => {
+  it('keeps selected-document context and composer in a stable center-stage row', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
 
@@ -105,10 +107,37 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('class="composer-context"');
     expect(app).toContain('{currentChatContext.kind}');
     expect(app).toContain('{currentChatContext.title}');
-    expect(styles).toMatch(/\.chat-rail[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\) auto/s);
+    expect(styles).toMatch(/\.main[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto/s);
+    expect(styles).toMatch(/\.stage-content[^}]*overflow:\s*auto/s);
+    expect(styles).toMatch(/\.chat-rail[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\)/s);
     expect(styles).toMatch(/\.conversation[^}]*overflow-y:\s*auto/s);
     expect(styles).toMatch(/\.composer-context[^}]*text-overflow:\s*ellipsis/s);
-    expect(styles).toMatch(/\.composer-shell[^}]*background:\s*#ceced2/s);
+    expect(styles).toMatch(/\.composer-shell[^}]*background:\s*#eceaec/s);
+    expect(app.indexOf('<main class="main">')).toBeLessThan(app.indexOf('<div class="composer-shell">'));
+    expect(app.indexOf('<div class="composer-shell">')).toBeLessThan(app.indexOf('<aside class="chat-rail">'));
+  });
+
+  it('renders stable selectable document tabs without duplicate-open stack navigation', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+
+    expect(app).toContain('class="document-tabs" role="tablist"');
+    expect(app).toContain('role="tab"');
+    expect(app).toContain('aria-selected={key === selectedDocumentKey}');
+    expect(app).toContain('onclick={() => closeDocument(key)}');
+    expect(app).toContain('openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document)');
+    expect(styles).toMatch(/\.document-tabs[^}]*height:\s*38px[^}]*overflow-x:\s*auto/s);
+  });
+
+  it('shows at most two current-scope messages and targets stable history elements', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+
+    expect(app).toContain('recentRunsForContext(chatRuns, currentChatContext)');
+    expect(app).toContain('class="scope-preview"');
+    expect(app).toContain('No messages for this scope.');
+    expect(app).toContain('document.getElementById(chatRunDomId(run))?.scrollIntoView');
+    expect(app).toContain('id={chatRunDomId(run)}');
+    expect(app).toContain('tabindex="-1"');
   });
 
   it('persists an environment-scoped unsent composer draft and uses instructional placeholder text', () => {

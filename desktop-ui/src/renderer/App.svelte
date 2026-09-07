@@ -20,6 +20,14 @@
   import { isChatAtBottom } from './chatScroll';
   import { readComposerDraft, writeComposerDraft } from './composerDraft';
   import { renderMarkdown } from './markdown';
+  import {
+    closeDocumentTab,
+    documentTabKey,
+    openDocumentTab,
+    replaceSelectedTab,
+    updateDocumentTab,
+  } from './documentTabs';
+  import { chatRunDomId, recentRunsForContext } from './scopedChat';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import type { RailSide, RailWidths } from './railLayout';
   import {
@@ -53,6 +61,7 @@
   let toolInspectorElement = $state<HTMLElement | null>(null);
   let pendingRunKey = $state<string | null>(null);
   let documents = $state<DocumentVM[]>([]);
+  let selectedDocumentKey = $state<string | null>(null);
   let saveState = $state<SaveState>('idle');
   let documentError = $state('');
   let saveTimer: number | undefined;
@@ -82,8 +91,9 @@
   let conversationPinned = true;
   let hasUnseenMessages = $state(false);
   let environmentGeneration = 0;
-  const activeDocument = $derived(documents.at(-1) ?? null);
+  const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
   const currentChatContext = $derived(chatContextForDocument(activeDocument));
+  const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
     viewportWidth,
@@ -101,7 +111,9 @@
     pendingRunKey = result.pendingConfirmation ? (result.journalId ?? runKey) : null;
     const document = result.document ?? result.workstream;
     if (document) {
-      documents = [document];
+      const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
+      documents = next.tabs;
+      selectedDocumentKey = next.selectedKey;
       documentError = '';
     }
     if (result.journalId) await refreshJournal(result.journalId);
@@ -317,6 +329,7 @@
     saveTimer = undefined;
     input = reset.input;
     documents = reset.documents;
+    selectedDocumentKey = null;
     saveState = reset.saveState;
     documentError = reset.documentError;
     chatRuns = reset.chatRuns;
@@ -439,14 +452,20 @@
     }
   }
 
-  function replaceActive(document: DocumentVM): void {
-    documents = [...documents.slice(0, -1), document];
+  function replaceActive(document: DocumentVM, key = selectedDocumentKey): void {
+    const next = key
+      ? updateDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key, document)
+      : replaceSelectedTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
   }
 
   async function openResource(kind: DesktopResourceKind, identifier: string): Promise<void> {
     try {
       const document = await window.workingMemory.openResource(kind, identifier);
-      documents = [...documents, document];
+      const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
+      documents = next.tabs;
+      selectedDocumentKey = next.selectedKey;
       documentError = '';
       saveState = 'idle';
     } catch (error) {
@@ -455,10 +474,11 @@
   }
 
   async function mutate(operation: () => Promise<DocumentVM>): Promise<void> {
+    const targetKey = selectedDocumentKey;
     saveState = 'saving';
     documentError = '';
     try {
-      replaceActive(await operation());
+      replaceActive(await operation(), targetKey);
       saveState = 'saved';
     } catch (error) {
       saveState = 'error';
@@ -472,7 +492,8 @@
     let mutationError = '';
     try {
       const document = await operation();
-      if (activeDocument?.kind === 'workstream' && activeDocument.slug === workstream) replaceActive(document);
+      const key = `workstream:${workstream}`;
+      if (documents.some((candidate) => documentTabKey(candidate) === key)) replaceActive(document, key);
       documentError = '';
     } catch (error) {
       mutationError = error instanceof Error ? error.message : String(error);
@@ -566,6 +587,26 @@
     event.preventDefault();
     openLink(target.getAttribute('href') ?? target.href);
   }
+
+  function selectDocument(key: string): void {
+    if (documents.some((document) => documentTabKey(document) === key)) {
+      selectedDocumentKey = key;
+      documentError = '';
+    }
+  }
+
+  function closeDocument(key: string): void {
+    const next = closeDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key);
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    documentError = '';
+  }
+
+  async function focusChatRun(run: ChatRun): Promise<void> {
+    await tick();
+    document.getElementById(chatRunDomId(run))?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById(chatRunDomId(run))?.focus({ preventScroll: true });
+  }
 </script>
 
 <svelte:window
@@ -631,6 +672,7 @@
   ></div>
 
   <main class="main">
+    <div class="stage-content">
     {#if page === 'settings'}
       <section class="settings">
         <header>
@@ -648,17 +690,31 @@
         </div>
       </section>
     {:else if activeDocument}
-      <div class="document-host">
-        <div class="document-toolbar">
-          <button
-            class="back-button"
-            disabled={documents.length < 2}
-            title="Back"
-            aria-label="Back"
-            onclick={(event) => { event.stopPropagation(); documents = documents.slice(0, -1); documentError = ''; }}
-          >←</button>
-          {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
+      <div class="document-stage">
+        <div class="document-tabs" role="tablist" aria-label="Open documents">
+          {#each documents as document (documentTabKey(document))}
+            {@const key = documentTabKey(document)}
+            <div class="document-tab" class:selected={key === selectedDocumentKey}>
+              <button
+                class="document-tab-select"
+                role="tab"
+                aria-selected={key === selectedDocumentKey}
+                title={document.title}
+                onclick={() => selectDocument(key)}
+              >
+                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : 'file'}"></span>
+                <span>{document.title}</span>
+              </button>
+              <button class="document-tab-close" title={`Close ${document.title}`} aria-label={`Close ${document.title}`} onclick={() => closeDocument(key)}>
+                <span aria-hidden="true" class="codicon codicon-close"></span>
+              </button>
+            </div>
+          {/each}
         </div>
+        <div class="document-host" role="tabpanel">
+          <div class="document-toolbar">
+          {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
+          </div>
         {#if activeDocument.kind === 'workstream'}
           <WorkstreamView
             ws={activeDocument}
@@ -687,6 +743,7 @@
             onOpenExternal={openLink}
           />
         {/if}
+        </div>
       </div>
     {:else}
       <section class="empty-state">
@@ -694,6 +751,35 @@
         <h1>Choose active work.</h1>
         <p>Open a workstream, topic, or nanite from the Active rail, or ask through chat.</p>
       </section>
+    {/if}
+    </div>
+
+    {#if page === 'workspace'}
+      <div class="composer-shell">
+        {#if currentChatContext}
+          <div class="composer-context" title={`${currentChatContext.kind}: ${currentChatContext.title}`}>
+            <span aria-hidden="true" class="codicon codicon-file"></span>
+            <span class="composer-context-kind">{currentChatContext.kind}</span>
+            <span class="composer-context-title">{currentChatContext.title}</span>
+          </div>
+        {:else}
+          <div class="composer-context composer-context-empty">No document selected</div>
+        {/if}
+        <form class="composer" onsubmit={(event) => { event.preventDefault(); void send(); }}>
+          <textarea
+            value={input}
+            rows="3"
+            aria-label="Message"
+            placeholder="Write a command to interact with Working Memory"
+            oninput={(event) => updateComposerDraft(event.currentTarget.value)}
+            onkeydown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); }
+            }}></textarea>
+          <button class="send" disabled={busy || pendingConfirmation !== null || !input.trim()} title="Send" aria-label="Send">
+            <span aria-hidden="true" class="codicon codicon-send"></span>
+          </button>
+        </form>
+      </div>
     {/if}
   </main>
 
@@ -740,6 +826,23 @@
         ><span aria-hidden="true" class="codicon codicon-chevron-right"></span></button>
       </header>
 
+      <section class="scope-preview" aria-label="Recent messages for current document">
+        <div class="scope-preview-heading">
+          <span>Current file</span>
+          <strong>{currentChatContext?.title ?? 'No document selected'}</strong>
+        </div>
+        {#if scopedRecentRuns.length === 0}
+          <p>No messages for this scope.</p>
+        {:else}
+          {#each scopedRecentRuns as run (run.journalId ?? run.key)}
+            <button onclick={() => void focusChatRun(run)} title="Show in history">
+              <span>{run.userText}</span>
+              <small>{run.assistantText ?? assistantFallback(run)}</small>
+            </button>
+          {/each}
+        {/if}
+      </section>
+
       <div class="conversation-shell">
       <div bind:this={conversationElement} class="conversation" aria-live="polite" onscroll={handleConversationScroll}>
       {#if historyCursor}
@@ -759,7 +862,7 @@
       {/if}
       {#each chatRuns as run (run.key)}
         {@const scopeTarget = targetForRef(run.scope)}
-        <article class="chat-run" data-journal-id={run.journalId}>
+        <article id={chatRunDomId(run)} class="chat-run" data-journal-id={run.journalId} tabindex="-1">
           <section class="user-entry">
             {#if scopeTarget}
               <button class="user-scope" onclick={() => void openResource(scopeTarget.kind, scopeTarget.identifier)}>
@@ -897,29 +1000,6 @@
         </div>
       {/if}
 
-      <div class="composer-shell">
-        {#if currentChatContext}
-          <div class="composer-context" title={`${currentChatContext.kind}: ${currentChatContext.title}`}>
-            <span aria-hidden="true" class="codicon codicon-file"></span>
-            <span class="composer-context-kind">{currentChatContext.kind}</span>
-            <span class="composer-context-title">{currentChatContext.title}</span>
-          </div>
-        {:else}
-          <div class="composer-context composer-context-empty">No document selected</div>
-        {/if}
-        <form class="composer" onsubmit={(event) => { event.preventDefault(); void send(); }}>
-          <textarea
-            value={input}
-            rows="3"
-            aria-label="Message"
-            placeholder="Write a command to interact with Working Memory"
-            oninput={(event) => updateComposerDraft(event.currentTarget.value)}
-            onkeydown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); }
-          }}></textarea>
-          <button class="send" disabled={busy || pendingConfirmation !== null || !input.trim()} title="Send" aria-label="Send">↑</button>
-        </form>
-      </div>
     {/if}
   </aside>
 </div>
