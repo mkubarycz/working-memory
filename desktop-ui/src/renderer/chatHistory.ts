@@ -32,6 +32,7 @@ export interface ChatRun {
   status: CommandJournalStatus | 'submitting';
   userText: string;
   scope: CommandJournalScopeRef;
+  entityRefs: CommandJournalEntityRef[];
   assistantText?: string;
   tools: ChatToolRow[];
   progress?: ToolProgress[];
@@ -96,6 +97,7 @@ export function summaryToChatRun(summary: CommandJournalSummary): ChatRun {
     status: summary.status,
     userText: summary.request.userText,
     scope: summary.primaryScope,
+    entityRefs: summary.entityRefs,
     assistantText: summary.completion?.finalAssistantText,
     tools: summary.eventSummaries.map((tool) => ({
       journalId: summary.id,
@@ -166,7 +168,7 @@ export function createLiveRun(
   scope: CommandJournalScopeRef,
   startedAt: number,
 ): ChatRun {
-  return { key, startedAt, status: 'submitting', userText, scope, tools: [] };
+  return { key, startedAt, status: 'submitting', userText, scope, entityRefs: [], tools: [] };
 }
 
 export function reconcileLiveRun(runs: ChatRun[], key: string, result: ChatResult): ChatRun[] {

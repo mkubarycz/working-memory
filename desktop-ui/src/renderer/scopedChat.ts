@@ -12,11 +12,12 @@ export function recentRunsForContext(
 ): ChatRun[] {
   if (!context || limit <= 0) return [];
   const contextKind = context.kind.toLowerCase().replaceAll('-', '');
+  const matchesContext = (ref: ChatRun['scope'] | ChatRun['entityRefs'][number]) => (
+    ref.kind.toLowerCase().replaceAll('-', '') === contextKind
+    && (ref.slug === context.identifier || ref.id === context.identifier)
+  );
   return runs
-    .filter((run) => (
-      run.scope.kind.toLowerCase().replaceAll('-', '') === contextKind
-      && (run.scope.slug ?? run.scope.id) === context.identifier
-    ))
+    .filter((run) => matchesContext(run.scope) || run.entityRefs.some(matchesContext))
     .sort((left, right) => right.startedAt - left.startedAt
       || (right.journalId ?? right.key).localeCompare(left.journalId ?? left.key))
     .slice(0, limit);

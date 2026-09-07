@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest';
 import type { ChatRun } from '../src/renderer/chatHistory';
 import { chatRunDomId, recentRunsForContext } from '../src/renderer/scopedChat';
 
-function run(key: string, startedAt: number, kind: string, identifier: string): ChatRun {
+function run(
+  key: string,
+  startedAt: number,
+  kind: string,
+  identifier: string,
+  entityRefs: ChatRun['entityRefs'] = [],
+): ChatRun {
   return {
     key, journalId: `journal/${key}`, startedAt, status: 'succeeded', userText: key,
-    scope: { kind, id: `${identifier}-id`, slug: identifier, title: identifier }, tools: [],
+    scope: { kind, id: `${identifier}-id`, slug: identifier, title: identifier }, entityRefs, tools: [],
   };
 }
 
@@ -27,5 +33,16 @@ describe('scoped chat previews', () => {
     const selected = run('stable', 10, 'Topic', 'selected');
     expect(recentRunsForContext([selected], undefined)).toEqual([]);
     expect(chatRunDomId(selected)).toBe('chat-run-journal%2Fstable');
+  });
+
+  it('includes runs that reference or mutate the current document from another primary scope', () => {
+    const related = run('created-topic', 20, 'Workstream', '0-15-2', [
+      { kind: 'Topic', id: 'topic-uuid', slug: 'selected', relation: 'mutated' },
+    ]);
+    const unrelated = run('other-topic', 30, 'Workstream', '0-15-2', [
+      { kind: 'Topic', id: 'other-uuid', slug: 'other', relation: 'referenced' },
+    ]);
+
+    expect(recentRunsForContext([related, unrelated], context).map((item) => item.key)).toEqual(['created-topic']);
   });
 });
