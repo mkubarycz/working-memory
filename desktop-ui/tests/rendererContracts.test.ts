@@ -14,6 +14,8 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.active-twistie[^}]*width:\s*26px[^}]*height:\s*26px/s);
     expect(activeRail).toContain('data-expandable="true"');
     expect(activeRail).toContain("aria-label=\"{open ? 'Collapse' : 'Expand'} {node.label}\"");
+    expect(activeRail).toContain("codicon-{open ? 'remove' : 'add'}");
+    expect(activeRail).not.toContain("codicon-chevron-{open ? 'down' : 'right'}");
     expect(workstreamView).toContain("aria-label=\"{open ? 'Collapse' : 'Expand'} {node.label}\"");
     expect(workstreamView).toContain('codicon-chevron-');
   });
@@ -44,7 +46,7 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('class:chat-collapsed={chatRailCollapsed}');
   });
 
-  it('keeps Active row actions in a context menu and gives focused topics a separate pin control', () => {
+  it('keeps Active row actions in a context menu and renders focused topics as a pinned strip', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
 
@@ -59,14 +61,20 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).not.toContain('class="active-actions"');
     expect(activeRail).not.toContain('class="active-icon-button focus-button"');
     expect(activeRail).toContain('class="codicon codicon-{topic.icon}"');
+    expect(activeRail).toContain('<section class="pinned-topics"');
+    expect(activeRail).toContain('aria-label={`Pinned topics in ${workstream.label}`}');
     expect(activeRail).toContain('class="focused-topic-open"');
     expect(activeRail).toContain('onclick={() => onOpen(topic.openUri)}');
     expect(activeRail).toContain('class="focused-topic-pin"');
     expect(activeRail).toContain('event.stopPropagation();');
     expect(activeRail).toContain("onToggleFocus(workstream.slug ?? '', topicSlug);");
     expect(activeRail).toContain('class="codicon codicon-pinned"');
-    expect(activeRail).not.toMatch(/focused-topic-pin[\s\S]*?onOpen\(/);
+    expect(activeRail.indexOf('class="focused-topic-pin"')).toBeLessThan(activeRail.indexOf('class="focused-topic-open"'));
     expect(styles).toMatch(/\.active-context-menu[^}]*position:\s*fixed/s);
+    expect(styles).toMatch(/\.pinned-topics[^}]*border-bottom:\s*1px/s);
+    expect(styles).toMatch(/\.focused-topic-pin[^}]*width:\s*30px[^}]*height:\s*30px/s);
+    expect(styles).not.toContain('.focused-topic::before');
+    expect(styles).toMatch(/\.topic-tree::before[^}]*width:\s*1px/s);
   });
 
   it('subdues closed topics without rendering topic status text or muting alerts', () => {
@@ -109,9 +117,9 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('class="composer-context"');
     expect(app).toContain('{currentChatContext.kind}');
     expect(app).toContain('{currentChatContext.title}');
-    expect(styles).toMatch(/\.main[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto/s);
+    expect(styles).toMatch(/\.main[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto auto/s);
     expect(styles).toMatch(/\.stage-content[^}]*overflow:\s*auto/s);
-    expect(styles).toMatch(/\.chat-rail[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\)/s);
+    expect(styles).toMatch(/\.chat-rail[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\)/s);
     expect(styles).toMatch(/\.conversation[^}]*overflow-y:\s*auto/s);
     expect(styles).toMatch(/\.composer-context[^}]*text-overflow:\s*ellipsis/s);
     expect(styles).toMatch(/\.composer-shell[^}]*background:\s*#eceaec/s);
@@ -133,11 +141,22 @@ describe('desktop tree icon contract', () => {
 
   it('shows at most two current-scope messages and targets stable history elements', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const previewIndex = app.indexOf('<section class="scope-preview"');
+    const composerIndex = app.indexOf('<div class="composer-shell">');
+    const chatRailIndex = app.indexOf('<aside class="chat-rail">');
 
     expect(app).toContain('recentRunsForContext(chatRuns, currentChatContext)');
-    expect(app).toContain('class="scope-preview"');
+    expect(app).toContain('aria-label="Related messages for selected document"');
+    expect(app).toContain('<span>Related messages</span>');
+    expect(previewIndex).toBeGreaterThan(app.indexOf('<main class="main">'));
+    expect(previewIndex).toBeLessThan(composerIndex);
+    expect(composerIndex).toBeLessThan(chatRailIndex);
+    expect(app.slice(chatRailIndex)).not.toContain('class="scope-preview"');
     expect(app).toContain('No messages for this scope.');
-    expect(app).toContain('document.getElementById(chatRunDomId(run))?.scrollIntoView');
+    expect(app).toContain('chatRailCollapsed = false;');
+    expect(app).toContain('const target = document.getElementById(chatRunDomId(run));');
+    expect(app).toContain("target?.scrollIntoView({ behavior: 'smooth', block: 'center' });");
+    expect(app).toContain('target?.focus({ preventScroll: true });');
     expect(app).toContain('id={chatRunDomId(run)}');
     expect(app).toContain('tabindex="-1"');
   });

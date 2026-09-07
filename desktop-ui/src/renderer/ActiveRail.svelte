@@ -228,7 +228,7 @@
           aria-expanded={open}
           aria-label="{open ? 'Collapse' : 'Expand'} {node.label}"
           onclick={() => toggle(node)}
-        ><span aria-hidden="true" class="codicon codicon-chevron-{open ? 'down' : 'right'}"></span></button>
+        ><span aria-hidden="true" class="codicon codicon-{open ? 'remove' : 'add'}"></span></button>
       {:else}
         <span class="active-twistie-spacer"></span>
       {/if}
@@ -270,7 +270,13 @@
       aria-label={group.collapsible ? `${open ? 'Collapse' : 'Expand'} ${group.label}` : group.label}
       onclick={() => group.collapsible && toggle(group)}
     >
-      <span aria-hidden="true" class="codicon codicon-chevron-{open ? 'down' : 'right'}"></span>
+      <span
+        aria-hidden="true"
+        class="active-group-disclosure"
+        class:codicon={group.collapsible}
+        class:codicon-remove={group.collapsible && open}
+        class:codicon-add={group.collapsible && !open}
+      ></span>
       <span aria-hidden="true" class="codicon codicon-{group.icon}"></span>
       <span>{group.label}</span>
     </button>
@@ -297,7 +303,7 @@
           aria-expanded={open}
           aria-label="{open ? 'Collapse' : 'Expand'} {workstream.label}"
           onclick={() => toggle(workstream, true)}
-        ><span aria-hidden="true" class="codicon codicon-chevron-{open ? 'down' : 'right'}"></span></button>
+        ><span aria-hidden="true" class="codicon codicon-{open ? 'remove' : 'add'}"></span></button>
       {:else}
         <span class="active-twistie-spacer"></span>
       {/if}
@@ -315,38 +321,46 @@
     </div>
     {#if hasDetails && open}
       <div class="active-card-body">
-        {#each workstream.focused_topics as topic (topic.id)}
-          {@const topicSlug = topicSlugFromOpenUri(topic.openUri)}
-          <div
-            class="focused-topic"
-            role="group"
-            draggable="true"
-            ondragstart={(event) => startResourceDrag(event, topic.openUri, topic.label)}
-            oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', activeContextMenuItems(topic.actions, { topic: topicSlug, focused: topic.focused }))}
-          >
-            <button
-              class="focused-topic-open"
-              title={topic.tooltip}
-              onclick={() => onOpen(topic.openUri)}
-            >
-              <span aria-hidden="true" class="codicon codicon-{topic.icon}"></span>
-              <span class="active-label">{topic.label}</span>
-              {@render alertBubble(topic.alertCount, topic.alertSeverity)}
-            </button>
-            <button
-              class="focused-topic-pin"
-              title="Unpin from workstream"
-              aria-label="Unpin {topic.label} from {workstream.label}"
-              onclick={(event) => {
-                event.stopPropagation();
-                onToggleFocus(workstream.slug ?? '', topicSlug);
-              }}
-            ><span aria-hidden="true" class="codicon codicon-pinned"></span></button>
+        {#if workstream.focused_topics.length > 0}
+          <section class="pinned-topics" aria-label={`Pinned topics in ${workstream.label}`}>
+            {#each workstream.focused_topics as topic (topic.id)}
+              {@const topicSlug = topicSlugFromOpenUri(topic.openUri)}
+              <div
+                class="focused-topic"
+                role="group"
+                draggable="true"
+                ondragstart={(event) => startResourceDrag(event, topic.openUri, topic.label)}
+                oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', activeContextMenuItems(topic.actions, { topic: topicSlug, focused: topic.focused }))}
+              >
+                <button
+                  class="focused-topic-pin"
+                  title="Unpin from workstream"
+                  aria-label="Unpin {topic.label} from {workstream.label}"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    onToggleFocus(workstream.slug ?? '', topicSlug);
+                  }}
+                ><span aria-hidden="true" class="codicon codicon-pinned"></span></button>
+                <button
+                  class="focused-topic-open"
+                  title={topic.tooltip}
+                  onclick={() => onOpen(topic.openUri)}
+                >
+                  <span aria-hidden="true" class="codicon codicon-{topic.icon}"></span>
+                  <span class="active-label">{topic.label}</span>
+                  {@render alertBubble(topic.alertCount, topic.alertSeverity)}
+                </button>
+              </div>
+            {/each}
+          </section>
+        {/if}
+        {#if workstream.children.length > 0}
+          <div class="topic-tree">
+            {#each workstream.children as group (group.id)}
+              {@render topicGroup(group, workstream.slug ?? '')}
+            {/each}
           </div>
-        {/each}
-        {#each workstream.children as group (group.id)}
-          {@render topicGroup(group, workstream.slug ?? '')}
-        {/each}
+        {/if}
       </div>
     {/if}
   </article>

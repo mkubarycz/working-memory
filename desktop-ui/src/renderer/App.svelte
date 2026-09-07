@@ -603,9 +603,11 @@
   }
 
   async function focusChatRun(run: ChatRun): Promise<void> {
+    chatRailCollapsed = false;
     await tick();
-    document.getElementById(chatRunDomId(run))?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    document.getElementById(chatRunDomId(run))?.focus({ preventScroll: true });
+    const target = document.getElementById(chatRunDomId(run));
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target?.focus({ preventScroll: true });
   }
 </script>
 
@@ -755,6 +757,22 @@
     </div>
 
     {#if page === 'workspace'}
+      <section class="scope-preview" aria-label="Related messages for selected document">
+        <div class="scope-preview-heading">
+          <span>Related messages</span>
+          <strong title={currentChatContext?.title}>Selected file: {currentChatContext?.title ?? 'No document selected'}</strong>
+        </div>
+        {#if scopedRecentRuns.length === 0}
+          <p>No messages for this scope.</p>
+        {:else}
+          {#each scopedRecentRuns as run (run.journalId ?? run.key)}
+            <button onclick={() => void focusChatRun(run)} title="Show in history">
+              <span>{run.userText}</span>
+              <small>{run.assistantText ?? assistantFallback(run)}</small>
+            </button>
+          {/each}
+        {/if}
+      </section>
       <div class="composer-shell">
         {#if currentChatContext}
           <div class="composer-context" title={`${currentChatContext.kind}: ${currentChatContext.title}`}>
@@ -825,23 +843,6 @@
           onclick={() => (chatRailCollapsed = true)}
         ><span aria-hidden="true" class="codicon codicon-chevron-right"></span></button>
       </header>
-
-      <section class="scope-preview" aria-label="Recent messages for current document">
-        <div class="scope-preview-heading">
-          <span>Current file</span>
-          <strong>{currentChatContext?.title ?? 'No document selected'}</strong>
-        </div>
-        {#if scopedRecentRuns.length === 0}
-          <p>No messages for this scope.</p>
-        {:else}
-          {#each scopedRecentRuns as run (run.journalId ?? run.key)}
-            <button onclick={() => void focusChatRun(run)} title="Show in history">
-              <span>{run.userText}</span>
-              <small>{run.assistantText ?? assistantFallback(run)}</small>
-            </button>
-          {/each}
-        {/if}
-      </section>
 
       <div class="conversation-shell">
       <div bind:this={conversationElement} class="conversation" aria-live="polite" onscroll={handleConversationScroll}>
