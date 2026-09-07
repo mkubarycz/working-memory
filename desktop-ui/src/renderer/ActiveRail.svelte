@@ -211,7 +211,7 @@
   {@const open = expanded.has(node.id)}
   {@const topicSlug = node.kind === 'topic' ? topicSlugFromOpenUri(node.openUri) : ''}
   {@const menuItems = activeContextMenuItems(node.actions, node.kind === 'topic' ? { topic: topicSlug, focused: node.focused } : undefined)}
-  <li class="active-tree-node" style="--tree-depth: {depth}">
+  <li class="active-tree-node" class:expanded={children.length > 0 && open} style="--tree-depth: {depth}">
     <div
       class="active-row"
       class:nanite={node.kind === 'nanite'}
@@ -249,7 +249,7 @@
       {/if}
     </div>
     {#if children.length > 0 && open}
-      <ul class="active-tree">
+      <ul class="active-tree branch-tree">
         {#each children as child (child.id)}
           {@render nodeRow(child, workstream, depth + 1)}
         {/each}
@@ -260,7 +260,7 @@
 
 {#snippet topicGroup(group: PanelTopicsGroup, workstream: string)}
   {@const open = expanded.has(group.id)}
-  <section class="active-group">
+  <section class="active-group" class:expanded={!group.collapsible || open}>
     <div class="active-group-header">
       {#if group.collapsible}
         <button
@@ -277,7 +277,7 @@
       <span>{group.label}</span>
     </div>
     {#if !group.collapsible || open}
-      <ul class="active-tree">
+      <ul class="active-tree branch-tree">
         {#each group.children as node (node.id)}
           {@render nodeRow(node, workstream, 0)}
         {/each}

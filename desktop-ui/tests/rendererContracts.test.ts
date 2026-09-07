@@ -35,9 +35,12 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.active-card-body[^}]*--active-tree-control-width:\s*22px/s);
     expect(styles).toMatch(/\.active-tree-node[^}]*padding-left:\s*0/s);
     expect(styles).toMatch(/\.topic-tree[^}]*--graph-color:\s*var\(--ws-card-border\)/s);
-    expect(styles).toMatch(/\.topic-tree::before[^}]*width:\s*2px[^}]*background:\s*var\(--graph-color\)/s);
     expect(styles).toMatch(/\.graph-node-dot[^}]*border:\s*2px solid var\(--graph-color\)[^}]*border-radius:\s*50%/s);
-    expect(styles).toMatch(/\.active-tree \.active-tree::before[^}]*background:\s*var\(--graph-color\)/s);
+    expect(styles).toMatch(/\.branch-tree[^}]*margin-left:\s*17px/s);
+    expect(styles).toMatch(/\.branch-tree::before[^}]*border-bottom:\s*2px solid var\(--graph-color\)[^}]*border-left:\s*2px solid var\(--graph-color\)[^}]*border-bottom-left-radius:\s*11px/s);
+    expect(styles).toMatch(/\.active-tree-node:not\(:last-child\) > \.branch-tree::after[^}]*border-right:\s*2px solid var\(--graph-color\)[^}]*border-bottom-right-radius:\s*11px/s);
+    expect(styles).toMatch(/\.active-tree-node\.expanded::after[^}]*display:\s*none/s);
+    expect(styles).not.toContain('.topic-tree::before');
     expect(styles).toMatch(/\.active-tree-node > \.active-row > \.graph-node-control[^}]*width:\s*var\(--active-tree-control-width\)/s);
     expect(styles).toMatch(/\.active-card-header, \.active-row[^}]*min-height:\s*32px/s);
     expect(styles).toMatch(/\.shell\.active-collapsed[^}]*grid-template-columns:\s*36px/s);
@@ -76,7 +79,7 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.pinned-topics[^}]*border-bottom:\s*1px/s);
     expect(styles).toMatch(/\.focused-topic-pin[^}]*width:\s*30px[^}]*height:\s*30px/s);
     expect(styles).not.toContain('.focused-topic::before');
-    expect(styles).toMatch(/\.topic-tree::before[^}]*width:\s*2px/s);
+    expect(styles).toMatch(/\.branch-tree::before[^}]*border-bottom-left-radius:\s*11px/s);
   });
 
   it('renders queue and backlog as summaries while progress alone owns disclosure and graph details', () => {
