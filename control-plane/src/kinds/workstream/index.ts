@@ -11,7 +11,8 @@
  *   - `slug`       → `metadata.slug`
  *   - `opened_at`  → `metadata.createdAt`
  *   - `closed_at` / `updated_at` → `metadata` timestamps
- * So `spec` below is only the authored/domain fields (title, status, closure).
+ * So `spec` below is only the authored/domain fields (title, status, closure,
+ * position).
  * Workstreams have NO body — none is added here.
  *
  * Drop-in discovered by `loader.ts`; no registration list to edit.
@@ -36,6 +37,7 @@ import { registerWsWorkstreamCreate } from './create.js';
 import { registerWsWorkstreamRead } from './read.js';
 import { registerWsWorkstreamUpdate } from './update.js';
 import { registerWsWorkstreamDelete } from './delete.js';
+import { registerWsWorkstreamReorder } from './reorder.js';
 
 // Re-export the domain type + POCO interface so type consumers of the kind can
 // import them from the kind entry point (e.g. the default import in
@@ -57,6 +59,7 @@ const workstream: KindModule = {
         // The closure note, set when the workstream is closed (mirrors the
         // `closure` column). Optional — absent while the workstream is active.
         closure: z.string().optional(),
+        position: z.number().finite().default(0),
       })
       .strict(),
     // No envelope `status` schema → inherit Base (lifecycle-only, empty {}).
@@ -81,6 +84,7 @@ function registerWorkstreamApi(server: McpServer, store: Store): void {
   registerWsWorkstreamRead(server, store);
   registerWsWorkstreamUpdate(server, store);
   registerWsWorkstreamDelete(server, store);
+  registerWsWorkstreamReorder(server, store);
 }
 
 export default workstream;

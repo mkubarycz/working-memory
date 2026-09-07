@@ -918,6 +918,8 @@ export interface WorkstreamTree {
  * Compose a workstream's {@link WorkstreamTree}. Extracted from
  * {@link buildDomainWorkstreamCard} so the rail card and the Svelte workstream
  * editor build the SAME nested topic/nanite structure from the same inputs.
+ * The full tree retains every member; only open focused topics appear in the
+ * pinned strip.
  */
 export function buildWorkstreamTree(
   wsId: string,
@@ -956,7 +958,7 @@ export function buildWorkstreamTree(
       naniteTemplates,
     );
     groups.push(group);
-    focusedTopics = orderedTopics.filter((t) => t.focused);
+    focusedTopics = orderedTopics.filter((t) => t.focused && t.status === 'open');
   }
   const nanitesGroup = buildWorkstreamNanitesGroup(
     wsId,
@@ -1083,7 +1085,12 @@ export function buildWorkstreamPanels(input: {
   const archived: PanelWorkstream[] = [];
   const nanites = input.nanites ?? [];
   const naniteTemplates = input.naniteTemplates ?? [];
-  for (const ws of input.workstreams) {
+  const orderedWorkstreams = input.workstreams
+    .map((workstream, index) => ({ workstream, index }))
+    .sort((left, right) =>
+      (left.workstream.position ?? 0) - (right.workstream.position ?? 0) || left.index - right.index)
+    .map(({ workstream }) => workstream);
+  for (const ws of orderedWorkstreams) {
     if (ws.status === 'closed') {
       archived.push(
         buildDomainWorkstreamCard(ws, 'archive', input.topics, typeMap, alerts, nanites, naniteTemplates),

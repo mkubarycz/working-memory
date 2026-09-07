@@ -107,14 +107,9 @@ async function runNaniteInstance(
  * Build a runner registry with the extension-host runner wired up (per-run
  * GitHub token + dev-container factory + `vscode.lm` bridge). Shared by the
  * dispatcher/manual run path ({@link runNaniteInstance}) and the chat-directed
- * agent path ({@link directAgent}). `postCompletion:false` suppresses the
- * runner's own chat write-back so the agent path can journal under its own
- * scope instead.
+ * agent path ({@link directAgent}).
  */
-async function buildNaniteRunnerRegistry(
-  client: ControlPlaneClient,
-  opts?: { postCompletion?: boolean },
-): Promise<NaniteRunnerRegistry> {
+async function buildNaniteRunnerRegistry(client: ControlPlaneClient): Promise<NaniteRunnerRegistry> {
   const registry = new NaniteRunnerRegistry(EXTENSION_HOST_RUNNER_ID);
   // A per-run GitHub token (from SecretStorage) + the container factory, wired
   // only when we know where global storage lives. The bridge is created PER RUN
@@ -145,7 +140,6 @@ async function buildNaniteRunnerRegistry(
       containerFactory,
       // Redact this token from the persisted run record (value + patterns).
       githubToken,
-      postCompletion: opts?.postCompletion,
     }),
   );
   return registry;
@@ -154,13 +148,12 @@ async function buildNaniteRunnerRegistry(
 /**
  * The chat-directed AGENT path (`nanites-as-longlived-chattable-agents`): run a
  * long-lived nanite once with a fresh directive as its request, returning the
- * run result so the caller (the command widget) can journal the exchange under
- * the agent's own scope. Re-directable — a terminal (Succeeded/Failed) agent is
+ * run result so the command widget can render the exchange in memory.
+ * Re-directable — a terminal (Succeeded/Failed) agent is
  * reset to Pending before the run; a still-Running agent is refused as busy.
  *
  * NOTE (increment 1): the directive overrides the in-memory `request` used to
- * build the prompt, but the stored `spec.request` is left as-is — the durable
- * record of the back-and-forth is the agent's chat, not the nanite doc.
+ * build the prompt, but the stored `spec.request` is left as-is.
  */
 async function directAgent(
   client: ControlPlaneClient,
@@ -188,7 +181,7 @@ async function directAgent(
       tpl ?? (await client.naniteTemplateRead({ id: ready.templateId }))[0];
     provider = providerFromSettings(template?.executionSettings);
   }
-  const registry = await buildNaniteRunnerRegistry(client, { postCompletion: false });
+  const registry = await buildNaniteRunnerRegistry(client);
   return registry.resolve(provider).run({ ...ready, request: directive });
 }
 
@@ -857,7 +850,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (!kind || !id) {
           const pickedKind = await vscode.window.showQuickPick(
-            ['topic', 'topic-type', 'workstream', 'alert'],
+            ['topic', 'topic-type', 'workstream', 'alert', 'document'],
             { placeHolder: 'Kind of working-memory doc to open' },
           );
           if (!pickedKind) {
@@ -875,10 +868,11 @@ export function activate(context: vscode.ExtensionContext): void {
           kind !== 'topic' &&
           kind !== 'topic-type' &&
           kind !== 'workstream' &&
-          kind !== 'alert'
+          kind !== 'alert' &&
+          kind !== 'document'
         ) {
           vscode.window.showWarningMessage(
-            `Working Memory: unknown kind "${kind}" (expected topic|topic-type|workstream|alert).`,
+            `Working Memory: unknown kind "${kind}" (expected topic|topic-type|workstream|alert|document).`,
           );
           return;
         }
@@ -1262,7 +1256,8 @@ export function activate(context: vscode.ExtensionContext): void {
           kind !== 'topic' &&
           kind !== 'topic-type' &&
           kind !== 'workstream' &&
-          kind !== 'alert'
+          kind !== 'alert' &&
+          kind !== 'document'
         ) {
           vscode.window.showErrorMessage(
             `Working Memory: unrecognized deep link: ${uri.toString()}`,

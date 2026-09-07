@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { openStore } from '../src/store';
+import { ConflictError, openStore } from '../src/store';
 
 // node:sqlite requires Node >= 22.5 (and, on some builds, --experimental-sqlite).
 // Detect availability so this suite stays green on runtimes that lack it rather
@@ -40,6 +40,39 @@ try {
     } finally {
       store.close();
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back an entire batch when a later CAS update fails', () => {
+    const store = openStore(':memory:');
+    try {
+      const first = store.createDocument({ kind: 'Test', slug: 'first', spec: { title: 'First' } });
+      const second = store.createDocument({ kind: 'Test', slug: 'second', spec: { title: 'Second' } });
+      const beforeVersion = store.db
+        .prepare("SELECT value FROM store_meta WHERE key = 'resource_version'")
+        .get() as unknown as { value: number };
+
+      expect(() => store.updateDocuments([
+        {
+          id: first.metadata.id,
+          expectedResourceVersion: first.metadata.resourceVersion,
+          spec: { title: 'Changed' },
+        },
+        {
+          id: second.metadata.id,
+          expectedResourceVersion: second.metadata.resourceVersion + 1,
+          spec: { title: 'Never written' },
+        },
+      ])).toThrow(ConflictError);
+
+      expect(store.getDocument({ id: first.metadata.id })?.spec).toEqual({ title: 'First' });
+      expect(store.getDocument({ id: second.metadata.id })?.spec).toEqual({ title: 'Second' });
+      const afterVersion = store.db
+        .prepare("SELECT value FROM store_meta WHERE key = 'resource_version'")
+        .get() as unknown as { value: number };
+      expect(afterVersion.value).toBe(beforeVersion.value);
+    } finally {
+      store.close();
     }
   });
 });

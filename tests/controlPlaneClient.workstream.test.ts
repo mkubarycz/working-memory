@@ -110,13 +110,27 @@ describe('ControlPlaneClient ws-* methods (mocked callTool)', () => {
     callToolMock.mockResolvedValueOnce(okText(updated));
     const client = makeClient();
 
-    const result = await client.wsUpdate({ slug: 'cp', title: 'v2', status: 'closed' });
+    const result = await client.wsUpdate({ slug: 'cp', title: 'v2', status: 'closed', position: 4 });
 
     expect(callToolMock).toHaveBeenCalledWith({
       name: 'ws-workstream-update',
-      arguments: { slug: 'cp', title: 'v2', status: 'closed' },
+      arguments: { slug: 'cp', title: 'v2', status: 'closed', position: 4 },
     });
     expect(result).toEqual(updated);
+  });
+
+  it('wsReorder forwards the batch and parses mapped Workstreams', async () => {
+    callToolMock.mockResolvedValueOnce(okText([sampleWs]));
+    const client = makeClient();
+    const updates = [{ slug: 'cp', status: 'progress' as const, position: 1 }];
+
+    const result = await client.wsReorder({ updates });
+
+    expect(callToolMock).toHaveBeenCalledWith({
+      name: 'ws-workstream-reorder',
+      arguments: { updates },
+    });
+    expect(result).toEqual([sampleWs]);
   });
 
   it('wsDelete parses { ok, slug } and forwards restore:true', async () => {

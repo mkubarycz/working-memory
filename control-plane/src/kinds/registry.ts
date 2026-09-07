@@ -80,7 +80,10 @@ function compose(parent: ZodTypeAny, own: ZodTypeAny | undefined): ZodTypeAny {
   const p = asObject(parent);
   const o = asObject(own);
   if (p && o) {
-    const merged = p.extend(o.shape);
+    const inherited = Object.fromEntries(
+      Object.entries(p.shape).filter(([key]) => !(key in o.shape)),
+    );
+    const merged = o.safeExtend(inherited);
     return isStrictObject(o) ? merged.strict() : merged;
   }
   return own;

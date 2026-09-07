@@ -46,6 +46,7 @@ export interface IWorkstream {
   title: string;
   status: WorkstreamLifecycleStatus;
   closure: string | null;
+  position: number;
   opened_at: number;
   updated_at: number;
   closed_at: number | null;
@@ -63,6 +64,7 @@ export class Workstream implements IWorkstream {
   title: string;
   status: WorkstreamLifecycleStatus;
   closure: string | null;
+  position: number;
   opened_at: number;
   updated_at: number;
   closed_at: number | null;
@@ -77,6 +79,7 @@ export class Workstream implements IWorkstream {
     this.title = typeof spec.title === 'string' ? spec.title : '';
     this.status = status;
     this.closure = closure;
+    this.position = typeof env.spec.position === 'number' ? env.spec.position : 0;
     this.opened_at = env.metadata.createdAt;
     this.updated_at = env.metadata.updatedAt;
     // The store has no closed_at column; best-effort is the last update time

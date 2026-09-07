@@ -49,6 +49,12 @@ export interface ListDocumentsInput {
   kind?: string;
 }
 
+export interface CreationOrderedDocument {
+  document: DocumentEnvelope;
+  /** SQLite insertion sequence; immutable for the lifetime of the stored row. */
+  creationSequence: number;
+}
+
 export interface GetDocumentInput {
   id?: string;
   slug?: string;
@@ -157,6 +163,8 @@ export interface Store {
   createDocument(input: CreateDocumentInput): DocumentEnvelope;
   /** List non-deleted documents (newest first), optionally filtered by kind. */
   listDocuments(input?: ListDocumentsInput): DocumentEnvelope[];
+  /** List live documents by immutable creation time and insertion sequence, newest first. */
+  listDocumentsByCreation(input?: ListDocumentsInput): CreationOrderedDocument[];
   /** Fetch one document by id, or by slug (optionally scoped by kind). Live rows
    * only unless `includeDeleted` is set (used to locate a doc for undelete). */
   getDocument(input: GetDocumentInput): DocumentEnvelope | null;
@@ -169,6 +177,8 @@ export interface Store {
    * exists.
    */
   updateDocument(input: UpdateDocumentInput): DocumentEnvelope;
+  /** Atomically apply multiple CAS updates; any failure rolls back the entire batch. */
+  updateDocuments(inputs: UpdateDocumentInput[]): DocumentEnvelope[];
   close(): void;
 }
 
@@ -184,6 +194,10 @@ interface ResourceRow {
   updated_at: number;
   deleted_at: number | null;
   resource_version: number;
+}
+
+interface CreationOrderedResourceRow extends ResourceRow {
+  creation_sequence: number;
 }
 
 function loadSqlite(): typeof import('node:sqlite') {
@@ -352,6 +366,32 @@ export function openStore(dbFilePath: string): Store {
     return rows.map(rowToEnvelope);
   }
 
+  function listDocumentsByCreation(
+    input: ListDocumentsInput = {},
+  ): CreationOrderedDocument[] {
+    const rows = (
+      input.kind
+        ? db
+            .prepare(
+              `SELECT *, rowid AS creation_sequence FROM resources
+               WHERE deleted_at IS NULL AND kind = ?
+               ORDER BY created_at DESC, rowid DESC`,
+            )
+            .all(input.kind)
+        : db
+            .prepare(
+              `SELECT *, rowid AS creation_sequence FROM resources
+               WHERE deleted_at IS NULL
+               ORDER BY created_at DESC, rowid DESC`,
+            )
+            .all()
+    ) as unknown as CreationOrderedResourceRow[];
+    return rows.map((row) => ({
+      document: rowToEnvelope(row),
+      creationSequence: row.creation_sequence,
+    }));
+  }
+
   function getDocument(input: GetDocumentInput): DocumentEnvelope | null {
     // `includeDeleted` drops the live-only filter so a soft-deleted row can be
     // located (e.g. to undelete it by slug). Defaults to live-only.
@@ -446,6 +486,61 @@ export function openStore(dbFilePath: string): Store {
         db.exec('ROLLBACK');
       }
       throw err;
+    }
+  }
+
+  function updateDocuments(inputs: UpdateDocumentInput[]): DocumentEnvelope[] {
+    if (new Set(inputs.map((input) => input.id)).size !== inputs.length) {
+      throw new Error('Batch update contains duplicate document ids.');
+    }
+    const now = nowSeconds();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const updated: DocumentEnvelope[] = [];
+      for (const input of inputs) {
+        const live = db
+          .prepare('SELECT resource_version FROM resources WHERE id = ? AND deleted_at IS NULL')
+          .get(input.id) as unknown as { resource_version: number } | undefined;
+        if (!live) throw new NotFoundError(input.id);
+        if (live.resource_version !== input.expectedResourceVersion) {
+          throw new ConflictError(input.id, input.expectedResourceVersion, live.resource_version);
+        }
+
+        db.prepare("UPDATE store_meta SET value = value + 1 WHERE key = 'resource_version'").run();
+        const counter = db
+          .prepare("SELECT value FROM store_meta WHERE key = 'resource_version'")
+          .get() as unknown as { value: number } | undefined;
+        const next = counter?.value ?? 0;
+        const setCols = ['spec = ?', 'updated_at = ?', 'resource_version = ?'];
+        const params: unknown[] = [JSON.stringify(input.spec), now, next];
+        if (input.slug !== undefined) {
+          setCols.push('slug = ?');
+          params.push(input.slug);
+        }
+        if (input.labels !== undefined) {
+          setCols.push('labels = ?');
+          params.push(JSON.stringify(input.labels));
+        }
+        if (input.status !== undefined) {
+          setCols.push('status = ?');
+          params.push(JSON.stringify(input.status));
+        }
+        params.push(input.id, input.expectedResourceVersion);
+        const result = db.prepare(
+          `UPDATE resources SET ${setCols.join(', ')}
+           WHERE id = ? AND resource_version = ? AND deleted_at IS NULL`,
+        ).run(...(params as never[]));
+        if (Number(result.changes) === 0) {
+          throw new ConflictError(input.id, input.expectedResourceVersion, live.resource_version);
+        }
+        const row = db.prepare('SELECT * FROM resources WHERE id = ?').get(input.id) as unknown as ResourceRow;
+        updated.push(rowToEnvelope(row));
+      }
+      db.exec('COMMIT');
+      return updated;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
   }
 
@@ -563,8 +658,10 @@ export function openStore(dbFilePath: string): Store {
     path: dbFilePath,
     createDocument,
     listDocuments,
+    listDocumentsByCreation,
     getDocument,
     updateDocument,
+    updateDocuments,
     deleteDocument,
     restoreDocument,
     close(): void {
