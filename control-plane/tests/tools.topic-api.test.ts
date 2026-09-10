@@ -96,8 +96,84 @@ async function connect(store: Store): Promise<{
           'ws-topic-read',
           'ws-topic-update',
           'ws-topic-delete',
+          'ws-topic-transfer',
         ]),
       );
+    } finally {
+      await close();
+    }
+  });
+
+  it('atomically copies or moves a topic and its descendant closure between workstreams', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      const createWorkstream = (slug: string) => client.callTool({
+        name: 'ws-workstream-create', arguments: { slug, title: slug },
+      });
+      await Promise.all(['source', 'target', 'moved', 'private'].map(createWorkstream));
+      const create = (slug: string, parents: string[] = [], workstreams = ['source'], focusedWorkstreams: string[] = []) =>
+        client.callTool({ name: 'ws-topic-create', arguments: { slug, title: slug, parents, workstreams, focusedWorkstreams } });
+      await create('root', ['cycle'], ['source'], ['source']);
+      await create('child', ['root']);
+      await create('grandchild', ['child']);
+      await create('multi-parent', ['root', 'child']);
+      await create('cycle', ['grandchild']);
+      await create('unrelated');
+      await create('out-of-scope-child', ['root'], ['private']);
+
+      const copied = jsonOf<ITopic[]>(await client.callTool({
+        name: 'ws-topic-transfer',
+        arguments: { slug: 'root', sourceWorkstream: 'source', targetWorkstream: 'target', move: false },
+      }));
+      expect(copied.map((topic) => topic.slug).sort()).toEqual(
+        ['root', 'child', 'multi-parent', 'grandchild', 'cycle'].sort(),
+      );
+      expect(copied.every((topic) => topic.workstreams.includes('source') && topic.workstreams.includes('target'))).toBe(true);
+      expect(copied.find((topic) => topic.slug === 'root')?.focusedWorkstreams).toEqual(['source']);
+
+      const outOfScopeChild = jsonOf<TopicList>(await client.callTool({
+        name: 'ws-topic-read', arguments: { slug: 'out-of-scope-child' },
+      })).topics[0];
+      expect(outOfScopeChild?.workstreams).toEqual(['private']);
+
+      const moved = jsonOf<ITopic[]>(await client.callTool({
+        name: 'ws-topic-transfer',
+        arguments: { slug: 'root', sourceWorkstream: 'source', targetWorkstream: 'moved', move: true },
+      }));
+      expect(moved).toHaveLength(5);
+      expect(moved.every((topic) => !topic.workstreams.includes('source') && topic.workstreams.includes('moved'))).toBe(true);
+      expect(moved.every((topic) => !topic.focusedWorkstreams.includes('source'))).toBe(true);
+
+      const unrelated = jsonOf<TopicList>(await client.callTool({
+        name: 'ws-topic-read', arguments: { slug: 'unrelated' },
+      })).topics[0];
+      expect(unrelated?.workstreams).toEqual(['source']);
+    } finally {
+      await close();
+    }
+  });
+
+  it('rejects a transfer when either workstream does not exist', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({
+        name: 'ws-workstream-create', arguments: { slug: 'source', title: 'Source' },
+      });
+      await client.callTool({
+        name: 'ws-topic-create', arguments: { slug: 'root', title: 'Root', workstreams: ['source'] },
+      });
+
+      const rejected = await client.callTool({
+        name: 'ws-topic-transfer',
+        arguments: { slug: 'root', sourceWorkstream: 'source', targetWorkstream: 'missing' },
+      });
+
+      expect(isErrorResult(rejected)).toBe(true);
+      expect(textOf(rejected)).toContain('Unknown workstream slug: "missing"');
+      const root = jsonOf<TopicList>(await client.callTool({
+        name: 'ws-topic-read', arguments: { slug: 'root' },
+      })).topics[0];
+      expect(root?.workstreams).toEqual(['source']);
     } finally {
       await close();
     }

@@ -148,6 +148,26 @@ describe('DesktopChatAgent', () => {
     expect(journal.current()?.completion?.mutated).toBe(true);
   });
 
+  it('classifies topic transfer calls as mutations', async () => {
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'a', function: { name: 'ws-topic-transfer', arguments: '{"slug":"parent","sourceWorkstream":"one","targetWorkstream":"two"}' } },
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Done.' } }] });
+    const journal = journalHarness();
+    const agent = new DesktopChatAgent({
+      ...options(callModel, undefined, journal),
+      listTools: async () => [
+        { name: 'ws-topic-transfer', inputSchema: { type: 'object', properties: { slug: { type: 'string' } } } },
+      ],
+    });
+
+    const result = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'transfer', headers: {} });
+
+    expect(result.mutated).toBe(true);
+    expect(journal.current()?.completion?.mutated).toBe(true);
+  });
+
   it('creates the durable journal before the first model request and strips endpoint secrets', async () => {
     const order: string[] = [];
     const journal = journalHarness();

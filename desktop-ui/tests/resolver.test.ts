@@ -165,6 +165,14 @@ describe('workstream resolver', () => {
     )).toEqual({
       kind: 'topic', operation: 'detach', slug: 'desktop-parity', workstream: roadmap.slug,
     });
+    expect(resolveDesktopAction(
+      'workingMemory.topic.transfer',
+      [{ topicSlug: 'desktop-parity', sourceWorkstream: 'source', move: true }],
+      roadmap.slug!,
+    )).toEqual({
+      kind: 'topic', operation: 'transfer', slug: 'desktop-parity',
+      sourceWorkstream: 'source', targetWorkstream: roadmap.slug, move: true,
+    });
     expect(() => resolveDesktopAction('workingMemory.unknown', [], roadmap.slug!))
       .toThrow('Unsupported desktop action');
   });

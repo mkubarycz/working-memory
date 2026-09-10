@@ -141,7 +141,7 @@ export function systemPromptForContext(context?: ChatContext): string {
   ].join(' ');
 }
 
-const MUTATING_ACTION = /-(create|update|delete|run|reorder)$/;
+const MUTATING_ACTION = /-(create|update|delete|run|reorder|transfer)$/;
 
 export class DesktopChatAgent {
   private readonly pending = new Map<string, Session>();

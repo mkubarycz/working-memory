@@ -23,6 +23,8 @@
   import { createDocumentSaveQueue } from './documentSaveQueue';
   import {
     closeDocumentTab,
+    closeDocumentTabsToRight,
+    closeOtherDocumentTabs,
     documentTabKey,
     openDocumentTab,
     replaceSelectedTab,
@@ -31,6 +33,7 @@
   import { chatRunDomId, recentRunsForContext } from './scopedChat';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
+  import { topicTransferRefreshTargets, type TopicTransferRequest } from './topicTransfer';
   import type { WorkstreamSection } from '../../../src/panelData';
   import type { RailSide, RailWidths } from './railLayout';
   import {
@@ -69,6 +72,8 @@
   let documentError = $state('');
   let documentSaveStates = $state<Record<string, SaveState>>({});
   let documentSaveErrors = $state<Record<string, string>>({});
+  let documentTabMenu = $state<{ x: number; y: number; key: string } | null>(null);
+  let documentTabMenuElement = $state<HTMLDivElement | null>(null);
   let busy = $state(false);
   let endpoint = $state('');
   let model = $state('');
@@ -564,6 +569,52 @@
     void mutateFromRail(workstream, () => invokeActiveAction(window.workingMemory.invokeAction, workstream, action));
   }
 
+  async function transferActiveTopic(request: TopicTransferRequest): Promise<void> {
+    activeLoading = true;
+    activeError = '';
+    let transferError = '';
+    try {
+      await documentSaves.flushAll();
+      await window.workingMemory.invokeAction(
+        request.targetWorkstream,
+        'workingMemory.topic.transfer',
+        [{
+          topicSlug: request.slug,
+          sourceWorkstream: request.sourceWorkstream,
+          move: request.move,
+        }],
+      );
+      const targets = topicTransferRefreshTargets(
+        documents,
+        request.sourceWorkstream,
+        request.targetWorkstream,
+      );
+      const refreshed = await Promise.allSettled(targets.map(async (target) => ({
+        key: target.key,
+        document: await window.workingMemory.openResource(target.kind, target.identifier),
+      })));
+      let state = { tabs: documents, selectedKey: selectedDocumentKey };
+      for (const result of refreshed) {
+        if (result.status === 'fulfilled') {
+          state = updateDocumentTab(state, result.value.key, result.value.document);
+        }
+      }
+      documents = state.tabs;
+      selectedDocumentKey = state.selectedKey;
+      restoreDocumentSaveStatus(state.selectedKey);
+      const failedRefreshes = refreshed.filter((result) => result.status === 'rejected').length;
+      if (failedRefreshes > 0) {
+        transferError = `Transfer completed, but ${failedRefreshes} open ${failedRefreshes === 1 ? 'tab' : 'tabs'} could not be refreshed.`;
+      }
+    } catch (error) {
+      transferError = error instanceof Error ? error.message : String(error);
+    } finally {
+      activeLoading = false;
+      await refreshActive();
+      if (transferError) activeError = transferError;
+    }
+  }
+
   async function reorderActiveWorkstream(
     slug: string,
     targetSection: WorkstreamSection,
@@ -669,11 +720,61 @@
     }
   }
 
-  function closeDocument(key: string): void {
-    const next = closeDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key);
+  function applyDocumentTabs(next: { tabs: DocumentVM[]; selectedKey: string | null }): void {
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
     restoreDocumentSaveStatus(next.selectedKey);
+  }
+
+  function closeDocument(key: string): void {
+    documentTabMenu = null;
+    applyDocumentTabs(closeDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key));
+  }
+
+  async function openDocumentTabMenu(event: MouseEvent, key: string): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    selectDocument(key);
+    documentTabMenu = { x: event.clientX, y: event.clientY, key };
+    await tick();
+    if (!documentTabMenu || !documentTabMenuElement) return;
+    const bounds = documentTabMenuElement.getBoundingClientRect();
+    documentTabMenu = {
+      ...documentTabMenu,
+      x: Math.max(4, Math.min(documentTabMenu.x, window.innerWidth - bounds.width - 4)),
+      y: Math.max(4, Math.min(documentTabMenu.y, window.innerHeight - bounds.height - 4)),
+    };
+    documentTabMenuElement.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }
+
+  function runDocumentTabMenuAction(action: 'close' | 'others' | 'right'): void {
+    const key = documentTabMenu?.key;
+    documentTabMenu = null;
+    if (!key) return;
+    const state = { tabs: documents, selectedKey: selectedDocumentKey };
+    applyDocumentTabs(action === 'close'
+      ? closeDocumentTab(state, key)
+      : action === 'others'
+        ? closeOtherDocumentTabs(state, key)
+        : closeDocumentTabsToRight(state, key));
+  }
+
+  function navigateDocumentTabMenu(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      documentTabMenu = null;
+      return;
+    }
+    if (!documentTabMenuElement || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const items = [...documentTabMenuElement.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0
+      : event.key === 'End' ? items.length - 1
+        : event.key === 'ArrowDown' ? (current + 1) % items.length
+          : (current - 1 + items.length) % items.length;
+    items[next]?.focus();
   }
 
   function clearPreviewAttention(target = previewAttentionTarget): void {
@@ -740,8 +841,13 @@
 </script>
 
 <svelte:window
-  onclick={handleDocumentClick}
-  onkeydown={(event) => { if (event.key === 'Escape' && selectedTool) selectedTool = null; }}
+  onclick={(event) => { documentTabMenu = null; handleDocumentClick(event); }}
+  onkeydown={(event) => {
+    if (event.key === 'Escape') {
+      documentTabMenu = null;
+      if (selectedTool) selectedTool = null;
+    }
+  }}
 />
 
 <div
@@ -777,6 +883,7 @@
           onToggleFocus={toggleActiveFocus}
           onAction={runActiveAction}
           onReorder={reorderActiveWorkstream}
+          onTransferTopic={transferActiveTopic}
         />
       {/key}
     {/if}
@@ -825,7 +932,12 @@
         <div class="document-tabs" role="tablist" aria-label="Open documents">
           {#each documents as document (documentTabKey(document))}
             {@const key = documentTabKey(document)}
-            <div class="document-tab" class:selected={key === selectedDocumentKey}>
+            <div
+              class="document-tab"
+              class:selected={key === selectedDocumentKey}
+              role="presentation"
+              oncontextmenu={(event) => void openDocumentTabMenu(event, key)}
+            >
               <button
                 class="document-tab-select"
                 role="tab"
@@ -842,6 +954,29 @@
             </div>
           {/each}
         </div>
+        {#if documentTabMenu}
+          {@const menuIndex = documents.findIndex((document) => documentTabKey(document) === documentTabMenu?.key)}
+          <div
+            bind:this={documentTabMenuElement}
+            class="document-tab-menu"
+            role="menu"
+            aria-label="Document tab actions"
+            tabindex="-1"
+            style="left: {documentTabMenu.x}px; top: {documentTabMenu.y}px;"
+            onclick={(event) => event.stopPropagation()}
+            onkeydown={navigateDocumentTabMenu}
+          >
+            <button role="menuitem" onclick={() => runDocumentTabMenuAction('close')}>
+              <span aria-hidden="true" class="codicon codicon-close"></span><span>Close</span>
+            </button>
+            <button role="menuitem" disabled={documents.length <= 1} onclick={() => runDocumentTabMenuAction('others')}>
+              <span aria-hidden="true" class="codicon codicon-close-all"></span><span>Close Others</span>
+            </button>
+            <button role="menuitem" disabled={menuIndex < 0 || menuIndex === documents.length - 1} onclick={() => runDocumentTabMenuAction('right')}>
+              <span aria-hidden="true" class="codicon codicon-arrow-right"></span><span>Close to the Right</span>
+            </button>
+          </div>
+        {/if}
         <div class="document-host" role="tabpanel" inert={environmentLoading}>
           <div class="document-toolbar">
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}

@@ -277,6 +277,13 @@ export interface TopicUpdateInput {
   focusedWorkstreams?: string[];
 }
 
+export interface TopicTransferInput {
+  slug: string;
+  sourceWorkstream: string;
+  targetWorkstream: string;
+  move?: boolean;
+}
+
 export interface TopicType {
   id: string;
   slug: string | null;
@@ -1501,6 +1508,21 @@ export class ControlPlaneClient {
       args.focusedWorkstreams = input.focusedWorkstreams;
     }
     return this.parseTopic(await this.callDomainTool('ws-topic-update', args));
+  }
+
+  /** Atomically copy or move a topic and its descendant closure between workstreams. */
+  async topicTransfer(input: TopicTransferInput): Promise<Topic[]> {
+    const result = await this.callDomainTool('ws-topic-transfer', {
+      slug: input.slug,
+      sourceWorkstream: input.sourceWorkstream,
+      targetWorkstream: input.targetWorkstream,
+      move: input.move ?? false,
+    });
+    const parsed = parseToolText(result);
+    if (!Array.isArray(parsed)) {
+      throw new ControlPlaneClientError('Malformed control-plane topic transfer response');
+    }
+    return parsed as Topic[];
   }
 
   /**

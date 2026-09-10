@@ -19,9 +19,10 @@
   } from './activeSectionLayout';
   import { setResourceDragData } from './resourceDrag';
   import { attachTreeConnector } from './treeConnector';
-  import { setSubtreeExpanded, type ExpandableTreeNode } from './treeExpansion';
+  import { setNodeAndChildrenExpanded, setSubtreeExpanded, type ExpandableTreeNode } from './treeExpansion';
   import { workstreamColorClass } from './workstreamColor';
   import { workstreamDropIndex } from './workstreamReorder';
+  import { planTopicTransfer, type TopicDragSource, type TopicTransferRequest } from './topicTransfer';
 
   interface Props {
     environments: DesktopEnvironment[];
@@ -38,13 +39,14 @@
     onToggleFocus: (workstream: string, topic: string) => void;
     onAction: (workstream: string, action: PanelAction) => void;
     onReorder: (slug: string, section: PanelWorkstreamSection['section'], index: number) => Promise<void>;
+    onTransferTopic: (request: TopicTransferRequest) => void;
     onDiscoverEnvironments: () => Promise<void>;
     onSwitchEnvironment: (mcpUrl: string) => Promise<void>;
   }
 
   let {
     environments, selectedEnvironment, environmentLoading, environmentError,
-    data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder,
+    data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder, onTransferTopic,
     onDiscoverEnvironments, onSwitchEnvironment,
   }: Props = $props();
   const expanded = new SvelteSet<string>();
@@ -55,7 +57,14 @@
   let sectionHeights = $state<ActiveSectionHeights | null>(null);
   let environmentMenuOpen = $state(false);
   let sectionDrag: { boundary: ActiveSectionBoundary; startY: number; initial: ActiveSectionHeights } | null = null;
-  let workstreamDrag = $state<{ slug: string; section: PanelWorkstreamSection['section'] } | null>(null);
+  let activeDrag = $state<
+    | ({ kind: 'topic' } & TopicDragSource)
+    | { kind: 'workstream'; slug: string; section: PanelWorkstreamSection['section'] }
+    | null
+  >(null);
+  const topicDrag = $derived(activeDrag?.kind === 'topic' ? activeDrag : null);
+  const workstreamDrag = $derived(activeDrag?.kind === 'workstream' ? activeDrag : null);
+  let topicDropTarget = $state<string | null>(null);
   let dropTarget = $state<{ section: PanelWorkstreamSection['section']; index: number } | null>(null);
 
   const sections = $derived(
@@ -79,6 +88,11 @@
     if (recursive) setSubtreeExpanded(expanded, node, nextExpanded);
     else if (nextExpanded) expanded.add(node.id);
     else expanded.delete(node.id);
+  }
+
+  function toggleWorkstream(workstream: PanelWorkstream): void {
+    if (expanded.has(workstream.id)) expanded.delete(workstream.id);
+    else setNodeAndChildrenExpanded(expanded, workstream);
   }
 
   async function toggleEnvironmentMenu(event: MouseEvent): Promise<void> {
@@ -185,6 +199,36 @@
     setResourceDragData(event.dataTransfer, openUri, label);
   }
 
+  function startTopicDrag(event: DragEvent, slug: string, workstream: string, openUri: string, label: string): void {
+    event.stopPropagation();
+    startResourceDrag(event, openUri, label);
+    activeDrag = { kind: 'topic', slug, sourceWorkstream: workstream };
+    dropTarget = null;
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove';
+  }
+
+  function finishTopicDrag(): void {
+    if (activeDrag?.kind === 'topic') activeDrag = null;
+    topicDropTarget = null;
+  }
+
+  function updateTopicDropTarget(event: DragEvent, targetWorkstream: string): void {
+    if (!planTopicTransfer(topicDrag, targetWorkstream, event.metaKey)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    topicDropTarget = targetWorkstream;
+    if (event.dataTransfer) event.dataTransfer.dropEffect = event.metaKey ? 'move' : 'copy';
+  }
+
+  function dropTopic(event: DragEvent, targetWorkstream: string): void {
+    const request = planTopicTransfer(topicDrag, targetWorkstream, event.metaKey);
+    if (!request) return;
+    event.preventDefault();
+    event.stopPropagation();
+    finishTopicDrag();
+    onTransferTopic(request);
+  }
+
   function startWorkstreamDrag(
     event: DragEvent,
     workstream: PanelWorkstream,
@@ -194,7 +238,8 @@
     if (!slug) return;
     event.stopPropagation();
     startResourceDrag(event, workstream.openUri, workstream.label);
-    workstreamDrag = { slug, section };
+    activeDrag = { kind: 'workstream', slug, section };
+    topicDropTarget = null;
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   }
 
@@ -215,7 +260,7 @@
   }
 
   function finishWorkstreamDrag(): void {
-    workstreamDrag = null;
+    if (activeDrag?.kind === 'workstream') activeDrag = null;
     dropTarget = null;
   }
 
@@ -283,7 +328,10 @@
         class="active-open"
         title={node.tooltip}
         draggable="true"
-        ondragstart={(event) => startResourceDrag(event, node.openUri, node.label)}
+        ondragstart={(event) => node.kind === 'topic'
+          ? startTopicDrag(event, topicSlug, workstream, node.openUri, node.label)
+          : startResourceDrag(event, node.openUri, node.label)}
+        ondragend={() => node.kind === 'topic' && finishTopicDrag()}
         onclick={() => onOpen(node.openUri)}
       >
         <span aria-hidden="true" class="codicon codicon-{node.icon}"></span>
@@ -339,14 +387,24 @@
   {@const hasDetails = workstream.focused_topics.length > 0 || workstream.children.length > 0}
   {@const expandable = sectionStatus === 'progress' && hasDetails}
   {@const menuItems = activeContextMenuItems(workstream.actions)}
-  <article class="active-card {workstreamColorClass(workstream.id)}" class:compact class:summary={sectionStatus !== 'progress'} class:dragging={workstreamDrag?.slug === workstream.slug} data-section-status={sectionStatus} data-workstream={workstream.slug ?? workstream.id}>
+  <article
+    class="active-card {workstreamColorClass(workstream.id)}"
+    class:compact
+    class:summary={sectionStatus !== 'progress'}
+    class:dragging={workstreamDrag?.slug === workstream.slug}
+    class:topic-drop-target={topicDropTarget === workstream.slug}
+    data-section-status={sectionStatus}
+    data-workstream={workstream.slug ?? workstream.id}
+    ondragenter={(event) => updateTopicDropTarget(event, workstream.slug ?? '')}
+    ondragover={(event) => updateTopicDropTarget(event, workstream.slug ?? '')}
+    ondragleave={(event) => {
+      if (!(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) topicDropTarget = null;
+    }}
+    ondrop={(event) => dropTopic(event, workstream.slug ?? '')}
+  >
     <div
       class="active-card-header"
       role="group"
-      draggable="true"
-      title="Drag to reorder {workstream.label}"
-      ondragstart={(event) => startWorkstreamDrag(event, workstream, sectionStatus)}
-      ondragend={finishWorkstreamDrag}
       oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', menuItems)}
     >
       {#if expandable}
@@ -355,7 +413,7 @@
           data-expandable="true"
           aria-expanded={open}
           aria-label="{open ? 'Collapse' : 'Expand'} {workstream.label}"
-          onclick={() => toggle(workstream)}
+          onclick={() => toggleWorkstream(workstream)}
         ><span aria-hidden="true" class="codicon codicon-chevron-{open ? 'down' : 'right'}"></span></button>
       {:else if sectionStatus === 'progress'}
         <span class="active-twistie-spacer"></span>
@@ -363,6 +421,9 @@
       <button
         class="active-open workstream-open"
         title={workstream.tooltip}
+        draggable="true"
+        ondragstart={(event) => startWorkstreamDrag(event, workstream, sectionStatus)}
+        ondragend={finishWorkstreamDrag}
         onclick={() => onOpen(workstream.openUri)}
       >
         <span aria-hidden="true" class="codicon codicon-briefcase"></span>
@@ -379,8 +440,6 @@
               <div
                 class="focused-topic"
                 role="group"
-                draggable="true"
-                ondragstart={(event) => startResourceDrag(event, topic.openUri, topic.label)}
                 oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', activeContextMenuItems(topic.actions, { topic: topicSlug, focused: topic.focused }))}
               >
                 <button
@@ -395,6 +454,9 @@
                 <button
                   class="focused-topic-open"
                   title={topic.tooltip}
+                  draggable="true"
+                  ondragstart={(event) => startTopicDrag(event, topicSlug, workstream.slug ?? '', topic.openUri, topic.label)}
+                  ondragend={finishTopicDrag}
                   onclick={() => onOpen(topic.openUri)}
                 >
                   <span aria-hidden="true" class="codicon codicon-{topic.icon}"></span>
@@ -509,6 +571,7 @@
           class="active-section-content"
           role="group"
           aria-label={`${section.label} workstreams`}
+          ondragenter={(event) => updateDropTarget(event, section.section)}
           ondragover={(event) => updateDropTarget(event, section.section)}
           ondrop={(event) => void dropWorkstream(event, section.section)}
         >

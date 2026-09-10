@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { DocumentVM } from '../../webview-ui/src/lib/types';
-import { closeDocumentTab, documentTabKey, openDocumentTab, replaceSelectedTab, updateDocumentTab } from '../src/renderer/documentTabs';
+import {
+  closeDocumentTab,
+  closeDocumentTabsToRight,
+  closeOtherDocumentTabs,
+  documentTabKey,
+  openDocumentTab,
+  replaceSelectedTab,
+  updateDocumentTab,
+} from '../src/renderer/documentTabs';
 
 function topic(slug: string, title = slug): DocumentVM {
   return {
@@ -36,5 +44,33 @@ describe('document tabs', () => {
     state = updateDocumentTab(state, 'topic:first', topic('first', 'First saved'));
     expect(state.tabs[0]?.title).toBe('First saved');
     expect(state.selectedKey).toBe('topic:second');
+  });
+
+  it('closes every tab except the context target and selects it', () => {
+    const state = {
+      tabs: [topic('first'), topic('second'), topic('third')],
+      selectedKey: 'topic:first',
+    };
+    expect(closeOtherDocumentTabs(state, 'topic:second')).toEqual({
+      tabs: [state.tabs[1]],
+      selectedKey: 'topic:second',
+    });
+    expect(closeOtherDocumentTabs(state, 'topic:missing')).toBe(state);
+  });
+
+  it('closes tabs to the right and falls back to the context target when selection is removed', () => {
+    const state = {
+      tabs: [topic('first'), topic('second'), topic('third')],
+      selectedKey: 'topic:third',
+    };
+    expect(closeDocumentTabsToRight(state, 'topic:second')).toEqual({
+      tabs: state.tabs.slice(0, 2),
+      selectedKey: 'topic:second',
+    });
+    expect(closeDocumentTabsToRight({ ...state, selectedKey: 'topic:first' }, 'topic:second')).toEqual({
+      tabs: state.tabs.slice(0, 2),
+      selectedKey: 'topic:first',
+    });
+    expect(closeDocumentTabsToRight(state, 'topic:third')).toBe(state);
   });
 });

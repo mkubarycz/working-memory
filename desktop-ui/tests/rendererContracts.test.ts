@@ -37,6 +37,9 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.active-tree-node[^}]*padding-left:\s*0/s);
     expect(styles).toMatch(/\.topic-tree[^}]*--graph-color:\s*var\(--ws-card-border\)/s);
     expect(styles).toMatch(/\.graph-node-dot[^}]*border:\s*2px solid var\(--graph-color\)[^}]*border-radius:\s*50%/s);
+    expect(styles).toMatch(/\.graph-node-passive \.graph-node-dot[^}]*background:\s*var\(--graph-color\)/s);
+    expect(styles).toMatch(/\.graph-node-control\[aria-expanded="true"\] \.graph-node-dot\s*{[^}]*background:\s*var\(--graph-color\)[^}]*}/s);
+    expect(styles).not.toMatch(/\.graph-node-control\[aria-expanded="true"\] \.graph-node-dot\s*{[^}]*box-shadow:/s);
     expect(styles).toMatch(/\.branch-tree[^}]*margin-left:\s*17px/s);
     expect(styles).toMatch(/\.tree-connector path[^}]*stroke:\s*var\(--graph-color\)[^}]*stroke-width:\s*2px[^}]*stroke-linecap:\s*round/s);
     expect(styles).not.toContain('.branch-tree::before');
@@ -91,6 +94,8 @@ describe('desktop tree icon contract', () => {
 
     expect(activeRail).toContain("workstreamCard(workstream: PanelWorkstream, sectionStatus: PanelWorkstreamSection['section'], compact: boolean)");
     expect(activeRail).toContain("const expandable = sectionStatus === 'progress' && hasDetails");
+    expect(activeRail).toContain('setNodeAndChildrenExpanded(expanded, workstream)');
+    expect(activeRail).toContain('onclick={() => toggleWorkstream(workstream)}');
     expect(activeRail).toContain("class:summary={sectionStatus !== 'progress'}");
     expect(activeRail).toContain('data-section-status={sectionStatus}');
     expect(activeRail).toContain("{:else if sectionStatus === 'progress'}");
@@ -110,18 +115,22 @@ describe('desktop tree icon contract', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
 
     expect(activeRail).toContain('startWorkstreamDrag');
+    expect(activeRail).toContain('ondragenter=');
     expect(activeRail).toContain('ondragover=');
     expect(activeRail).toContain('ondrop=');
     expect(activeRail).toContain('class:drop-target=');
     expect(activeRail).toContain('class="active-drop-indicator"');
     expect(activeRail).toContain('await onReorder(slug, section, index)');
     expect(activeRail).toContain(
-      'class="active-card-header"\n      role="group"\n      draggable="true"',
+      'class="active-open workstream-open"\n        title={workstream.tooltip}\n        draggable="true"',
     );
     expect(activeRail).not.toContain('workstream-drag-handle');
     expect(activeRail).not.toContain(
-      'class="active-open workstream-open"\n        title={workstream.tooltip}\n        draggable="true"',
+      'class="active-card-header"\n      role="group"\n      draggable="true"',
     );
+    expect(activeRail).toContain("let activeDrag = $state<");
+    expect(activeRail).toContain("activeDrag?.kind === 'topic'");
+    expect(activeRail).toContain("activeDrag?.kind === 'workstream'");
     expect(styles).toMatch(/\.active-card-header[^}]*cursor:\s*grab/);
     expect(app).toContain('planWorkstreamReorder(order, slug, targetSection, targetIndex)');
     expect(app).toContain('window.workingMemory.reorderWorkstreams(updates)');
@@ -189,7 +198,13 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('aria-selected={key === selectedDocumentKey}');
     expect(app).toContain('onclick={() => closeDocument(key)}');
     expect(app).toContain('openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document)');
+    expect(app).toContain('oncontextmenu={(event) => void openDocumentTabMenu(event, key)}');
+    expect(app).toContain('<span>Close Others</span>');
+    expect(app).toContain('<span>Close to the Right</span>');
+    expect(app).toContain("closeOtherDocumentTabs(state, key)");
+    expect(app).toContain("closeDocumentTabsToRight(state, key)");
     expect(styles).toMatch(/\.document-tabs[^}]*height:\s*38px[^}]*overflow-x:\s*auto/s);
+    expect(styles).toMatch(/\.document-tab-menu[^}]*position:\s*fixed[^}]*z-index:\s*30/s);
   });
 
   it('shows at most two current-scope messages and targets stable history elements', () => {

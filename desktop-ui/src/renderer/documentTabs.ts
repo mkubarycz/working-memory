@@ -54,3 +54,19 @@ export function closeDocumentTab(state: DocumentTabsState, key: string): Documen
   const fallback = tabs[Math.min(index, tabs.length - 1)];
   return { tabs, selectedKey: fallback ? documentTabKey(fallback) : null };
 }
+
+export function closeOtherDocumentTabs(state: DocumentTabsState, key: string): DocumentTabsState {
+  const tab = state.tabs.find((candidate) => documentTabKey(candidate) === key);
+  if (!tab) return state;
+  return { tabs: [tab], selectedKey: key };
+}
+
+export function closeDocumentTabsToRight(state: DocumentTabsState, key: string): DocumentTabsState {
+  const index = state.tabs.findIndex((tab) => documentTabKey(tab) === key);
+  if (index < 0 || index === state.tabs.length - 1) return state;
+  const tabs = state.tabs.slice(0, index + 1);
+  const selectedKey = tabs.some((tab) => documentTabKey(tab) === state.selectedKey)
+    ? state.selectedKey
+    : key;
+  return { tabs, selectedKey };
+}

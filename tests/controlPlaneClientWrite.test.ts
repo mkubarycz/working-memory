@@ -195,6 +195,35 @@ describe('ControlPlaneClient write methods', () => {
     }
   });
 
+  it('atomically transfers a topic descendant closure through the typed client', async () => {
+    server = await startServer({ port: 0 });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server!.url}/mcp` });
+    try {
+      await Promise.all(['source', 'target', 'moved'].map((slug) => client.createDocument({
+        kind: 'Workstream', slug, spec: { title: slug },
+      })));
+      await client.topicCreate({ slug: 'parent', title: 'Parent', workstreams: ['source'] });
+      await client.topicCreate({
+        slug: 'child', title: 'Child', parents: ['parent'], workstreams: ['source'],
+      });
+
+      const copied = await client.topicTransfer({
+        slug: 'parent', sourceWorkstream: 'source', targetWorkstream: 'target',
+      });
+      expect(copied.map((topic) => topic.slug).sort()).toEqual(['child', 'parent']);
+      expect(copied.every((topic) => topic.workstreams.includes('source') && topic.workstreams.includes('target')))
+        .toBe(true);
+
+      const moved = await client.topicTransfer({
+        slug: 'parent', sourceWorkstream: 'source', targetWorkstream: 'moved', move: true,
+      });
+      expect(moved.every((topic) => !topic.workstreams.includes('source') && topic.workstreams.includes('moved')))
+        .toBe(true);
+    } finally {
+      await client.dispose();
+    }
+  });
+
   it('sets then clears per-workstream focus via topicSetFocus / topicClearFocus', async () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;

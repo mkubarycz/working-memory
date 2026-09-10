@@ -165,7 +165,8 @@ async function invokeAction(workstream: string, command: string, args: unknown[]
     await controlPlane().wsUpdate({ slug: action.slug, status: action.section });
   } else if (action.kind === 'topic') {
     if (action.operation === 'attach') await controlPlane().topicAttachWorkstream(action);
-    else await controlPlane().topicDetachWorkstream(action);
+    else if (action.operation === 'detach') await controlPlane().topicDetachWorkstream(action);
+    else if (action.operation === 'transfer') await controlPlane().topicTransfer(action);
   } else if (action.operation === 'run') {
     await controlPlane().naniteRun({ id: action.id, approved: true });
   } else if (action.operation === 'reset') {
