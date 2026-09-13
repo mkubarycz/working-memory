@@ -7,7 +7,7 @@ import type {
   CommandJournalSummary,
   CommandJournalToolEventSummary,
 } from '../../../src/controlPlaneClient';
-import type { ChatResult, DesktopResourceKind, PendingConfirmation, ToolProgress } from '../shared/contracts';
+import type { ChatContext, ChatResult, DesktopResourceKind, PendingConfirmation, ToolProgress } from '../shared/contracts';
 
 export interface ChatTarget {
   kind: DesktopResourceKind;
@@ -34,6 +34,7 @@ export interface ChatRun {
   scope: CommandJournalScopeRef;
   entityRefs: CommandJournalEntityRef[];
   assistantText?: string;
+  mutated?: boolean;
   tools: ChatToolRow[];
   progress?: ToolProgress[];
   pendingConfirmation?: PendingConfirmation;
@@ -99,6 +100,7 @@ export function summaryToChatRun(summary: CommandJournalSummary): ChatRun {
     scope: summary.primaryScope,
     entityRefs: summary.entityRefs,
     assistantText: summary.completion?.finalAssistantText,
+    mutated: summary.completion?.mutated,
     tools: summary.eventSummaries.map((tool) => ({
       journalId: summary.id,
       sequence: tool.sequence,
@@ -146,9 +148,25 @@ export function journalToSummary(journal: CommandJournal): CommandJournalSummary
 
 export function mergeHistoryRuns(current: ChatRun[], summaries: CommandJournalSummary[]): ChatRun[] {
   const merged = new Map(current.map((run) => [run.journalId ?? run.key, run]));
+  const optimisticMatches = new Map<string, string>();
+  const unmatchedSummaries = summaries.filter((summary) => !merged.has(summary.id));
+  for (const [key, run] of merged) {
+    if (run.journalId || run.status !== 'submitting') continue;
+    const match = unmatchedSummaries
+      .filter((summary) => sameRequest(run, summary))
+      .sort((left, right) => Math.abs(left.startedAt - run.startedAt) - Math.abs(right.startedAt - run.startedAt))[0];
+    if (!match || Math.abs(match.startedAt - run.startedAt) > 30_000) continue;
+    optimisticMatches.set(match.id, key);
+    unmatchedSummaries.splice(unmatchedSummaries.indexOf(match), 1);
+  }
   for (const summary of summaries) {
     const persisted = summaryToChatRun(summary);
-    const live = merged.get(summary.id);
+    const optimisticKey = optimisticMatches.get(summary.id);
+    const live = merged.get(summary.id) ?? (optimisticKey ? merged.get(optimisticKey) : undefined);
+    if (live?.journalId === summary.id
+      && live.resourceVersion !== undefined
+      && summary.resourceVersion < live.resourceVersion) continue;
+    if (optimisticKey) merged.delete(optimisticKey);
     merged.set(summary.id, live
       ? {
           ...live,
@@ -160,6 +178,36 @@ export function mergeHistoryRuns(current: ChatRun[], summaries: CommandJournalSu
   }
   return [...merged.values()].sort((left, right) =>
     left.startedAt - right.startedAt || (left.journalId ?? left.key).localeCompare(right.journalId ?? right.key));
+}
+
+function sameRequest(run: ChatRun, summary: CommandJournalSummary): boolean {
+  const runKind = run.scope.kind.toLowerCase().replaceAll('-', '');
+  const summaryKind = summary.primaryScope.kind.toLowerCase().replaceAll('-', '');
+  const runIdentifier = run.scope.slug ?? run.scope.id;
+  const summaryIdentifier = summary.primaryScope.slug ?? summary.primaryScope.id;
+  return run.userText === summary.request.userText
+    && runKind === summaryKind
+    && runIdentifier === summaryIdentifier;
+}
+
+export function refreshLatestRuns(current: ChatRun[], summaries: CommandJournalSummary[]): ChatRun[] {
+  return mergeHistoryRuns(current, summaries);
+}
+
+export function isRetryableRun(run: ChatRun): boolean {
+  return (run.status === 'failed' || run.status === 'interrupted') && run.mutated !== true;
+}
+
+export function chatContextForScope(scope: CommandJournalScopeRef): ChatContext | undefined {
+  if (scope.kind.toLowerCase().replaceAll('-', '') === 'desktopchat') return undefined;
+  const target = targetForRef(scope);
+  if (!target) return undefined;
+  return {
+    kind: scope.kind,
+    routeKind: target.kind,
+    identifier: target.identifier,
+    title: scope.title?.trim() || target.identifier,
+  };
 }
 
 export function createLiveRun(
@@ -182,8 +230,9 @@ export function reconcileLiveRun(runs: ChatRun[], key: string, result: ChatResul
     ...current,
     key: result.journalId ?? current.key,
     journalId: result.journalId ?? current.journalId,
-    status: result.pendingConfirmation ? 'awaiting_confirmation' : 'running',
+    status: result.status,
     assistantText: result.message,
+    mutated: result.mutated ?? current.mutated,
     progress: result.progress,
     pendingConfirmation: result.pendingConfirmation,
   };

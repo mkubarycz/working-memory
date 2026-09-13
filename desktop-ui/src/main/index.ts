@@ -19,7 +19,12 @@ import {
   writeStoredConfig,
   type StoredConfig,
 } from './config';
-import { DesktopChatAgent, type DesktopAgentResult, type ModelHttpRequest } from './desktopChatAgent';
+import {
+  DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
+  DesktopChatAgent,
+  type DesktopAgentResult,
+  type ModelHttpRequest,
+} from './desktopChatAgent';
 import {
   DesktopEnvironmentManager,
   readPersistedEnvironment,
@@ -45,7 +50,6 @@ import {
 } from './resolver';
 
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
-const MODEL_TIMEOUT_MS = 20_000;
 const WINDOW_DEFAULTS = { defaultWidth: 1280, defaultHeight: 820, minWidth: 900, minHeight: 600 };
 const WINDOW_STATE_SAVE_DELAY_MS = 250;
 let configFile = '';
@@ -128,10 +132,11 @@ async function openWorkstream(query: string): Promise<ChatResult> {
   const workstreams = await controlPlane().wsRead({ limit: 200 });
   const workstream = chooseWorkstream(query, workstreams);
   if (!workstream) {
-    return { message: `I couldn't find a workstream matching “${query}”.` };
+    return { message: `I couldn't find a workstream matching “${query}”.`, status: 'failed' };
   }
   return {
     message: `Opened ${workstream.title}.`,
+    status: 'succeeded',
     workstream: (await loadWorkstreamViewModel(controlPlane(), workstream.slug ?? workstream.id)) ?? undefined,
   };
 }
@@ -237,6 +242,8 @@ async function presentAgentResult(result: DesktopAgentResult, context?: ChatCont
   return {
     journalId: result.journalId,
     message: result.message,
+    status: result.status,
+    mutated: result.mutated,
     progress: result.progress,
     pendingConfirmation: result.pendingConfirmation,
     ...(document ? { document } : {}),
@@ -253,7 +260,7 @@ async function testConfiguredModel(config: StoredConfig): Promise<string> {
   const body = request.mode === 'responses'
     ? { model: config.model, input: 'Reply with only: connected' }
     : { model: config.model, messages: [{ role: 'user', content: 'Reply with only: connected' }] };
-  const parsed = parseModelTurn(request.mode, await requestModel({ ...request, body, timeoutMs: MODEL_TIMEOUT_MS }));
+  const parsed = parseModelTurn(request.mode, await requestModel({ ...request, body, timeoutMs: DESKTOP_MODEL_REQUEST_TIMEOUT_MS }));
   return parsed.text || 'Connected.';
 }
 
@@ -283,16 +290,16 @@ function registerIpc(): void {
       const query = localWorkstreamQuery(message);
       return query
         ? await openWorkstream(query)
-        : { message: 'Configure a model in Settings, or ask me to open a workstream.' };
+        : { message: 'Configure a model in Settings, or ask me to open a workstream.', status: 'failed' };
     } catch (error) {
-      return { message: `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}` };
+      return { message: `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}`, status: 'failed' };
     }
   });
   ipcMain.handle('chat:confirm', async (_event, id: string, confirmed: boolean, context?: ChatContext) => {
     try {
       return await presentAgentResult(await chatAgent.resolveConfirmation(id, confirmed), context);
     } catch (error) {
-      return { message: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}` };
+      return { message: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}`, status: 'failed' };
     }
   });
   ipcMain.handle('chat:history', (_event, input: CommandJournalHistoryInput = {}) =>
@@ -305,7 +312,7 @@ function registerIpc(): void {
     try {
       return await openWorkstream(query);
     } catch (error) {
-      return { message: `Control plane disconnected: ${error instanceof Error ? error.message : String(error)}` };
+      return { message: `Control plane disconnected: ${error instanceof Error ? error.message : String(error)}`, status: 'failed' };
     }
   });
   ipcMain.handle('resource:open', (_event, kind: DesktopResourceKind, identifier: string) => {

@@ -107,8 +107,8 @@ export function createMcpServer(
         "document body/fields. The `kind` MUST be a registered kind (see `wm-list-kinds`); " +
         'unknown kinds are rejected. The `spec` MUST match the kind\'s schema exactly — ' +
         'required fields must be present and unknown fields are rejected (e.g. "Topic" ' +
-        'requires a `title`, ≤120 chars; a Topic also requires a unique slug using lowercase words ' +
-        'separated with dashes, with 3-5 short, precise words as the best practice). The parsed spec ' +
+        'requires a `title`, ≤120 chars; Topic and Workstream also require unique slugs using lowercase words ' +
+        'separated with dashes, with 3-5 short, precise words as the best practice for Topic). The parsed spec ' +
         '(defaults applied) is what gets ' +
         'persisted. Returns the created document envelope.',
       inputSchema: {
@@ -116,7 +116,7 @@ export function createMcpServer(
         slug: z
           .string()
           .optional()
-          .describe('Optional human-friendly slug, except Topic requires a unique lowercase dash-separated slug; best practice is 3-5 short, precise words.'),
+          .describe('Optional for kinds that permit omission. Topic and Workstream require a unique lowercase dash-separated slug; Topic best practice is 3-5 short, precise words.'),
         labels: z
           .record(z.string(), z.string())
           .optional()
@@ -254,11 +254,12 @@ export function createMcpServer(
       title: 'Working Memory: Delete Document',
       description:
         'Soft-delete a document by `id` (stamps `deleted_at`; the row is kept so it can be ' +
-        'undeleted). This is **kind-agnostic** — it does NOT look up the kind or validate the ' +
-        'spec, so it works on ANY document including legacy / unregistered-kind junk (e.g. old ' +
+        'undeleted). This does NOT validate the spec, so it works on ANY document including legacy / ' +
+        'unregistered-kind junk (e.g. old ' +
         'lowercase `topic` docs). After deletion the document drops out of `wm-document-read` ' +
         '(both list and single-read modes). To **undelete** a previously soft-deleted document, call this ' +
         'same tool with `restore: true` (clears `deleted_at`, bumps its version). ' +
+        'Restoring a Workstream is rejected if another live Workstream already owns its slug. ' +
         '`expectedResourceVersion` is OPTIONAL and only applies to deletes: when provided it ' +
         'acts as a compare-and-swap guard (the delete is rejected as a conflict if the document ' +
         'changed since you read it); when omitted the current live row is deleted ' +
@@ -278,10 +279,17 @@ export function createMcpServer(
       },
     },
     async ({ id, restore, expectedResourceVersion }) => {
-      // No kind lookup / spec validation here — delete/restore is deliberately
-      // kind-agnostic so unregistered-kind documents remain manageable.
+      // No spec validation here, so unregistered-kind documents remain manageable.
+      // Workstream restore alone enforces its reserved-slug invariant.
       try {
         if (restore === true) {
+          const deleted = store.getDocument({ id, includeDeleted: true });
+          if (deleted?.kind === 'Workstream' && deleted.metadata.slug) {
+            const live = store.getDocument({ kind: 'Workstream', slug: deleted.metadata.slug });
+            if (live && live.metadata.id !== id) {
+              return asError(`Cannot restore Workstream ${id}: slug "${deleted.metadata.slug}" is already in use.`);
+            }
+          }
           return asText(store.restoreDocument({ id }));
         }
         return asText(store.deleteDocument({ id, expectedResourceVersion }));

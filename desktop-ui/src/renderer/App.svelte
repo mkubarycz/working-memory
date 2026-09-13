@@ -31,6 +31,7 @@
     updateDocumentTab,
   } from './documentTabs';
   import { chatRunDomId, recentRunsForContext } from './scopedChat';
+  import { CHAT_HISTORY_POLL_INTERVAL_MS } from './chatPolling';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
   import { topicTransferRefreshTargets, type TopicTransferRequest } from './topicTransfer';
@@ -42,11 +43,14 @@
     type SelectedTool,
   } from './environmentState';
   import {
+    chatContextForScope,
     createLiveRun,
     formatDetailValue,
+    isRetryableRun,
     journalToSummary,
     mergeHistoryRuns,
     reconcileLiveRun,
+    refreshLatestRuns,
     targetForRef,
     toolDetail,
     type ChatRun,
@@ -102,6 +106,7 @@
   let previewAttentionTarget: HTMLElement | null = null;
   let previewAttentionTimer: number | undefined;
   let environmentGeneration = 0;
+  let historyRequestGeneration: number | null = null;
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
   const currentChatContext = $derived(chatContextForDocument(activeDocument));
 
@@ -173,9 +178,9 @@
     void refreshActive();
   }
 
-  function liveScope(): CommandJournalScopeRef {
-    return currentChatContext
-      ? { kind: currentChatContext.kind, id: currentChatContext.identifier, title: currentChatContext.title }
+  function liveScope(context = currentChatContext): CommandJournalScopeRef {
+    return context
+      ? { kind: context.kind, id: context.identifier, title: context.title }
       : { kind: 'DesktopChat', id: 'desktop-chat' };
   }
 
@@ -190,33 +195,57 @@
     }
   }
 
-  async function loadHistory(older = false): Promise<void> {
-    if (historyLoading && older) return;
+  async function refreshLatestHistory(initialize = false): Promise<void> {
+    const generation = environmentGeneration;
+    if (historyRequestGeneration === generation) return;
+    historyRequestGeneration = generation;
+    if (initialize) historyLoading = true;
+    historyError = '';
+    try {
+      const historyPage = await window.workingMemory.getChatHistory({ limit: HISTORY_PAGE_SIZE });
+      if (generation !== environmentGeneration) return;
+      chatRuns = refreshLatestRuns(chatRuns, historyPage.journals);
+      if (initialize) historyCursor = historyPage.nextCursor;
+    } catch (error) {
+      if (generation !== environmentGeneration) return;
+      historyError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (historyRequestGeneration === generation) {
+        historyRequestGeneration = null;
+        if (initialize) historyLoading = false;
+      }
+    }
+  }
+
+  async function loadOlderHistory(): Promise<void> {
+    const generation = environmentGeneration;
+    if (!historyCursor || historyRequestGeneration === generation) return;
+    historyRequestGeneration = generation;
     const previousHeight = conversationElement?.scrollHeight ?? 0;
     const previousTop = conversationElement?.scrollTop ?? 0;
     historyLoading = true;
     historyError = '';
-    const generation = environmentGeneration;
     try {
       const historyPage = await window.workingMemory.getChatHistory({
         limit: HISTORY_PAGE_SIZE,
-        ...(older && historyCursor ? { cursor: historyCursor } : {}),
+        cursor: historyCursor,
       });
       if (generation !== environmentGeneration) return;
       chatRuns = mergeHistoryRuns(chatRuns, historyPage.journals);
       historyCursor = historyPage.nextCursor;
-      if (older) {
-        await tick();
-        if (conversationElement) {
-          conversationElement.scrollTop = previousTop + conversationElement.scrollHeight - previousHeight;
-          conversationPinned = false;
-        }
+      await tick();
+      if (conversationElement) {
+        conversationElement.scrollTop = previousTop + conversationElement.scrollHeight - previousHeight;
+        conversationPinned = false;
       }
     } catch (error) {
       if (generation !== environmentGeneration) return;
       historyError = error instanceof Error ? error.message : String(error);
     } finally {
-      if (generation === environmentGeneration) historyLoading = false;
+      if (historyRequestGeneration === generation) {
+        historyRequestGeneration = null;
+        historyLoading = false;
+      }
     }
   }
 
@@ -277,8 +306,10 @@
     void window.workingMemory.getConfig().then(loadConfig);
     void discoverEnvironments(true);
     void refreshActive();
-    void loadHistory();
+    void refreshLatestHistory(true);
+    const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
     return () => {
+      window.clearInterval(historyPoll);
       window.removeEventListener('resize', handleResize);
       document.body.classList.remove('resizing-rails');
       clearPreviewAttention();
@@ -410,10 +441,11 @@
       await documentSaves.flushAll();
       const state = await window.workingMemory.switchEnvironment(mcpUrl);
       environmentGeneration += 1;
+      historyRequestGeneration = null;
       resetEnvironmentState();
       applyEnvironmentState(state);
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
-      await reloadEnvironmentBoundData(refreshActive, () => loadHistory());
+      await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -428,17 +460,14 @@
     apiKey = '';
   }
 
-  async function send(): Promise<void> {
-    const message = input.trim();
-    if (!message || busy || pendingConfirmation) return;
+  async function submitChat(message: string, context = currentChatContext): Promise<void> {
+    if (!message.trim() || busy || pendingConfirmation) return;
     const runKey = crypto.randomUUID();
-    chatRuns = [...chatRuns, createLiveRun(runKey, message, liveScope(), Date.now())];
-    input = '';
-    writeComposerDraft(localStorage, selectedEnvironment?.id, '');
+    chatRuns = [...chatRuns, createLiveRun(runKey, message, liveScope(context), Date.now())];
     busy = true;
     const generation = environmentGeneration;
     try {
-      const result = await window.workingMemory.sendChat(message, currentChatContext);
+      const result = await window.workingMemory.sendChat(message, context);
       if (generation === environmentGeneration) await applyChatResult(result, runKey);
     } catch (error) {
       if (generation !== environmentGeneration) return;
@@ -448,6 +477,20 @@
     } finally {
       if (generation === environmentGeneration) busy = false;
     }
+  }
+
+  async function send(): Promise<void> {
+    const message = input.trim();
+    if (!message || busy || pendingConfirmation) return;
+    const context = currentChatContext;
+    input = '';
+    writeComposerDraft(localStorage, selectedEnvironment?.id, '');
+    await submitChat(message, context);
+  }
+
+  async function retryRun(run: ChatRun): Promise<void> {
+    if (!isRetryableRun(run) || busy || pendingConfirmation) return;
+    await submitChat(run.userText, chatContextForScope(run.scope));
   }
 
   function updateComposerDraft(value: string): void {
@@ -1029,10 +1072,15 @@
           <p>No messages for this scope.</p>
         {:else}
           {#each scopedRecentRuns as run (run.journalId ?? run.key)}
-            <button onclick={() => void focusChatRun(run)} title="Show in history">
-              <span>{run.userText}</span>
-              <small>{run.assistantText ?? assistantFallback(run)}</small>
-            </button>
+            <div class="scope-preview-row">
+              <button class="scope-preview-main" onclick={() => void focusChatRun(run)} title="Show in history">
+                <span>{run.userText}</span>
+                <small>{run.assistantText ?? assistantFallback(run)}</small>
+              </button>
+              {#if isRetryableRun(run)}
+                <button class="retry-button" disabled={busy || pendingConfirmation !== null} onclick={() => void retryRun(run)}>Retry</button>
+              {/if}
+            </div>
           {/each}
         {/if}
       </section>
@@ -1110,7 +1158,7 @@
       <div class="conversation-shell">
       <div bind:this={conversationElement} class="conversation" aria-live="polite" onscroll={handleConversationScroll}>
       {#if historyCursor}
-        <button class="load-older" disabled={historyLoading} onclick={() => void loadHistory(true)}>
+        <button class="load-older" disabled={historyLoading} onclick={() => void loadOlderHistory()}>
           {historyLoading ? 'Loading…' : 'Load older'}
         </button>
       {/if}
@@ -1177,6 +1225,11 @@
               <p>{assistantFallback(run)}</p>
             {/if}
           </section>
+          {#if isRetryableRun(run)}
+            <div class="run-actions">
+              <button class="retry-button" disabled={busy || pendingConfirmation !== null} onclick={() => void retryRun(run)}>Retry</button>
+            </div>
+          {/if}
         </article>
       {/each}
       {#if pendingConfirmation}

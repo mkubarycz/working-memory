@@ -280,7 +280,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('await onDiscoverEnvironments()');
     expect(activeRail).toContain('role="menuitemradio"');
     expect(app).toContain('window.workingMemory.switchEnvironment(mcpUrl)');
-    expect(app).toContain('reloadEnvironmentBoundData(refreshActive, () => loadHistory())');
+    expect(app).toContain('reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true))');
     expect(styles).toMatch(/\.environment-trigger[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\) 14px/s);
   });
 });

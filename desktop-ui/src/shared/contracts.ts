@@ -5,6 +5,7 @@ import type {
   CommandJournal,
   CommandJournalHistoryInput,
   CommandJournalHistoryPage,
+  CommandJournalStatus,
 } from '../../../src/controlPlaneClient';
 
 export interface PublicConfig {
@@ -76,6 +77,8 @@ export interface PendingConfirmation {
 export interface ChatResult {
   journalId?: string;
   message: string;
+  status: CommandJournalStatus;
+  mutated?: boolean;
   workstream?: WorkstreamVM;
   document?: DocumentVM;
   progress?: ToolProgress[];
