@@ -28,3 +28,5 @@ media/codicons/
 # compile:webview). Generated artifact; source of truth is webview-ui/.
 media/webview-ui/
 
+# Platform-specific Electron runtime staged for VSIX packaging.
+desktop-ui/runtime/

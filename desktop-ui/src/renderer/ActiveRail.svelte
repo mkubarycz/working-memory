@@ -4,7 +4,6 @@
   import type {
     PanelAction,
     PanelData,
-    PanelNaniteRow,
     PanelTopic,
     PanelTopicsGroup,
     PanelWorkstream,
@@ -299,16 +298,15 @@
   {/if}
 {/snippet}
 
-{#snippet nodeRow(node: PanelTopic | PanelNaniteRow, workstream: string, depth: number)}
-  {@const children = node.kind === 'topic' ? node.children ?? [] : []}
+{#snippet nodeRow(node: PanelTopic, workstream: string, depth: number)}
+  {@const children = node.children ?? []}
   {@const open = expanded.has(node.id)}
-  {@const topicSlug = node.kind === 'topic' ? topicSlugFromOpenUri(node.openUri) : ''}
-  {@const menuItems = activeContextMenuItems(node.actions, node.kind === 'topic' ? { topic: topicSlug, focused: node.focused } : undefined)}
+  {@const topicSlug = topicSlugFromOpenUri(node.openUri)}
+  {@const menuItems = activeContextMenuItems(node.actions, { topic: topicSlug, focused: node.focused })}
   <li class="active-tree-node" class:expanded={children.length > 0 && open} style="--tree-depth: {depth}">
     <div
       class="active-row"
-      class:nanite={node.kind === 'nanite'}
-      class:closed={node.kind === 'topic' && node.status === 'closed'}
+      class:closed={node.status === 'closed'}
       data-kind={node.kind}
       role="group"
       oncontextmenu={(event) => void openMenu(event, workstream, menuItems)}
@@ -328,21 +326,14 @@
         class="active-open"
         title={node.tooltip}
         draggable="true"
-        ondragstart={(event) => node.kind === 'topic'
-          ? startTopicDrag(event, topicSlug, workstream, node.openUri, node.label)
-          : startResourceDrag(event, node.openUri, node.label)}
-        ondragend={() => node.kind === 'topic' && finishTopicDrag()}
+        ondragstart={(event) => startTopicDrag(event, topicSlug, workstream, node.openUri, node.label)}
+        ondragend={finishTopicDrag}
         onclick={() => onOpen(node.openUri)}
       >
         <span aria-hidden="true" class="codicon codicon-{node.icon}"></span>
         <span class="active-label">{node.label}</span>
-        {#if node.kind === 'nanite'}
-          <span class="active-description">{node.phase}</span>
-        {/if}
       </button>
-      {#if node.kind === 'topic'}
-        {@render alertBubble(node.alertCount, node.alertSeverity)}
-      {/if}
+      {@render alertBubble(node.alertCount, node.alertSeverity)}
     </div>
     {#if children.length > 0 && open}
       <ul class="active-tree branch-tree">

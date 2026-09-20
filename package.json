@@ -53,35 +53,6 @@
           "minimum": 1,
           "maximum": 65535,
           "markdownDescription": "TCP port the extension connects to when an EXTERNAL control-plane daemon owns the process — i.e. `#workingMemory.controlPlane.hosting#` = **service**, or **auto** while probing for a running service. Ignored in **embedded** / auto-self-host mode, where the extension spawns the daemon on an ephemeral port and learns the actual bound port automatically. Set this to match the port your external/OS-service daemon binds (`WM_CONTROL_PLANE_PORT`)."
-        },
-        "workingMemory.nanites.maxConcurrent": {
-          "type": "number",
-          "default": 1,
-          "minimum": 1,
-          "maximum": 20,
-          "markdownDescription": "How many `Queued` nanites the dispatcher runs at once. Start at **1**; raise to run more background nanites in parallel (each is a live model call, so higher values cost more)."
-        },
-        "workingMemory.localModel.baseUrl": {
-          "type": "string",
-          "default": "http://localhost:11434",
-          "markdownDescription": "Base URL of the local Ollama/Llama server that powers the right-rail command widget. The widget POSTs to `${baseUrl}/api/chat` with constrained decoding (a JSON-schema `format` grammar that forces schema-valid tool-call args)."
-        },
-        "workingMemory.localModel.model": {
-          "type": "string",
-          "default": "qwen3:14b",
-          "markdownDescription": "Model tag the command widget asks the local server to run. Must be a tool-capable model. Default **`qwen3:14b`**; **`qwen2.5:14b`** is a known-good fallback."
-        },
-        "workingMemory.localModel.maxIterations": {
-          "type": "number",
-          "default": 8,
-          "minimum": 1,
-          "maximum": 50,
-          "markdownDescription": "Maximum tool-calling turns the command widget's agentic loop takes before it gives up (the classic small-model \"never stops\" guard)."
-        },
-        "workingMemory.localModel.disableThinking": {
-          "type": "boolean",
-          "default": true,
-          "markdownDescription": "Send `think: false` on command-widget chat requests to disable a reasoning model's hidden `<think>` tokens. This is an **Ollama-specific** extension — leave it **on** for the default Ollama endpoint, but turn it **off** if `#workingMemory.localModel.baseUrl#` points at a non-Ollama server that may reject the unknown `think` field."
         }
       }
     },
@@ -105,11 +76,6 @@
         {
           "id": "workingMemory.workstreams",
           "name": "Workstreams",
-          "type": "webview"
-        },
-        {
-          "id": "workingMemory.commandWidget",
-          "name": "Working Memory Command",
           "type": "webview"
         }
       ]
@@ -138,6 +104,12 @@
         "title": "Reload Window",
         "category": "Working Memory",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "working-memory.openDesktopUi",
+        "title": "Open Working Memory UI",
+        "category": "Working Memory",
+        "icon": "$(multiple-windows)"
       },
       {
         "command": "working-memory.updateToLatest",
@@ -182,26 +154,6 @@
         "command": "working-memory.setWorkstreamSection",
         "title": "Move Workstream to Section",
         "category": "Working Memory"
-      },
-      {
-        "command": "workingMemory.nanite.run",
-        "title": "Run Nanite",
-        "category": "Working Memory"
-      },
-      {
-        "command": "workingMemory.nanite.reset",
-        "title": "Reset Nanite to Pending",
-        "category": "Working Memory"
-      },
-      {
-        "command": "workingMemory.nanite.restart",
-        "title": "Restart Nanite",
-        "category": "Working Memory"
-      },
-      {
-        "command": "workingMemory.setGithubToken",
-        "title": "Set GitHub Token for Nanites",
-        "category": "Working Memory"
       }
     ],
     "menus": {
@@ -213,6 +165,11 @@
         },
         {
           "command": "working-memory.reloadWindow",
+          "when": "view == workingMemory.workstreams",
+          "group": "navigation"
+        },
+        {
+          "command": "working-memory.openDesktopUi",
           "when": "view == workingMemory.workstreams",
           "group": "navigation"
         },
@@ -237,15 +194,17 @@
   "scripts": {
     "compile": "npm run compile:webview && npm run copy:codicons && tsc -p . && npm run compile:control-plane",
     "compile:control-plane": "tsc -p control-plane",
+    "compile:desktop": "npm run build --prefix desktop-ui",
     "compile:webview": "vite build",
     "copy:codicons": "node scripts/copy-codicons.mjs",
+    "prepare:desktop-runtime": "node scripts/prepare-desktop-runtime.mjs",
     "postinstall": "node scripts/copy-codicons.mjs",
     "watch": "tsc -p . -w",
     "watch:webview": "vite build --watch",
     "package": "vsce package",
     "test": "vitest run",
     "test:watch": "vitest",
-    "vscode:prepublish": "npm run compile"
+    "vscode:prepublish": "npm run compile && npm run prepare:desktop-runtime"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.0.0",

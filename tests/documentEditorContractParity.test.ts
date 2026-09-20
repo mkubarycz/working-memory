@@ -63,7 +63,6 @@ function interfaceFields(source: string, name: string): string[] {
 const SHARED_VMS = [
   'WorkstreamTopicVM',
   'TreeActionVM',
-  'TreeNaniteVM',
   'TreeTopicVM',
   'TreeGroupVM',
   'WorkstreamVM',
@@ -73,14 +72,6 @@ const SHARED_VMS = [
   'TopicVM',
   'GenericFieldVM',
   'GenericDocVM',
-  'NaniteJournalRowVM',
-  'NaniteJournalLinkVM',
-  'FriendlyReadItemVM',
-  'FriendlyReadVM',
-  'NaniteJournalStepVM',
-  'NaniteJournalRoundVM',
-  'NaniteJournalAcceptanceVM',
-  'NaniteJournalDetailVM',
 ];
 
 describe('webview↔host document VM contract parity', () => {

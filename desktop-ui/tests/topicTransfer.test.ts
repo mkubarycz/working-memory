@@ -24,7 +24,7 @@ describe('topic transfer drag planning', () => {
       { kind: 'workstream', slug: 'source' },
       { kind: 'workstream', slug: 'target' },
       { kind: 'workstream', slug: 'unrelated' },
-      { kind: 'Nanite', slug: 'runner' },
+      { kind: 'Config', slug: 'runner' },
     ], 'source', 'target')).toEqual([
       { kind: 'topic', identifier: 'parent', key: 'topic:parent' },
       { kind: 'topic', identifier: 'child', key: 'topic:child' },

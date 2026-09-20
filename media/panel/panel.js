@@ -19,7 +19,7 @@
   /** @typedef {{ type: 'invoke', command: string, args: unknown[] }} InvokeMessage */
   /** @typedef {CardUnfocusMessage | CardFocusMessage | InvokeMessage} ContextMenuMessage */
   /** @typedef {{ label: string, enabled: boolean, icon?: string, message?: ContextMenuMessage, children?: ContextMenuItem[] }} ContextMenuItem */
-  /** @typedef {{ tab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites', items: Node[],
+  /** @typedef {{ tab: 'active'|'archive'|'topics'|'topic-types'|'alerts', items: Node[],
    *              emptyMessage: string }} TabData */
 
   /**
@@ -80,12 +80,12 @@
   // --- State ------------------------------------------------------------
 
   const persisted =
-    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites', gearView?: 'archive'|'topic-types'|'topics', expanded?: string[], nanitesSplit?: number, nanitesSelectedTemplate?: { id: string, slug: string | null } | null } | undefined} */ (
+    /** @type {{ activeTab?: 'active'|'archive'|'topics'|'topic-types'|'alerts', gearView?: 'archive'|'topic-types'|'topics', expanded?: string[] } | undefined} */ (
       vscode.getState()
     );
 
-  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'|'blackboard', gearView: 'archive'|'topic-types'|'topics'|'blackboard', expanded: Set<string>,
-   *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData, nanites?: TabData, blackboard?: TabData },
+  /** @type {{ activeTab: 'active'|'archive'|'topics'|'topic-types'|'alerts'|'blackboard', gearView: 'archive'|'topic-types'|'topics'|'blackboard', expanded: Set<string>,
+   *           data: { active?: TabData, archive?: TabData, topics?: TabData, topicTypes?: TabData, alerts?: TabData, blackboard?: TabData },
    *           focusedId: string | null, recentCounts: Map<string, number>,
    *           flashChipIds: Set<string>, revealTarget: { kind?: string, id: string } | null }} */
   const state = {
@@ -95,7 +95,6 @@
       persisted?.activeTab === 'topics' ||
       persisted?.activeTab === 'topic-types' ||
       persisted?.activeTab === 'alerts' ||
-      persisted?.activeTab === 'nanites' ||
       persisted?.activeTab === 'blackboard'
         ? persisted.activeTab
         : 'active',
@@ -114,15 +113,6 @@
     flashChipIds: new Set(),
     /** @type {{ kind?: string, id: string } | null} Latest reveal target from the host. */
     revealTarget: null,
-    /** Nanites tab: top/bottom split ratio (0.1..0.9). */
-    nanitesSplit:
-      typeof persisted?.nanitesSplit === 'number' &&
-      persisted.nanitesSplit > 0.1 &&
-      persisted.nanitesSplit < 0.9
-        ? persisted.nanitesSplit
-        : 0.5,
-    /** @type {{ id: string, slug: string | null } | null} Selected template filter on the Nanites tab. */
-    nanitesSelectedTemplate: persisted?.nanitesSelectedTemplate ?? null,
   };
 
   function persist() {
@@ -130,13 +120,11 @@
       activeTab: state.activeTab,
       gearView: state.gearView,
       expanded: Array.from(state.expanded),
-      nanitesSplit: state.nanitesSplit,
-      nanitesSelectedTemplate: state.nanitesSelectedTemplate,
     });
   }
 
   /**
-   * @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'|'blackboard'} tab
+   * @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'blackboard'} tab
    * @returns {TabData | undefined}
    */
   function getTabData(tab) {
@@ -185,7 +173,7 @@
   const CONTEXT_MENU_MARGIN = 6;
   // Kinds whose host-provided `node.actions` are exposed via a right-click
   // context menu (like the Active tab) rather than the "…" overflow kebab.
-  const RIGHT_CLICK_ACTION_KINDS = new Set(['topic', 'topic-row', 'nanite']);
+  const RIGHT_CLICK_ACTION_KINDS = new Set(['topic', 'topic-row']);
   const contextMenuEl = document.createElement('div');
   contextMenuEl.className = 'context-menu';
   contextMenuEl.hidden = true;
@@ -549,12 +537,6 @@
     ) {
       row.classList.add('is-closed');
     }
-    // Mute soft-deleted nanite rows the same way closed topics are muted, so
-    // the deleted list reads as "archived" while still offering Restore.
-    if (node.kind === 'nanite' && node.deleted === true) {
-      row.classList.add('is-deleted');
-    }
-
     const hasChildren =
       Array.isArray(node.children) && node.children.length > 0;
     const expanded = state.expanded.has(node.id);
@@ -753,7 +735,7 @@
     } else {
       state.expanded.add(id);
       // Expand-everything-by-default: opening a workstream reveals all of its
-      // groups, topics (incl. nested), and nanites at once instead of leaving
+      // groups and topics (including nested topics) at once instead of leaving
       // each one collapsed.
       if (node && node.kind === 'workstream') {
         /** @type {string[]} */
@@ -1039,7 +1021,7 @@
       event.preventDefault();
       event.stopPropagation();
       // If the right-click landed on a nested row that carries its own actions
-      // (e.g. a nanite), show THAT row's menu — not the workstream card menu.
+      // show THAT row's menu — not the workstream card menu.
       const target = event.target;
       const rowEl = target instanceof Element ? target.closest('.row') : null;
       const rowNode = rowEl && /** @type {any} */ (rowEl).__wmNode;
@@ -1394,173 +1376,6 @@
   }
 
   /**
-   * Render the Nanites tab: Nanite Templates (top) + latest Nanites (bottom),
-   * split by a draggable divider. Selecting a template filters the bottom list.
-   * @param {any} data
-   */
-  function renderNanitesTab(data) {
-    if (!data || !data.available) {
-      const empty = document.createElement('div');
-      empty.className = 'empty';
-      empty.textContent = data ? data.emptyMessage : '';
-      listEl.appendChild(empty);
-      return;
-    }
-    const sel = state.nanitesSelectedTemplate;
-    const container = document.createElement('div');
-    container.className = 'nanites-split';
-
-    // Top pane: templates.
-    const top = document.createElement('div');
-    top.className = 'nanites-pane';
-    top.style.flexGrow = String(state.nanitesSplit);
-    const topHead = document.createElement('div');
-    topHead.className = 'nanites-head';
-    topHead.textContent = 'Nanite Templates';
-    top.appendChild(topHead);
-    const topList = document.createElement('div');
-    topList.className = 'nanites-pane-list';
-    if (!data.templates || data.templates.length === 0) {
-      const e = document.createElement('div');
-      e.className = 'empty';
-      e.textContent = 'No nanite templates yet.';
-      topList.appendChild(e);
-    } else {
-      for (const t of data.templates) {
-        topList.appendChild(renderTemplateRow(t));
-      }
-    }
-    top.appendChild(topList);
-
-    // Draggable divider.
-    const divider = document.createElement('div');
-    divider.className = 'nanites-divider';
-    divider.setAttribute('role', 'separator');
-    divider.setAttribute('aria-orientation', 'horizontal');
-
-    // Bottom pane: latest nanites, filtered to the selected template.
-    const bottom = document.createElement('div');
-    bottom.className = 'nanites-pane';
-    bottom.style.flexGrow = String(1 - state.nanitesSplit);
-    const selTemplate = sel
-      ? (data.templates || []).find((t) => t.templateId === sel.id)
-      : null;
-    const botHead = document.createElement('div');
-    botHead.className = 'nanites-head';
-    const botLabel = document.createElement('span');
-    botLabel.textContent = sel
-      ? 'Nanites · ' + (selTemplate ? selTemplate.label : 'selected')
-      : 'Latest Nanites';
-    botHead.appendChild(botLabel);
-    if (sel) {
-      const clear = document.createElement('button');
-      clear.className = 'nanites-clear';
-      clear.textContent = 'Clear';
-      clear.title = 'Clear template filter';
-      clear.addEventListener('click', () => {
-        state.nanitesSelectedTemplate = null;
-        persist();
-        render();
-      });
-      botHead.appendChild(clear);
-    }
-    bottom.appendChild(botHead);
-    const botList = document.createElement('div');
-    botList.className = 'nanites-pane-list';
-    const nanites = data.nanites || [];
-    const filtered = sel
-      ? nanites.filter(
-          (n) => n.templateId === sel.id || (sel.slug && n.templateId === sel.slug),
-        )
-      : nanites;
-    if (filtered.length === 0) {
-      const e = document.createElement('div');
-      e.className = 'empty';
-      e.textContent = sel ? 'No nanites for this template.' : 'No nanites yet.';
-      botList.appendChild(e);
-    } else {
-      for (const n of filtered) {
-        renderNode(n, 0, botList);
-      }
-    }
-    bottom.appendChild(botList);
-
-    container.append(top, divider, bottom);
-    listEl.appendChild(container);
-    wireNanitesDivider(divider, top, bottom, container);
-  }
-
-  /**
-   * Render a Nanite Template row (top section). Click selects/toggles the
-   * template filter; double-click opens its virtual doc.
-   * @param {any} t
-   */
-  function renderTemplateRow(t) {
-    const row = document.createElement('div');
-    row.className = 'nanite-template-row';
-    const sel = state.nanitesSelectedTemplate;
-    if (sel && sel.id === t.templateId) {
-      row.classList.add('selected');
-    }
-    row.appendChild(makeCodicon(t.icon || 'symbol-class'));
-    const label = document.createElement('span');
-    label.className = 'nanite-template-label';
-    label.textContent = t.label;
-    row.appendChild(label);
-    if (t.enabled === false) {
-      const tag = document.createElement('span');
-      tag.className = 'nanite-template-tag';
-      tag.textContent = 'disabled';
-      row.appendChild(tag);
-    }
-    row.title = t.tooltip || t.label;
-    row.addEventListener('click', () => {
-      // Open the template's view AND filter the nanites list below to it.
-      state.nanitesSelectedTemplate = { id: t.templateId, slug: t.slug };
-      if (t.openUri) {
-        vscode.postMessage({ type: 'open', uri: t.openUri });
-      }
-      persist();
-      render();
-    });
-    return row;
-  }
-
-  /**
-   * Drag-to-resize the Nanites split. Listeners are scoped to the drag so they
-   * don't accumulate across re-renders.
-   * @param {HTMLElement} divider
-   * @param {HTMLElement} top
-   * @param {HTMLElement} bottom
-   * @param {HTMLElement} container
-   */
-  function wireNanitesDivider(divider, top, bottom, container) {
-    divider.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      document.body.style.cursor = 'row-resize';
-      const onMove = (/** @type {MouseEvent} */ ev) => {
-        const rect = container.getBoundingClientRect();
-        if (rect.height <= 0) {
-          return;
-        }
-        let ratio = (ev.clientY - rect.top) / rect.height;
-        ratio = Math.max(0.1, Math.min(0.9, ratio));
-        state.nanitesSplit = ratio;
-        top.style.flexGrow = String(ratio);
-        bottom.style.flexGrow = String(1 - ratio);
-      };
-      const onUp = () => {
-        document.body.style.cursor = '';
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('mouseup', onUp);
-        persist();
-      };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-    });
-  }
-
-  /**
    * The element that owns vertical scroll for the current tab. In Active
    * ("cards") mode the In Progress region scrolls internally; every other tab
    * scrolls the list itself.
@@ -1602,12 +1417,6 @@
     // List
     listEl.replaceChildren();
     listEl.classList.toggle('cards', state.activeTab === 'active');
-    listEl.classList.toggle('nanites-mode', state.activeTab === 'nanites');
-    if (state.activeTab === 'nanites') {
-      renderNanitesTab(getTabData('nanites'));
-      state.flashChipIds.clear();
-      return;
-    }
     const data = getTabData(state.activeTab);
     if (!data || data.items.length === 0) {
       const empty = document.createElement('div');
@@ -1720,13 +1529,13 @@
       return;
     }
     const t = btn.getAttribute('data-tab');
-    if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types' && t !== 'alerts' && t !== 'nanites' && t !== 'blackboard') {
+    if (t !== 'active' && t !== 'archive' && t !== 'topics' && t !== 'topic-types' && t !== 'alerts' && t !== 'blackboard') {
       return;
     }
     selectTab(t);
   });
 
-  /** @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'nanites'|'blackboard'} t */
+  /** @param {'active'|'archive'|'topics'|'topic-types'|'alerts'|'blackboard'} t */
   function selectTab(t) {
     if (state.activeTab === t) {
       // Even when already selected, a click on Blackboard re-fetches — docs
@@ -1929,7 +1738,7 @@
           }
         }
       };
-      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types', 'nanites'])) {
+      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types'])) {
         const td = tab === 'topic-types' ? msg.data?.topicTypes : msg.data?.[tab];
         if (td?.items) {
           for (const w of td.items) {
@@ -1969,7 +1778,7 @@
           }
         }
       };
-      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types', 'nanites'])) {
+      for (const tab of /** @type {const} */ (['active', 'archive', 'topics', 'topic-types'])) {
         const td = tab === 'topic-types' ? msg.data?.topicTypes : msg.data?.[tab];
         if (td?.items) {
           for (const n of td.items) {

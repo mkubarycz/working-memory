@@ -93,6 +93,6 @@ describe('controlPlaneKindFor', () => {
     const { controlPlaneKindFor } = await import(
       '../src/webview/documentEditorProvider'
     );
-    expect(controlPlaneKindFor('Nanite')).toBe('Nanite');
+    expect(controlPlaneKindFor('Config')).toBe('Config');
   });
 });

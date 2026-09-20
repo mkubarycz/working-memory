@@ -7,11 +7,13 @@ import type {
   ChatResult,
   DesktopEnvironmentState,
   DesktopResourceKind,
+  PublicConfig,
   SaveConfigInput,
 } from '../shared/contracts';
 import type { CommandJournalHistoryInput } from '../../../src/controlPlaneClient';
 import type { DocumentVM, TopicPatch } from '../../../webview-ui/src/lib/types';
 import {
+  CredentialManager,
   modelAuthHeaders,
   modelEndpoint,
   publicConfig,
@@ -103,12 +105,16 @@ const gracefulShutdown = createGracefulShutdown({
   onError: (error) => console.error('[desktop] graceful shutdown failed:', error),
 });
 
-function decryptApiKey(config: StoredConfig): string {
-  if (!config.encryptedApiKey) return '';
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('Secure credential storage is unavailable on this system');
-  }
-  return safeStorage.decryptString(Buffer.from(config.encryptedApiKey, 'base64'));
+const credentialManager = new CredentialManager(safeStorage, (message) => {
+  console.warn(`[desktop] ${message}`);
+});
+
+function desktopPublicConfig(config: StoredConfig): PublicConfig {
+  return {
+    ...publicConfig(config),
+    hasApiKey: credentialManager.hasApiKey(config),
+    credentialStorage: credentialManager.mode(),
+  };
 }
 
 async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
@@ -118,14 +124,9 @@ async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
     model: input.model,
     ...(current.encryptedApiKey ? { encryptedApiKey: current.encryptedApiKey } : {}),
   };
-  if (input.apiKey?.trim()) {
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('Secure credential storage is unavailable on this system');
-    }
-    next.encryptedApiKey = safeStorage.encryptString(input.apiKey.trim()).toString('base64');
-  }
-  await writeStoredConfig(configFile, next);
-  return next;
+  const stored = credentialManager.store(next, input.apiKey);
+  await writeStoredConfig(configFile, stored);
+  return stored;
 }
 
 async function openWorkstream(query: string): Promise<ChatResult> {
@@ -172,13 +173,6 @@ async function invokeAction(workstream: string, command: string, args: unknown[]
     if (action.operation === 'attach') await controlPlane().topicAttachWorkstream(action);
     else if (action.operation === 'detach') await controlPlane().topicDetachWorkstream(action);
     else if (action.operation === 'transfer') await controlPlane().topicTransfer(action);
-  } else if (action.operation === 'run') {
-    await controlPlane().naniteRun({ id: action.id, approved: true });
-  } else if (action.operation === 'reset') {
-    await controlPlane().naniteRun({ id: action.id, reset: true });
-  } else {
-    await controlPlane().naniteRun({ id: action.id, reset: true });
-    await controlPlane().naniteRun({ id: action.id, approved: true });
   }
   return loadResource('workstream', workstream);
 }
@@ -222,7 +216,7 @@ function configuredRequest(config: StoredConfig): { mode: ReturnType<typeof mode
     ...endpoint,
     headers: {
       'content-type': 'application/json',
-      ...modelAuthHeaders(endpoint.url, decryptApiKey(config)),
+      ...modelAuthHeaders(endpoint.url, credentialManager.read(config)),
     },
   };
 }
@@ -272,8 +266,8 @@ function registerIpc(): void {
   });
   ipcMain.handle('active:get', () => loadActivePanelData(controlPlane()));
   ipcMain.handle('active:reorder', (_event, updates) => persistWorkstreamReorder(controlPlane(), updates));
-  ipcMain.handle('config:get', async () => publicConfig(await readStoredConfig(configFile)));
-  ipcMain.handle('config:save', async (_event, input: SaveConfigInput) => publicConfig(await saveConfig(input)));
+  ipcMain.handle('config:get', async () => desktopPublicConfig(await readStoredConfig(configFile)));
+  ipcMain.handle('config:save', async (_event, input: SaveConfigInput) => desktopPublicConfig(await saveConfig(input)));
   ipcMain.handle('config:test', async (_event, input: SaveConfigInput) => {
     try {
       const config = await saveConfig(input);

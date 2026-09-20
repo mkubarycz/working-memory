@@ -38,9 +38,6 @@ const DESKTOP_TOOL_FAMILIES = [
   'topic',
   'topictype',
   'alert',
-  'nanite',
-  'nanitetemplate',
-  'nanitejournal',
 ];
 
 export function desktopToolDescriptors(tools: CanonicalToolDef[]): CanonicalToolDef[] {
@@ -48,8 +45,7 @@ export function desktopToolDescriptors(tools: CanonicalToolDef[]): CanonicalTool
 }
 
 export function isDestructiveTool(name: string, args: Record<string, unknown>): boolean {
-  if (/-delete$/.test(name)) return args.restore !== true;
-  return name === 'ws-nanite-run' && args.reset === true;
+  return /-delete$/.test(name) && args.restore !== true;
 }
 
 export function createModelConversation(input: Omit<ModelConversation, 'chatMessages' | 'responseInput'>): ModelConversation {

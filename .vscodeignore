@@ -10,8 +10,17 @@ vitest.config.ts
 **/*.ts
 !out/**/*.js
 node_modules/.cache/**
+desktop-ui/node_modules/**
+desktop-ui/src/**
+desktop-ui/tests/**
+desktop-ui/electron.vite.config.ts
+desktop-ui/tsconfig.json
+desktop-ui/package-lock.json
 .gitignore
 .eslintrc*
 tsconfig.json
 **/.DS_Store
 *.vsix
+!desktop-ui/runtime/**
+!desktop-ui/out/**
+!desktop-ui/package.json

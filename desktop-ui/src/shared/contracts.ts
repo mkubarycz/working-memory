@@ -12,6 +12,7 @@ export interface PublicConfig {
   endpoint: string;
   model: string;
   hasApiKey: boolean;
+  credentialStorage: 'secure' | 'session' | 'unavailable';
 }
 
 export interface SaveConfigInput {

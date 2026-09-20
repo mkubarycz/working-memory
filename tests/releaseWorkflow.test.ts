@@ -45,16 +45,30 @@ test('release workflow compiles, tests, and packages the vsix', () => {
   const yml = readFileSync(releaseYmlPath, 'utf8');
 
   expect(yml).toContain('npm run compile');
+  expect(yml).toContain('npm ci --prefix desktop-ui');
+  expect(yml).toContain('npm run compile:desktop');
   expect(yml).toContain('npm test');
   expect(yml).toContain('vsce package');
 });
 
-test('release workflow publishes a GitHub Release with the vsix attached', () => {
+test('release workflow publishes platform-targeted GitHub Release assets', () => {
   const yml = readFileSync(releaseYmlPath, 'utf8');
 
   expect(yml).toContain('softprops/action-gh-release');
-  expect(yml).toContain('working-memory-*.vsix');
-  expect(yml).toContain('working-memory.vsix');
+  for (const target of [
+    'linux-x64',
+    'win32-x64',
+    'darwin-x64',
+    'darwin-arm64',
+  ]) {
+    expect(yml).toContain(`target: ${target}`);
+  }
+  expect(yml).toContain('working-memory-${{ matrix.target }}.vsix');
+  expect(yml).toContain('npm_config_platform: ${{ matrix.platform }}');
+  expect(yml).toContain('npm_config_arch: ${{ matrix.arch }}');
+  expect(yml).toContain('WM_DESKTOP_PLATFORM: ${{ matrix.platform }}');
+  expect(yml).toContain('WM_DESKTOP_ARCH: ${{ matrix.arch }}');
+  expect(yml).not.toMatch(/working-memory\.vsix/);
 });
 
 test('release workflow grants contents: write permission', () => {
@@ -63,9 +77,32 @@ test('release workflow grants contents: write permission', () => {
   expect(yml).toMatch(/permissions:\s*[\s\S]*contents:\s*write/);
 });
 
+test('release is published only after every targeted package succeeds', () => {
+  const yml = readFileSync(releaseYmlPath, 'utf8');
+
+  expect(yml).toMatch(/publish:\s*[\s\S]*needs:\s*build/);
+  expect(yml).toContain('uses: actions/upload-artifact@v4');
+  expect(yml).toContain('uses: actions/download-artifact@v4');
+  expect(yml).toContain('pattern: release-vsix-*');
+  expect(yml).toContain('merge-multiple: true');
+});
+
 test('bleeding-edge build workflow still exists and triggers on push to main', () => {
   const yml = readFileSync(buildYmlPath, 'utf8');
 
   expect(yml).toMatch(/on:\s*[\s\S]*push:/);
   expect(yml).toMatch(/branches:\s*[\s\S]*-\s*main/);
+});
+
+test('clean main builds install and build the desktop UI before packaging', () => {
+  const yml = readFileSync(buildYmlPath, 'utf8');
+
+  const install = yml.indexOf('npm ci --prefix desktop-ui');
+  const build = yml.indexOf('npm run compile:desktop');
+  const packageVsix = yml.indexOf('vsce package');
+  expect(install).toBeGreaterThan(-1);
+  expect(build).toBeGreaterThan(install);
+  expect(packageVsix).toBeGreaterThan(build);
+  expect(yml).toContain('--target linux-x64');
+  expect(yml).toContain('--out working-memory-linux-x64.vsix');
 });

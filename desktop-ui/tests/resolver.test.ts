@@ -50,8 +50,6 @@ describe('workstream resolver', () => {
     const client = {
       wsRead: async () => [roadmap],
       topicRead: async () => [topic],
-      naniteRead: async () => [],
-      naniteTemplateRead: async () => [],
       topicTypeRead: async () => [topicType],
       alertRead: async () => [alert],
     } as never;
@@ -87,7 +85,7 @@ describe('workstream resolver', () => {
     };
     const client = {
       wsRead: async () => [roadmap], topicRead: async () => [topic, closedTopic], alertRead: async () => [alert],
-      topicTypeRead: async () => [], naniteRead: async () => [], naniteTemplateRead: async () => [],
+      topicTypeRead: async () => [],
     } as never;
 
     const active = await loadActivePanelData(client);
@@ -118,7 +116,6 @@ describe('workstream resolver', () => {
         { ...roadmap, slug: 'first', title: 'First', position: 5 },
       ],
       topicRead: async () => [], alertRead: async () => [], topicTypeRead: async () => [],
-      naniteRead: async () => [], naniteTemplateRead: async () => [],
     } as never;
 
     const active = await loadActivePanelData(client);
@@ -156,8 +153,6 @@ describe('workstream resolver', () => {
       [{ slug: roadmap.slug, section: 'progress' }],
       roadmap.slug!,
     )).toEqual({ kind: 'workstream', operation: 'move', slug: roadmap.slug, section: 'progress' });
-    expect(resolveDesktopAction('workingMemory.nanite.restart', [{ id: 'nanite-1' }], roadmap.slug!))
-      .toEqual({ kind: 'nanite', operation: 'restart', id: 'nanite-1' });
     expect(resolveDesktopAction(
       'workingMemory.topic.removeFromWorkstream',
       [{ topicSlug: 'desktop-parity' }],

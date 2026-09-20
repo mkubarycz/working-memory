@@ -83,6 +83,7 @@
   let model = $state('');
   let apiKey = $state('');
   let hasApiKey = $state(false);
+  let credentialStorage = $state<PublicConfig['credentialStorage']>('secure');
   let settingsStatus = $state('');
   let saving = $state(false);
   let testing = $state(false);
@@ -457,6 +458,7 @@
     endpoint = config.endpoint;
     model = config.model;
     hasApiKey = config.hasApiKey;
+    credentialStorage = config.credentialStorage;
     apiKey = '';
   }
 
@@ -537,11 +539,9 @@
     testing = true;
     settingsStatus = 'Testing…';
     try {
-      const submittedApiKey = Boolean(apiKey.trim());
       const result = await window.workingMemory.testConnection({ endpoint, model, apiKey });
       if (result.ok) {
-        apiKey = '';
-        hasApiKey = hasApiKey || submittedApiKey;
+        loadConfig(await window.workingMemory.getConfig());
       }
       settingsStatus = result.message;
     } catch (error) {
@@ -959,11 +959,18 @@
         <header>
           <p class="eyebrow">Configuration</p>
           <h1>Model connection</h1>
-          <p>OpenAI-compatible Chat Completions or Responses endpoint. Credentials stay in OS-backed secure storage.</p>
+          <p>
+            OpenAI-compatible Chat Completions or Responses endpoint.
+            {credentialStorage === 'secure'
+              ? ' Credentials stay in OS-backed secure storage.'
+              : credentialStorage === 'session'
+                ? ' The API key is held in memory for this app session because secure storage is unavailable.'
+                : ' Secure storage is unavailable; API keys can be used for the current app session but are not written to disk.'}
+          </p>
         </header>
         <label>Endpoint<input bind:value={endpoint} placeholder="http://localhost:11434/v1" /></label>
         <label>Model<input bind:value={model} placeholder="qwen3:14b" /></label>
-        <label>API key<input type="password" bind:value={apiKey} placeholder={hasApiKey ? 'Saved securely' : 'Optional for local endpoints'} autocomplete="new-password" /></label>
+        <label>API key<input type="password" bind:value={apiKey} placeholder={hasApiKey ? (credentialStorage === 'secure' ? 'Saved securely' : 'Available this session') : 'Optional for local endpoints'} autocomplete="new-password" /></label>
         <div class="settings-actions">
           <button class="secondary" disabled={saving || testing} onclick={() => void testConnection()}>{testing ? 'Testing…' : 'Test Connection'}</button>
           <button class="primary" disabled={saving || testing} onclick={() => void saveSettings()}>{saving ? 'Saving…' : 'Save'}</button>
@@ -1030,7 +1037,6 @@
             {saveState}
             onSave={saveWorkstream}
             onOpenTopic={(slug) => void openResource('topic', slug)}
-            onOpenNanite={(id) => void openResource('document', id)}
             onInvoke={invokeAction}
             onTogglePin={togglePin}
             onSetAlertStatus={setAlertStatus}
@@ -1058,7 +1064,7 @@
       <section class="empty-state">
         <p class="eyebrow">Control plane view</p>
         <h1>Choose active work.</h1>
-        <p>Open a workstream, topic, or nanite from the Active rail, or ask through chat.</p>
+        <p>Open a workstream or topic from the Active rail, or ask through chat.</p>
       </section>
     {/if}
     </div>

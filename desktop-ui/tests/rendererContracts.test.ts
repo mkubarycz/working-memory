@@ -143,9 +143,8 @@ describe('desktop tree icon contract', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
 
-    expect(activeRail).toContain("class:closed={node.kind === 'topic' && node.status === 'closed'}");
+    expect(activeRail).toContain("class:closed={node.status === 'closed'}");
     expect(activeRail).not.toContain('{node.status}');
-    expect(activeRail).toContain('<span class="active-description">{node.phase}</span>');
     expect(styles).toMatch(/\.active-row\.closed \.active-open\s*{[^}]*color:\s*var\(--desktop-active-muted\)/s);
     expect(styles).not.toMatch(/\.active-row\.closed\s*{[^}]*opacity:/s);
   });

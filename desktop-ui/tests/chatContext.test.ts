@@ -18,14 +18,14 @@ describe('chatContextForDocument', () => {
 
   it('normalizes generic kinds and returns no context without an identifier', () => {
     expect(chatContextForDocument({
-      kind: 'Nanite',
-      id: 'nanite-id',
+      kind: 'Config',
+      id: 'config-id',
       slug: null,
       title: 'Daily review',
     })).toEqual({
-      kind: 'Nanite',
+      kind: 'Config',
       routeKind: 'document',
-      identifier: 'nanite-id',
+      identifier: 'config-id',
       title: 'Daily review',
     });
     expect(chatContextForDocument({ kind: 'topic', id: '', slug: null, title: 'Untitled' })).toBeUndefined();

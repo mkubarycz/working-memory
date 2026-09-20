@@ -2,7 +2,7 @@
  * Discovery port file for the control-plane daemon.
  *
  * The daemon writes `{ port, pid }` as JSON once its server is bound, so every
- * client (the extension, the Blackboard app, Nanites) can discover the single
+ * client (the extension or desktop app) can discover the single
  * running instance's endpoint. Written atomically (temp + rename) so a reader
  * never observes a half-written file.
  */

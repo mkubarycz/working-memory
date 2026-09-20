@@ -13,7 +13,7 @@ const tree: ExpandableTreeNode = {
       children: [
         {
           id: 'parent-topic',
-          children: [{ id: 'child-topic', children: [{ id: 'nanite' }] }],
+          children: [{ id: 'child-topic', children: [{ id: 'leaf-topic' }] }],
         },
       ],
     },
@@ -31,7 +31,7 @@ describe('setSubtreeExpanded', () => {
       'topics-group',
       'parent-topic',
       'child-topic',
-      'nanite',
+      'leaf-topic',
     ]);
   });
 

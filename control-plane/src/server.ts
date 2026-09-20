@@ -259,7 +259,8 @@ export function createMcpServer(
         'lowercase `topic` docs). After deletion the document drops out of `wm-document-read` ' +
         '(both list and single-read modes). To **undelete** a previously soft-deleted document, call this ' +
         'same tool with `restore: true` (clears `deleted_at`, bumps its version). ' +
-        'Restoring a Workstream is rejected if another live Workstream already owns its slug. ' +
+        'Restoring a Workstream or ContainerClaim is rejected if another live document of the ' +
+        'same kind already owns its slug. ' +
         '`expectedResourceVersion` is OPTIONAL and only applies to deletes: when provided it ' +
         'acts as a compare-and-swap guard (the delete is rejected as a conflict if the document ' +
         'changed since you read it); when omitted the current live row is deleted ' +
@@ -280,14 +281,20 @@ export function createMcpServer(
     },
     async ({ id, restore, expectedResourceVersion }) => {
       // No spec validation here, so unregistered-kind documents remain manageable.
-      // Workstream restore alone enforces its reserved-slug invariant.
+      // Kinds with durable slug identity enforce that invariant on restore.
       try {
         if (restore === true) {
           const deleted = store.getDocument({ id, includeDeleted: true });
-          if (deleted?.kind === 'Workstream' && deleted.metadata.slug) {
-            const live = store.getDocument({ kind: 'Workstream', slug: deleted.metadata.slug });
+          if (
+            deleted &&
+            (deleted.kind === 'Workstream' || deleted.kind === 'ContainerClaim') &&
+            deleted.metadata.slug
+          ) {
+            const live = store.getDocument({ kind: deleted.kind, slug: deleted.metadata.slug });
             if (live && live.metadata.id !== id) {
-              return asError(`Cannot restore Workstream ${id}: slug "${deleted.metadata.slug}" is already in use.`);
+              return asError(
+                `Cannot restore ${deleted.kind} ${id}: slug "${deleted.metadata.slug}" is already in use.`,
+              );
             }
           }
           return asText(store.restoreDocument({ id }));

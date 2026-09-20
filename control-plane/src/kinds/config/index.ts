@@ -1,10 +1,7 @@
 /**
  * The `Config` kind — a "configmap": a named bag of string key-value pairs
  * (`data`) plus an optional human `name` and authored `status`, identified by a
- * registry-key `slug` (e.g. `banking-app-developer`). A nanite references
- * configmaps by slug/id and, on run, their merged `data` is injected into its
- * dev container as environment variables (so e.g. a `GH_TOKEN` key reaches the
- * container).
+ * registry-key `slug` (e.g. `banking-app-developer`).
  *
  * `data` values are ALWAYS strings — the spec schema rejects a non-string value
  * outright. `data` is required (an empty object is allowed). Unknown top-level

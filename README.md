@@ -31,7 +31,9 @@ It does two things at once:
 - **You see it:** an activity-bar container with two tree views — **Active**
   (open workstreams) and **Archive** (closed) — plus a webview panel with
   Active / Archive / Topics tabs. Workstreams expand to a `Topics` group;
-  clicking a workstream, topic, or session opens its virtual markdown doc.
+  clicking a workstream, topic, or session opens its virtual markdown doc. The
+  panel header also includes a shortcut that launches or focuses the packaged
+  Working Memory desktop UI.
 - **Built for recovery:** FTS5 search over entry bodies, soft-delete (and
   `wm_restore_*` undo) across workstreams / sessions / entries / topics / link
   rows, and topic M:N links to both workstreams and entries.
@@ -40,22 +42,27 @@ It does two things at once:
 
 Tagging a release (`git tag v<version> && git push --tags`) runs the
 [`Release VSIX`](.github/workflows/release.yml) workflow, which builds, tests,
-packages, and attaches the `.vsix` to a GitHub Release. A stable
-`working-memory.vsix` asset always points at the latest release, so this
-downloads the newest build to the current directory and installs it without
-cloning:
+and attaches platform-targeted `.vsix` files to a GitHub Release. Each package
+contains the matching Electron runtime. Download the asset for the host running
+VS Code:
 
 **macOS / Linux (bash):**
 
 ```bash
-curl -sL https://github.com/mkubarycz/working-memory/releases/latest/download/working-memory.vsix -o working-memory.vsix && code --install-extension working-memory.vsix --force
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) TARGET=darwin-arm64 ;;
+  Darwin-x86_64) TARGET=darwin-x64 ;;
+  Linux-x86_64) TARGET=linux-x64 ;;
+  *) echo "No prebuilt Working Memory package for this host" >&2; exit 1 ;;
+esac
+curl -sL "https://github.com/mkubarycz/working-memory/releases/latest/download/working-memory-${TARGET}.vsix" -o working-memory.vsix && code --install-extension working-memory.vsix --force
 # then reload the VS Code window
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-Invoke-WebRequest https://github.com/mkubarycz/working-memory/releases/latest/download/working-memory.vsix -OutFile working-memory.vsix; code --install-extension working-memory.vsix --force
+Invoke-WebRequest https://github.com/mkubarycz/working-memory/releases/latest/download/working-memory-win32-x64.vsix -OutFile working-memory.vsix; code --install-extension working-memory.vsix --force
 # then reload the VS Code window
 ```
 
@@ -158,9 +165,10 @@ Rules:
 
 Releases are cut by tagging `main`. Bump the version, push the commit, and push
 a `v<version>` tag — the [`Release VSIX`](.github/workflows/release.yml)
-workflow does the rest: build, test, package, and publish the `.vsix` to a
-GitHub Release (including the stable `working-memory.vsix` asset the install
-one-liner points at).
+workflow does the rest: build, test, package, and publish
+`working-memory-{darwin-arm64,darwin-x64,linux-x64,win32-x64}.vsix`. The
+extension's **Update to Latest** command selects the asset matching the current
+host. Linux arm64 and Windows arm64 are not currently published.
 
 ```bash
 # from an up-to-date main, with the change already merged:

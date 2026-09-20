@@ -819,7 +819,7 @@ function addUsage(session: Session, usage: ParsedModelTurn['usage']): void {
 
 const ENTITY_KINDS: Record<string, string> = {
   workstream: 'Workstream', topic: 'Topic', topictype: 'TopicType', alert: 'Alert',
-  config: 'Config', nanite: 'Nanite', nanitetemplate: 'NaniteTemplate', nanitejournal: 'NaniteJournal',
+  config: 'Config',
 };
 
 function entityRefsForCalls(calls: ModelToolCall[], relation: CommandJournalEntityRef['relation']): CommandJournalEntityRef[] {

@@ -1,25 +1,25 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
+import { releaseAssetName, releaseTarget } from '../src/releaseTarget';
 
 const extensionTsPath = join(process.cwd(), 'src', 'extension.ts');
 const packageJsonPath = join(process.cwd(), 'package.json');
 
-test('updateToLatest downloads the vsix from a tagged GitHub Release', () => {
+test('updateToLatest downloads the host-targeted vsix from a tagged GitHub Release', () => {
   const src = readFileSync(extensionTsPath, 'utf8');
 
-  // The command must shell out to `gh release download` with a `--pattern`
-  // glob for the vsix artifact.
   expect(src).toMatch(/['"]release['"],\s*[\s\S]*['"]download['"]/);
   expect(src).toContain("'--pattern'");
-  expect(src).toContain("'*.vsix'");
+  expect(src).toContain('releaseAssetName()');
+  expect(src).not.toContain("'*.vsix'");
 });
 
 test('updateToLatest no longer pulls from the CI run artifact', () => {
   const src = readFileSync(extensionTsPath, 'utf8');
 
   // Guard the actual anti-pattern (`gh run download …`), not any occurrence of
-  // the word 'run' — unrelated code (e.g. nanite `.../run` deep links) is fine.
+  // the word 'run' — unrelated code is fine.
   expect(src).not.toMatch(/['"]run['"],\s*['"]download['"]/);
   expect(src).not.toContain('working-memory-vsix');
   expect(src).not.toMatch(/['"]--name['"]/);
@@ -58,4 +58,19 @@ test('runCommand spawns the bare command via shell:true on Windows', () => {
   // Args are double-quoted with embedded quotes escaped to handle spaces
   // and prevent injection.
   expect(src).toMatch(/args\.map\([\s\S]*replace\(\/"\/g/);
+});
+
+test.each([
+  ['darwin', 'arm64', 'working-memory-darwin-arm64.vsix'],
+  ['darwin', 'x64', 'working-memory-darwin-x64.vsix'],
+  ['linux', 'x64', 'working-memory-linux-x64.vsix'],
+  ['win32', 'x64', 'working-memory-win32-x64.vsix'],
+] as const)('maps %s-%s to its published release asset', (platform, arch, asset) => {
+  expect(releaseAssetName(platform, arch)).toBe(asset);
+});
+
+test('rejects hosts for which no release artifact is published', () => {
+  expect(() => releaseTarget('linux', 'arm64')).toThrow(
+    'no published Working Memory release supports linux-arm64',
+  );
 });
