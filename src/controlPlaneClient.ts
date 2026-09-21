@@ -207,6 +207,53 @@ export interface WsDeleteInput {
   restore?: boolean;
 }
 
+export interface DockerRuntimeSpec {
+  type: 'docker';
+  buildContext: string;
+  dockerfile: string;
+  imageName: string;
+  containerName: string;
+  hostPort: number;
+  containerPort: number;
+  healthPath: string;
+  entryPath: string;
+}
+
+export interface ContainerClaim {
+  id: string;
+  slug: string;
+  title: string;
+  repository: string;
+  sourceRevision?: string;
+  runtime?: DockerRuntimeSpec;
+  created_at: number;
+  updated_at: number;
+  resourceVersion: number;
+}
+
+export interface ContainerClaimReadInput {
+  slug?: string;
+  id?: string;
+  query?: string;
+  limit?: number;
+}
+
+export interface ContainerClaimCreateInput {
+  slug: string;
+  title: string;
+  repository: string;
+  sourceRevision?: string;
+  runtime?: DockerRuntimeSpec;
+}
+
+export interface ContainerClaimUpdateInput {
+  slug: string;
+  title?: string;
+  repository?: string;
+  sourceRevision?: string | null;
+  runtime?: DockerRuntimeSpec | null;
+}
+
 /**
  * The topic shape returned by the control-plane `ws-topic-*` domain API (mapped
  * from a Topic document by the kind's `Topic` POCO). This client OWNS the type,
@@ -1094,6 +1141,34 @@ export class ControlPlaneClient {
       ok: parsed?.ok === true,
       slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
     };
+  }
+
+  // ----- ContainerClaim domain API -----------------------------------------
+
+  private parseContainerClaim(result: unknown): ContainerClaim {
+    const parsed = parseToolText(result) as ContainerClaim | null;
+    if (!parsed || typeof parsed.id !== 'string' || typeof parsed.slug !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane container claim response');
+    }
+    return parsed;
+  }
+
+  async containerClaimRead(input: ContainerClaimReadInput = {}): Promise<ContainerClaim[]> {
+    const result = await this.callDomainTool('ws-containerclaim-read', { ...input });
+    const parsed = parseToolText(result) as { claims?: unknown } | null;
+    return (Array.isArray(parsed?.claims) ? parsed.claims : []) as ContainerClaim[];
+  }
+
+  async containerClaimCreate(input: ContainerClaimCreateInput): Promise<ContainerClaim> {
+    return this.parseContainerClaim(
+      await this.callDomainTool('ws-containerclaim-create', { ...input }),
+    );
+  }
+
+  async containerClaimUpdate(input: ContainerClaimUpdateInput): Promise<ContainerClaim> {
+    return this.parseContainerClaim(
+      await this.callDomainTool('ws-containerclaim-update', { ...input }),
+    );
   }
 
   // ----- Topic domain API (`ws-topic-*`) ------------------------------------

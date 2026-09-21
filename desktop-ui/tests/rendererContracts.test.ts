@@ -195,6 +195,9 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('class="document-tabs" role="tablist"');
     expect(app).toContain('role="tab"');
     expect(app).toContain('aria-selected={key === selectedDocumentKey}');
+    const documentHost = app.slice(app.indexOf('<div class="document-stage">'), app.indexOf('<section class="empty-state">'));
+    expect(documentHost).not.toContain('ContainerAppDetail');
+    expect(documentHost).not.toContain('container-app-tab');
     expect(app).toContain('onclick={() => closeDocument(key)}');
     expect(app).toContain('openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document)');
     expect(app).toContain('oncontextmenu={(event) => void openDocumentTabMenu(event, key)}');
@@ -208,6 +211,7 @@ describe('desktop tree icon contract', () => {
 
   it('shows at most two current-scope messages and targets stable history elements', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const focus = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/chatRunFocus.ts'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const previewIndex = app.indexOf('<section class="scope-preview"');
     const composerIndex = app.indexOf('<div class="composer-shell">');
@@ -223,15 +227,18 @@ describe('desktop tree icon contract', () => {
     expect(composerIndex).toBeLessThan(chatRailIndex);
     expect(app.slice(chatRailIndex)).not.toContain('class="scope-preview"');
     expect(app).toContain('No messages for this scope.');
-    expect(app).toContain('chatRailCollapsed = false;');
-    expect(app).toContain('const target = document.getElementById(chatRunDomId(run));');
+    expect(app).toContain("activateLog: () => activateHeaderTab('log')");
+    expect(app).toContain('expandChatRail: () => (chatRailCollapsed = false)');
+    expect(app).toContain('getTarget: () => document.getElementById(chatRunDomId(run))');
+    expect(focus.indexOf('dependencies.activateLog();')).toBeLessThan(focus.indexOf('await dependencies.afterRender();'));
+    expect(focus).toContain('const target = dependencies.getTarget();');
     expect(app).toContain("scroller.addEventListener('scrollend', finish, { once: true });");
     expect(app).toContain('idleTimer = window.setTimeout(finish, 120);');
-    expect(app).toContain('const needsScroll = scrollerBounds');
-    expect(app).toContain('scroller && needsScroll ? waitForScrollEnd(scroller) : Promise.resolve()');
-    expect(app).toContain("target.scrollIntoView({ behavior: 'smooth', block: 'center' });");
-    expect(app).toContain('await scrollFinished;');
-    expect(app).toContain('target.focus({ preventScroll: true });');
+    expect(focus).toContain('const needsScroll = scrollerBounds');
+    expect(focus).toContain('dependencies.waitForScrollEnd(scroller)');
+    expect(focus).toContain("target.scrollIntoView({ behavior: 'smooth', block: 'center' });");
+    expect(focus).toContain('await scrollFinished;');
+    expect(focus).toContain('target.focus({ preventScroll: true });');
     expect(app).toContain("target.classList.remove('preview-attention');");
     expect(app).toContain('void target.offsetWidth;');
     expect(app).toContain("target.classList.add('preview-attention');");

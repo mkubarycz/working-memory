@@ -1,6 +1,6 @@
 import type { DocumentVM, SaveState } from '../../../webview-ui/src/lib/types';
 import type { PanelData } from '../../../src/panelData';
-import type { PendingConfirmation } from '../shared/contracts';
+import type { ContainerAppStatus, PendingConfirmation } from '../shared/contracts';
 import type { ChatRun, ChatToolRow, ToolDetail } from './chatHistory';
 
 export type SelectedTool = { row: ChatToolRow; detail?: ToolDetail; loading: boolean; error: string };
@@ -22,6 +22,9 @@ export interface EnvironmentBoundRendererState {
   activeLoading: boolean;
   activeError: string;
   hasUnseenMessages: boolean;
+  containerAppStatuses: Record<string, ContainerAppStatus | undefined>;
+  selectedContainerAppId: string | null;
+  busyContainerAppId: string | null;
 }
 
 export function emptyEnvironmentBoundRendererState(): EnvironmentBoundRendererState {
@@ -42,6 +45,9 @@ export function emptyEnvironmentBoundRendererState(): EnvironmentBoundRendererSt
     activeLoading: false,
     activeError: '',
     hasUnseenMessages: false,
+    containerAppStatuses: {},
+    selectedContainerAppId: null,
+    busyContainerAppId: null,
   };
 }
 

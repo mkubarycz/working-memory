@@ -10,6 +10,20 @@ import { registerWsContainerClaimDelete } from './delete.js';
 
 export type { IContainerClaim } from './containerClaim.js';
 
+const dockerRuntime = z
+  .object({
+    type: z.literal('docker'),
+    buildContext: z.string().trim().min(1).max(1000),
+    dockerfile: z.string().trim().min(1).max(500),
+    imageName: z.string().trim().min(1).max(255),
+    containerName: z.string().trim().min(1).max(255),
+    hostPort: z.number().int().min(1).max(65535),
+    containerPort: z.number().int().min(1).max(65535),
+    healthPath: z.string().startsWith('/').max(500),
+    entryPath: z.string().startsWith('/').max(500),
+  })
+  .strict();
+
 const containerClaim: KindModule = {
   name: CONTAINER_CLAIM_KIND,
   descriptor: {
@@ -19,6 +33,7 @@ const containerClaim: KindModule = {
         title: z.string().trim().min(1).max(200),
         repository: z.string().trim().min(1).max(500),
         sourceRevision: z.string().trim().min(1).max(200).optional(),
+        runtime: dockerRuntime.optional(),
       })
       .strict(),
     validateMetadata: ({ slug, store, excludeId }) => {

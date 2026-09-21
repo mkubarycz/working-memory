@@ -22,12 +22,30 @@ export function registerWsContainerClaimCreate(server: McpServer, store: Store):
           .string()
           .optional()
           .describe('Optional source branch, tag, or revision; omit to use the source default.'),
+        runtime: z
+          .object({
+            type: z.literal('docker'),
+            buildContext: z.string(),
+            dockerfile: z.string(),
+            imageName: z.string(),
+            containerName: z.string(),
+            hostPort: z.number().int(),
+            containerPort: z.number().int(),
+            healthPath: z.string(),
+            entryPath: z.string(),
+          })
+          .strict()
+          .optional()
+          .describe('Optional local Docker build and runtime intent.'),
       },
     },
-    async ({ slug, title, repository, sourceRevision }) => {
+    async ({ slug, title, repository, sourceRevision, runtime }) => {
       const specInput: Record<string, unknown> = { title, repository };
       if (sourceRevision !== undefined) {
         specInput.sourceRevision = sourceRevision;
+      }
+      if (runtime !== undefined) {
+        specInput.runtime = runtime;
       }
       try {
         validateMetadata(CONTAINER_CLAIM_KIND, { slug, store });

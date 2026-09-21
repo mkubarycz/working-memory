@@ -25,6 +25,10 @@ const api: DesktopApi = {
   togglePin: (workstream, topic) => invoke('topic:toggle-pin', workstream, topic),
   setAlertStatus: (context, id, status) => invoke('alert:set-status', context, id, status),
   invokeAction: (workstream, command, args) => invoke('action:invoke', workstream, command, args),
+  runContainerApp: (id) => invoke('container:run', id),
+  inspectContainerApp: (id) => invoke('container:inspect', id),
+  stopContainerApp: (id) => invoke('container:stop', id),
+  openContainerApp: (id) => invoke('container:open', id),
   openExternal: (url) => invoke('external:open', url),
 };
 

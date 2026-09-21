@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
+  import ContainerAppDetail from './ContainerAppDetail.svelte';
+  import ContainerAppStrip from './ContainerAppStrip.svelte';
   import WorkstreamView from '../../../webview-ui/src/lib/WorkstreamView.svelte';
   import TopicView from '../../../webview-ui/src/lib/TopicView.svelte';
   import DocumentView from '../../../webview-ui/src/lib/DocumentView.svelte';
@@ -8,12 +10,14 @@
   import { chatContextForDocument } from '../shared/contracts';
   import type {
     ChatResult,
+    ContainerAppStatus,
     DesktopEnvironment,
     DesktopEnvironmentState,
     DesktopResourceKind,
     PendingConfirmation,
     PublicConfig,
   } from '../shared/contracts';
+  import { CONTAINER_APPS, type ContainerAppItem } from './containerApps';
   import type { CommandJournalScopeRef } from '../../../src/controlPlaneClient';
   import type { PanelAction, PanelData } from '../../../src/panelData';
   import { invokeActiveAction } from './activeContextMenu';
@@ -32,6 +36,7 @@
   } from './documentTabs';
   import { chatRunDomId, recentRunsForContext } from './scopedChat';
   import { CHAT_HISTORY_POLL_INTERVAL_MS } from './chatPolling';
+  import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
   import { topicTransferRefreshTargets, type TopicTransferRequest } from './topicTransfer';
@@ -59,7 +64,9 @@
   } from './chatHistory';
 
   type Page = 'workspace' | 'settings';
+  type HeaderTab = 'log' | 'container-apps';
   const HISTORY_PAGE_SIZE = 30;
+  const HEADER_TABS: HeaderTab[] = ['log', 'container-apps'];
 
   let page = $state<Page>('workspace');
   let input = $state('');
@@ -92,6 +99,12 @@
   let selectedEnvironment = $state<DesktopEnvironment | null>(null);
   let environmentLoading = $state(false);
   let environmentError = $state('');
+  let containerAppStatuses = $state<Record<string, ContainerAppStatus | undefined>>({});
+  let selectedContainerAppId = $state<string | null>(null);
+  let containerAppError = $state('');
+  let activeHeaderTab = $state<HeaderTab>('log');
+  let focusedHeaderTab = $state<HeaderTab>('log');
+  let busyContainerAppId = $state<string | null>(null);
   let activePanel = $state<PanelData | null>(null);
   let activeLoading = $state(false);
   let activeError = $state('');
@@ -109,7 +122,61 @@
   let environmentGeneration = 0;
   let historyRequestGeneration: number | null = null;
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
+  const selectedContainerApp = $derived(CONTAINER_APPS.find((app) => app.id === selectedContainerAppId) ?? null);
   const currentChatContext = $derived(chatContextForDocument(activeDocument));
+
+  async function refreshContainerApp(app: ContainerAppItem): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      const status = await window.workingMemory.inspectContainerApp(app.id);
+      if (generation === environmentGeneration) {
+        containerAppStatuses[app.id] = status;
+        containerAppError = status.error ?? '';
+      }
+    } catch (error) {
+      if (generation === environmentGeneration) containerAppError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function openContainerAppDetail(app: ContainerAppItem): Promise<void> {
+    selectedContainerAppId = app.id;
+    activateHeaderTab('container-apps');
+    await refreshContainerApp(app);
+  }
+
+  async function runContainerAppAction(app: ContainerAppItem, action: 'run' | 'open' | 'stop' | 'refresh'): Promise<void> {
+    if (busyContainerAppId) return;
+    const generation = environmentGeneration;
+    busyContainerAppId = app.id;
+    containerAppError = '';
+    try {
+      if (action === 'run') {
+        const result = await window.workingMemory.runContainerApp(app.id);
+        const status = await window.workingMemory.inspectContainerApp(app.id);
+        if (generation !== environmentGeneration) return;
+        containerAppStatuses[app.id] = result.status === 'ready'
+          ? { ...status, lastAction: `Run: ${result.action}`, error: null }
+          : { ...status, lastAction: 'Run failed', error: result.message };
+        if (result.status === 'error') containerAppError = result.message;
+      } else if (action === 'stop') {
+        const result = await window.workingMemory.stopContainerApp(app.id);
+        if (generation !== environmentGeneration) return;
+        containerAppStatuses[app.id] = result.detail;
+        if (result.status === 'error') containerAppError = result.message;
+      } else if (action === 'open') {
+        const status = await window.workingMemory.openContainerApp(app.id);
+        if (generation !== environmentGeneration) return;
+        containerAppStatuses[app.id] = status;
+        if (status.error) containerAppError = status.error;
+      } else {
+        await refreshContainerApp(app);
+      }
+    } catch (error) {
+      if (generation === environmentGeneration) containerAppError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (generation === environmentGeneration) busyContainerAppId = null;
+    }
+  }
 
   type DocumentPatch = TopicPatch & { status?: string };
   const documentSaves = createDocumentSaveQueue<DocumentPatch, DocumentVM>({
@@ -173,6 +240,7 @@
       const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
+      activateHeaderTab('log');
       documentError = '';
     }
     if (result.journalId) await refreshJournal(result.journalId);
@@ -308,6 +376,7 @@
     void discoverEnvironments(true);
     void refreshActive();
     void refreshLatestHistory(true);
+    void refreshContainerApp(CONTAINER_APPS[0]);
     const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
     return () => {
       window.clearInterval(historyPoll);
@@ -431,6 +500,12 @@
     activeLoading = reset.activeLoading;
     activeError = reset.activeError;
     hasUnseenMessages = reset.hasUnseenMessages;
+    containerAppStatuses = reset.containerAppStatuses;
+    selectedContainerAppId = reset.selectedContainerAppId;
+    containerAppError = '';
+    activeHeaderTab = 'log';
+    focusedHeaderTab = 'log';
+    busyContainerAppId = reset.busyContainerAppId;
     conversationPinned = true;
     page = 'workspace';
   }
@@ -440,13 +515,14 @@
     environmentError = '';
     try {
       await documentSaves.flushAll();
-      const state = await window.workingMemory.switchEnvironment(mcpUrl);
       environmentGeneration += 1;
       historyRequestGeneration = null;
       resetEnvironmentState();
+      const state = await window.workingMemory.switchEnvironment(mcpUrl);
       applyEnvironmentState(state);
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
+      await Promise.all(CONTAINER_APPS.map(refreshContainerApp));
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -570,6 +646,7 @@
       const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
+      activateHeaderTab('log');
       restoreDocumentSaveStatus(next.selectedKey);
     } catch (error) {
       documentError = error instanceof Error ? error.message : String(error);
@@ -759,8 +836,37 @@
   function selectDocument(key: string): void {
     if (documents.some((document) => documentTabKey(document) === key)) {
       selectedDocumentKey = key;
+      activateHeaderTab('log');
       restoreDocumentSaveStatus(key);
     }
+  }
+
+  function activateHeaderTab(tab: HeaderTab): void {
+    activeHeaderTab = tab;
+    focusedHeaderTab = tab;
+  }
+
+  function focusHeaderTab(tab: HeaderTab): void {
+    focusedHeaderTab = tab;
+    void tick().then(() => document.getElementById(`desktop-tab-${tab}`)?.focus());
+  }
+
+  function handleHeaderTabKeydown(event: KeyboardEvent, tab: HeaderTab): void {
+    const index = HEADER_TABS.indexOf(tab);
+    let next: HeaderTab | undefined;
+    if (event.key === 'ArrowLeft') next = HEADER_TABS[(index - 1 + HEADER_TABS.length) % HEADER_TABS.length];
+    else if (event.key === 'ArrowRight') next = HEADER_TABS[(index + 1) % HEADER_TABS.length];
+    else if (event.key === 'Home') next = HEADER_TABS[0];
+    else if (event.key === 'End') next = HEADER_TABS[HEADER_TABS.length - 1];
+    else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      activateHeaderTab(tab);
+      return;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    if (next) focusHeaderTab(next);
   }
 
   function applyDocumentTabs(next: { tabs: DocumentVM[]; selectedKey: string | null }): void {
@@ -865,21 +971,14 @@
   }
 
   async function focusChatRun(run: ChatRun): Promise<void> {
-    chatRailCollapsed = false;
-    await tick();
-    const target = document.getElementById(chatRunDomId(run));
-    if (!target) return;
-    const scroller = target.closest('.conversation');
-    const targetBounds = target.getBoundingClientRect();
-    const scrollerBounds = scroller?.getBoundingClientRect();
-    const needsScroll = scrollerBounds
-      ? Math.abs(targetBounds.top + targetBounds.height / 2 - (scrollerBounds.top + scrollerBounds.height / 2)) > 1
-      : false;
-    const scrollFinished = scroller && needsScroll ? waitForScrollEnd(scroller) : Promise.resolve();
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await scrollFinished;
-    target.focus({ preventScroll: true });
-    restartPreviewAttention(target);
+    await focusChatRunTarget({
+      activateLog: () => activateHeaderTab('log'),
+      expandChatRail: () => (chatRailCollapsed = false),
+      afterRender: tick,
+      getTarget: () => document.getElementById(chatRunDomId(run)),
+      waitForScrollEnd,
+      restartAttention: restartPreviewAttention,
+    });
   }
 </script>
 
@@ -1031,7 +1130,7 @@
           <div class="document-toolbar">
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
-        {#if activeDocument.kind === 'workstream'}
+        {#if activeDocument?.kind === 'workstream'}
           <WorkstreamView
             ws={activeDocument}
             {saveState}
@@ -1041,7 +1140,7 @@
             onTogglePin={togglePin}
             onSetAlertStatus={setAlertStatus}
           />
-        {:else if activeDocument.kind === 'topic'}
+        {:else if activeDocument?.kind === 'topic'}
           <TopicView
             topic={activeDocument}
             {saveState}
@@ -1050,7 +1149,7 @@
             onOpenWorkstream={(slug) => void openResource('workstream', slug)}
             onSetAlertStatus={setAlertStatus}
           />
-        {:else}
+        {:else if activeDocument}
           <DocumentView
             doc={activeDocument}
             onOpenDocument={(id) => void openResource('document', id)}
@@ -1147,11 +1246,29 @@
         onclick={() => (chatRailCollapsed = false)}
       ><span aria-hidden="true" class="codicon codicon-chevron-left"></span></button>
     {:else}
-      <header class="brand">
+      <header class="desktop-header">
         <div class="mark">WM</div>
-        <div>
-          <strong>Working Memory</strong>
-          <span>Desktop</span>
+        <div class="desktop-header-tabs" role="tablist" aria-label="Desktop views">
+          <button
+            id="desktop-tab-log"
+            role="tab"
+            aria-selected={activeHeaderTab === 'log'}
+            aria-controls="desktop-panel-log"
+            tabindex={focusedHeaderTab === 'log' ? 0 : -1}
+            onclick={() => activateHeaderTab('log')}
+            onfocus={() => (focusedHeaderTab = 'log')}
+            onkeydown={(event) => handleHeaderTabKeydown(event, 'log')}
+          >Log</button>
+          <button
+            id="desktop-tab-container-apps"
+            role="tab"
+            aria-selected={activeHeaderTab === 'container-apps'}
+            aria-controls="desktop-panel-container-apps"
+            tabindex={focusedHeaderTab === 'container-apps' ? 0 : -1}
+            onclick={() => activateHeaderTab('container-apps')}
+            onfocus={() => (focusedHeaderTab = 'container-apps')}
+            onkeydown={(event) => handleHeaderTabKeydown(event, 'container-apps')}
+          >Container Apps</button>
         </div>
         <button
           class="icon-button"
@@ -1161,6 +1278,14 @@
         ><span aria-hidden="true" class="codicon codicon-chevron-right"></span></button>
       </header>
 
+      <div
+        id="desktop-panel-log"
+        class="chat-body"
+        role="tabpanel"
+        aria-labelledby="desktop-tab-log"
+        hidden={activeHeaderTab !== 'log'}
+        inert={activeHeaderTab !== 'log'}
+      >
       <div class="conversation-shell">
       <div bind:this={conversationElement} class="conversation" aria-live="polite" onscroll={handleConversationScroll}>
       {#if historyCursor}
@@ -1322,7 +1447,39 @@
           </div>
         </div>
       {/if}
+      </div>
 
+      <div
+        id="desktop-panel-container-apps"
+        class="container-apps-panel"
+        role="tabpanel"
+        aria-labelledby="desktop-tab-container-apps"
+        hidden={activeHeaderTab !== 'container-apps'}
+        inert={activeHeaderTab !== 'container-apps'}
+      >
+        <ContainerAppStrip
+          apps={CONTAINER_APPS}
+          statuses={containerAppStatuses}
+          busyAppId={busyContainerAppId}
+          onOpenDetail={(app) => void openContainerAppDetail(app)}
+          onAction={(app, action) => void runContainerAppAction(app, action)}
+        />
+        {#if containerAppError}
+          <p class="container-panel-error" role="alert">{containerAppError}</p>
+        {/if}
+        {#if selectedContainerApp}
+          <ContainerAppDetail
+            app={selectedContainerApp}
+            status={containerAppStatuses[selectedContainerApp.id]}
+            busy={busyContainerAppId === selectedContainerApp.id}
+            onAction={(action) => void runContainerAppAction(selectedContainerApp!, action)}
+          />
+        {:else}
+          <div class="container-app-empty">
+            <p>Select a container app to inspect and manage it.</p>
+          </div>
+        {/if}
+      </div>
     {/if}
   </aside>
 </div>

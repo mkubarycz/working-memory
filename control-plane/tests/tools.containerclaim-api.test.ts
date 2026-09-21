@@ -32,6 +32,17 @@ interface Claim {
   title: string;
   repository: string;
   sourceRevision?: string;
+  runtime?: {
+    type: 'docker';
+    buildContext: string;
+    dockerfile: string;
+    imageName: string;
+    containerName: string;
+    hostPort: number;
+    containerPort: number;
+    healthPath: string;
+    entryPath: string;
+  };
   resourceVersion: number;
 }
 
@@ -219,6 +230,51 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       });
       expect(isErrorResult(runtimeField)).toBe(true);
       expect(textOf(runtimeField)).toContain('dockerId');
+    } finally {
+      await close();
+    }
+  });
+
+  it('round-trips an optional strict Docker runtime while old claims remain valid', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    const runtime = {
+      type: 'docker',
+      buildContext: '/workspace/ClarinetHero',
+      dockerfile: '/workspace/ClarinetHero/Dockerfile',
+      imageName: 'clarinet-hero:local',
+      containerName: 'working-memory-clarinet-hero',
+      hostPort: 4173,
+      containerPort: 80,
+      healthPath: '/',
+      entryPath: '/',
+    } as const;
+    try {
+      const created = jsonOf<Claim>(await client.callTool({
+        name: 'ws-containerclaim-create',
+        arguments: {
+          slug: 'clarinet-hero',
+          title: 'Clarinet Hero',
+          repository: '/workspace/ClarinetHero',
+          runtime,
+        },
+      }));
+      expect(created.runtime).toEqual(runtime);
+
+      const invalidRuntime = await client.callTool({
+        name: 'ws-containerclaim-update',
+        arguments: {
+          slug: created.slug,
+          runtime: { ...runtime, hostPort: 70000 },
+        },
+      });
+      expect(isErrorResult(invalidRuntime)).toBe(true);
+      expect(textOf(invalidRuntime)).toContain('hostPort');
+
+      const removed = jsonOf<Claim>(await client.callTool({
+        name: 'ws-containerclaim-update',
+        arguments: { slug: created.slug, runtime: null },
+      }));
+      expect(removed.runtime).toBeUndefined();
     } finally {
       await close();
     }

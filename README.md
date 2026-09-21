@@ -99,6 +99,22 @@ For iterating on the extension itself, use the **Extension Development Host**:
 To install a build instead of debugging, use the prebuilt GitHub Release
 one-liner above.
 
+## Clarinet Hero desktop launcher
+
+The Working Memory desktop header includes a **Clarinet Hero** button. It
+creates or updates the durable `clarinet-hero` ContainerClaim, builds the local
+ClarinetHero Dockerfile, and reconciles the labeled
+`working-memory-clarinet-hero` container onto
+`127.0.0.1:4173`. The browser opens <http://localhost:4173/> only after an HTTP
+readiness check succeeds. Docker must already be installed and running; the
+launcher uses only a validated local Unix-socket Docker context and reports
+missing CLI, daemon, timeout, build, ownership-conflict, startup, and readiness
+failures without removing unrelated containers. Set
+`WORKING_MEMORY_DOCKER_CONTEXT` to prefer a context; otherwise the launcher
+checks `desktop-linux`, `orbstack`, and `default`. Existing valid claim source
+paths are retained. For a new or stale claim, set `CLARINET_HERO_SOURCE` or
+place the checkout in a discoverable sibling/workspace `ClarinetHero` path.
+
 ## Chat link patterns
 
 VS Code's Copilot Chat panel only linkifies a narrow set of URI forms in

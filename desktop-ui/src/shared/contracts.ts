@@ -26,6 +26,59 @@ export interface ConnectionResult {
   message: string;
 }
 
+export type ContainerLaunchResult =
+  | {
+      status: 'ready';
+      url: string;
+      action: 'created' | 'started' | 'recreated' | 'reused';
+    }
+  | {
+      status: 'error';
+      code:
+        | 'docker_missing'
+        | 'docker_unavailable'
+        | 'docker_timeout'
+        | 'source_not_found'
+        | 'claim_error'
+        | 'container_conflict'
+        | 'build_failed'
+        | 'start_failed'
+        | 'stop_failed'
+        | 'unhealthy'
+        | 'readiness_timeout';
+      message: string;
+    };
+
+export type ContainerAppState = 'missing' | 'stopped' | 'running' | 'healthy' | 'unhealthy' | 'error';
+
+export interface ContainerAppStatus {
+  id: string;
+  displayName: string;
+  claimTitle: string;
+  claimSlug: string;
+  repository: string;
+  buildContext: string;
+  dockerfile: string;
+  image: string;
+  containerName: string;
+  dockerContext: string | null;
+  state: ContainerAppState;
+  hostPort: number;
+  containerPort: number;
+  url: string;
+  ready: boolean;
+  lastAction: string;
+  error: string | null;
+}
+
+export interface ContainerStopResult {
+  status: 'stopped' | 'already_stopped' | 'missing' | 'error';
+  message: string;
+  detail: ContainerAppStatus;
+}
+
+export type ContainerAppId = 'clarinet-hero';
+
 export interface DesktopEnvironment {
   id: string;
   port: number;
@@ -117,5 +170,9 @@ export interface DesktopApi {
     status: AlertVM['status'],
   ): Promise<DocumentVM>;
   invokeAction(workstream: string, command: string, args: unknown[]): Promise<DocumentVM>;
+  runContainerApp(id: ContainerAppId): Promise<ContainerLaunchResult>;
+  inspectContainerApp(id: ContainerAppId): Promise<ContainerAppStatus>;
+  stopContainerApp(id: ContainerAppId): Promise<ContainerStopResult>;
+  openContainerApp(id: ContainerAppId): Promise<ContainerAppStatus>;
   openExternal(url: string): Promise<void>;
 }

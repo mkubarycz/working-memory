@@ -12,7 +12,7 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
       title: 'Container Claim: Update',
       description:
         'Update the authored intent of a live ContainerClaim by `slug`. Pass only `title`, ' +
-        '`repository`, or `sourceRevision`; the stable slug is not changed.',
+        '`repository`, `sourceRevision`, or `runtime`; the stable slug is not changed.',
       inputSchema: {
         slug: z.string().describe('Slug of the live claim to update.'),
         title: z.string().optional().describe('Replacement human-readable title.'),
@@ -22,6 +22,22 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
           .nullable()
           .optional()
           .describe('Replacement source revision, or null to return to the repository default.'),
+        runtime: z
+          .object({
+            type: z.literal('docker'),
+            buildContext: z.string(),
+            dockerfile: z.string(),
+            imageName: z.string(),
+            containerName: z.string(),
+            hostPort: z.number().int(),
+            containerPort: z.number().int(),
+            healthPath: z.string(),
+            entryPath: z.string(),
+          })
+          .strict()
+          .nullable()
+          .optional()
+          .describe('Replacement Docker runtime intent, or null to remove it.'),
       },
     },
     async ({ slug, ...input }) => {
@@ -40,6 +56,9 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
         const merged = { ...existing.spec, ...patch };
         if (merged.sourceRevision === null) {
           delete merged.sourceRevision;
+        }
+        if (merged.runtime === null) {
+          delete merged.runtime;
         }
         spec = validateSpec(CONTAINER_CLAIM_KIND, merged);
       } catch (err) {
