@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:{{ cookiecutter.port }}:{{ cookiecutter.port }}"
+    environment:
+      DATABASE_PATH: /data/application.sqlite
+      ENABLE_HTTP: "{{ cookiecutter.enable_http }}"
+      ENABLE_UI: "{{ cookiecutter.enable_ui }}"
+    volumes:
+      - app-data:/data
+volumes:
+  app-data:

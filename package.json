@@ -203,6 +203,7 @@
     "watch:webview": "vite build --watch",
     "package": "vsce package",
     "test": "vitest run",
+    "test:standalone-template": "bash scripts/test-standalone-template.sh",
     "test:watch": "vitest",
     "vscode:prepublish": "npm run compile && npm run prepare:desktop-runtime"
   },
