@@ -35,7 +35,8 @@ export function registerWsTopicUpdate(server: McpServer, store: Store): void {
         '`body`, `status`, `topicType`, `parents`, `workstreams`, `focusedWorkstreams`). Reads ' +
         'the current document for its id + resourceVersion, then does a compare-and-swap write of ' +
         'the merged, re-validated spec. Unknown slug and version conflicts are surfaced clearly. ' +
-        'Returns the updated topic.',
+        'Returns the updated topic. To close a topic together with children/descendants, use the ' +
+        'single atomic ws-topic-close-tree tool instead of issuing many update calls.',
       inputSchema: {
         slug: z.string().describe('Slug of the topic to update (required).'),
         title: z.string().optional().describe('New title (≤120 chars).'),

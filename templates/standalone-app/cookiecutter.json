@@ -1,0 +1,13 @@
+{
+  "app_id": "example-app",
+  "app_title": "Example App",
+  "app_description": "A standalone resource-oriented application.",
+  "package_name": "example-app",
+  "port": "8080",
+  "enable_http": ["true", "false"],
+  "enable_ui": ["true", "false"],
+  "_copy_without_render": [
+    "*.sqlite",
+    "*.sqlite-*"
+  ]
+}

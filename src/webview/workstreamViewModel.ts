@@ -1,8 +1,6 @@
 import type {
   Alert,
   ControlPlaneClient,
-  Nanite,
-  NaniteTemplate,
   Topic,
   TopicType,
   Workstream,
@@ -10,7 +8,6 @@ import type {
 import {
   buildWorkstreamTree,
   type PanelAction,
-  type PanelNaniteRow,
   type PanelTopic,
   type PanelTopicsGroup,
 } from '../panelData';
@@ -39,16 +36,6 @@ export interface WorkstreamTreeActionViewModel {
   enabled: boolean;
 }
 
-export interface WorkstreamTreeNaniteViewModel {
-  kind: 'nanite';
-  id: string;
-  label: string;
-  icon: string;
-  phase: string;
-  openId: string;
-  actions: WorkstreamTreeActionViewModel[];
-}
-
 export interface WorkstreamTreeTopicViewModel {
   kind: 'topic';
   id: string;
@@ -59,7 +46,7 @@ export interface WorkstreamTreeTopicViewModel {
   pinned: boolean;
   alertCount: number;
   alertSeverity: 'alert' | 'informational' | null;
-  children: Array<WorkstreamTreeTopicViewModel | WorkstreamTreeNaniteViewModel>;
+  children: WorkstreamTreeTopicViewModel[];
   actions: WorkstreamTreeActionViewModel[];
 }
 
@@ -68,7 +55,7 @@ export interface WorkstreamTreeGroupViewModel {
   id: string;
   label: string;
   icon: string;
-  children: Array<WorkstreamTreeTopicViewModel | WorkstreamTreeNaniteViewModel>;
+  children: WorkstreamTreeTopicViewModel[];
 }
 
 function treeActions(actions: PanelAction[] | undefined): WorkstreamTreeActionViewModel[] {
@@ -86,20 +73,7 @@ function topicSlugFromUri(uri: string): string {
   return match ? decodeURIComponent(match[1]) : '';
 }
 
-function treeNode(
-  row: PanelTopic | PanelNaniteRow,
-): WorkstreamTreeTopicViewModel | WorkstreamTreeNaniteViewModel {
-  if (row.kind === 'nanite') {
-    return {
-      kind: 'nanite',
-      id: row.id,
-      label: row.label,
-      icon: row.icon,
-      phase: row.phase,
-      openId: row.naniteId,
-      actions: treeActions(row.actions),
-    };
-  }
+function treeNode(row: PanelTopic): WorkstreamTreeTopicViewModel {
   return {
     kind: 'topic',
     id: row.id,
@@ -145,15 +119,11 @@ export async function loadWorkstreamViewModel(
 
   const slug = workstream.slug;
   let topics: Topic[] = [];
-  let nanites: Nanite[] = [];
-  let naniteTemplates: NaniteTemplate[] = [];
   let topicTypes: TopicType[] = [];
   let alerts: Alert[] = [];
   if (slug) {
-    [topics, nanites, naniteTemplates, topicTypes] = await Promise.all([
+    [topics, topicTypes] = await Promise.all([
       client.topicRead({ workstream: slug }).catch(() => []),
-      client.naniteRead({ workstream: slug }).catch(() => []),
-      client.naniteTemplateRead().catch(() => []),
       client.topicTypeRead().catch(() => []),
     ]);
   }
@@ -176,8 +146,6 @@ export async function loadWorkstreamViewModel(
     slug ? topics : undefined,
     typeMap,
     alerts,
-    nanites,
-    naniteTemplates,
   );
   const memberSlugs = topics
     .map((topic) => topic.slug)

@@ -2,15 +2,111 @@ import type { AlertVM, DocumentVM, TopicPatch, WorkstreamVM } from '../../../web
 import type { PanelData } from '../../../src/panelData';
 import type { WorkstreamSection } from '../../../src/panelData';
 import type {
+  ApplicationContractMetadata,
   CommandJournal,
   CommandJournalHistoryInput,
   CommandJournalHistoryPage,
+  CommandJournalStatus,
 } from '../../../src/controlPlaneClient';
+
+export type ContainerAppId = string;
+
+export interface AppMcpEndpoint {
+  transport: 'streamable-http';
+  url: string;
+}
+
+export interface McpToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
+export interface AppMcpTool {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  annotations?: McpToolAnnotations;
+}
+
+export interface AppMcpToolListing {
+  connectionId: number;
+  endpoint: AppMcpEndpoint;
+  tools: AppMcpTool[];
+}
+
+export interface AppMcpStatus {
+  appId: ContainerAppId;
+  endpoint?: AppMcpEndpoint;
+  connectionId?: number;
+  state: 'unavailable' | 'disconnected' | 'connected' | 'error';
+  error: string | null;
+}
+
+export interface AppResourceContract {
+  contractVersion: string;
+  application: {
+    id: string;
+    name?: string;
+    title?: string;
+    version?: string;
+    description?: string;
+  };
+  envelope: Record<string, unknown>;
+  resources: Record<string, unknown> | Array<Record<string, unknown>>;
+  operations?: Array<Record<string, unknown>>;
+  errors?: Array<Record<string, unknown>>;
+  events?: Array<Record<string, unknown>>;
+}
+
+export type ContainerAppState = 'missing' | 'stopped' | 'running' | 'healthy' | 'unhealthy' | 'error';
+
+export interface ContainerAppStatus {
+  id: ContainerAppId;
+  displayName: string;
+  claimTitle: string;
+  claimSlug: string;
+  repository: string;
+  buildContext: string;
+  dockerfile: string;
+  image: string;
+  containerName: string;
+  dockerContext: string | null;
+  state: ContainerAppState;
+  hostPort: number;
+  containerPort: number;
+  url: string;
+  ready: boolean;
+  lastAction: string;
+  error: string | null;
+  mcp?: AppMcpEndpoint;
+  application?: ApplicationContractMetadata;
+}
+
+export interface ContainerStopResult {
+  status: 'stopped' | 'already_stopped' | 'missing' | 'error';
+  message: string;
+  detail: ContainerAppStatus;
+}
+
+export type ContainerLaunchResult =
+  | { status: 'ready'; url: string; action: 'created' | 'started' | 'recreated' | 'reused' }
+  | { status: 'error'; code: string; message: string };
+
+export interface ContainerAppDefinition {
+  id: ContainerAppId;
+  displayName: string;
+  icon: string;
+  mcp?: AppMcpEndpoint;
+  application?: ApplicationContractMetadata;
+}
 
 export interface PublicConfig {
   endpoint: string;
   model: string;
   hasApiKey: boolean;
+  credentialStorage: 'secure' | 'session' | 'unavailable';
 }
 
 export interface SaveConfigInput {
@@ -42,6 +138,7 @@ export interface ChatContext {
   routeKind: DesktopResourceKind;
   identifier: string;
   title: string;
+  containerAppId?: ContainerAppId;
 }
 
 interface ChatContextDocument {
@@ -58,7 +155,13 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
   const routeKind = ['workstream', 'topic', 'alert', 'topic-type'].includes(document.kind)
     ? document.kind as DesktopResourceKind
     : 'document';
-  return { kind: document.kind, routeKind, identifier, title: document.title.trim() || identifier };
+  return {
+    kind: document.kind,
+    routeKind,
+    identifier,
+    title: document.title.trim() || identifier,
+    ...(document.kind === 'container-app' ? { containerAppId: identifier } : {}),
+  };
 }
 
 export interface ToolProgress {
@@ -76,6 +179,8 @@ export interface PendingConfirmation {
 export interface ChatResult {
   journalId?: string;
   message: string;
+  status: CommandJournalStatus;
+  mutated?: boolean;
   workstream?: WorkstreamVM;
   document?: DocumentVM;
   progress?: ToolProgress[];
@@ -91,6 +196,7 @@ export interface DesktopWorkstreamReorderUpdate {
 }
 
 export interface DesktopApi {
+  listContainerApps(): Promise<ContainerAppDefinition[]>;
   discoverEnvironments(): Promise<DesktopEnvironmentState>;
   switchEnvironment(mcpUrl: string): Promise<DesktopEnvironmentState>;
   getActivePanel(): Promise<PanelData>;
@@ -113,5 +219,15 @@ export interface DesktopApi {
     status: AlertVM['status'],
   ): Promise<DocumentVM>;
   invokeAction(workstream: string, command: string, args: unknown[]): Promise<DocumentVM>;
+  runContainerApp(id: ContainerAppId): Promise<ContainerLaunchResult>;
+  inspectContainerApp(id: ContainerAppId): Promise<ContainerAppStatus>;
+  stopContainerApp(id: ContainerAppId): Promise<ContainerStopResult>;
+  openContainerApp(id: ContainerAppId): Promise<ContainerAppStatus>;
+  getAppMcpStatus(id: ContainerAppId): Promise<AppMcpStatus>;
+  connectAppMcp(id: ContainerAppId): Promise<AppMcpStatus>;
+  disconnectAppMcp(id: ContainerAppId): Promise<AppMcpStatus>;
+  listAppMcpTools(id: ContainerAppId): Promise<AppMcpTool[]>;
+  callAppMcpTool(id: ContainerAppId, name: string, args: Record<string, unknown>): Promise<unknown>;
+  getAppResourceContract(id: ContainerAppId): Promise<AppResourceContract>;
   openExternal(url: string): Promise<void>;
 }

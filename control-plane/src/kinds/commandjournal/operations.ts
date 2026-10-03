@@ -43,11 +43,16 @@ function statusAfterAppend(events: CommandJournalEvent[]): 'running' | 'awaiting
   return awaiting ? 'awaiting_confirmation' : 'running';
 }
 
+const MAX_ENTITY_REFS = 500;
+
 function mergeEntityRefs(existing: unknown, discovered: z.infer<typeof scopeRef>[] & Array<{ relation: 'referenced' | 'mutated' }>) {
   const merged = new Map<string, Record<string, unknown>>();
   for (const ref of [...((existing as Record<string, unknown>[]) ?? []), ...discovered]) {
-    const key = `${ref.kind}\u0000${ref.id}\u0000${ref.relation}`;
-    merged.set(key, { ...merged.get(key), ...ref });
+    const key = `${ref.kind}\u0000${ref.id}`;
+    const prior = merged.get(key);
+    const relation = prior?.relation === 'mutated' || ref.relation === 'mutated' ? 'mutated' : 'referenced';
+    if (!prior && merged.size >= MAX_ENTITY_REFS) continue;
+    merged.set(key, { ...prior, ...ref, relation });
   }
   return [...merged.values()];
 }
@@ -75,7 +80,7 @@ export function registerWsCommandJournalOperations(server: McpServer, store: Sto
           provider,
           request,
           primaryScope,
-          entityRefs: entityRefs ?? [],
+          entityRefs: mergeEntityRefs([], entityRefs ?? []),
           events: [],
         });
         const created = store.createDocument({

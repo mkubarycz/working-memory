@@ -37,6 +37,9 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.active-tree-node[^}]*padding-left:\s*0/s);
     expect(styles).toMatch(/\.topic-tree[^}]*--graph-color:\s*var\(--ws-card-border\)/s);
     expect(styles).toMatch(/\.graph-node-dot[^}]*border:\s*2px solid var\(--graph-color\)[^}]*border-radius:\s*50%/s);
+    expect(styles).toMatch(/\.graph-node-passive \.graph-node-dot[^}]*background:\s*var\(--graph-color\)/s);
+    expect(styles).toMatch(/\.graph-node-control\[aria-expanded="true"\] \.graph-node-dot\s*{[^}]*background:\s*var\(--graph-color\)[^}]*}/s);
+    expect(styles).not.toMatch(/\.graph-node-control\[aria-expanded="true"\] \.graph-node-dot\s*{[^}]*box-shadow:/s);
     expect(styles).toMatch(/\.branch-tree[^}]*margin-left:\s*17px/s);
     expect(styles).toMatch(/\.tree-connector path[^}]*stroke:\s*var\(--graph-color\)[^}]*stroke-width:\s*2px[^}]*stroke-linecap:\s*round/s);
     expect(styles).not.toContain('.branch-tree::before');
@@ -91,6 +94,8 @@ describe('desktop tree icon contract', () => {
 
     expect(activeRail).toContain("workstreamCard(workstream: PanelWorkstream, sectionStatus: PanelWorkstreamSection['section'], compact: boolean)");
     expect(activeRail).toContain("const expandable = sectionStatus === 'progress' && hasDetails");
+    expect(activeRail).toContain('setNodeAndChildrenExpanded(expanded, workstream)');
+    expect(activeRail).toContain('onclick={() => toggleWorkstream(workstream)}');
     expect(activeRail).toContain("class:summary={sectionStatus !== 'progress'}");
     expect(activeRail).toContain('data-section-status={sectionStatus}');
     expect(activeRail).toContain("{:else if sectionStatus === 'progress'}");
@@ -110,18 +115,22 @@ describe('desktop tree icon contract', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
 
     expect(activeRail).toContain('startWorkstreamDrag');
+    expect(activeRail).toContain('ondragenter=');
     expect(activeRail).toContain('ondragover=');
     expect(activeRail).toContain('ondrop=');
     expect(activeRail).toContain('class:drop-target=');
     expect(activeRail).toContain('class="active-drop-indicator"');
     expect(activeRail).toContain('await onReorder(slug, section, index)');
     expect(activeRail).toContain(
-      'class="active-card-header"\n      role="group"\n      draggable="true"',
+      'class="active-open workstream-open"\n        title={workstream.tooltip}\n        draggable="true"',
     );
     expect(activeRail).not.toContain('workstream-drag-handle');
     expect(activeRail).not.toContain(
-      'class="active-open workstream-open"\n        title={workstream.tooltip}\n        draggable="true"',
+      'class="active-card-header"\n      role="group"\n      draggable="true"',
     );
+    expect(activeRail).toContain("let activeDrag = $state<");
+    expect(activeRail).toContain("activeDrag?.kind === 'topic'");
+    expect(activeRail).toContain("activeDrag?.kind === 'workstream'");
     expect(styles).toMatch(/\.active-card-header[^}]*cursor:\s*grab/);
     expect(app).toContain('planWorkstreamReorder(order, slug, targetSection, targetIndex)');
     expect(app).toContain('window.workingMemory.reorderWorkstreams(updates)');
@@ -134,9 +143,8 @@ describe('desktop tree icon contract', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
 
-    expect(activeRail).toContain("class:closed={node.kind === 'topic' && node.status === 'closed'}");
+    expect(activeRail).toContain("class:closed={node.status === 'closed'}");
     expect(activeRail).not.toContain('{node.status}');
-    expect(activeRail).toContain('<span class="active-description">{node.phase}</span>');
     expect(styles).toMatch(/\.active-row\.closed \.active-open\s*{[^}]*color:\s*var\(--desktop-active-muted\)/s);
     expect(styles).not.toMatch(/\.active-row\.closed\s*{[^}]*opacity:/s);
   });
@@ -187,13 +195,23 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('class="document-tabs" role="tablist"');
     expect(app).toContain('role="tab"');
     expect(app).toContain('aria-selected={key === selectedDocumentKey}');
+    const documentHost = app.slice(app.indexOf('<div class="document-stage">'), app.indexOf('<section class="empty-state">'));
+    expect(documentHost).toContain('ContainerAppDetail');
+    expect(documentHost).toContain("activeDocument?.kind === 'container-app'");
     expect(app).toContain('onclick={() => closeDocument(key)}');
     expect(app).toContain('openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document)');
+    expect(app).toContain('oncontextmenu={(event) => void openDocumentTabMenu(event, key)}');
+    expect(app).toContain('<span>Close Others</span>');
+    expect(app).toContain('<span>Close to the Right</span>');
+    expect(app).toContain("closeOtherDocumentTabs(state, key)");
+    expect(app).toContain("closeDocumentTabsToRight(state, key)");
     expect(styles).toMatch(/\.document-tabs[^}]*height:\s*38px[^}]*overflow-x:\s*auto/s);
+    expect(styles).toMatch(/\.document-tab-menu[^}]*position:\s*fixed[^}]*z-index:\s*30/s);
   });
 
   it('shows at most two current-scope messages and targets stable history elements', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const focus = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/chatRunFocus.ts'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const previewIndex = app.indexOf('<section class="scope-preview"');
     const composerIndex = app.indexOf('<div class="composer-shell">');
@@ -209,15 +227,18 @@ describe('desktop tree icon contract', () => {
     expect(composerIndex).toBeLessThan(chatRailIndex);
     expect(app.slice(chatRailIndex)).not.toContain('class="scope-preview"');
     expect(app).toContain('No messages for this scope.');
-    expect(app).toContain('chatRailCollapsed = false;');
-    expect(app).toContain('const target = document.getElementById(chatRunDomId(run));');
+    expect(app).toContain("activateLog: () => activateHeaderTab('log')");
+    expect(app).toContain('expandChatRail: () => (chatRailCollapsed = false)');
+    expect(app).toContain('getTarget: () => document.getElementById(chatRunDomId(run))');
+    expect(focus.indexOf('dependencies.activateLog();')).toBeLessThan(focus.indexOf('await dependencies.afterRender();'));
+    expect(focus).toContain('const target = dependencies.getTarget();');
     expect(app).toContain("scroller.addEventListener('scrollend', finish, { once: true });");
     expect(app).toContain('idleTimer = window.setTimeout(finish, 120);');
-    expect(app).toContain('const needsScroll = scrollerBounds');
-    expect(app).toContain('scroller && needsScroll ? waitForScrollEnd(scroller) : Promise.resolve()');
-    expect(app).toContain("target.scrollIntoView({ behavior: 'smooth', block: 'center' });");
-    expect(app).toContain('await scrollFinished;');
-    expect(app).toContain('target.focus({ preventScroll: true });');
+    expect(focus).toContain('const needsScroll = scrollerBounds');
+    expect(focus).toContain('dependencies.waitForScrollEnd(scroller)');
+    expect(focus).toContain("target.scrollIntoView({ behavior: 'smooth', block: 'center' });");
+    expect(focus).toContain('await scrollFinished;');
+    expect(focus).toContain('target.focus({ preventScroll: true });');
     expect(app).toContain("target.classList.remove('preview-attention');");
     expect(app).toContain('void target.offsetWidth;');
     expect(app).toContain("target.classList.add('preview-attention');");
@@ -236,9 +257,30 @@ describe('desktop tree icon contract', () => {
 
     expect(app).not.toContain('Show me the 0.15.0 roadmap workstream');
     expect(app).toContain('placeholder="Write a command to interact with Working Memory"');
-    expect(app).toContain('oninput={(event) => updateComposerDraft(event.currentTarget.value)}');
+    expect(app).toContain('oninput={handleComposerInput}');
     expect(app).toContain('readComposerDraft(localStorage, selectedEnvironment?.id)');
     expect(app).toContain("writeComposerDraft(localStorage, selectedEnvironment?.id, '')");
+  });
+
+  it('exposes an accessible, mouse-selectable Container App mention list without stealing composer focus', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+
+    expect(app).toContain('role="combobox"');
+    expect(app).toContain('aria-autocomplete="list"');
+    expect(app).toContain('aria-activedescendant=');
+    expect(app).toContain('aria-describedby="mention-instructions"');
+    expect(app).toContain('role="listbox"');
+    expect(app).toContain('role="option"');
+    expect(app).toContain('No Container Apps match');
+    expect(app).toContain("'MCP ready' : 'No MCP endpoint'");
+    expect(app).toContain('onmousedown={(event) => event.preventDefault()}');
+    expect(app).toContain('onclick={() => void selectMention(app)}');
+    expect(app).toContain('composerTextarea?.setSelectionRange(replacement.caret, replacement.caret)');
+    expect(app).toContain('mentionKeyEventAction(event, mentionOpen, mentionApps.length, mentionActiveIndex)');
+    expect(app).toMatch(/async function send\(\)[^]*closeMentionCompletion\(\);[^]*await submitChat\(message, context\);/);
+    expect(app).toContain("page = 'workspace';\n    closeMentionCompletion();");
+    expect(styles).toMatch(/\.mention-popup[^}]*position:\s*absolute/);
   });
 
   it('keeps the chat pinned only while the reader remains at the bottom', () => {
@@ -265,7 +307,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('await onDiscoverEnvironments()');
     expect(activeRail).toContain('role="menuitemradio"');
     expect(app).toContain('window.workingMemory.switchEnvironment(mcpUrl)');
-    expect(app).toContain('reloadEnvironmentBoundData(refreshActive, () => loadHistory())');
+    expect(app).toContain('reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true))');
     expect(styles).toMatch(/\.environment-trigger[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\) 14px/s);
   });
 });

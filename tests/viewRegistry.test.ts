@@ -21,7 +21,7 @@ describe('resolveView', () => {
   test('falls back to generic for any other/unknown kind', () => {
     expect(resolveView('alert')).toBe('generic');
     expect(resolveView('topic-type')).toBe('generic');
-    expect(resolveView('Nanite')).toBe('generic');
+    expect(resolveView('Config')).toBe('generic');
     expect(resolveView('')).toBe('generic');
   });
 });

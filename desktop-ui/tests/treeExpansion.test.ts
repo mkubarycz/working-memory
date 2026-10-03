@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { setSubtreeExpanded, type ExpandableTreeNode } from '../src/renderer/treeExpansion';
+import {
+  setNodeAndChildrenExpanded,
+  setSubtreeExpanded,
+  type ExpandableTreeNode,
+} from '../src/renderer/treeExpansion';
 
 const tree: ExpandableTreeNode = {
   id: 'workstream',
@@ -9,7 +13,7 @@ const tree: ExpandableTreeNode = {
       children: [
         {
           id: 'parent-topic',
-          children: [{ id: 'child-topic', children: [{ id: 'nanite' }] }],
+          children: [{ id: 'child-topic', children: [{ id: 'leaf-topic' }] }],
         },
       ],
     },
@@ -27,7 +31,7 @@ describe('setSubtreeExpanded', () => {
       'topics-group',
       'parent-topic',
       'child-topic',
-      'nanite',
+      'leaf-topic',
     ]);
   });
 
@@ -37,5 +41,15 @@ describe('setSubtreeExpanded', () => {
     setSubtreeExpanded(expanded, tree, false);
 
     expect([...expanded]).toEqual(['other']);
+  });
+});
+
+describe('setNodeAndChildrenExpanded', () => {
+  it('opens a workstream and its Topics group without expanding nested topic branches', () => {
+    const expanded = new Set(['other']);
+
+    setNodeAndChildrenExpanded(expanded, tree);
+
+    expect([...expanded]).toEqual(['other', 'workstream', 'topics-group']);
   });
 });

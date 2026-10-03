@@ -1,0 +1,1 @@
+export const CHAT_HISTORY_POLL_INTERVAL_MS = 3_000;

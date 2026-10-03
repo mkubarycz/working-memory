@@ -22,6 +22,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install desktop UI dependencies
+        run: npm ci --prefix desktop-ui
+
       - name: Stage codicons
         run: |
           mkdir -p media/codicons
@@ -31,15 +34,26 @@ jobs:
       - name: Compile
         run: npm run compile
 
+      - name: Build desktop UI
+        run: npm run compile:desktop
+
       - name: Test
         run: npm test
 
+      - name: Test desktop UI
+        run: npm test --prefix desktop-ui
+
       - name: Package VSIX
-        run: npx vsce package --allow-missing-repository
+        env:
+          npm_config_platform: linux
+          npm_config_arch: x64
+          WM_DESKTOP_PLATFORM: linux
+          WM_DESKTOP_ARCH: x64
+        run: npx vsce package --target linux-x64 --out working-memory-linux-x64.vsix --allow-missing-repository
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: working-memory-vsix
-          path: '*.vsix'
+          name: working-memory-vsix-linux-x64
+          path: working-memory-linux-x64.vsix
           retention-days: 14

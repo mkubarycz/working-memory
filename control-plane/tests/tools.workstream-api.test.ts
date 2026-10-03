@@ -45,6 +45,10 @@ interface IWorkstream {
   resourceVersion: number;
 }
 
+interface DocumentEnvelope {
+  metadata: { slug: string | null; deletedAt: number | null };
+}
+
 (sqliteAvailable ? describe : describe.skip)('control-plane Workstream ws-* API', () => {
   beforeAll(async () => {
     // Populate the kind registry (Workstream's registerApi is what wires ws-*).
@@ -201,6 +205,216 @@ interface IWorkstream {
       );
       expect(afterRestore.count).toBe(1);
       expect(afterRestore.workstreams[0]?.status).toBe('closed');
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
+    }
+  });
+
+  it('generates a lowercase dash-separated slug from a title-only create', async () => {
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-cp-ws-generated-slug', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      await client.connect(transport);
+
+      const created = jsonOf<IWorkstream>(
+        await client.callTool({
+          name: 'ws-workstream-create',
+          arguments: { title: 'SunsetChess' },
+        }),
+      );
+
+      expect(created.slug).toBe('sunset-chess');
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
+    }
+  });
+
+  it('suffixes generated slug collisions deterministically', async () => {
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-cp-ws-generated-collision', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      await client.connect(transport);
+
+      const first = jsonOf<IWorkstream>(
+        await client.callTool({ name: 'ws-workstream-create', arguments: { title: 'Sunset Chess' } }),
+      );
+      const second = jsonOf<IWorkstream>(
+        await client.callTool({ name: 'ws-workstream-create', arguments: { title: 'SunsetChess' } }),
+      );
+      const third = jsonOf<IWorkstream>(
+        await client.callTool({ name: 'ws-workstream-create', arguments: { title: 'Sunset Chess' } }),
+      );
+
+      expect([first.slug, second.slug, third.slug]).toEqual([
+        'sunset-chess',
+        'sunset-chess-2',
+        'sunset-chess-3',
+      ]);
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
+    }
+  });
+
+  it('reserves soft-deleted slugs across dedicated and generic create and restore paths', async () => {
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-cp-ws-deleted-slug-reservation', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      await client.connect(transport);
+
+      const original = jsonOf<IWorkstream>(
+        await client.callTool({ name: 'ws-workstream-create', arguments: { title: 'Reserved Name' } }),
+      );
+      await client.callTool({ name: 'ws-workstream-delete', arguments: { slug: original.slug } });
+
+      const generated = jsonOf<IWorkstream>(
+        await client.callTool({ name: 'ws-workstream-create', arguments: { title: 'Reserved Name' } }),
+      );
+      const dedicatedDuplicate = await client.callTool({
+        name: 'ws-workstream-create',
+        arguments: { slug: original.slug, title: 'Dedicated Duplicate' },
+      });
+      const genericDuplicate = await client.callTool({
+        name: 'wm-document-create',
+        arguments: { kind: 'Workstream', slug: original.slug, spec: { title: 'Generic Duplicate' } },
+      });
+
+      expect(generated.slug).toBe('reserved-name-2');
+      expect(isErrorResult(dedicatedDuplicate)).toBe(true);
+      expect(textOf(dedicatedDuplicate)).toMatch(/already in use/i);
+      expect(isErrorResult(genericDuplicate)).toBe(true);
+      expect(textOf(genericDuplicate)).toMatch(/already in use/i);
+
+      const dedicatedRestore = jsonOf<{ ok: boolean; slug: string }>(
+        await client.callTool({
+          name: 'ws-workstream-delete',
+          arguments: { slug: original.slug, restore: true },
+        }),
+      );
+      expect(dedicatedRestore).toEqual({ ok: true, slug: original.slug });
+
+      await client.callTool({ name: 'ws-workstream-delete', arguments: { slug: original.slug } });
+      const genericRestore = jsonOf<DocumentEnvelope>(
+        await client.callTool({
+          name: 'wm-document-delete',
+          arguments: { id: original.id, restore: true },
+        }),
+      );
+      expect(genericRestore.metadata.slug).toBe(original.slug);
+      expect(genericRestore.metadata.deletedAt).toBeNull();
+
+      const live = store.listDocuments({ kind: 'Workstream' });
+      expect(live.map((document) => document.metadata.slug).sort()).toEqual([
+        'reserved-name',
+        'reserved-name-2',
+      ]);
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
+    }
+  });
+
+  it('rejects dedicated and generic restore when a legacy live Workstream owns the slug', async () => {
+    const store = openStore(':memory:');
+    const deleted = store.createDocument({
+      kind: 'Workstream',
+      slug: 'legacy-duplicate',
+      spec: { title: 'Deleted', status: 'progress', position: 0 },
+    });
+    store.deleteDocument({ id: deleted.metadata.id });
+    store.createDocument({
+      kind: 'Workstream',
+      slug: 'legacy-duplicate',
+      spec: { title: 'Live', status: 'progress', position: 0 },
+    });
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-cp-ws-legacy-restore-conflict', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      await client.connect(transport);
+
+      const dedicatedRestore = await client.callTool({
+        name: 'ws-workstream-delete',
+        arguments: { slug: 'legacy-duplicate', restore: true },
+      });
+      const genericRestore = await client.callTool({
+        name: 'wm-document-delete',
+        arguments: { id: deleted.metadata.id, restore: true },
+      });
+
+      expect(isErrorResult(dedicatedRestore)).toBe(true);
+      expect(isErrorResult(genericRestore)).toBe(true);
+      expect(textOf(genericRestore)).toMatch(/slug "legacy-duplicate" is already in use/i);
+      expect(store.listDocuments({ kind: 'Workstream' })).toHaveLength(1);
+      expect(store.getDocument({ id: deleted.metadata.id, includeDeleted: true })?.metadata.deletedAt).not.toBeNull();
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
+    }
+  });
+
+  it('rejects explicit invalid and duplicate slugs', async () => {
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-cp-ws-explicit-slug-validation', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      await client.connect(transport);
+      await client.callTool({
+        name: 'ws-workstream-create',
+        arguments: { slug: 'sunset-chess', title: 'Sunset Chess' },
+      });
+
+      const invalid = await client.callTool({
+        name: 'ws-workstream-create',
+        arguments: { slug: 'SunsetChess', title: 'Invalid Slug' },
+      });
+      const duplicate = await client.callTool({
+        name: 'ws-workstream-create',
+        arguments: { slug: 'sunset-chess', title: 'Duplicate Slug' },
+      });
+
+      expect(isErrorResult(invalid)).toBe(true);
+      expect(textOf(invalid)).toMatch(/lowercase words separated with dashes/i);
+      expect(isErrorResult(duplicate)).toBe(true);
+      expect(textOf(duplicate)).toMatch(/already in use/i);
+      expect(store.listDocuments({ kind: 'Workstream' })).toHaveLength(1);
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
+    }
+  });
+
+  it('rejects a generic Workstream create without a slug', async () => {
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-cp-ws-generic-missing-slug', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      await client.connect(transport);
+
+      const result = await client.callTool({
+        name: 'wm-document-create',
+        arguments: { kind: 'Workstream', spec: { title: 'Missing Slug' } },
+      });
+
+      expect(isErrorResult(result)).toBe(true);
+      expect(textOf(result)).toMatch(/workstream requires a unique slug/i);
+      expect(store.listDocuments({ kind: 'Workstream' })).toEqual([]);
     } finally {
       await client.close();
       await server.close();

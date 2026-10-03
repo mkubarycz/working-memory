@@ -7,13 +7,11 @@ export { loadWorkstreamViewModel } from '../../../src/webview/workstreamViewMode
 
 export async function loadActivePanelData(client: ControlPlaneClient): Promise<PanelData> {
   try {
-    const [workstreams, topics, alerts, topicTypes, nanites, naniteTemplates] = await Promise.all([
+    const [workstreams, topics, alerts, topicTypes] = await Promise.all([
       client.wsRead({}),
       client.topicRead({}),
       client.alertRead({}),
       client.topicTypeRead({}),
-      client.naniteRead({}),
-      client.naniteTemplateRead({}),
     ]);
     return buildWorkstreamPanels({
       available: true,
@@ -21,8 +19,6 @@ export async function loadActivePanelData(client: ControlPlaneClient): Promise<P
       topics,
       alerts,
       topicTypes,
-      nanites,
-      naniteTemplates,
     }).active;
   } catch (error) {
     return buildWorkstreamPanels({
@@ -171,8 +167,8 @@ export function toGenericDocumentViewModel(document: DocumentEnvelope): GenericD
 }
 
 export type DesktopAction =
-  | { kind: 'nanite'; operation: 'run' | 'reset' | 'restart'; id: string }
   | { kind: 'topic'; operation: 'attach' | 'detach'; slug: string; workstream: string }
+  | { kind: 'topic'; operation: 'transfer'; slug: string; sourceWorkstream: string; targetWorkstream: string; move: boolean }
   | { kind: 'workstream'; operation: 'move'; slug: string; section: WorkstreamSection };
 
 export function resolveDesktopAction(
@@ -192,15 +188,6 @@ export function resolveDesktopAction(
       : null;
     if (slug && section) return { kind: 'workstream', operation: 'move', slug, section };
   }
-  if (command.startsWith('workingMemory.nanite.')) {
-    if (!value || typeof value !== 'object' || !('id' in value) || typeof value.id !== 'string') {
-      throw new Error('This action is missing its document id.');
-    }
-    const operation = command.slice('workingMemory.nanite.'.length);
-    if (operation === 'run' || operation === 'reset' || operation === 'restart') {
-      return { kind: 'nanite', operation, id: value.id };
-    }
-  }
   const topicSlug = value && typeof value === 'object' && 'topicSlug' in value && typeof value.topicSlug === 'string'
     ? value.topicSlug : '';
   if (topicSlug && command === 'workingMemory.topic.addToWorkstream') {
@@ -208,6 +195,17 @@ export function resolveDesktopAction(
   }
   if (topicSlug && command === 'workingMemory.topic.removeFromWorkstream') {
     return { kind: 'topic', operation: 'detach', slug: topicSlug, workstream };
+  }
+  if (topicSlug && command === 'workingMemory.topic.transfer') {
+    const sourceWorkstream = value && typeof value === 'object' && 'sourceWorkstream' in value &&
+      typeof value.sourceWorkstream === 'string' ? value.sourceWorkstream : '';
+    const move = Boolean(value && typeof value === 'object' && 'move' in value && value.move === true);
+    if (sourceWorkstream && workstream && sourceWorkstream !== workstream) {
+      return {
+        kind: 'topic', operation: 'transfer', slug: topicSlug,
+        sourceWorkstream, targetWorkstream: workstream, move,
+      };
+    }
   }
   throw new Error(`Unsupported desktop action: ${command}`);
 }

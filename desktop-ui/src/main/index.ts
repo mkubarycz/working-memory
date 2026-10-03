@@ -10,6 +10,7 @@ import type {
   SaveConfigInput,
 } from '../shared/contracts';
 import type { CommandJournalHistoryInput } from '../../../src/controlPlaneClient';
+import type { ContainerClaim, ToolCallOutcome } from '../../../src/controlPlaneClient';
 import type { DocumentVM, TopicPatch } from '../../../webview-ui/src/lib/types';
 import {
   modelAuthHeaders,
@@ -19,13 +20,33 @@ import {
   writeStoredConfig,
   type StoredConfig,
 } from './config';
-import { DesktopChatAgent, type DesktopAgentResult, type ModelHttpRequest } from './desktopChatAgent';
+import {
+  DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
+  DesktopChatAgent,
+  type DesktopAgentResult,
+  type ModelHttpRequest,
+} from './desktopChatAgent';
 import {
   DesktopEnvironmentManager,
   readPersistedEnvironment,
   writePersistedEnvironment,
 } from './environments';
 import { parseModelTurn } from './modelTools';
+import { AppMcpService, parseAppResourceContract } from './appMcpService';
+import {
+  appMentionSystemInstructions,
+  resolveMentionedAppTools,
+} from './appToolRouting';
+import {
+  containerAppDefinitions,
+  containerAppRegistration,
+  isContainerAppId,
+  type ContainerAppRegistration,
+} from './containerAppRegistry';
+import {
+  DockerContainerService,
+  resolveContainerAppClaim,
+} from './dockerContainerService';
 import { createGracefulShutdown } from './gracefulShutdown';
 import {
   readWindowBounds,
@@ -45,7 +66,6 @@ import {
 } from './resolver';
 
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
-const MODEL_TIMEOUT_MS = 20_000;
 const WINDOW_DEFAULTS = { defaultWidth: 1280, defaultHeight: 820, minWidth: 900, minHeight: 600 };
 const WINDOW_STATE_SAVE_DELAY_MS = 250;
 let configFile = '';
@@ -54,6 +74,10 @@ let windowStateFile = '';
 let mainWindow: BrowserWindow | null = null;
 let mainWindowCreation: Promise<BrowserWindow> | null = null;
 let windowStateSaveTimer: ReturnType<typeof setTimeout> | undefined;
+const dockerContainers = new DockerContainerService();
+const appMcp = new AppMcpService();
+const containerOperations = new Set<AbortController>();
+let containerEnvironmentGeneration = 0;
 
 const environmentManager = new DesktopEnvironmentManager<ControlPlaneClient>({
   createClient: (mcpUrl) => new ControlPlaneClient({ resolveUrl: () => mcpUrl }),
@@ -93,7 +117,10 @@ const chatAgent = new DesktopChatAgent({
 });
 
 const gracefulShutdown = createGracefulShutdown({
-  resetAgent: () => chatAgent.reset(),
+  resetAgent: async () => {
+    await chatAgent.reset();
+    await appMcp.disconnectAll();
+  },
   disposeEnvironment: () => environmentManager.dispose(),
   quit: () => app.quit(),
   onError: (error) => console.error('[desktop] graceful shutdown failed:', error),
@@ -128,10 +155,11 @@ async function openWorkstream(query: string): Promise<ChatResult> {
   const workstreams = await controlPlane().wsRead({ limit: 200 });
   const workstream = chooseWorkstream(query, workstreams);
   if (!workstream) {
-    return { message: `I couldn't find a workstream matching “${query}”.` };
+    return { message: `I couldn't find a workstream matching “${query}”.`, status: 'failed' };
   }
   return {
     message: `Opened ${workstream.title}.`,
+    status: 'succeeded',
     workstream: (await loadWorkstreamViewModel(controlPlane(), workstream.slug ?? workstream.id)) ?? undefined,
   };
 }
@@ -165,14 +193,8 @@ async function invokeAction(workstream: string, command: string, args: unknown[]
     await controlPlane().wsUpdate({ slug: action.slug, status: action.section });
   } else if (action.kind === 'topic') {
     if (action.operation === 'attach') await controlPlane().topicAttachWorkstream(action);
-    else await controlPlane().topicDetachWorkstream(action);
-  } else if (action.operation === 'run') {
-    await controlPlane().naniteRun({ id: action.id, approved: true });
-  } else if (action.operation === 'reset') {
-    await controlPlane().naniteRun({ id: action.id, reset: true });
-  } else {
-    await controlPlane().naniteRun({ id: action.id, reset: true });
-    await controlPlane().naniteRun({ id: action.id, approved: true });
+    else if (action.operation === 'detach') await controlPlane().topicDetachWorkstream(action);
+    else if (action.operation === 'transfer') await controlPlane().topicTransfer(action);
   }
   return loadResource('workstream', workstream);
 }
@@ -236,6 +258,8 @@ async function presentAgentResult(result: DesktopAgentResult, context?: ChatCont
   return {
     journalId: result.journalId,
     message: result.message,
+    status: result.status,
+    mutated: result.mutated,
     progress: result.progress,
     pendingConfirmation: result.pendingConfirmation,
     ...(document ? { document } : {}),
@@ -244,7 +268,91 @@ async function presentAgentResult(result: DesktopAgentResult, context?: ChatCont
 
 async function callConfiguredModel(message: string, config: StoredConfig, context?: ChatContext): Promise<ChatResult> {
   const request = configuredRequest(config);
-  return presentAgentResult(await chatAgent.start({ ...request, model: config.model, message, context }), context);
+  const mentioned = await resolveMentionedAppTools(message, containerAppDefinitions(), {
+    readClaim: currentClaim,
+    inspect: (claim) => dockerContainers.inspect(claim),
+    connect: async (appId, endpoint) => { await appMcp.connect(appId, endpoint); },
+    listTools: (appId, endpoint) => appMcp.listToolsForRoute(appId, endpoint),
+  }, context?.containerAppId ? [context.containerAppId] : []);
+  const appTools = mentioned.tools.length ? {
+    tools: mentioned.tools,
+    systemInstructions: appMentionSystemInstructions(mentioned.contexts),
+    requiresConfirmation: (name: string) =>
+      mentioned.routes.get(name)?.annotations?.readOnlyHint !== true,
+    callTool: async (name: string, args: Record<string, unknown>): Promise<ToolCallOutcome> => {
+      const route = mentioned.routes.get(name);
+      if (!route) return { ok: false, error: `Unknown application tool route: ${name}` };
+      try {
+        return {
+          ok: true,
+          result: await appMcp.callTool(route.appId, route.originalToolName, args, route),
+        };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  } : undefined;
+  return presentAgentResult(await chatAgent.start({
+    ...request,
+    model: config.model,
+    message,
+    context,
+    ...(appTools ? { appTools } : {}),
+  }), context);
+}
+
+function requireContainerAppId(rawId: string): string {
+  if (!isContainerAppId(rawId)) throw new Error(`Unsupported container app: ${rawId}`);
+  return rawId;
+}
+
+function beginContainerOperation(): { client: ControlPlaneClient; signal: AbortSignal; end: () => void } {
+  const controller = new AbortController();
+  const generation = containerEnvironmentGeneration;
+  containerOperations.add(controller);
+  return {
+    client: controlPlane(),
+    signal: controller.signal,
+    end: () => {
+      containerOperations.delete(controller);
+      if (generation !== containerEnvironmentGeneration) controller.abort();
+    },
+  };
+}
+
+async function containerAppClaim(
+  client: ControlPlaneClient,
+  registration: ContainerAppRegistration,
+): Promise<ReturnType<typeof resolveContainerAppClaim>> {
+  const [existing] = await client.containerClaimRead({ slug: registration.id });
+  return resolveContainerAppClaim(registration, existing);
+}
+
+async function currentClaim(id: string): Promise<ContainerClaim | undefined> {
+  const [claim] = await controlPlane().containerClaimRead({ slug: id });
+  if (!claim) return undefined;
+  const desired = resolveContainerAppClaim(containerAppRegistration(id), claim);
+  return {
+    ...claim,
+    ...desired,
+    mcp: desired.mcp,
+    application: desired.application,
+  };
+}
+
+async function liveClaim(id: string): Promise<ContainerClaim> {
+  const claim = await currentClaim(id);
+  if (!claim) throw new Error(`Container App @${id} has no ContainerClaim. Run it first.`);
+  return claim;
+}
+
+async function ensureConnectedClaim(id: string): Promise<ContainerClaim> {
+  const claim = await liveClaim(id);
+  if (!claim.mcp) throw new Error(`Container App @${id} does not advertise MCP.`);
+  const status = await dockerContainers.inspect(claim);
+  if (!status.ready) throw new Error(`Container App @${id} is not healthy (state: ${status.state}).`);
+  await appMcp.connect(id, claim.mcp);
+  return claim;
 }
 
 async function testConfiguredModel(config: StoredConfig): Promise<string> {
@@ -252,13 +360,16 @@ async function testConfiguredModel(config: StoredConfig): Promise<string> {
   const body = request.mode === 'responses'
     ? { model: config.model, input: 'Reply with only: connected' }
     : { model: config.model, messages: [{ role: 'user', content: 'Reply with only: connected' }] };
-  const parsed = parseModelTurn(request.mode, await requestModel({ ...request, body, timeoutMs: MODEL_TIMEOUT_MS }));
+  const parsed = parseModelTurn(request.mode, await requestModel({ ...request, body, timeoutMs: DESKTOP_MODEL_REQUEST_TIMEOUT_MS }));
   return parsed.text || 'Connected.';
 }
 
 function registerIpc(): void {
   ipcMain.handle('environment:discover', async () => environmentState(await environmentManager.discover()));
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
+    containerEnvironmentGeneration += 1;
+    for (const operation of containerOperations) operation.abort();
+    await appMcp.disconnectAll();
     await environmentManager.switchTo(mcpUrl, () => chatAgent.reset());
     return environmentState(environmentManager.availableEnvironments);
   });
@@ -282,16 +393,16 @@ function registerIpc(): void {
       const query = localWorkstreamQuery(message);
       return query
         ? await openWorkstream(query)
-        : { message: 'Configure a model in Settings, or ask me to open a workstream.' };
+        : { message: 'Configure a model in Settings, or ask me to open a workstream.', status: 'failed' };
     } catch (error) {
-      return { message: `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}` };
+      return { message: `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}`, status: 'failed' };
     }
   });
   ipcMain.handle('chat:confirm', async (_event, id: string, confirmed: boolean, context?: ChatContext) => {
     try {
       return await presentAgentResult(await chatAgent.resolveConfirmation(id, confirmed), context);
     } catch (error) {
-      return { message: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}` };
+      return { message: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}`, status: 'failed' };
     }
   });
   ipcMain.handle('chat:history', (_event, input: CommandJournalHistoryInput = {}) =>
@@ -304,7 +415,7 @@ function registerIpc(): void {
     try {
       return await openWorkstream(query);
     } catch (error) {
-      return { message: `Control plane disconnected: ${error instanceof Error ? error.message : String(error)}` };
+      return { message: `Control plane disconnected: ${error instanceof Error ? error.message : String(error)}`, status: 'failed' };
     }
   });
   ipcMain.handle('resource:open', (_event, kind: DesktopResourceKind, identifier: string) => {
@@ -340,6 +451,107 @@ function registerIpc(): void {
     return loadResource(context.kind, context.identifier);
   });
   ipcMain.handle('action:invoke', (_event, workstream, command, args) => invokeAction(workstream, command, args));
+  ipcMain.handle('container:list', () => containerAppDefinitions());
+  ipcMain.handle('container:run', async (_event, rawId: string) => {
+    const registration = containerAppRegistration(requireContainerAppId(rawId));
+    const scope = beginContainerOperation();
+    try {
+      return await dockerContainers.ensure(
+        scope.client,
+        await containerAppClaim(scope.client, registration),
+        scope.signal,
+      );
+    } finally {
+      scope.end();
+    }
+  });
+  ipcMain.handle('container:inspect', async (_event, rawId: string) => {
+    const registration = containerAppRegistration(requireContainerAppId(rawId));
+    const scope = beginContainerOperation();
+    try {
+      return await dockerContainers.inspect(
+        await containerAppClaim(scope.client, registration),
+        scope.signal,
+      );
+    } finally {
+      scope.end();
+    }
+  });
+  ipcMain.handle('container:stop', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    const registration = containerAppRegistration(id);
+    const scope = beginContainerOperation();
+    try {
+      const result = await dockerContainers.stop(
+        await containerAppClaim(scope.client, registration),
+        scope.signal,
+      );
+      await appMcp.disconnect(id).catch(() => undefined);
+      return result;
+    } finally {
+      scope.end();
+    }
+  });
+  ipcMain.handle('container:open', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    const registration = containerAppRegistration(id);
+    const scope = beginContainerOperation();
+    try {
+      const status = await dockerContainers.inspect(
+        await containerAppClaim(scope.client, registration),
+        scope.signal,
+      );
+      if (!status.ready) throw new Error(`${registration.displayName} is not healthy.`);
+      const url = new URL(status.url);
+      if (url.protocol !== 'http:' || url.hostname !== 'localhost') {
+        throw new Error('Container app URLs must use localhost HTTP.');
+      }
+      await shell.openExternal(url.toString());
+      return status;
+    } finally {
+      scope.end();
+    }
+  });
+  ipcMain.handle('app-mcp:status', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    const claim = await liveClaim(id).catch(() => undefined);
+    return appMcp.status(id, claim?.mcp);
+  });
+  ipcMain.handle('app-mcp:connect', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    const claim = await ensureConnectedClaim(id);
+    return appMcp.status(id, claim.mcp);
+  });
+  ipcMain.handle('app-mcp:disconnect', (_event, rawId: string) =>
+    appMcp.disconnect(requireContainerAppId(rawId)));
+  ipcMain.handle('app-mcp:list-tools', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    await ensureConnectedClaim(id);
+    return appMcp.listTools(id);
+  });
+  ipcMain.handle('app-mcp:call-tool', async (
+    _event,
+    rawId: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) => {
+    const id = requireContainerAppId(rawId);
+    await ensureConnectedClaim(id);
+    return appMcp.callTool(id, name, args);
+  });
+  ipcMain.handle('app-mcp:contract', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    const claim = await ensureConnectedClaim(id);
+    if (!claim.application) throw new Error(`Container App @${id} has no application contract metadata.`);
+    const result = await appMcp.callTool(id, claim.application.discovery.toolName, {});
+    const contract = parseAppResourceContract(result);
+    if (contract.application.id !== claim.application.id) {
+      throw new Error(
+        `Application contract identity mismatch: expected "${claim.application.id}", received "${contract.application.id}".`,
+      );
+    }
+    return contract;
+  });
   ipcMain.handle('external:open', async (_event, rawUrl: string) => {
     const url = new URL(rawUrl);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {

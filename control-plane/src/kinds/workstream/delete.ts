@@ -51,6 +51,10 @@ export function registerWsWorkstreamDelete(server: McpServer, store: Store): voi
       }
       try {
         if (restore === true) {
+          const live = store.getDocument({ slug, kind: WORKSTREAM_KIND });
+          if (live && live.metadata.id !== doc.metadata.id) {
+            return asError(`Cannot restore workstream "${slug}": its slug is already in use.`);
+          }
           store.restoreDocument({ id: doc.metadata.id });
         } else {
           store.deleteDocument({ id: doc.metadata.id });

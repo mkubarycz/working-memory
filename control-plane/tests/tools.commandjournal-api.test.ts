@@ -174,42 +174,43 @@ describe('CommandJournal schema', () => {
       }));
       expect(appended.events.map((event: any) => event.sequence)).toEqual([1, 2, 3]);
       expect(appended.entityRefs).toEqual([
-        { kind: 'Topic', id: 'topic-1', slug: 'selected-topic', title: 'Selected topic', relation: 'referenced' },
+        { kind: 'Topic', id: 'topic-1', slug: 'selected-topic', title: 'Selected topic', relation: 'mutated' },
         { kind: 'Workstream', id: 'workstream-1', relation: 'mutated' },
-        { kind: 'Topic', id: 'topic-1', relation: 'mutated' },
       ]);
       expect(appended.resourceVersion).toBe(2);
 
-      const overflow = await client.callTool({
+      const bounded = jsonOf<any>(await client.callTool({
         name: 'ws-commandjournal-append',
         arguments: {
           id: created.id,
           expectedResourceVersion: appended.resourceVersion,
           events: [{ id: 'error-1', sequence: 4, timestamp: 1_013, type: 'run_error', stage: 'execution', message: 'x' }],
-          entityRefs: Array.from({ length: 498 }, (_, index) => ({ kind: 'Topic', id: `extra-${index}`, relation: 'referenced' })),
+          entityRefs: Array.from({ length: 500 }, (_, index) => ({ kind: 'Topic', id: `extra-${index}`, relation: 'referenced' })),
         },
-      });
-      expect(isError(overflow)).toBe(true);
-      expect(textOf(overflow)).toMatch(/500/);
-      expect(store.getDocument({ id: created.id })?.metadata.resourceVersion).toBe(2);
+      }));
+      expect(bounded.entityRefs).toHaveLength(500);
+      expect(bounded.entityRefs.slice(0, 3).map((ref: any) => `${ref.kind}:${ref.id}`)).toEqual([
+        'Topic:topic-1', 'Workstream:workstream-1', 'Topic:extra-0',
+      ]);
+      expect(store.getDocument({ id: created.id })?.metadata.resourceVersion).toBe(3);
 
       const finalized = jsonOf<any>(await client.callTool({
         name: 'ws-commandjournal-finalize',
         arguments: {
           id: created.id,
-          expectedResourceVersion: appended.resourceVersion,
+          expectedResourceVersion: bounded.resourceVersion,
           status: 'succeeded',
           completedAt: 1_100,
           completion: { finalAssistantText: 'Updated.', stopReason: 'stop', mutated: true, navigationTarget: baseCreate.primaryScope },
           entityRefs: [{ kind: 'Workstream', id: 'workstream-1', slug: 'active-work', relation: 'mutated' }],
         },
       }));
-      expect(finalized).toMatchObject({ status: 'succeeded', completedAt: 1_100, completion: { finalAssistantText: 'Updated.', mutated: true }, resourceVersion: 3 });
-      expect(finalized.entityRefs).toEqual([
-        { kind: 'Topic', id: 'topic-1', slug: 'selected-topic', title: 'Selected topic', relation: 'referenced' },
+      expect(finalized).toMatchObject({ status: 'succeeded', completedAt: 1_100, completion: { finalAssistantText: 'Updated.', mutated: true }, resourceVersion: 4 });
+      expect(finalized.entityRefs.slice(0, 2)).toEqual([
+        { kind: 'Topic', id: 'topic-1', slug: 'selected-topic', title: 'Selected topic', relation: 'mutated' },
         { kind: 'Workstream', id: 'workstream-1', slug: 'active-work', relation: 'mutated' },
-        { kind: 'Topic', id: 'topic-1', relation: 'mutated' },
       ]);
+      expect(finalized.entityRefs).toHaveLength(500);
     } finally {
       await client.close();
       await server.close();

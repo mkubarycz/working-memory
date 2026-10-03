@@ -8,7 +8,6 @@ import { renderWorkstreamDocument } from '../src/documentRenderers/workstream';
 import { renderTopicDocument } from '../src/documentRenderers/topic';
 import { renderTopicTypeDocument } from '../src/documentRenderers/topictype';
 import { renderAlertDocument } from '../src/documentRenderers/alert';
-import { renderNaniteDocument } from '../src/documentRenderers/nanite';
 import { extractTopicBody } from '../src/editableRegions';
 import {
   extractTopicTypeBodyTemplate,
@@ -307,113 +306,6 @@ describe('renderAlertDocument', () => {
       }),
     );
     expect(md).toContain('# Alert: First line');
-  });
-});
-
-describe('renderNaniteDocument', () => {
-  it('renders Request + Response as their OWN collapsed sections', () => {
-    const md = renderNaniteDocument(
-      makeEnvelope('Nanite', {
-        phase: 'Succeeded',
-        templateId: 'due-action-alerts',
-        workstream: 'peanut-planting-season',
-        inputTopic: 'plant-select-seed-variety',
-        prompt: 'You are a helper.\n\n---\n\n# Task\ndo the thing',
-        output: 'here is the answer',
-      }),
-    );
-    expect(md).toContain('# Nanite: due-action-alerts');
-    expect(md).toContain('`phase`: Succeeded');
-    // Each blob is in its own collapsed disclosure...
-    expect(md).toContain('<summary>Request — full prompt sent to the model</summary>');
-    expect(md).toContain('<summary>Response — model output</summary>');
-    expect(md).toContain('You are a helper.');
-    expect(md).toContain('here is the answer');
-    // ...and rendered VERBATIM in a fence so prompt headings don't become page
-    // headings, and NOT dumped inline via a raw envelope block.
-    expect(md).toContain('~~~text');
-    expect(md).not.toContain('## Envelope');
-    expect(md).not.toContain('```json');
-    // Request comes before Response.
-    expect(md.indexOf('<summary>Request')).toBeLessThan(md.indexOf('<summary>Response'));
-    // Deep links for the workstream + input topic.
-    expect(md).toContain('open/workstream/peanut-planting-season');
-    expect(md).toContain('open/topic/plant-select-seed-variety');
-  });
-
-  it('omits a section whose field is empty', () => {
-    const md = renderNaniteDocument(
-      makeEnvelope('Nanite', { phase: 'Pending', prompt: '', output: '' }),
-    );
-    expect(md).not.toContain('<summary>Request');
-    expect(md).not.toContain('<summary>Response');
-    expect(md).toContain('# Nanite: doc-1');
-    expect(md).toContain('`phase`: Pending');
-  });
-
-  it('renders the execution trace as an inline Workflow, in order, before the Response', () => {
-    const md = renderNaniteDocument(
-      makeEnvelope('Nanite', {
-        phase: 'Succeeded',
-        output: 'here is the answer',
-        steps: [
-          { kind: 'assistant', text: 'Looking up the open topics first.' },
-          { kind: 'tool', name: 'wm_list_topics', ok: true, input: '{"status":"open"}', result: '[{"slug":"a"}]' },
-          { kind: 'tool', name: 'wm_delete_topic', ok: false, input: '{"slug":"a"}', error: 'not granted' },
-        ],
-      }),
-    );
-    expect(md).toContain('## Workflow');
-    // Narration and each tool call appear, numbered, with status icons.
-    expect(md).toContain('Looking up the open topics first.');
-    expect(md).toContain('1. ✅ `wm_list_topics`');
-    expect(md).toContain('2. ❌ `wm_delete_topic`');
-    // Args + result/error tucked into a disclosure.
-    expect(md).toContain('<summary>arguments &amp; result</summary>');
-    expect(md).toContain('"status":"open"');
-    expect(md).toContain('not granted');
-    // Workflow renders before the Response disclosure.
-    expect(md.indexOf('## Workflow')).toBeLessThan(md.indexOf('<summary>Response'));
-  });
-
-  it('omits the Workflow section when there is no execution trace', () => {
-    const md = renderNaniteDocument(
-      makeEnvelope('Nanite', { phase: 'Succeeded', output: 'done', steps: [] }),
-    );
-    expect(md).not.toContain('## Workflow');
-  });
-
-  it('is wired into the dispatcher for the Nanite kind', () => {
-    const md = renderDocumentByKind(
-      makeEnvelope('Nanite', { phase: 'Running', prompt: 'req', output: '' }),
-    );
-    expect(md).toContain('<summary>Request — full prompt sent to the model</summary>');
-  });
-
-  it('explains a Pending nanite as awaiting the user by default', () => {
-    const md = renderNaniteDocument(makeEnvelope('Nanite', { phase: 'Pending' }));
-    expect(md).toContain('## Status');
-    expect(md).toContain('Waiting for approval');
-    expect(md).toContain('will not run on its own');
-    expect(md).toContain('**Run**');
-    // Clickable Approve & Run deep link.
-    expect(md).toContain('vscode://kubarycz.working-memory/nanite/doc-1/run');
-    expect(md).not.toContain('allows unattended runs');
-  });
-
-  it('notes unattended runs on a Pending nanite but still says it will not run on its own', () => {
-    const md = renderNaniteDocument(makeEnvelope('Nanite', { phase: 'Pending' }), {
-      allowRunWithoutHuman: true,
-    });
-    expect(md).toContain('Waiting for approval');
-    expect(md).toContain('will not run on its own');
-    expect(md).toContain('allows unattended runs');
-  });
-
-  it('gives a plain-language status for Queued', () => {
-    const md = renderNaniteDocument(makeEnvelope('Nanite', { phase: 'Queued' }));
-    expect(md).toContain('**Queued**');
-    expect(md).toContain('start automatically');
   });
 });
 

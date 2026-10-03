@@ -7,6 +7,7 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const api: DesktopApi = {
+  listContainerApps: () => invoke('container:list'),
   discoverEnvironments: () => invoke('environment:discover'),
   switchEnvironment: (mcpUrl) => invoke('environment:switch', mcpUrl),
   getActivePanel: () => invoke('active:get'),
@@ -25,6 +26,16 @@ const api: DesktopApi = {
   togglePin: (workstream, topic) => invoke('topic:toggle-pin', workstream, topic),
   setAlertStatus: (context, id, status) => invoke('alert:set-status', context, id, status),
   invokeAction: (workstream, command, args) => invoke('action:invoke', workstream, command, args),
+  runContainerApp: (id) => invoke('container:run', id),
+  inspectContainerApp: (id) => invoke('container:inspect', id),
+  stopContainerApp: (id) => invoke('container:stop', id),
+  openContainerApp: (id) => invoke('container:open', id),
+  getAppMcpStatus: (id) => invoke('app-mcp:status', id),
+  connectAppMcp: (id) => invoke('app-mcp:connect', id),
+  disconnectAppMcp: (id) => invoke('app-mcp:disconnect', id),
+  listAppMcpTools: (id) => invoke('app-mcp:list-tools', id),
+  callAppMcpTool: (id, name, args) => invoke('app-mcp:call-tool', id, name, args),
+  getAppResourceContract: (id) => invoke('app-mcp:contract', id),
   openExternal: (url) => invoke('external:open', url),
 };
 

@@ -70,7 +70,7 @@ describe('decideRefreshAction', () => {
   });
 
   // The signal is an opaque hash of the WHOLE view-model. A workstream embeds
-  // its child topic + nanite tree, so a child-only change makes the VM hash
+  // its child topic tree, so a child-only change makes the VM hash
   // differ even when the top-level fields are otherwise identical. Proving
   // `apply` here is the regression guard for "closing a child topic doesn't
   // refresh the workstream screen".

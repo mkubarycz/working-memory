@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DesktopChatAgent } from '../src/main/desktopChatAgent';
+import { DESKTOP_MODEL_REQUEST_TIMEOUT_MS, DesktopChatAgent } from '../src/main/desktopChatAgent';
 import type { CommandJournal, CommandJournalEntityRef } from '../../src/controlPlaneClient';
 import { commandJournalSpec } from '../../control-plane/src/kinds/commandjournal';
 
@@ -81,6 +81,17 @@ function deferred<T>() {
 }
 
 describe('DesktopChatAgent', () => {
+  it('allows 60 seconds for each model request by default', async () => {
+    const callModel = vi.fn(async () => ({ choices: [{ message: { content: 'Done.' } }] }));
+
+    await new DesktopChatAgent(options(callModel)).start({
+      mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'read', headers: {},
+    });
+
+    expect(DESKTOP_MODEL_REQUEST_TIMEOUT_MS).toBe(60_000);
+    expect(callModel).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
+  });
+
   it('includes selected document identity and deictic-reference rules in model instructions', async () => {
     const callModel = vi.fn(async () => ({ id: 'resp_1', output_text: 'Found it.' }));
     const agent = new DesktopChatAgent(options(callModel));
@@ -100,6 +111,32 @@ describe('DesktopChatAgent', () => {
     expect(instructions).toContain('Use this exact kind and identifier in tool calls');
   });
 
+  it('injects mentioned-app instructions and tools into only that model request', async () => {
+    const callModel = vi.fn(async () => ({ id: 'resp_app', output_text: 'Ready.' }));
+    const agent = new DesktopChatAgent(options(callModel));
+
+    await agent.start({
+      mode: 'responses',
+      url: 'https://example.test',
+      model: 'test',
+      message: '@tasks add one',
+      headers: {},
+      appTools: {
+        tools: [{
+          name: 'app__tasks__app-contract-get',
+          description: 'Get live contract.',
+          inputSchema: { type: 'object', properties: {} },
+        }],
+        callTool: vi.fn(),
+        systemInstructions: 'Ask @tasks for its live contract first, then plan resource relationships.',
+      },
+    });
+
+    const body = callModel.mock.calls[0][0].body;
+    expect(body.instructions).toContain('live contract first');
+    expect(JSON.stringify(body.tools)).toContain('app__tasks__app-contract-get');
+  });
+
   it('dispatches multiple read/create calls and continues to a final response', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ id: 'chatcmpl_1', usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 }, choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [
@@ -113,7 +150,7 @@ describe('DesktopChatAgent', () => {
     const journal = journalHarness();
     const agent = new DesktopChatAgent(options(callModel, callTool, journal));
     const result = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'do it', headers: {} });
-    expect(result).toMatchObject({ journalId: 'journal-1', message: 'Done.', mutated: true, navigation: { kind: 'topic', identifier: 'ship-it' } });
+    expect(result).toMatchObject({ journalId: 'journal-1', message: 'Done.', status: 'succeeded', mutated: true, navigation: { kind: 'topic', identifier: 'ship-it' } });
     expect(callTool).toHaveBeenCalledTimes(2);
     expect(journal.current()).toMatchObject({
       status: 'succeeded',
@@ -126,6 +163,28 @@ describe('DesktopChatAgent', () => {
     expect(journal.current()?.events.at(-1)).toMatchObject({ providerResponseId: 'chatcmpl_2', finishReason: 'stop' });
     expect(journal.current()?.entityRefs).toContainEqual(expect.objectContaining({ kind: 'Workstream', id: 'roadmap', relation: 'referenced' }));
     expect(journal.current()?.entityRefs).toContainEqual(expect.objectContaining({ kind: 'Topic', id: 'ship-it', relation: 'mutated' }));
+  });
+
+  it('dispatches a title-only workstream create without inventing a slug', async () => {
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'a', function: { name: 'ws-workstream-create', arguments: '{"title":"SunsetChess"}' } },
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Created.' } }] });
+    const callTool = vi.fn(async () => ({ ok: true, result: { slug: 'sunset-chess' } }));
+    const agent = new DesktopChatAgent({
+      ...options(callModel, callTool),
+      listTools: async () => [{
+        name: 'ws-workstream-create',
+        inputSchema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] },
+      }],
+    });
+
+    await agent.start({
+      mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'create SunsetChess', headers: {},
+    });
+
+    expect(callTool).toHaveBeenCalledWith('ws-workstream-create', { title: 'SunsetChess' });
   });
 
   it('classifies workstream reorder calls as mutations', async () => {
@@ -148,6 +207,26 @@ describe('DesktopChatAgent', () => {
     expect(journal.current()?.completion?.mutated).toBe(true);
   });
 
+  it('classifies topic transfer calls as mutations', async () => {
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'a', function: { name: 'ws-topic-transfer', arguments: '{"slug":"parent","sourceWorkstream":"one","targetWorkstream":"two"}' } },
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Done.' } }] });
+    const journal = journalHarness();
+    const agent = new DesktopChatAgent({
+      ...options(callModel, undefined, journal),
+      listTools: async () => [
+        { name: 'ws-topic-transfer', inputSchema: { type: 'object', properties: { slug: { type: 'string' } } } },
+      ],
+    });
+
+    const result = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'transfer', headers: {} });
+
+    expect(result.mutated).toBe(true);
+    expect(journal.current()?.completion?.mutated).toBe(true);
+  });
+
   it('creates the durable journal before the first model request and strips endpoint secrets', async () => {
     const order: string[] = [];
     const journal = journalHarness();
@@ -165,6 +244,26 @@ describe('DesktopChatAgent', () => {
     expect(journal.create.mock.calls[0][0]).not.toHaveProperty('headers');
   });
 
+  it('records and finalizes an unexpected post-journal failure as retryable', async () => {
+    const journal = journalHarness();
+    journal.append.mockRejectedValueOnce(new Error('temporary append failure'));
+    const agent = new DesktopChatAgent(options(
+      vi.fn(async () => ({ id: 'resp_1', output_text: 'Done.' })),
+      undefined,
+      journal,
+    ));
+
+    const result = await agent.start({
+      mode: 'responses', url: 'https://example.test', model: 'test', message: 'read', headers: {},
+    });
+
+    expect(result).toMatchObject({ status: 'failed', message: expect.stringContaining('temporary append failure') });
+    expect(journal.current()).toMatchObject({ status: 'failed', completion: { stopReason: 'unexpected_error' } });
+    expect(journal.current()?.events.at(-1)).toMatchObject({
+      type: 'run_error', stage: 'agent_run', code: 'unexpected_error', retryable: true,
+    });
+  });
+
   it('cannot execute a destructive call before explicit confirmation', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
@@ -176,6 +275,7 @@ describe('DesktopChatAgent', () => {
     const agent = new DesktopChatAgent(options(callModel, callTool, journal));
     const pending = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'delete old', headers: {} });
     expect(pending.journalId).toBe('journal-1');
+    expect(pending.status).toBe('awaiting_confirmation');
     expect(pending.pendingConfirmation).toEqual({ id: 'confirm-1', tool: 'ws-topic-delete', arguments: { slug: 'old' } });
     expect(callTool).not.toHaveBeenCalled();
     expect(journal.current()?.status).toBe('awaiting_confirmation');
@@ -231,6 +331,7 @@ describe('DesktopChatAgent', () => {
     const result = await running;
 
     expect(result.message).toContain('environment changed');
+    expect(result.status).toBe('interrupted');
     expect(oldCallTool).not.toHaveBeenCalled();
     expect(replacementCallTool).not.toHaveBeenCalled();
     expect(replacementJournal.append).not.toHaveBeenCalled();
@@ -276,6 +377,27 @@ describe('DesktopChatAgent', () => {
     expect(oldJournal.current()?.events.filter((event) => event.type === 'tool_result')).toEqual([]);
   });
 
+  it('preserves a successful mutation when reset interrupts its in-flight tool call', async () => {
+    const tool = deferred<{ ok: true; result: { slug: string } }>();
+    const journal = journalHarness();
+    const callTool = vi.fn(() => tool.promise);
+    const agent = new DesktopChatAgent(options(vi.fn(async () => ({ choices: [{ message: { tool_calls: [
+      { id: 'a', function: { name: 'ws-topic-create', arguments: '{"title":"Created"}' } },
+    ] } }] })), callTool, journal));
+    const running = agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'create', headers: {} });
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+
+    const resetting = agent.reset();
+    tool.resolve({ ok: true, result: { slug: 'created' } });
+    await resetting;
+    const result = await running;
+
+    expect(result).toMatchObject({ status: 'interrupted', mutated: true });
+    expect(journal.current()).toMatchObject({
+      status: 'interrupted', completion: { stopReason: 'environment_changed', mutated: true },
+    });
+  });
+
   it('cancellation is fed back without executing the destructive call', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ id: 'resp_1', output: [{ type: 'function_call', call_id: 'a', name: 'ws-topic-delete', arguments: '{"slug":"old"}' }] })
@@ -286,6 +408,7 @@ describe('DesktopChatAgent', () => {
     await agent.start({ mode: 'responses', url: 'https://example.test', model: 'test', message: 'delete old', headers: {} });
     const result = await agent.resolveConfirmation('confirm-1', false);
     expect(callTool).not.toHaveBeenCalled();
+    expect(result.status).toBe('cancelled');
     expect(result.progress.at(-1)?.status).toBe('cancelled');
     expect(callModel.mock.calls[1][0].body).toMatchObject({ previous_response_id: 'resp_1' });
     expect(journal.current()).toMatchObject({ status: 'cancelled', completion: { stopReason: 'user_rejected' } });
@@ -379,6 +502,7 @@ describe('DesktopChatAgent', () => {
     const agent = new DesktopChatAgent(options(vi.fn(async () => { throw new Error('network unavailable'); }), undefined, journal));
     const result = await agent.start({ mode: 'responses', url: 'https://example.test', model: 'test', message: 'read', headers: {} });
     expect(result.message).toBe('Model request failed: network unavailable');
+    expect(result.status).toBe('failed');
     expect(journal.current()).toMatchObject({ status: 'failed', completion: { stopReason: 'model_error' } });
     expect(journal.current()?.events.at(-1)).toMatchObject({ type: 'run_error', stage: 'model_request' });
   });
@@ -405,15 +529,32 @@ describe('DesktopChatAgent', () => {
     expect(callModel).not.toHaveBeenCalled();
   });
 
-  it('stops execution when an incremental append fails', async () => {
+  it('stops execution and returns a failed terminal result when an incremental append fails', async () => {
     const callModel = vi.fn(async () => ({ choices: [{ message: { tool_calls: [{ id: 'a', function: { name: 'ws-workstream-read', arguments: '{}' } }] } }] }));
     const callTool = vi.fn();
     const journal = journalHarness();
     journal.append.mockRejectedValueOnce(new Error('write failed'));
-    await expect(new DesktopChatAgent(options(callModel, callTool, journal)).start({
+    const result = await new DesktopChatAgent(options(callModel, callTool, journal)).start({
       mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'read', headers: {},
-    })).rejects.toThrow('Command journal append failed: write failed');
+    });
+    expect(result).toMatchObject({ status: 'failed', message: expect.stringContaining('Command journal append failed: write failed') });
+    expect(journal.current()).toMatchObject({ status: 'failed', completion: { stopReason: 'unexpected_error' } });
     expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it('rejects to the IPC boundary when failed-run persistence is unavailable', async () => {
+    const journal = journalHarness();
+    journal.append.mockRejectedValue(new Error('journal unavailable'));
+    journal.finalize.mockRejectedValue(new Error('journal unavailable'));
+    const agent = new DesktopChatAgent(options(
+      vi.fn(async () => ({ id: 'resp_1', output_text: 'Done.' })),
+      undefined,
+      journal,
+    ));
+
+    await expect(agent.start({
+      mode: 'responses', url: 'https://example.test', model: 'test', message: 'read', headers: {},
+    })).rejects.toThrow('Command journal append failed: journal unavailable');
   });
 
   it('redacts credential keys and embedded secret values from persisted text and payloads', async () => {
