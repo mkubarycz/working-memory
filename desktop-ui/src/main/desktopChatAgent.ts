@@ -85,6 +85,12 @@ export interface StartChatInput {
   message: string;
   headers: Record<string, string>;
   context?: ChatContext;
+  appTools?: {
+    tools: CanonicalToolDef[];
+    callTool: DesktopChatDependencies['callTool'];
+    systemInstructions: string;
+    requiresConfirmation?: (toolName: string) => boolean;
+  };
 }
 
 interface Session {
@@ -106,6 +112,7 @@ interface Session {
   journalCallIds: Map<ModelToolCall, string>;
   usedCallIds: Set<string>;
   navigation?: NavigationHint;
+  appToolsRequiringConfirmation: Set<string>;
   suspended?: {
     turn: ParsedModelTurn;
     calls: ModelToolCall[];
@@ -141,6 +148,12 @@ export function systemPromptForContext(context?: ChatContext): string {
     'Unless the user says otherwise, deictic references including "this", "it", and "current document" refer to this selected document.',
     'Use this exact kind and identifier in tool calls that act on or read the selected document; do not guess its identity from the title.',
   ].join(' ');
+}
+
+function systemPromptForInput(input: StartChatInput): string {
+  return [systemPromptForContext(input.context), input.appTools?.systemInstructions]
+    .filter(Boolean)
+    .join(' ');
 }
 
 const MUTATING_ACTION = /-(create|update|delete|run|reorder|transfer)$/;
@@ -187,7 +200,20 @@ export class DesktopChatAgent {
     };
     this.active.add(run);
     try {
-    const tools = desktopToolDescriptors(await this.external(run, run.dependencies.listTools()));
+    const tools = [
+      ...desktopToolDescriptors(await this.external(run, run.dependencies.listTools())),
+      ...(input.appTools?.tools ?? []),
+    ];
+    if (input.appTools) {
+      const controlPlaneCall = run.dependencies.callTool;
+      const appNames = new Set(input.appTools.tools.map((tool) => tool.name));
+      run.dependencies = {
+        ...run.dependencies,
+        callTool: (name, args) => appNames.has(name)
+          ? input.appTools!.callTool(name, args)
+          : controlPlaneCall(name, args),
+      };
+    }
     this.assertCurrent(run);
     const startedAt = this.now();
     const secretValues = secretHeaderValues(input.headers);
@@ -208,7 +234,7 @@ export class DesktopChatAgent {
       conversation: createModelConversation({
         mode: input.mode,
         model: input.model,
-        systemPrompt: systemPromptForContext(input.context),
+        systemPrompt: systemPromptForInput(input),
         userMessage: input.message,
         tools,
       }),
@@ -227,6 +253,11 @@ export class DesktopChatAgent {
       lastExecutionByTool: new Map(),
       journalCallIds: new Map(),
       usedCallIds: new Set(),
+      appToolsRequiringConfirmation: new Set(
+        input.appTools?.tools
+          .filter((tool) => input.appTools?.requiresConfirmation?.(tool.name))
+          .map((tool) => tool.name) ?? [],
+      ),
     };
     run.session = session;
     this.assertCurrent(run);
@@ -394,7 +425,10 @@ export class DesktopChatAgent {
     for (let index = startIndex; index < calls.length; index += 1) {
       this.assertCurrent(session.run);
       const call = calls[index];
-      if (isDestructiveTool(call.name, call.arguments)) {
+      if (
+        isDestructiveTool(call.name, call.arguments)
+        || session.appToolsRequiringConfirmation.has(call.name)
+      ) {
         const id = this.createId();
         session.suspended = { turn, calls, results, index };
         await this.append(session, [{
@@ -819,7 +853,7 @@ function addUsage(session: Session, usage: ParsedModelTurn['usage']): void {
 
 const ENTITY_KINDS: Record<string, string> = {
   workstream: 'Workstream', topic: 'Topic', topictype: 'TopicType', alert: 'Alert',
-  config: 'Config',
+  config: 'Config', nanite: 'Nanite', nanitetemplate: 'NaniteTemplate', nanitejournal: 'NaniteJournal',
 };
 
 function entityRefsForCalls(calls: ModelToolCall[], relation: CommandJournalEntityRef['relation']): CommandJournalEntityRef[] {

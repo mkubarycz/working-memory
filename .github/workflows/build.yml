@@ -40,6 +40,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Test desktop UI
+        run: npm test --prefix desktop-ui
+
       - name: Package VSIX
         env:
           npm_config_platform: linux

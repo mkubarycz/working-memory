@@ -30,4 +30,19 @@ describe('chatContextForDocument', () => {
     });
     expect(chatContextForDocument({ kind: 'topic', id: '', slug: null, title: 'Untitled' })).toBeUndefined();
   });
+
+  it('marks a container-app virtual document as an implicit app target', () => {
+    expect(chatContextForDocument({
+      kind: 'container-app',
+      id: 'sunset-chess',
+      slug: 'sunset-chess',
+      title: 'Sunset Chess',
+    })).toEqual({
+      kind: 'container-app',
+      routeKind: 'document',
+      identifier: 'sunset-chess',
+      title: 'Sunset Chess',
+      containerAppId: 'sunset-chess',
+    });
+  });
 });

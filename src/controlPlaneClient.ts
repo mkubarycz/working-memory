@@ -217,6 +217,23 @@ export interface DockerRuntimeSpec {
   containerPort: number;
   healthPath: string;
   entryPath: string;
+  volumes?: Array<{ name: string; mountPath: string }>;
+}
+
+export interface AppMcpEndpoint {
+  transport: 'streamable-http';
+  url: string;
+}
+
+export interface ApplicationContractMetadata {
+  id: string;
+  contractVersion: string;
+  discovery: { toolName: string; url?: string };
+  capabilities: string[];
+  dataOwnership: 'application';
+  healthUrl?: string;
+  uiUrl?: string;
+  httpUrl?: string;
 }
 
 export interface ContainerClaim {
@@ -226,6 +243,8 @@ export interface ContainerClaim {
   repository: string;
   sourceRevision?: string;
   runtime?: DockerRuntimeSpec;
+  mcp?: AppMcpEndpoint;
+  application?: ApplicationContractMetadata;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -244,6 +263,8 @@ export interface ContainerClaimCreateInput {
   repository: string;
   sourceRevision?: string;
   runtime?: DockerRuntimeSpec;
+  mcp?: AppMcpEndpoint;
+  application?: ApplicationContractMetadata;
 }
 
 export interface ContainerClaimUpdateInput {
@@ -252,6 +273,8 @@ export interface ContainerClaimUpdateInput {
   repository?: string;
   sourceRevision?: string | null;
   runtime?: DockerRuntimeSpec | null;
+  mcp?: AppMcpEndpoint | null;
+  application?: ApplicationContractMetadata | null;
 }
 
 /**
@@ -329,6 +352,26 @@ export interface TopicTransferInput {
   sourceWorkstream: string;
   targetWorkstream: string;
   move?: boolean;
+}
+
+export interface TopicCloseTreeInput {
+  slug: string;
+  includeSharedDescendants?: boolean;
+  dryRun?: boolean;
+}
+
+export interface TopicCloseTreeResult {
+  root: { id: string; slug: string; title: string; resourceVersion: number };
+  dryRun: boolean;
+  includeSharedDescendants: boolean;
+  matchedCount: number;
+  matchedSlugs: string[];
+  closedCount: number;
+  closedSlugs: string[];
+  alreadyClosedCount: number;
+  alreadyClosedSlugs: string[];
+  skippedSharedCount: number;
+  skippedSharedSlugs: string[];
 }
 
 export interface TopicType {
@@ -1296,6 +1339,19 @@ export class ControlPlaneClient {
       throw new ControlPlaneClientError('Malformed control-plane topic transfer response');
     }
     return parsed as Topic[];
+  }
+
+  /** Atomically close a topic and its eligible descendant closure. */
+  async topicCloseTree(input: TopicCloseTreeInput): Promise<TopicCloseTreeResult> {
+    const parsed = parseToolText(await this.callDomainTool('ws-topic-close-tree', {
+      slug: input.slug,
+      includeSharedDescendants: input.includeSharedDescendants ?? false,
+      dryRun: input.dryRun ?? false,
+    })) as TopicCloseTreeResult | null;
+    if (!parsed || typeof parsed.matchedCount !== 'number' || !Array.isArray(parsed.matchedSlugs)) {
+      throw new ControlPlaneClientError('Malformed control-plane topic close-tree response');
+    }
+    return parsed;
   }
 
   /**

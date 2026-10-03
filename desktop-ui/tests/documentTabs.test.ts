@@ -9,6 +9,7 @@ import {
   replaceSelectedTab,
   updateDocumentTab,
 } from '../src/renderer/documentTabs';
+import { containerAppDocument } from '../src/renderer/containerApps';
 
 function topic(slug: string, title = slug): DocumentVM {
   return {
@@ -26,6 +27,15 @@ describe('document tabs', () => {
     expect(state.tabs.map(documentTabKey)).toEqual(['topic:first', 'topic:second']);
     expect(state.tabs[0]?.title).toBe('First refreshed');
     expect(state.selectedKey).toBe('topic:first');
+  });
+
+  it('uses one stable virtual tab identity for a registered container app', () => {
+    const app = { id: 'sunset-chess', displayName: 'Sunset Chess', icon: 'server-environment' };
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, containerAppDocument(app));
+    state = openDocumentTab(state, containerAppDocument({ ...app, displayName: 'Sunset Chess refreshed' }));
+    expect(state.tabs.map(documentTabKey)).toEqual(['container-app:sunset-chess']);
+    expect(state.tabs[0]?.title).toBe('Sunset Chess refreshed');
+    expect(state.selectedKey).toBe('container-app:sunset-chess');
   });
 
   it('replaces the selected document in place and closes to the nearest remaining tab', () => {

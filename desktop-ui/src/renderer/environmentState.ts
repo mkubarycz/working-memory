@@ -23,7 +23,6 @@ export interface EnvironmentBoundRendererState {
   activeError: string;
   hasUnseenMessages: boolean;
   containerAppStatuses: Record<string, ContainerAppStatus | undefined>;
-  selectedContainerAppId: string | null;
   busyContainerAppId: string | null;
 }
 
@@ -46,7 +45,6 @@ export function emptyEnvironmentBoundRendererState(): EnvironmentBoundRendererSt
     activeError: '',
     hasUnseenMessages: false,
     containerAppStatuses: {},
-    selectedContainerAppId: null,
     busyContainerAppId: null,
   };
 }

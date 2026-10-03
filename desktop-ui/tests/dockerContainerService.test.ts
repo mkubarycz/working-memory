@@ -6,10 +6,11 @@ import {
   DockerContainerService,
   ExecFileCommandRunner,
   MANAGED_LABEL,
-  resolveClarinetHeroClaim,
+  resolveContainerAppClaim,
   type ClaimClient,
   type CommandRunner,
 } from '../src/main/dockerContainerService';
+import { CONTAINER_APP_REGISTRY } from '../src/main/containerAppRegistry';
 import type { ContainerClaimCreateInput } from '../../src/controlPlaneClient';
 
 const desired: ContainerClaimCreateInput = {
@@ -57,6 +58,28 @@ function localRunner(
 }
 
 describe('DockerContainerService', () => {
+  it('clears stale optional claim metadata that the registry no longer advertises', async () => {
+    const stale = claim({
+      application: {
+        id: 'sunset-chess',
+        contractVersion: '1.0',
+        discovery: { toolName: 'contract-discover' },
+        capabilities: ['contract-discovery'],
+        dataOwnership: 'application',
+      },
+    });
+    const claimClient = client(stale);
+    vi.mocked(claimClient.containerClaimUpdate).mockRejectedValue(new Error('stop after update'));
+
+    await expect(new DockerContainerService().ensure(claimClient, desired))
+      .resolves.toMatchObject({ status: 'error', code: 'claim_error' });
+    expect(claimClient.containerClaimUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      slug: desired.slug,
+      mcp: null,
+      application: null,
+    }));
+  });
+
   it('uses one explicitly selected local context for every Docker command', async () => {
     const calls: string[][] = [];
     const runner = localRunner(async (args) => {
@@ -82,6 +105,38 @@ describe('DockerContainerService', () => {
       '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=clarinet-hero`,
     ]));
     expect(readiness).toHaveBeenCalledTimes(2);
+  });
+
+  it('mounts safe named volumes without changing apps that omit volumes', async () => {
+    const calls: string[][] = [];
+    const withVolume = {
+      ...desired,
+      runtime: {
+        ...desired.runtime!,
+        volumes: [{ name: 'working-memory-sunset-chess-data', mountPath: '/data' }],
+      },
+    };
+    const runner = localRunner(async (args) => {
+      if (args[0] === 'container' && args[1] === 'inspect') {
+        throw new CommandExecutionError('not found', 1, 'No such container');
+      }
+      if (args[0] === 'image') return { stdout: 'sha256:new\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    }, calls);
+    const volumeClient = client(null as never);
+    vi.mocked(volumeClient.containerClaimCreate).mockResolvedValue(claim(withVolume));
+    await new DockerContainerService({ runner, readiness: async () => true }).ensure(volumeClient, withVolume);
+    const run = calls.find((args) => args.includes('run'))!;
+    expect(run).toContain('type=volume,source=working-memory-sunset-chess-data,destination=/data');
+
+    const unsafe = {
+      ...withVolume,
+      runtime: { ...withVolume.runtime, volumes: [{ name: '../unsafe', mountPath: '/data' }] },
+    };
+    const unsafeClient = client(null as never);
+    vi.mocked(unsafeClient.containerClaimCreate).mockResolvedValue(claim(unsafe));
+    await expect(new DockerContainerService({ runner }).ensure(unsafeClient, unsafe))
+      .resolves.toMatchObject({ status: 'error', code: 'start_failed' });
   });
 
   it('refuses a configured remote context before build, start, or removal', async () => {
@@ -373,36 +428,136 @@ describe('ExecFileCommandRunner', () => {
   });
 });
 
-describe('resolveClarinetHeroClaim', () => {
+describe('resolveContainerAppClaim', () => {
+  const clarinet = CONTAINER_APP_REGISTRY[0];
+  const banking = CONTAINER_APP_REGISTRY[1];
+  const sunset = CONTAINER_APP_REGISTRY[2];
   const validPaths = (root: string) => (path: string) => {
     if (path === root) return 'directory' as const;
     if (path === `${root}/Dockerfile` || path === `${root}/package.json`) return 'file' as const;
     return null;
   };
 
-  it('preserves an existing claim with a valid runtime', () => {
+  it('preserves a valid existing source while enforcing registry runtime identity', () => {
     const existing = claim({
       repository: '/saved/source',
       runtime: { ...desired.runtime, buildContext: '/saved/source', dockerfile: '/saved/source/Dockerfile' },
     });
-    const resolved = resolveClarinetHeroClaim(existing, { pathKind: validPaths('/saved/source') });
+    const resolved = resolveContainerAppClaim(clarinet, existing, { pathKind: validPaths('/saved/source') });
     expect(resolved.repository).toBe('/saved/source');
-    expect(resolved.runtime).toEqual(existing.runtime);
+    expect(resolved.runtime).toEqual({
+      ...clarinet.runtime,
+      buildContext: '/saved/source',
+      dockerfile: '/saved/source/Dockerfile',
+    });
   });
 
   it('prefers a configured source and reports every checked candidate when none is valid', () => {
-    const configured = resolveClarinetHeroClaim(undefined, {
+    const configured = resolveContainerAppClaim(clarinet, undefined, {
       configuredPath: '/configured/source',
       cwd: '/workspace',
       pathKind: validPaths('/configured/source'),
     });
     expect(configured.repository).toBe('/configured/source');
 
-    expect(() => resolveClarinetHeroClaim(undefined, {
+    expect(() => resolveContainerAppClaim(clarinet, undefined, {
       configuredPath: '/missing/source',
       cwd: '/workspace',
       searchRoots: ['/another/missing'],
       pathKind: () => null,
     })).toThrow(/CLARINET_HERO_SOURCE.*\/missing\/source.*\/another\/missing/);
+  });
+
+  it('resolves a second registry app without app-specific code', () => {
+    const resolved = resolveContainerAppClaim(banking, undefined, {
+      configuredPath: '/workspace/projects/BankingApp',
+      pathKind: validPaths('/workspace/projects/BankingApp'),
+    });
+
+    expect(resolved).toMatchObject({
+      slug: 'banking-app',
+      title: 'Banking App',
+      repository: '/workspace/projects/BankingApp',
+      runtime: {
+        imageName: 'banking-app:local',
+        containerName: 'working-memory-banking-app',
+        hostPort: 4174,
+        containerPort: 4174,
+        entryPath: '/',
+        healthPath: '/health',
+        volumes: [{ name: 'working-memory-banking-app-data', mountPath: '/data' }],
+      },
+    });
+  });
+
+  it('resolves canonical contract-capable Sunset Chess from one registry entry', () => {
+    const resolved = resolveContainerAppClaim(sunset, undefined, {
+      cwd: '/workspace',
+      pathKind: validPaths('/workspace/projects/SunsetChess'),
+    });
+    expect(resolved).toMatchObject({
+      slug: 'sunset-chess',
+      title: 'Sunset Chess',
+      repository: '/workspace/projects/SunsetChess',
+      runtime: {
+        imageName: 'sunset-chess:1.2',
+        containerName: 'working-memory-sunset-chess',
+        hostPort: 4175,
+        containerPort: 4175,
+        entryPath: '/',
+        healthPath: '/health',
+        volumes: [{ name: 'working-memory-sunset-chess-data', mountPath: '/data' }],
+      },
+      mcp: { transport: 'streamable-http', url: 'http://127.0.0.1:4175/mcp' },
+      application: {
+        id: 'sunset-chess',
+        contractVersion: '1.0',
+        discovery: {
+          toolName: 'contract-discover',
+          url: 'http://127.0.0.1:4175/.well-known/sunset-chess-contract',
+        },
+        capabilities: ['contract-discovery'],
+        dataOwnership: 'application',
+        healthUrl: 'http://127.0.0.1:4175/health',
+        uiUrl: 'http://127.0.0.1:4175/',
+        httpUrl: 'http://127.0.0.1:4175/api',
+      },
+    });
+  });
+
+  it('cannot stop another app container when given the banking definition', async () => {
+      const bankingDesired = resolveContainerAppClaim(banking, undefined, {
+        configuredPath: '/repo/BankingApp',
+        pathKind: validPaths('/repo/BankingApp'),
+      });
+      const calls: string[][] = [];
+      const runner = localRunner(async (args) => {
+        if (args[0] === 'container' && args[1] === 'inspect') {
+          expect(args[2]).toBe('working-memory-banking-app');
+          return {
+            stdout: JSON.stringify([{
+              State: { Running: true },
+              Config: {
+                Image: 'banking-app:local',
+                Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: 'banking-app' },
+              },
+              HostConfig: { PortBindings: { '4174/tcp': [{ HostIp: '127.0.0.1', HostPort: '4174' }] } },
+              Mounts: [{
+                Type: 'volume',
+                Name: 'working-memory-banking-app-data',
+                Destination: '/data',
+              }],
+            }]),
+            stderr: '',
+          };
+        }
+        return { stdout: '', stderr: '' };
+      }, calls);
+      await expect(new DockerContainerService({ runner, readiness: async () => true }).stop(bankingDesired))
+        .resolves.toMatchObject({ status: 'stopped' });
+      expect(calls).toContainEqual([
+        '--context', 'desktop-linux', 'container', 'stop', 'working-memory-banking-app',
+      ]);
+      expect(calls.flat()).not.toContain('working-memory-clarinet-hero');
   });
 });

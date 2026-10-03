@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -14,38 +13,23 @@ const contextSchema = {
 };
 
 export class McpAdapter {
-  readonly #transports = new Map<string, StreamableHTTPServerTransport>();
-
   constructor(
     readonly registry: ResourceRegistry,
     readonly service: ResourceService,
   ) {}
 
   async handle(req: IncomingMessage, res: ServerResponse, body?: unknown): Promise<void> {
-    const sessionId = String(req.headers['mcp-session-id'] ?? '');
-    if (req.method === 'POST') {
-      const existing = this.#transports.get(sessionId);
-      if (existing) return existing.handleRequest(req, res, body);
-      if (!sessionId && isInitialize(body)) {
-        let transport: StreamableHTTPServerTransport;
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: randomUUID,
-          enableJsonResponse: true,
-          onsessioninitialized: (id): void => {
-            this.#transports.set(id, transport);
-          },
-        });
-        transport.onclose = () => {
-          if (transport.sessionId) this.#transports.delete(transport.sessionId);
-        };
-        await this.createServer().connect(transport);
-        return transport.handleRequest(req, res, body);
-      }
-    } else if (req.method === 'GET' || req.method === 'DELETE') {
-      const existing = this.#transports.get(sessionId);
-      if (existing) return existing.handleRequest(req, res);
+    if (req.method !== 'POST') {
+      json(res, 405, { error: 'MCP requires POST.' });
+      return;
     }
-    json(res, 400, { error: 'Invalid or missing MCP session.' });
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    res.on('close', () => void transport.close());
+    await this.createServer().connect(transport);
+    await transport.handleRequest(req, res, body);
   }
 
   private createServer(): McpServer {
@@ -55,10 +39,7 @@ export class McpAdapter {
       description: 'Return the live Zod-derived resource contract. Call this before resource operations.',
       inputSchema: { transactionId: z.string().uuid().optional() },
       annotations: { readOnlyHint: true },
-    }, async ({ transactionId }) => text({
-      transactionId: transactionId ?? crypto.randomUUID(),
-      result: applicationContract(this.registry),
-    }));
+    }, async () => text(applicationContract(this.registry)));
     server.registerTool('resource-query', {
       description: 'Query envelopes of one discovered resource kind using optional top-level spec equality.',
       inputSchema: {
@@ -110,10 +91,6 @@ export class McpAdapter {
     }, async (input) => text(this.service.delete(input)));
     return server;
   }
-}
-
-function isInitialize(value: unknown): boolean {
-  return Boolean(value && typeof value === 'object' && 'method' in value && value.method === 'initialize');
 }
 
 function text(value: unknown) {

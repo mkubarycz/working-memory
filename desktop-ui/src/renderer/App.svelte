@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
-  import ContainerAppStrip from './ContainerAppStrip.svelte';
+  import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from '../../../webview-ui/src/lib/WorkstreamView.svelte';
   import TopicView from '../../../webview-ui/src/lib/TopicView.svelte';
   import DocumentView from '../../../webview-ui/src/lib/DocumentView.svelte';
@@ -17,12 +17,24 @@
     PendingConfirmation,
     PublicConfig,
   } from '../shared/contracts';
-  import { CONTAINER_APPS, type ContainerAppItem } from './containerApps';
+  import {
+    containerAppDocument,
+    containerAppIdForDocument,
+    loadRegisteredContainerApps,
+    type ContainerAppItem,
+  } from './containerApps';
   import type { CommandJournalScopeRef } from '../../../src/controlPlaneClient';
   import type { PanelAction, PanelData } from '../../../src/panelData';
   import { invokeActiveAction } from './activeContextMenu';
   import { isChatAtBottom } from './chatScroll';
   import { readComposerDraft, writeComposerDraft } from './composerDraft';
+  import {
+    filterMentionApps,
+    mentionKeyEventAction,
+    mentionTokenAtCaret,
+    replaceMentionToken,
+    type MentionToken,
+  } from './mentionCompletion';
   import { renderMarkdown } from './markdown';
   import { createDocumentSaveQueue } from './documentSaveQueue';
   import {
@@ -100,7 +112,7 @@
   let environmentLoading = $state(false);
   let environmentError = $state('');
   let containerAppStatuses = $state<Record<string, ContainerAppStatus | undefined>>({});
-  let selectedContainerAppId = $state<string | null>(null);
+  let containerApps = $state<ContainerAppItem[]>([]);
   let containerAppError = $state('');
   let activeHeaderTab = $state<HeaderTab>('log');
   let focusedHeaderTab = $state<HeaderTab>('log');
@@ -115,6 +127,10 @@
   let viewportWidth = $state(1280);
   let railDrag: { side: RailSide; startX: number; widths: RailWidths } | null = null;
   let conversationElement = $state<HTMLDivElement | null>(null);
+  let composerElement = $state<HTMLFormElement | null>(null);
+  let composerTextarea = $state<HTMLTextAreaElement | null>(null);
+  let mentionToken = $state<MentionToken | null>(null);
+  let mentionActiveIndex = $state(0);
   let conversationPinned = true;
   let hasUnseenMessages = $state(false);
   let previewAttentionTarget: HTMLElement | null = null;
@@ -122,8 +138,59 @@
   let environmentGeneration = 0;
   let historyRequestGeneration: number | null = null;
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
-  const selectedContainerApp = $derived(CONTAINER_APPS.find((app) => app.id === selectedContainerAppId) ?? null);
+  const selectedContainerAppId = $derived(containerAppIdForDocument(activeDocument));
+  const selectedContainerApp = $derived(containerApps.find((app) => app.id === selectedContainerAppId) ?? null);
   const currentChatContext = $derived(chatContextForDocument(activeDocument));
+  const mentionApps = $derived(mentionToken ? filterMentionApps(containerApps, mentionToken.query) : []);
+  const mentionOpen = $derived(mentionToken !== null);
+
+  function appAdvertisesMcp(app: ContainerAppItem): boolean {
+    const status = containerAppStatuses[app.id];
+    return status ? Boolean(status.mcp) : Boolean(app.mcp);
+  }
+
+  function closeMentionCompletion(): void {
+    mentionToken = null;
+    mentionActiveIndex = 0;
+  }
+
+  function refreshMentionCompletion(value: string, caret: number | null): void {
+    mentionToken = mentionTokenAtCaret(value, caret ?? value.length, containerApps);
+    mentionActiveIndex = 0;
+  }
+
+  async function selectMention(app: ContainerAppItem): Promise<void> {
+    const token = mentionToken;
+    if (!token) return;
+    const replacement = replaceMentionToken(input, token, app.id);
+    input = replacement.value;
+    writeComposerDraft(localStorage, selectedEnvironment?.id, input);
+    closeMentionCompletion();
+    await tick();
+    composerTextarea?.focus();
+    composerTextarea?.setSelectionRange(replacement.caret, replacement.caret);
+  }
+
+  function handleComposerInput(event: Event): void {
+    const textarea = event.currentTarget as HTMLTextAreaElement;
+    updateComposerDraft(textarea.value);
+    refreshMentionCompletion(textarea.value, textarea.selectionStart);
+  }
+
+  function handleComposerKeydown(event: KeyboardEvent): void {
+    const action = mentionKeyEventAction(event, mentionOpen, mentionApps.length, mentionActiveIndex);
+    if (action.type === 'none') return;
+    if (action.type === 'navigate') mentionActiveIndex = action.index;
+    else if (action.type === 'dismiss') closeMentionCompletion();
+    else if (action.type === 'select') void selectMention(mentionApps[action.index]);
+    else if (action.type === 'send') void send();
+  }
+
+  function handleComposerBlur(): void {
+    window.setTimeout(() => {
+      if (!composerElement?.contains(document.activeElement)) closeMentionCompletion();
+    }, 0);
+  }
 
   async function refreshContainerApp(app: ContainerAppItem): Promise<void> {
     const generation = environmentGeneration;
@@ -138,9 +205,36 @@
     }
   }
 
+  async function loadContainerApps(): Promise<void> {
+    try {
+      await loadRegisteredContainerApps(
+        () => window.workingMemory.listContainerApps(),
+        (id) => window.workingMemory.inspectContainerApp(id),
+        () => environmentGeneration,
+        (apps) => { containerApps = apps; },
+        (app, status) => {
+          containerAppStatuses[app.id] = status;
+          if (status.error) containerAppError = status.error;
+        },
+        (error) => {
+          containerAppError = error instanceof Error ? error.message : String(error);
+        },
+      );
+    } catch (error) {
+      containerAppError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   async function openContainerAppDetail(app: ContainerAppItem): Promise<void> {
-    selectedContainerAppId = app.id;
+    const next = openDocumentTab(
+      { tabs: documents, selectedKey: selectedDocumentKey },
+      containerAppDocument(app),
+    );
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    page = 'workspace';
     activateHeaderTab('container-apps');
+    restoreDocumentSaveStatus(next.selectedKey);
     await refreshContainerApp(app);
   }
 
@@ -376,7 +470,7 @@
     void discoverEnvironments(true);
     void refreshActive();
     void refreshLatestHistory(true);
-    void refreshContainerApp(CONTAINER_APPS[0]);
+    void loadContainerApps();
     const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
     return () => {
       window.clearInterval(historyPoll);
@@ -501,13 +595,13 @@
     activeError = reset.activeError;
     hasUnseenMessages = reset.hasUnseenMessages;
     containerAppStatuses = reset.containerAppStatuses;
-    selectedContainerAppId = reset.selectedContainerAppId;
     containerAppError = '';
     activeHeaderTab = 'log';
     focusedHeaderTab = 'log';
     busyContainerAppId = reset.busyContainerAppId;
     conversationPinned = true;
     page = 'workspace';
+    closeMentionCompletion();
   }
 
   async function switchEnvironment(mcpUrl: string): Promise<void> {
@@ -522,7 +616,7 @@
       applyEnvironmentState(state);
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
-      await Promise.all(CONTAINER_APPS.map(refreshContainerApp));
+      await loadContainerApps();
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -562,6 +656,7 @@
     if (!message || busy || pendingConfirmation) return;
     const context = currentChatContext;
     input = '';
+    closeMentionCompletion();
     writeComposerDraft(localStorage, selectedEnvironment?.id, '');
     await submitChat(message, context);
   }
@@ -1094,7 +1189,7 @@
                 title={document.title}
                 onclick={() => selectDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : 'file'}"></span>
+                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'container-app' ? 'server-environment' : 'file'}"></span>
                 <span>{document.title}</span>
               </button>
               <button class="document-tab-close" title={`Close ${document.title}`} aria-label={`Close ${document.title}`} onclick={() => closeDocument(key)}>
@@ -1130,7 +1225,14 @@
           <div class="document-toolbar">
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
-        {#if activeDocument?.kind === 'workstream'}
+        {#if activeDocument?.kind === 'container-app' && selectedContainerApp}
+          <ContainerAppDetail
+            app={selectedContainerApp}
+            status={containerAppStatuses[selectedContainerApp.id]}
+            busy={busyContainerAppId === selectedContainerApp.id}
+            onAction={(action) => void runContainerAppAction(selectedContainerApp!, action)}
+          />
+        {:else if activeDocument?.kind === 'workstream'}
           <WorkstreamView
             ws={activeDocument}
             {saveState}
@@ -1199,16 +1301,58 @@
         {:else}
           <div class="composer-context composer-context-empty">No document selected</div>
         {/if}
-        <form class="composer" onsubmit={(event) => { event.preventDefault(); void send(); }}>
+        <form bind:this={composerElement} class="composer" onsubmit={(event) => { event.preventDefault(); closeMentionCompletion(); void send(); }}>
+          <span id="mention-instructions" class="sr-only">Type at sign followed by a Container App name. Use up and down arrows to navigate, Enter or Tab to select, and Escape to dismiss.</span>
+          {#if mentionOpen}
+            <div class="mention-popup" id="container-app-mentions" role="listbox" aria-label="Container Apps">
+              {#if mentionApps.length}
+                {#each mentionApps as app, index (app.id)}
+                  <button
+                    type="button"
+                    id={`container-app-mention-${app.id}`}
+                    class="mention-option"
+                    class:active={index === mentionActiveIndex}
+                    role="option"
+                    aria-selected={index === mentionActiveIndex}
+                    tabindex="-1"
+                    onmousedown={(event) => event.preventDefault()}
+                    onclick={() => void selectMention(app)}
+                  >
+                    <span class="mention-option-label">
+                      <strong>{app.displayName}</strong>
+                      <code>@{app.id}</code>
+                    </span>
+                    <span class:mcp-ready={appAdvertisesMcp(app)} class="mention-mcp">
+                      {appAdvertisesMcp(app) ? 'MCP ready' : 'No MCP endpoint'}
+                    </span>
+                  </button>
+                {/each}
+              {:else}
+                <div class="mention-empty" role="status">No Container Apps match “{mentionToken?.query}”.</div>
+              {/if}
+            </div>
+          {/if}
           <textarea
+            bind:this={composerTextarea}
             value={input}
             rows="3"
             aria-label="Message"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={mentionOpen}
+            aria-controls={mentionOpen ? 'container-app-mentions' : undefined}
+            aria-activedescendant={mentionOpen && mentionApps.length ? `container-app-mention-${mentionApps[mentionActiveIndex]?.id}` : undefined}
+            aria-describedby="mention-instructions"
             placeholder="Write a command to interact with Working Memory"
-            oninput={(event) => updateComposerDraft(event.currentTarget.value)}
-            onkeydown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); }
-            }}></textarea>
+            oninput={handleComposerInput}
+            onclick={(event) => refreshMentionCompletion(event.currentTarget.value, event.currentTarget.selectionStart)}
+            onkeyup={(event) => {
+              if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+                refreshMentionCompletion(event.currentTarget.value, event.currentTarget.selectionStart);
+              }
+            }}
+            onblur={handleComposerBlur}
+            onkeydown={handleComposerKeydown}></textarea>
           <button class="send" disabled={busy || pendingConfirmation !== null || !input.trim()} title="Send" aria-label="Send">
             <span aria-hidden="true" class="codicon codicon-send"></span>
           </button>
@@ -1457,27 +1601,14 @@
         hidden={activeHeaderTab !== 'container-apps'}
         inert={activeHeaderTab !== 'container-apps'}
       >
-        <ContainerAppStrip
-          apps={CONTAINER_APPS}
+        <ContainerAppList
+          apps={containerApps}
           statuses={containerAppStatuses}
-          busyAppId={busyContainerAppId}
-          onOpenDetail={(app) => void openContainerAppDetail(app)}
-          onAction={(app, action) => void runContainerAppAction(app, action)}
+          selectedId={selectedContainerAppId}
+          onSelect={(app) => void openContainerAppDetail(app)}
         />
         {#if containerAppError}
           <p class="container-panel-error" role="alert">{containerAppError}</p>
-        {/if}
-        {#if selectedContainerApp}
-          <ContainerAppDetail
-            app={selectedContainerApp}
-            status={containerAppStatuses[selectedContainerApp.id]}
-            busy={busyContainerAppId === selectedContainerApp.id}
-            onAction={(action) => void runContainerAppAction(selectedContainerApp!, action)}
-          />
-        {:else}
-          <div class="container-app-empty">
-            <p>Select a container app to inspect and manage it.</p>
-          </div>
         {/if}
       </div>
     {/if}

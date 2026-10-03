@@ -4,9 +4,11 @@ import { resolve } from 'node:path';
 import type {
   ContainerClaim,
   ContainerClaimCreateInput,
+  ContainerClaimUpdateInput,
   DockerRuntimeSpec,
 } from '../../../src/controlPlaneClient';
 import type { ContainerAppStatus, ContainerStopResult } from '../shared/contracts';
+import type { ContainerAppRegistration } from './containerAppRegistry';
 
 export const MANAGED_LABEL = 'com.kubarycz.working-memory.managed';
 export const CLAIM_LABEL = 'com.kubarycz.working-memory.claim';
@@ -28,12 +30,7 @@ export interface CommandRunOptions {
 export interface ClaimClient {
   containerClaimRead(input: { slug: string }): Promise<ContainerClaim[]>;
   containerClaimCreate(input: ContainerClaimCreateInput): Promise<ContainerClaim>;
-  containerClaimUpdate(input: {
-    slug: string;
-    title?: string;
-    repository?: string;
-    runtime?: DockerRuntimeSpec;
-  }): Promise<ContainerClaim>;
+  containerClaimUpdate(input: ContainerClaimUpdateInput): Promise<ContainerClaim>;
 }
 
 export type ContainerLaunchResult =
@@ -71,7 +68,7 @@ export interface DockerOperationTimeouts {
   remove: number;
 }
 
-export interface ClarinetHeroSourceOptions {
+export interface ContainerAppSourceOptions {
   configuredPath?: string;
   cwd?: string;
   searchRoots?: string[];
@@ -96,6 +93,7 @@ interface DockerInspect {
   HostConfig?: {
     PortBindings?: Record<string, Array<{ HostIp?: string; HostPort?: string }> | null>;
   };
+  Mounts?: Array<{ Type?: string; Name?: string; Destination?: string }>;
 }
 
 export class CommandExecutionError extends Error {
@@ -170,7 +168,7 @@ export class DockerContainerService {
         ? await this.updateClaimIfNeeded(claimClient, existing, desired)
         : await claimClient.containerClaimCreate(desired);
     } catch (error) {
-      return failure('claim_error', 'Unable to ensure the Clarinet Hero ContainerClaim.', error);
+      return failure('claim_error', `Unable to ensure the ${desired.title} ContainerClaim.`, error);
     }
 
     if (!claim.runtime || claim.runtime.type !== 'docker') {
@@ -351,12 +349,16 @@ export class DockerContainerService {
       existing.title === desired.title
       && existing.repository === desired.repository
       && JSON.stringify(existing.runtime) === JSON.stringify(desired.runtime)
+      && JSON.stringify(existing.mcp) === JSON.stringify(desired.mcp)
+      && JSON.stringify(existing.application) === JSON.stringify(desired.application)
     ) return existing;
     return client.containerClaimUpdate({
       slug: desired.slug,
       title: desired.title,
       repository: desired.repository,
       runtime: desired.runtime,
+      mcp: desired.mcp ?? null,
+      application: desired.application ?? null,
     });
   }
 
@@ -366,10 +368,15 @@ export class DockerContainerService {
     slug: string,
     signal?: AbortSignal,
   ): Promise<void> {
+    validateVolumes(runtime.volumes);
+    const volumeArgs = (runtime.volumes ?? []).flatMap((volume) => [
+      '--mount', `type=volume,source=${volume.name},destination=${volume.mountPath}`,
+    ]);
     await this.docker(context, [
       'container', 'run', '--detach', '--name', runtime.containerName,
       '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=${slug}`,
       '--publish', `127.0.0.1:${runtime.hostPort}:${runtime.containerPort}`,
+      ...volumeArgs,
       runtime.imageName,
     ], this.timeouts.start, signal);
   }
@@ -426,29 +433,24 @@ export class DockerContainerService {
   }
 }
 
-export function resolveClarinetHeroClaim(
+export function resolveContainerAppClaim(
+  app: ContainerAppRegistration,
   existing?: ContainerClaim,
-  options: ClarinetHeroSourceOptions = {},
+  options: ContainerAppSourceOptions = {},
 ): ContainerClaimCreateInput {
   const pathKind = options.pathKind ?? defaultPathKind;
-  if (existing && validClarinetHeroSource(existing.repository, existing.runtime, pathKind)) {
-    return {
-      slug: existing.slug,
-      title: existing.title,
-      repository: existing.repository,
-      runtime: existing.runtime!,
-    };
-  }
-
   const cwd = options.cwd ?? process.cwd();
-  const configured = options.configuredPath ?? process.env.CLARINET_HERO_SOURCE;
+  const configured = options.configuredPath ?? process.env[app.sourceEnvironmentVariable];
   const candidates = unique([
     ...(configured ? [configured] : []),
+    ...(existing && validContainerAppSource(existing.repository, existing.runtime, pathKind)
+      ? [existing.repository]
+      : []),
     ...(options.searchRoots ?? []),
-    resolve(cwd, 'ClarinetHero'),
-    resolve(cwd, 'projects', 'ClarinetHero'),
-    resolve(cwd, '..', 'ClarinetHero'),
-    resolve(cwd, '..', '..', 'ClarinetHero'),
+    resolve(cwd, app.projectDirectory),
+    resolve(cwd, 'projects', app.projectDirectory),
+    resolve(cwd, '..', app.projectDirectory),
+    resolve(cwd, '..', '..', app.projectDirectory),
   ]).map((candidate) => resolve(candidate));
   const repository = candidates.find((candidate) => (
     pathKind(candidate) === 'directory'
@@ -457,24 +459,21 @@ export function resolveClarinetHeroClaim(
   ));
   if (!repository) {
     throw new Error(
-      `Clarinet Hero source was not found. Set CLARINET_HERO_SOURCE to a checkout containing Dockerfile and package.json. Checked: ${candidates.join(', ')}.`,
+      `${app.displayName} source was not found. Set ${app.sourceEnvironmentVariable} to a checkout containing Dockerfile and package.json. Checked: ${candidates.join(', ')}.`,
     );
   }
+
   return {
-    slug: 'clarinet-hero',
-    title: 'Clarinet Hero',
+    slug: app.id,
+    title: app.claimTitle,
     repository,
     runtime: {
-      type: 'docker',
       buildContext: repository,
       dockerfile: resolve(repository, 'Dockerfile'),
-      imageName: 'clarinet-hero:local',
-      containerName: 'working-memory-clarinet-hero',
-      hostPort: 4173,
-      containerPort: 80,
-      healthPath: '/',
-      entryPath: '/',
+      ...app.runtime,
     },
+    ...(app.mcp ? { mcp: app.mcp } : {}),
+    ...(app.application ? { application: app.application } : {}),
   };
 }
 
@@ -490,7 +489,8 @@ function containerMatches(
     && inspect.Config?.Labels?.[MANAGED_LABEL] === 'true'
     && inspect.Config?.Labels?.[CLAIM_LABEL] === slug
     && binding?.HostIp === '127.0.0.1'
-    && binding.HostPort === String(runtime.hostPort);
+    && binding.HostPort === String(runtime.hostPort)
+    && volumesMatch(inspect, runtime);
 }
 
 function containerOwnedByClaim(inspect: DockerInspect, slug: string, runtime: DockerRuntimeSpec): boolean {
@@ -499,7 +499,8 @@ function containerOwnedByClaim(inspect: DockerInspect, slug: string, runtime: Do
     && inspect.Config?.Labels?.[MANAGED_LABEL] === 'true'
     && inspect.Config?.Labels?.[CLAIM_LABEL] === slug
     && binding?.HostIp === '127.0.0.1'
-    && binding.HostPort === String(runtime.hostPort);
+    && binding.HostPort === String(runtime.hostPort)
+    && volumesMatch(inspect, runtime);
 }
 
 function appHealthUrl(runtime: DockerRuntimeSpec): string {
@@ -533,6 +534,8 @@ function appStatus(
     ready,
     lastAction,
     error,
+    ...(desired.mcp ? { mcp: desired.mcp } : {}),
+    ...(desired.application ? { application: desired.application } : {}),
   };
 }
 
@@ -598,7 +601,7 @@ function defaultPathKind(path: string): 'file' | 'directory' | null {
   return null;
 }
 
-function validClarinetHeroSource(
+function validContainerAppSource(
   repository: string,
   runtime: DockerRuntimeSpec | undefined,
   pathKind: (path: string) => 'file' | 'directory' | null,
@@ -611,4 +614,24 @@ function validClarinetHeroSource(
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function validateVolumes(volumes: DockerRuntimeSpec['volumes']): void {
+  for (const volume of volumes ?? []) {
+    if (!/^[a-z0-9][a-z0-9_.-]{0,127}$/.test(volume.name)) {
+      throw new Error(`Unsafe Docker volume name: "${volume.name}".`);
+    }
+    if (!/^\/(?:[^/]+\/)*[^/]+$/.test(volume.mountPath) || volume.mountPath.includes('..')) {
+      throw new Error(`Unsafe Docker volume mount path: "${volume.mountPath}".`);
+    }
+  }
+}
+
+function volumesMatch(inspect: DockerInspect, runtime: DockerRuntimeSpec): boolean {
+  validateVolumes(runtime.volumes);
+  return (runtime.volumes ?? []).every((expected) =>
+    inspect.Mounts?.some((mount) =>
+      mount.Type === 'volume'
+      && mount.Name === expected.name
+      && mount.Destination === expected.mountPath));
 }

@@ -1,5 +1,9 @@
 .vscode/**
 .vscode-test/**
+.cache/**
+.github/**
+.tools/**
+.venv/**
 src/**
 webview-ui/**
 scripts/**
@@ -16,6 +20,9 @@ desktop-ui/tests/**
 desktop-ui/electron.vite.config.ts
 desktop-ui/tsconfig.json
 desktop-ui/package-lock.json
+mockups/**
+templates/**
+package-lock 2.json
 .gitignore
 .eslintrc*
 tsconfig.json

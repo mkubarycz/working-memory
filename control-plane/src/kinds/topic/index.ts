@@ -37,6 +37,7 @@ import { registerWsTopicRead } from './read.js';
 import { registerWsTopicUpdate } from './update.js';
 import { registerWsTopicDelete } from './delete.js';
 import { registerWsTopicTransfer } from './transfer.js';
+import { registerWsTopicCloseTree } from './closeTree.js';
 
 // Re-export the POCO interface + status type so type consumers can import them
 // from the kind entry point (mirrors the Workstream/TopicType kinds).
@@ -109,6 +110,7 @@ function registerTopicApi(server: McpServer, store: Store): void {
   registerWsTopicUpdate(server, store);
   registerWsTopicDelete(server, store);
   registerWsTopicTransfer(server, store);
+  registerWsTopicCloseTree(server, store);
 }
 
 export default topic;

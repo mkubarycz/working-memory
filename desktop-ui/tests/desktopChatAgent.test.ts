@@ -111,6 +111,32 @@ describe('DesktopChatAgent', () => {
     expect(instructions).toContain('Use this exact kind and identifier in tool calls');
   });
 
+  it('injects mentioned-app instructions and tools into only that model request', async () => {
+    const callModel = vi.fn(async () => ({ id: 'resp_app', output_text: 'Ready.' }));
+    const agent = new DesktopChatAgent(options(callModel));
+
+    await agent.start({
+      mode: 'responses',
+      url: 'https://example.test',
+      model: 'test',
+      message: '@tasks add one',
+      headers: {},
+      appTools: {
+        tools: [{
+          name: 'app__tasks__app-contract-get',
+          description: 'Get live contract.',
+          inputSchema: { type: 'object', properties: {} },
+        }],
+        callTool: vi.fn(),
+        systemInstructions: 'Ask @tasks for its live contract first, then plan resource relationships.',
+      },
+    });
+
+    const body = callModel.mock.calls[0][0].body;
+    expect(body.instructions).toContain('live contract first');
+    expect(JSON.stringify(body.tools)).toContain('app__tasks__app-contract-get');
+  });
+
   it('dispatches multiple read/create calls and continues to a final response', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ id: 'chatcmpl_1', usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 }, choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [

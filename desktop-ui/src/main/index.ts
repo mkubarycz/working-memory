@@ -1,21 +1,18 @@
 import { app, BrowserWindow, ipcMain, safeStorage, screen, shell } from 'electron';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ControlPlaneClient } from '../../../src/controlPlaneClient';
 import type {
   ChatContext,
   ChatResult,
-  ContainerAppId,
-  ContainerAppStatus,
   DesktopEnvironmentState,
   DesktopResourceKind,
-  PublicConfig,
   SaveConfigInput,
 } from '../shared/contracts';
-import type { CommandJournalHistoryInput, ContainerClaim } from '../../../src/controlPlaneClient';
+import type { CommandJournalHistoryInput } from '../../../src/controlPlaneClient';
+import type { ContainerClaim, ToolCallOutcome } from '../../../src/controlPlaneClient';
 import type { DocumentVM, TopicPatch } from '../../../webview-ui/src/lib/types';
 import {
-  CredentialManager,
   modelAuthHeaders,
   modelEndpoint,
   publicConfig,
@@ -35,12 +32,22 @@ import {
   writePersistedEnvironment,
 } from './environments';
 import { parseModelTurn } from './modelTools';
-import { createGracefulShutdown } from './gracefulShutdown';
+import { AppMcpService, parseAppResourceContract } from './appMcpService';
+import {
+  appMentionSystemInstructions,
+  resolveMentionedAppTools,
+} from './appToolRouting';
+import {
+  containerAppDefinitions,
+  containerAppRegistration,
+  isContainerAppId,
+  type ContainerAppRegistration,
+} from './containerAppRegistry';
 import {
   DockerContainerService,
-  resolveClarinetHeroClaim,
-  type ContainerLaunchResult,
+  resolveContainerAppClaim,
 } from './dockerContainerService';
+import { createGracefulShutdown } from './gracefulShutdown';
 import {
   readWindowBounds,
   resolveWindowBounds,
@@ -67,11 +74,10 @@ let windowStateFile = '';
 let mainWindow: BrowserWindow | null = null;
 let mainWindowCreation: Promise<BrowserWindow> | null = null;
 let windowStateSaveTimer: ReturnType<typeof setTimeout> | undefined;
-const dockerContainerService = new DockerContainerService();
-let containerEnvironmentGeneration = 0;
+const dockerContainers = new DockerContainerService();
+const appMcp = new AppMcpService();
 const containerOperations = new Set<AbortController>();
-const containerLaunches = new Map<string, Promise<ContainerLaunchResult>>();
-const SUPPORTED_CONTAINER_APP_IDS = new Set<ContainerAppId>(['clarinet-hero']);
+let containerEnvironmentGeneration = 0;
 
 const environmentManager = new DesktopEnvironmentManager<ControlPlaneClient>({
   createClient: (mcpUrl) => new ControlPlaneClient({ resolveUrl: () => mcpUrl }),
@@ -81,69 +87,6 @@ const environmentManager = new DesktopEnvironmentManager<ControlPlaneClient>({
 
 function controlPlane(): ControlPlaneClient {
   return environmentManager.currentClient;
-}
-
-interface ContainerOperationScope {
-  client: ControlPlaneClient;
-  generation: number;
-  controller: AbortController;
-}
-
-function requireContainerAppId(id: string): ContainerAppId {
-  if (!SUPPORTED_CONTAINER_APP_IDS.has(id as ContainerAppId)) {
-    throw new Error(`Unsupported container app: ${id}`);
-  }
-  return id as ContainerAppId;
-}
-
-function beginContainerOperation(): ContainerOperationScope {
-  const controller = new AbortController();
-  containerOperations.add(controller);
-  return { client: controlPlane(), generation: containerEnvironmentGeneration, controller };
-}
-
-function finishContainerOperation(scope: ContainerOperationScope): void {
-  containerOperations.delete(scope.controller);
-}
-
-function assertCurrentContainerEnvironment(scope: ContainerOperationScope): void {
-  if (scope.generation !== containerEnvironmentGeneration || scope.client !== controlPlane()) {
-    throw new Error('Container operation cancelled because the control-plane environment changed.');
-  }
-}
-
-async function ensureClarinetHero(scope: ContainerOperationScope): Promise<ContainerLaunchResult> {
-  const desired = await clarinetHeroClaim(scope.client);
-  assertCurrentContainerEnvironment(scope);
-  if ('code' in desired) return desired;
-  const result = await dockerContainerService.ensure(scope.client, desired, scope.controller.signal);
-  assertCurrentContainerEnvironment(scope);
-  return result;
-}
-
-async function clarinetHeroClaim(client: ControlPlaneClient): Promise<ReturnType<typeof resolveClarinetHeroClaim> | Extract<ContainerLaunchResult, { status: 'error' }>> {
-  let existing: ContainerClaim | undefined;
-  try {
-    [existing] = await client.containerClaimRead({ slug: 'clarinet-hero' });
-  } catch (error) {
-    return {
-      status: 'error',
-      code: 'claim_error',
-      message: `Unable to read the Clarinet Hero ContainerClaim. ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-  try {
-    const claim = resolveClarinetHeroClaim(existing, {
-      searchRoots: [resolve(app.getAppPath(), '..', '..', 'ClarinetHero')],
-    });
-    return claim;
-  } catch (error) {
-    return {
-      status: 'error',
-      code: 'source_not_found',
-      message: error instanceof Error ? error.message : String(error),
-    };
-  }
 }
 
 function environmentState(environments = [] as DesktopEnvironmentState['environments']): DesktopEnvironmentState {
@@ -174,22 +117,21 @@ const chatAgent = new DesktopChatAgent({
 });
 
 const gracefulShutdown = createGracefulShutdown({
-  resetAgent: () => chatAgent.reset(),
+  resetAgent: async () => {
+    await chatAgent.reset();
+    await appMcp.disconnectAll();
+  },
   disposeEnvironment: () => environmentManager.dispose(),
   quit: () => app.quit(),
   onError: (error) => console.error('[desktop] graceful shutdown failed:', error),
 });
 
-const credentialManager = new CredentialManager(safeStorage, (message) => {
-  console.warn(`[desktop] ${message}`);
-});
-
-function desktopPublicConfig(config: StoredConfig): PublicConfig {
-  return {
-    ...publicConfig(config),
-    hasApiKey: credentialManager.hasApiKey(config),
-    credentialStorage: credentialManager.mode(),
-  };
+function decryptApiKey(config: StoredConfig): string {
+  if (!config.encryptedApiKey) return '';
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure credential storage is unavailable on this system');
+  }
+  return safeStorage.decryptString(Buffer.from(config.encryptedApiKey, 'base64'));
 }
 
 async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
@@ -199,9 +141,14 @@ async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
     model: input.model,
     ...(current.encryptedApiKey ? { encryptedApiKey: current.encryptedApiKey } : {}),
   };
-  const stored = credentialManager.store(next, input.apiKey);
-  await writeStoredConfig(configFile, stored);
-  return stored;
+  if (input.apiKey?.trim()) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('Secure credential storage is unavailable on this system');
+    }
+    next.encryptedApiKey = safeStorage.encryptString(input.apiKey.trim()).toString('base64');
+  }
+  await writeStoredConfig(configFile, next);
+  return next;
 }
 
 async function openWorkstream(query: string): Promise<ChatResult> {
@@ -291,7 +238,7 @@ function configuredRequest(config: StoredConfig): { mode: ReturnType<typeof mode
     ...endpoint,
     headers: {
       'content-type': 'application/json',
-      ...modelAuthHeaders(endpoint.url, credentialManager.read(config)),
+      ...modelAuthHeaders(endpoint.url, decryptApiKey(config)),
     },
   };
 }
@@ -321,7 +268,91 @@ async function presentAgentResult(result: DesktopAgentResult, context?: ChatCont
 
 async function callConfiguredModel(message: string, config: StoredConfig, context?: ChatContext): Promise<ChatResult> {
   const request = configuredRequest(config);
-  return presentAgentResult(await chatAgent.start({ ...request, model: config.model, message, context }), context);
+  const mentioned = await resolveMentionedAppTools(message, containerAppDefinitions(), {
+    readClaim: currentClaim,
+    inspect: (claim) => dockerContainers.inspect(claim),
+    connect: async (appId, endpoint) => { await appMcp.connect(appId, endpoint); },
+    listTools: (appId, endpoint) => appMcp.listToolsForRoute(appId, endpoint),
+  }, context?.containerAppId ? [context.containerAppId] : []);
+  const appTools = mentioned.tools.length ? {
+    tools: mentioned.tools,
+    systemInstructions: appMentionSystemInstructions(mentioned.contexts),
+    requiresConfirmation: (name: string) =>
+      mentioned.routes.get(name)?.annotations?.readOnlyHint !== true,
+    callTool: async (name: string, args: Record<string, unknown>): Promise<ToolCallOutcome> => {
+      const route = mentioned.routes.get(name);
+      if (!route) return { ok: false, error: `Unknown application tool route: ${name}` };
+      try {
+        return {
+          ok: true,
+          result: await appMcp.callTool(route.appId, route.originalToolName, args, route),
+        };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  } : undefined;
+  return presentAgentResult(await chatAgent.start({
+    ...request,
+    model: config.model,
+    message,
+    context,
+    ...(appTools ? { appTools } : {}),
+  }), context);
+}
+
+function requireContainerAppId(rawId: string): string {
+  if (!isContainerAppId(rawId)) throw new Error(`Unsupported container app: ${rawId}`);
+  return rawId;
+}
+
+function beginContainerOperation(): { client: ControlPlaneClient; signal: AbortSignal; end: () => void } {
+  const controller = new AbortController();
+  const generation = containerEnvironmentGeneration;
+  containerOperations.add(controller);
+  return {
+    client: controlPlane(),
+    signal: controller.signal,
+    end: () => {
+      containerOperations.delete(controller);
+      if (generation !== containerEnvironmentGeneration) controller.abort();
+    },
+  };
+}
+
+async function containerAppClaim(
+  client: ControlPlaneClient,
+  registration: ContainerAppRegistration,
+): Promise<ReturnType<typeof resolveContainerAppClaim>> {
+  const [existing] = await client.containerClaimRead({ slug: registration.id });
+  return resolveContainerAppClaim(registration, existing);
+}
+
+async function currentClaim(id: string): Promise<ContainerClaim | undefined> {
+  const [claim] = await controlPlane().containerClaimRead({ slug: id });
+  if (!claim) return undefined;
+  const desired = resolveContainerAppClaim(containerAppRegistration(id), claim);
+  return {
+    ...claim,
+    ...desired,
+    mcp: desired.mcp,
+    application: desired.application,
+  };
+}
+
+async function liveClaim(id: string): Promise<ContainerClaim> {
+  const claim = await currentClaim(id);
+  if (!claim) throw new Error(`Container App @${id} has no ContainerClaim. Run it first.`);
+  return claim;
+}
+
+async function ensureConnectedClaim(id: string): Promise<ContainerClaim> {
+  const claim = await liveClaim(id);
+  if (!claim.mcp) throw new Error(`Container App @${id} does not advertise MCP.`);
+  const status = await dockerContainers.inspect(claim);
+  if (!status.ready) throw new Error(`Container App @${id} is not healthy (state: ${status.state}).`);
+  await appMcp.connect(id, claim.mcp);
+  return claim;
 }
 
 async function testConfiguredModel(config: StoredConfig): Promise<string> {
@@ -338,14 +369,14 @@ function registerIpc(): void {
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
     containerEnvironmentGeneration += 1;
     for (const operation of containerOperations) operation.abort();
-    containerLaunches.clear();
+    await appMcp.disconnectAll();
     await environmentManager.switchTo(mcpUrl, () => chatAgent.reset());
     return environmentState(environmentManager.availableEnvironments);
   });
   ipcMain.handle('active:get', () => loadActivePanelData(controlPlane()));
   ipcMain.handle('active:reorder', (_event, updates) => persistWorkstreamReorder(controlPlane(), updates));
-  ipcMain.handle('config:get', async () => desktopPublicConfig(await readStoredConfig(configFile)));
-  ipcMain.handle('config:save', async (_event, input: SaveConfigInput) => desktopPublicConfig(await saveConfig(input)));
+  ipcMain.handle('config:get', async () => publicConfig(await readStoredConfig(configFile)));
+  ipcMain.handle('config:save', async (_event, input: SaveConfigInput) => publicConfig(await saveConfig(input)));
   ipcMain.handle('config:test', async (_event, input: SaveConfigInput) => {
     try {
       const config = await saveConfig(input);
@@ -420,102 +451,114 @@ function registerIpc(): void {
     return loadResource(context.kind, context.identifier);
   });
   ipcMain.handle('action:invoke', (_event, workstream, command, args) => invokeAction(workstream, command, args));
+  ipcMain.handle('container:list', () => containerAppDefinitions());
   ipcMain.handle('container:run', async (_event, rawId: string) => {
-    const id = requireContainerAppId(rawId);
-    const scope = beginContainerOperation();
-    const key = `${scope.generation}:${id}`;
-    let launch = containerLaunches.get(key);
-    if (!launch) {
-      launch = ensureClarinetHero(scope).finally(() => {
-        containerLaunches.delete(key);
-        finishContainerOperation(scope);
-      });
-      containerLaunches.set(key, launch);
-    } else {
-      finishContainerOperation(scope);
-    }
-    return launch;
-  });
-  ipcMain.handle('container:inspect', async (_event, rawId: string): Promise<ContainerAppStatus> => {
-    requireContainerAppId(rawId);
+    const registration = containerAppRegistration(requireContainerAppId(rawId));
     const scope = beginContainerOperation();
     try {
-      const desired = await clarinetHeroClaim(scope.client);
-      assertCurrentContainerEnvironment(scope);
-      if ('code' in desired) return failedAppStatus(desired.message);
-      const status = await dockerContainerService.inspect(desired, scope.controller.signal);
-      assertCurrentContainerEnvironment(scope);
-      return status;
+      return await dockerContainers.ensure(
+        scope.client,
+        await containerAppClaim(scope.client, registration),
+        scope.signal,
+      );
     } finally {
-      finishContainerOperation(scope);
+      scope.end();
+    }
+  });
+  ipcMain.handle('container:inspect', async (_event, rawId: string) => {
+    const registration = containerAppRegistration(requireContainerAppId(rawId));
+    const scope = beginContainerOperation();
+    try {
+      return await dockerContainers.inspect(
+        await containerAppClaim(scope.client, registration),
+        scope.signal,
+      );
+    } finally {
+      scope.end();
     }
   });
   ipcMain.handle('container:stop', async (_event, rawId: string) => {
-    requireContainerAppId(rawId);
+    const id = requireContainerAppId(rawId);
+    const registration = containerAppRegistration(id);
     const scope = beginContainerOperation();
     try {
-      const desired = await clarinetHeroClaim(scope.client);
-      assertCurrentContainerEnvironment(scope);
-      if ('code' in desired) return { status: 'error', message: desired.message, detail: failedAppStatus(desired.message) };
-      const result = await dockerContainerService.stop(desired, scope.controller.signal);
-      assertCurrentContainerEnvironment(scope);
+      const result = await dockerContainers.stop(
+        await containerAppClaim(scope.client, registration),
+        scope.signal,
+      );
+      await appMcp.disconnect(id).catch(() => undefined);
       return result;
     } finally {
-      finishContainerOperation(scope);
+      scope.end();
     }
   });
-  ipcMain.handle('container:open', async (_event, rawId: string): Promise<ContainerAppStatus> => {
-    requireContainerAppId(rawId);
+  ipcMain.handle('container:open', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    const registration = containerAppRegistration(id);
     const scope = beginContainerOperation();
     try {
-      const desired = await clarinetHeroClaim(scope.client);
-      assertCurrentContainerEnvironment(scope);
-      if ('code' in desired) return failedAppStatus(desired.message);
-      const status = await dockerContainerService.inspect(desired, scope.controller.signal);
-      assertCurrentContainerEnvironment(scope);
-    if (!status.ready || status.state !== 'healthy') {
-      return { ...status, lastAction: 'Open refused', error: status.error ?? 'Claranet Hero must be running and healthy before it can be opened.' };
-    }
-    const url = new URL(status.url);
-    if (url.protocol !== 'http:' || url.hostname !== 'localhost' || url.port !== '4173') {
-      return { ...status, lastAction: 'Open refused', error: 'Refusing to open an unexpected container URL.' };
-    }
-    await shell.openExternal(url.toString());
-    return { ...status, lastAction: 'Opened app', error: null };
+      const status = await dockerContainers.inspect(
+        await containerAppClaim(scope.client, registration),
+        scope.signal,
+      );
+      if (!status.ready) throw new Error(`${registration.displayName} is not healthy.`);
+      const url = new URL(status.url);
+      if (url.protocol !== 'http:' || url.hostname !== 'localhost') {
+        throw new Error('Container app URLs must use localhost HTTP.');
+      }
+      await shell.openExternal(url.toString());
+      return status;
     } finally {
-      finishContainerOperation(scope);
+      scope.end();
     }
+  });
+  ipcMain.handle('app-mcp:status', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    const claim = await liveClaim(id).catch(() => undefined);
+    return appMcp.status(id, claim?.mcp);
+  });
+  ipcMain.handle('app-mcp:connect', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    const claim = await ensureConnectedClaim(id);
+    return appMcp.status(id, claim.mcp);
+  });
+  ipcMain.handle('app-mcp:disconnect', (_event, rawId: string) =>
+    appMcp.disconnect(requireContainerAppId(rawId)));
+  ipcMain.handle('app-mcp:list-tools', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    await ensureConnectedClaim(id);
+    return appMcp.listTools(id);
+  });
+  ipcMain.handle('app-mcp:call-tool', async (
+    _event,
+    rawId: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) => {
+    const id = requireContainerAppId(rawId);
+    await ensureConnectedClaim(id);
+    return appMcp.callTool(id, name, args);
+  });
+  ipcMain.handle('app-mcp:contract', async (_event, rawId: string) => {
+    const id = requireContainerAppId(rawId);
+    const claim = await ensureConnectedClaim(id);
+    if (!claim.application) throw new Error(`Container App @${id} has no application contract metadata.`);
+    const result = await appMcp.callTool(id, claim.application.discovery.toolName, {});
+    const contract = parseAppResourceContract(result);
+    if (contract.application.id !== claim.application.id) {
+      throw new Error(
+        `Application contract identity mismatch: expected "${claim.application.id}", received "${contract.application.id}".`,
+      );
+    }
+    return contract;
   });
   ipcMain.handle('external:open', async (_event, rawUrl: string) => {
     const url = new URL(rawUrl);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new Error('Only HTTP and HTTPS links can be opened externally.');
     }
-
     await shell.openExternal(url.toString());
   });
-}
-
-function failedAppStatus(message: string): ContainerAppStatus {
-  return {
-    id: 'clarinet-hero',
-    displayName: 'Claranet Hero',
-    claimTitle: 'Clarinet Hero',
-    claimSlug: 'clarinet-hero',
-    repository: '',
-    buildContext: '',
-    dockerfile: '',
-    image: 'clarinet-hero:local',
-    containerName: 'working-memory-clarinet-hero',
-    dockerContext: null,
-    state: 'error',
-    hostPort: 4173,
-    containerPort: 80,
-    url: 'http://localhost:4173/',
-    ready: false,
-    lastAction: 'Status failed',
-    error: message,
-  };
 }
 
 function currentWindowBounds(window: BrowserWindow) {

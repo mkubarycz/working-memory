@@ -22,7 +22,11 @@ Terminal completion records the final assistant text, stop reason, aggregate usa
 
 ## Scope and entity references
 
-`primaryScope` identifies the context in which the request was submitted with `kind`, `id`, and optional `slug` and `title`. `entityRefs` use the same identity fields plus `relation: referenced | mutated`. Append and finalize merge references by `(kind, id, relation)` and enrich an existing reference with later snapshot fields.
+`primaryScope` identifies the context in which the request was submitted with `kind`, `id`, and optional `slug` and `title`. `entityRefs` use the same identity fields plus `relation: referenced | mutated`. The supplemental index is capped at 500 entries and merges by `(kind, id)`; a later `mutated` relation promotes an existing `referenced` entry in place. The desktop client deduplicates candidates against the current journal and sends only new references that fit the remaining capacity (plus in-place promotions). If candidates overflow, it records one bounded system `model_turn` noting that additional references remain available in the canonical tool call/result events. Tool events/results are never discarded merely because this index is full.
+
+Bulk operations such as `ws-topic-close-tree` return one root object and plain slug arrays, so a single tree operation does not manufacture hundreds of entity-reference objects.
+
+The append API accepts at most 1,000 events per call and a journal stores at most 1,000 events total. The desktop client preflights that bound and fails clearly rather than submitting an invalid append.
 
 ## History and detail rendering
 

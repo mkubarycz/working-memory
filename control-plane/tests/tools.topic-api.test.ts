@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { startServer } from '../src/server';
 import { openStore, type Store } from '../src/store';
-import { clearKinds } from '../src/kinds/registry';
+import { clearKinds, validateSpec } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -97,8 +97,217 @@ async function connect(store: Store): Promise<{
           'ws-topic-update',
           'ws-topic-delete',
           'ws-topic-transfer',
+          'ws-topic-close-tree',
         ]),
       );
+      const closeTree = (await client.listTools()).tools.find((tool) => tool.name === 'ws-topic-close-tree');
+      expect(closeTree?.description).toContain('instead of many ws-topic-update calls');
+      expect(closeTree?.inputSchema).toMatchObject({
+        required: ['slug'],
+        properties: {
+          includeSharedDescendants: { type: 'boolean', default: false },
+          dryRun: { type: 'boolean', default: false },
+        },
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it('closes a deterministic tree, reports no-ops, and supports exact dry runs', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({ name: 'ws-workstream-create', arguments: { slug: 'tree-work', title: 'Tree' } });
+      const create = (slug: string, parents: string[] = [], status = 'open') => client.callTool({
+        name: 'ws-topic-create', arguments: { slug, title: slug, parents, status, workstreams: ['tree-work'] },
+      });
+      await create('solo');
+      await create('root');
+      await create('z-child', ['root']);
+      await create('a-child', ['root'], 'closed');
+      await create('grandchild', ['a-child']);
+
+      const solo = jsonOf<any>(await client.callTool({
+        name: 'ws-topic-close-tree', arguments: { slug: 'solo' },
+      }));
+      expect(solo).toMatchObject({ matchedCount: 1, closedCount: 1, alreadyClosedCount: 0, matchedSlugs: ['solo'] });
+
+      const dryRun = jsonOf<any>(await client.callTool({
+        name: 'ws-topic-close-tree', arguments: { slug: 'root', dryRun: true },
+      }));
+      expect(dryRun).toMatchObject({
+        dryRun: true,
+        matchedSlugs: ['root', 'a-child', 'z-child', 'grandchild'],
+        closedSlugs: ['root', 'z-child', 'grandchild'],
+        alreadyClosedSlugs: ['a-child'],
+      });
+      const before = jsonOf<TopicList>(await client.callTool({
+        name: 'ws-topic-read', arguments: { slug: 'root' },
+      })).topics[0];
+      expect(before.status).toBe('open');
+
+      const closed = jsonOf<any>(await client.callTool({
+        name: 'ws-topic-close-tree', arguments: { slug: 'root' },
+      }));
+      expect(closed).toMatchObject({ matchedCount: 4, closedCount: 3, alreadyClosedCount: 1 });
+      const repeated = jsonOf<any>(await client.callTool({
+        name: 'ws-topic-close-tree', arguments: { slug: 'root' },
+      }));
+      expect(repeated).toMatchObject({ matchedCount: 4, closedCount: 0, alreadyClosedCount: 4 });
+
+      const missing = await client.callTool({
+        name: 'ws-topic-close-tree', arguments: { slug: 'missing' },
+      });
+      expect(isErrorResult(missing)).toBe(true);
+      expect(textOf(missing)).toContain('Unknown topic slug');
+    } finally {
+      await close();
+    }
+  });
+
+  it('skips shared descendants to a fixed point unless explicitly included', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({ name: 'ws-workstream-create', arguments: { slug: 'shared-work', title: 'Shared' } });
+      const create = (slug: string, parents: string[] = []) => client.callTool({
+        name: 'ws-topic-create', arguments: { slug, title: slug, parents, workstreams: ['shared-work'] },
+      });
+      await create('root');
+      await create('outside');
+      await create('shared-child', ['root', 'outside']);
+      await create('below-shared', ['shared-child']);
+      await create('private-child', ['root']);
+
+      const safe = jsonOf<any>(await client.callTool({
+        name: 'ws-topic-close-tree', arguments: { slug: 'root' },
+      }));
+      expect(safe.matchedSlugs).toEqual(['root', 'private-child']);
+      expect(safe.skippedSharedSlugs).toEqual(['shared-child', 'below-shared']);
+
+      const forced = jsonOf<any>(await client.callTool({
+        name: 'ws-topic-close-tree', arguments: { slug: 'root', includeSharedDescendants: true },
+      }));
+      expect(forced.matchedSlugs).toEqual(['root', 'private-child', 'shared-child', 'below-shared']);
+      expect(forced.skippedSharedCount).toBe(0);
+      expect(forced.closedSlugs).toEqual(['shared-child', 'below-shared']);
+    } finally {
+      await close();
+    }
+  });
+
+  it('rejects cycles before writing', async () => {
+    const store = openStore(':memory:');
+    const { client, close } = await connect(store);
+    try {
+      await client.callTool({ name: 'ws-workstream-create', arguments: { slug: 'cycle-work', title: 'Cycle' } });
+      await client.callTool({ name: 'ws-topic-create', arguments: {
+        slug: 'root', title: 'root', parents: ['child'], workstreams: ['cycle-work'],
+      } });
+      await client.callTool({ name: 'ws-topic-create', arguments: {
+        slug: 'child', title: 'child', parents: ['root'], workstreams: ['cycle-work'],
+      } });
+      const result = await client.callTool({ name: 'ws-topic-close-tree', arguments: { slug: 'root' } });
+      expect(isErrorResult(result)).toBe(true);
+      expect(textOf(result)).toContain('cycle detected');
+      expect(store.getDocument({ slug: 'root', kind: 'Topic' })?.spec.status).toBe('open');
+      expect(store.getDocument({ slug: 'child', kind: 'Topic' })?.spec.status).toBe('open');
+    } finally {
+      await close();
+    }
+  });
+
+  it('atomically closes more than 500 descendants and rolls the batch back on conflict', async () => {
+    const base = openStore(':memory:');
+    base.createDocument({
+      kind: 'Workstream', slug: 'bulk-work',
+      spec: validateSpec('Workstream', { title: 'Bulk', status: 'progress' }),
+    });
+
+    for (let index = 0; index < 602; index += 1) {
+      const slug = index === 0 ? 'bulk-root' : `bulk-node-${String(index).padStart(4, '0')}`;
+      const parent = index === 0 ? [] : [index === 1 ? 'bulk-root' : `bulk-node-${String(index - 1).padStart(4, '0')}`];
+      base.createDocument({
+        kind: 'Topic', slug,
+        spec: validateSpec('Topic', { title: slug, parents: parent, workstreams: ['bulk-work'] }),
+      });
+    }
+    const originalUpdateDocuments = base.updateDocuments.bind(base);
+    let forceConflict = true;
+    const store = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property !== 'updateDocuments') return Reflect.get(target, property, receiver);
+        return (inputs: Parameters<Store['updateDocuments']>[0]) => {
+          if (forceConflict) {
+            forceConflict = false;
+            const last = base.getDocument({ slug: 'bulk-node-0601', kind: 'Topic' })!;
+            base.updateDocument({
+              id: last.metadata.id,
+              expectedResourceVersion: last.metadata.resourceVersion,
+              spec: { ...last.spec, body: 'concurrent edit' },
+            });
+          }
+          return originalUpdateDocuments(inputs);
+        };
+      },
+    }) as Store;
+    const { client, close } = await connect(store);
+    try {
+      const conflicted = await client.callTool({
+        name: 'ws-topic-close-tree', arguments: { slug: 'bulk-root' },
+      });
+      expect(isErrorResult(conflicted)).toBe(true);
+      expect(textOf(conflicted)).toContain('no topics were closed');
+      expect(base.listDocuments({ kind: 'Topic' }).every((document) => document.spec.status === 'open')).toBe(true);
+
+      const result = jsonOf<any>(await client.callTool({
+        name: 'ws-topic-close-tree', arguments: { slug: 'bulk-root' },
+      }));
+      expect(result).toMatchObject({ matchedCount: 602, closedCount: 602 });
+      expect(base.listDocuments({ kind: 'Topic' }).every((document) => document.spec.status === 'closed')).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
+  it('dry-runs a 5000-node linear tree iteratively and rejects 5001 before writing', async () => {
+    const store = openStore(':memory:');
+    store.createDocument({
+      kind: 'Workstream', slug: 'limit-work',
+      spec: validateSpec('Workstream', { title: 'Limit', status: 'progress' }),
+    });
+    for (let index = 0; index < 5_001; index += 1) {
+      const slug = `limit-node-${String(index).padStart(4, '0')}`;
+      store.createDocument({
+        kind: 'Topic',
+        slug,
+        spec: validateSpec('Topic', {
+          title: slug,
+          parents: index === 0 ? [] : [`limit-node-${String(index - 1).padStart(4, '0')}`],
+          workstreams: ['limit-work'],
+        }),
+      });
+    }
+    const { client, close } = await connect(store);
+    try {
+      const exactLimit = jsonOf<any>(await client.callTool({
+        name: 'ws-topic-close-tree',
+        arguments: { slug: 'limit-node-0001', dryRun: true },
+      }));
+      expect(exactLimit).toMatchObject({
+        dryRun: true,
+        matchedCount: 5_000,
+        closedCount: 5_000,
+      });
+      expect(exactLimit.matchedSlugs).toHaveLength(5_000);
+
+      const overLimit = await client.callTool({
+        name: 'ws-topic-close-tree',
+        arguments: { slug: 'limit-node-0000', dryRun: true },
+      });
+      expect(isErrorResult(overLimit)).toBe(true);
+      expect(textOf(overLimit)).toContain('contains 5001 topics');
+      expect(textOf(overLimit)).toContain('limit of 5000');
+      expect(store.listDocuments({ kind: 'Topic' }).every((document) => document.spec.status === 'open')).toBe(true);
     } finally {
       await close();
     }
@@ -639,4 +848,3 @@ async function connect(store: Store): Promise<{
     }
   });
 });
-

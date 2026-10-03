@@ -12,7 +12,7 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
       title: 'Container Claim: Update',
       description:
         'Update the authored intent of a live ContainerClaim by `slug`. Pass only `title`, ' +
-        '`repository`, `sourceRevision`, or `runtime`; the stable slug is not changed.',
+        '`repository`, `sourceRevision`, runtime, MCP, or application metadata; the stable slug is not changed.',
       inputSchema: {
         slug: z.string().describe('Slug of the live claim to update.'),
         title: z.string().optional().describe('Replacement human-readable title.'),
@@ -22,22 +22,9 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
           .nullable()
           .optional()
           .describe('Replacement source revision, or null to return to the repository default.'),
-        runtime: z
-          .object({
-            type: z.literal('docker'),
-            buildContext: z.string(),
-            dockerfile: z.string(),
-            imageName: z.string(),
-            containerName: z.string(),
-            hostPort: z.number().int(),
-            containerPort: z.number().int(),
-            healthPath: z.string(),
-            entryPath: z.string(),
-          })
-          .strict()
-          .nullable()
-          .optional()
-          .describe('Replacement Docker runtime intent, or null to remove it.'),
+        runtime: z.record(z.string(), z.unknown()).nullable().optional(),
+        mcp: z.record(z.string(), z.unknown()).nullable().optional(),
+        application: z.record(z.string(), z.unknown()).nullable().optional(),
       },
     },
     async ({ slug, ...input }) => {
@@ -54,11 +41,8 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
       let spec: Record<string, unknown>;
       try {
         const merged = { ...existing.spec, ...patch };
-        if (merged.sourceRevision === null) {
-          delete merged.sourceRevision;
-        }
-        if (merged.runtime === null) {
-          delete merged.runtime;
+        for (const optional of ['sourceRevision', 'runtime', 'mcp', 'application']) {
+          if (merged[optional] === null) delete merged[optional];
         }
         spec = validateSpec(CONTAINER_CLAIM_KIND, merged);
       } catch (err) {

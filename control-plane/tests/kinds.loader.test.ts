@@ -11,7 +11,7 @@ describe('kind loader', () => {
     // Default dir = the loader module's own folder (control-plane/src/kinds under
     // vitest; out/control-plane/kinds in the compiled daemon). The scan walks each
     // SUBFOLDER and loads its `index.ts` / `index.js` by convention — no central
-    // list. Exactly the ten kinds register.
+    // list. Exactly the seven current kinds register.
     const registered = await loadKinds();
     expect(registered).toEqual(
       expect.arrayContaining([

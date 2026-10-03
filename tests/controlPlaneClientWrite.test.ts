@@ -219,6 +219,15 @@ describe('ControlPlaneClient write methods', () => {
       });
       expect(moved.every((topic) => !topic.workstreams.includes('source') && topic.workstreams.includes('moved')))
         .toBe(true);
+
+      const preview = await client.topicCloseTree({ slug: 'parent', dryRun: true });
+      expect(preview).toMatchObject({
+        dryRun: true,
+        matchedSlugs: ['parent', 'child'],
+        closedCount: 2,
+      });
+      const closed = await client.topicCloseTree({ slug: 'parent' });
+      expect(closed).toMatchObject({ matchedCount: 2, closedCount: 2 });
     } finally {
       await client.dispose();
     }

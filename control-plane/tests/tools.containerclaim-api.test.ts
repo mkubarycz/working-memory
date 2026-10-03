@@ -32,16 +32,16 @@ interface Claim {
   title: string;
   repository: string;
   sourceRevision?: string;
-  runtime?: {
-    type: 'docker';
-    buildContext: string;
-    dockerfile: string;
-    imageName: string;
-    containerName: string;
-    hostPort: number;
-    containerPort: number;
-    healthPath: string;
-    entryPath: string;
+  runtime?: { type: string; volumes?: Array<{ name: string; mountPath: string }> };
+  mcp?: { transport: string; url: string };
+  application?: {
+    id: string;
+    contractVersion: string;
+    discovery: { toolName: string };
+    capabilities: string[];
+    dataOwnership: string;
+    uiUrl?: string;
+    httpUrl?: string;
   };
   resourceVersion: number;
 }
@@ -92,14 +92,48 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
             slug: 'working-memory-dev',
             title: 'Working Memory development container',
             repository: 'https://github.com/mkubarycz/working-memory.git',
+            runtime: {
+              type: 'docker',
+              buildContext: '/source',
+              dockerfile: '/source/Dockerfile',
+              imageName: 'working-memory-dev:local',
+              containerName: 'working-memory-dev',
+              hostPort: 8080,
+              containerPort: 8080,
+              healthPath: '/health',
+              entryPath: '/',
+              volumes: [{ name: 'working-memory-dev-data', mountPath: '/data' }],
+            },
+            mcp: { transport: 'streamable-http', url: 'http://localhost:8080/mcp' },
+            application: {
+              id: 'working-memory-dev',
+              contractVersion: '1.0.0',
+              discovery: {
+                toolName: 'app-contract-get',
+                url: 'http://localhost:8080/.well-known/application-contract',
+              },
+              capabilities: ['generic-crud'],
+              dataOwnership: 'application',
+              uiUrl: 'http://localhost:8080/',
+              httpUrl: 'http://localhost:8080/api',
+            },
           },
         }),
       );
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
       expect(created.sourceRevision).toBeUndefined();
       expect(created.resourceVersion).toBe(1);
+      expect(created.application).toMatchObject({
+        id: 'working-memory-dev',
+        discovery: { toolName: 'app-contract-get' },
+        dataOwnership: 'application',
+      });
+      expect(created.runtime?.volumes).toEqual([{ name: 'working-memory-dev-data', mountPath: '/data' }]);
       expect(Object.keys(created).sort()).toEqual(
-        ['created_at', 'id', 'repository', 'resourceVersion', 'slug', 'title', 'updated_at'].sort(),
+        [
+          'application', 'created_at', 'id', 'mcp', 'repository', 'resourceVersion',
+          'runtime', 'slug', 'title', 'updated_at',
+        ].sort(),
       );
 
       const updated = jsonOf<Claim>(
@@ -110,6 +144,7 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       );
       expect(updated.sourceRevision).toBe('feature/container-claims');
       expect(updated.repository).toBe(created.repository);
+      expect(updated.application).toEqual(created.application);
       expect(updated.resourceVersion).toBe(2);
 
       const resetToDefault = jsonOf<Claim>(
@@ -230,51 +265,24 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       });
       expect(isErrorResult(runtimeField)).toBe(true);
       expect(textOf(runtimeField)).toContain('dockerId');
-    } finally {
-      await close();
-    }
-  });
 
-  it('round-trips an optional strict Docker runtime while old claims remain valid', async () => {
-    const { client, close } = await connect(openStore(':memory:'));
-    const runtime = {
-      type: 'docker',
-      buildContext: '/workspace/ClarinetHero',
-      dockerfile: '/workspace/ClarinetHero/Dockerfile',
-      imageName: 'clarinet-hero:local',
-      containerName: 'working-memory-clarinet-hero',
-      hostPort: 4173,
-      containerPort: 80,
-      healthPath: '/',
-      entryPath: '/',
-    } as const;
-    try {
-      const created = jsonOf<Claim>(await client.callTool({
+      const invalidApplication = await client.callTool({
         name: 'ws-containerclaim-create',
         arguments: {
-          slug: 'clarinet-hero',
-          title: 'Clarinet Hero',
-          repository: '/workspace/ClarinetHero',
-          runtime,
-        },
-      }));
-      expect(created.runtime).toEqual(runtime);
-
-      const invalidRuntime = await client.callTool({
-        name: 'ws-containerclaim-update',
-        arguments: {
-          slug: created.slug,
-          runtime: { ...runtime, hostPort: 70000 },
+          slug: 'invalid-application',
+          title: 'Invalid application',
+          repository: 'owner/repo',
+          application: {
+            id: 'invalid-application',
+            contractVersion: '1',
+            discovery: { toolName: 'app-contract-get' },
+            capabilities: [],
+            dataOwnership: 'working-memory',
+          },
         },
       });
-      expect(isErrorResult(invalidRuntime)).toBe(true);
-      expect(textOf(invalidRuntime)).toContain('hostPort');
-
-      const removed = jsonOf<Claim>(await client.callTool({
-        name: 'ws-containerclaim-update',
-        arguments: { slug: created.slug, runtime: null },
-      }));
-      expect(removed.runtime).toBeUndefined();
+      expect(isErrorResult(invalidApplication)).toBe(true);
+      expect(textOf(invalidApplication)).toContain('dataOwnership');
     } finally {
       await close();
     }

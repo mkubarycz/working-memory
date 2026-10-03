@@ -22,31 +22,21 @@ export function registerWsContainerClaimCreate(server: McpServer, store: Store):
           .string()
           .optional()
           .describe('Optional source branch, tag, or revision; omit to use the source default.'),
-        runtime: z
-          .object({
-            type: z.literal('docker'),
-            buildContext: z.string(),
-            dockerfile: z.string(),
-            imageName: z.string(),
-            containerName: z.string(),
-            hostPort: z.number().int(),
-            containerPort: z.number().int(),
-            healthPath: z.string(),
-            entryPath: z.string(),
-          })
-          .strict()
-          .optional()
-          .describe('Optional local Docker build and runtime intent.'),
+        runtime: z.record(z.string(), z.unknown()).optional().describe('Optional local Docker build and runtime intent.'),
+        mcp: z.record(z.string(), z.unknown()).optional().describe('Optional app-scoped MCP endpoint.'),
+        application: z.record(z.string(), z.unknown()).optional().describe(
+          'Optional application contract metadata: identity, version, discovery tool, capabilities, data ownership, and endpoints.',
+        ),
       },
     },
-    async ({ slug, title, repository, sourceRevision, runtime }) => {
+    async ({ slug, title, repository, sourceRevision, runtime, mcp, application }) => {
       const specInput: Record<string, unknown> = { title, repository };
       if (sourceRevision !== undefined) {
         specInput.sourceRevision = sourceRevision;
       }
-      if (runtime !== undefined) {
-        specInput.runtime = runtime;
-      }
+      if (runtime !== undefined) specInput.runtime = runtime;
+      if (mcp !== undefined) specInput.mcp = mcp;
+      if (application !== undefined) specInput.application = application;
       try {
         validateMetadata(CONTAINER_CLAIM_KIND, { slug, store });
         const spec = validateSpec(CONTAINER_CLAIM_KIND, specInput);

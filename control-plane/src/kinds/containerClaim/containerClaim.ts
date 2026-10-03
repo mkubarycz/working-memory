@@ -12,6 +12,23 @@ export interface DockerRuntimeSpec {
   containerPort: number;
   healthPath: string;
   entryPath: string;
+  volumes?: Array<{ name: string; mountPath: string }>;
+}
+
+export interface AppMcpEndpoint {
+  transport: 'streamable-http';
+  url: string;
+}
+
+export interface ApplicationContractMetadata {
+  id: string;
+  contractVersion: string;
+  discovery: { toolName: string; url?: string };
+  capabilities: string[];
+  dataOwnership: 'application';
+  healthUrl?: string;
+  uiUrl?: string;
+  httpUrl?: string;
 }
 
 export interface IContainerClaim {
@@ -21,6 +38,8 @@ export interface IContainerClaim {
   repository: string;
   sourceRevision?: string;
   runtime?: DockerRuntimeSpec;
+  mcp?: AppMcpEndpoint;
+  application?: ApplicationContractMetadata;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -34,6 +53,8 @@ export class ContainerClaim implements IContainerClaim {
   repository: string;
   sourceRevision?: string;
   runtime?: DockerRuntimeSpec;
+  mcp?: AppMcpEndpoint;
+  application?: ApplicationContractMetadata;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -47,25 +68,43 @@ export class ContainerClaim implements IContainerClaim {
     if (typeof spec.sourceRevision === 'string') {
       this.sourceRevision = spec.sourceRevision;
     }
-    if (isDockerRuntimeSpec(spec.runtime)) {
-      this.runtime = spec.runtime;
-    }
+    if (isDockerRuntimeSpec(spec.runtime)) this.runtime = spec.runtime;
+    if (isAppMcpEndpoint(spec.mcp)) this.mcp = spec.mcp;
+    if (isApplicationContractMetadata(spec.application)) this.application = spec.application;
     this.created_at = env.metadata.createdAt;
     this.updated_at = env.metadata.updatedAt;
     this.resourceVersion = env.metadata.resourceVersion;
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function isDockerRuntimeSpec(value: unknown): value is DockerRuntimeSpec {
-  if (!value || typeof value !== 'object') return false;
-  const runtime = value as Record<string, unknown>;
-  return runtime.type === 'docker'
-    && typeof runtime.buildContext === 'string'
-    && typeof runtime.dockerfile === 'string'
-    && typeof runtime.imageName === 'string'
-    && typeof runtime.containerName === 'string'
-    && typeof runtime.hostPort === 'number'
-    && typeof runtime.containerPort === 'number'
-    && typeof runtime.healthPath === 'string'
-    && typeof runtime.entryPath === 'string';
+  if (!isRecord(value)) return false;
+  return value.type === 'docker'
+    && typeof value.buildContext === 'string'
+    && typeof value.dockerfile === 'string'
+    && typeof value.imageName === 'string'
+    && typeof value.containerName === 'string'
+    && typeof value.hostPort === 'number'
+    && typeof value.containerPort === 'number'
+    && typeof value.healthPath === 'string'
+    && typeof value.entryPath === 'string';
+}
+
+function isAppMcpEndpoint(value: unknown): value is AppMcpEndpoint {
+  return isRecord(value) && value.transport === 'streamable-http' && typeof value.url === 'string';
+}
+
+function isApplicationContractMetadata(value: unknown): value is ApplicationContractMetadata {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.contractVersion === 'string'
+    && isRecord(value.discovery)
+    && typeof value.discovery.toolName === 'string'
+    && Array.isArray(value.capabilities)
+    && value.capabilities.every((item) => typeof item === 'string')
+    && value.dataOwnership === 'application';
 }

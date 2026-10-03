@@ -196,8 +196,8 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('role="tab"');
     expect(app).toContain('aria-selected={key === selectedDocumentKey}');
     const documentHost = app.slice(app.indexOf('<div class="document-stage">'), app.indexOf('<section class="empty-state">'));
-    expect(documentHost).not.toContain('ContainerAppDetail');
-    expect(documentHost).not.toContain('container-app-tab');
+    expect(documentHost).toContain('ContainerAppDetail');
+    expect(documentHost).toContain("activeDocument?.kind === 'container-app'");
     expect(app).toContain('onclick={() => closeDocument(key)}');
     expect(app).toContain('openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document)');
     expect(app).toContain('oncontextmenu={(event) => void openDocumentTabMenu(event, key)}');
@@ -257,9 +257,30 @@ describe('desktop tree icon contract', () => {
 
     expect(app).not.toContain('Show me the 0.15.0 roadmap workstream');
     expect(app).toContain('placeholder="Write a command to interact with Working Memory"');
-    expect(app).toContain('oninput={(event) => updateComposerDraft(event.currentTarget.value)}');
+    expect(app).toContain('oninput={handleComposerInput}');
     expect(app).toContain('readComposerDraft(localStorage, selectedEnvironment?.id)');
     expect(app).toContain("writeComposerDraft(localStorage, selectedEnvironment?.id, '')");
+  });
+
+  it('exposes an accessible, mouse-selectable Container App mention list without stealing composer focus', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+
+    expect(app).toContain('role="combobox"');
+    expect(app).toContain('aria-autocomplete="list"');
+    expect(app).toContain('aria-activedescendant=');
+    expect(app).toContain('aria-describedby="mention-instructions"');
+    expect(app).toContain('role="listbox"');
+    expect(app).toContain('role="option"');
+    expect(app).toContain('No Container Apps match');
+    expect(app).toContain("'MCP ready' : 'No MCP endpoint'");
+    expect(app).toContain('onmousedown={(event) => event.preventDefault()}');
+    expect(app).toContain('onclick={() => void selectMention(app)}');
+    expect(app).toContain('composerTextarea?.setSelectionRange(replacement.caret, replacement.caret)');
+    expect(app).toContain('mentionKeyEventAction(event, mentionOpen, mentionApps.length, mentionActiveIndex)');
+    expect(app).toMatch(/async function send\(\)[^]*closeMentionCompletion\(\);[^]*await submitChat\(message, context\);/);
+    expect(app).toContain("page = 'workspace';\n    closeMentionCompletion();");
+    expect(styles).toMatch(/\.mention-popup[^}]*position:\s*absolute/);
   });
 
   it('keeps the chat pinned only while the reader remains at the bottom', () => {

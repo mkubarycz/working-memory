@@ -56,6 +56,9 @@ const TARGET_KINDS: Record<string, DesktopResourceKind> = {
   alert: 'alert',
   topictype: 'topic-type',
   'topic-type': 'topic-type',
+  nanite: 'document',
+  nanitetemplate: 'document',
+  nanitejournal: 'document',
   document: 'document',
 };
 

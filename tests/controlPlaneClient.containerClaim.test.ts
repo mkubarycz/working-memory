@@ -80,5 +80,6 @@ describe('ControlPlaneClient ContainerClaim API', () => {
     callToolMock.mockResolvedValueOnce(okText({ ...claim, resourceVersion: 2 }));
     await expect(client.containerClaimUpdate({ slug: claim.slug, runtime }))
       .resolves.toMatchObject({ resourceVersion: 2 });
+
   });
 });
