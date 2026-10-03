@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { CHAT_HISTORY_POLL_INTERVAL_MS } from '../src/renderer/chatPolling';
 
 const desktopRoot = resolve(import.meta.dirname, '..');
 
@@ -25,20 +26,44 @@ describe('desktop chat history IPC contract', () => {
     const main = readFileSync(resolve(desktopRoot, 'src/main/index.ts'), 'utf8');
 
     expect(agent).toContain('journalId: session.journal.id');
+    expect(agent).toContain("status: 'awaiting_confirmation'");
+    expect(agent).toContain('status,');
     expect(main).toContain('journalId: result.journalId');
+    expect(main).toContain('status: result.status');
+    expect(main.match(/status: 'failed'/g)?.length).toBeGreaterThanOrEqual(4);
   });
 
-  it('hydrates global history on startup and paginates older pages without replacing live runs', () => {
+  it('polls newest history without overlapping or clobbering the older-page cursor and clears the timer', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
 
-    expect(app).toContain('void loadHistory();');
-    expect(app).toContain('window.workingMemory.getChatHistory({');
+    expect(CHAT_HISTORY_POLL_INTERVAL_MS).toBeGreaterThanOrEqual(2_000);
+    expect(CHAT_HISTORY_POLL_INTERVAL_MS).toBeLessThanOrEqual(5_000);
+    expect(app).toContain('void refreshLatestHistory(true);');
+    expect(app).toContain('window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS)');
+    expect(app).toContain('window.clearInterval(historyPoll);');
+    expect(app).toContain('if (historyRequestGeneration === generation) return;');
+    expect(app).toContain('chatRuns = refreshLatestRuns(chatRuns, historyPage.journals);');
+    expect(app).toContain('if (initialize) historyCursor = historyPage.nextCursor;');
     expect(app).toContain('chatRuns = mergeHistoryRuns(chatRuns, historyPage.journals);');
     expect(app).toContain('historyCursor = historyPage.nextCursor;');
-    expect(app).toContain("onclick={() => void loadHistory(true)}");
+    expect(app).toContain('cursor: historyCursor');
+    expect(app).toContain('onclick={() => void loadOlderHistory()}');
     expect(app).toContain('conversationElement.scrollTop = previousTop + conversationElement.scrollHeight - previousHeight;');
     expect(app).toContain('Loading history…');
     expect(app).toContain('No chat history.');
+  });
+
+  it('renders independent Retry actions in scope previews and full journal rows', () => {
+    const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(desktopRoot, 'src/renderer/style.css'), 'utf8');
+
+    expect(app).toContain('await submitChat(run.userText, chatContextForScope(run.scope));');
+    expect(app.match(/onclick=\{\(\) => void retryRun\(run\)\}/g)).toHaveLength(2);
+    expect(app).toContain('class="scope-preview-row"');
+    expect(app).toContain('class="scope-preview-main"');
+    expect(app).toContain('class="run-actions"');
+    expect(app).toContain('disabled={busy || pendingConfirmation !== null}');
+    expect(styles).toMatch(/\.retry-button\s*{[^}]*font-size:\s*10px/s);
   });
 
   it('exposes discovery and switching through typed renderer-to-main IPC', () => {

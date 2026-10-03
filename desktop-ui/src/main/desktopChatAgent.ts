@@ -7,6 +7,7 @@ import type {
   CommandJournalEvent,
   CommandJournalFinalizeInput,
   CommandJournalScopeRef,
+  CommandJournalStatus,
   ToolCallOutcome,
 } from '../../../src/controlPlaneClient';
 import type { ModelEndpointMode } from './config';
@@ -43,6 +44,7 @@ export interface PendingConfirmation {
 export interface DesktopAgentResult {
   journalId: string;
   message: string;
+  status: CommandJournalStatus;
   progress: ToolProgress[];
   mutated: boolean;
   navigation?: NavigationHint;
@@ -83,6 +85,12 @@ export interface StartChatInput {
   message: string;
   headers: Record<string, string>;
   context?: ChatContext;
+  appTools?: {
+    tools: CanonicalToolDef[];
+    callTool: DesktopChatDependencies['callTool'];
+    systemInstructions: string;
+    requiresConfirmation?: (toolName: string) => boolean;
+  };
 }
 
 interface Session {
@@ -104,6 +112,7 @@ interface Session {
   journalCallIds: Map<ModelToolCall, string>;
   usedCallIds: Set<string>;
   navigation?: NavigationHint;
+  appToolsRequiringConfirmation: Set<string>;
   suspended?: {
     turn: ParsedModelTurn;
     calls: ModelToolCall[];
@@ -141,7 +150,14 @@ export function systemPromptForContext(context?: ChatContext): string {
   ].join(' ');
 }
 
-const MUTATING_ACTION = /-(create|update|delete|run|reorder)$/;
+function systemPromptForInput(input: StartChatInput): string {
+  return [systemPromptForContext(input.context), input.appTools?.systemInstructions]
+    .filter(Boolean)
+    .join(' ');
+}
+
+const MUTATING_ACTION = /-(create|update|delete|run|reorder|transfer)$/;
+export const DESKTOP_MODEL_REQUEST_TIMEOUT_MS = 60_000;
 
 export class DesktopChatAgent {
   private readonly pending = new Map<string, Session>();
@@ -156,7 +172,7 @@ export class DesktopChatAgent {
   constructor(private readonly options: DesktopChatAgentOptions) {
     this.maxIterations = options.maxIterations ?? 8;
     this.totalTimeoutMs = options.totalTimeoutMs ?? 90_000;
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 20_000;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DESKTOP_MODEL_REQUEST_TIMEOUT_MS;
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? (() => crypto.randomUUID());
   }
@@ -184,7 +200,20 @@ export class DesktopChatAgent {
     };
     this.active.add(run);
     try {
-    const tools = desktopToolDescriptors(await this.external(run, run.dependencies.listTools()));
+    const tools = [
+      ...desktopToolDescriptors(await this.external(run, run.dependencies.listTools())),
+      ...(input.appTools?.tools ?? []),
+    ];
+    if (input.appTools) {
+      const controlPlaneCall = run.dependencies.callTool;
+      const appNames = new Set(input.appTools.tools.map((tool) => tool.name));
+      run.dependencies = {
+        ...run.dependencies,
+        callTool: (name, args) => appNames.has(name)
+          ? input.appTools!.callTool(name, args)
+          : controlPlaneCall(name, args),
+      };
+    }
     this.assertCurrent(run);
     const startedAt = this.now();
     const secretValues = secretHeaderValues(input.headers);
@@ -205,7 +234,7 @@ export class DesktopChatAgent {
       conversation: createModelConversation({
         mode: input.mode,
         model: input.model,
-        systemPrompt: systemPromptForContext(input.context),
+        systemPrompt: systemPromptForInput(input),
         userMessage: input.message,
         tools,
       }),
@@ -224,6 +253,11 @@ export class DesktopChatAgent {
       lastExecutionByTool: new Map(),
       journalCallIds: new Map(),
       usedCallIds: new Set(),
+      appToolsRequiringConfirmation: new Set(
+        input.appTools?.tools
+          .filter((tool) => input.appTools?.requiresConfirmation?.(tool.name))
+          .map((tool) => tool.name) ?? [],
+      ),
     };
     run.session = session;
     this.assertCurrent(run);
@@ -232,6 +266,10 @@ export class DesktopChatAgent {
       if (isEnvironmentChanged(error)) {
         const interrupted = await this.interrupt(run);
         if (interrupted) return interrupted;
+      }
+      if (run.session) {
+        const failed = await this.failUnexpected(run.session, error);
+        if (failed) return failed;
       }
       throw error;
     } finally {
@@ -280,6 +318,8 @@ export class DesktopChatAgent {
         const interrupted = await this.interrupt(session.run);
         if (interrupted) return interrupted;
       }
+      const failed = await this.failUnexpected(session, error);
+      if (failed) return failed;
       throw error;
     } finally {
       if (!session.suspended) this.active.delete(session.run);
@@ -385,7 +425,10 @@ export class DesktopChatAgent {
     for (let index = startIndex; index < calls.length; index += 1) {
       this.assertCurrent(session.run);
       const call = calls[index];
-      if (isDestructiveTool(call.name, call.arguments)) {
+      if (
+        isDestructiveTool(call.name, call.arguments)
+        || session.appToolsRequiringConfirmation.has(call.name)
+      ) {
         const id = this.createId();
         session.suspended = { turn, calls, results, index };
         await this.append(session, [{
@@ -400,6 +443,7 @@ export class DesktopChatAgent {
         return {
           journalId: session.journal.id,
           message: `Confirmation required before running ${call.name}.`,
+          status: 'awaiting_confirmation',
           progress: session.progress,
           mutated: session.mutated,
           navigation: session.navigation,
@@ -434,6 +478,7 @@ export class DesktopChatAgent {
           session.run,
           session.run.dependencies.callTool(call.name, cleanArguments(call.arguments)),
         );
+        if (outcome.ok && MUTATING_ACTION.test(call.name)) session.mutated = true;
         this.assertCurrent(session.run);
       } catch (error) {
         if (isEnvironmentChanged(error)) throw error;
@@ -562,12 +607,36 @@ export class DesktopChatAgent {
       return {
         journalId: session.journal.id,
         message,
+        status,
         progress: session.progress,
         mutated: session.mutated,
         navigation: session.navigation,
       };
     })();
     return session.finalization;
+  }
+
+  private async failUnexpected(session: Session, error: unknown): Promise<DesktopAgentResult | undefined> {
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = `Unable to complete that request: ${detail}`;
+    try {
+      await this.append(session, [{
+        ...this.eventBase(session, 'run-error'),
+        type: 'run_error',
+        stage: 'agent_run',
+        message: sanitizeJournalText(detail, secretHeaderValues(session.headers)).slice(0, 32_768),
+        code: 'unexpected_error',
+        retryable: true,
+      }]);
+    } catch {
+      // Finalization may still succeed when an individual append failed transiently.
+    }
+    session.finalization = undefined;
+    try {
+      return await this.finish(session, message, 'failed', 'unexpected_error');
+    } catch {
+      return undefined;
+    }
   }
 
   private async interrupt(run: ActiveRun, confirmationId?: string): Promise<DesktopAgentResult | undefined> {
@@ -585,6 +654,7 @@ export class DesktopChatAgent {
           return {
             journalId: session.journal.id,
             message: 'Cancelled because the Working Memory environment changed.',
+            status: session.journal.status,
             progress: session.progress,
             mutated: session.mutated,
             navigation: session.navigation,
@@ -631,6 +701,7 @@ export class DesktopChatAgent {
         return {
           journalId: session.journal.id,
           message: 'Cancelled because the Working Memory environment changed.',
+          status: confirmationId ? 'cancelled' : 'interrupted',
           progress: session.progress,
           mutated: session.mutated,
           navigation: session.navigation,

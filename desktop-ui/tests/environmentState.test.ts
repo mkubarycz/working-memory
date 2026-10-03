@@ -11,6 +11,7 @@ describe('renderer environment reset', () => {
       historyLoading: false, historyError: '', historyCursor: undefined,
       selectedTool: null, pendingRunKey: null, busy: false, pendingConfirmation: null,
       activePanel: null, activeLoading: false, activeError: '', hasUnseenMessages: false,
+      containerAppStatuses: {}, busyContainerAppId: null,
     });
   });
 

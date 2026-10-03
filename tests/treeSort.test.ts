@@ -1,8 +1,8 @@
 /**
  * Focused unit test for the pure workstream-tree ordering helper
  * (`sortTreeChildren` in webview-ui/src/lib/treeSort.ts). Verifies the
- * pinned-first → open → closed-last ordering, stability within tiers, that
- * nanites keep their slot with the open tier, and that the input is not mutated.
+ * pinned-first → open → closed-last ordering, stability within tiers, and that
+ * the input is not mutated.
  */
 
 import { describe, test, expect } from 'vitest';
@@ -20,18 +20,6 @@ function topic(id: string, status: string, pinned = false): TreeChild {
     alertCount: 0,
     alertSeverity: null,
     children: [],
-    actions: [],
-  };
-}
-
-function nanite(id: string, phase = 'Succeeded'): TreeChild {
-  return {
-    kind: 'nanite',
-    id,
-    label: id,
-    icon: 'play',
-    phase,
-    openId: id,
     actions: [],
   };
 }
@@ -66,15 +54,6 @@ describe('sortTreeChildren', () => {
   test('pinned-open sorts before pinned-closed', () => {
     const input = [topic('pin-closed', 'closed', true), topic('pin-open', 'open', true)];
     expect(ids(sortTreeChildren(input))).toEqual(['pin-open', 'pin-closed']);
-  });
-
-  test('nanites ride with the open tier ahead of closed topics, stable', () => {
-    const input = [
-      topic('closed-x', 'closed'),
-      nanite('run-1', 'Failed'),
-      topic('open-x', 'open'),
-    ];
-    expect(ids(sortTreeChildren(input))).toEqual(['run-1', 'open-x', 'closed-x']);
   });
 
   test('does not mutate the input array', () => {

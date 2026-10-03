@@ -62,6 +62,17 @@ const workstream: KindModule = {
         position: z.number().finite().default(0),
       })
       .strict(),
+    validateMetadata: ({ slug, store, excludeId }) => {
+      const slugConvention =
+        'A Workstream requires a unique slug: lowercase words separated with dashes.';
+      if (typeof slug !== 'string' || slug.trim() === '' || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(slug)) {
+        throw new Error(slugConvention);
+      }
+      const existing = store.getDocument({ slug, kind: WORKSTREAM_KIND, includeDeleted: true });
+      if (existing && existing.metadata.id !== excludeId) {
+        throw new Error(`${slugConvention} "${slug}" is already in use.`);
+      }
+    },
     // No envelope `status` schema → inherit Base (lifecycle-only, empty {}).
     fts: (r) => (r.spec.closure ? `${r.spec.title}\n${r.spec.closure}` : r.spec.title),
   },

@@ -13,9 +13,6 @@ const tools = [
   { name: 'ws-topic-create', description: 'Create topic', inputSchema: { type: 'object', required: ['title'] } },
   { name: 'ws-topictype-read' },
   { name: 'ws-alert-update' },
-  { name: 'ws-nanite-run' },
-  { name: 'ws-nanitetemplate-create' },
-  { name: 'ws-nanitejournal-read' },
   { name: 'ws-config-read' },
   { name: 'wm-document-read' },
 ];
@@ -27,17 +24,13 @@ describe('desktop model tools', () => {
       'ws-topic-create',
       'ws-topictype-read',
       'ws-alert-update',
-      'ws-nanite-run',
-      'ws-nanitetemplate-create',
-      'ws-nanitejournal-read',
     ]);
     expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('ws-config-read');
   });
 
-  it('classifies delete and nanite reset calls as destructive', () => {
+  it('classifies deletes as destructive', () => {
     expect(isDestructiveTool('ws-topic-delete', { slug: 'x' })).toBe(true);
     expect(isDestructiveTool('ws-topic-delete', { slug: 'x', restore: true })).toBe(false);
-    expect(isDestructiveTool('ws-nanite-run', { id: 'x', reset: true })).toBe(true);
   });
 
   it('continues Chat Completions with the assistant call and every tool result', () => {

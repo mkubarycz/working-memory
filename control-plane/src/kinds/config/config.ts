@@ -4,10 +4,7 @@
  *
  * A *Config* holds one or more **key-value pairs** (`data`) plus a human `name`
  * and an authored `status`, identified by a registry-key `slug` (e.g.
- * `banking-app-developer`). It is a first-class kind like TopicType: a nanite
- * references configmaps by slug/id in its `configs` array and, on run, their
- * merged `data` is injected into the nanite's dev container as environment
- * variables (so e.g. a `GH_TOKEN` key reaches the container).
+ * `banking-app-developer`). It is a first-class kind like TopicType.
  *
  * This file is a ROOT of the config folder's import graph: it imports NOTHING
  * from its siblings (only the store's `DocumentEnvelope` type), so `index.ts`

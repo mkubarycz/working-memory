@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   chatCompletionsUrl,
+  CredentialManager,
   modelAuthHeaders,
   modelEndpoint,
   normalizeEndpoint,
@@ -39,4 +40,55 @@ describe('desktop config', () => {
       .toEqual({});
   });
 
+  it('keeps API keys in memory when secure storage is unavailable', () => {
+    const warnings: string[] = [];
+    const credentials = new CredentialManager(
+      {
+        isEncryptionAvailable: () => false,
+        encryptString: () => {
+          throw new Error('must not encrypt');
+        },
+        decryptString: () => {
+          throw new Error('must not decrypt');
+        },
+      },
+      (message) => warnings.push(message),
+    );
+    const config = credentials.store(
+      { endpoint: 'https://models.example/v1', model: 'demo' },
+      'session-secret',
+    );
+
+    expect(config.encryptedApiKey).toBeUndefined();
+    expect(credentials.read(config)).toBe('session-secret');
+    expect(credentials.hasApiKey(config)).toBe(true);
+    expect(credentials.mode()).toBe('session');
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('ignores an unreadable persisted API key without blocking keyless endpoints', () => {
+    const warnings: string[] = [];
+    const credentials = new CredentialManager(
+      {
+        isEncryptionAvailable: () => false,
+        encryptString: () => {
+          throw new Error('must not encrypt');
+        },
+        decryptString: () => {
+          throw new Error('must not decrypt');
+        },
+      },
+      (message) => warnings.push(message),
+    );
+    const config = {
+      endpoint: 'http://localhost:11434/v1',
+      model: 'local',
+      encryptedApiKey: 'legacy-ciphertext',
+    };
+
+    expect(credentials.read(config)).toBe('');
+    expect(credentials.hasApiKey(config)).toBe(false);
+    expect(credentials.mode()).toBe('unavailable');
+    expect(warnings).toHaveLength(1);
+  });
 });

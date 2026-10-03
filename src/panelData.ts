@@ -13,8 +13,6 @@ import type {
   Alert as ControlPlaneAlert,
   DocumentEnvelope,
   ListDocumentsResult,
-  Nanite,
-  NaniteTemplate,
   Topic as ControlPlaneTopic,
   TopicType,
   Workstream,
@@ -64,8 +62,8 @@ export interface PanelTopic {
   alertCount?: number;
   /** Max severity among open alerts: 'alert' reddish, 'informational' default. */
   alertSeverity?: 'alert' | 'informational' | null;
-  /** Nested child topics (and any nanites nested under this topic) — only set when non-empty. */
-  children?: Array<PanelTopic | PanelNaniteRow>;
+  /** Nested child topics — only set when non-empty. */
+  children?: PanelTopic[];
 }
 
 export interface PanelTopicsGroup {
@@ -76,7 +74,7 @@ export interface PanelTopicsGroup {
   /** Codicon id for the group header. */
   icon: string;
   collapsible: boolean;
-  children: Array<PanelTopic | PanelNaniteRow>;
+  children: PanelTopic[];
 }
 
 export interface PanelWorkstream {
@@ -131,68 +129,7 @@ export interface PanelTopicRow {
   actions?: PanelAction[];
   alertCount?: number;
   alertSeverity?: 'alert' | 'informational' | null;
-  children?: Array<PanelTopicRow | PanelNaniteRow>;
-}
-
-/**
- * A Nanite row rendered as a CHILD of its input topic in the panel tree (kind
- * `nanite`, so `media/panel/panel.js` renders it with right-click actions and
- * deleted-muting). One Nanite = one execution instance of a Nanite Template; it
- * shows its lifecycle `phase` (Pending → Running → Succeeded|Failed) and offers
- * a Run action while Pending.
- */
-export interface PanelNaniteRow {
-  kind: 'nanite';
-  id: string;
-  /** The bare nanite document id (its agent id), used to open the agent chat. */
-  naniteId: string;
-  label: string;
-  description: string;
-  tooltip: string;
-  /** Codicon id. */
-  icon: string;
-  /** `working-memory:/document/<id>.working-memory` unified-editor URI (generic envelope route). */
-  openUri: string;
-  /** Lifecycle phase. */
-  phase: 'Pending' | 'Queued' | 'Running' | 'Succeeded' | 'Failed';
-  /** Owning Nanite Template ref (id or slug); used to filter on the Nanites tab. */
-  templateId: string | null;
-  /** Whether the underlying document is soft-deleted (muted in the tree). */
-  deleted: boolean;
-  actions?: PanelAction[];
-}
-
-/**
- * A Nanite Template row for the top section of the Nanites tab. Clicking it
- * selects/filters the nanites list below; `templateId`/`slug` are the match keys.
- */
-export interface PanelNaniteTemplateRow {
-  kind: 'nanite-template';
-  /** DOM id. */
-  id: string;
-  /** Template document id (primary selection key). */
-  templateId: string;
-  /** Template slug (secondary selection key). */
-  slug: string | null;
-  label: string;
-  description: string;
-  tooltip: string;
-  icon: string;
-  openUri: string;
-  enabled: boolean;
-}
-
-/**
- * The Nanites tab payload: templates on top, latest nanites (newest-first)
- * below, split by a draggable divider in the webview. Distinct from `PanelData`
- * (no flat `items`) — the webview renders it with a dedicated split view.
- */
-export interface PanelNanitesData {
-  tab: 'nanites';
-  available: boolean;
-  templates: PanelNaniteTemplateRow[];
-  nanites: PanelNaniteRow[];
-  emptyMessage: string;
+  children?: PanelTopicRow[];
 }
 
 /**
@@ -507,232 +444,14 @@ function attachControlPlaneChildren(
 }
 
 /**
- * Build a Nanite child row for the Topics tab. A Nanite renders under its input
- * topic showing its lifecycle `phase`; while `Pending` it offers a Run action
- * (the `workingMemory.nanite.run` command, registered in extension.ts). Kind
- * `nanite` so `media/panel/panel.js` gives it right-click actions + soft-delete
- * muting.
- */
-function buildNaniteRow(
-  n: Nanite,
-  rowIdPrefix = `topics:nanite:${n.inputTopic}`,
-  labelOverride?: string,
-): PanelNaniteRow {
-  const label =
-    labelOverride ?? (n.request.trim() || n.templateId || `Nanite ${n.id.slice(0, 8)}`);
-  const runAction: PanelAction = {
-    command: 'workingMemory.nanite.run',
-    title: 'Approve & Run',
-    icon: 'play',
-    args: [{ id: n.id }],
-  };
-  const resetAction: PanelAction = {
-    command: 'workingMemory.nanite.reset',
-    title: 'Reset to Pending',
-    icon: 'discard',
-    args: [{ id: n.id }],
-  };
-  const restartAction: PanelAction = {
-    command: 'workingMemory.nanite.restart',
-    title: 'Restart Nanite',
-    icon: 'debug-restart',
-    args: [{ id: n.id }],
-  };
-  // Actions per lifecycle phase: Pending offers Run; Queued/Running offer a
-  // Cancel (reset to Pending); terminal offers Restart + Reset.
-  const actions: PanelAction[] =
-    n.phase === 'Pending'
-      ? [runAction]
-      : n.phase === 'Queued' || n.phase === 'Running'
-        ? [{ ...resetAction, title: 'Cancel (Reset to Pending)' }]
-        : [restartAction, resetAction];
-  // At-a-glance status hover so a reader can tell what (if anything) a phase
-  // is waiting on — Pending especially reads as "waiting for you to Run it".
-  const phaseHint = NANITE_PHASE_HINT[n.phase];
-  return {
-    kind: 'nanite',
-    id: `${rowIdPrefix}:${n.id}`,
-    naniteId: n.id,
-    label,
-    description: n.phase,
-    tooltip: `${label} — ${n.phase}${phaseHint ? `\n${phaseHint}` : ''}`,
-    icon: NANITE_PHASE_ICON[n.phase],
-    // Generic envelope route — the unified editor's generic DocumentView.
-    openUri: `working-memory:/document/${n.id}.working-memory`,
-    phase: n.phase,
-    templateId: n.templateId,
-    deleted: false,
-    actions,
-  };
-}
-
-/** One-line "what is this waiting on" hint per phase (panel row tooltip). */
-const NANITE_PHASE_HINT: Record<Nanite['phase'], string> = {
-  Pending: 'Waiting for approval — it will not run on its own; press Run to approve & queue it.',
-  Queued: 'Queued — the dispatcher will start it automatically.',
-  Running: 'Running now.',
-  Succeeded: 'Finished — succeeded.',
-  Failed: 'Finished — failed; open it for the error.',
-};
-
-/** Codicon per Nanite lifecycle phase. */
-const NANITE_PHASE_ICON: Record<Nanite['phase'], string> = {
-  Pending: 'circle-outline',
-  Queued: 'clock',
-  Running: 'sync',
-  Succeeded: 'pass',
-  Failed: 'error',
-};
-
-/** Format a unix-seconds timestamp for a nanite card row. */
-function formatNaniteTimestamp(sec: number): string {
-  return new Date(sec * 1000).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-/** Map a Nanite Template ref (id or slug) → friendly title. */
-function naniteTemplateNameMap(templates: NaniteTemplate[]): Map<string, string> {
-  const m = new Map<string, string>();
-  for (const t of templates) {
-    m.set(t.id, t.title);
-    if (t.slug) {
-      m.set(t.slug, t.title);
-    }
-  }
-  return m;
-}
-
-/** Card row label for a nanite: its template's friendly name + timestamp. */
-function cardNaniteLabel(n: Nanite, nameByRef: Map<string, string>): string {
-  const tname = n.templateId ? nameByRef.get(n.templateId) : undefined;
-  const base = tname ?? (n.request.trim() || `Nanite ${n.id.slice(0, 8)}`);
-  return `${base} · ${formatNaniteTimestamp(n.created_at)}`;
-}
-
-/**
- * Build the per-card "Nanites" group. `nanites` is assumed pre-filtered to the
- * workstream's ORPHAN nanites (those whose input topic is NOT a member of the
- * card — nanites whose topic IS a member nest under that topic instead). Newest
- * first, labelled with the Nanite Template's friendly name + timestamp. Returns
- * null when empty.
- */
-function buildWorkstreamNanitesGroup(
-  wsId: string,
-  tab: 'active' | 'archive',
-  nanites: Nanite[],
-  templates: NaniteTemplate[],
-): PanelTopicsGroup | null {
-  if (nanites.length === 0) {
-    return null;
-  }
-  const nameByRef = naniteTemplateNameMap(templates);
-  const rows = [...nanites]
-    .sort((a, b) => b.created_at - a.created_at)
-    .map((n) =>
-      buildNaniteRow(n, `${tab}:ws-nanite:${wsId}`, cardNaniteLabel(n, nameByRef)),
-    );
-  return {
-    kind: 'topics-group',
-    id: `${tab}:ws-nanites:${wsId}`,
-    label: `Nanites (${rows.length})`,
-    icon: 'zap',
-    collapsible: true,
-    children: rows,
-  };
-}
-
-/** Build a top-section row for a Nanite Template on the Nanites tab. */
-function buildNaniteTemplateRow(t: NaniteTemplate): PanelNaniteTemplateRow {
-  return {
-    kind: 'nanite-template',
-    id: `nanites:template:${t.id}`,
-    templateId: t.id,
-    slug: t.slug,
-    label: t.title,
-    description: t.enabled ? '' : 'disabled',
-    tooltip: `${t.title}${t.slug ? ` (${t.slug})` : ''}`,
-    icon: t.enabled ? 'symbol-class' : 'circle-slash',
-    openUri: `working-memory:/document/${t.id}.working-memory`,
-    enabled: t.enabled,
-  };
-}
-
-/**
- * Build the Nanites tab: Nanite Templates on top, latest Nanites (newest-first)
- * below. The webview splits them with a draggable divider and filters the
- * bottom list to the selected template. `available:false` renders the empty
- * "control plane not running" state.
- */
-export function buildNanitesPanel(input: {
-  available: boolean;
-  templates?: NaniteTemplate[];
-  nanites?: Nanite[];
-}): PanelNanitesData {
-  if (!input.available) {
-    return {
-      tab: 'nanites',
-      available: false,
-      templates: [],
-      nanites: [],
-      emptyMessage: 'Control plane not running.',
-    };
-  }
-  const templates = (input.templates ?? []).map(buildNaniteTemplateRow);
-  const nanites = [...(input.nanites ?? [])]
-    .sort((a, b) => b.created_at - a.created_at)
-    .map((n) => buildNaniteRow(n, 'nanites:nanite'));
-  return {
-    tab: 'nanites',
-    available: true,
-    templates,
-    nanites,
-    emptyMessage: 'No nanite templates yet.',
-  };
-}
-
-/** Slug of a topic row, parsed from its `working-memory:/topic/<slug>.working-memory` openUri. */
-function topicSlugFromRow(row: PanelTopicRow): string | null {
-  const m = /^working-memory:\/topic\/(.+)\.working-memory$/.exec(row.openUri);
-  return m ? m[1] : null;
-}
-
-/**
- * Recursively append Nanite child rows onto every topic row whose slug is an
- * input topic in `nanitesByTopic`. Nanites are appended AFTER any child topics,
- * and the walk descends only into topic-row children (never into nanite rows).
- */
-function attachNanites(
-  row: PanelTopicRow,
-  nanitesByTopic: Map<string, PanelNaniteRow[]>,
-): void {
-  const existing = row.children ?? [];
-  for (const child of existing) {
-    if (child.kind === 'topic-row') {
-      attachNanites(child, nanitesByTopic);
-    }
-  }
-  const slug = topicSlugFromRow(row);
-  const nanites = slug ? nanitesByTopic.get(slug) : undefined;
-  if (nanites && nanites.length > 0) {
-    row.children = [...existing, ...nanites];
-  }
-}
-
-/**
  * Build the Topics tab from the control-plane topic list. Only OPEN topics are
  * shown, rooted at the parentless ones, with the DAG walked top-down via the
- * flat `spec.parents` refs. Nanites render as child rows under their input
- * topic. `available:false` (daemon down) renders the "control plane not running"
+ * flat `spec.parents` refs. `available:false` (daemon down) renders the "control plane not running"
  * empty state.
  */
 export function buildTopicsPanel(input: {
   available: boolean;
   topics: ControlPlaneTopic[];
-  nanites?: Nanite[];
   alerts?: ControlPlaneAlert[];
   topicTypes?: TopicType[];
   error?: string;
@@ -755,14 +474,6 @@ export function buildTopicsPanel(input: {
       childrenBySlug.set(p, arr);
     }
   }
-  // Group nanites by their input topic slug for under-topic render (the read
-  // returns non-deleted rows only).
-  const nanitesByTopic = new Map<string, PanelNaniteRow[]>();
-  for (const n of input.nanites ?? []) {
-    const arr = nanitesByTopic.get(n.inputTopic) ?? [];
-    arr.push(buildNaniteRow(n));
-    nanitesByTopic.set(n.inputTopic, arr);
-  }
   const roots = open.filter((t) => t.parents.length === 0);
   const items: PanelItem[] = roots.map((t) => {
     const slug = t.slug as string;
@@ -776,7 +487,6 @@ export function buildTopicsPanel(input: {
       new Set([slug]),
       1,
     );
-    attachNanites(row, nanitesByTopic);
     return row;
   });
   return { tab: 'topics', items, emptyMessage: 'No open topics.' };
@@ -797,8 +507,6 @@ function buildControlPlaneCardTopics(
   members: ControlPlaneTopic[],
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
-  nanites: Nanite[] = [],
-  naniteTemplates: NaniteTemplate[] = [],
 ): { group: PanelTopicsGroup; orderedTopics: PanelTopic[] } {
   const panelBySlug = new Map<string, PanelTopic>();
   const orderedSlugs: string[] = [];
@@ -864,23 +572,6 @@ function buildControlPlaneCardTopics(
   for (const s of rootSlugs) {
     attach(s, new Set([s]), 1);
   }
-  // Nest nanites under their input topic (`nanites` is pre-filtered to members
-  // of this workstream). Appended after any child topics on the same panel.
-  if (nanites.length > 0) {
-    const nameByRef = naniteTemplateNameMap(naniteTemplates);
-    for (const n of [...nanites].sort((a, b) => b.created_at - a.created_at)) {
-      const panel = panelBySlug.get(n.inputTopic);
-      if (!panel) {
-        continue;
-      }
-      const row = buildNaniteRow(
-        n,
-        `${tab}:topic-nanite:${wsId}:${n.inputTopic}`,
-        cardNaniteLabel(n, nameByRef),
-      );
-      panel.children = [...(panel.children ?? []), row];
-    }
-  }
   const children = rootSlugs.map((s) => panelBySlug.get(s) as PanelTopic);
   const count = orderedSlugs.length;
   return {
@@ -899,14 +590,13 @@ function buildControlPlaneCardTopics(
 
 /**
  * The nested tree groups a workstream renders: the "Topics (N)" group (member
- * topics nested by their in-set parents, each carrying its nanite runs) plus a
- * top-level "Nanites (N)" group of orphan nanites. This is the SHARED
+ * topics nested by their in-set parents. This is the SHARED
  * composition the left-rail workstream card renders AND the Svelte workstream
  * editor mirrors below its flat topics list — pure, a function of already-
  * fetched control-plane values.
  */
 export interface WorkstreamTree {
-  /** [Topics group, Nanites group?] — same order the rail card renders. */
+  /** Topic groups rendered by the rail card. */
   groups: PanelTopicsGroup[];
   /** Member topics flagged `focused` (drives the card's pinned row). */
   focusedTopics: PanelTopic[];
@@ -917,7 +607,7 @@ export interface WorkstreamTree {
 /**
  * Compose a workstream's {@link WorkstreamTree}. Extracted from
  * {@link buildDomainWorkstreamCard} so the rail card and the Svelte workstream
- * editor build the SAME nested topic/nanite structure from the same inputs.
+ * editor build the SAME nested topic structure from the same inputs.
  * The full tree retains every member; only open focused topics appear in the
  * pinned strip.
  */
@@ -928,23 +618,12 @@ export function buildWorkstreamTree(
   topics: ControlPlaneTopic[] | undefined,
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
-  nanites: Nanite[] = [],
-  naniteTemplates: NaniteTemplate[] = [],
 ): WorkstreamTree {
   const groups: PanelTopicsGroup[] = [];
   const members =
     topics !== undefined && wsSlug.length > 0
       ? topics.filter((t) => t.workstreams.includes(wsSlug))
       : [];
-  const memberTopicSlugs = new Set(
-    members.map((m) => m.slug ?? '').filter((s) => s !== ''),
-  );
-  const myNanites =
-    wsSlug.length > 0 ? nanites.filter((n) => n.workstream === wsSlug) : [];
-  // A nanite whose input topic is a member of this workstream nests under that
-  // topic; the rest surface in the top-level "Nanites" group.
-  const nestedNanites = myNanites.filter((n) => memberTopicSlugs.has(n.inputTopic));
-  const orphanNanites = myNanites.filter((n) => !memberTopicSlugs.has(n.inputTopic));
   let focusedTopics: PanelTopic[] = [];
   if (topics !== undefined && wsSlug.length > 0) {
     const { group, orderedTopics } = buildControlPlaneCardTopics(
@@ -954,20 +633,9 @@ export function buildWorkstreamTree(
       members,
       typeMap,
       alerts,
-      nestedNanites,
-      naniteTemplates,
     );
     groups.push(group);
     focusedTopics = orderedTopics.filter((t) => t.focused && t.status === 'open');
-  }
-  const nanitesGroup = buildWorkstreamNanitesGroup(
-    wsId,
-    tab,
-    orphanNanites,
-    naniteTemplates,
-  );
-  if (nanitesGroup) {
-    groups.push(nanitesGroup);
   }
   return { groups, focusedTopics, members };
 }
@@ -986,8 +654,6 @@ function buildDomainWorkstreamCard(
   topics: ControlPlaneTopic[] | undefined,
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
-  nanites: Nanite[] = [],
-  naniteTemplates: NaniteTemplate[] = [],
 ): PanelWorkstream {
   const slug = ws.slug ?? '';
   const status = ws.status;
@@ -1016,8 +682,6 @@ function buildDomainWorkstreamCard(
     topics,
     typeMap,
     alerts,
-    nanites,
-    naniteTemplates,
   );
   const memberSlugs = members
     .map((t) => t.slug ?? '')
@@ -1063,8 +727,6 @@ export function buildWorkstreamPanels(input: {
   topics?: ControlPlaneTopic[];
   alerts?: ControlPlaneAlert[];
   topicTypes?: TopicType[];
-  nanites?: Nanite[];
-  naniteTemplates?: NaniteTemplate[];
   error?: string;
 }): WorkstreamPanels {
   if (!input.available) {
@@ -1083,8 +745,6 @@ export function buildWorkstreamPanels(input: {
     backlog: [],
   };
   const archived: PanelWorkstream[] = [];
-  const nanites = input.nanites ?? [];
-  const naniteTemplates = input.naniteTemplates ?? [];
   const orderedWorkstreams = input.workstreams
     .map((workstream, index) => ({ workstream, index }))
     .sort((left, right) =>
@@ -1093,11 +753,11 @@ export function buildWorkstreamPanels(input: {
   for (const ws of orderedWorkstreams) {
     if (ws.status === 'closed') {
       archived.push(
-        buildDomainWorkstreamCard(ws, 'archive', input.topics, typeMap, alerts, nanites, naniteTemplates),
+        buildDomainWorkstreamCard(ws, 'archive', input.topics, typeMap, alerts),
       );
     } else {
       buckets[sectionForStatus(ws.status)].push(
-        buildDomainWorkstreamCard(ws, 'active', input.topics, typeMap, alerts, nanites, naniteTemplates),
+        buildDomainWorkstreamCard(ws, 'active', input.topics, typeMap, alerts),
       );
     }
   }

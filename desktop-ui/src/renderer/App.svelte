@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
+  import ContainerAppDetail from './ContainerAppDetail.svelte';
+  import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from '../../../webview-ui/src/lib/WorkstreamView.svelte';
   import TopicView from '../../../webview-ui/src/lib/TopicView.svelte';
   import DocumentView from '../../../webview-ui/src/lib/DocumentView.svelte';
@@ -8,29 +10,48 @@
   import { chatContextForDocument } from '../shared/contracts';
   import type {
     ChatResult,
+    ContainerAppStatus,
     DesktopEnvironment,
     DesktopEnvironmentState,
     DesktopResourceKind,
     PendingConfirmation,
     PublicConfig,
   } from '../shared/contracts';
+  import {
+    containerAppDocument,
+    containerAppIdForDocument,
+    loadRegisteredContainerApps,
+    type ContainerAppItem,
+  } from './containerApps';
   import type { CommandJournalScopeRef } from '../../../src/controlPlaneClient';
   import type { PanelAction, PanelData } from '../../../src/panelData';
   import { invokeActiveAction } from './activeContextMenu';
   import { isChatAtBottom } from './chatScroll';
   import { readComposerDraft, writeComposerDraft } from './composerDraft';
+  import {
+    filterMentionApps,
+    mentionKeyEventAction,
+    mentionTokenAtCaret,
+    replaceMentionToken,
+    type MentionToken,
+  } from './mentionCompletion';
   import { renderMarkdown } from './markdown';
   import { createDocumentSaveQueue } from './documentSaveQueue';
   import {
     closeDocumentTab,
+    closeDocumentTabsToRight,
+    closeOtherDocumentTabs,
     documentTabKey,
     openDocumentTab,
     replaceSelectedTab,
     updateDocumentTab,
   } from './documentTabs';
   import { chatRunDomId, recentRunsForContext } from './scopedChat';
+  import { CHAT_HISTORY_POLL_INTERVAL_MS } from './chatPolling';
+  import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
+  import { topicTransferRefreshTargets, type TopicTransferRequest } from './topicTransfer';
   import type { WorkstreamSection } from '../../../src/panelData';
   import type { RailSide, RailWidths } from './railLayout';
   import {
@@ -39,11 +60,14 @@
     type SelectedTool,
   } from './environmentState';
   import {
+    chatContextForScope,
     createLiveRun,
     formatDetailValue,
+    isRetryableRun,
     journalToSummary,
     mergeHistoryRuns,
     reconcileLiveRun,
+    refreshLatestRuns,
     targetForRef,
     toolDetail,
     type ChatRun,
@@ -52,7 +76,9 @@
   } from './chatHistory';
 
   type Page = 'workspace' | 'settings';
+  type HeaderTab = 'log' | 'container-apps';
   const HISTORY_PAGE_SIZE = 30;
+  const HEADER_TABS: HeaderTab[] = ['log', 'container-apps'];
 
   let page = $state<Page>('workspace');
   let input = $state('');
@@ -69,11 +95,14 @@
   let documentError = $state('');
   let documentSaveStates = $state<Record<string, SaveState>>({});
   let documentSaveErrors = $state<Record<string, string>>({});
+  let documentTabMenu = $state<{ x: number; y: number; key: string } | null>(null);
+  let documentTabMenuElement = $state<HTMLDivElement | null>(null);
   let busy = $state(false);
   let endpoint = $state('');
   let model = $state('');
   let apiKey = $state('');
   let hasApiKey = $state(false);
+  let credentialStorage = $state<PublicConfig['credentialStorage']>('secure');
   let settingsStatus = $state('');
   let saving = $state(false);
   let testing = $state(false);
@@ -82,6 +111,12 @@
   let selectedEnvironment = $state<DesktopEnvironment | null>(null);
   let environmentLoading = $state(false);
   let environmentError = $state('');
+  let containerAppStatuses = $state<Record<string, ContainerAppStatus | undefined>>({});
+  let containerApps = $state<ContainerAppItem[]>([]);
+  let containerAppError = $state('');
+  let activeHeaderTab = $state<HeaderTab>('log');
+  let focusedHeaderTab = $state<HeaderTab>('log');
+  let busyContainerAppId = $state<string | null>(null);
   let activePanel = $state<PanelData | null>(null);
   let activeLoading = $state(false);
   let activeError = $state('');
@@ -92,13 +127,150 @@
   let viewportWidth = $state(1280);
   let railDrag: { side: RailSide; startX: number; widths: RailWidths } | null = null;
   let conversationElement = $state<HTMLDivElement | null>(null);
+  let composerElement = $state<HTMLFormElement | null>(null);
+  let composerTextarea = $state<HTMLTextAreaElement | null>(null);
+  let mentionToken = $state<MentionToken | null>(null);
+  let mentionActiveIndex = $state(0);
   let conversationPinned = true;
   let hasUnseenMessages = $state(false);
   let previewAttentionTarget: HTMLElement | null = null;
   let previewAttentionTimer: number | undefined;
   let environmentGeneration = 0;
+  let historyRequestGeneration: number | null = null;
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
+  const selectedContainerAppId = $derived(containerAppIdForDocument(activeDocument));
+  const selectedContainerApp = $derived(containerApps.find((app) => app.id === selectedContainerAppId) ?? null);
   const currentChatContext = $derived(chatContextForDocument(activeDocument));
+  const mentionApps = $derived(mentionToken ? filterMentionApps(containerApps, mentionToken.query) : []);
+  const mentionOpen = $derived(mentionToken !== null);
+
+  function appAdvertisesMcp(app: ContainerAppItem): boolean {
+    const status = containerAppStatuses[app.id];
+    return status ? Boolean(status.mcp) : Boolean(app.mcp);
+  }
+
+  function closeMentionCompletion(): void {
+    mentionToken = null;
+    mentionActiveIndex = 0;
+  }
+
+  function refreshMentionCompletion(value: string, caret: number | null): void {
+    mentionToken = mentionTokenAtCaret(value, caret ?? value.length, containerApps);
+    mentionActiveIndex = 0;
+  }
+
+  async function selectMention(app: ContainerAppItem): Promise<void> {
+    const token = mentionToken;
+    if (!token) return;
+    const replacement = replaceMentionToken(input, token, app.id);
+    input = replacement.value;
+    writeComposerDraft(localStorage, selectedEnvironment?.id, input);
+    closeMentionCompletion();
+    await tick();
+    composerTextarea?.focus();
+    composerTextarea?.setSelectionRange(replacement.caret, replacement.caret);
+  }
+
+  function handleComposerInput(event: Event): void {
+    const textarea = event.currentTarget as HTMLTextAreaElement;
+    updateComposerDraft(textarea.value);
+    refreshMentionCompletion(textarea.value, textarea.selectionStart);
+  }
+
+  function handleComposerKeydown(event: KeyboardEvent): void {
+    const action = mentionKeyEventAction(event, mentionOpen, mentionApps.length, mentionActiveIndex);
+    if (action.type === 'none') return;
+    if (action.type === 'navigate') mentionActiveIndex = action.index;
+    else if (action.type === 'dismiss') closeMentionCompletion();
+    else if (action.type === 'select') void selectMention(mentionApps[action.index]);
+    else if (action.type === 'send') void send();
+  }
+
+  function handleComposerBlur(): void {
+    window.setTimeout(() => {
+      if (!composerElement?.contains(document.activeElement)) closeMentionCompletion();
+    }, 0);
+  }
+
+  async function refreshContainerApp(app: ContainerAppItem): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      const status = await window.workingMemory.inspectContainerApp(app.id);
+      if (generation === environmentGeneration) {
+        containerAppStatuses[app.id] = status;
+        containerAppError = status.error ?? '';
+      }
+    } catch (error) {
+      if (generation === environmentGeneration) containerAppError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function loadContainerApps(): Promise<void> {
+    try {
+      await loadRegisteredContainerApps(
+        () => window.workingMemory.listContainerApps(),
+        (id) => window.workingMemory.inspectContainerApp(id),
+        () => environmentGeneration,
+        (apps) => { containerApps = apps; },
+        (app, status) => {
+          containerAppStatuses[app.id] = status;
+          if (status.error) containerAppError = status.error;
+        },
+        (error) => {
+          containerAppError = error instanceof Error ? error.message : String(error);
+        },
+      );
+    } catch (error) {
+      containerAppError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function openContainerAppDetail(app: ContainerAppItem): Promise<void> {
+    const next = openDocumentTab(
+      { tabs: documents, selectedKey: selectedDocumentKey },
+      containerAppDocument(app),
+    );
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    page = 'workspace';
+    activateHeaderTab('container-apps');
+    restoreDocumentSaveStatus(next.selectedKey);
+    await refreshContainerApp(app);
+  }
+
+  async function runContainerAppAction(app: ContainerAppItem, action: 'run' | 'open' | 'stop' | 'refresh'): Promise<void> {
+    if (busyContainerAppId) return;
+    const generation = environmentGeneration;
+    busyContainerAppId = app.id;
+    containerAppError = '';
+    try {
+      if (action === 'run') {
+        const result = await window.workingMemory.runContainerApp(app.id);
+        const status = await window.workingMemory.inspectContainerApp(app.id);
+        if (generation !== environmentGeneration) return;
+        containerAppStatuses[app.id] = result.status === 'ready'
+          ? { ...status, lastAction: `Run: ${result.action}`, error: null }
+          : { ...status, lastAction: 'Run failed', error: result.message };
+        if (result.status === 'error') containerAppError = result.message;
+      } else if (action === 'stop') {
+        const result = await window.workingMemory.stopContainerApp(app.id);
+        if (generation !== environmentGeneration) return;
+        containerAppStatuses[app.id] = result.detail;
+        if (result.status === 'error') containerAppError = result.message;
+      } else if (action === 'open') {
+        const status = await window.workingMemory.openContainerApp(app.id);
+        if (generation !== environmentGeneration) return;
+        containerAppStatuses[app.id] = status;
+        if (status.error) containerAppError = status.error;
+      } else {
+        await refreshContainerApp(app);
+      }
+    } catch (error) {
+      if (generation === environmentGeneration) containerAppError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (generation === environmentGeneration) busyContainerAppId = null;
+    }
+  }
 
   type DocumentPatch = TopicPatch & { status?: string };
   const documentSaves = createDocumentSaveQueue<DocumentPatch, DocumentVM>({
@@ -162,15 +334,16 @@
       const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
+      activateHeaderTab('log');
       documentError = '';
     }
     if (result.journalId) await refreshJournal(result.journalId);
     void refreshActive();
   }
 
-  function liveScope(): CommandJournalScopeRef {
-    return currentChatContext
-      ? { kind: currentChatContext.kind, id: currentChatContext.identifier, title: currentChatContext.title }
+  function liveScope(context = currentChatContext): CommandJournalScopeRef {
+    return context
+      ? { kind: context.kind, id: context.identifier, title: context.title }
       : { kind: 'DesktopChat', id: 'desktop-chat' };
   }
 
@@ -185,33 +358,57 @@
     }
   }
 
-  async function loadHistory(older = false): Promise<void> {
-    if (historyLoading && older) return;
+  async function refreshLatestHistory(initialize = false): Promise<void> {
+    const generation = environmentGeneration;
+    if (historyRequestGeneration === generation) return;
+    historyRequestGeneration = generation;
+    if (initialize) historyLoading = true;
+    historyError = '';
+    try {
+      const historyPage = await window.workingMemory.getChatHistory({ limit: HISTORY_PAGE_SIZE });
+      if (generation !== environmentGeneration) return;
+      chatRuns = refreshLatestRuns(chatRuns, historyPage.journals);
+      if (initialize) historyCursor = historyPage.nextCursor;
+    } catch (error) {
+      if (generation !== environmentGeneration) return;
+      historyError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (historyRequestGeneration === generation) {
+        historyRequestGeneration = null;
+        if (initialize) historyLoading = false;
+      }
+    }
+  }
+
+  async function loadOlderHistory(): Promise<void> {
+    const generation = environmentGeneration;
+    if (!historyCursor || historyRequestGeneration === generation) return;
+    historyRequestGeneration = generation;
     const previousHeight = conversationElement?.scrollHeight ?? 0;
     const previousTop = conversationElement?.scrollTop ?? 0;
     historyLoading = true;
     historyError = '';
-    const generation = environmentGeneration;
     try {
       const historyPage = await window.workingMemory.getChatHistory({
         limit: HISTORY_PAGE_SIZE,
-        ...(older && historyCursor ? { cursor: historyCursor } : {}),
+        cursor: historyCursor,
       });
       if (generation !== environmentGeneration) return;
       chatRuns = mergeHistoryRuns(chatRuns, historyPage.journals);
       historyCursor = historyPage.nextCursor;
-      if (older) {
-        await tick();
-        if (conversationElement) {
-          conversationElement.scrollTop = previousTop + conversationElement.scrollHeight - previousHeight;
-          conversationPinned = false;
-        }
+      await tick();
+      if (conversationElement) {
+        conversationElement.scrollTop = previousTop + conversationElement.scrollHeight - previousHeight;
+        conversationPinned = false;
       }
     } catch (error) {
       if (generation !== environmentGeneration) return;
       historyError = error instanceof Error ? error.message : String(error);
     } finally {
-      if (generation === environmentGeneration) historyLoading = false;
+      if (historyRequestGeneration === generation) {
+        historyRequestGeneration = null;
+        historyLoading = false;
+      }
     }
   }
 
@@ -272,8 +469,11 @@
     void window.workingMemory.getConfig().then(loadConfig);
     void discoverEnvironments(true);
     void refreshActive();
-    void loadHistory();
+    void refreshLatestHistory(true);
+    void loadContainerApps();
+    const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
     return () => {
+      window.clearInterval(historyPoll);
       window.removeEventListener('resize', handleResize);
       document.body.classList.remove('resizing-rails');
       clearPreviewAttention();
@@ -394,8 +594,14 @@
     activeLoading = reset.activeLoading;
     activeError = reset.activeError;
     hasUnseenMessages = reset.hasUnseenMessages;
+    containerAppStatuses = reset.containerAppStatuses;
+    containerAppError = '';
+    activeHeaderTab = 'log';
+    focusedHeaderTab = 'log';
+    busyContainerAppId = reset.busyContainerAppId;
     conversationPinned = true;
     page = 'workspace';
+    closeMentionCompletion();
   }
 
   async function switchEnvironment(mcpUrl: string): Promise<void> {
@@ -403,12 +609,14 @@
     environmentError = '';
     try {
       await documentSaves.flushAll();
-      const state = await window.workingMemory.switchEnvironment(mcpUrl);
       environmentGeneration += 1;
+      historyRequestGeneration = null;
       resetEnvironmentState();
+      const state = await window.workingMemory.switchEnvironment(mcpUrl);
       applyEnvironmentState(state);
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
-      await reloadEnvironmentBoundData(refreshActive, () => loadHistory());
+      await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
+      await loadContainerApps();
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -420,20 +628,18 @@
     endpoint = config.endpoint;
     model = config.model;
     hasApiKey = config.hasApiKey;
+    credentialStorage = config.credentialStorage;
     apiKey = '';
   }
 
-  async function send(): Promise<void> {
-    const message = input.trim();
-    if (!message || busy || pendingConfirmation) return;
+  async function submitChat(message: string, context = currentChatContext): Promise<void> {
+    if (!message.trim() || busy || pendingConfirmation) return;
     const runKey = crypto.randomUUID();
-    chatRuns = [...chatRuns, createLiveRun(runKey, message, liveScope(), Date.now())];
-    input = '';
-    writeComposerDraft(localStorage, selectedEnvironment?.id, '');
+    chatRuns = [...chatRuns, createLiveRun(runKey, message, liveScope(context), Date.now())];
     busy = true;
     const generation = environmentGeneration;
     try {
-      const result = await window.workingMemory.sendChat(message, currentChatContext);
+      const result = await window.workingMemory.sendChat(message, context);
       if (generation === environmentGeneration) await applyChatResult(result, runKey);
     } catch (error) {
       if (generation !== environmentGeneration) return;
@@ -443,6 +649,21 @@
     } finally {
       if (generation === environmentGeneration) busy = false;
     }
+  }
+
+  async function send(): Promise<void> {
+    const message = input.trim();
+    if (!message || busy || pendingConfirmation) return;
+    const context = currentChatContext;
+    input = '';
+    closeMentionCompletion();
+    writeComposerDraft(localStorage, selectedEnvironment?.id, '');
+    await submitChat(message, context);
+  }
+
+  async function retryRun(run: ChatRun): Promise<void> {
+    if (!isRetryableRun(run) || busy || pendingConfirmation) return;
+    await submitChat(run.userText, chatContextForScope(run.scope));
   }
 
   function updateComposerDraft(value: string): void {
@@ -489,11 +710,9 @@
     testing = true;
     settingsStatus = 'Testing…';
     try {
-      const submittedApiKey = Boolean(apiKey.trim());
       const result = await window.workingMemory.testConnection({ endpoint, model, apiKey });
       if (result.ok) {
-        apiKey = '';
-        hasApiKey = hasApiKey || submittedApiKey;
+        loadConfig(await window.workingMemory.getConfig());
       }
       settingsStatus = result.message;
     } catch (error) {
@@ -522,6 +741,7 @@
       const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
+      activateHeaderTab('log');
       restoreDocumentSaveStatus(next.selectedKey);
     } catch (error) {
       documentError = error instanceof Error ? error.message : String(error);
@@ -562,6 +782,52 @@
   function runActiveAction(workstream: string, action: PanelAction): void {
     if (!workstream || action.enabled === false) return;
     void mutateFromRail(workstream, () => invokeActiveAction(window.workingMemory.invokeAction, workstream, action));
+  }
+
+  async function transferActiveTopic(request: TopicTransferRequest): Promise<void> {
+    activeLoading = true;
+    activeError = '';
+    let transferError = '';
+    try {
+      await documentSaves.flushAll();
+      await window.workingMemory.invokeAction(
+        request.targetWorkstream,
+        'workingMemory.topic.transfer',
+        [{
+          topicSlug: request.slug,
+          sourceWorkstream: request.sourceWorkstream,
+          move: request.move,
+        }],
+      );
+      const targets = topicTransferRefreshTargets(
+        documents,
+        request.sourceWorkstream,
+        request.targetWorkstream,
+      );
+      const refreshed = await Promise.allSettled(targets.map(async (target) => ({
+        key: target.key,
+        document: await window.workingMemory.openResource(target.kind, target.identifier),
+      })));
+      let state = { tabs: documents, selectedKey: selectedDocumentKey };
+      for (const result of refreshed) {
+        if (result.status === 'fulfilled') {
+          state = updateDocumentTab(state, result.value.key, result.value.document);
+        }
+      }
+      documents = state.tabs;
+      selectedDocumentKey = state.selectedKey;
+      restoreDocumentSaveStatus(state.selectedKey);
+      const failedRefreshes = refreshed.filter((result) => result.status === 'rejected').length;
+      if (failedRefreshes > 0) {
+        transferError = `Transfer completed, but ${failedRefreshes} open ${failedRefreshes === 1 ? 'tab' : 'tabs'} could not be refreshed.`;
+      }
+    } catch (error) {
+      transferError = error instanceof Error ? error.message : String(error);
+    } finally {
+      activeLoading = false;
+      await refreshActive();
+      if (transferError) activeError = transferError;
+    }
   }
 
   async function reorderActiveWorkstream(
@@ -665,15 +931,94 @@
   function selectDocument(key: string): void {
     if (documents.some((document) => documentTabKey(document) === key)) {
       selectedDocumentKey = key;
+      activateHeaderTab('log');
       restoreDocumentSaveStatus(key);
     }
   }
 
-  function closeDocument(key: string): void {
-    const next = closeDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key);
+  function activateHeaderTab(tab: HeaderTab): void {
+    activeHeaderTab = tab;
+    focusedHeaderTab = tab;
+  }
+
+  function focusHeaderTab(tab: HeaderTab): void {
+    focusedHeaderTab = tab;
+    void tick().then(() => document.getElementById(`desktop-tab-${tab}`)?.focus());
+  }
+
+  function handleHeaderTabKeydown(event: KeyboardEvent, tab: HeaderTab): void {
+    const index = HEADER_TABS.indexOf(tab);
+    let next: HeaderTab | undefined;
+    if (event.key === 'ArrowLeft') next = HEADER_TABS[(index - 1 + HEADER_TABS.length) % HEADER_TABS.length];
+    else if (event.key === 'ArrowRight') next = HEADER_TABS[(index + 1) % HEADER_TABS.length];
+    else if (event.key === 'Home') next = HEADER_TABS[0];
+    else if (event.key === 'End') next = HEADER_TABS[HEADER_TABS.length - 1];
+    else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      activateHeaderTab(tab);
+      return;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    if (next) focusHeaderTab(next);
+  }
+
+  function applyDocumentTabs(next: { tabs: DocumentVM[]; selectedKey: string | null }): void {
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
     restoreDocumentSaveStatus(next.selectedKey);
+  }
+
+  function closeDocument(key: string): void {
+    documentTabMenu = null;
+    applyDocumentTabs(closeDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key));
+  }
+
+  async function openDocumentTabMenu(event: MouseEvent, key: string): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    selectDocument(key);
+    documentTabMenu = { x: event.clientX, y: event.clientY, key };
+    await tick();
+    if (!documentTabMenu || !documentTabMenuElement) return;
+    const bounds = documentTabMenuElement.getBoundingClientRect();
+    documentTabMenu = {
+      ...documentTabMenu,
+      x: Math.max(4, Math.min(documentTabMenu.x, window.innerWidth - bounds.width - 4)),
+      y: Math.max(4, Math.min(documentTabMenu.y, window.innerHeight - bounds.height - 4)),
+    };
+    documentTabMenuElement.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }
+
+  function runDocumentTabMenuAction(action: 'close' | 'others' | 'right'): void {
+    const key = documentTabMenu?.key;
+    documentTabMenu = null;
+    if (!key) return;
+    const state = { tabs: documents, selectedKey: selectedDocumentKey };
+    applyDocumentTabs(action === 'close'
+      ? closeDocumentTab(state, key)
+      : action === 'others'
+        ? closeOtherDocumentTabs(state, key)
+        : closeDocumentTabsToRight(state, key));
+  }
+
+  function navigateDocumentTabMenu(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      documentTabMenu = null;
+      return;
+    }
+    if (!documentTabMenuElement || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const items = [...documentTabMenuElement.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0
+      : event.key === 'End' ? items.length - 1
+        : event.key === 'ArrowDown' ? (current + 1) % items.length
+          : (current - 1 + items.length) % items.length;
+    items[next]?.focus();
   }
 
   function clearPreviewAttention(target = previewAttentionTarget): void {
@@ -721,27 +1066,25 @@
   }
 
   async function focusChatRun(run: ChatRun): Promise<void> {
-    chatRailCollapsed = false;
-    await tick();
-    const target = document.getElementById(chatRunDomId(run));
-    if (!target) return;
-    const scroller = target.closest('.conversation');
-    const targetBounds = target.getBoundingClientRect();
-    const scrollerBounds = scroller?.getBoundingClientRect();
-    const needsScroll = scrollerBounds
-      ? Math.abs(targetBounds.top + targetBounds.height / 2 - (scrollerBounds.top + scrollerBounds.height / 2)) > 1
-      : false;
-    const scrollFinished = scroller && needsScroll ? waitForScrollEnd(scroller) : Promise.resolve();
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await scrollFinished;
-    target.focus({ preventScroll: true });
-    restartPreviewAttention(target);
+    await focusChatRunTarget({
+      activateLog: () => activateHeaderTab('log'),
+      expandChatRail: () => (chatRailCollapsed = false),
+      afterRender: tick,
+      getTarget: () => document.getElementById(chatRunDomId(run)),
+      waitForScrollEnd,
+      restartAttention: restartPreviewAttention,
+    });
   }
 </script>
 
 <svelte:window
-  onclick={handleDocumentClick}
-  onkeydown={(event) => { if (event.key === 'Escape' && selectedTool) selectedTool = null; }}
+  onclick={(event) => { documentTabMenu = null; handleDocumentClick(event); }}
+  onkeydown={(event) => {
+    if (event.key === 'Escape') {
+      documentTabMenu = null;
+      if (selectedTool) selectedTool = null;
+    }
+  }}
 />
 
 <div
@@ -777,6 +1120,7 @@
           onToggleFocus={toggleActiveFocus}
           onAction={runActiveAction}
           onReorder={reorderActiveWorkstream}
+          onTransferTopic={transferActiveTopic}
         />
       {/key}
     {/if}
@@ -809,11 +1153,18 @@
         <header>
           <p class="eyebrow">Configuration</p>
           <h1>Model connection</h1>
-          <p>OpenAI-compatible Chat Completions or Responses endpoint. Credentials stay in OS-backed secure storage.</p>
+          <p>
+            OpenAI-compatible Chat Completions or Responses endpoint.
+            {credentialStorage === 'secure'
+              ? ' Credentials stay in OS-backed secure storage.'
+              : credentialStorage === 'session'
+                ? ' The API key is held in memory for this app session because secure storage is unavailable.'
+                : ' Secure storage is unavailable; API keys can be used for the current app session but are not written to disk.'}
+          </p>
         </header>
         <label>Endpoint<input bind:value={endpoint} placeholder="http://localhost:11434/v1" /></label>
         <label>Model<input bind:value={model} placeholder="qwen3:14b" /></label>
-        <label>API key<input type="password" bind:value={apiKey} placeholder={hasApiKey ? 'Saved securely' : 'Optional for local endpoints'} autocomplete="new-password" /></label>
+        <label>API key<input type="password" bind:value={apiKey} placeholder={hasApiKey ? (credentialStorage === 'secure' ? 'Saved securely' : 'Available this session') : 'Optional for local endpoints'} autocomplete="new-password" /></label>
         <div class="settings-actions">
           <button class="secondary" disabled={saving || testing} onclick={() => void testConnection()}>{testing ? 'Testing…' : 'Test Connection'}</button>
           <button class="primary" disabled={saving || testing} onclick={() => void saveSettings()}>{saving ? 'Saving…' : 'Save'}</button>
@@ -825,7 +1176,12 @@
         <div class="document-tabs" role="tablist" aria-label="Open documents">
           {#each documents as document (documentTabKey(document))}
             {@const key = documentTabKey(document)}
-            <div class="document-tab" class:selected={key === selectedDocumentKey}>
+            <div
+              class="document-tab"
+              class:selected={key === selectedDocumentKey}
+              role="presentation"
+              oncontextmenu={(event) => void openDocumentTabMenu(event, key)}
+            >
               <button
                 class="document-tab-select"
                 role="tab"
@@ -833,7 +1189,7 @@
                 title={document.title}
                 onclick={() => selectDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : 'file'}"></span>
+                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'container-app' ? 'server-environment' : 'file'}"></span>
                 <span>{document.title}</span>
               </button>
               <button class="document-tab-close" title={`Close ${document.title}`} aria-label={`Close ${document.title}`} onclick={() => closeDocument(key)}>
@@ -842,22 +1198,51 @@
             </div>
           {/each}
         </div>
+        {#if documentTabMenu}
+          {@const menuIndex = documents.findIndex((document) => documentTabKey(document) === documentTabMenu?.key)}
+          <div
+            bind:this={documentTabMenuElement}
+            class="document-tab-menu"
+            role="menu"
+            aria-label="Document tab actions"
+            tabindex="-1"
+            style="left: {documentTabMenu.x}px; top: {documentTabMenu.y}px;"
+            onclick={(event) => event.stopPropagation()}
+            onkeydown={navigateDocumentTabMenu}
+          >
+            <button role="menuitem" onclick={() => runDocumentTabMenuAction('close')}>
+              <span aria-hidden="true" class="codicon codicon-close"></span><span>Close</span>
+            </button>
+            <button role="menuitem" disabled={documents.length <= 1} onclick={() => runDocumentTabMenuAction('others')}>
+              <span aria-hidden="true" class="codicon codicon-close-all"></span><span>Close Others</span>
+            </button>
+            <button role="menuitem" disabled={menuIndex < 0 || menuIndex === documents.length - 1} onclick={() => runDocumentTabMenuAction('right')}>
+              <span aria-hidden="true" class="codicon codicon-arrow-right"></span><span>Close to the Right</span>
+            </button>
+          </div>
+        {/if}
         <div class="document-host" role="tabpanel" inert={environmentLoading}>
           <div class="document-toolbar">
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
-        {#if activeDocument.kind === 'workstream'}
+        {#if activeDocument?.kind === 'container-app' && selectedContainerApp}
+          <ContainerAppDetail
+            app={selectedContainerApp}
+            status={containerAppStatuses[selectedContainerApp.id]}
+            busy={busyContainerAppId === selectedContainerApp.id}
+            onAction={(action) => void runContainerAppAction(selectedContainerApp!, action)}
+          />
+        {:else if activeDocument?.kind === 'workstream'}
           <WorkstreamView
             ws={activeDocument}
             {saveState}
             onSave={saveWorkstream}
             onOpenTopic={(slug) => void openResource('topic', slug)}
-            onOpenNanite={(id) => void openResource('document', id)}
             onInvoke={invokeAction}
             onTogglePin={togglePin}
             onSetAlertStatus={setAlertStatus}
           />
-        {:else if activeDocument.kind === 'topic'}
+        {:else if activeDocument?.kind === 'topic'}
           <TopicView
             topic={activeDocument}
             {saveState}
@@ -866,7 +1251,7 @@
             onOpenWorkstream={(slug) => void openResource('workstream', slug)}
             onSetAlertStatus={setAlertStatus}
           />
-        {:else}
+        {:else if activeDocument}
           <DocumentView
             doc={activeDocument}
             onOpenDocument={(id) => void openResource('document', id)}
@@ -880,7 +1265,7 @@
       <section class="empty-state">
         <p class="eyebrow">Control plane view</p>
         <h1>Choose active work.</h1>
-        <p>Open a workstream, topic, or nanite from the Active rail, or ask through chat.</p>
+        <p>Open a workstream or topic from the Active rail, or ask through chat.</p>
       </section>
     {/if}
     </div>
@@ -894,10 +1279,15 @@
           <p>No messages for this scope.</p>
         {:else}
           {#each scopedRecentRuns as run (run.journalId ?? run.key)}
-            <button onclick={() => void focusChatRun(run)} title="Show in history">
-              <span>{run.userText}</span>
-              <small>{run.assistantText ?? assistantFallback(run)}</small>
-            </button>
+            <div class="scope-preview-row">
+              <button class="scope-preview-main" onclick={() => void focusChatRun(run)} title="Show in history">
+                <span>{run.userText}</span>
+                <small>{run.assistantText ?? assistantFallback(run)}</small>
+              </button>
+              {#if isRetryableRun(run)}
+                <button class="retry-button" disabled={busy || pendingConfirmation !== null} onclick={() => void retryRun(run)}>Retry</button>
+              {/if}
+            </div>
           {/each}
         {/if}
       </section>
@@ -911,16 +1301,58 @@
         {:else}
           <div class="composer-context composer-context-empty">No document selected</div>
         {/if}
-        <form class="composer" onsubmit={(event) => { event.preventDefault(); void send(); }}>
+        <form bind:this={composerElement} class="composer" onsubmit={(event) => { event.preventDefault(); closeMentionCompletion(); void send(); }}>
+          <span id="mention-instructions" class="sr-only">Type at sign followed by a Container App name. Use up and down arrows to navigate, Enter or Tab to select, and Escape to dismiss.</span>
+          {#if mentionOpen}
+            <div class="mention-popup" id="container-app-mentions" role="listbox" aria-label="Container Apps">
+              {#if mentionApps.length}
+                {#each mentionApps as app, index (app.id)}
+                  <button
+                    type="button"
+                    id={`container-app-mention-${app.id}`}
+                    class="mention-option"
+                    class:active={index === mentionActiveIndex}
+                    role="option"
+                    aria-selected={index === mentionActiveIndex}
+                    tabindex="-1"
+                    onmousedown={(event) => event.preventDefault()}
+                    onclick={() => void selectMention(app)}
+                  >
+                    <span class="mention-option-label">
+                      <strong>{app.displayName}</strong>
+                      <code>@{app.id}</code>
+                    </span>
+                    <span class:mcp-ready={appAdvertisesMcp(app)} class="mention-mcp">
+                      {appAdvertisesMcp(app) ? 'MCP ready' : 'No MCP endpoint'}
+                    </span>
+                  </button>
+                {/each}
+              {:else}
+                <div class="mention-empty" role="status">No Container Apps match “{mentionToken?.query}”.</div>
+              {/if}
+            </div>
+          {/if}
           <textarea
+            bind:this={composerTextarea}
             value={input}
             rows="3"
             aria-label="Message"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={mentionOpen}
+            aria-controls={mentionOpen ? 'container-app-mentions' : undefined}
+            aria-activedescendant={mentionOpen && mentionApps.length ? `container-app-mention-${mentionApps[mentionActiveIndex]?.id}` : undefined}
+            aria-describedby="mention-instructions"
             placeholder="Write a command to interact with Working Memory"
-            oninput={(event) => updateComposerDraft(event.currentTarget.value)}
-            onkeydown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); }
-            }}></textarea>
+            oninput={handleComposerInput}
+            onclick={(event) => refreshMentionCompletion(event.currentTarget.value, event.currentTarget.selectionStart)}
+            onkeyup={(event) => {
+              if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+                refreshMentionCompletion(event.currentTarget.value, event.currentTarget.selectionStart);
+              }
+            }}
+            onblur={handleComposerBlur}
+            onkeydown={handleComposerKeydown}></textarea>
           <button class="send" disabled={busy || pendingConfirmation !== null || !input.trim()} title="Send" aria-label="Send">
             <span aria-hidden="true" class="codicon codicon-send"></span>
           </button>
@@ -958,11 +1390,29 @@
         onclick={() => (chatRailCollapsed = false)}
       ><span aria-hidden="true" class="codicon codicon-chevron-left"></span></button>
     {:else}
-      <header class="brand">
+      <header class="desktop-header">
         <div class="mark">WM</div>
-        <div>
-          <strong>Working Memory</strong>
-          <span>Desktop</span>
+        <div class="desktop-header-tabs" role="tablist" aria-label="Desktop views">
+          <button
+            id="desktop-tab-log"
+            role="tab"
+            aria-selected={activeHeaderTab === 'log'}
+            aria-controls="desktop-panel-log"
+            tabindex={focusedHeaderTab === 'log' ? 0 : -1}
+            onclick={() => activateHeaderTab('log')}
+            onfocus={() => (focusedHeaderTab = 'log')}
+            onkeydown={(event) => handleHeaderTabKeydown(event, 'log')}
+          >Log</button>
+          <button
+            id="desktop-tab-container-apps"
+            role="tab"
+            aria-selected={activeHeaderTab === 'container-apps'}
+            aria-controls="desktop-panel-container-apps"
+            tabindex={focusedHeaderTab === 'container-apps' ? 0 : -1}
+            onclick={() => activateHeaderTab('container-apps')}
+            onfocus={() => (focusedHeaderTab = 'container-apps')}
+            onkeydown={(event) => handleHeaderTabKeydown(event, 'container-apps')}
+          >Container Apps</button>
         </div>
         <button
           class="icon-button"
@@ -972,10 +1422,18 @@
         ><span aria-hidden="true" class="codicon codicon-chevron-right"></span></button>
       </header>
 
+      <div
+        id="desktop-panel-log"
+        class="chat-body"
+        role="tabpanel"
+        aria-labelledby="desktop-tab-log"
+        hidden={activeHeaderTab !== 'log'}
+        inert={activeHeaderTab !== 'log'}
+      >
       <div class="conversation-shell">
       <div bind:this={conversationElement} class="conversation" aria-live="polite" onscroll={handleConversationScroll}>
       {#if historyCursor}
-        <button class="load-older" disabled={historyLoading} onclick={() => void loadHistory(true)}>
+        <button class="load-older" disabled={historyLoading} onclick={() => void loadOlderHistory()}>
           {historyLoading ? 'Loading…' : 'Load older'}
         </button>
       {/if}
@@ -1042,6 +1500,11 @@
               <p>{assistantFallback(run)}</p>
             {/if}
           </section>
+          {#if isRetryableRun(run)}
+            <div class="run-actions">
+              <button class="retry-button" disabled={busy || pendingConfirmation !== null} onclick={() => void retryRun(run)}>Retry</button>
+            </div>
+          {/if}
         </article>
       {/each}
       {#if pendingConfirmation}
@@ -1128,7 +1591,26 @@
           </div>
         </div>
       {/if}
+      </div>
 
+      <div
+        id="desktop-panel-container-apps"
+        class="container-apps-panel"
+        role="tabpanel"
+        aria-labelledby="desktop-tab-container-apps"
+        hidden={activeHeaderTab !== 'container-apps'}
+        inert={activeHeaderTab !== 'container-apps'}
+      >
+        <ContainerAppList
+          apps={containerApps}
+          statuses={containerAppStatuses}
+          selectedId={selectedContainerAppId}
+          onSelect={(app) => void openContainerAppDetail(app)}
+        />
+        {#if containerAppError}
+          <p class="container-panel-error" role="alert">{containerAppError}</p>
+        {/if}
+      </div>
     {/if}
   </aside>
 </div>
