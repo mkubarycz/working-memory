@@ -23,7 +23,7 @@ function makeCtx(overrides: Partial<DeepLinkContext> = {}): DeepLinkContext {
   };
 }
 
-const OPEN = 'vscode://kubarycz.working-memory/open';
+const OPEN = 'http://127.0.0.1:7718/open';
 
 describe('enrichDeepLinks', () => {
   it('topic link: prepends the topic-type icon and appends the child count', () => {

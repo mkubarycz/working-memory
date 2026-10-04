@@ -34,9 +34,9 @@ const FIXED_ICON: Record<Exclude<EnrichableKind, 'topic'>, string> = {
 /** Fallback icon when a topic (or its topic-type) can't be resolved. */
 export const DEEP_LINK_FALLBACK_ICON = 'symbol-misc';
 
-// [label](vscode://kubarycz.working-memory/open/<kind>/<id>) — session dropped.
+// [label](http://127.0.0.1:7718/open/<kind>/<id>) — session dropped.
 const DEEP_LINK_RE =
-  /\[([^\]]+)\]\((vscode:\/\/kubarycz\.working-memory\/open\/(topic|workstream|topic-type|alert)\/([^)\s]+))\)/g;
+  /\[([^\]]+)\]\((http:\/\/127\.0\.0\.1:7718\/open\/(topic|workstream|topic-type|alert)\/([^)\s]+))\)/g;
 
 /**
  * Injected lookup the pure enrichment pass uses to resolve icons + counts. Built

@@ -21,7 +21,7 @@ import { deployTemplates } from './deployTemplates';
 import { initControlPlaneIntegration } from './controlPlane';
 import { ControlPlaneClient } from './controlPlaneClient';
 import { ControlPlaneHost } from './controlPlaneHost';
-import { launchDesktopUi } from './desktopLauncher';
+import { launchDesktopDeepLink, launchDesktopUi } from './desktopLauncher';
 import { maxMtimeMs } from './storeMtime';
 import { releaseAssetName } from './releaseTarget';
 
@@ -911,9 +911,11 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        void vscode.commands.executeCommand('working-memory.open', {
-          kind,
-          id,
+        void launchDesktopDeepLink(context.extensionPath, kind, id).catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(
+            `Working Memory: failed to open desktop link — ${message}`,
+          );
         });
       },
     }),

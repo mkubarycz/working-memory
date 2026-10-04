@@ -20,10 +20,10 @@ Topics are durable subjects that outlive any single session. Tag entries with `w
 When referencing a session, topic, or workstream in chat output, render it as a markdown link using the deep-link form so the user can click through:
 
 ```
-vscode://kubarycz.working-memory/open/<kind>/<id>
+http://127.0.0.1:7718/open/<kind>/<id>
 ```
 
-Where `<kind>` is `topic`, `session`, or `workstream` and `<id>` is the slug (or UUID for sessions). Never paste raw `working-memory:/...` URIs or bare session UUIDs — Copilot Chat won't linkify them.
+Where `<kind>` is `topic`, `workstream`, `topic-type`, `alert`, or `document`. The desktop loopback bridge opens the link in the desktop UI. Never paste raw URIs; wrap the link in Markdown with a friendly label.
 
 ## Specialist subagents
 

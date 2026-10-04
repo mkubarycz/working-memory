@@ -2,6 +2,11 @@ import type { PanelAction } from '../../../src/panelData';
 import type { DocumentVM } from '../../../webview-ui/src/lib/types';
 import { toIpcPayload } from '../preload/ipcPayload';
 
+export interface ActiveMoveTarget {
+  slug: string;
+  title: string;
+}
+
 export type ActiveContextMenuItem =
   | {
       kind: 'focus';
@@ -16,6 +21,14 @@ export type ActiveContextMenuItem =
       icon: string;
       enabled: boolean;
       action: PanelAction;
+    }
+  | {
+      kind: 'move';
+      title: 'Move to...';
+      icon: 'arrow-swap';
+      enabled: boolean;
+      topic: string;
+      targets: ActiveMoveTarget[];
     };
 
 export function topicSlugFromOpenUri(openUri: string): string {
@@ -29,16 +42,30 @@ export function topicSlugFromOpenUri(openUri: string): string {
 
 export function activeContextMenuItems(
   actions: PanelAction[] = [],
-  focus?: { topic: string; focused: boolean },
+  topic?: {
+    topic: string;
+    focused: boolean;
+    sourceWorkstream: string;
+    moveTargets: ActiveMoveTarget[];
+  },
 ): ActiveContextMenuItem[] {
   const items: ActiveContextMenuItem[] = [];
-  if (focus) {
+  if (topic) {
     items.push({
       kind: 'focus',
-      title: focus.focused ? 'Remove from Focus' : 'Add to Focus',
-      icon: focus.focused ? 'pinned' : 'pin',
-      enabled: Boolean(focus.topic),
-      topic: focus.topic,
+      title: topic.focused ? 'Remove from Focus' : 'Add to Focus',
+      icon: topic.focused ? 'pinned' : 'pin',
+      enabled: Boolean(topic.topic),
+      topic: topic.topic,
+    });
+    const targets = topic.moveTargets.filter((target) => target.slug !== topic.sourceWorkstream);
+    items.push({
+      kind: 'move',
+      title: 'Move to...',
+      icon: 'arrow-swap',
+      enabled: Boolean(topic.topic) && targets.length > 0,
+      topic: topic.topic,
+      targets,
     });
   }
   return items.concat(actions.map((action) => ({

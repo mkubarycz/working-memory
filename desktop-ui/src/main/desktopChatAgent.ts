@@ -135,6 +135,7 @@ interface ActiveRun {
 const SYSTEM_PROMPT = [
   'You are the Working Memory desktop assistant.',
   'Use the provided ws-* tools to read and maintain Working Memory. Prefer exact reads before updates.',
+  'When referencing a Working Memory topic, workstream, alert, topic type, or document in Chat, use a friendly Markdown link whose target is http://127.0.0.1:7718/open/<kind>/<identifier>; URI-encode the identifier. The desktop loopback bridge opens that resource.',
   'Tool errors include the authoritative schema; correct the arguments and retry.',
   'When the task is complete, answer concisely. Never claim a destructive action ran unless its tool result says it ran.',
 ].join(' ');

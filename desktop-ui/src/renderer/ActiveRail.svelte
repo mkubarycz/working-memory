@@ -9,8 +9,13 @@
     PanelWorkstream,
     PanelWorkstreamSection,
   } from '../../../src/panelData';
-  import type { DesktopEnvironment } from '../shared/contracts';
-  import { activeContextMenuItems, topicSlugFromOpenUri, type ActiveContextMenuItem } from './activeContextMenu';
+  import type { DesktopEnvironment, PreparedResourceDrag } from '../shared/contracts';
+  import {
+    activeContextMenuItems,
+    topicSlugFromOpenUri,
+    type ActiveContextMenuItem,
+    type ActiveMoveTarget,
+  } from './activeContextMenu';
   import {
     resizeActiveSections,
     type ActiveSectionBoundary,
@@ -50,7 +55,13 @@
   }: Props = $props();
   const expanded = new SvelteSet<string>();
   let seeded = $state(false);
-  let menu = $state<{ x: number; y: number; workstream: string; items: ActiveContextMenuItem[] } | null>(null);
+  let menu = $state<{
+    x: number;
+    y: number;
+    workstream: string;
+    items: ActiveContextMenuItem[];
+    submenuToLeft: boolean;
+  } | null>(null);
   let menuElement = $state<HTMLDivElement | null>(null);
   let sectionsElement = $state<HTMLDivElement | null>(null);
   let sectionHeights = $state<ActiveSectionHeights | null>(null);
@@ -65,10 +76,18 @@
   const workstreamDrag = $derived(activeDrag?.kind === 'workstream' ? activeDrag : null);
   let topicDropTarget = $state<string | null>(null);
   let dropTarget = $state<{ section: PanelWorkstreamSection['section']; index: number } | null>(null);
+  const preparedResourceDrags = new Map<string, PreparedResourceDrag>();
+  const pendingResourceDrags = new Map<string, number>();
+  let dragPreparationGeneration = 0;
+  let nativeDragFilePath = $state<string | null>(null);
+  let draggingWorkstreamSlug = $state<string | null>(null);
 
   const sections = $derived(
     (data?.items.filter((item): item is PanelWorkstreamSection => item.kind === 'workstream-section')) ?? [],
   );
+  const moveTargets = $derived(sections.flatMap((section) =>
+    section.workstreams.flatMap((workstream): ActiveMoveTarget[] =>
+      workstream.slug ? [{ slug: workstream.slug, title: workstream.label }] : [])));
 
   $effect(() => {
     if (seeded || sections.length === 0) return;
@@ -81,6 +100,35 @@
       }
     }
   });
+
+  $effect(() => {
+    selectedEnvironment?.mcpUrl;
+    const visibleSections = sections;
+    dragPreparationGeneration += 1;
+    preparedResourceDrags.clear();
+    pendingResourceDrags.clear();
+    for (const section of visibleSections) {
+      for (const workstream of section.workstreams) {
+        prepareResourceDrag(workstream.openUri, workstream.label);
+        for (const topic of workstream.focused_topics) prepareTopicDragTree(topic);
+        for (const group of workstream.children) {
+          for (const topic of group.children) prepareTopicDragTree(topic);
+        }
+      }
+    }
+  });
+
+  $effect(() => window.workingMemory.onResourceDragResult((result) => {
+    if (result.filePath !== nativeDragFilePath) return;
+    if (result.status === 'failed') {
+      nativeDragFilePath = null;
+      activeDrag = null;
+      topicDropTarget = null;
+      dropTarget = null;
+      draggingWorkstreamSlug = null;
+      console.error('Unable to drag Working Memory context:', result.error);
+    }
+  }));
 
   function toggle(node: ExpandableTreeNode, recursive = false): void {
     const nextExpanded = !expanded.has(node.id);
@@ -120,25 +168,86 @@
       y: event.clientY || targetRect.top + targetRect.height,
       workstream,
       items,
+      submenuToLeft: false,
     };
     await tick();
     if (!menu || !menuElement) return;
     const menuRect = menuElement.getBoundingClientRect();
+    const submenuRects = [...menuElement.querySelectorAll<HTMLElement>('.active-context-submenu')]
+      .map((submenu) => submenu.getBoundingClientRect());
+    const submenuWidth = Math.max(0, ...submenuRects.map((rect) => rect.width));
+    const contentHeight = Math.max(menuRect.height, ...submenuRects.map((rect) => rect.height));
+    const x = Math.max(4, Math.min(menu.x, window.innerWidth - menuRect.width - 4));
     menu = {
       ...menu,
-      x: Math.max(4, Math.min(menu.x, window.innerWidth - menuRect.width - 4)),
-      y: Math.max(4, Math.min(menu.y, window.innerHeight - menuRect.height - 4)),
+      x,
+      y: Math.max(4, Math.min(menu.y, window.innerHeight - contentHeight - 4)),
+      submenuToLeft: submenuWidth > 0 && x + menuRect.width + submenuWidth + 8 > window.innerWidth,
     };
-    menuElement.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    menuElement.querySelector<HTMLButtonElement>(
+      ':scope > .active-context-menu-entry > button:not(:disabled)',
+    )?.focus();
   }
 
   function runMenuItem(event: MouseEvent, item: ActiveContextMenuItem): void {
     event.stopPropagation();
     const workstream = menu?.workstream ?? '';
     if (!item.enabled) return;
+    if (item.kind === 'move') return;
     menu = null;
     if (item.kind === 'focus') onToggleFocus(workstream, item.topic);
     else onAction(workstream, item.action);
+  }
+
+  function moveTopicFromMenu(
+    event: MouseEvent,
+    item: Extract<ActiveContextMenuItem, { kind: 'move' }>,
+    targetWorkstream: string,
+  ): void {
+    event.stopPropagation();
+    const sourceWorkstream = menu?.workstream ?? '';
+    const request = planTopicTransfer(
+      { slug: item.topic, sourceWorkstream },
+      targetWorkstream,
+      true,
+    );
+    if (!request) return;
+    menu = null;
+    onTransferTopic(request);
+  }
+
+  function openMoveSubmenu(event: KeyboardEvent): void {
+    if (event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    event.stopPropagation();
+    (event.currentTarget as HTMLElement)
+      .closest('.active-context-menu-entry')
+      ?.querySelector<HTMLButtonElement>('.active-context-submenu button:not(:disabled)')
+      ?.focus();
+  }
+
+  function navigateMoveSubmenu(event: KeyboardEvent): void {
+    const submenu = (event.currentTarget as HTMLElement).closest('.active-context-submenu');
+    if (!submenu) return;
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      event.stopPropagation();
+      submenu.closest('.active-context-menu-entry')
+        ?.querySelector<HTMLButtonElement>(':scope > button')
+        ?.focus();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const items = [...submenu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0
+      : event.key === 'End' ? items.length - 1
+        : event.key === 'ArrowDown' ? (current + 1) % items.length
+          : (current - 1 + items.length) % items.length;
+    items[next]?.focus();
   }
 
   function navigateMenu(event: KeyboardEvent): void {
@@ -149,7 +258,9 @@
     }
     if (!menuElement || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const items = [...menuElement.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+    const items = [...menuElement.querySelectorAll<HTMLButtonElement>(
+      ':scope > .active-context-menu-entry > button:not(:disabled)',
+    )];
     if (items.length === 0) return;
     const current = items.indexOf(document.activeElement as HTMLButtonElement);
     const next = event.key === 'Home' ? 0
@@ -194,21 +305,98 @@
     document.body.classList.remove('resizing-active-sections');
   }
 
-  function startResourceDrag(event: DragEvent, openUri: string, label: string): void {
-    setResourceDragData(event.dataTransfer, openUri, label);
+  function prepareTopicDragTree(topic: PanelTopic, generation = dragPreparationGeneration): void {
+    prepareResourceDrag(topic.openUri, topic.label, generation);
+    for (const child of topic.children ?? []) prepareTopicDragTree(child, generation);
   }
 
-  function startTopicDrag(event: DragEvent, slug: string, workstream: string, openUri: string, label: string): void {
+  function prepareResourceDrag(
+    openUri: string,
+    label: string,
+    generation = dragPreparationGeneration,
+  ): void {
+    if (
+      preparedResourceDrags.has(openUri)
+      || pendingResourceDrags.get(openUri) === generation
+    ) return;
+    pendingResourceDrags.set(openUri, generation);
+    void window.workingMemory.prepareResourceDrag(openUri, label)
+      .then((prepared) => {
+        if (generation === dragPreparationGeneration) {
+          preparedResourceDrags.set(openUri, prepared);
+        }
+      })
+      .catch((error) => console.error('Unable to prepare Working Memory drag context:', error))
+      .finally(() => {
+        if (pendingResourceDrags.get(openUri) === generation) {
+          pendingResourceDrags.delete(openUri);
+        }
+      });
+  }
+
+  function startResourceDrag(event: DragEvent, openUri: string, label: string): void {
+    const prepared = preparedResourceDrags.get(openUri);
+    setResourceDragData(event.dataTransfer, openUri, label, prepared);
+    if (!prepared) return;
+    event.preventDefault();
+    nativeDragFilePath = prepared.filePath;
+    window.workingMemory.startResourceDrag(prepared);
+  }
+
+  function startTopicDrag(
+    event: DragEvent,
+    slug: string,
+    workstream: string,
+    openUri: string,
+    label: string,
+  ): void {
     event.stopPropagation();
-    startResourceDrag(event, openUri, label);
     activeDrag = { kind: 'topic', slug, sourceWorkstream: workstream };
     dropTarget = null;
+    startResourceDrag(event, openUri, label);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove';
   }
 
   function finishTopicDrag(): void {
     if (activeDrag?.kind === 'topic') activeDrag = null;
+    nativeDragFilePath = null;
     topicDropTarget = null;
+  }
+
+  function startWorkstreamDrag(
+    event: DragEvent,
+    workstream: PanelWorkstream,
+    section: PanelWorkstreamSection['section'],
+  ): void {
+    const slug = workstream.slug ?? '';
+    if (!slug) return;
+    event.stopPropagation();
+    activeDrag = { kind: 'workstream', slug, section };
+    draggingWorkstreamSlug = slug;
+    topicDropTarget = null;
+    startResourceDrag(event, workstream.openUri, workstream.label);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  }
+
+  function finishWorkstreamDrag(): void {
+    if (activeDrag?.kind === 'workstream') activeDrag = null;
+    nativeDragFilePath = null;
+    draggingWorkstreamSlug = null;
+    dropTarget = null;
+  }
+
+  function clearExternalDragVisual(event: DragEvent): void {
+    if ((event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) return;
+    draggingWorkstreamSlug = null;
+  }
+
+  function clearCompletedNativeDrag(event: PointerEvent): void {
+    if (event.buttons !== 0 || !nativeDragFilePath) return;
+    nativeDragFilePath = null;
+    activeDrag = null;
+    topicDropTarget = null;
+    dropTarget = null;
+    draggingWorkstreamSlug = null;
   }
 
   function updateTopicDropTarget(event: DragEvent, targetWorkstream: string): void {
@@ -228,20 +416,6 @@
     onTransferTopic(request);
   }
 
-  function startWorkstreamDrag(
-    event: DragEvent,
-    workstream: PanelWorkstream,
-    section: PanelWorkstreamSection['section'],
-  ): void {
-    const slug = workstream.slug ?? '';
-    if (!slug) return;
-    event.stopPropagation();
-    startResourceDrag(event, workstream.openUri, workstream.label);
-    activeDrag = { kind: 'workstream', slug, section };
-    topicDropTarget = null;
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
-  }
-
   function updateDropTarget(
     event: DragEvent,
     section: PanelWorkstreamSection['section'],
@@ -256,11 +430,6 @@
         return { top: bounds.top, height: bounds.height };
       });
     dropTarget = { section, index: workstreamDropIndex(boundaries, event.clientY) };
-  }
-
-  function finishWorkstreamDrag(): void {
-    if (activeDrag?.kind === 'workstream') activeDrag = null;
-    dropTarget = null;
   }
 
   async function dropWorkstream(event: DragEvent, section: PanelWorkstreamSection['section']): Promise<void> {
@@ -287,6 +456,7 @@
 
 <svelte:window
   onclick={() => { menu = null; environmentMenuOpen = false; }}
+  onpointermove={clearCompletedNativeDrag}
   onkeydown={(event) => {
     if (event.key === 'Escape') { menu = null; environmentMenuOpen = false; }
   }}
@@ -302,7 +472,12 @@
   {@const children = node.children ?? []}
   {@const open = expanded.has(node.id)}
   {@const topicSlug = topicSlugFromOpenUri(node.openUri)}
-  {@const menuItems = activeContextMenuItems(node.actions, { topic: topicSlug, focused: node.focused })}
+  {@const menuItems = activeContextMenuItems(node.actions, {
+    topic: topicSlug,
+    focused: node.focused,
+    sourceWorkstream: workstream,
+    moveTargets,
+  })}
   <li class="active-tree-node" class:expanded={children.length > 0 && open} style="--tree-depth: {depth}">
     <div
       class="active-row"
@@ -326,6 +501,7 @@
         class="active-open"
         title={node.tooltip}
         draggable="true"
+        onpointerdown={() => prepareResourceDrag(node.openUri, node.label)}
         ondragstart={(event) => startTopicDrag(event, topicSlug, workstream, node.openUri, node.label)}
         ondragend={finishTopicDrag}
         onclick={() => onOpen(node.openUri)}
@@ -382,7 +558,7 @@
     class="active-card {workstreamColorClass(workstream.id)}"
     class:compact
     class:summary={sectionStatus !== 'progress'}
-    class:dragging={workstreamDrag?.slug === workstream.slug}
+    class:dragging={draggingWorkstreamSlug === workstream.slug}
     class:topic-drop-target={topicDropTarget === workstream.slug}
     data-section-status={sectionStatus}
     data-workstream={workstream.slug ?? workstream.id}
@@ -413,6 +589,7 @@
         class="active-open workstream-open"
         title={workstream.tooltip}
         draggable="true"
+        onpointerdown={() => prepareResourceDrag(workstream.openUri, workstream.label)}
         ondragstart={(event) => startWorkstreamDrag(event, workstream, sectionStatus)}
         ondragend={finishWorkstreamDrag}
         onclick={() => onOpen(workstream.openUri)}
@@ -431,7 +608,12 @@
               <div
                 class="focused-topic"
                 role="group"
-                oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', activeContextMenuItems(topic.actions, { topic: topicSlug, focused: topic.focused }))}
+                oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', activeContextMenuItems(topic.actions, {
+                  topic: topicSlug,
+                  focused: topic.focused,
+                  sourceWorkstream: workstream.slug ?? '',
+                  moveTargets,
+                }))}
               >
                 <button
                   class="focused-topic-pin"
@@ -446,6 +628,7 @@
                   class="focused-topic-open"
                   title={topic.tooltip}
                   draggable="true"
+                  onpointerdown={() => prepareResourceDrag(topic.openUri, topic.label)}
                   ondragstart={(event) => startTopicDrag(event, topicSlug, workstream.slug ?? '', topic.openUri, topic.label)}
                   ondragend={finishTopicDrag}
                   onclick={() => onOpen(topic.openUri)}
@@ -470,7 +653,12 @@
   </article>
 {/snippet}
 
-<div class="active-rail-inner">
+<div
+  class="active-rail-inner"
+  role="region"
+  aria-label="Active workstreams"
+  ondragleave={clearExternalDragVisual}
+>
   <header class="active-rail-header">
     <div class="mark">WM</div>
     <div class="environment-selector">
@@ -482,7 +670,10 @@
         onclick={(event) => void toggleEnvironmentMenu(event)}
       >
         <span aria-hidden="true" class="codicon codicon-server"></span>
-        <span class="active-heading"><strong>{selectedEnvironment?.displayName ?? 'No server'}</strong><span>Working Memory</span></span>
+        <span class="active-heading">
+          <strong>{selectedEnvironment?.displayName ?? 'No server'}</strong>
+          <span>Working Memory</span>
+        </span>
         <span aria-hidden="true" class="codicon codicon-chevron-down" class:codicon-modifier-spin={environmentLoading}></span>
       </button>
       {#if environmentMenuOpen}
@@ -518,7 +709,7 @@
         </div>
       {/if}
     </div>
-    <button class="active-header-button" title="Refresh Active" aria-label="Refresh Active" onclick={onRefresh}>
+    <button class="active-header-button" title="Restart to apply latest build" aria-label="Restart Working Memory" onclick={onRefresh}>
       <span aria-hidden="true" class="codicon codicon-refresh" class:codicon-modifier-spin={loading}></span>
     </button>
     <button class="active-header-button" title="Settings" aria-label="Settings" onclick={onSettings}>
@@ -601,14 +792,41 @@
     onkeydown={navigateMenu}
   >
     {#each menu.items as item}
-      <button
-        role="menuitem"
-        disabled={!item.enabled}
-        onclick={(event) => runMenuItem(event, item)}
-      >
-        <span aria-hidden="true" class="codicon codicon-{item.icon}"></span>
-        <span>{item.title}</span>
-      </button>
+      <div class="active-context-menu-entry">
+        <button
+          role="menuitem"
+          aria-haspopup={item.kind === 'move' ? 'menu' : undefined}
+          disabled={!item.enabled}
+          onclick={(event) => runMenuItem(event, item)}
+          onkeydown={item.kind === 'move' ? openMoveSubmenu : undefined}
+        >
+          <span aria-hidden="true" class="codicon codicon-{item.icon}"></span>
+          <span>{item.title}</span>
+          {#if item.kind === 'move'}
+            <span aria-hidden="true" class="codicon codicon-chevron-right active-context-submenu-arrow"></span>
+          {/if}
+        </button>
+        {#if item.kind === 'move' && item.enabled}
+          <div
+            class="active-context-submenu"
+            class:submenu-left={menu.submenuToLeft}
+            role="menu"
+            aria-label="Move topic tree to workstream"
+            tabindex="-1"
+            onkeydown={navigateMoveSubmenu}
+          >
+            {#each item.targets as target (target.slug)}
+              <button
+                role="menuitem"
+                onclick={(event) => moveTopicFromMenu(event, item, target.slug)}
+              >
+                <span aria-hidden="true" class="codicon codicon-briefcase"></span>
+                <span>{target.title}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
     {/each}
   </div>
 {/if}

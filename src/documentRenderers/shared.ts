@@ -11,7 +11,7 @@
 
 import type { DocumentEnvelope } from '../controlPlaneClient';
 
-/** The kind segment of a `vscode://…/open/<kind>/<slug>` deep link. */
+/** The kind segment of a desktop loopback `/open/<kind>/<slug>` link. */
 export type DeepLinkKind =
   | 'workstream'
   | 'topic'
@@ -19,9 +19,9 @@ export type DeepLinkKind =
   | 'topic-type'
   | 'alert';
 
-/** Build a Working Memory deep link an agent (or reader) can click through. */
+/** Build an Agent Window-compatible Working Memory desktop link. */
 export function deepLink(kind: DeepLinkKind, slug: string): string {
-  return `vscode://kubarycz.working-memory/open/${kind}/${encodeURIComponent(slug)}`;
+  return `http://127.0.0.1:7718/open/${kind}/${encodeURIComponent(slug)}`;
 }
 
 /**

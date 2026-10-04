@@ -26,6 +26,7 @@
   import type { CommandJournalScopeRef } from '../../../src/controlPlaneClient';
   import type { PanelAction, PanelData } from '../../../src/panelData';
   import { invokeActiveAction } from './activeContextMenu';
+  import { DESKTOP_BUILD_TIMESTAMP, formatDesktopBuildTimestamp } from './buildInfo';
   import { isChatAtBottom } from './chatScroll';
   import { readComposerDraft, writeComposerDraft } from './composerDraft';
   import {
@@ -79,6 +80,7 @@
   type HeaderTab = 'log' | 'container-apps';
   const HISTORY_PAGE_SIZE = 30;
   const HEADER_TABS: HeaderTab[] = ['log', 'container-apps'];
+  const desktopBuildLabel = formatDesktopBuildTimestamp(DESKTOP_BUILD_TIMESTAMP);
 
   let page = $state<Page>('workspace');
   let input = $state('');
@@ -471,8 +473,12 @@
     void refreshActive();
     void refreshLatestHistory(true);
     void loadContainerApps();
+    const stopListeningForDeepLinks = window.workingMemory.onOpenResource(
+      (kind, identifier) => void openResource(kind, identifier),
+    );
     const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
     return () => {
+      stopListeningForDeepLinks();
       window.clearInterval(historyPoll);
       window.removeEventListener('resize', handleResize);
       document.body.classList.remove('resizing-rails');
@@ -1113,7 +1119,7 @@
           error={activeError}
           onDiscoverEnvironments={discoverEnvironments}
           onSwitchEnvironment={switchEnvironment}
-          onRefresh={() => void refreshActive()}
+          onRefresh={() => window.workingMemory.restartDesktop()}
           onSettings={() => (page = page === 'settings' ? 'workspace' : 'settings')}
           onCollapse={() => (activeRailCollapsed = true)}
           onOpen={openRoute}
@@ -1613,4 +1619,9 @@
       </div>
     {/if}
   </aside>
+
+  <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
+    <span>Working Memory</span>
+    <span>Built {desktopBuildLabel}</span>
+  </footer>
 </div>

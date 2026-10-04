@@ -21,6 +21,25 @@ const api: DesktopApi = {
   getChatJournal: (id) => invoke('chat:journal', id),
   openWorkstream: (query: string) => invoke('workstream:open', query),
   openResource: (kind, identifier) => invoke('resource:open', kind, identifier),
+  onOpenResource: (listener) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      kind: Parameters<typeof listener>[0],
+      identifier: string,
+    ) => listener(kind, identifier);
+    ipcRenderer.on('resource:open-deep-link', handler);
+    return () => ipcRenderer.removeListener('resource:open-deep-link', handler);
+  },
+  prepareResourceDrag: (openUri, label) => invoke('resource:prepare-drag', openUri, label),
+  startResourceDrag: (prepared) => ipcRenderer.send('resource:start-drag', toIpcPayload(prepared)),
+  onResourceDragResult: (listener) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      result: Parameters<typeof listener>[0],
+    ) => listener(result);
+    ipcRenderer.on('resource:drag-result', handler);
+    return () => ipcRenderer.removeListener('resource:drag-result', handler);
+  },
   saveWorkstream: (identifier, patch) => invoke('workstream:save', identifier, patch),
   saveTopic: (identifier, patch) => invoke('topic:save', identifier, patch),
   togglePin: (workstream, topic) => invoke('topic:toggle-pin', workstream, topic),
@@ -36,6 +55,7 @@ const api: DesktopApi = {
   listAppMcpTools: (id) => invoke('app-mcp:list-tools', id),
   callAppMcpTool: (id, name, args) => invoke('app-mcp:call-tool', id, name, args),
   getAppResourceContract: (id) => invoke('app-mcp:contract', id),
+  restartDesktop: () => ipcRenderer.send('app:restart'),
   openExternal: (url) => invoke('external:open', url),
 };
 

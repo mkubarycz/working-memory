@@ -8,7 +8,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { resolveDesktopLaunchPaths } from '../src/desktopLauncher';
+import {
+  desktopLaunchArgs,
+  resolveDesktopLaunchPaths,
+  STABLE_DESKTOP_APP,
+} from '../src/desktopLauncher';
 
 const roots: string[] = [];
 
@@ -19,6 +23,20 @@ afterEach(() => {
 });
 
 describe('resolveDesktopLaunchPaths', () => {
+  it('uses the stable macOS application path', () => {
+    expect(STABLE_DESKTOP_APP).toBe('/Applications/Working Memory.app');
+  });
+
+  it('passes a desktop deep link after the Electron entry point', () => {
+    expect(desktopLaunchArgs(
+      { cwd: '/desktop', electron: '/electron', main: '/desktop/main.js' },
+      'working-memory://open/topic/chat-links',
+    )).toEqual([
+      '/desktop/main.js',
+      'working-memory://open/topic/chat-links',
+    ]);
+  });
+
   it('resolves the packaged Electron executable and desktop entry point', () => {
     const root = mkdtempSync(join(tmpdir(), 'wm-desktop-launcher-'));
     roots.push(root);
