@@ -1,11 +1,15 @@
-import { app, BrowserWindow, ipcMain, safeStorage, screen, shell } from 'electron';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, screen, shell } from 'electron';
+import { existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ControlPlaneClient } from '../../../src/controlPlaneClient';
+import { renderDocumentByKind } from '../../../src/documentRenderers';
 import type {
   ChatContext,
   ChatResult,
   DesktopEnvironmentState,
+  PreparedResourceDrag,
   DesktopResourceKind,
   SaveConfigInput,
 } from '../shared/contracts';
@@ -64,8 +68,16 @@ import {
   resolveDesktopAction,
   toGenericDocumentViewModel,
 } from './resolver';
+import {
+  parseDesktopDeepLink,
+  WORKING_MEMORY_PROTOCOL,
+  type DesktopDeepLinkTarget,
+} from '../shared/deepLink';
+import { DesktopLinkBridge } from './linkBridge';
+import { resourceDragFilename } from './resourceDragContext';
 
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
+const STABLE_DESKTOP_EXECUTABLE = '/Applications/Working Memory.app/Contents/MacOS/Electron';
 const WINDOW_DEFAULTS = { defaultWidth: 1280, defaultHeight: 820, minWidth: 900, minHeight: 600 };
 const WINDOW_STATE_SAVE_DELAY_MS = 250;
 let configFile = '';
@@ -74,6 +86,8 @@ let windowStateFile = '';
 let mainWindow: BrowserWindow | null = null;
 let mainWindowCreation: Promise<BrowserWindow> | null = null;
 let windowStateSaveTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingDeepLink: DesktopDeepLinkTarget | null = null;
+let desktopLinkBridge: DesktopLinkBridge | null = null;
 const dockerContainers = new DockerContainerService();
 const appMcp = new AppMcpService();
 const containerOperations = new Set<AbortController>();
@@ -120,6 +134,7 @@ const gracefulShutdown = createGracefulShutdown({
   resetAgent: async () => {
     await chatAgent.reset();
     await appMcp.disconnectAll();
+    await desktopLinkBridge?.close();
   },
   disposeEnvironment: () => environmentManager.dispose(),
   quit: () => app.quit(),
@@ -185,6 +200,82 @@ async function loadResource(
     if (result.document) return toGenericDocumentViewModel(result.document);
   }
   throw new Error(`Working Memory ${kind} "${identifier}" was not found.`);
+}
+
+const RESOURCE_URI_RE =
+  /^working-memory:\/(?:\/)?(workstream|topic|document|alert|topic-type)\/([^/]+)\.working-memory$/;
+
+function createDragIcon(): Electron.NativeImage {
+  const size = 16;
+  const bitmap = Buffer.alloc(size * size * 4);
+  for (const y of [4, 7, 10]) {
+    for (let x = 3; x <= 12; x += 1) {
+      const offset = (y * size + x) * 4;
+      bitmap[offset] = 157;
+      bitmap[offset + 1] = 75;
+      bitmap[offset + 2] = 242;
+      bitmap[offset + 3] = 255;
+    }
+  }
+  return nativeImage.createFromBitmap(bitmap, {
+    width: size,
+    height: size,
+    scaleFactor: 1,
+  });
+}
+
+function dragContextDirectory(): string {
+  return join(app.getPath('temp'), 'working-memory-chat-context');
+}
+
+function isDragContextFile(filePath: string): boolean {
+  const root = resolve(dragContextDirectory());
+  const candidate = resolve(filePath);
+  const rel = relative(root, candidate);
+  return rel !== '' && !rel.startsWith('..') && !rel.includes('/../');
+}
+
+async function prepareResourceDrag(
+  openUri: string,
+  label: string,
+): Promise<PreparedResourceDrag> {
+  const match = RESOURCE_URI_RE.exec(openUri);
+  if (!match) throw new Error(`Unsupported Working Memory resource URI: ${openUri}`);
+  const kind = match[1] as DesktopResourceKind;
+  const identifier = decodeURIComponent(match[2]);
+  const controlPlaneKind =
+    kind === 'workstream'
+      ? 'Workstream'
+      : kind === 'topic'
+        ? 'Topic'
+        : kind === 'topic-type'
+          ? 'TopicType'
+          : kind === 'alert'
+            ? 'Alert'
+            : undefined;
+  let result = await controlPlane().getDocument(
+    kind === 'document' || kind === 'alert'
+      ? { id: identifier }
+      : { slug: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) },
+  );
+  if (result.available && !result.document && kind === 'alert') {
+    result = await controlPlane().getDocument({ slug: identifier, kind: 'Alert' });
+  }
+  if (!result.available) {
+    throw new Error(result.error ?? 'Working Memory control plane is unavailable.');
+  }
+  if (!result.document) {
+    throw new Error(`Working Memory ${kind} "${identifier}" was not found.`);
+  }
+  const filename = resourceDragFilename(kind, identifier, label);
+  const directory = dragContextDirectory();
+  const file = join(directory, filename);
+  await mkdir(directory, { recursive: true });
+  await writeFile(file, renderDocumentByKind(result.document), {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  return { filename, filePath: file, fileUrl: pathToFileURL(file).toString() };
 }
 
 async function invokeAction(workstream: string, command: string, args: unknown[]): Promise<DocumentVM> {
@@ -365,6 +456,17 @@ async function testConfiguredModel(config: StoredConfig): Promise<string> {
 }
 
 function registerIpc(): void {
+  ipcMain.on('app:restart', () => {
+    if (!existsSync(STABLE_DESKTOP_EXECUTABLE)) {
+      dialog.showErrorBox(
+        'Working Memory update unavailable',
+        'The installed application was not found at /Applications/Working Memory.app.',
+      );
+      return;
+    }
+    app.relaunch({ execPath: STABLE_DESKTOP_EXECUTABLE, args: [] });
+    app.quit();
+  });
   ipcMain.handle('environment:discover', async () => environmentState(await environmentManager.discover()));
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
     containerEnvironmentGeneration += 1;
@@ -423,6 +525,32 @@ function registerIpc(): void {
       throw new Error(`Unsupported Working Memory resource kind: ${String(kind)}`);
     }
     return loadResource(kind, identifier);
+  });
+  ipcMain.handle('resource:prepare-drag', (_event, openUri: string, label: string) =>
+    prepareResourceDrag(openUri, label));
+  ipcMain.on('resource:start-drag', (event, prepared: PreparedResourceDrag) => {
+    try {
+      if (!prepared || !isDragContextFile(prepared.filePath)) {
+        throw new Error('Refusing native drag outside the context directory');
+      }
+      const icon = createDragIcon();
+      if (icon.isEmpty()) {
+        throw new Error('Unable to create the native drag icon');
+      }
+      event.sender.startDrag({ file: prepared.filePath, icon });
+      event.reply('resource:drag-result', {
+        filePath: prepared.filePath,
+        status: 'started',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[desktop] Unable to start native Working Memory drag:', error);
+      event.reply('resource:drag-result', {
+        filePath: prepared?.filePath ?? '',
+        status: 'failed',
+        error: message,
+      });
+    }
   });
   ipcMain.handle('workstream:save', async (_event, identifier: string, patch: { title?: string; status?: string }) => {
     const current = await loadWorkstreamViewModel(controlPlane(), identifier);
@@ -634,8 +762,59 @@ function ensureWindow(): Promise<BrowserWindow> {
 function focusWindow(window: BrowserWindow, reload: boolean): void {
   if (window.isMinimized()) window.restore();
   window.show();
+  if (process.platform === 'darwin') app.focus({ steal: true });
   window.focus();
   if (reload) window.webContents.reloadIgnoringCache();
+}
+
+function sendDeepLink(window: BrowserWindow, target: DesktopDeepLinkTarget): void {
+  window.webContents.send('resource:open-deep-link', target.kind, target.identifier);
+}
+
+async function activateDesktopWindow(): Promise<void> {
+  const window = await ensureWindow();
+  focusWindow(window, false);
+}
+
+async function openDeepLink(target: DesktopDeepLinkTarget): Promise<void> {
+  pendingDeepLink = target;
+  if (!app.isReady()) return;
+  const window = await ensureWindow();
+  focusWindow(window, false);
+  await new Promise<void>((resolve) => {
+    const deliver = (): void => {
+      const current = pendingDeepLink;
+      pendingDeepLink = null;
+      if (current) sendDeepLink(window, current);
+      resolve();
+    };
+    if (window.webContents.isLoadingMainFrame()) {
+      window.webContents.once('did-finish-load', deliver);
+    } else {
+      deliver();
+    }
+  });
+}
+
+function deepLinkFromArgs(argv: string[]): DesktopDeepLinkTarget | null {
+  for (const arg of argv) {
+    const target = parseDesktopDeepLink(arg);
+    if (target) return target;
+  }
+  return null;
+}
+
+function registerDesktopProtocol(): void {
+  const registered = process.defaultApp && process.argv[1]
+    ? app.setAsDefaultProtocolClient(
+        WORKING_MEMORY_PROTOCOL,
+        process.execPath,
+        [resolve(process.argv[1])],
+      )
+    : app.setAsDefaultProtocolClient(WORKING_MEMORY_PROTOCOL);
+  if (!registered) {
+    console.error(`[desktop] Unable to register ${WORKING_MEMORY_PROTOCOL}:// links`);
+  }
 }
 
 const ownsSingleInstanceLock = app.requestSingleInstanceLock({ refreshDesktop: true });
@@ -643,7 +822,22 @@ const ownsSingleInstanceLock = app.requestSingleInstanceLock({ refreshDesktop: t
 if (!ownsSingleInstanceLock) {
   app.exit(0);
 } else {
-  app.on('second-instance', () => {
+  app.on('open-url', (event, rawUrl) => {
+    event.preventDefault();
+    const target = parseDesktopDeepLink(rawUrl);
+    if (target) void openDeepLink(target).catch((error) => {
+      console.error('[desktop] Unable to open protocol link:', error);
+    });
+  });
+
+  app.on('second-instance', (_event, argv) => {
+    const target = deepLinkFromArgs(argv);
+    if (target) {
+      void openDeepLink(target).catch((error) => {
+        console.error('[desktop] Unable to open second-instance link:', error);
+      });
+      return;
+    }
     const existingWindow = mainWindow ?? BrowserWindow.getAllWindows()[0];
     if (existingWindow) {
       focusWindow(existingWindow, true);
@@ -653,12 +847,34 @@ if (!ownsSingleInstanceLock) {
   });
 
   void app.whenReady().then(async () => {
+    registerDesktopProtocol();
     configFile = join(app.getPath('userData'), 'config.json');
     environmentFile = join(app.getPath('userData'), 'environment.json');
     windowStateFile = join(app.getPath('userData'), 'window-state.json');
     await environmentManager.initialize();
+    desktopLinkBridge = new DesktopLinkBridge(
+      openDeepLink,
+      undefined,
+      activateDesktopWindow,
+    );
+    try {
+      await desktopLinkBridge.start();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[desktop] Unable to start Agent Window link bridge:', error);
+      dialog.showErrorBox(
+        'Working Memory link bridge unavailable',
+        `Links from the VS Code Agents window will not open: ${message}`,
+      );
+    }
     registerIpc();
     await ensureWindow();
+    const initialDeepLink = deepLinkFromArgs(process.argv);
+    if (initialDeepLink) {
+      void openDeepLink(initialDeepLink).catch((error) => {
+        console.error('[desktop] Unable to open initial link:', error);
+      });
+    }
     app.on('activate', () => {
       const existingWindow = mainWindow ?? BrowserWindow.getAllWindows()[0];
       if (existingWindow) focusWindow(existingWindow, false);

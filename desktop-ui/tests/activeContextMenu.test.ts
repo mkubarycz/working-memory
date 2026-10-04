@@ -37,12 +37,46 @@ describe('Active rail context-menu projection', () => {
   });
 
   it('projects context-sensitive focus actions without inventing a command', () => {
-    expect(activeContextMenuItems([], { topic: 'topic-one', focused: false })).toEqual([
+    expect(activeContextMenuItems([], {
+      topic: 'topic-one',
+      focused: false,
+      sourceWorkstream: 'source',
+      moveTargets: [
+        { slug: 'source', title: 'Source' },
+        { slug: 'target', title: 'Target' },
+      ],
+    })).toEqual([
       { kind: 'focus', title: 'Add to Focus', icon: 'pin', enabled: true, topic: 'topic-one' },
+      {
+        kind: 'move',
+        title: 'Move to...',
+        icon: 'arrow-swap',
+        enabled: true,
+        topic: 'topic-one',
+        targets: [{ slug: 'target', title: 'Target' }],
+      },
     ]);
-    expect(activeContextMenuItems([], { topic: 'topic-one', focused: true })[0]).toMatchObject({
+    expect(activeContextMenuItems([], {
+      topic: 'topic-one',
+      focused: true,
+      sourceWorkstream: 'source',
+      moveTargets: [],
+    })[0]).toMatchObject({
       title: 'Remove from Focus',
       icon: 'pinned',
+    });
+  });
+
+  it('disables Move to when no other open workstream is available', () => {
+    expect(activeContextMenuItems([], {
+      topic: 'topic-one',
+      focused: false,
+      sourceWorkstream: 'source',
+      moveTargets: [{ slug: 'source', title: 'Source' }],
+    })[1]).toMatchObject({
+      kind: 'move',
+      enabled: false,
+      targets: [],
     });
   });
 

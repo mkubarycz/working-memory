@@ -90,11 +90,15 @@ activation event in `package.json`.
 
 - Virtual docs: `working-memory:/workstream/<slug>.md`,
   `working-memory:/topic/<slug>.md`, `working-memory:/session/<uuid>.md`.
-- Deep-link form for chat: `vscode://kubarycz.working-memory/open/<kind>/<id>`
-  where `<kind>` ∈ `session | topic | workstream`. The URI handler is
-  registered in `extension.ts`. Unknown ids fall through to the content
-  provider's not-found body. Slugs with reserved chars should be
-  URI-encoded.
+- Agent Window-compatible link form:
+  `http://127.0.0.1:7718/open/<kind>/<id>`, where `<kind>` is one of
+  `topic | workstream | topic-type | alert | document`. The standalone
+  desktop app owns this loopback HTTP bridge and opens the target in its UI.
+  Slugs and ids with reserved characters must be URI-encoded.
+- The desktop app internally handles
+  `working-memory://open/<kind>/<id>`, but Copilot Chat blocks that custom
+  scheme, so agents must not emit it directly. Extension-owned `vscode://`
+  links are also unavailable in the separate Agents window.
 
 ## What lives where else (workspace context, not in this repo)
 

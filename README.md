@@ -75,7 +75,56 @@ git clone https://github.com/mkubarycz/working-memory.git
 cd working-memory
 npm install
 npm run compile           # tsc -p .  →  out/src/extension.js
+npm run compile:desktop   # builds and updates /Applications/Working Memory.app on macOS
 ```
+
+Local macOS desktop builds always update the stable
+`/Applications/Working Memory.app` bundle, which can be kept in the Dock. A
+build does not restart the running desktop process. Use the Refresh button in
+the desktop Active rail when you are ready to quit and relaunch into the newly
+built application. CI builds prepare the application bundle but skip the local
+`/Applications` installation.
+
+## Persistent control-plane container
+
+The Working Memory SQLite data tier and Streamable HTTP MCP server can run as
+a dedicated Docker Compose service. The service:
+
+- bind-mounts the existing data directory at `/data`, so `journal.sqlite`
+  remains on the host and survives container replacement;
+- publishes MCP and health only on `127.0.0.1:7717`;
+- restarts automatically unless explicitly stopped;
+- exposes `GET /health` and Streamable HTTP MCP at `/mcp`.
+
+Create a local `.env` with an absolute host path. On macOS:
+
+```bash
+cp .env.example .env
+# Edit WORKING_MEMORY_DATA_DIR for your username if needed.
+docker compose up -d --build control-plane
+docker compose ps
+curl http://127.0.0.1:7717/health
+```
+
+The default production data directory on macOS is
+`~/Library/Application Support/WorkingMemory`. Stop any host control-plane
+process before starting the container so only one process opens the SQLite
+store. View logs with `npm run container:logs` and stop the service with
+`npm run container:stop`.
+
+When the container is the production owner, configure the extension to use the
+fixed external service instead of spawning an embedded daemon:
+
+```json
+{
+  "workingMemory.controlPlane.hosting": "service",
+  "workingMemory.controlPlane.port": 7717
+}
+```
+
+The daemon binds to loopback by default outside Docker. The container sets
+`WM_CONTROL_PLANE_HOST=0.0.0.0` internally so Docker can publish it, while the
+Compose port mapping keeps the host exposure restricted to `127.0.0.1`.
 
 ## DB path resolution (extension)
 
@@ -228,29 +277,24 @@ can explain the missing capability.
 
 ## Chat link patterns
 
-VS Code's Copilot Chat panel only linkifies a narrow set of URI forms in
-assistant output. Custom schemes (`working-memory:`) are stripped, and
-`command:` URIs require trusted markdown — a privilege not granted to
-assistant-rendered links. The form that survives is VS Code's own
-extension deep-link scheme: **`vscode://<publisher>.<extension>/...`**.
+The separate VS Code Agents window does not load ordinary extension URI
+handlers and blocks arbitrary custom schemes. Chat-facing links therefore use
+the desktop loopback bridge
+`http://127.0.0.1:7718/open/<kind>/<id>`, where:
 
-The extension registers a URI handler for
-`vscode://kubarycz.working-memory/open/<kind>/<id>`, where:
-
-- `<kind>` ∈ `session | topic | workstream`
-- `<id>` is the session uuid or the topic/workstream slug
+- `<kind>` is `topic`, `workstream`, `topic-type`, `alert`, or `document`
+- `<id>` is the resource slug or id
 
 | Kind | Markdown shape | Example |
 |---|---|---|
-| Session | `[label](vscode://kubarycz.working-memory/open/session/<uuid>)` | `[chat session](vscode://kubarycz.working-memory/open/session/de55954a-d717-4b5f-9aa5-dc2513ba6f71)` |
-| Topic | `[label](vscode://kubarycz.working-memory/open/topic/<slug>)` | `[chat-clickable-links](vscode://kubarycz.working-memory/open/topic/chat-clickable-links)` |
-| Workstream | `[label](vscode://kubarycz.working-memory/open/workstream/<slug>)` | `[topic-types](vscode://kubarycz.working-memory/open/workstream/topic-types)` |
+| Topic | `[label](http://127.0.0.1:7718/open/topic/<slug>)` | `[chat-clickable-links](http://127.0.0.1:7718/open/topic/chat-clickable-links)` |
+| Workstream | `[label](http://127.0.0.1:7718/open/workstream/<slug>)` | `[topic-types](http://127.0.0.1:7718/open/workstream/topic-types)` |
+| Alert | `[label](http://127.0.0.1:7718/open/alert/<id>)` | `[release blocker](http://127.0.0.1:7718/open/alert/1234)` |
 
-Slugs containing reserved characters should be URI-encoded (the handler
-calls `decodeURIComponent` on the id). Unknown slugs/uuids fall through
-to the content provider, which renders its own not-found body (parity
-with clicking a stale row in the panel). Malformed paths surface a
-single error notification — no extension crash.
+The loopback server accepts validated GET routes only, focuses the desktop app,
+opens the resource, and returns a small confirmation page. Identifiers
+containing reserved characters must be URI-encoded. The Working Memory Agent
+Plugin supplies the same link rule to the separate Agents window.
 
 ### Palette + `command:` parity
 

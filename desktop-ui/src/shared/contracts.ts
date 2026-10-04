@@ -195,6 +195,18 @@ export interface DesktopWorkstreamReorderUpdate {
   position: number;
 }
 
+export interface PreparedResourceDrag {
+  filename: string;
+  filePath: string;
+  fileUrl: string;
+}
+
+export interface ResourceDragResult {
+  filePath: string;
+  status: 'started' | 'failed';
+  error?: string;
+}
+
 export interface DesktopApi {
   listContainerApps(): Promise<ContainerAppDefinition[]>;
   discoverEnvironments(): Promise<DesktopEnvironmentState>;
@@ -210,6 +222,10 @@ export interface DesktopApi {
   getChatJournal(id: string): Promise<CommandJournal | null>;
   openWorkstream(query: string): Promise<ChatResult>;
   openResource(kind: DesktopResourceKind, identifier: string): Promise<DocumentVM>;
+  onOpenResource(listener: (kind: DesktopResourceKind, identifier: string) => void): () => void;
+  prepareResourceDrag(openUri: string, label: string): Promise<PreparedResourceDrag>;
+  startResourceDrag(prepared: PreparedResourceDrag): void;
+  onResourceDragResult(listener: (result: ResourceDragResult) => void): () => void;
   saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;
   saveTopic(identifier: string, patch: TopicPatch): Promise<DocumentVM>;
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;
@@ -229,5 +245,6 @@ export interface DesktopApi {
   listAppMcpTools(id: ContainerAppId): Promise<AppMcpTool[]>;
   callAppMcpTool(id: ContainerAppId, name: string, args: Record<string, unknown>): Promise<unknown>;
   getAppResourceContract(id: ContainerAppId): Promise<AppResourceContract>;
+  restartDesktop(): void;
   openExternal(url: string): Promise<void>;
 }

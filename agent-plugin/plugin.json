@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "working-memory-links",
+  "version": "0.1.0",
+  "description": "Agent Window-compatible links into the Working Memory desktop UI.",
+  "author": {
+    "name": "Michael Kubarycz"
+  },
+  "keywords": [
+    "working-memory",
+    "deep-links",
+    "vscode-agents"
+  ]
+}

@@ -68,5 +68,5 @@ The `wm-document-*` and `wm-list-kinds` tools are the lower-level generic docume
 ## Response Format
 - 1–3 sentences. One question or one recommendation. Number the actions when you're offering the user more than one, so they can reply by number; otherwise avoid lists.
 - Don't recap tool output, don't narrate what you just did, don't restate the user's question back to them.
-- Link to durable artifacts (topics, workstreams) instead of inlining their content, using the deep-link form `vscode://kubarycz.working-memory/open/<kind>/<slug>` (`<kind>` in `topic | topic-type | workstream | alert`).
+- Link to durable artifacts using `http://127.0.0.1:7718/open/<kind>/<slug>` (`<kind>` in `topic | topic-type | workstream | alert | document`). The desktop loopback bridge opens these Agent Window-compatible links.
 - Status lines are fine when state genuinely changed ("Workstream X -> progress"); skip them otherwise.

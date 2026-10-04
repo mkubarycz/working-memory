@@ -5,6 +5,20 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = resolve(import.meta.dirname, '../..');
 
 describe('desktop tree icon contract', () => {
+  it('uses Refresh as the explicit desktop restart boundary', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
+    const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
+    const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
+
+    expect(app).toContain('onRefresh={() => window.workingMemory.restartDesktop()}');
+    expect(activeRail).toContain('title="Restart to apply latest build"');
+    expect(activeRail).toContain('aria-label="Restart Working Memory"');
+    expect(preload).toContain("restartDesktop: () => ipcRenderer.send('app:restart')");
+    expect(main).toContain("ipcMain.on('app:restart'");
+    expect(main).toContain('app.relaunch({ execPath: STABLE_DESKTOP_EXECUTABLE, args: [] })');
+  });
+
   it('loads codicons and gives expandable controls stable dimensions and labels', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
@@ -67,8 +81,11 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('role="menu"');
     expect(activeRail).toContain('tabindex="-1"');
     expect(activeRail).toContain('role="menuitem"');
-    expect(activeRail).toContain("menuElement.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()");
+    expect(activeRail).toContain("':scope > .active-context-menu-entry > button:not(:disabled)'");
     expect(activeRail).toContain("event.key === 'Escape'");
+    expect(activeRail).toContain('aria-label="Move topic tree to workstream"');
+    expect(activeRail).toContain('moveTopicFromMenu(event, item, target.slug)');
+    expect(activeRail).toContain('sourceWorkstream: workstream');
     expect(activeRail).not.toContain('class="active-actions"');
     expect(activeRail).not.toContain('class="active-icon-button focus-button"');
     expect(activeRail).toContain('class="codicon codicon-{topic.icon}"');
@@ -82,6 +99,8 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('class="codicon codicon-pinned"');
     expect(activeRail.indexOf('class="focused-topic-pin"')).toBeLessThan(activeRail.indexOf('class="focused-topic-open"'));
     expect(styles).toMatch(/\.active-context-menu[^}]*position:\s*fixed/s);
+    expect(styles).toMatch(/\.active-context-submenu[^}]*position:\s*absolute/s);
+    expect(styles).toContain('.active-context-menu-entry:hover > .active-context-submenu');
     expect(styles).toMatch(/\.pinned-topics[^}]*border-bottom:\s*1px/s);
     expect(styles).toMatch(/\.focused-topic-pin[^}]*width:\s*30px[^}]*height:\s*30px/s);
     expect(styles).not.toContain('.focused-topic::before');
@@ -112,6 +131,7 @@ describe('desktop tree icon contract', () => {
   it('renders workstream reorder drop targets and insertion feedback', () => {
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
 
     expect(activeRail).toContain('startWorkstreamDrag');
@@ -121,22 +141,46 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('class:drop-target=');
     expect(activeRail).toContain('class="active-drop-indicator"');
     expect(activeRail).toContain('await onReorder(slug, section, index)');
-    expect(activeRail).toContain(
-      'class="active-open workstream-open"\n        title={workstream.tooltip}\n        draggable="true"',
-    );
-    expect(activeRail).not.toContain('workstream-drag-handle');
+    expect(activeRail).not.toContain('active-drag-handle');
     expect(activeRail).not.toContain(
       'class="active-card-header"\n      role="group"\n      draggable="true"',
     );
     expect(activeRail).toContain("let activeDrag = $state<");
     expect(activeRail).toContain("activeDrag?.kind === 'topic'");
     expect(activeRail).toContain("activeDrag?.kind === 'workstream'");
-    expect(styles).toMatch(/\.active-card-header[^}]*cursor:\s*grab/);
+    expect(activeRail).toContain('event.preventDefault();');
+    expect(activeRail).toContain('window.workingMemory.startResourceDrag(prepared)');
+    expect(activeRail).toContain('onResourceDragResult');
+    expect(activeRail).toContain("result.status === 'failed'");
+    expect(activeRail).not.toContain("result.status === 'started'");
+    expect(activeRail).toContain('dragPreparationGeneration += 1');
+    expect(activeRail).toContain('generation === dragPreparationGeneration');
+    expect(activeRail).toContain('ondragleave={clearExternalDragVisual}');
+    expect(activeRail).toContain('onpointermove={clearCompletedNativeDrag}');
+    expect(activeRail).toContain('class:dragging={draggingWorkstreamSlug === workstream.slug}');
+    expect(preload).toContain("ipcRenderer.send('resource:start-drag'");
+    expect(preload).toContain("ipcRenderer.on('resource:drag-result'");
     expect(app).toContain('planWorkstreamReorder(order, slug, targetSection, targetIndex)');
     expect(app).toContain('window.workingMemory.reorderWorkstreams(updates)');
     expect(styles).toMatch(/\.active-section\.drop-target[^}]*var\(--desktop-accent\)/s);
     expect(styles).toMatch(/\.active-drop-indicator[^}]*height:\s*0/s);
     expect(styles).toMatch(/\.active-drop-indicator::after[^}]*height:\s*3px/s);
+  });
+
+  it('shows the immutable desktop build timestamp in a global status bar', () => {
+    const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+    const viteConfig = readFileSync(resolve(repoRoot, 'desktop-ui/electron.vite.config.ts'), 'utf8');
+
+    expect(viteConfig).toContain('__WM_BUILD_TIMESTAMP__');
+    expect(viteConfig).toContain('new Date().toISOString()');
+    expect(activeRail).not.toContain('desktopBuildLabel');
+    expect(activeRail).not.toContain('DESKTOP_BUILD_TIMESTAMP');
+    expect(app).toContain('class="desktop-status-bar"');
+    expect(app).toContain('Built {desktopBuildLabel}');
+    expect(app).toContain('title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}');
+    expect(styles).toMatch(/\.desktop-status-bar\s*{[^}]*grid-column:\s*1\s*\/\s*-1/s);
   });
 
   it('subdues closed topics without rendering topic status text or muting alerts', () => {

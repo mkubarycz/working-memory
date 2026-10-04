@@ -21,7 +21,13 @@ import { removePortFile, writePortFile } from './portfile.js';
 import { openStore, type Store } from './store.js';
 import { startServer, type RunningServer } from './server.js';
 import { loadKinds } from './kinds/loader.js';
-import { DEFAULT_PORT, HOST, LISTENING_MARKER, PORT_ENV, SERVICE_VERSION } from './config.js';
+import {
+  DEFAULT_PORT,
+  LISTENING_MARKER,
+  PORT_ENV,
+  SERVICE_VERSION,
+  resolveHost,
+} from './config.js';
 
 export interface Daemon {
   readonly port: number;
@@ -46,12 +52,13 @@ function resolvePreferredPort(): number {
 }
 
 async function startWithFallback(preferred: number, store: Store): Promise<RunningServer> {
+  const host = resolveHost();
   try {
-    return await startServer({ host: HOST, port: preferred, version: SERVICE_VERSION, store });
+    return await startServer({ host, port: preferred, version: SERVICE_VERSION, store });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE' && preferred !== 0) {
       log(`port ${preferred} in use — falling back to an ephemeral port`);
-      return startServer({ host: HOST, port: 0, version: SERVICE_VERSION, store });
+      return startServer({ host, port: 0, version: SERVICE_VERSION, store });
     }
     throw err;
   }

@@ -11,6 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -78,6 +79,114 @@ cpSync(sourceDist, join(runtimeRoot, 'electron'), {
   preserveTimestamps: true,
 });
 materializeSymlinks(join(runtimeRoot, 'electron'));
+
+function prepareMacApp(appBundle, deepSign) {
+  const contents = join(appBundle, 'Contents');
+  const infoPath = join(contents, 'Info.plist');
+  let info = readFileSync(infoPath, 'utf8');
+  const replacePlistString = (key, value) => {
+    const pattern = new RegExp(`(<key>${key}</key>\\s*<string>)[^<]*(</string>)`);
+    if (!pattern.test(info)) {
+      throw new Error(`Electron Info.plist is missing ${key}`);
+    }
+    info = info.replace(pattern, `$1${value}$2`);
+  };
+  replacePlistString('CFBundleIdentifier', 'com.kubarycz.working-memory');
+  replacePlistString('CFBundleName', 'Working Memory');
+  replacePlistString('CFBundleDisplayName', 'Working Memory');
+  if (!info.includes('<key>CFBundleURLTypes</key>')) {
+    info = info.replace(
+      '</dict>\n</plist>',
+      [
+        '\t<key>CFBundleURLTypes</key>',
+        '\t<array>',
+        '\t\t<dict>',
+        '\t\t\t<key>CFBundleURLName</key>',
+        '\t\t\t<string>Working Memory</string>',
+        '\t\t\t<key>CFBundleURLSchemes</key>',
+        '\t\t\t<array>',
+        '\t\t\t\t<string>working-memory</string>',
+        '\t\t\t</array>',
+        '\t\t</dict>',
+        '\t</array>',
+        '</dict>',
+        '</plist>',
+      ].join('\n'),
+    );
+  }
+  writeFileSync(infoPath, info);
+
+  const appResources = join(contents, 'Resources', 'app');
+  mkdirSync(appResources, { recursive: true });
+  cpSync(join(desktopRoot, 'out'), join(appResources, 'out'), {
+    recursive: true,
+    preserveTimestamps: true,
+  });
+  writeFileSync(
+    join(appResources, 'package.json'),
+    `${JSON.stringify({
+      name: 'working-memory-desktop',
+      productName: 'Working Memory',
+      type: 'module',
+      main: 'out/main/index.js',
+    }, null, 2)}\n`,
+  );
+
+  if (process.platform === 'darwin') {
+    let signingError = '';
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const clearedAttributes = spawnSync(
+        '/usr/bin/xattr',
+        ['-cr', appBundle],
+        { encoding: 'utf8' },
+      );
+      if (clearedAttributes.status !== 0) {
+        throw new Error(
+          `Unable to clear Working Memory.app metadata: ${clearedAttributes.stderr || clearedAttributes.stdout}`,
+        );
+      }
+      for (const attribute of ['com.apple.FinderInfo', 'com.apple.fileprovider.fpfs#P']) {
+        const removedAttribute = spawnSync(
+          '/usr/bin/xattr',
+          ['-dr', attribute, appBundle],
+          { encoding: 'utf8' },
+        );
+        if (removedAttribute.status !== 0) {
+          throw new Error(
+            `Unable to remove ${attribute} from Working Memory.app: ${removedAttribute.stderr || removedAttribute.stdout}`,
+          );
+        }
+      }
+      const signed = spawnSync(
+        '/usr/bin/codesign',
+        ['--force', ...(deepSign ? ['--deep'] : []), '--sign', '-', appBundle],
+        { encoding: 'utf8' },
+      );
+      if (signed.status === 0) {
+        return;
+      }
+      signingError = signed.stderr || signed.stdout;
+      console.warn(
+        `prepare-desktop-runtime: signing attempt ${attempt} failed after metadata cleanup`,
+      );
+    }
+    throw new Error(`Unable to sign Working Memory.app after 3 attempts: ${signingError}`);
+  }
+}
+
+if (targetPlatform === 'darwin') {
+  prepareMacApp(join(runtimeRoot, 'electron', 'Electron.app'), false);
+
+  const applicationRoot = join(runtimeRoot, 'application');
+  const applicationBundle = join(applicationRoot, 'Working Memory.app');
+  mkdirSync(applicationRoot, { recursive: true });
+  cpSync(join(sourceDist, 'Electron.app'), applicationBundle, {
+    recursive: true,
+    preserveTimestamps: true,
+    verbatimSymlinks: true,
+  });
+  prepareMacApp(applicationBundle, true);
+}
 
 writeFileSync(
   join(runtimeRoot, 'launch.json'),

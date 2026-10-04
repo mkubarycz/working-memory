@@ -6,7 +6,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && node ../scripts/prepare-desktop-runtime.mjs && node ../scripts/install-desktop-app.mjs",
     "start": "npm run build && electron out/main/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

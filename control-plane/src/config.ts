@@ -18,6 +18,21 @@ export const SERVICE_VERSION = '0.1.0';
 /** Loopback host — the service binds here and nowhere else. */
 export const HOST = '127.0.0.1';
 
+/** Env var: overrides the bind host for container deployments. */
+export const HOST_ENV = 'WM_CONTROL_PLANE_HOST';
+
+const ALLOWED_HOSTS = new Set([HOST, '0.0.0.0']);
+
+export function resolveHost(env: NodeJS.ProcessEnv = process.env): string {
+  const value = env[HOST_ENV]?.trim() || HOST;
+  if (!ALLOWED_HOSTS.has(value)) {
+    throw new Error(
+      `${HOST_ENV} must be ${HOST} or 0.0.0.0; received ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
+}
+
 /** Default TCP port; override with the WM_CONTROL_PLANE_PORT env var. */
 export const DEFAULT_PORT = 7717;
 

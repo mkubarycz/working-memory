@@ -1,0 +1,30 @@
+name: working-memory
+
+services:
+  control-plane:
+    container_name: working-memory-control-plane
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    environment:
+      WM_CONTROL_PLANE_HOME: /data
+      WM_CONTROL_PLANE_HOST: 0.0.0.0
+      WM_CONTROL_PLANE_PORT: "7717"
+    ports:
+      - "127.0.0.1:7717:7717"
+    volumes:
+      - type: bind
+        source: ${WORKING_MEMORY_DATA_DIR:?Set WORKING_MEMORY_DATA_DIR to the existing Working Memory data directory}
+        target: /data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:7717/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 5

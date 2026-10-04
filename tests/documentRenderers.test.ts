@@ -84,15 +84,15 @@ describe('renderTopicDocument', () => {
     );
     expect(md).toContain('# Topic: Blackboard Tab');
     expect(md).toContain(
-      '`topicType`: [feature](vscode://kubarycz.working-memory/open/topic-type/feature)',
+      '`topicType`: [feature](http://127.0.0.1:7718/open/topic-type/feature)',
     );
     expect(md).toContain('the body text');
     // Workstreams degrade to slug labels when no resolved titles are injected.
     expect(md).toContain(
-      '[control-plane](vscode://kubarycz.working-memory/open/workstream/control-plane)',
+      '[control-plane](http://127.0.0.1:7718/open/workstream/control-plane)',
     );
     expect(md).toContain(
-      '[blackboard](vscode://kubarycz.working-memory/open/workstream/blackboard)',
+      '[blackboard](http://127.0.0.1:7718/open/workstream/blackboard)',
     );
     // The flat `## Parents` section is gone; a `## Family` tree replaces it.
     expect(md).not.toContain('## Parents');
@@ -144,19 +144,19 @@ describe('renderTopicDocument', () => {
     );
     // Friendly workstream link (title label, not slug).
     expect(md).toContain(
-      '[Workstream A](vscode://kubarycz.working-memory/open/workstream/ws-a)',
+      '[Workstream A](http://127.0.0.1:7718/open/workstream/ws-a)',
     );
     // Ancestors + descendant are friendly clickable links, indented 2/level.
     expect(md).toContain(
-      '- [Grandparent](vscode://kubarycz.working-memory/open/topic/grandparent)',
+      '- [Grandparent](http://127.0.0.1:7718/open/topic/grandparent)',
     );
     expect(md).toContain(
-      '  - [Parent](vscode://kubarycz.working-memory/open/topic/parent)',
+      '  - [Parent](http://127.0.0.1:7718/open/topic/parent)',
     );
     // The current node is bold, NOT a link.
     expect(md).toContain('    - **Family Node**');
     expect(md).toContain(
-      '      - [Child](vscode://kubarycz.working-memory/open/topic/child)',
+      '      - [Child](http://127.0.0.1:7718/open/topic/child)',
     );
   });
 
@@ -180,7 +180,7 @@ describe('renderTopicDocument', () => {
     });
     // Title unresolved → the slug itself is the label, so the link never breaks.
     expect(md).toContain(
-      '- [ghost-parent](vscode://kubarycz.working-memory/open/topic/ghost-parent)',
+      '- [ghost-parent](http://127.0.0.1:7718/open/topic/ghost-parent)',
     );
   });
 
@@ -293,7 +293,7 @@ describe('renderAlertDocument', () => {
     expect(md).toContain('The disk is at 95%.');
     expect(md).toContain('Free space.');
     expect(md).toContain(
-      '[infra](vscode://kubarycz.working-memory/open/topic/infra)',
+      '[infra](http://127.0.0.1:7718/open/topic/infra)',
     );
   });
 
