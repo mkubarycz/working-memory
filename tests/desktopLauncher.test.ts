@@ -66,27 +66,31 @@ describe('resolveDesktopLaunchPaths', () => {
   });
 
   describe('desktop UI command contribution', () => {
-    it('places the launcher in the Workstreams view title navigation', () => {
+    it('keeps only the desktop launcher and no VS Code UI contributions', () => {
       const packageJson = JSON.parse(
         readFileSync(join(process.cwd(), 'package.json'), 'utf8'),
       ) as {
         contributes: {
-          commands: Array<{ command: string; icon?: string }>;
-          menus: { 'view/title': Array<{ command: string; when?: string; group?: string }> };
+          commands: Array<{ command: string; title: string; category: string; icon?: string }>;
+          views?: unknown;
+          viewsContainers?: unknown;
+          customEditors?: unknown;
+          menus?: unknown;
         };
       };
 
-      expect(packageJson.contributes.commands).toContainEqual(
-        expect.objectContaining({
+      expect(packageJson.contributes.commands).toEqual([
+        {
           command: 'working-memory.openDesktopUi',
+          title: 'Open Working Memory UI',
+          category: 'Working Memory',
           icon: '$(multiple-windows)',
-        }),
-      );
-      expect(packageJson.contributes.menus['view/title']).toContainEqual({
-        command: 'working-memory.openDesktopUi',
-        when: 'view == workingMemory.workstreams',
-        group: 'navigation',
-      });
+        },
+      ]);
+      expect(packageJson.contributes.views).toBeUndefined();
+      expect(packageJson.contributes.viewsContainers).toBeUndefined();
+      expect(packageJson.contributes.customEditors).toBeUndefined();
+      expect(packageJson.contributes.menus).toBeUndefined();
     });
   });
 

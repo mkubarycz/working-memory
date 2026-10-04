@@ -30,6 +30,16 @@ describe('renderMarkdown', () => {
     expect(html).toContain('<a href="https://example.com">');
   });
 
+  it('resolves portable attachment image links against the active control plane', () => {
+    const html = renderMarkdown(
+      '![pasted](wm-attachment:123e4567-e89b-12d3-a456-426614174000)',
+      'http://127.0.0.1:7717',
+    );
+    expect(html).toContain(
+      'src="http://127.0.0.1:7717/attachments/123e4567-e89b-12d3-a456-426614174000"',
+    );
+  });
+
   // Security guard: markdown-it is configured `html: false`, so authored raw
   // HTML must be ESCAPED, never emitted as live markup.
   it('escapes a raw <script> tag instead of injecting it', () => {

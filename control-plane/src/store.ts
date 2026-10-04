@@ -17,7 +17,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 /** The parsed, caller-facing document envelope. */
@@ -110,6 +110,21 @@ export interface RestoreDocumentInput {
   id: string;
 }
 
+export interface Attachment {
+  id: string;
+  sha256: string;
+  mimeType: string;
+  filename: string;
+  data: Uint8Array;
+  createdAt: number;
+}
+
+export interface CreateAttachmentInput {
+  mimeType: string;
+  filename: string;
+  data: Uint8Array;
+}
+
 /**
  * Thrown when a live row with the given id exists but its `resource_version`
  * doesn't match the caller's `expected` (a stale writer). Carries the current
@@ -159,6 +174,10 @@ export interface Store {
   restoreDocument(input: RestoreDocumentInput): DocumentEnvelope;
   readonly db: DatabaseSync;
   readonly path: string;
+  /** Store a binary attachment, deduplicated by SHA-256. */
+  createAttachment(input: CreateAttachmentInput): Attachment;
+  /** Fetch a binary attachment by its immutable id. */
+  getAttachment(id: string): Attachment | null;
   /** Insert a new document; bumps the global `resource_version`. */
   createDocument(input: CreateDocumentInput): DocumentEnvelope;
   /** List non-deleted documents (newest first), optionally filtered by kind. */
@@ -198,6 +217,15 @@ interface ResourceRow {
 
 interface CreationOrderedResourceRow extends ResourceRow {
   creation_sequence: number;
+}
+
+interface AttachmentRow {
+  id: string;
+  sha256: string;
+  mime_type: string;
+  filename: string;
+  data: Uint8Array;
+  created_at: number;
 }
 
 function loadSqlite(): typeof import('node:sqlite') {
@@ -242,6 +270,15 @@ function ensureSchema(db: DatabaseSync): void {
     INSERT OR IGNORE INTO store_meta (key, value) VALUES ('resource_version', 0);
 
     CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources (kind);
+
+    CREATE TABLE IF NOT EXISTS attachments (
+      id         TEXT PRIMARY KEY,
+      sha256     TEXT NOT NULL UNIQUE,
+      mime_type  TEXT NOT NULL,
+      filename   TEXT NOT NULL,
+      data       BLOB NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
 }
 
@@ -277,6 +314,17 @@ function rowToEnvelope(row: ResourceRow): DocumentEnvelope {
   };
 }
 
+function rowToAttachment(row: AttachmentRow): Attachment {
+  return {
+    id: row.id,
+    sha256: row.sha256,
+    mimeType: row.mime_type,
+    filename: row.filename,
+    data: row.data,
+    createdAt: row.created_at,
+  };
+}
+
 /**
  * Open (creating if needed) the control-plane SQLite store, enable WAL, and
  * ensure the resource schema. Pass `':memory:'` for an ephemeral database.
@@ -292,6 +340,32 @@ export function openStore(dbFilePath: string): Store {
   // No `.pragma()` helper on DatabaseSync — use exec (repo convention).
   db.exec('PRAGMA journal_mode = WAL');
   ensureSchema(db);
+
+  function createAttachment(input: CreateAttachmentInput): Attachment {
+    const data = Buffer.from(input.data);
+    const sha256 = createHash('sha256').update(data).digest('hex');
+    const existing = db
+      .prepare('SELECT * FROM attachments WHERE sha256 = ?')
+      .get(sha256) as unknown as AttachmentRow | undefined;
+    if (existing) {
+      return rowToAttachment(existing);
+    }
+
+    const id = randomUUID();
+    const createdAt = nowSeconds();
+    db.prepare(
+      `INSERT INTO attachments (id, sha256, mime_type, filename, data, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(id, sha256, input.mimeType, input.filename, data, createdAt);
+    return { id, sha256, mimeType: input.mimeType, filename: input.filename, data, createdAt };
+  }
+
+  function getAttachment(id: string): Attachment | null {
+    const row = db
+      .prepare('SELECT * FROM attachments WHERE id = ?')
+      .get(id) as unknown as AttachmentRow | undefined;
+    return row ? rowToAttachment(row) : null;
+  }
 
   function createDocument(input: CreateDocumentInput): DocumentEnvelope {
     const now = nowSeconds();
@@ -656,6 +730,8 @@ export function openStore(dbFilePath: string): Store {
   return {
     db,
     path: dbFilePath,
+    createAttachment,
+    getAttachment,
     createDocument,
     listDocuments,
     listDocumentsByCreation,

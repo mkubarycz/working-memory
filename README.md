@@ -1,42 +1,33 @@
 # working-memory
 
-**Working Memory is a context-storage and workflow engine for VS Code that
-treats agentic workflows as a first-class citizen.** It gives AI agents (and
-you) a durable, structured place to record what's happening, why decisions
-were made, and what's left to do — so context survives across sessions instead
-of evaporating when a chat ends.
+**Working Memory is a desktop context-storage and workflow engine that treats
+agentic workflows as a first-class citizen.** It gives AI agents (and you) a
+durable, structured place to record what's happening, why decisions were made,
+and what's left to do — so context survives across chats instead of
+evaporating when a chat ends.
 
 It does two things at once:
 
-- **Context storage** — a SQLite database that captures work as a simple
-  hierarchy: **workstreams** (long-running threads) contain **sessions**
-  (individual work blocks) which contain **entries** (timestamped log lines).
-  Durable **topics** cut across workstreams to track subjects that outlive any
-  one session, and full-text search makes all of it retrievable.
-- **Workflow engine** — agents drive the whole thing through ~29 MCP
-  language-model tools (`wm_*`). They open sessions, append journal entries,
-  open and close topics, and link everything together as they work. A panel UI
-  surfaces the live state so you can watch and steer.
+- **Context storage** — a portable SQLite database of durable **workstreams**,
+  **topics**, topic types, alerts, and related control-plane documents.
+- **Workflow engine** — agents drive the store through typed MCP tools
+  (`ws-*` and `wm-document-*`). The standalone desktop app surfaces the live
+  state so you can watch and steer.
 
 ## How it works
 
-- **Storage:** a SQLite DB at `<hub-workspace>/memory/journal.sqlite`, opened
-  via Node 22's built-in `node:sqlite` — no native modules, no build step.
-  Schema lives in tracked, append-only migrations under `schema/NNN_*.sql`,
-  applied automatically on activation.
-- **Agent access:** the journal is exposed directly as MCP tools
-  (`wm_start_session`, `wm_append_entry`, `wm_search_entries`,
-  `wm_create_topic`, `wm_link_entry_topic`, …). Agents read and write the
-  database without ever touching SQL by hand — the tools are the API.
-- **You see it:** an activity-bar container with two tree views — **Active**
-  (open workstreams) and **Archive** (closed) — plus a webview panel with
-  Active / Archive / Topics tabs. Workstreams expand to a `Topics` group;
-  clicking a workstream, topic, or session opens its virtual markdown doc. The
-  panel header also includes a shortcut that launches or focuses the packaged
-  Working Memory desktop UI.
-- **Built for recovery:** FTS5 search over entry bodies, soft-delete (and
-  `wm_restore_*` undo) across workstreams / sessions / entries / topics / link
-  rows, and topic M:N links to both workstreams and entries.
+- **Storage:** the control plane owns a SQLite database opened through Node
+  22's built-in `node:sqlite`. Schema changes are tracked in append-only
+  migrations and applied automatically.
+- **Agent access:** typed MCP tools expose the document store without requiring
+  agents to touch SQL.
+- **You see it:** the standalone Working Memory desktop app owns the Active
+  rail, document editor, Markdown preview, chat, and settings UI. The VS Code
+  extension is intentionally thin: it registers the MCP endpoint, supervises
+  the control plane when configured to do so, launches the desktop app, and
+  forwards legacy `vscode://` links to native `working-memory://` links.
+- **Built for recovery:** resources use explicit status and relationship
+  fields, while the SQLite store remains portable and independently backed up.
 
 ## Install the latest prebuilt build
 
@@ -126,13 +117,13 @@ The daemon binds to loopback by default outside Docker. The container sets
 `WM_CONTROL_PLANE_HOST=0.0.0.0` internally so Docker can publish it, while the
 Compose port mapping keeps the host exposure restricted to `127.0.0.1`.
 
-## DB path resolution (extension)
+## Store path resolution
 
-On activation the extension looks at every open workspace folder and picks the
-first one that contains **both** `AGENTS.md` and a `memory/` directory. The DB
-lives at `<that folder>/memory/journal.sqlite`. If no folder qualifies, the
-extension surfaces an error toast and the tree stays empty — open the hub
-workspace and run **Working Memory: Refresh** (or reload the window).
+The control plane resolves its data directory from
+`WM_CONTROL_PLANE_HOME`, then the `workingMemory.controlPlane.storePath`
+setting when extension-hosted, and otherwise the platform application-data
+default. The desktop app connects to the selected control-plane environment;
+it does not open SQLite directly.
 
 ## Run the extension locally
 
@@ -143,7 +134,10 @@ For iterating on the extension itself, use the **Extension Development Host**:
    with the extension loaded.
 3. In that window, open the multi-root workspace
    `kubarycz-agentic-workspace.code-workspace` so the hub folder is present.
-4. Click the brain icon in the activity bar → see your workstreams.
+4. Run **Working Memory: Open Working Memory UI** from the Command Palette.
+
+The extension does not contribute an activity-bar rail, virtual topic files,
+or custom editors. Those surfaces live in the desktop app.
 
 To install a build instead of debugging, use the prebuilt GitHub Release
 one-liner above.
@@ -151,7 +145,7 @@ one-liner above.
 ## Desktop container apps
 
 The desktop **Container Apps** right-rail tab lists registered local
-applications. Selecting one opens its stable virtual document in the middle
+applications. Selecting one opens its resource document in the middle
 stage, where its launch, health, contract, MCP, and refresh actions remain
 available:
 

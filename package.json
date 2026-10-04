@@ -19,7 +19,6 @@
   },
   "main": "./out/src/extension.js",
   "activationEvents": [
-    "onFileSystem:working-memory",
     "onStartupFinished",
     "onUri"
   ],
@@ -62,169 +61,39 @@
         "label": "Working Memory Control Plane"
       }
     ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "working-memory",
-          "title": "Working Memory",
-          "icon": "media/brain.svg"
-        }
-      ]
-    },
-    "views": {
-      "working-memory": [
-        {
-          "id": "workingMemory.workstreams",
-          "name": "Workstreams",
-          "type": "webview"
-        }
-      ]
-    },
-    "customEditors": [
-      {
-        "viewType": "workingMemory.documentEditor",
-        "displayName": "Working Memory Document",
-        "selector": [
-          {
-            "filenamePattern": "*.working-memory"
-          }
-        ],
-        "priority": "default"
-      }
-    ],
     "commands": [
-      {
-        "command": "working-memory.refresh",
-        "title": "Refresh",
-        "category": "Working Memory",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "working-memory.reloadWindow",
-        "title": "Reload Window",
-        "category": "Working Memory",
-        "icon": "$(debug-restart)"
-      },
       {
         "command": "working-memory.openDesktopUi",
         "title": "Open Working Memory UI",
         "category": "Working Memory",
         "icon": "$(multiple-windows)"
-      },
-      {
-        "command": "working-memory.updateToLatest",
-        "title": "Download and install the latest release of Working Memory",
-        "shortTitle": "Update to Latest",
-        "category": "Working Memory",
-        "icon": "$(cloud-download)"
-      },
-      {
-        "command": "working-memory.backupNow",
-        "title": "Back up journal database now",
-        "shortTitle": "Back Up Now",
-        "category": "Working Memory",
-        "icon": "$(save)"
-      },
-      {
-        "command": "working-memory.open",
-        "title": "Open Doc…",
-        "category": "Working Memory"
-      },
-      {
-        "command": "working-memory.openTopic",
-        "title": "Open Topic",
-        "category": "Working Memory"
-      },
-      {
-        "command": "working-memory.openWorkstream",
-        "title": "Open Workstream",
-        "category": "Working Memory"
-      },
-      {
-        "command": "workingMemory.topic.addToWorkstream",
-        "title": "Topic: Add to Workstream",
-        "category": "Working Memory"
-      },
-      {
-        "command": "workingMemory.topic.removeFromWorkstream",
-        "title": "Topic: Remove from Workstream",
-        "category": "Working Memory"
-      },
-      {
-        "command": "working-memory.setWorkstreamSection",
-        "title": "Move Workstream to Section",
-        "category": "Working Memory"
       }
-    ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "working-memory.refresh",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        },
-        {
-          "command": "working-memory.reloadWindow",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        },
-        {
-          "command": "working-memory.openDesktopUi",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        },
-        {
-          "command": "working-memory.updateToLatest",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        },
-        {
-          "command": "working-memory.backupNow",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        }
-      ]
-    },
-    "markdown": {
-      "previewStyles": [
-        "media/codicons/codicon.css"
-      ]
-    }
+    ]
   },
   "scripts": {
-    "compile": "npm run compile:webview && npm run copy:codicons && tsc -p . && npm run compile:control-plane",
+    "compile": "tsc -p . && npm run compile:control-plane",
     "compile:control-plane": "tsc -p control-plane",
     "compile:desktop": "npm run build --prefix desktop-ui",
-    "compile:webview": "vite build",
     "container:build": "docker compose build control-plane",
     "container:logs": "docker compose logs -f control-plane",
     "container:start": "docker compose up -d --build control-plane",
     "container:stop": "docker compose stop control-plane",
-    "copy:codicons": "node scripts/copy-codicons.mjs",
     "prepare:desktop-runtime": "node scripts/prepare-desktop-runtime.mjs",
-    "postinstall": "node scripts/copy-codicons.mjs",
     "watch": "tsc -p . -w",
-    "watch:webview": "vite build --watch",
     "package": "vsce package",
     "test": "vitest run",
     "test:standalone-template": "bash scripts/test-standalone-template.sh",
     "test:watch": "vitest",
-    "vscode:prepublish": "npm run compile && npm run prepare:desktop-runtime"
+    "vscode:prepublish": "npm run compile && npm run compile:desktop && npm run prepare:desktop-runtime"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^6.0.0",
-    "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.5.0",
     "@types/vscode": "^1.95.0",
-    "@vscode/codicons": "^0.0.45",
     "@vscode/vsce": "^2.24.0",
-    "svelte": "^5.19.0",
     "typescript": "^5.4.0",
-    "vite": "^7.0.0",
     "vitest": "^4.1.8"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "markdown-it": "^14.3.0"
+    "@modelcontextprotocol/sdk": "^1.29.0"
   }
 }

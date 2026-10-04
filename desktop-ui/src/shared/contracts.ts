@@ -1,4 +1,11 @@
-import type { AlertVM, DocumentVM, TopicPatch, WorkstreamVM } from '../../../webview-ui/src/lib/types';
+import type {
+  AlertVM,
+  AttachmentRef,
+  AttachmentUpload,
+  DocumentVM,
+  TopicPatch,
+  WorkstreamVM,
+} from '../../../webview-ui/src/lib/types';
 import type { PanelData } from '../../../src/panelData';
 import type { WorkstreamSection } from '../../../src/panelData';
 import type {
@@ -120,6 +127,14 @@ export interface ConnectionResult {
   message: string;
 }
 
+export interface BackendHealth {
+  state: 'healthy' | 'unreachable';
+  endpoint: string;
+  result: string;
+  observedAt: number;
+  source: DesktopEnvironment['source'];
+}
+
 export interface DesktopEnvironment {
   id: string;
   port: number;
@@ -214,6 +229,7 @@ export interface DesktopApi {
   getActivePanel(): Promise<PanelData>;
   reorderWorkstreams(updates: DesktopWorkstreamReorderUpdate[]): Promise<void>;
   getConfig(): Promise<PublicConfig>;
+  getBackendHealth(): Promise<BackendHealth>;
   saveConfig(input: SaveConfigInput): Promise<PublicConfig>;
   testConnection(input: SaveConfigInput): Promise<ConnectionResult>;
   sendChat(message: string, context?: ChatContext): Promise<ChatResult>;
@@ -228,6 +244,8 @@ export interface DesktopApi {
   onResourceDragResult(listener: (result: ResourceDragResult) => void): () => void;
   saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;
   saveTopic(identifier: string, patch: TopicPatch): Promise<DocumentVM>;
+  reparentTopic(slug: string, parent: string | null): Promise<void>;
+  uploadAttachment(file: AttachmentUpload): Promise<AttachmentRef>;
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;
   setAlertStatus(
     context: { kind: 'workstream' | 'topic'; identifier: string },

@@ -6,10 +6,17 @@
   import WorkstreamView from '../../../webview-ui/src/lib/WorkstreamView.svelte';
   import TopicView from '../../../webview-ui/src/lib/TopicView.svelte';
   import DocumentView from '../../../webview-ui/src/lib/DocumentView.svelte';
-  import type { AlertVM, DocumentVM, SaveState, TopicPatch } from '../../../webview-ui/src/lib/types';
+  import type {
+    AlertVM,
+    AttachmentRef,
+    DocumentVM,
+    SaveState,
+    TopicPatch,
+  } from '../../../webview-ui/src/lib/types';
   import { chatContextForDocument } from '../shared/contracts';
   import type {
     ChatResult,
+    BackendHealth,
     ContainerAppStatus,
     DesktopEnvironment,
     DesktopEnvironmentState,
@@ -119,6 +126,13 @@
   let activeHeaderTab = $state<HeaderTab>('log');
   let focusedHeaderTab = $state<HeaderTab>('log');
   let busyContainerAppId = $state<string | null>(null);
+  let backendHealth = $state<BackendHealth | null>(null);
+  let backendHealthChecking = $state(false);
+  let openAiHealth = $state<{
+    state: 'healthy' | 'degraded' | 'unreachable' | 'unknown';
+    result: string;
+    observedAt: number;
+  }>({ state: 'unknown', result: 'No backend request observed yet.', observedAt: 0 });
   let activePanel = $state<PanelData | null>(null);
   let activeLoading = $state(false);
   let activeError = $state('');
@@ -250,6 +264,7 @@
         const result = await window.workingMemory.runContainerApp(app.id);
         const status = await window.workingMemory.inspectContainerApp(app.id);
         if (generation !== environmentGeneration) return;
+        observeOpenAi('unreachable', error instanceof Error ? error.message : String(error));
         containerAppStatuses[app.id] = result.status === 'ready'
           ? { ...status, lastAction: `Run: ${result.action}`, error: null }
           : { ...status, lastAction: 'Run failed', error: result.message };
@@ -257,6 +272,7 @@
       } else if (action === 'stop') {
         const result = await window.workingMemory.stopContainerApp(app.id);
         if (generation !== environmentGeneration) return;
+        observeOpenAi('unreachable', error instanceof Error ? error.message : String(error));
         containerAppStatuses[app.id] = result.detail;
         if (result.status === 'error') containerAppError = result.message;
       } else if (action === 'open') {
@@ -315,6 +331,32 @@
       void refreshActive();
     },
   });
+
+  async function refreshBackendHealth(): Promise<void> {
+    if (backendHealthChecking) return;
+    backendHealthChecking = true;
+    try {
+      backendHealth = await window.workingMemory.getBackendHealth();
+    } catch (error) {
+      backendHealth = {
+        state: 'unreachable',
+        endpoint: selectedEnvironment?.mcpUrl ?? 'not selected',
+        result: error instanceof Error ? error.message : String(error),
+        observedAt: Date.now(),
+        source: selectedEnvironment?.source ?? 'production',
+      };
+    } finally {
+      backendHealthChecking = false;
+    }
+  }
+
+  function observeOpenAi(state: 'healthy' | 'degraded' | 'unreachable', result: string): void {
+    openAiHealth = { state, result, observedAt: Date.now() };
+  }
+
+  function statusTime(timestamp: number): string {
+    return timestamp ? new Date(timestamp).toLocaleTimeString() : 'never';
+  }
   const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
@@ -476,10 +518,13 @@
     const stopListeningForDeepLinks = window.workingMemory.onOpenResource(
       (kind, identifier) => void openResource(kind, identifier),
     );
+    void refreshBackendHealth();
     const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
+    const backendHealthPoll = window.setInterval(() => void refreshBackendHealth(), 30_000);
     return () => {
       stopListeningForDeepLinks();
       window.clearInterval(historyPoll);
+      window.clearInterval(backendHealthPoll);
       window.removeEventListener('resize', handleResize);
       document.body.classList.remove('resizing-rails');
       clearPreviewAttention();
@@ -623,6 +668,7 @@
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
       await loadContainerApps();
+      await refreshBackendHealth();
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -646,7 +692,10 @@
     const generation = environmentGeneration;
     try {
       const result = await window.workingMemory.sendChat(message, context);
-      if (generation === environmentGeneration) await applyChatResult(result, runKey);
+      if (generation === environmentGeneration) {
+        observeOpenAi(result.status === 'failed' ? 'degraded' : 'healthy', `Request ${result.status}.`);
+        await applyChatResult(result, runKey);
+      }
     } catch (error) {
       if (generation !== environmentGeneration) return;
       chatRuns = chatRuns.map((run) => run.key === runKey
@@ -686,7 +735,10 @@
     const generation = environmentGeneration;
     try {
       const result = await window.workingMemory.resolveChatConfirmation(pending.id, confirmed, currentChatContext);
-      if (generation === environmentGeneration) await applyChatResult(result, runKey);
+      if (generation === environmentGeneration) {
+        observeOpenAi(result.status === 'failed' ? 'degraded' : 'healthy', `Request ${result.status}.`);
+        await applyChatResult(result, runKey);
+      }
     } catch (error) {
       if (generation !== environmentGeneration) return;
       chatRuns = chatRuns.map((run) => run.key === runKey || run.journalId === runKey
@@ -868,6 +920,32 @@
     void mutateFromRail(workstream, () => window.workingMemory.togglePin(workstream, topic));
   }
 
+  async function reparentActiveTopic(slug: string, parent: string | null): Promise<void> {
+    activeError = '';
+    try {
+      await window.workingMemory.reparentTopic(slug, parent);
+    } catch (error) {
+      activeError = error instanceof Error ? error.message : String(error);
+    } finally {
+      await refreshActive();
+      const refreshed = await Promise.allSettled(documents
+        .filter((document) => document.kind === 'topic' && document.slug)
+        .map(async (document) => ({
+          key: documentTabKey(document),
+          document: await window.workingMemory.openResource('topic', document.slug!),
+        })));
+      let state = { tabs: documents, selectedKey: selectedDocumentKey };
+      for (const result of refreshed) {
+        if (result.status === 'fulfilled') {
+          state = updateDocumentTab(state, result.value.key, result.value.document);
+        }
+      }
+      documents = state.tabs;
+      selectedDocumentKey = state.selectedKey;
+      restoreDocumentSaveStatus(state.selectedKey);
+    }
+  }
+
   function saveWorkstream(patch: { title?: string; status?: string }): void {
     const document = activeDocument;
     if (document?.kind !== 'workstream' || !document.slug) return;
@@ -878,6 +956,14 @@
     const document = activeDocument;
     if (document?.kind !== 'topic' || !document.slug) return;
     documentSaves.schedule(documentTabKey(document), patch);
+  }
+
+  async function attachImages(files: File[]): Promise<AttachmentRef[]> {
+    return Promise.all(files.map(async (file) => window.workingMemory.uploadAttachment({
+      name: file.name || 'image',
+      type: file.type,
+      data: await file.arrayBuffer(),
+    })));
   }
 
   function setAlertStatus(id: string, status: AlertVM['status']): void {
@@ -1127,6 +1213,7 @@
           onAction={runActiveAction}
           onReorder={reorderActiveWorkstream}
           onTransferTopic={transferActiveTopic}
+          onReparentTopic={(slug, parent) => void reparentActiveTopic(slug, parent)}
         />
       {/key}
     {/if}
@@ -1256,6 +1343,10 @@
             onOpenTopic={(slug) => void openResource('topic', slug)}
             onOpenWorkstream={(slug) => void openResource('workstream', slug)}
             onSetAlertStatus={setAlertStatus}
+            attachmentBaseUrl={selectedEnvironment?.mcpUrl
+              ? new URL(selectedEnvironment.mcpUrl).origin
+              : ''}
+            onAttachImages={attachImages}
           />
         {:else if activeDocument}
           <DocumentView
@@ -1621,7 +1712,20 @@
   </aside>
 
   <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
-    <span>Working Memory</span>
-    <span>Built {desktopBuildLabel}</span>
+    <span
+      class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
+      title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"
+    >
+      <span class="status-dot"></span>
+      Working Memory: {backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}
+    </span>
+    <span
+      class="backend-status state-{openAiHealth.state}"
+      title="Endpoint: {endpoint || 'not configured'}&#10;Signal: normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
+    >
+      <span class="status-dot"></span>
+      OpenAI: {openAiHealth.state}
+    </span>
+    <span class="desktop-build-status">Built {desktopBuildLabel}</span>
   </footer>
 </div>

@@ -475,6 +475,34 @@ function registerIpc(): void {
     await environmentManager.switchTo(mcpUrl, () => chatAgent.reset());
     return environmentState(environmentManager.availableEnvironments);
   });
+  ipcMain.handle('backend:health', async () => {
+    const environment = environmentManager.currentEnvironment;
+    if (!environment) throw new Error('No Working Memory environment is selected.');
+    const endpoint = new URL(environment.mcpUrl).origin;
+    const observedAt = Date.now();
+    try {
+      const response = await fetch(`${endpoint}/health`, { signal: AbortSignal.timeout(5_000) });
+      const body = await response.json() as { ok?: boolean; version?: string };
+      if (!response.ok || body.ok !== true) {
+        throw new Error(`Health check returned HTTP ${response.status}.`);
+      }
+      return {
+        state: 'healthy' as const,
+        endpoint,
+        result: `Working Memory ${body.version ?? 'unknown version'}`,
+        observedAt,
+        source: environment.source,
+      };
+    } catch (error) {
+      return {
+        state: 'unreachable' as const,
+        endpoint,
+        result: error instanceof Error ? error.message : String(error),
+        observedAt,
+        source: environment.source,
+      };
+    }
+  });
   ipcMain.handle('active:get', () => loadActivePanelData(controlPlane()));
   ipcMain.handle('active:reorder', (_event, updates) => persistWorkstreamReorder(controlPlane(), updates));
   ipcMain.handle('config:get', async () => publicConfig(await readStoredConfig(configFile)));
@@ -563,6 +591,36 @@ function registerIpc(): void {
     if (!current?.slug) throw new Error('This topic cannot be edited.');
     await controlPlane().topicUpdate({ slug: current.slug, ...patch });
     return loadResource('topic', current.slug);
+  });
+  ipcMain.handle('topic:reparent', async (_event, slug: string, parent: string | null) => {
+    await controlPlane().topicUpdate({ slug, parents: parent ? [parent] : [] });
+  });
+  ipcMain.handle('attachment:upload', async (_event, file: {
+    name: string;
+    type: string;
+    data: ArrayBuffer;
+  }) => {
+    const environment = environmentManager.currentEnvironment;
+    if (!environment) throw new Error('No healthy Working Memory environment is selected.');
+    const baseUrl = new URL(environment.mcpUrl).origin;
+    const response = await fetch(`${baseUrl}/attachments`, {
+      method: 'POST',
+      headers: {
+        'content-type': file.type,
+        'x-file-name': encodeURIComponent(file.name),
+      },
+      body: Buffer.from(file.data),
+    });
+    const payload = await response.json() as {
+      id?: string;
+      filename?: string;
+      mimeType?: string;
+      error?: string;
+    };
+    if (!response.ok || !payload.id || !payload.filename || !payload.mimeType) {
+      throw new Error(payload.error ?? `Attachment upload failed (${response.status}).`);
+    }
+    return { id: payload.id, filename: payload.filename, mimeType: payload.mimeType };
   });
   ipcMain.handle('topic:toggle-pin', async (_event, workstream: string, topic: string) => {
     const [current] = await controlPlane().topicRead({ slug: topic });
@@ -759,12 +817,11 @@ function ensureWindow(): Promise<BrowserWindow> {
   return mainWindowCreation;
 }
 
-function focusWindow(window: BrowserWindow, reload: boolean): void {
+function focusWindow(window: BrowserWindow): void {
   if (window.isMinimized()) window.restore();
   window.show();
   if (process.platform === 'darwin') app.focus({ steal: true });
   window.focus();
-  if (reload) window.webContents.reloadIgnoringCache();
 }
 
 function sendDeepLink(window: BrowserWindow, target: DesktopDeepLinkTarget): void {
@@ -840,9 +897,9 @@ if (!ownsSingleInstanceLock) {
     }
     const existingWindow = mainWindow ?? BrowserWindow.getAllWindows()[0];
     if (existingWindow) {
-      focusWindow(existingWindow, true);
+      focusWindow(existingWindow);
     } else if (app.isReady()) {
-      void ensureWindow().then((window) => focusWindow(window, false));
+      void ensureWindow().then(focusWindow);
     }
   });
 
@@ -877,7 +934,7 @@ if (!ownsSingleInstanceLock) {
     }
     app.on('activate', () => {
       const existingWindow = mainWindow ?? BrowserWindow.getAllWindows()[0];
-      if (existingWindow) focusWindow(existingWindow, false);
+      if (existingWindow) focusWindow(existingWindow);
       else void ensureWindow();
     });
   });

@@ -1,7 +1,8 @@
 <script lang="ts">
-  import type { AlertVM, SaveState, TopicPatch, TopicVM } from './types';
+  import type { AlertVM, AttachmentRef, SaveState, TopicPatch, TopicVM } from './types';
   import { getTopicTypeConfig, iconForTopic } from './viewRegistry';
   import { renderMarkdown } from './markdown';
+  import { imageFilesFromTransfer } from './imageFiles';
   import SaveStatus from './SaveStatus.svelte';
   import AlertCallouts from './AlertCallouts.svelte';
 
@@ -12,6 +13,8 @@
     onOpenTopic: (slug: string) => void;
     onOpenWorkstream: (slug: string) => void;
     onSetAlertStatus: (id: string, status: AlertVM['status']) => void;
+    attachmentBaseUrl?: string;
+    onAttachImages?: (files: File[]) => Promise<AttachmentRef[]>;
   }
 
   let {
@@ -21,6 +24,8 @@
     onOpenTopic,
     onOpenWorkstream,
     onSetAlertStatus,
+    attachmentBaseUrl = '',
+    onAttachImages = async () => [],
   }: Props = $props();
 
   const STATUSES = ['open', 'closed'];
@@ -38,6 +43,68 @@
   function onBodyInput(event: Event): void {
     topic.body = (event.currentTarget as HTMLTextAreaElement).value;
     onSaveTopic({ body: topic.body });
+  }
+
+  let bodyInput = $state<HTMLTextAreaElement | null>(null);
+  let attachmentError = $state('');
+  let attachingImages = $state(false);
+
+  async function attachImages(files: File[]): Promise<void> {
+    if (files.length === 0 || attachingImages) {
+      return;
+    }
+    const selectionStart = bodyInput?.selectionStart ?? topic.body.length;
+    const selectionEnd = bodyInput?.selectionEnd ?? selectionStart;
+    attachingImages = true;
+    attachmentError = '';
+    try {
+      const attachments = await onAttachImages(files);
+      const markdown = attachments
+        .map((attachment) => `![${attachment.filename.replace(/[\[\]]/g, '')}](wm-attachment:${attachment.id})`)
+        .join('\n\n');
+      const before = topic.body.slice(0, selectionStart);
+      const after = topic.body.slice(selectionEnd);
+      const prefix = before && !before.endsWith('\n') ? '\n\n' : '';
+      const suffix = after && !after.startsWith('\n') ? '\n\n' : '';
+      topic.body = `${before}${prefix}${markdown}${suffix}${after}`;
+      onSaveTopic({ body: topic.body });
+      requestAnimationFrame(() => {
+        const cursor = before.length + prefix.length + markdown.length;
+        bodyInput?.focus();
+        bodyInput?.setSelectionRange(cursor, cursor);
+      });
+    } catch (error) {
+      attachmentError = error instanceof Error ? error.message : String(error);
+    } finally {
+      attachingImages = false;
+    }
+  }
+
+  function onBodyPaste(event: ClipboardEvent): void {
+    const files = imageFilesFromTransfer(event.clipboardData);
+    if (files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    void attachImages(files);
+  }
+
+  function onBodyDragOver(event: DragEvent): void {
+    if ([...(event.dataTransfer?.items ?? [])].some((item) => item.kind === 'file' && item.type.startsWith('image/'))) {
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+    }
+  }
+
+  function onBodyDrop(event: DragEvent): void {
+    const files = imageFilesFromTransfer(event.dataTransfer);
+    if (files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    void attachImages(files);
   }
 
   function fmtTs(ts: number): string {
@@ -68,7 +135,7 @@
 
   // Body view mode: default to Preview (reading-first); flip to Edit to modify.
   let bodyMode = $state<'preview' | 'edit'>('preview');
-  const renderedBody = $derived(renderMarkdown(topic.body || ''));
+  const renderedBody = $derived(renderMarkdown(topic.body || '', attachmentBaseUrl));
 
   // Family-tree scroll cues: show top/bottom fades only when there's more to
   // scroll in that direction, so the lineage reads as scrollable.
@@ -265,12 +332,18 @@
     >
       {#if topic.editable && bodyMode === 'edit'}
         <textarea
+          bind:this={bodyInput}
           class="body-input"
           value={topic.body}
           oninput={onBodyInput}
+          onpaste={onBodyPaste}
+          ondragover={onBodyDragOver}
+          ondrop={onBodyDrop}
           spellcheck="false"
           aria-label="Topic body (Markdown)"
         ></textarea>
+        {#if attachingImages}<p class="attachment-status">Attaching image…</p>{/if}
+        {#if attachmentError}<p class="attachment-error" role="alert">{attachmentError}</p>{/if}
       {:else if topic.body}
         <!-- Safe to inject: renderMarkdown uses markdown-it `html: false`, so any
              authored raw HTML is escaped rather than emitted as live markup. -->

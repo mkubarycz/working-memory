@@ -2,6 +2,8 @@
  * The control-plane HTTP surface.
  *
  *   GET  /health          → 200 { ok, version, uptime }
+ *   POST /attachments     → store an image in the portable SQLite database
+ *   GET  /attachments/:id → stream a stored image
  *   POST|GET|DELETE /mcp  → MCP over Streamable HTTP (stateful sessions)
  *
  * Bound loopback-only by the daemon. Uses the official MCP TypeScript SDK with
@@ -428,6 +430,29 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return JSON.parse(raw);
 }
 
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const IMAGE_MIME_TYPES = new Set([
+  'image/avif',
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+async function readBinaryBody(req: http.IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.from(chunk as Uint8Array);
+    size += buffer.length;
+    if (size > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`Attachment exceeds the ${MAX_ATTACHMENT_BYTES} byte limit.`);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 function endJson(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -522,6 +547,59 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
 
     if (req.method === 'GET' && url.pathname === HEALTH_PATH) {
       endJson(res, 200, { ok: true, version, uptime: (Date.now() - startedAt) / 1000 });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/attachments') {
+      const rawMimeType = Array.isArray(req.headers['content-type'])
+        ? req.headers['content-type'][0]
+        : req.headers['content-type'];
+      const mimeType = rawMimeType?.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+      if (!IMAGE_MIME_TYPES.has(mimeType)) {
+        endJson(res, 415, { ok: false, error: `Unsupported image type: ${mimeType || '(missing)'}` });
+        return;
+      }
+      const encodedFilename = Array.isArray(req.headers['x-file-name'])
+        ? req.headers['x-file-name'][0]
+        : req.headers['x-file-name'];
+      let filename = 'image';
+      if (encodedFilename) {
+        try {
+          filename = decodeURIComponent(encodedFilename);
+        } catch {
+          endJson(res, 400, { ok: false, error: 'Invalid x-file-name header.' });
+          return;
+        }
+      }
+      const data = await readBinaryBody(req);
+      if (data.length === 0) {
+        endJson(res, 400, { ok: false, error: 'Attachment body is empty.' });
+        return;
+      }
+      const attachment = store.createAttachment({ mimeType, filename, data });
+      endJson(res, 201, {
+        id: attachment.id,
+        filename: attachment.filename,
+        mimeType: attachment.mimeType,
+        size: attachment.data.byteLength,
+      });
+      return;
+    }
+
+    const attachmentMatch = /^\/attachments\/([0-9a-f-]+)$/.exec(url.pathname);
+    if (req.method === 'GET' && attachmentMatch) {
+      const attachment = store.getAttachment(attachmentMatch[1]);
+      if (!attachment) {
+        endJson(res, 404, { ok: false, error: 'attachment not found' });
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': attachment.mimeType,
+        'content-length': attachment.data.byteLength,
+        'cache-control': 'public, max-age=31536000, immutable',
+        'x-content-type-options': 'nosniff',
+      });
+      res.end(Buffer.from(attachment.data));
       return;
     }
 

@@ -182,8 +182,10 @@ export type SaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 
 /** Messages the extension host sends TO the webview. */
 export type ExtToWebview =
-  | { type: 'document'; data: DocumentVM }
+  | { type: 'document'; data: DocumentVM; attachmentBaseUrl?: string }
   | { type: 'saved'; resourceVersion?: number }
+  | { type: 'imagesAttached'; requestId: string; attachments: AttachmentRef[] }
+  | { type: 'imagesAttachFailed'; requestId: string; message: string }
   | { type: 'error'; message: string }
   // Non-terminal startup state: the control plane isn't connected yet, so the
   // webview shows "connecting…" and waits for a refresh to heal it (Bug B).
@@ -200,6 +202,18 @@ export interface TopicPatch {
   body?: string;
 }
 
+export interface AttachmentUpload {
+  name: string;
+  type: string;
+  data: ArrayBuffer;
+}
+
+export interface AttachmentRef {
+  id: string;
+  filename: string;
+  mimeType: string;
+}
+
 /** Messages the webview sends TO the extension host. */
 export type WebviewToExt =
   | { type: 'ready' }
@@ -209,6 +223,7 @@ export type WebviewToExt =
   | { type: 'openWorkstream'; slug: string }
   | { type: 'invoke'; command: string; args: unknown[] }
   | { type: 'togglePinTopic'; slug: string }
+  | { type: 'attachImages'; requestId: string; files: AttachmentUpload[] }
   // Transition an alert's lifecycle status (resolve / escalate / close / reopen)
   // from a callout button. Routed to `ws-alert-update` via the control-plane
   // client; the live-refresh then re-pushes the updated callouts.

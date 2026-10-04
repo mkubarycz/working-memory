@@ -15,8 +15,8 @@ export const SERVICE_NAME = 'working-memory-control-plane';
  */
 export const SERVICE_VERSION = '0.1.0';
 
-/** Loopback host — the service binds here and nowhere else. */
-export const HOST = '127.0.0.1';
+/** Bind host. Docker sets this to `0.0.0.0`; local launches stay loopback-only. */
+export const HOST = process.env.WM_CONTROL_PLANE_HOST?.trim() || '127.0.0.1';
 
 /** Env var: overrides the bind host for container deployments. */
 export const HOST_ENV = 'WM_CONTROL_PLANE_HOST';
