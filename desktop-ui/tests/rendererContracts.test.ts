@@ -107,6 +107,30 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.tree-connector[^}]*pointer-events:\s*none/s);
   });
 
+  it('offers root and child topic creation from both topic trees', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
+    const workstreamView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/WorkstreamView.svelte'), 'utf8');
+    const topicCreateView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/TopicCreateView.svelte'), 'utf8');
+    const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
+    const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
+
+    expect(activeRail).toContain('aria-label="Add Topic..."');
+    expect(activeRail).toContain("kind === 'create-child'");
+    expect(workstreamView).toContain("label: 'Add Child...'");
+    expect(workstreamView).toContain('aria-label="Add Topic..."');
+    expect(app).toContain("activeDocument?.kind === 'topic-create'");
+    expect(app).toContain('await refreshActive()');
+    expect(topicCreateView).toContain('aria-label="Topic title"');
+    expect(topicCreateView).toContain('aria-label="Topic type"');
+    expect(topicCreateView).toContain('<HybridMarkdownEditor');
+    expect(topicCreateView).toContain("error = 'Enter a topic title.'");
+    expect(preload).toContain("createTopic: (input) => invoke('topic:create', input)");
+    expect(main).toContain("ipcMain.handle('topic:create'");
+    expect(main).toContain('workstreams: [workstream]');
+    expect(main).toContain('parents: input.parent ? [input.parent] : []');
+  });
+
   it('renders queue and backlog as summaries while progress alone owns disclosure and graph details', () => {
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
@@ -123,7 +147,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('class="graph-node-control"');
     expect(activeRail).toContain('class="graph-node-dot"');
     expect(activeRail).toContain('class="graph-node-control graph-node-passive"');
-    expect(activeRail).not.toMatch(/codicon-(?:add|remove)/);
+    expect(activeRail).not.toContain("codicon-{open ? 'remove' : 'add'}");
     expect(styles).toMatch(/\.active-card\.summary[^}]*box-shadow:\s*none/s);
     expect(styles).toContain('--graph-color: var(--ws-card-border)');
   });

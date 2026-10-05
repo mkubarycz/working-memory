@@ -4,6 +4,7 @@ import type {
   AttachmentUpload,
   DocumentVM,
   TopicPatch,
+  TopicTypeMetaVM,
   WorkstreamVM,
 } from '../renderer/documents/types';
 import type { PanelData } from '../../../shared/panelData';
@@ -169,6 +170,7 @@ interface ChatContextDocument {
 
 export function chatContextForDocument(document: ChatContextDocument | null): ChatContext | undefined {
   if (!document) return undefined;
+  if (document.kind === 'topic-create') return undefined;
   const identifier = (document.slug ?? document.id).trim();
   if (!identifier) return undefined;
   const routeKind = ['workstream', 'topic', 'alert', 'topic-type'].includes(document.kind)
@@ -215,6 +217,14 @@ export interface ChatResult {
 
 export type DesktopResourceKind = 'workstream' | 'topic' | 'document' | 'alert' | 'topic-type';
 
+export interface TopicCreateInput {
+  title: string;
+  body: string;
+  topicType: string;
+  workstream: string;
+  parent?: string;
+}
+
 export interface DesktopWorkstreamReorderUpdate {
   slug: string;
   section: WorkstreamSection;
@@ -256,6 +266,8 @@ export interface DesktopApi {
   onResourceDragResult(listener: (result: ResourceDragResult) => void): () => void;
   saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;
   saveTopic(identifier: string, patch: TopicPatch): Promise<DocumentVM>;
+  listTopicTypes(): Promise<TopicTypeMetaVM[]>;
+  createTopic(input: TopicCreateInput): Promise<DocumentVM>;
   reparentTopic(slug: string, parent: string | null): Promise<void>;
   uploadAttachment(file: AttachmentUpload): Promise<AttachmentRef>;
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;

@@ -9,6 +9,13 @@ export interface ActiveMoveTarget {
 
 export type ActiveContextMenuItem =
   | {
+      kind: 'create-child';
+      title: 'Add Child...';
+      icon: 'add';
+      enabled: boolean;
+      topic: string;
+    }
+  | {
       kind: 'focus';
       title: string;
       icon: 'pin' | 'pinned';
@@ -51,6 +58,13 @@ export function activeContextMenuItems(
 ): ActiveContextMenuItem[] {
   const items: ActiveContextMenuItem[] = [];
   if (topic) {
+    items.push({
+      kind: 'create-child',
+      title: 'Add Child...',
+      icon: 'add',
+      enabled: Boolean(topic.topic) && Boolean(topic.sourceWorkstream),
+      topic: topic.topic,
+    });
     items.push({
       kind: 'focus',
       title: topic.focused ? 'Remove from Focus' : 'Add to Focus',

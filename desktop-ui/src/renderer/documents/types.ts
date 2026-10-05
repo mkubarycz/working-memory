@@ -123,6 +123,21 @@ export interface TopicTypeMetaVM {
   description: string;
 }
 
+/** Local-only document tab used while authoring a topic before its first save. */
+export interface TopicCreateDraftVM {
+  kind: 'topic-create';
+  id: string;
+  slug: null;
+  title: string;
+  body: string;
+  topicType: string;
+  topicTypes: TopicTypeMetaVM[];
+  workstream: string;
+  workstreamTitle: string;
+  parent: string | null;
+  parentTitle: string | null;
+}
+
 /** The topic detail view-model (kind = topic). */
 export interface TopicVM {
   kind: 'topic';
@@ -172,7 +187,7 @@ export interface GenericDocVM {
 }
 
 /** The discriminated document view-model pushed from the extension host. */
-export type DocumentVM = WorkstreamVM | TopicVM | GenericDocVM;
+export type DocumentVM = WorkstreamVM | TopicVM | TopicCreateDraftVM | GenericDocVM;
 
 /**
  * Save-status the header indicator renders. `saved` (green) only ever fires on

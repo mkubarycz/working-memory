@@ -44,6 +44,8 @@ const api: DesktopApi = {
   },
   saveWorkstream: (identifier, patch) => invoke('workstream:save', identifier, patch),
   saveTopic: (identifier, patch) => invoke('topic:save', identifier, patch),
+  listTopicTypes: () => invoke('topic:list-types'),
+  createTopic: (input) => invoke('topic:create', input),
   reparentTopic: (slug, parent) => invoke('topic:reparent', slug, parent),
   uploadAttachment: (file) => invoke('attachment:upload', file),
   togglePin: (workstream, topic) => invoke('topic:toggle-pin', workstream, topic),

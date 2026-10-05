@@ -5,6 +5,7 @@
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
   import TopicView from './documents/TopicView.svelte';
+  import TopicCreateView from './documents/TopicCreateView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
     AlertVM,
@@ -12,6 +13,8 @@
     DocumentVM,
     SaveState,
     TopicPatch,
+    TopicCreateDraftVM,
+    WorkstreamVM,
   } from './documents/types';
   import { chatContextForDocument } from '../shared/contracts';
   import type {
@@ -1020,6 +1023,66 @@
     } catch (error) {
       documentError = error instanceof Error ? error.message : String(error);
     }
+
+    async function startTopicCreation(
+      workstream: string,
+      workstreamTitle: string,
+      parent?: { slug: string; title: string },
+    ): Promise<void> {
+      documentError = '';
+      try {
+        const topicTypes = await window.workingMemory.listTopicTypes();
+        const draft: TopicCreateDraftVM = {
+          kind: 'topic-create',
+          id: crypto.randomUUID(),
+          slug: null,
+          title: 'New Topic',
+          body: '',
+          topicType: topicTypes[0]?.slug ?? '',
+          topicTypes,
+          workstream,
+          workstreamTitle,
+          parent: parent?.slug ?? null,
+          parentTitle: parent?.title ?? null,
+        };
+        const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, draft);
+        documents = next.tabs;
+        selectedDocumentKey = next.selectedKey;
+        activateHeaderTab('log');
+      } catch (error) {
+        documentError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    async function createTopic(draft: TopicCreateDraftVM): Promise<void> {
+      const draftKey = documentTabKey(draft);
+      const created = await window.workingMemory.createTopic({
+        title: draft.title,
+        body: draft.body,
+        topicType: draft.topicType,
+        workstream: draft.workstream,
+        ...(draft.parent ? { parent: draft.parent } : {}),
+      });
+      const replaced = updateDocumentTab(
+        { tabs: documents, selectedKey: selectedDocumentKey },
+        draftKey,
+        created,
+      );
+      documents = replaced.tabs;
+      selectedDocumentKey = replaced.selectedKey;
+      const workstreamKey = `workstream:${draft.workstream}`;
+      if (documents.some((document) => documentTabKey(document) === workstreamKey)) {
+        const refreshed = await window.workingMemory.openResource('workstream', draft.workstream);
+        const updated = updateDocumentTab(
+          { tabs: documents, selectedKey: selectedDocumentKey },
+          workstreamKey,
+          refreshed,
+        );
+        documents = updated.tabs;
+        selectedDocumentKey = updated.selectedKey;
+      }
+      await refreshActive();
+    }
   }
 
   async function mutate(operation: () => Promise<DocumentVM>): Promise<void> {
@@ -1430,6 +1493,13 @@
           onReorder={reorderActiveWorkstream}
           onTransferTopic={transferActiveTopic}
           onReparentTopic={(slug, parent) => void reparentActiveTopic(slug, parent)}
+          onAddTopic={(workstream, parent) => {
+            const card = activePanel?.items
+              .filter((item) => item.kind === 'workstream-section')
+              .flatMap((section) => section.workstreams)
+              .find((candidate) => candidate.slug === workstream);
+            void startTopicCreation(workstream, card?.label ?? workstream, parent);
+          }}
         />
       {/key}
     {/if}
@@ -1500,7 +1570,7 @@
                 title={document.title}
                 onclick={() => selectDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'container-app' ? 'server-environment' : 'file'}"></span>
+                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'container-app' ? 'server-environment' : 'file'}"></span>
                 <span>{document.title}</span>
               </button>
               <button class="document-tab-close" title={`Close ${document.title}`} aria-label={`Close ${document.title}`} onclick={() => closeDocument(key)}>
@@ -1549,9 +1619,22 @@
             {saveState}
             onSave={saveWorkstream}
             onOpenTopic={(slug) => void openResource('topic', slug)}
+            onAddTopic={(parent) => {
+              const workstream = activeDocument as WorkstreamVM;
+              if (workstream.slug) void startTopicCreation(workstream.slug, workstream.title, parent);
+            }}
             onInvoke={invokeAction}
             onTogglePin={togglePin}
             onSetAlertStatus={setAlertStatus}
+          />
+        {:else if activeDocument?.kind === 'topic-create'}
+          <TopicCreateView
+            draft={activeDocument as TopicCreateDraftVM}
+            attachmentBaseUrl={selectedEnvironment?.mcpUrl
+              ? new URL(selectedEnvironment.mcpUrl).origin
+              : ''}
+            onAttachImages={attachImages}
+            onCreate={() => createTopic(activeDocument as TopicCreateDraftVM)}
           />
         {:else if activeDocument?.kind === 'topic'}
           <TopicView

@@ -627,6 +627,36 @@ function registerIpc(): void {
     await controlPlane().topicUpdate({ slug: current.slug, ...patch });
     return loadResource('topic', current.slug);
   });
+  ipcMain.handle('topic:list-types', async () => (await controlPlane().topicTypeRead())
+    .filter((topicType) => topicType.slug)
+    .map((topicType) => ({
+      slug: topicType.slug,
+      label: topicType.label,
+      icon: topicType.icon,
+      description: topicType.description,
+    })));
+  ipcMain.handle('topic:create', async (_event, input: {
+    title: string;
+    body: string;
+    topicType: string;
+    workstream: string;
+    parent?: string;
+  }) => {
+    const title = input.title.trim();
+    const topicType = input.topicType.trim();
+    const workstream = input.workstream.trim();
+    if (!title) throw new Error('A topic title is required.');
+    if (!topicType) throw new Error('A topic type is required.');
+    if (!workstream) throw new Error('A workstream is required.');
+    const created = await controlPlane().topicCreate({
+      title,
+      body: input.body,
+      topicType,
+      parents: input.parent ? [input.parent] : [],
+      workstreams: [workstream],
+    });
+    return loadResource('topic', created.slug ?? created.id);
+  });
   ipcMain.handle('topic:reparent', async (_event, slug: string, parent: string | null) => {
     await controlPlane().topicUpdate({ slug, parents: parent ? [parent] : [] });
   });
