@@ -217,6 +217,14 @@ export const completion = z
   })
   .strict();
 
+export const commandJournalAttachment = z
+  .object({
+    id: identifier,
+    filename: z.string().min(1).max(1_024),
+    mimeType: z.string().min(1).max(256),
+  })
+  .strict();
+
 export const commandJournalSpec = z
   .object({
     schemaVersion: z.literal(2),
@@ -248,7 +256,12 @@ export const commandJournalSpec = z
         model: identifier,
       })
       .strict(),
-    request: z.object({ userText: boundedText.min(1) }).strict(),
+    request: z
+      .object({
+        userText: boundedText.min(1),
+        attachments: z.array(commandJournalAttachment).max(20).optional(),
+      })
+      .strict(),
     primaryScope: scopeRef,
     entityRefs: z
       .array(scopeRef.extend({ relation: z.enum(['referenced', 'mutated']) }).strict())

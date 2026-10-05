@@ -19,6 +19,37 @@ import { validateSpec } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Topic, TOPIC_KIND } from './topic.js';
 
+function validateParents(store: Store, slug: string, parents: string[]): string | null {
+  if (new Set(parents).size !== parents.length) {
+    return 'A topic cannot list the same parent more than once.';
+  }
+  const topics = new Map(
+    store.listDocuments({ kind: TOPIC_KIND })
+      .filter((document) => document.metadata.slug)
+      .map((document) => [document.metadata.slug!, document]),
+  );
+  for (const parent of parents) {
+    if (!topics.has(parent)) {
+      return `Unknown parent topic slug: "${parent}".`;
+    }
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const hasCycle = (candidate: string): boolean => {
+    if (visiting.has(candidate)) return true;
+    if (visited.has(candidate)) return false;
+    visiting.add(candidate);
+    const candidateParents = candidate === slug
+      ? parents
+      : ((topics.get(candidate)?.spec.parents as string[] | undefined) ?? []);
+    const cycle = candidateParents.some(hasCycle);
+    visiting.delete(candidate);
+    visited.add(candidate);
+    return cycle;
+  };
+  return hasCycle(slug) ? `Cannot reparent "${slug}": the parent change would create a cycle.` : null;
+}
+
 /**
  * Register the `ws-topic-update` tool on an MCP session's server. Reads the
  * current document for its id + resourceVersion, merges the patch, re-validates
@@ -73,6 +104,10 @@ export function registerWsTopicUpdate(server: McpServer, store: Store): void {
         patch.topicType = topicType;
       }
       if (parents !== undefined) {
+        const parentError = validateParents(store, slug, parents);
+        if (parentError) {
+          return asError(parentError);
+        }
         patch.parents = parents;
       }
       if (workstreams !== undefined) {

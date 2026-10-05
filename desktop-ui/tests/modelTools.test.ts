@@ -52,6 +52,34 @@ describe('desktop model tools', () => {
     ]));
   });
 
+  it('formats images for Chat Completions without changing tool setup', () => {
+    const request = modelTurnRequest(createModelConversation({
+      mode: 'chat-completions',
+      model: 'test',
+      systemPrompt: 'system',
+      userMessage: 'Describe this.',
+      userImages: [{
+        id: 'attachment-1',
+        dataUrl: 'data:image/png;base64,cGl4ZWxz',
+        filename: 'capture.png',
+        mimeType: 'image/png',
+      }],
+      tools,
+    }));
+
+    expect(request.messages).toEqual([
+      { role: 'system', content: 'system' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Describe this.' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,cGl4ZWxz', detail: 'auto' } },
+        ],
+      },
+    ]);
+    expect(request.tools).toHaveLength(tools.length);
+  });
+
   it('retains Chat Completions provider metadata and content details', () => {
     expect(parseModelTurn('chat-completions', {
       id: 'chatcmpl_1',
@@ -81,6 +109,34 @@ describe('desktop model tools', () => {
         { type: 'function_call_output', call_id: 'b' },
       ],
     });
+  });
+
+  it('formats images for Responses without changing tool setup', () => {
+    const request = modelTurnRequest(createModelConversation({
+      mode: 'responses',
+      model: 'test',
+      systemPrompt: 'system',
+      userMessage: 'Describe this.',
+      userImages: [{
+        id: 'attachment-1',
+        dataUrl: 'data:image/jpeg;base64,cGl4ZWxz',
+        filename: 'camera.jpg',
+        mimeType: 'image/jpeg',
+      }],
+      tools,
+    }));
+
+    expect(request).toMatchObject({
+      instructions: 'system',
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'Describe this.' },
+          { type: 'input_image', image_url: 'data:image/jpeg;base64,cGl4ZWxz' },
+        ],
+      }],
+    });
+    expect(request.tools).toHaveLength(tools.length);
   });
 
   it('retains Responses provider metadata and nested content details', () => {

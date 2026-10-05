@@ -216,6 +216,37 @@ async function connect(store: Store): Promise<{
     }
   });
 
+  it('rejects cycle-forming and unknown parents during topic updates', async () => {
+    const store = openStore(':memory:');
+    const { client, close } = await connect(store);
+    try {
+      await client.callTool({ name: 'ws-workstream-create', arguments: { slug: 'reparent-work', title: 'Reparent' } });
+      await client.callTool({ name: 'ws-topic-create', arguments: {
+        slug: 'root', title: 'root', workstreams: ['reparent-work'],
+      } });
+      await client.callTool({ name: 'ws-topic-create', arguments: {
+        slug: 'child', title: 'child', parents: ['root'], workstreams: ['reparent-work'],
+      } });
+
+      const cycle = await client.callTool({
+        name: 'ws-topic-update',
+        arguments: { slug: 'root', parents: ['child'] },
+      });
+      expect(isErrorResult(cycle)).toBe(true);
+      expect(textOf(cycle)).toContain('would create a cycle');
+      expect(store.getDocument({ slug: 'root', kind: 'Topic' })?.spec.parents).toEqual([]);
+
+      const missing = await client.callTool({
+        name: 'ws-topic-update',
+        arguments: { slug: 'child', parents: ['missing'] },
+      });
+      expect(isErrorResult(missing)).toBe(true);
+      expect(textOf(missing)).toContain('Unknown parent topic slug');
+    } finally {
+      await close();
+    }
+  });
+
   it('atomically closes more than 500 descendants and rolls the batch back on conflict', async () => {
     const base = openStore(':memory:');
     base.createDocument({

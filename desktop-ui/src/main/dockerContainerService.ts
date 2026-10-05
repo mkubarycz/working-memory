@@ -6,7 +6,7 @@ import type {
   ContainerClaimCreateInput,
   ContainerClaimUpdateInput,
   DockerRuntimeSpec,
-} from '../../../src/controlPlaneClient';
+} from '../../../shared/controlPlaneClient';
 import type { ContainerAppStatus, ContainerStopResult } from '../shared/contracts';
 import type { ContainerAppRegistration } from './containerAppRegistry';
 

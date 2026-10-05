@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { terminateDaemonPid, type PidKiller } from '../src/controlPlaneShared';
+import { terminateDaemonPid, type PidKiller } from '../shared/controlPlaneShared';
 
 /** A no-wait delay so tests don't actually sleep through the grace period. */
 const noDelay = () => Promise.resolve();

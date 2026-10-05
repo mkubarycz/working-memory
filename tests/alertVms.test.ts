@@ -9,8 +9,8 @@ import {
   buildAlertVMs,
   alertBubbleForTopic,
   RECENT_CLOSED_ALERT_MS,
-} from '../src/webview/alertVms';
-import type { Alert } from '../src/controlPlaneClient';
+} from '../shared/viewModels/alertVms';
+import type { Alert } from '../shared/controlPlaneClient';
 
 const NOW = 1_000_000_000_000;
 

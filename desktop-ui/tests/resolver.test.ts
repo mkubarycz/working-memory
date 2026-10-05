@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Alert, Topic, TopicType, Workstream } from '../../src/controlPlaneClient';
+import type { Alert, Topic, TopicType, Workstream } from '../../shared/controlPlaneClient';
 import {
   chooseWorkstream,
   loadActivePanelData,

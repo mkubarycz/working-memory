@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DocumentVM } from '../../webview-ui/src/lib/types';
+import type { DocumentVM } from '../src/renderer/documents/types';
 import {
   closeDocumentTab,
   closeDocumentTabsToRight,

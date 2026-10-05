@@ -1,4 +1,4 @@
-import type { WorkstreamSection } from '../../../src/panelData';
+import type { WorkstreamSection } from '../../../shared/panelData';
 
 export interface WorkstreamReorderUpdate {
   slug: string;

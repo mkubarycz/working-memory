@@ -44,6 +44,44 @@ describe('control-plane server bootstrap', () => {
     }
   });
 
+  it('stores and serves image attachments from SQLite', async () => {
+    const server = await startServer({ port: 0 });
+    try {
+      const upload = await fetch(`${server.url}/attachments`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'image/png',
+          'x-file-name': encodeURIComponent('pasted image.png'),
+        },
+        body: Buffer.from('png-bytes'),
+      });
+      expect(upload.status).toBe(201);
+      const created = await upload.json() as { id: string; filename: string };
+      expect(created.filename).toBe('pasted image.png');
+
+      const downloaded = await fetch(`${server.url}/attachments/${created.id}`);
+      expect(downloaded.status).toBe(200);
+      expect(downloaded.headers.get('content-type')).toBe('image/png');
+      expect(Buffer.from(await downloaded.arrayBuffer()).toString()).toBe('png-bytes');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects unsupported attachment types', async () => {
+    const server = await startServer({ port: 0 });
+    try {
+      const upload = await fetch(`${server.url}/attachments`, {
+        method: 'POST',
+        headers: { 'content-type': 'text/html' },
+        body: '<script>alert(1)</script>',
+      });
+      expect(upload.status).toBe(415);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('completes an MCP initialize handshake and answers wm-ping', async () => {
     const server = await startServer({ port: 0 });
     const client = new Client({ name: 'wm-cp-test-client', version: '0.0.0' });

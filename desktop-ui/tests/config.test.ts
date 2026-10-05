@@ -13,7 +13,12 @@ describe('desktop config', () => {
     expect(normalizeEndpoint(' https://models.example/v1/ ')).toBe('https://models.example/v1');
     expect(chatCompletionsUrl('https://models.example/v1')).toBe('https://models.example/v1/chat/completions');
     expect(publicConfig({ endpoint: 'https://models.example/v1', model: 'demo', encryptedApiKey: 'ciphertext' }))
-      .toEqual({ endpoint: 'https://models.example/v1', model: 'demo', hasApiKey: true });
+      .toEqual({
+        endpoint: 'https://models.example/v1',
+        model: 'demo',
+        hasApiKey: true,
+        credentialStorage: 'secure',
+      });
   });
 
   it('preserves Responses endpoints and resolves other endpoints to Chat Completions', () => {

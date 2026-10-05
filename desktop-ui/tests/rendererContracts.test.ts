@@ -22,7 +22,7 @@ describe('desktop tree icon contract', () => {
   it('loads codicons and gives expandable controls stable dimensions and labels', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
-    const workstreamView = readFileSync(resolve(repoRoot, 'webview-ui/src/lib/WorkstreamView.svelte'), 'utf8');
+    const workstreamView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/WorkstreamView.svelte'), 'utf8');
 
     expect(styles).toContain("@import '../../../media/codicons/codicon.css'");
     expect(styles).toMatch(/\.active-twistie[^}]*width:\s*26px[^}]*height:\s*26px/s);
@@ -306,6 +306,24 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain("writeComposerDraft(localStorage, selectedEnvironment?.id, '')");
   });
 
+  it('always sends attached images to the model and delegates topic saves to the agent', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+
+    expect(app).toContain('const promptImages = images;');
+    expect(app).not.toContain('saveComposerImagesToTopic');
+    expect(app).not.toContain('Save image');
+    expect(app).not.toContain('Send to AI');
+    expect(app).not.toContain('sendToAi');
+    expect(app).not.toContain('insertIntoDocument');
+    expect(app).not.toContain('image.file.arrayBuffer()');
+    expect(app).toContain('id: image.attachment.id');
+    expect(app).toContain('filename: image.attachment.filename');
+    expect(app).toContain('mimeType: image.attachment.mimeType');
+    expect(app).not.toContain('attachment: image.attachment,');
+    expect(app.indexOf('const submission = submitChat(')).toBeLessThan(app.indexOf("input = '';", app.indexOf('const submission = submitChat(')));
+    expect(app.indexOf("input = '';", app.indexOf('const submission = submitChat('))).toBeLessThan(app.indexOf('await submission;'));
+  });
+
   it('exposes an accessible, mouse-selectable Container App mention list without stealing composer focus', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
@@ -322,7 +340,7 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('onclick={() => void selectMention(app)}');
     expect(app).toContain('composerTextarea?.setSelectionRange(replacement.caret, replacement.caret)');
     expect(app).toContain('mentionKeyEventAction(event, mentionOpen, mentionApps.length, mentionActiveIndex)');
-    expect(app).toMatch(/async function send\(\)[^]*closeMentionCompletion\(\);[^]*await submitChat\(message, context\);/);
+    expect(app).toMatch(/async function send\(\)[^]*closeMentionCompletion\(\);[^]*const submission = submitChat\(/);
     expect(app).toContain("page = 'workspace';\n    closeMentionCompletion();");
     expect(styles).toMatch(/\.mention-popup[^}]*position:\s*absolute/);
   });

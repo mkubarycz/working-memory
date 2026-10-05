@@ -8,7 +8,7 @@
     PanelTopicsGroup,
     PanelWorkstream,
     PanelWorkstreamSection,
-  } from '../../../src/panelData';
+  } from '../../../shared/panelData';
   import type { DesktopEnvironment, PreparedResourceDrag } from '../shared/contracts';
   import {
     activeContextMenuItems,
@@ -44,6 +44,7 @@
     onAction: (workstream: string, action: PanelAction) => void;
     onReorder: (slug: string, section: PanelWorkstreamSection['section'], index: number) => Promise<void>;
     onTransferTopic: (request: TopicTransferRequest) => void;
+    onReparentTopic: (slug: string, parent: string | null) => void;
     onDiscoverEnvironments: () => Promise<void>;
     onSwitchEnvironment: (mcpUrl: string) => Promise<void>;
   }
@@ -51,6 +52,7 @@
   let {
     environments, selectedEnvironment, environmentLoading, environmentError,
     data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder, onTransferTopic,
+    onReparentTopic,
     onDiscoverEnvironments, onSwitchEnvironment,
   }: Props = $props();
   const expanded = new SvelteSet<string>();
@@ -75,6 +77,7 @@
   const topicDrag = $derived(activeDrag?.kind === 'topic' ? activeDrag : null);
   const workstreamDrag = $derived(activeDrag?.kind === 'workstream' ? activeDrag : null);
   let topicDropTarget = $state<string | null>(null);
+  let topicReparentTarget = $state<string | null>(null);
   let dropTarget = $state<{ section: PanelWorkstreamSection['section']; index: number } | null>(null);
   const preparedResourceDrags = new Map<string, PreparedResourceDrag>();
   const pendingResourceDrags = new Map<string, number>();
@@ -361,6 +364,24 @@
     if (activeDrag?.kind === 'topic') activeDrag = null;
     nativeDragFilePath = null;
     topicDropTarget = null;
+    topicReparentTarget = null;
+  }
+
+  function updateTopicReparentTarget(event: DragEvent, parent: string | null): void {
+    if (!topicDrag || topicDrag.slug === parent) return;
+    event.preventDefault();
+    event.stopPropagation();
+    topicReparentTarget = parent ?? 'root';
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  }
+
+  function dropTopicOnParent(event: DragEvent, parent: string | null): void {
+    if (!topicDrag || topicDrag.slug === parent) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const slug = topicDrag.slug;
+    finishTopicDrag();
+    onReparentTopic(slug, parent);
   }
 
   function startWorkstreamDrag(
@@ -482,8 +503,12 @@
     <div
       class="active-row"
       class:closed={node.status === 'closed'}
+      class:topic-reparent-target={topicReparentTarget === topicSlug}
       data-kind={node.kind}
       role="group"
+      ondragenter={(event) => updateTopicReparentTarget(event, topicSlug)}
+      ondragover={(event) => updateTopicReparentTarget(event, topicSlug)}
+      ondrop={(event) => dropTopicOnParent(event, topicSlug)}
       oncontextmenu={(event) => void openMenu(event, workstream, menuItems)}
     >
       {#if children.length > 0}
@@ -523,7 +548,15 @@
 
 {#snippet topicGroup(group: PanelTopicsGroup, workstream: string)}
   {@const open = expanded.has(group.id)}
-  <section class="active-group" class:expanded={!group.collapsible || open}>
+  <section
+    class="active-group"
+    role="group"
+    class:expanded={!group.collapsible || open}
+    class:topic-root-target={topicReparentTarget === 'root'}
+    ondragenter={(event) => updateTopicReparentTarget(event, null)}
+    ondragover={(event) => updateTopicReparentTarget(event, null)}
+    ondrop={(event) => dropTopicOnParent(event, null)}
+  >
     <div class="active-group-header">
       {#if group.collapsible}
         <button

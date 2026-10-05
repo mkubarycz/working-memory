@@ -1,12 +1,13 @@
 import type {
   CommandJournal,
+  CommandJournalAttachment,
   CommandJournalEntityRef,
   CommandJournalEvent,
   CommandJournalScopeRef,
   CommandJournalStatus,
   CommandJournalSummary,
   CommandJournalToolEventSummary,
-} from '../../../src/controlPlaneClient';
+} from '../../../shared/controlPlaneClient';
 import type { ChatContext, ChatResult, DesktopResourceKind, PendingConfirmation, ToolProgress } from '../shared/contracts';
 
 export interface ChatTarget {
@@ -31,6 +32,7 @@ export interface ChatRun {
   completedAt?: number;
   status: CommandJournalStatus | 'submitting';
   userText: string;
+  attachments: CommandJournalAttachment[];
   scope: CommandJournalScopeRef;
   entityRefs: CommandJournalEntityRef[];
   assistantText?: string;
@@ -97,6 +99,7 @@ export function summaryToChatRun(summary: CommandJournalSummary): ChatRun {
     completedAt: summary.completedAt,
     status: summary.status,
     userText: summary.request.userText,
+    attachments: summary.request.attachments ?? [],
     scope: summary.primaryScope,
     entityRefs: summary.entityRefs,
     assistantText: summary.completion?.finalAssistantText,
@@ -215,8 +218,18 @@ export function createLiveRun(
   userText: string,
   scope: CommandJournalScopeRef,
   startedAt: number,
+  attachments: CommandJournalAttachment[] = [],
 ): ChatRun {
-  return { key, startedAt, status: 'submitting', userText, scope, entityRefs: [], tools: [] };
+  return {
+    key,
+    startedAt,
+    status: 'submitting',
+    userText,
+    attachments,
+    scope,
+    entityRefs: [],
+    tools: [],
+  };
 }
 
 export function reconcileLiveRun(runs: ChatRun[], key: string, result: ChatResult): ChatRun[] {

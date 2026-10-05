@@ -18,7 +18,7 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
   },
 }));
 
-import { ControlPlaneClient, type ContainerClaim } from '../src/controlPlaneClient';
+import { ControlPlaneClient, type ContainerClaim } from '../shared/controlPlaneClient';
 
 const runtime = {
   type: 'docker' as const,

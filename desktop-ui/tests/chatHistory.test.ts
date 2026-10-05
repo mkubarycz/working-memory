@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CommandJournal, CommandJournalSummary } from '../../src/controlPlaneClient';
+import type { CommandJournal, CommandJournalSummary } from '../../shared/controlPlaneClient';
 import {
   chatContextForScope,
   createLiveRun,
@@ -51,6 +51,25 @@ describe('chat history presentation', () => {
     expect(refreshed.map((run) => [run.key, run.status])).toEqual([
       ['old', 'succeeded'], ['running', 'succeeded'], ['external', 'succeeded'], ['local-1', 'submitting'],
     ]);
+  });
+
+  it('hydrates persisted attachment references for transcript rendering and retries', () => {
+    const attachments = [{
+      id: 'attachment-1',
+      filename: 'camera.jpg',
+      mimeType: 'image/jpeg',
+    }];
+
+    expect(summaryToChatRun(summary({
+      request: { userText: 'Read this image', attachments },
+    })).attachments).toEqual(attachments);
+    expect(createLiveRun(
+      'local-image',
+      'Read this image',
+      { kind: 'DesktopChat', id: 'desktop-chat' },
+      20,
+      attachments,
+    ).attachments).toEqual(attachments);
   });
 
   it('ignores an out-of-order persisted summary older than the journal-backed run', () => {

@@ -1,4 +1,4 @@
-name: Build VSIX
+name: Build
 
 on:
   push:
@@ -25,12 +25,6 @@ jobs:
       - name: Install desktop UI dependencies
         run: npm ci --prefix desktop-ui
 
-      - name: Stage codicons
-        run: |
-          mkdir -p media/codicons
-          cp node_modules/@vscode/codicons/dist/codicon.css media/codicons/codicon.css
-          cp node_modules/@vscode/codicons/dist/codicon.ttf media/codicons/codicon.ttf
-
       - name: Compile
         run: npm run compile
 
@@ -42,18 +36,3 @@ jobs:
 
       - name: Test desktop UI
         run: npm test --prefix desktop-ui
-
-      - name: Package VSIX
-        env:
-          npm_config_platform: linux
-          npm_config_arch: x64
-          WM_DESKTOP_PLATFORM: linux
-          WM_DESKTOP_ARCH: x64
-        run: npx vsce package --target linux-x64 --out working-memory-linux-x64.vsix --allow-missing-repository
-
-      - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: working-memory-vsix-linux-x64
-          path: working-memory-linux-x64.vsix
-          retention-days: 14

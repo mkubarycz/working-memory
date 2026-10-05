@@ -1,13 +1,13 @@
 /**
  * Focused unit test for the shared workstream-tree composition
- * (`buildWorkstreamTree` in src/panelData.ts) — the SAME structure the left
+ * (`buildWorkstreamTree` in shared/panelData.ts) — the SAME structure the left
  * rail's workstream card renders and the Svelte workstream editor mirrors below
  * its flat topics list. Covers parent→child topic nesting and membership.
  */
 
 import { describe, test, expect } from 'vitest';
-import { buildWorkstreamTree } from '../src/panelData';
-import type { Topic, TopicType } from '../src/controlPlaneClient';
+import { buildWorkstreamTree } from '../shared/panelData';
+import type { Topic, TopicType } from '../shared/controlPlaneClient';
 
 function topic(partial: Partial<Topic> & { slug: string; title: string }): Topic {
   return {

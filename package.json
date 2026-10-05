@@ -1,9 +1,7 @@
 {
   "name": "working-memory",
-  "displayName": "Working Memory",
-  "description": "Workstream-aware session journal for Michael's hub workspace.",
+  "description": "Standalone Working Memory desktop app and control plane.",
   "version": "0.15.4",
-  "publisher": "kubarycz",
   "private": true,
   "repository": {
     "type": "git",
@@ -14,217 +12,27 @@
     "url": "https://github.com/mkubarycz/working-memory/issues"
   },
   "engines": {
-    "vscode": "^1.101.0",
-    "node": ">=18"
-  },
-  "main": "./out/src/extension.js",
-  "activationEvents": [
-    "onFileSystem:working-memory",
-    "onStartupFinished",
-    "onUri"
-  ],
-  "contributes": {
-    "configuration": {
-      "title": "Working Memory",
-      "properties": {
-        "workingMemory.controlPlane.hosting": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "embedded",
-            "service"
-          ],
-          "enumDescriptions": [
-            "Use a running control-plane service if one is reachable, otherwise self-host (spawn + supervise) it.",
-            "The extension always spawns and supervises the control-plane process itself.",
-            "An external OS service owns the control-plane process; the extension is a pure client and never spawns it."
-          ],
-          "default": "auto",
-          "markdownDescription": "Who runs the control-plane process: **auto** (use a running service if reachable, else self-host), **embedded** (extension spawns + supervises it), or **service** (external OS service; extension is a pure client)."
-        },
-        "workingMemory.controlPlane.storePath": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Filesystem directory for the control-plane's SQLite files. Empty = per-OS app-data default. Maps to the `WM_CONTROL_PLANE_HOME` environment variable."
-        },
-        "workingMemory.controlPlane.port": {
-          "type": "number",
-          "default": 7717,
-          "minimum": 1,
-          "maximum": 65535,
-          "markdownDescription": "TCP port the extension connects to when an EXTERNAL control-plane daemon owns the process — i.e. `#workingMemory.controlPlane.hosting#` = **service**, or **auto** while probing for a running service. Ignored in **embedded** / auto-self-host mode, where the extension spawns the daemon on an ephemeral port and learns the actual bound port automatically. Set this to match the port your external/OS-service daemon binds (`WM_CONTROL_PLANE_PORT`)."
-        }
-      }
-    },
-    "mcpServerDefinitionProviders": [
-      {
-        "id": "workingMemoryControlPlane",
-        "label": "Working Memory Control Plane"
-      }
-    ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "working-memory",
-          "title": "Working Memory",
-          "icon": "media/brain.svg"
-        }
-      ]
-    },
-    "views": {
-      "working-memory": [
-        {
-          "id": "workingMemory.workstreams",
-          "name": "Workstreams",
-          "type": "webview"
-        }
-      ]
-    },
-    "customEditors": [
-      {
-        "viewType": "workingMemory.documentEditor",
-        "displayName": "Working Memory Document",
-        "selector": [
-          {
-            "filenamePattern": "*.working-memory"
-          }
-        ],
-        "priority": "default"
-      }
-    ],
-    "commands": [
-      {
-        "command": "working-memory.refresh",
-        "title": "Refresh",
-        "category": "Working Memory",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "working-memory.reloadWindow",
-        "title": "Reload Window",
-        "category": "Working Memory",
-        "icon": "$(debug-restart)"
-      },
-      {
-        "command": "working-memory.openDesktopUi",
-        "title": "Open Working Memory UI",
-        "category": "Working Memory",
-        "icon": "$(multiple-windows)"
-      },
-      {
-        "command": "working-memory.updateToLatest",
-        "title": "Download and install the latest release of Working Memory",
-        "shortTitle": "Update to Latest",
-        "category": "Working Memory",
-        "icon": "$(cloud-download)"
-      },
-      {
-        "command": "working-memory.backupNow",
-        "title": "Back up journal database now",
-        "shortTitle": "Back Up Now",
-        "category": "Working Memory",
-        "icon": "$(save)"
-      },
-      {
-        "command": "working-memory.open",
-        "title": "Open Doc…",
-        "category": "Working Memory"
-      },
-      {
-        "command": "working-memory.openTopic",
-        "title": "Open Topic",
-        "category": "Working Memory"
-      },
-      {
-        "command": "working-memory.openWorkstream",
-        "title": "Open Workstream",
-        "category": "Working Memory"
-      },
-      {
-        "command": "workingMemory.topic.addToWorkstream",
-        "title": "Topic: Add to Workstream",
-        "category": "Working Memory"
-      },
-      {
-        "command": "workingMemory.topic.removeFromWorkstream",
-        "title": "Topic: Remove from Workstream",
-        "category": "Working Memory"
-      },
-      {
-        "command": "working-memory.setWorkstreamSection",
-        "title": "Move Workstream to Section",
-        "category": "Working Memory"
-      }
-    ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "working-memory.refresh",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        },
-        {
-          "command": "working-memory.reloadWindow",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        },
-        {
-          "command": "working-memory.openDesktopUi",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        },
-        {
-          "command": "working-memory.updateToLatest",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        },
-        {
-          "command": "working-memory.backupNow",
-          "when": "view == workingMemory.workstreams",
-          "group": "navigation"
-        }
-      ]
-    },
-    "markdown": {
-      "previewStyles": [
-        "media/codicons/codicon.css"
-      ]
-    }
+    "node": ">=22"
   },
   "scripts": {
-    "compile": "npm run compile:webview && npm run copy:codicons && tsc -p . && npm run compile:control-plane",
+    "compile": "tsc -p . && npm run compile:control-plane",
     "compile:control-plane": "tsc -p control-plane",
     "compile:desktop": "npm run build --prefix desktop-ui",
-    "compile:webview": "vite build",
     "container:build": "docker compose build control-plane",
     "container:logs": "docker compose logs -f control-plane",
     "container:start": "docker compose up -d --build control-plane",
     "container:stop": "docker compose stop control-plane",
-    "copy:codicons": "node scripts/copy-codicons.mjs",
-    "prepare:desktop-runtime": "node scripts/prepare-desktop-runtime.mjs",
-    "postinstall": "node scripts/copy-codicons.mjs",
     "watch": "tsc -p . -w",
-    "watch:webview": "vite build --watch",
-    "package": "vsce package",
     "test": "vitest run",
     "test:standalone-template": "bash scripts/test-standalone-template.sh",
-    "test:watch": "vitest",
-    "vscode:prepublish": "npm run compile && npm run prepare:desktop-runtime"
+    "test:watch": "vitest"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^6.0.0",
-    "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.5.0",
-    "@types/vscode": "^1.95.0",
-    "@vscode/codicons": "^0.0.45",
-    "@vscode/vsce": "^2.24.0",
-    "svelte": "^5.19.0",
     "typescript": "^5.4.0",
-    "vite": "^7.0.0",
     "vitest": "^4.1.8"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "markdown-it": "^14.3.0"
+    "@modelcontextprotocol/sdk": "^1.29.0"
   }
 }

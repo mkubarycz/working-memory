@@ -1,119 +1,51 @@
 # Copilot Instructions — working-memory
 
-Grounding for the GitHub cloud Copilot coding agent. This repo is the
-`working-memory` VS Code extension: a left-rail webview + ~25 MCP language-model
-tools (`wm_*`) backed by a SQLite journal database.
+Working Memory is a standalone Electron desktop app backed by a Docker/Node
+control plane and SQLite document store. It is not a VS Code extension.
 
 ## Project shape
 
-```
+```text
 working-memory/
-├── package.json              # extension manifest + scripts; version lives here
-├── tsconfig.json             # tsc → out/src/extension.js
-├── vitest.config.ts          # unit tests (vitest)
-├── schema/NNN_*.sql          # append-only migrations, registered in src/db.ts
-├── src/
-│   ├── extension.ts          # activate/deactivate; registers views, commands, URI handler
-│   ├── db.ts                 # hub-workspace lookup, openDb(), migration runner, all queries
-│   ├── tools.ts              # MCP language-model tool registrations (wm_*)
-│   ├── tree.ts               # webview tree provider (Active + Archive tabs)
-│   └── contentProvider.ts    # virtual docs for `working-memory:` URI scheme
-├── tests/                    # vitest specs
-├── media/                    # activity-bar icon, panel assets
-└── dist/                     # built .vsix artifacts (gitignored)
+├── control-plane/   # MCP/HTTP server, document kinds, SQLite store
+├── desktop-ui/      # Electron main, preload, Svelte renderer, tests
+├── shared/          # typed control-plane client and shared view-model logic
+├── schema/          # append-only SQLite migrations
+└── tests/           # shared/control-plane client tests
 ```
 
-The extension lives inside Michael's multi-root **hub workspace** at
-`kubarycz-agentic-workspace/`. The DB is at `<hub>/memory/journal.sqlite`. On
-activation the extension picks the first open workspace folder containing
-**both** `AGENTS.md` and a `memory/` directory.
+The desktop renderer owns all document UI. Do not add VS Code views, custom
+editors, virtual files, URI handlers, process supervision, or VSIX packaging.
+VS Code connects directly to the external MCP endpoint configured in the
+workspace `.vscode/mcp.json`.
 
-## Build / test / run
+## Build and test
 
 ```bash
 npm install
-npm run compile        # tsc -p .
-npm run watch          # tsc --watch
-npm run test           # vitest run
-npm run package        # npx vsce package --allow-missing-repository
+npm run compile
+npm test
+npm run typecheck --prefix desktop-ui
+npm test --prefix desktop-ui
+npm run build --prefix desktop-ui
 ```
 
-Cloud agent default: run `npm install`, then `npm run compile && npm run test`
-before opening a PR. GitHub releases are created by merging the release PR to
-`main`, then tagging the merge commit `v<package-version>`.
+On macOS, the desktop build updates `/Applications/Working Memory.app` without
+restarting a running process.
 
-## Conventions
+## Architecture rules
 
-- **TypeScript** strict, target per `tsconfig.json`. Source under `src/`,
-  compiled to `out/`. Entry point: `out/src/extension.js`.
-- **SQLite via Node 22's built-in `node:sqlite`** (`DatabaseSync`). No native
-  modules, no `better-sqlite3`, no `@electron/rebuild`. If you see references to
-  those, they are stale. `require('node:sqlite')` is done **lazily inside
-  `openDb()`** so missing-runtime cases surface as a caught error.
-- API quirks vs `better-sqlite3`:
-  - No `.pragma()` helper → use `db.exec('PRAGMA journal_mode = WAL')`.
-  - No `db.transaction(fn)` → write `db.exec('BEGIN')` / `COMMIT` / `ROLLBACK`
-    manually (see the migration runner in `src/db.ts`).
-  - `.all()` / `.get()` return `unknown` to TS → cast `as unknown as MyRow[]`.
-  - Close with `db.close()`; guard with a module-level handle.
-- **Defensive activation:** `activate()` must register commands, the tree
-  provider, **and** the `TextDocumentContentProvider` BEFORE touching the DB.
-  Query helpers in `db.ts` return `[]` / `null` when the handle is missing —
-  never throw on read paths. DB open failures surface via
-  `vscode.window.showErrorMessage`.
-
-## Schema migrations
-
-- New migrations: `schema/NNN_<name>.sql`, registered in the `MIGRATIONS` array
-  at the top of `src/db.ts`. Runner ensures `schema_migrations(version,
-  applied_at)` exists and applies unapplied versions in order, each in its own
-  `BEGIN`/`COMMIT`.
-- **Append-only.** Never edit an already-applied migration.
-- Keep DDL idempotent where possible (`CREATE TABLE IF NOT EXISTS`).
-- **Table rebuilds with cascading children MUST use the safe pattern in
-  `schema/005_safe_topic_rebuild_template.sql`.** The DB opens with
-  `foreign_keys = ON`; a naïve `DROP TABLE` will cascade and silently wipe
-  join rows (this happened in v0.4.0 and wiped `workstream_topics` /
-  `entry_topics`). The short version: `PRAGMA foreign_keys = OFF` outside the
-  txn, capture child rows before the drop, restore after the rename, run
-  `PRAGMA foreign_key_check` before COMMIT. `defer_foreign_keys` is NOT a
-  substitute — it defers the *check*, not the cascade *actions*.
-
-## Tools (`wm_*`)
-
-~25 MCP language-model tools registered in `src/tools.ts` and declared in
-`package.json` under `contributes.languageModelTools`. Adding/removing a tool
-requires updating both. Each tool is gated by an `onLanguageModelTool:<name>`
-activation event in `package.json`.
-
-## URI scheme + deep links
-
-- Virtual docs: `working-memory:/workstream/<slug>.md`,
-  `working-memory:/topic/<slug>.md`, `working-memory:/session/<uuid>.md`.
-- Agent Window-compatible link form:
-  `http://127.0.0.1:7718/open/<kind>/<id>`, where `<kind>` is one of
-  `topic | workstream | topic-type | alert | document`. The standalone
-  desktop app owns this loopback HTTP bridge and opens the target in its UI.
-  Slugs and ids with reserved characters must be URI-encoded.
-- The desktop app internally handles
-  `working-memory://open/<kind>/<id>`, but Copilot Chat blocks that custom
-  scheme, so agents must not emit it directly. Extension-owned `vscode://`
-  links are also unavailable in the separate Agents window.
-
-## What lives where else (workspace context, not in this repo)
-
-- `<hub>/AGENTS.md` — workspace-wide agent rules (journaling discipline,
-  destructive-action rules).
-- `<hub>/memory/` — the live journal DB and legacy markdown sessions
-  (read-only for new content).
-- `.github/prompts/working-memory-developer.agent.md` — the local-IDE
-  specialist agent that owns local development and GitHub release coordination.
-
-## Cloud-agent guidance
-
-- Make code changes; run `npm run compile && npm run test`; open a PR.
-- Do **not** bump the `version` in `package.json` unless explicitly asked. The
-  release flow is human-driven by Michael.
-- Do **not** edit applied migrations or write `memory/*.md` files (legacy).
-- Prefer editing existing files over creating new ones. Keep changes scoped
-  to the task in the issue.
+- The control plane is the only SQLite owner. The desktop app uses the typed
+  client in `shared/controlPlaneClient.ts`.
+- SQLite uses Node 22's built-in `node:sqlite`.
+- Schema migrations are append-only. Table rebuilds with cascading children
+  must follow `schema/005_safe_topic_rebuild_template.sql`.
+- Persist Markdown as source. Rendering and editor decorations must not rewrite
+  stored Markdown without an authored edit.
+- Persist attachment references as `wm-attachment:<uuid>` and resolve them
+  against the selected environment only at render time.
+- Use native `working-memory://open/<kind>/<id>` links inside the desktop app.
+  The loopback `http://127.0.0.1:7718/open/...` bridge remains only for Agent
+  Window surfaces that block custom schemes.
+- Do not reintroduce VSIX release workflows. A standalone installer/updater is
+  required before release publishing resumes.

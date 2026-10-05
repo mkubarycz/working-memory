@@ -57,12 +57,14 @@ describe('desktop chat history IPC contract', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
     const styles = readFileSync(resolve(desktopRoot, 'src/renderer/style.css'), 'utf8');
 
-    expect(app).toContain('await submitChat(run.userText, chatContextForScope(run.scope));');
+    expect(app).toContain('run.attachments.map((attachment) => ({');
     expect(app.match(/onclick=\{\(\) => void retryRun\(run\)\}/g)).toHaveLength(2);
     expect(app).toContain('class="scope-preview-row"');
     expect(app).toContain('class="scope-preview-main"');
     expect(app).toContain('class="run-actions"');
     expect(app).toContain('disabled={busy || pendingConfirmation !== null}');
+    expect(app).toContain('One approval covers this bounded batch.');
+    expect(app).toContain('pendingConfirmation.batchCount');
     expect(styles).toMatch(/\.retry-button\s*{[^}]*font-size:\s*10px/s);
   });
 

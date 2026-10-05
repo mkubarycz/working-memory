@@ -1,5 +1,5 @@
-import type { PanelAction } from '../../../src/panelData';
-import type { DocumentVM } from '../../../webview-ui/src/lib/types';
+import type { PanelAction } from '../../../shared/panelData';
+import type { DocumentVM } from './documents/types';
 import { toIpcPayload } from '../preload/ipcPayload';
 
 export interface ActiveMoveTarget {

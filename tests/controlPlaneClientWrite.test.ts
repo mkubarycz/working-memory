@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { startServer, type RunningServer } from '../control-plane/src/server';
 import { clearKinds } from '../control-plane/src/kinds/registry';
 import { loadKinds } from '../control-plane/src/kinds/loader';
-import { ControlPlaneClient } from '../src/controlPlaneClient';
+import { ControlPlaneClient } from '../shared/controlPlaneClient';
 
 /**
  * Exercises the {@link ControlPlaneClient} WRITE methods (create/update/delete)

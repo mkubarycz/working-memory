@@ -1,15 +1,23 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
   import ContainerAppList from './ContainerAppList.svelte';
-  import WorkstreamView from '../../../webview-ui/src/lib/WorkstreamView.svelte';
-  import TopicView from '../../../webview-ui/src/lib/TopicView.svelte';
-  import DocumentView from '../../../webview-ui/src/lib/DocumentView.svelte';
-  import type { AlertVM, DocumentVM, SaveState, TopicPatch } from '../../../webview-ui/src/lib/types';
+  import WorkstreamView from './documents/WorkstreamView.svelte';
+  import TopicView from './documents/TopicView.svelte';
+  import DocumentView from './documents/DocumentView.svelte';
+  import type {
+    AlertVM,
+    AttachmentRef,
+    DocumentVM,
+    SaveState,
+    TopicPatch,
+  } from './documents/types';
   import { chatContextForDocument } from '../shared/contracts';
   import type {
     ChatResult,
+    BackendHealth,
+    ChatPromptImage,
     ContainerAppStatus,
     DesktopEnvironment,
     DesktopEnvironmentState,
@@ -23,8 +31,8 @@
     loadRegisteredContainerApps,
     type ContainerAppItem,
   } from './containerApps';
-  import type { CommandJournalScopeRef } from '../../../src/controlPlaneClient';
-  import type { PanelAction, PanelData } from '../../../src/panelData';
+  import type { CommandJournalScopeRef } from '../../../shared/controlPlaneClient';
+  import type { PanelAction, PanelData } from '../../../shared/panelData';
   import { invokeActiveAction } from './activeContextMenu';
   import { DESKTOP_BUILD_TIMESTAMP, formatDesktopBuildTimestamp } from './buildInfo';
   import { isChatAtBottom } from './chatScroll';
@@ -37,6 +45,8 @@
     type MentionToken,
   } from './mentionCompletion';
   import { renderMarkdown } from './markdown';
+  import { imageFilesFromTransfer } from './documents/imageFiles';
+  import { validateChatImage } from './chatImages';
   import { createDocumentSaveQueue } from './documentSaveQueue';
   import {
     closeDocumentTab,
@@ -53,7 +63,7 @@
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
   import { topicTransferRefreshTargets, type TopicTransferRequest } from './topicTransfer';
-  import type { WorkstreamSection } from '../../../src/panelData';
+  import type { WorkstreamSection } from '../../../shared/panelData';
   import type { RailSide, RailWidths } from './railLayout';
   import {
     emptyEnvironmentBoundRendererState,
@@ -81,6 +91,11 @@
   const HISTORY_PAGE_SIZE = 30;
   const HEADER_TABS: HeaderTab[] = ['log', 'container-apps'];
   const desktopBuildLabel = formatDesktopBuildTimestamp(DESKTOP_BUILD_TIMESTAMP);
+
+  interface ComposerImage {
+    attachment: AttachmentRef;
+    previewUrl: string;
+  }
 
   let page = $state<Page>('workspace');
   let input = $state('');
@@ -119,6 +134,13 @@
   let activeHeaderTab = $state<HeaderTab>('log');
   let focusedHeaderTab = $state<HeaderTab>('log');
   let busyContainerAppId = $state<string | null>(null);
+  let backendHealth = $state<BackendHealth | null>(null);
+  let backendHealthChecking = $state(false);
+  let openAiHealth = $state<{
+    state: 'healthy' | 'degraded' | 'unreachable' | 'unknown';
+    result: string;
+    observedAt: number;
+  }>({ state: 'unknown', result: 'No backend request observed yet.', observedAt: 0 });
   let activePanel = $state<PanelData | null>(null);
   let activeLoading = $state(false);
   let activeError = $state('');
@@ -131,6 +153,15 @@
   let conversationElement = $state<HTMLDivElement | null>(null);
   let composerElement = $state<HTMLFormElement | null>(null);
   let composerTextarea = $state<HTMLTextAreaElement | null>(null);
+  let composerImages = $state<ComposerImage[]>([]);
+  let composerImageError = $state('');
+  let composerImageWorking = $state(false);
+  let cameraOpen = $state(false);
+  let cameraError = $state('');
+  let cameraVideo = $state<HTMLVideoElement | null>(null);
+  let cameraCapture: File | null = null;
+  let cameraCaptureUrl = $state('');
+  let cameraStream: MediaStream | null = null;
   let mentionToken = $state<MentionToken | null>(null);
   let mentionActiveIndex = $state(0);
   let conversationPinned = true;
@@ -194,6 +225,144 @@
     }, 0);
   }
 
+  function chatAttachmentUrl(id: string): string {
+    if (!selectedEnvironment?.mcpUrl) return '';
+    return `${new URL(selectedEnvironment.mcpUrl).origin}/attachments/${encodeURIComponent(id)}`;
+  }
+
+  function clearComposerImages(): void {
+    for (const image of composerImages) URL.revokeObjectURL(image.previewUrl);
+    composerImages = [];
+  }
+
+  function removeComposerImage(index: number): void {
+    const image = composerImages[index];
+    if (!image) return;
+    URL.revokeObjectURL(image.previewUrl);
+    composerImages = composerImages.filter((_, current) => current !== index);
+  }
+
+  async function addComposerImages(files: File[]): Promise<void> {
+    if (files.length === 0 || composerImageWorking) return;
+    composerImageError = '';
+    const validationError = files.map(validateChatImage).find(Boolean);
+    if (validationError) {
+      composerImageError = validationError;
+      return;
+    }
+    composerImageWorking = true;
+    try {
+      const attachments = await attachImages(files);
+      composerImages = [
+        ...composerImages,
+        ...attachments.map((attachment, index) => ({
+          attachment,
+          previewUrl: URL.createObjectURL(files[index]),
+        })),
+      ];
+    } catch (error) {
+      composerImageError = error instanceof Error ? error.message : String(error);
+    } finally {
+      composerImageWorking = false;
+    }
+  }
+
+  function handleComposerPaste(event: ClipboardEvent): void {
+    const files = imageFilesFromTransfer(event.clipboardData);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void addComposerImages(files);
+  }
+
+  function stopCameraStream(): void {
+    cameraStream?.getTracks().forEach((track) => track.stop());
+    cameraStream = null;
+    if (cameraVideo) cameraVideo.srcObject = null;
+  }
+
+  function clearCameraCapture(): void {
+    if (cameraCaptureUrl) URL.revokeObjectURL(cameraCaptureUrl);
+    cameraCaptureUrl = '';
+    cameraCapture = null;
+  }
+
+  async function openCamera(): Promise<void> {
+    cameraError = '';
+    clearCameraCapture();
+    if (!navigator.mediaDevices?.getUserMedia) {
+      cameraError = 'Camera capture is unavailable in this environment.';
+      cameraOpen = true;
+      return;
+    }
+    cameraOpen = true;
+    await tick();
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      if (!cameraVideo) throw new Error('Camera preview could not be initialized.');
+      cameraVideo.srcObject = cameraStream;
+      await cameraVideo.play();
+    } catch (error) {
+      stopCameraStream();
+      cameraError = error instanceof DOMException && error.name === 'NotAllowedError'
+        ? 'Camera permission was denied. Allow camera access in System Settings and try again.'
+        : `Unable to open camera: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function captureCameraImage(): void {
+    if (!cameraVideo || cameraVideo.videoWidth === 0 || cameraVideo.videoHeight === 0) {
+      cameraError = 'The camera is not ready yet.';
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = cameraVideo.videoWidth;
+    canvas.height = cameraVideo.videoHeight;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      cameraError = 'Unable to capture a camera frame.';
+      return;
+    }
+    context.drawImage(cameraVideo, 0, 0);
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        cameraError = 'Unable to encode the captured image.';
+        return;
+      }
+      clearCameraCapture();
+      cameraCapture = new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      cameraCaptureUrl = URL.createObjectURL(cameraCapture);
+      stopCameraStream();
+    }, 'image/jpeg', 0.92);
+  }
+
+  async function retakeCameraImage(): Promise<void> {
+    clearCameraCapture();
+    await openCamera();
+  }
+
+  async function confirmCameraImage(): Promise<void> {
+    if (!cameraCapture) return;
+    const capture = cameraCapture;
+    cameraOpen = false;
+    clearCameraCapture();
+    await addComposerImages([capture]);
+  }
+
+  function closeCamera(): void {
+    stopCameraStream();
+    clearCameraCapture();
+    cameraOpen = false;
+    cameraError = '';
+  }
+
+  onDestroy(() => {
+    clearComposerImages();
+    closeCamera();
+  });
+
   async function refreshContainerApp(app: ContainerAppItem): Promise<void> {
     const generation = environmentGeneration;
     try {
@@ -250,6 +419,7 @@
         const result = await window.workingMemory.runContainerApp(app.id);
         const status = await window.workingMemory.inspectContainerApp(app.id);
         if (generation !== environmentGeneration) return;
+        observeOpenAi('unreachable', error instanceof Error ? error.message : String(error));
         containerAppStatuses[app.id] = result.status === 'ready'
           ? { ...status, lastAction: `Run: ${result.action}`, error: null }
           : { ...status, lastAction: 'Run failed', error: result.message };
@@ -257,6 +427,7 @@
       } else if (action === 'stop') {
         const result = await window.workingMemory.stopContainerApp(app.id);
         if (generation !== environmentGeneration) return;
+        observeOpenAi('unreachable', error instanceof Error ? error.message : String(error));
         containerAppStatuses[app.id] = result.detail;
         if (result.status === 'error') containerAppError = result.message;
       } else if (action === 'open') {
@@ -315,6 +486,41 @@
       void refreshActive();
     },
   });
+
+  async function refreshBackendHealth(): Promise<void> {
+    if (backendHealthChecking) return;
+    backendHealthChecking = true;
+    try {
+      backendHealth = await window.workingMemory.getBackendHealth();
+    } catch (error) {
+      backendHealth = {
+        state: 'unreachable',
+        endpoint: selectedEnvironment?.mcpUrl ?? 'not selected',
+        result: error instanceof Error ? error.message : String(error),
+        observedAt: Date.now(),
+        source: selectedEnvironment?.source ?? 'production',
+      };
+    } finally {
+      backendHealthChecking = false;
+    }
+  }
+
+  async function refreshOpenAiHealth(): Promise<void> {
+    try {
+      const result = await window.workingMemory.getOpenAiHealth();
+      observeOpenAi(result.ok ? 'healthy' : 'degraded', result.message);
+    } catch (error) {
+      observeOpenAi('unreachable', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function observeOpenAi(state: 'healthy' | 'degraded' | 'unreachable', result: string): void {
+    openAiHealth = { state, result, observedAt: Date.now() };
+  }
+
+  function statusTime(timestamp: number): string {
+    return timestamp ? new Date(timestamp).toLocaleTimeString() : 'never';
+  }
   const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
@@ -469,6 +675,7 @@
     const handleResize = () => { viewportWidth = window.innerWidth; };
     window.addEventListener('resize', handleResize);
     void window.workingMemory.getConfig().then(loadConfig);
+    void refreshOpenAiHealth();
     void discoverEnvironments(true);
     void refreshActive();
     void refreshLatestHistory(true);
@@ -476,10 +683,13 @@
     const stopListeningForDeepLinks = window.workingMemory.onOpenResource(
       (kind, identifier) => void openResource(kind, identifier),
     );
+    void refreshBackendHealth();
     const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
+    const backendHealthPoll = window.setInterval(() => void refreshBackendHealth(), 30_000);
     return () => {
       stopListeningForDeepLinks();
       window.clearInterval(historyPoll);
+      window.clearInterval(backendHealthPoll);
       window.removeEventListener('resize', handleResize);
       document.body.classList.remove('resizing-rails');
       clearPreviewAttention();
@@ -623,6 +833,7 @@
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
       await loadContainerApps();
+      await refreshBackendHealth();
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -638,20 +849,38 @@
     apiKey = '';
   }
 
-  async function submitChat(message: string, context = currentChatContext): Promise<void> {
-    if (!message.trim() || busy || pendingConfirmation) return;
+  async function submitChat(
+    message: string,
+    context = currentChatContext,
+    images: ChatPromptImage[] = [],
+  ): Promise<string | null> {
+    if (!message.trim() || busy || pendingConfirmation) return 'The chat request cannot be sent right now.';
     const runKey = crypto.randomUUID();
-    chatRuns = [...chatRuns, createLiveRun(runKey, message, liveScope(context), Date.now())];
+    chatRuns = [...chatRuns, createLiveRun(
+      runKey,
+      message,
+      liveScope(context),
+      Date.now(),
+      images.map(({ attachment }) => attachment),
+    )];
     busy = true;
     const generation = environmentGeneration;
     try {
-      const result = await window.workingMemory.sendChat(message, context);
-      if (generation === environmentGeneration) await applyChatResult(result, runKey);
+      const result = await window.workingMemory.sendChat(message, context, images);
+      if (generation === environmentGeneration) {
+        observeOpenAi(result.status === 'failed' ? 'degraded' : 'healthy', `Request ${result.status}.`);
+        await applyChatResult(result, runKey);
+        return result.status === 'failed' ? result.message : null;
+      }
+      return 'The Working Memory environment changed before the request completed.';
     } catch (error) {
-      if (generation !== environmentGeneration) return;
-      chatRuns = chatRuns.map((run) => run.key === runKey
-        ? { ...run, status: 'failed', assistantText: `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}` }
-        : run);
+      const message = `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}`;
+      if (generation === environmentGeneration) {
+        chatRuns = chatRuns.map((run) => run.key === runKey
+          ? { ...run, status: 'failed', assistantText: message }
+          : run);
+      }
+      return message;
     } finally {
       if (generation === environmentGeneration) busy = false;
     }
@@ -659,17 +888,52 @@
 
   async function send(): Promise<void> {
     const message = input.trim();
-    if (!message || busy || pendingConfirmation) return;
+    if ((!message && composerImages.length === 0) || busy || pendingConfirmation || composerImageWorking) return;
     const context = currentChatContext;
-    input = '';
-    closeMentionCompletion();
-    writeComposerDraft(localStorage, selectedEnvironment?.id, '');
-    await submitChat(message, context);
+    const images = [...composerImages];
+    const promptImages = images;
+    composerImageWorking = true;
+    composerImageError = '';
+    try {
+      const modelImages = promptImages.map((image) => ({
+        attachment: {
+          id: image.attachment.id,
+          filename: image.attachment.filename,
+          mimeType: image.attachment.mimeType,
+        },
+      }));
+      if (message || modelImages.length) {
+        closeMentionCompletion();
+        const submission = submitChat(
+          message || 'Review the attached image.',
+          context,
+          modelImages,
+        );
+        input = '';
+        writeComposerDraft(localStorage, selectedEnvironment?.id, '');
+        clearComposerImages();
+        await submission;
+      }
+    } catch (error) {
+      composerImageError = error instanceof Error ? error.message : String(error);
+    } finally {
+      composerImageWorking = false;
+    }
   }
 
   async function retryRun(run: ChatRun): Promise<void> {
     if (!isRetryableRun(run) || busy || pendingConfirmation) return;
-    await submitChat(run.userText, chatContextForScope(run.scope));
+    await submitChat(
+      run.userText,
+      chatContextForScope(run.scope),
+      run.attachments.map((attachment) => ({
+        attachment: {
+          id: attachment.id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+        },
+      })),
+    );
   }
 
   function updateComposerDraft(value: string): void {
@@ -686,7 +950,10 @@
     const generation = environmentGeneration;
     try {
       const result = await window.workingMemory.resolveChatConfirmation(pending.id, confirmed, currentChatContext);
-      if (generation === environmentGeneration) await applyChatResult(result, runKey);
+      if (generation === environmentGeneration) {
+        observeOpenAi(result.status === 'failed' ? 'degraded' : 'healthy', `Request ${result.status}.`);
+        await applyChatResult(result, runKey);
+      }
     } catch (error) {
       if (generation !== environmentGeneration) return;
       chatRuns = chatRuns.map((run) => run.key === runKey || run.journalId === runKey
@@ -717,6 +984,7 @@
     settingsStatus = 'Testing…';
     try {
       const result = await window.workingMemory.testConnection({ endpoint, model, apiKey });
+      observeOpenAi(result.ok ? 'healthy' : 'degraded', result.message);
       if (result.ok) {
         loadConfig(await window.workingMemory.getConfig());
       }
@@ -868,6 +1136,32 @@
     void mutateFromRail(workstream, () => window.workingMemory.togglePin(workstream, topic));
   }
 
+  async function reparentActiveTopic(slug: string, parent: string | null): Promise<void> {
+    activeError = '';
+    try {
+      await window.workingMemory.reparentTopic(slug, parent);
+    } catch (error) {
+      activeError = error instanceof Error ? error.message : String(error);
+    } finally {
+      await refreshActive();
+      const refreshed = await Promise.allSettled(documents
+        .filter((document) => document.kind === 'topic' && document.slug)
+        .map(async (document) => ({
+          key: documentTabKey(document),
+          document: await window.workingMemory.openResource('topic', document.slug!),
+        })));
+      let state = { tabs: documents, selectedKey: selectedDocumentKey };
+      for (const result of refreshed) {
+        if (result.status === 'fulfilled') {
+          state = updateDocumentTab(state, result.value.key, result.value.document);
+        }
+      }
+      documents = state.tabs;
+      selectedDocumentKey = state.selectedKey;
+      restoreDocumentSaveStatus(state.selectedKey);
+    }
+  }
+
   function saveWorkstream(patch: { title?: string; status?: string }): void {
     const document = activeDocument;
     if (document?.kind !== 'workstream' || !document.slug) return;
@@ -878,6 +1172,14 @@
     const document = activeDocument;
     if (document?.kind !== 'topic' || !document.slug) return;
     documentSaves.schedule(documentTabKey(document), patch);
+  }
+
+  async function attachImages(files: File[]): Promise<AttachmentRef[]> {
+    return Promise.all(files.map(async (file) => window.workingMemory.uploadAttachment({
+      name: file.name || 'image',
+      type: file.type,
+      data: await file.arrayBuffer(),
+    })));
   }
 
   function setAlertStatus(id: string, status: AlertVM['status']): void {
@@ -1127,6 +1429,7 @@
           onAction={runActiveAction}
           onReorder={reorderActiveWorkstream}
           onTransferTopic={transferActiveTopic}
+          onReparentTopic={(slug, parent) => void reparentActiveTopic(slug, parent)}
         />
       {/key}
     {/if}
@@ -1163,6 +1466,8 @@
             OpenAI-compatible Chat Completions or Responses endpoint.
             {credentialStorage === 'secure'
               ? ' Credentials stay in OS-backed secure storage.'
+              : credentialStorage === 'local'
+                ? ' Credentials are encrypted in this user profile without relying on macOS Keychain approval.'
               : credentialStorage === 'session'
                 ? ' The API key is held in memory for this app session because secure storage is unavailable.'
                 : ' Secure storage is unavailable; API keys can be used for the current app session but are not written to disk.'}
@@ -1170,7 +1475,7 @@
         </header>
         <label>Endpoint<input bind:value={endpoint} placeholder="http://localhost:11434/v1" /></label>
         <label>Model<input bind:value={model} placeholder="qwen3:14b" /></label>
-        <label>API key<input type="password" bind:value={apiKey} placeholder={hasApiKey ? (credentialStorage === 'secure' ? 'Saved securely' : 'Available this session') : 'Optional for local endpoints'} autocomplete="new-password" /></label>
+        <label>API key<input type="password" bind:value={apiKey} placeholder={hasApiKey ? (credentialStorage === 'session' ? 'Available this session' : 'Saved') : 'Optional for local endpoints'} autocomplete="new-password" /></label>
         <div class="settings-actions">
           <button class="secondary" disabled={saving || testing} onclick={() => void testConnection()}>{testing ? 'Testing…' : 'Test Connection'}</button>
           <button class="primary" disabled={saving || testing} onclick={() => void saveSettings()}>{saving ? 'Saving…' : 'Save'}</button>
@@ -1256,6 +1561,10 @@
             onOpenTopic={(slug) => void openResource('topic', slug)}
             onOpenWorkstream={(slug) => void openResource('workstream', slug)}
             onSetAlertStatus={setAlertStatus}
+            attachmentBaseUrl={selectedEnvironment?.mcpUrl
+              ? new URL(selectedEnvironment.mcpUrl).origin
+              : ''}
+            onAttachImages={attachImages}
           />
         {:else if activeDocument}
           <DocumentView
@@ -1338,6 +1647,28 @@
               {/if}
             </div>
           {/if}
+          {#if composerImages.length}
+            <div class="composer-images" aria-label="Attached images">
+              {#each composerImages as image, index (image.previewUrl)}
+                <article class="composer-image">
+                  <img src={image.previewUrl} alt={image.attachment.filename} />
+                  <strong>{image.attachment.filename}</strong>
+                  <button
+                    type="button"
+                    class="composer-image-remove"
+                    aria-label={`Remove ${image.attachment.filename}`}
+                    title="Remove image"
+                    onclick={() => removeComposerImage(index)}
+                  >
+                    <span class="codicon codicon-close" aria-hidden="true"></span>
+                  </button>
+                </article>
+              {/each}
+            </div>
+          {/if}
+          {#if composerImageError}
+            <p class="composer-image-error" role="alert">{composerImageError}</p>
+          {/if}
           <textarea
             bind:this={composerTextarea}
             value={input}
@@ -1350,6 +1681,7 @@
             aria-activedescendant={mentionOpen && mentionApps.length ? `container-app-mention-${mentionApps[mentionActiveIndex]?.id}` : undefined}
             aria-describedby="mention-instructions"
             placeholder="Write a command to interact with Working Memory"
+            onpaste={handleComposerPaste}
             oninput={handleComposerInput}
             onclick={(event) => refreshMentionCompletion(event.currentTarget.value, event.currentTarget.selectionStart)}
             onkeyup={(event) => {
@@ -1359,13 +1691,63 @@
             }}
             onblur={handleComposerBlur}
             onkeydown={handleComposerKeydown}></textarea>
-          <button class="send" disabled={busy || pendingConfirmation !== null || !input.trim()} title="Send" aria-label="Send">
+          <button
+            type="button"
+            class="camera-button"
+            disabled={busy || composerImageWorking}
+            title="Capture image"
+            aria-label="Capture image"
+            onclick={() => void openCamera()}
+          >
+            <span aria-hidden="true" class="codicon codicon-device-camera"></span>
+          </button>
+          <button
+            class="send"
+            disabled={busy || pendingConfirmation !== null || composerImageWorking || (!input.trim() && composerImages.length === 0)}
+            title="Send"
+            aria-label="Send"
+          >
             <span aria-hidden="true" class="codicon codicon-send"></span>
           </button>
         </form>
       </div>
     {/if}
   </main>
+
+  {#if cameraOpen}
+    <div class="camera-backdrop" role="presentation">
+      <div class="camera-dialog" role="dialog" aria-modal="true" aria-labelledby="camera-title">
+        <header>
+          <h2 id="camera-title">Capture image</h2>
+          <button type="button" aria-label="Close camera" title="Close" onclick={closeCamera}>
+            <span class="codicon codicon-close" aria-hidden="true"></span>
+          </button>
+        </header>
+        {#if cameraCaptureUrl}
+          <img class="camera-review" src={cameraCaptureUrl} alt="Captured camera preview" />
+        {:else}
+          <video bind:this={cameraVideo} class="camera-preview" autoplay muted playsinline></video>
+        {/if}
+        {#if cameraError}<p class="camera-error" role="alert">{cameraError}</p>{/if}
+        <footer>
+          {#if cameraCaptureUrl}
+            <button type="button" onclick={() => void retakeCameraImage()}>Retake</button>
+            <button type="button" class="camera-primary" onclick={() => void confirmCameraImage()}>Use photo</button>
+          {:else}
+            <button type="button" onclick={closeCamera}>Cancel</button>
+            <button
+              type="button"
+              class="camera-primary"
+              disabled={Boolean(cameraError)}
+              onclick={captureCameraImage}
+            >
+              Take photo
+            </button>
+          {/if}
+        </footer>
+      </div>
+    </div>
+  {/if}
 
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <div
@@ -1465,6 +1847,17 @@
             {:else}
               <span class="user-scope unsupported">{run.scope.title ?? run.scope.slug ?? run.scope.id}</span>
             {/if}
+            {#if run.attachments.length}
+              <div class="user-attachments" aria-label="Attached images">
+                {#each run.attachments as attachment (attachment.id)}
+                  <img
+                    src={chatAttachmentUrl(attachment.id)}
+                    alt={attachment.filename}
+                    title={attachment.filename}
+                  />
+                {/each}
+              </div>
+            {/if}
             <pre>{run.userText}</pre>
           </section>
 
@@ -1514,9 +1907,22 @@
         </article>
       {/each}
       {#if pendingConfirmation}
-        <section class="confirmation" aria-label="Destructive action confirmation">
-          <strong>Confirm {pendingConfirmation.tool}?</strong>
-          <pre>{JSON.stringify(pendingConfirmation.arguments, null, 2)}</pre>
+        <section class="confirmation" aria-label="Tool action confirmation">
+          <strong>
+            {pendingConfirmation.batchCount
+              ? `Confirm ${pendingConfirmation.batchCount} changes?`
+              : `Confirm ${pendingConfirmation.tool}?`}
+          </strong>
+          {#if pendingConfirmation.batchCount}
+            <p>One approval covers this bounded batch. Calls and results will remain individually visible.</p>
+            <ul>
+              {#each pendingConfirmation.batchActions ?? [] as action}
+                <li><strong>{action.summary}</strong> <code>{action.tool}</code></li>
+              {/each}
+            </ul>
+          {:else}
+            <pre>{JSON.stringify(pendingConfirmation.arguments, null, 2)}</pre>
+          {/if}
           <div>
             <button class="confirm" disabled={busy} onclick={() => void resolveConfirmation(true)}>Confirm</button>
             <button class="cancel" disabled={busy} onclick={() => void resolveConfirmation(false)}>Cancel</button>
@@ -1621,7 +2027,20 @@
   </aside>
 
   <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
-    <span>Working Memory</span>
-    <span>Built {desktopBuildLabel}</span>
+    <span
+      class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
+      title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"
+    >
+      <span class="status-dot"></span>
+      Working Memory: {backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}
+    </span>
+    <span
+      class="backend-status state-{openAiHealth.state}"
+      title="Endpoint: {endpoint || 'not configured'}&#10;Signal: startup connectivity test or normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
+    >
+      <span class="status-dot"></span>
+      OpenAI: {openAiHealth.state}
+    </span>
+    <span class="desktop-build-status">Built {desktopBuildLabel}</span>
   </footer>
 </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderMarkdown } from '../webview-ui/src/lib/markdown';
+import { renderMarkdown } from '../desktop-ui/src/renderer/documents/markdown';
 
 describe('renderMarkdown', () => {
   it('renders a heading', () => {
@@ -28,6 +28,16 @@ describe('renderMarkdown', () => {
   it('autolinks bare URLs (linkify)', () => {
     const html = renderMarkdown('see https://example.com now');
     expect(html).toContain('<a href="https://example.com">');
+  });
+
+  it('resolves portable attachment image links against the active control plane', () => {
+    const html = renderMarkdown(
+      '![pasted](wm-attachment:123e4567-e89b-12d3-a456-426614174000)',
+      'http://127.0.0.1:7717',
+    );
+    expect(html).toContain(
+      'src="http://127.0.0.1:7717/attachments/123e4567-e89b-12d3-a456-426614174000"',
+    );
   });
 
   // Security guard: markdown-it is configured `html: false`, so authored raw

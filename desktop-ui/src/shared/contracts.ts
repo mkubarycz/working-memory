@@ -1,13 +1,20 @@
-import type { AlertVM, DocumentVM, TopicPatch, WorkstreamVM } from '../../../webview-ui/src/lib/types';
-import type { PanelData } from '../../../src/panelData';
-import type { WorkstreamSection } from '../../../src/panelData';
+import type {
+  AlertVM,
+  AttachmentRef,
+  AttachmentUpload,
+  DocumentVM,
+  TopicPatch,
+  WorkstreamVM,
+} from '../renderer/documents/types';
+import type { PanelData } from '../../../shared/panelData';
+import type { WorkstreamSection } from '../../../shared/panelData';
 import type {
   ApplicationContractMetadata,
   CommandJournal,
   CommandJournalHistoryInput,
   CommandJournalHistoryPage,
   CommandJournalStatus,
-} from '../../../src/controlPlaneClient';
+} from '../../../shared/controlPlaneClient';
 
 export type ContainerAppId = string;
 
@@ -106,7 +113,7 @@ export interface PublicConfig {
   endpoint: string;
   model: string;
   hasApiKey: boolean;
-  credentialStorage: 'secure' | 'session' | 'unavailable';
+  credentialStorage: 'secure' | 'local' | 'session' | 'unavailable';
 }
 
 export interface SaveConfigInput {
@@ -118,6 +125,18 @@ export interface SaveConfigInput {
 export interface ConnectionResult {
   ok: boolean;
   message: string;
+}
+
+export interface ChatPromptImage {
+  attachment: AttachmentRef;
+}
+
+export interface BackendHealth {
+  state: 'healthy' | 'unreachable';
+  endpoint: string;
+  result: string;
+  observedAt: number;
+  source: DesktopEnvironment['source'];
 }
 
 export interface DesktopEnvironment {
@@ -174,6 +193,13 @@ export interface PendingConfirmation {
   id: string;
   tool: string;
   arguments: Record<string, unknown>;
+  batchCount?: number;
+  batchActions?: Array<{
+    tool: string;
+    count: number;
+    summary: string;
+    arguments: Record<string, unknown>;
+  }>;
 }
 
 export interface ChatResult {
@@ -214,9 +240,11 @@ export interface DesktopApi {
   getActivePanel(): Promise<PanelData>;
   reorderWorkstreams(updates: DesktopWorkstreamReorderUpdate[]): Promise<void>;
   getConfig(): Promise<PublicConfig>;
+  getBackendHealth(): Promise<BackendHealth>;
+  getOpenAiHealth(): Promise<ConnectionResult>;
   saveConfig(input: SaveConfigInput): Promise<PublicConfig>;
   testConnection(input: SaveConfigInput): Promise<ConnectionResult>;
-  sendChat(message: string, context?: ChatContext): Promise<ChatResult>;
+  sendChat(message: string, context?: ChatContext, images?: ChatPromptImage[]): Promise<ChatResult>;
   resolveChatConfirmation(id: string, confirmed: boolean, context?: ChatContext): Promise<ChatResult>;
   getChatHistory(input?: CommandJournalHistoryInput): Promise<CommandJournalHistoryPage>;
   getChatJournal(id: string): Promise<CommandJournal | null>;
@@ -228,6 +256,8 @@ export interface DesktopApi {
   onResourceDragResult(listener: (result: ResourceDragResult) => void): () => void;
   saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;
   saveTopic(identifier: string, patch: TopicPatch): Promise<DocumentVM>;
+  reparentTopic(slug: string, parent: string | null): Promise<void>;
+  uploadAttachment(file: AttachmentUpload): Promise<AttachmentRef>;
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;
   setAlertStatus(
     context: { kind: 'workstream' | 'topic'; identifier: string },

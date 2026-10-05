@@ -1,4 +1,4 @@
-import type { DockerRuntimeSpec } from '../../../src/controlPlaneClient';
+import type { DockerRuntimeSpec } from '../../../shared/controlPlaneClient';
 import type { ContainerAppDefinition, ContainerAppId } from '../shared/contracts';
 
 export interface ContainerAppRegistration extends ContainerAppDefinition {

@@ -43,6 +43,28 @@ try {
     }
   });
 
+  it('stores binary attachments and deduplicates identical content', () => {
+    const store = openStore(':memory:');
+    try {
+      const first = store.createAttachment({
+        mimeType: 'image/png',
+        filename: 'first.png',
+        data: Buffer.from('same-image'),
+      });
+      const duplicate = store.createAttachment({
+        mimeType: 'image/png',
+        filename: 'duplicate.png',
+        data: Buffer.from('same-image'),
+      });
+
+      expect(duplicate.id).toBe(first.id);
+      expect(Buffer.from(store.getAttachment(first.id)!.data).toString()).toBe('same-image');
+      expect(store.getAttachment('missing')).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it('rolls back an entire batch when a later CAS update fails', () => {
     const store = openStore(':memory:');
     try {
