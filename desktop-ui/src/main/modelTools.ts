@@ -1,4 +1,4 @@
-import type { CanonicalToolDef } from '../../../src/controlPlaneClient';
+import type { CanonicalToolDef } from '../../../shared/controlPlaneClient';
 import type { ModelEndpointMode } from './config';
 
 export interface ModelToolCall {
@@ -33,6 +33,14 @@ export interface ModelConversation {
   responseInput?: Record<string, unknown>[];
 }
 
+export interface ModelImageInput {
+  id: string;
+  dataUrl: string;
+  filename: string;
+  mimeType: string;
+  qrPayloads?: string[];
+}
+
 const DESKTOP_TOOL_FAMILIES = [
   'workstream',
   'topic',
@@ -48,15 +56,39 @@ export function isDestructiveTool(name: string, args: Record<string, unknown>): 
   return /-delete$/.test(name) && args.restore !== true;
 }
 
-export function createModelConversation(input: Omit<ModelConversation, 'chatMessages' | 'responseInput'>): ModelConversation {
+export function createModelConversation(
+  input: Omit<ModelConversation, 'chatMessages' | 'responseInput'> & {
+    userImages?: ModelImageInput[];
+  },
+): ModelConversation {
+  const images = input.userImages ?? [];
+  const { userImages: _userImages, ...conversation } = input;
   if (input.mode === 'responses') {
-    return { ...input, responseInput: [{ role: 'user', content: input.userMessage }] };
+    const content = images.length
+      ? [
+          ...(input.userMessage ? [{ type: 'input_text', text: input.userMessage }] : []),
+          ...images.map((image) => ({
+            type: 'input_image',
+            image_url: image.dataUrl,
+          })),
+        ]
+      : input.userMessage;
+    return { ...conversation, responseInput: [{ role: 'user', content }] };
   }
+  const content = images.length
+    ? [
+        ...(input.userMessage ? [{ type: 'text', text: input.userMessage }] : []),
+        ...images.map((image) => ({
+          type: 'image_url',
+          image_url: { url: image.dataUrl, detail: 'auto' },
+        })),
+      ]
+    : input.userMessage;
   return {
-    ...input,
+    ...conversation,
     chatMessages: [
       { role: 'system', content: input.systemPrompt },
-      { role: 'user', content: input.userMessage },
+      { role: 'user', content },
     ],
   };
 }

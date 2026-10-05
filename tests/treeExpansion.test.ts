@@ -1,7 +1,7 @@
 /**
  * Focused unit test for the pure workstream-tree expansion helpers
  * (`defaultExpandedIds` / `cascadeExpandIds` in
- * webview-ui/src/lib/treeExpansion.ts). Verifies the default reveals only the
+ * desktop document tree expansion helper). Verifies the default reveals only the
  * first level (groups expanded, topic subtrees collapsed) and that expanding a
  * node cascades exactly two additional levels of descendants.
  */
@@ -11,7 +11,7 @@ import {
   defaultExpandedIds,
   cascadeExpandIds,
   type ExpandableNode,
-} from '../webview-ui/src/lib/treeExpansion';
+} from '../desktop-ui/src/renderer/documents/treeExpansion';
 
 // group → topic → child topic → grandchild topic → great-grandchild topic.
 const greatGrandchild: ExpandableNode = { id: 'gg' };

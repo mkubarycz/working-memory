@@ -118,8 +118,9 @@ describe('container app contracts and renderer', () => {
 
   it('submits the original transcript text while carrying selected app context separately', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
-    expect(app).toContain('createLiveRun(runKey, message, liveScope(context), Date.now())');
-    expect(app).toContain('window.workingMemory.sendChat(message, context)');
+    expect(app).toContain('createLiveRun(');
+    expect(app).toContain('liveScope(context)');
+    expect(app).toContain('window.workingMemory.sendChat(message, context, images)');
     expect(app).not.toContain('sendChat(`@${');
   });
 });

@@ -31,7 +31,7 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
   },
 }));
 
-import { ControlPlaneClient, ControlPlaneClientError } from '../src/controlPlaneClient';
+import { ControlPlaneClient, ControlPlaneClientError } from '../shared/controlPlaneClient';
 
 const okText = (obj: unknown) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
 const errText = (msg: string) => ({ isError: true, content: [{ type: 'text', text: msg }] });

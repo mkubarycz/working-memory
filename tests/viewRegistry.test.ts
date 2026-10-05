@@ -10,7 +10,7 @@ import {
   getTopicTypeConfig,
   iconForTopic,
   FALLBACK_TOPIC_ICON,
-} from '../webview-ui/src/lib/viewRegistry';
+} from '../desktop-ui/src/renderer/documents/viewRegistry';
 
 describe('resolveView', () => {
   test('maps bespoke kinds to their view id', () => {

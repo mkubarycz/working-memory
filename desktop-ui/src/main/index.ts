@@ -3,19 +3,20 @@ import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { ControlPlaneClient } from '../../../src/controlPlaneClient';
-import { renderDocumentByKind } from '../../../src/documentRenderers';
+import { ControlPlaneClient } from '../../../shared/controlPlaneClient';
+import { renderDocumentByKind } from './documentRenderers';
 import type {
   ChatContext,
+  ChatPromptImage,
   ChatResult,
   DesktopEnvironmentState,
   PreparedResourceDrag,
   DesktopResourceKind,
   SaveConfigInput,
 } from '../shared/contracts';
-import type { CommandJournalHistoryInput } from '../../../src/controlPlaneClient';
-import type { ContainerClaim, ToolCallOutcome } from '../../../src/controlPlaneClient';
-import type { DocumentVM, TopicPatch } from '../../../webview-ui/src/lib/types';
+import type { CommandJournalHistoryInput } from '../../../shared/controlPlaneClient';
+import type { ContainerClaim, ToolCallOutcome } from '../../../shared/controlPlaneClient';
+import type { DocumentVM, TopicPatch } from '../renderer/documents/types';
 import {
   modelAuthHeaders,
   modelEndpoint,
@@ -24,6 +25,7 @@ import {
   writeStoredConfig,
   type StoredConfig,
 } from './config';
+import { checkConfiguredModel } from './modelHealth';
 import {
   DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
   DesktopChatAgent,
@@ -75,12 +77,17 @@ import {
 } from '../shared/deepLink';
 import { DesktopLinkBridge } from './linkBridge';
 import { resourceDragFilename } from './resourceDragContext';
+import { DesktopCredentialVault } from './credentialVault';
+import { loadPromptImages } from './promptImages';
+import { decodeQrPayloads } from './qrDecoder';
 
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
 const STABLE_DESKTOP_EXECUTABLE = '/Applications/Working Memory.app/Contents/MacOS/Electron';
 const WINDOW_DEFAULTS = { defaultWidth: 1280, defaultHeight: 820, minWidth: 900, minHeight: 600 };
 const WINDOW_STATE_SAVE_DELAY_MS = 250;
 let configFile = '';
+let credentialVault: DesktopCredentialVault | null = null;
+let credentialMigrationError = '';
 let environmentFile = '';
 let windowStateFile = '';
 let mainWindow: BrowserWindow | null = null;
@@ -142,27 +149,22 @@ const gracefulShutdown = createGracefulShutdown({
 });
 
 function decryptApiKey(config: StoredConfig): string {
-  if (!config.encryptedApiKey) return '';
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('Secure credential storage is unavailable on this system');
-  }
-  return safeStorage.decryptString(Buffer.from(config.encryptedApiKey, 'base64'));
+  if (credentialMigrationError) throw new Error(credentialMigrationError);
+  if (!credentialVault) throw new Error('Credential storage has not been initialized');
+  return credentialVault.decrypt(config);
 }
 
 async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
+  if (!credentialVault) throw new Error('Credential storage has not been initialized');
   const current = await readStoredConfig(configFile);
-  const next: StoredConfig = {
+  const base: StoredConfig = {
     endpoint: input.endpoint,
     model: input.model,
     ...(current.encryptedApiKey ? { encryptedApiKey: current.encryptedApiKey } : {}),
   };
-  if (input.apiKey?.trim()) {
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('Secure credential storage is unavailable on this system');
-    }
-    next.encryptedApiKey = safeStorage.encryptString(input.apiKey.trim()).toString('base64');
-  }
+  const next = credentialVault.store(base, input.apiKey);
   await writeStoredConfig(configFile, next);
+  if (input.apiKey?.trim()) credentialMigrationError = '';
   return next;
 }
 
@@ -357,8 +359,17 @@ async function presentAgentResult(result: DesktopAgentResult, context?: ChatCont
   };
 }
 
-async function callConfiguredModel(message: string, config: StoredConfig, context?: ChatContext): Promise<ChatResult> {
+async function callConfiguredModel(
+  message: string,
+  config: StoredConfig,
+  context?: ChatContext,
+  images: ChatPromptImage[] = [],
+): Promise<ChatResult> {
   const request = configuredRequest(config);
+  const environment = environmentManager.currentEnvironment;
+  if (images.length && !environment) {
+    throw new Error('No healthy Working Memory environment is selected.');
+  }
   const mentioned = await resolveMentionedAppTools(message, containerAppDefinitions(), {
     readClaim: currentClaim,
     inspect: (claim) => dockerContainers.inspect(claim),
@@ -388,6 +399,12 @@ async function callConfiguredModel(message: string, config: StoredConfig, contex
     model: config.model,
     message,
     context,
+    images: await loadPromptImages(
+      images,
+      environment ? new URL(environment.mcpUrl).origin : '',
+      fetch,
+      (data) => decodeQrPayloads(nativeImage.createFromBuffer(Buffer.from(data))),
+    ),
     ...(appTools ? { appTools } : {}),
   }), context);
 }
@@ -505,21 +522,39 @@ function registerIpc(): void {
   });
   ipcMain.handle('active:get', () => loadActivePanelData(controlPlane()));
   ipcMain.handle('active:reorder', (_event, updates) => persistWorkstreamReorder(controlPlane(), updates));
-  ipcMain.handle('config:get', async () => publicConfig(await readStoredConfig(configFile)));
-  ipcMain.handle('config:save', async (_event, input: SaveConfigInput) => publicConfig(await saveConfig(input)));
+  ipcMain.handle('config:get', async () => publicConfig(
+    credentialMigrationError
+      ? { ...(await readStoredConfig(configFile)), encryptedApiKey: undefined }
+      : await readStoredConfig(configFile),
+    credentialVault?.mode() ?? 'unavailable',
+  ));
+  ipcMain.handle('config:health', async () => (
+    checkConfiguredModel(await readStoredConfig(configFile), testConfiguredModel)
+  ));
+  ipcMain.handle('config:save', async (_event, input: SaveConfigInput) => publicConfig(
+    await saveConfig(input),
+    credentialVault?.mode() ?? 'unavailable',
+  ));
   ipcMain.handle('config:test', async (_event, input: SaveConfigInput) => {
     try {
       const config = await saveConfig(input);
-      if (!config.model.trim()) return { ok: false, message: 'Choose a model first.' };
-      return { ok: true, message: await testConfiguredModel(config) };
+      return checkConfiguredModel(config, testConfiguredModel);
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
     }
   });
-  ipcMain.handle('chat:send', async (_event, message: string, context?: ChatContext) => {
+  ipcMain.handle('chat:send', async (
+    _event,
+    message: string,
+    context?: ChatContext,
+    images: ChatPromptImage[] = [],
+  ) => {
     try {
       const config = await readStoredConfig(configFile);
-      if (config.model.trim()) return await callConfiguredModel(message, config, context);
+      if (config.model.trim()) return await callConfiguredModel(message, config, context, images);
       const query = localWorkstreamQuery(message);
       return query
         ? await openWorkstream(query)
@@ -830,14 +865,14 @@ function sendDeepLink(window: BrowserWindow, target: DesktopDeepLinkTarget): voi
 
 async function activateDesktopWindow(): Promise<void> {
   const window = await ensureWindow();
-  focusWindow(window, false);
+  focusWindow(window);
 }
 
 async function openDeepLink(target: DesktopDeepLinkTarget): Promise<void> {
   pendingDeepLink = target;
   if (!app.isReady()) return;
   const window = await ensureWindow();
-  focusWindow(window, false);
+  focusWindow(window);
   await new Promise<void>((resolve) => {
     const deliver = (): void => {
       const current = pendingDeepLink;
@@ -906,6 +941,23 @@ if (!ownsSingleInstanceLock) {
   void app.whenReady().then(async () => {
     registerDesktopProtocol();
     configFile = join(app.getPath('userData'), 'config.json');
+    credentialVault = new DesktopCredentialVault(
+      safeStorage,
+      process.platform,
+      join(app.getPath('userData'), 'credential-vault.key'),
+    );
+    try {
+      const storedConfig = await readStoredConfig(configFile);
+      const migratedConfig = credentialVault.migrate(storedConfig);
+      if (migratedConfig !== storedConfig) {
+        await writeStoredConfig(configFile, migratedConfig);
+      }
+    } catch (error) {
+      credentialMigrationError = `The existing API key could not be migrated. Re-enter it in Settings. ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      console.error('[desktop] Credential migration failed:', error);
+    }
     environmentFile = join(app.getPath('userData'), 'environment.json');
     windowStateFile = join(app.getPath('userData'), 'window-state.json');
     await environmentManager.initialize();

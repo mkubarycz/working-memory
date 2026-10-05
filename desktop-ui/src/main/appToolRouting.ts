@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { CanonicalToolDef, DockerRuntimeSpec } from '../../../src/controlPlaneClient';
+import type { CanonicalToolDef, DockerRuntimeSpec } from '../../../shared/controlPlaneClient';
 import type {
   AppMcpTool,
   AppMcpToolListing,
@@ -62,7 +62,7 @@ export interface LiveAppClaim {
   repository: string;
   runtime?: DockerRuntimeSpec;
   mcp?: import('../shared/contracts').AppMcpEndpoint;
-  application?: import('../../../src/controlPlaneClient').ApplicationContractMetadata;
+  application?: import('../../../shared/controlPlaneClient').ApplicationContractMetadata;
 }
 
 export interface AppToolResolutionDependencies {

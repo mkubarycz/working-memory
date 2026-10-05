@@ -1,9 +1,9 @@
-import type { ControlPlaneClient, DocumentEnvelope, Topic, Workstream } from '../../../src/controlPlaneClient';
-import { buildWorkstreamPanels, type PanelData, type WorkstreamSection } from '../../../src/panelData';
-import { alertBubbleForTopic, buildAlertVMs } from '../../../src/webview/alertVms';
-import type { GenericDocVM, RelationVM, TopicVM } from '../../../webview-ui/src/lib/types';
+import type { ControlPlaneClient, DocumentEnvelope, Topic, Workstream } from '../../../shared/controlPlaneClient';
+import { buildWorkstreamPanels, type PanelData, type WorkstreamSection } from '../../../shared/panelData';
+import { alertBubbleForTopic, buildAlertVMs } from '../../../shared/viewModels/alertVms';
+import type { GenericDocVM, RelationVM, TopicVM } from '../renderer/documents/types';
 import type { DesktopWorkstreamReorderUpdate } from '../shared/contracts';
-export { loadWorkstreamViewModel } from '../../../src/webview/workstreamViewModel';
+export { loadWorkstreamViewModel } from '../../../shared/viewModels/workstreamViewModel';
 
 export async function loadActivePanelData(client: ControlPlaneClient): Promise<PanelData> {
   try {

@@ -9,7 +9,7 @@ import type {
   CommandJournalScopeRef,
   CommandJournalStatus,
   ToolCallOutcome,
-} from '../../../src/controlPlaneClient';
+} from '../../../shared/controlPlaneClient';
 import type { ModelEndpointMode } from './config';
 import type { ChatContext } from '../shared/contracts';
 import {
@@ -19,6 +19,7 @@ import {
   isDestructiveTool,
   modelTurnRequest,
   parseModelTurn,
+  type ModelImageInput,
   type ModelConversation,
   type ModelToolCall,
   type ParsedModelTurn,
@@ -38,6 +39,15 @@ export interface NavigationHint {
 export interface PendingConfirmation {
   id: string;
   tool: string;
+  arguments: Record<string, unknown>;
+  batchCount?: number;
+  batchActions?: ConfirmationBatchAction[];
+}
+
+export interface ConfirmationBatchAction {
+  tool: string;
+  count: number;
+  summary: string;
   arguments: Record<string, unknown>;
 }
 
@@ -84,6 +94,7 @@ export interface StartChatInput {
   model: string;
   message: string;
   headers: Record<string, string>;
+  images?: ModelImageInput[];
   context?: ChatContext;
   appTools?: {
     tools: CanonicalToolDef[];
@@ -107,12 +118,13 @@ interface Session {
   toolsMs: number;
   usage: NonNullable<CommandJournal['completion']>['usage'];
   cancelled: boolean;
-  executed: Map<string, { callId: string; output: unknown }>;
+  executed: Map<string, { callId: string; output: unknown; status: 'success' | 'failure' }>;
   lastExecutionByTool: Map<string, { callId: string; key: string; status: 'success' | 'failure' }>;
   journalCallIds: Map<ModelToolCall, string>;
   usedCallIds: Set<string>;
   navigation?: NavigationHint;
   appToolsRequiringConfirmation: Set<string>;
+  approvedCalls: Set<ModelToolCall>;
   suspended?: {
     turn: ParsedModelTurn;
     calls: ModelToolCall[];
@@ -152,7 +164,25 @@ export function systemPromptForContext(context?: ChatContext): string {
 }
 
 function systemPromptForInput(input: StartChatInput): string {
-  return [systemPromptForContext(input.context), input.appTools?.systemInstructions]
+  const imageInstructions = input.images?.length
+    ? [
+        'The user attached images that are already stored in Working Memory.',
+        ...input.images.map((image) => (
+          [
+            `${JSON.stringify(image.filename)} is wm-attachment:${image.id}.`,
+            ...(image.qrPayloads?.map((payload) => (
+              `A local QR decoder read this exact payload from the image: ${JSON.stringify(payload)}.`
+            )) ?? []),
+          ].join(' ')
+        )),
+        'If the user asks to save or reference an attached image in a topic, read the topic first, then use ws-topic-update to preserve its existing body and add Markdown in the form ![filename](wm-attachment:id).',
+      ].join(' ')
+    : undefined;
+  return [
+    systemPromptForContext(input.context),
+    imageInstructions,
+    input.appTools?.systemInstructions,
+  ]
     .filter(Boolean)
     .join(' ');
 }
@@ -223,7 +253,16 @@ export class DesktopChatAgent {
       journal = await this.external(run, run.dependencies.journal.create({
         startedAt,
         provider: { endpoint: sanitizedEndpoint(input.url), mode: input.mode, model: input.model.slice(0, 256) },
-        request: { userText: sanitizeJournalText(input.message, secretValues).slice(0, 32_768) },
+        request: {
+          userText: sanitizeJournalText(input.message, secretValues).slice(0, 32_768),
+          ...(input.images?.length ? {
+            attachments: input.images.map((image) => ({
+              id: image.id,
+              filename: sanitizeJournalText(image.filename, secretValues).slice(0, 1_024),
+              mimeType: image.mimeType,
+            })),
+          } : {}),
+        },
         primaryScope: scopeForContext(input.context, secretValues),
         ...(input.context ? { entityRefs: [{ ...scopeForContext(input.context, secretValues), relation: 'referenced' }] } : {}),
       }));
@@ -237,6 +276,7 @@ export class DesktopChatAgent {
         model: input.model,
         systemPrompt: systemPromptForInput(input),
         userMessage: input.message,
+        userImages: input.images,
         tools,
       }),
       url: input.url,
@@ -259,6 +299,7 @@ export class DesktopChatAgent {
           .filter((tool) => input.appTools?.requiresConfirmation?.(tool.name))
           .map((tool) => tool.name) ?? [],
       ),
+      approvedCalls: new Set(),
     };
     run.session = session;
     this.assertCurrent(run);
@@ -295,6 +336,9 @@ export class DesktopChatAgent {
     this.pending.delete(id);
     session.suspended = undefined;
     if (confirmed) {
+      confirmationBatch(state.calls, state.index, session.appToolsRequiringConfirmation)
+        .slice(1)
+        .forEach((approvedCall) => session.approvedCalls.add(approvedCall));
       state.results.push({ call, output: await this.execute(session, call) });
     } else {
       const output = { ok: false, error: 'User cancelled this destructive action. Do not retry it unless the user asks again.' };
@@ -379,7 +423,8 @@ export class DesktopChatAgent {
       for (const call of turn.calls) {
         const callId = this.journalCallId(session, call);
         const key = executionKey(call);
-        const duplicate = session.executed.get(key);
+        const previousExecution = session.executed.get(key);
+        const duplicate = previousExecution?.status === 'success' ? previousExecution : undefined;
         const previous = session.lastExecutionByTool.get(call.name);
         events.push({
           id: `${session.journal.id}:event:${session.journal.events.length + events.length + 1}`,
@@ -393,7 +438,7 @@ export class DesktopChatAgent {
             ? { argumentParseError: call.argumentError.slice(0, 32_768) }
             : { arguments: sanitizeForJournal(cleanArguments(call.arguments), secretValues) }),
           ...(duplicate ? { dedupedOfCallId: duplicate.callId } : {}),
-          ...(!duplicate && previous?.status === 'failure' && previous.key !== key
+          ...(!duplicate && previous?.status === 'failure'
             ? { retryOfCallId: previous.callId }
             : {}),
         });
@@ -426,10 +471,10 @@ export class DesktopChatAgent {
     for (let index = startIndex; index < calls.length; index += 1) {
       this.assertCurrent(session.run);
       const call = calls[index];
-      if (
-        isDestructiveTool(call.name, call.arguments)
-        || session.appToolsRequiringConfirmation.has(call.name)
-      ) {
+      const requiresConfirmation = callRequiresConfirmation(call, session.appToolsRequiringConfirmation);
+      if (requiresConfirmation && !session.approvedCalls.delete(call)) {
+        const batch = confirmationBatch(calls, index, session.appToolsRequiringConfirmation);
+        const batchActions = summarizeBatchActions(batch);
         const id = this.createId();
         session.suspended = { turn, calls, results, index };
         await this.append(session, [{
@@ -437,18 +482,42 @@ export class DesktopChatAgent {
           type: 'confirmation_requested',
           confirmationId: id,
           callId: this.journalCallId(session, call),
-          prompt: `Confirm ${call.name}`,
-          payload: sanitizeForJournal(call.arguments, secretHeaderValues(session.headers)),
+          prompt: batch.length > 1
+            ? `Confirm ${batch.length} mutating actions`
+            : `Confirm ${call.name}`,
+          payload: sanitizeForJournal(
+            batch.length > 1
+              ? { count: batch.length, actions: batchActions }
+              : call.arguments,
+            secretHeaderValues(session.headers),
+          ),
         }]);
         this.pending.set(id, session);
         return {
           journalId: session.journal.id,
-          message: `Confirmation required before running ${call.name}.`,
+          message: batch.length > 1
+            ? `Confirmation required before running ${batch.length} mutating actions.`
+            : `Confirmation required before running ${call.name}.`,
           status: 'awaiting_confirmation',
           progress: session.progress,
           mutated: session.mutated,
           navigation: session.navigation,
-          pendingConfirmation: { id, tool: call.name, arguments: sanitizeArguments(call.arguments) },
+          pendingConfirmation: {
+            id,
+            tool: call.name,
+            arguments: batch.length > 1
+              ? {}
+              : sanitizeArguments(call.arguments),
+            ...(batch.length > 1
+              ? {
+                  batchCount: batch.length,
+                  batchActions: batchActions.map((action) => ({
+                    ...action,
+                    arguments: sanitizeArguments(action.arguments),
+                  })),
+                }
+              : {}),
+          },
         };
       }
       results.push({ call, output: await this.execute(session, call) });
@@ -460,7 +529,7 @@ export class DesktopChatAgent {
     this.assertCurrent(session.run);
     const key = executionKey(call);
     const previous = session.executed.get(key);
-    if (previous) {
+    if (previous?.status === 'success') {
       session.progress.push({ name: call.name, status: 'completed', summary: 'Skipped duplicate call' });
       const output = { ok: true, deduped: true, result: previous.output };
       await this.persistToolResult(session, call, output, 'success', 0);
@@ -498,7 +567,7 @@ export class DesktopChatAgent {
       };
       session.progress.push({ name: call.name, status: 'failed', summary: concise(outcome.error ?? 'Failed') });
       const callId = this.journalCallId(session, call);
-      session.executed.set(key, { callId, output });
+      session.executed.set(key, { callId, output, status: 'failure' });
       session.lastExecutionByTool.set(call.name, { callId, key, status: 'failure' });
       await this.persistToolResult(session, call, output, 'failure', durationMs);
       return output;
@@ -509,7 +578,7 @@ export class DesktopChatAgent {
     session.progress.push({ name: call.name, status: 'completed', summary: mutating ? 'Updated Working Memory' : 'Read Working Memory' });
     const output = { ok: true, result: trimResult(outcome.result) };
     const callId = this.journalCallId(session, call);
-    session.executed.set(key, { callId, output });
+    session.executed.set(key, { callId, output, status: 'success' });
     session.lastExecutionByTool.set(call.name, { callId, key, status: 'success' });
     await this.persistToolResult(session, call, output, 'success', durationMs, entityRefsForTool(call, outcome.result, mutating ? 'mutated' : 'referenced'));
     return output;
@@ -768,6 +837,70 @@ function isTerminalJournal(journal: CommandJournal): boolean {
 
 function executionKey(call: ModelToolCall): string {
   return `${call.name}:${stableStringify(cleanArguments(call.arguments))}`;
+}
+
+function confirmationBatch(
+  calls: ModelToolCall[],
+  startIndex: number,
+  appToolsRequiringConfirmation: Set<string>,
+): ModelToolCall[] {
+  const first = calls[startIndex];
+  if (!first || !callRequiresConfirmation(first, appToolsRequiringConfirmation)) {
+    return first ? [first] : [];
+  }
+  return calls.slice(startIndex).filter((call) =>
+    callRequiresConfirmation(call, appToolsRequiringConfirmation));
+}
+
+function callRequiresConfirmation(
+  call: ModelToolCall,
+  appToolsRequiringConfirmation: Set<string>,
+): boolean {
+  return !call.argumentError && (
+    isDestructiveTool(call.name, call.arguments)
+    || appToolsRequiringConfirmation.has(call.name)
+  );
+}
+
+function summarizeBatchActions(calls: ModelToolCall[]): ConfirmationBatchAction[] {
+  const grouped = new Map<string, ModelToolCall[]>();
+  for (const call of calls) {
+    const group = grouped.get(call.name) ?? [];
+    group.push(call);
+    grouped.set(call.name, group);
+  }
+  return [...grouped.entries()].map(([tool, groupedCalls]) => ({
+    tool,
+    count: groupedCalls.length,
+    summary: actionSummary(tool, groupedCalls.length),
+    arguments: argumentPattern(groupedCalls),
+  }));
+}
+
+function actionSummary(tool: string, count: number): string {
+  const originalName = tool.split('__').at(-1) ?? tool;
+  const parts = originalName.split('-').filter(Boolean);
+  const action = parts.pop() ?? 'run';
+  const entity = parts.pop() ?? 'item';
+  const pluralEntity = count === 1
+    ? entity
+    : entity.endsWith('s') ? entity : `${entity}s`;
+  return `${action[0]?.toUpperCase() ?? ''}${action.slice(1)} ${count} ${pluralEntity}`;
+}
+
+function argumentPattern(calls: ModelToolCall[]): Record<string, unknown> {
+  const args = calls.map((call) => cleanArguments(call.arguments));
+  const keys = [...new Set(args.flatMap((value) => Object.keys(value)))].sort();
+  return Object.fromEntries(keys.map((key) => {
+    const values = args.map((value) => value[key]);
+    const first = stableStringify(values[0]);
+    return [
+      key,
+      values.every((value) => stableStringify(value) === first)
+        ? values[0]
+        : `<varies across ${calls.length} calls>`,
+    ];
+  }));
 }
 
 function journalFailure(stage: string, error: unknown): Error {

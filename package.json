@@ -1,9 +1,7 @@
 {
   "name": "working-memory",
-  "displayName": "Working Memory",
-  "description": "Workstream-aware session journal for Michael's hub workspace.",
+  "description": "Standalone Working Memory desktop app and control plane.",
   "version": "0.15.4",
-  "publisher": "kubarycz",
   "private": true,
   "repository": {
     "type": "git",
@@ -14,61 +12,7 @@
     "url": "https://github.com/mkubarycz/working-memory/issues"
   },
   "engines": {
-    "vscode": "^1.101.0",
-    "node": ">=18"
-  },
-  "main": "./out/src/extension.js",
-  "activationEvents": [
-    "onStartupFinished",
-    "onUri"
-  ],
-  "contributes": {
-    "configuration": {
-      "title": "Working Memory",
-      "properties": {
-        "workingMemory.controlPlane.hosting": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "embedded",
-            "service"
-          ],
-          "enumDescriptions": [
-            "Use a running control-plane service if one is reachable, otherwise self-host (spawn + supervise) it.",
-            "The extension always spawns and supervises the control-plane process itself.",
-            "An external OS service owns the control-plane process; the extension is a pure client and never spawns it."
-          ],
-          "default": "auto",
-          "markdownDescription": "Who runs the control-plane process: **auto** (use a running service if reachable, else self-host), **embedded** (extension spawns + supervises it), or **service** (external OS service; extension is a pure client)."
-        },
-        "workingMemory.controlPlane.storePath": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Filesystem directory for the control-plane's SQLite files. Empty = per-OS app-data default. Maps to the `WM_CONTROL_PLANE_HOME` environment variable."
-        },
-        "workingMemory.controlPlane.port": {
-          "type": "number",
-          "default": 7717,
-          "minimum": 1,
-          "maximum": 65535,
-          "markdownDescription": "TCP port the extension connects to when an EXTERNAL control-plane daemon owns the process — i.e. `#workingMemory.controlPlane.hosting#` = **service**, or **auto** while probing for a running service. Ignored in **embedded** / auto-self-host mode, where the extension spawns the daemon on an ephemeral port and learns the actual bound port automatically. Set this to match the port your external/OS-service daemon binds (`WM_CONTROL_PLANE_PORT`)."
-        }
-      }
-    },
-    "mcpServerDefinitionProviders": [
-      {
-        "id": "workingMemoryControlPlane",
-        "label": "Working Memory Control Plane"
-      }
-    ],
-    "commands": [
-      {
-        "command": "working-memory.openDesktopUi",
-        "title": "Open Working Memory UI",
-        "category": "Working Memory",
-        "icon": "$(multiple-windows)"
-      }
-    ]
+    "node": ">=22"
   },
   "scripts": {
     "compile": "tsc -p . && npm run compile:control-plane",
@@ -78,18 +22,13 @@
     "container:logs": "docker compose logs -f control-plane",
     "container:start": "docker compose up -d --build control-plane",
     "container:stop": "docker compose stop control-plane",
-    "prepare:desktop-runtime": "node scripts/prepare-desktop-runtime.mjs",
     "watch": "tsc -p . -w",
-    "package": "vsce package",
     "test": "vitest run",
     "test:standalone-template": "bash scripts/test-standalone-template.sh",
-    "test:watch": "vitest",
-    "vscode:prepublish": "npm run compile && npm run compile:desktop && npm run prepare:desktop-runtime"
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",
-    "@types/vscode": "^1.95.0",
-    "@vscode/vsce": "^2.24.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.8"
   },

@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import {
   ControlPlaneClient,
   type DocumentEnvelope,
-} from '../src/controlPlaneClient';
+} from '../shared/controlPlaneClient';
 
 /**
  * The Blackboard tab reads documents through the SAME MCP surface an agent

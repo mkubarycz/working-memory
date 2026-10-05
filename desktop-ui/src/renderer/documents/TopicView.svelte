@@ -5,6 +5,7 @@
   import { imageFilesFromTransfer } from './imageFiles';
   import SaveStatus from './SaveStatus.svelte';
   import AlertCallouts from './AlertCallouts.svelte';
+  import HybridMarkdownEditor from './HybridMarkdownEditor.svelte';
 
   interface Props {
     topic: TopicVM;
@@ -133,8 +134,10 @@
     new Set(topic.focusedWorkstreams.map((w) => w.slug)),
   );
 
-  // Body view mode: default to Preview (reading-first); flip to Edit to modify.
-  let bodyMode = $state<'preview' | 'edit'>('preview');
+  let bodyMode = $state<'hybrid' | 'source' | 'preview'>('hybrid');
+  $effect(() => {
+    if (!topic.editable) bodyMode = 'preview';
+  });
   const renderedBody = $derived(renderMarkdown(topic.body || '', attachmentBaseUrl));
 
   // Family-tree scroll cues: show top/bottom fades only when there's more to
@@ -297,40 +300,52 @@
 <section class="body-section" aria-label="Topic body">
   <div class="tab-panel">
     <div class="tab-bar" role="tablist" aria-label="Body view mode">
-      <button
-        type="button"
-        role="tab"
-        id="tab-preview"
-        class="tab"
-        class:active={bodyMode === 'preview'}
-        aria-selected={bodyMode === 'preview'}
-        aria-controls="tabpanel-body"
-        onclick={() => (bodyMode = 'preview')}
-      >
-        Preview
-      </button>
       {#if topic.editable}
         <button
           type="button"
           role="tab"
-          id="tab-edit"
+          id="tab-hybrid"
           class="tab"
-          class:active={bodyMode === 'edit'}
-          aria-selected={bodyMode === 'edit'}
+          class:active={bodyMode === 'hybrid'}
+          aria-selected={bodyMode === 'hybrid'}
           aria-controls="tabpanel-body"
-          onclick={() => (bodyMode = 'edit')}
+          onclick={() => (bodyMode = 'hybrid')}
         >
-          Edit
+          Live
         </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-source"
+          class="tab"
+          class:active={bodyMode === 'source'}
+          aria-selected={bodyMode === 'source'}
+          aria-controls="tabpanel-body"
+          onclick={() => (bodyMode = 'source')}
+        >
+          Source
+        </button>
+      {:else}
+        <span class="tab active" id="tab-preview">Preview</span>
       {/if}
     </div>
     <div
       class="tab-content"
       id="tabpanel-body"
       role="tabpanel"
-      aria-labelledby={bodyMode === 'edit' ? 'tab-edit' : 'tab-preview'}
+      aria-labelledby={`tab-${bodyMode}`}
     >
-      {#if topic.editable && bodyMode === 'edit'}
+      {#if topic.editable && bodyMode === 'hybrid'}
+        <HybridMarkdownEditor
+          value={topic.body}
+          {attachmentBaseUrl}
+          onInput={(body) => {
+            topic.body = body;
+            onSaveTopic({ body });
+          }}
+          {onAttachImages}
+        />
+      {:else if topic.editable && bodyMode === 'source'}
         <textarea
           bind:this={bodyInput}
           class="body-input"

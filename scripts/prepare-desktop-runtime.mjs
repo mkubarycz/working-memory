@@ -3,6 +3,7 @@ import {
   cpSync,
   existsSync,
   lstatSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -12,8 +13,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  MAC_APP_IDENTIFIER,
+  macCodeSignArguments,
+} from './macos-code-signing.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'desktop-ui');
@@ -77,8 +83,11 @@ mkdirSync(runtimeRoot, { recursive: true });
 cpSync(sourceDist, join(runtimeRoot, 'electron'), {
   recursive: true,
   preserveTimestamps: true,
+  verbatimSymlinks: true,
 });
-materializeSymlinks(join(runtimeRoot, 'electron'));
+if (targetPlatform !== 'darwin') {
+  materializeSymlinks(join(runtimeRoot, 'electron'));
+}
 
 function prepareMacApp(appBundle, deepSign) {
   const contents = join(appBundle, 'Contents');
@@ -91,9 +100,20 @@ function prepareMacApp(appBundle, deepSign) {
     }
     info = info.replace(pattern, `$1${value}$2`);
   };
-  replacePlistString('CFBundleIdentifier', 'com.kubarycz.working-memory');
+  replacePlistString('CFBundleIdentifier', MAC_APP_IDENTIFIER);
   replacePlistString('CFBundleName', 'Working Memory');
   replacePlistString('CFBundleDisplayName', 'Working Memory');
+  if (!info.includes('<key>NSCameraUsageDescription</key>')) {
+    info = info.replace(
+      '</dict>\n</plist>',
+      [
+        '\t<key>NSCameraUsageDescription</key>',
+        '\t<string>Working Memory uses the camera to attach photos to chat prompts and topics.</string>',
+        '</dict>',
+        '</plist>',
+      ].join('\n'),
+    );
+  }
   if (!info.includes('<key>CFBundleURLTypes</key>')) {
     info = info.replace(
       '</dict>\n</plist>',
@@ -133,44 +153,61 @@ function prepareMacApp(appBundle, deepSign) {
   );
 
   if (process.platform === 'darwin') {
+    const signingRoot = mkdtempSync(join(tmpdir(), 'working-memory-sign-'));
+    const signingBundle = join(signingRoot, 'Working Memory.app');
+    cpSync(appBundle, signingBundle, {
+      recursive: true,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    });
     let signingError = '';
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const clearedAttributes = spawnSync(
-        '/usr/bin/xattr',
-        ['-cr', appBundle],
-        { encoding: 'utf8' },
-      );
-      if (clearedAttributes.status !== 0) {
-        throw new Error(
-          `Unable to clear Working Memory.app metadata: ${clearedAttributes.stderr || clearedAttributes.stdout}`,
-        );
-      }
-      for (const attribute of ['com.apple.FinderInfo', 'com.apple.fileprovider.fpfs#P']) {
-        const removedAttribute = spawnSync(
+    try {
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const clearedAttributes = spawnSync(
           '/usr/bin/xattr',
-          ['-dr', attribute, appBundle],
+          ['-cr', signingBundle],
           { encoding: 'utf8' },
         );
-        if (removedAttribute.status !== 0) {
+        if (clearedAttributes.status !== 0) {
           throw new Error(
-            `Unable to remove ${attribute} from Working Memory.app: ${removedAttribute.stderr || removedAttribute.stdout}`,
+            `Unable to clear Working Memory.app metadata: ${clearedAttributes.stderr || clearedAttributes.stdout}`,
           );
         }
+        for (const attribute of ['com.apple.FinderInfo', 'com.apple.fileprovider.fpfs#P']) {
+          const removedAttribute = spawnSync(
+            '/usr/bin/xattr',
+            ['-dr', attribute, signingBundle],
+            { encoding: 'utf8' },
+          );
+          if (removedAttribute.status !== 0) {
+            throw new Error(
+              `Unable to remove ${attribute} from Working Memory.app: ${removedAttribute.stderr || removedAttribute.stdout}`,
+            );
+          }
+        }
+        const signed = spawnSync(
+          '/usr/bin/codesign',
+          macCodeSignArguments(signingBundle, { deep: deepSign }),
+          { encoding: 'utf8' },
+        );
+        if (signed.status === 0) {
+          rmSync(appBundle, { recursive: true, force: true });
+          cpSync(signingBundle, appBundle, {
+            recursive: true,
+            preserveTimestamps: true,
+            verbatimSymlinks: true,
+          });
+          return;
+        }
+        signingError = signed.stderr || signed.stdout;
+        console.warn(
+          `prepare-desktop-runtime: signing attempt ${attempt} failed after metadata cleanup`,
+        );
       }
-      const signed = spawnSync(
-        '/usr/bin/codesign',
-        ['--force', ...(deepSign ? ['--deep'] : []), '--sign', '-', appBundle],
-        { encoding: 'utf8' },
-      );
-      if (signed.status === 0) {
-        return;
-      }
-      signingError = signed.stderr || signed.stdout;
-      console.warn(
-        `prepare-desktop-runtime: signing attempt ${attempt} failed after metadata cleanup`,
-      );
+      throw new Error(`Unable to sign Working Memory.app after 3 attempts: ${signingError}`);
+    } finally {
+      rmSync(signingRoot, { recursive: true, force: true });
     }
-    throw new Error(`Unable to sign Working Memory.app after 3 attempts: ${signingError}`);
   }
 }
 

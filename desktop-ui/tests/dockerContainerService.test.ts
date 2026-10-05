@@ -11,7 +11,7 @@ import {
   type CommandRunner,
 } from '../src/main/dockerContainerService';
 import { CONTAINER_APP_REGISTRY } from '../src/main/containerAppRegistry';
-import type { ContainerClaimCreateInput } from '../../src/controlPlaneClient';
+import type { ContainerClaimCreateInput } from '../../shared/controlPlaneClient';
 
 const desired: ContainerClaimCreateInput = {
   slug: 'clarinet-hero',

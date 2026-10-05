@@ -35,7 +35,7 @@ import {
   ControlPlaneClient,
   ControlPlaneClientError,
   type Workstream,
-} from '../src/controlPlaneClient';
+} from '../shared/controlPlaneClient';
 
 /** A success tool result: a single JSON-encoded text content block. */
 const okText = (obj: unknown) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });

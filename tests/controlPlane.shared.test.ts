@@ -12,7 +12,7 @@ import {
   coercePort,
   parseListeningPort,
   resolveServicePort,
-} from '../src/controlPlaneShared';
+} from '../shared/controlPlaneShared';
 
 describe('controlPlaneShared', () => {
   describe('renderWm2Chatmode', () => {

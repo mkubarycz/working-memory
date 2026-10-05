@@ -1,12 +1,12 @@
 /**
  * Focused unit test for the pure workstream-tree ordering helper
- * (`sortTreeChildren` in webview-ui/src/lib/treeSort.ts). Verifies the
+ * (`sortTreeChildren` in the desktop document UI). Verifies the
  * pinned-first → open → closed-last ordering, stability within tiers, and that
  * the input is not mutated.
  */
 
 import { describe, test, expect } from 'vitest';
-import { sortTreeChildren, type TreeChild } from '../webview-ui/src/lib/treeSort';
+import { sortTreeChildren, type TreeChild } from '../desktop-ui/src/renderer/documents/treeSort';
 
 function topic(id: string, status: string, pinned = false): TreeChild {
   return {

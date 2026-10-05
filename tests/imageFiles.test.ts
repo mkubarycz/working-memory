@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { imageFilesFromTransfer } from '../webview-ui/src/lib/imageFiles';
+import { imageFilesFromTransfer } from '../desktop-ui/src/renderer/documents/imageFiles';
 
 function file(name: string, type: string): File {
   return { name, type, size: 10, lastModified: 1 } as File;

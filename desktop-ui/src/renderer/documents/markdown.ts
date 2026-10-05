@@ -12,26 +12,32 @@ import MarkdownIt from 'markdown-it';
  * in. With `html: false` there is no raw-HTML injection surface, so it's not
  * needed for this MVP.)
  */
-const md: MarkdownIt = new MarkdownIt({
+const md = new MarkdownIt({
   html: false,
   linkify: true,
   breaks: false,
 });
 
-const defaultImageRenderer = md.renderer.rules.image
-  ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+const defaultImageRenderer = md.renderer.rules.image;
+
+export function resolveMarkdownImageSource(src: string, attachmentBaseUrl = ''): string {
+  const match = /^wm-attachment:([0-9a-f-]+)$/.exec(src);
+  const baseUrl = attachmentBaseUrl.replace(/\/$/, '');
+  return match && baseUrl ? `${baseUrl}/attachments/${match[1]}` : src;
+}
 
 md.renderer.rules.image = (tokens, idx, options, env, self) => {
   const srcIndex = tokens[idx].attrIndex('src');
   const src = srcIndex >= 0 ? tokens[idx].attrs?.[srcIndex]?.[1] : undefined;
   const attachmentBaseUrl = typeof env?.attachmentBaseUrl === 'string'
-    ? env.attachmentBaseUrl.replace(/\/$/, '')
+    ? env.attachmentBaseUrl
     : '';
-  const match = /^wm-attachment:([0-9a-f-]+)$/.exec(src ?? '');
-  if (match && attachmentBaseUrl && srcIndex >= 0 && tokens[idx].attrs) {
-    tokens[idx].attrs![srcIndex][1] = `${attachmentBaseUrl}/attachments/${match[1]}`;
+  if (src && srcIndex >= 0 && tokens[idx].attrs) {
+    tokens[idx].attrs![srcIndex][1] = resolveMarkdownImageSource(String(src), attachmentBaseUrl);
   }
-  return defaultImageRenderer(tokens, idx, options, env, self);
+  return defaultImageRenderer
+    ? defaultImageRenderer(tokens, idx, options, env, self)
+    : self.renderToken(tokens, idx, options);
 };
 
 /** Render markdown source to an HTML string that is safe to inject as `{@html}`. */

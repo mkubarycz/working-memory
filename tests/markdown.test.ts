@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderMarkdown } from '../webview-ui/src/lib/markdown';
+import { renderMarkdown } from '../desktop-ui/src/renderer/documents/markdown';
 
 describe('renderMarkdown', () => {
   it('renders a heading', () => {

@@ -1,4 +1,4 @@
-import type { DocumentVM } from '../../../webview-ui/src/lib/types';
+import type { DocumentVM } from './documents/types';
 
 export interface DocumentTabsState {
   tabs: DocumentVM[];

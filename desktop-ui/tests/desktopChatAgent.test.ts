@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DESKTOP_MODEL_REQUEST_TIMEOUT_MS, DesktopChatAgent } from '../src/main/desktopChatAgent';
-import type { CommandJournal, CommandJournalEntityRef } from '../../src/controlPlaneClient';
+import type { CommandJournal, CommandJournalEntityRef } from '../../shared/controlPlaneClient';
 import { commandJournalSpec } from '../../control-plane/src/kinds/commandjournal';
 
 const tools = [
@@ -288,6 +288,194 @@ describe('DesktopChatAgent', () => {
     ]);
   });
 
+  it('approves repeated app create calls as one bounded batch while logging each result', async () => {
+    const playerCreate = {
+      name: 'app__sunset-chess__player-create',
+      inputSchema: {
+        type: 'object',
+        properties: { name: { type: 'string' }, club: { type: 'string' } },
+        required: ['name'],
+      },
+    };
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'player-1', function: { name: playerCreate.name, arguments: '{"name":"Ava","club":"Sunset"}' } },
+        { id: 'player-2', function: { name: playerCreate.name, arguments: '{"name":"Milo","club":"Sunset"}' } },
+        { id: 'player-3', function: { name: playerCreate.name, arguments: '{"name":"Nora","club":"Sunset"}' } },
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Created three players.' } }] });
+    const callTool = vi.fn(async (_name, args) => ({ ok: true, result: { id: args.name } }));
+    const journal = journalHarness();
+    const agent = new DesktopChatAgent(options(callModel, callTool, journal));
+
+    const pending = await agent.start({
+      mode: 'chat-completions',
+      url: 'https://example.test',
+      model: 'test',
+      message: 'Create three Sunset players',
+      headers: {},
+      appTools: {
+        tools: [playerCreate],
+        callTool,
+        systemInstructions: 'Use Sunset Chess tools.',
+        requiresConfirmation: () => true,
+      },
+    });
+
+    expect(pending.pendingConfirmation).toEqual({
+      id: 'confirm-1',
+      tool: playerCreate.name,
+      batchCount: 3,
+      arguments: {},
+      batchActions: [{
+        tool: playerCreate.name,
+        count: 3,
+        summary: 'Create 3 players',
+        arguments: {
+          club: 'Sunset',
+          name: '<varies across 3 calls>',
+        },
+      }],
+    });
+    expect(callTool).not.toHaveBeenCalled();
+    const result = await agent.resolveConfirmation('confirm-1', true);
+    expect(result).toMatchObject({ status: 'succeeded', message: 'Created three players.' });
+    expect(callTool).toHaveBeenCalledTimes(3);
+    expect(journal.current()?.events.filter((event) => event.type === 'confirmation_requested')).toHaveLength(1);
+    expect(journal.current()?.events.filter((event) => event.type === 'confirmation_resolved')).toHaveLength(1);
+    expect(journal.current()?.events.filter((event) => event.type === 'tool_result')).toHaveLength(3);
+    expect(journal.current()?.events.find((event) => event.type === 'confirmation_requested')).toMatchObject({
+      prompt: 'Confirm 3 mutating actions',
+      payload: {
+        count: 3,
+        actions: [{
+          tool: playerCreate.name,
+          count: 3,
+          summary: 'Create 3 players',
+          arguments: { club: 'Sunset', name: '<varies across 3 calls>' },
+        }],
+      },
+    });
+  });
+
+  it('uses one approval for mixed mutating tool classes and lists each action group', async () => {
+    const cancelGame = { name: 'app__sunset-chess__game-cancel', inputSchema: { type: 'object', properties: {} } };
+    const deletePlayer = { name: 'app__sunset-chess__player-delete', inputSchema: { type: 'object', properties: {} } };
+    const queryResource = { name: 'app__sunset-chess__resource-query', inputSchema: { type: 'object', properties: {} } };
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { tool_calls: [
+        { id: 'query', function: { name: queryResource.name, arguments: '{"type":"game"}' } },
+        { id: 'cancel-1', function: { name: cancelGame.name, arguments: '{"id":"game-1"}' } },
+        { id: 'cancel-2', function: { name: cancelGame.name, arguments: '{"id":"game-2"}' } },
+        { id: 'delete-1', function: { name: deletePlayer.name, arguments: '{"id":"player-1"}' } },
+        { id: 'delete-2', function: { name: deletePlayer.name, arguments: '{"id":"player-2"}' } },
+        { id: 'delete-3', function: { name: deletePlayer.name, arguments: '{"id":"player-3"}' } },
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'Database cleared.' } }] });
+    const callTool = vi.fn(async () => ({ ok: true, result: {} }));
+    const agent = new DesktopChatAgent(options(callModel, callTool));
+
+    const pending = await agent.start({
+      mode: 'chat-completions',
+      url: 'https://example.test',
+      model: 'test',
+      message: 'Clear the Sunset Chess database',
+      headers: {},
+      appTools: {
+        tools: [queryResource, cancelGame, deletePlayer],
+        callTool,
+        systemInstructions: 'Use Sunset Chess tools.',
+        requiresConfirmation: (name) => name !== queryResource.name,
+      },
+    });
+
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenLastCalledWith(queryResource.name, { type: 'game' });
+    expect(pending.pendingConfirmation).toMatchObject({
+      batchCount: 5,
+      batchActions: [
+        { tool: cancelGame.name, count: 2, summary: 'Cancel 2 games' },
+        { tool: deletePlayer.name, count: 3, summary: 'Delete 3 players' },
+      ],
+    });
+    const result = await agent.resolveConfirmation('confirm-1', true);
+    expect(result.status).toBe('succeeded');
+    expect(callTool).toHaveBeenCalledTimes(6);
+  });
+
+  it('asks for new approval when a later model turn expands a create batch', async () => {
+    const playerCreate = { name: 'app__sunset-chess__player-create', inputSchema: { type: 'object', properties: {} } };
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { tool_calls: [
+        { id: 'player-1', function: { name: playerCreate.name, arguments: '{"name":"Ava"}' } },
+        { id: 'player-2', function: { name: playerCreate.name, arguments: '{"name":"Milo"}' } },
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { tool_calls: [
+        { id: 'player-3', function: { name: playerCreate.name, arguments: '{"name":"Nora"}' } },
+      ] } }] });
+    const callTool = vi.fn(async () => ({ ok: true, result: {} }));
+    let confirmation = 0;
+    const agent = new DesktopChatAgent({
+      ...options(callModel, callTool),
+      createId: () => `confirm-${++confirmation}`,
+    });
+    const input = {
+      mode: 'chat-completions' as const,
+      url: 'https://example.test',
+      model: 'test',
+      message: 'Create players',
+      headers: {},
+      appTools: {
+        tools: [playerCreate],
+        callTool,
+        systemInstructions: 'Use Sunset Chess tools.',
+        requiresConfirmation: () => true,
+      },
+    };
+
+    expect((await agent.start(input)).pendingConfirmation).toMatchObject({ id: 'confirm-1', batchCount: 2 });
+    const expanded = await agent.resolveConfirmation('confirm-1', true);
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(expanded.pendingConfirmation).toMatchObject({
+      id: 'confirm-2',
+      tool: playerCreate.name,
+      arguments: { name: 'Nora' },
+    });
+  });
+
+  it('retries failed create arguments without duplicating successful creates', async () => {
+    const callModel = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { tool_calls: [
+        { id: 'first-success', function: { name: 'ws-topic-create', arguments: '{"title":"A"}' } },
+        { id: 'first-failure', function: { name: 'ws-topic-create', arguments: '{"title":"B"}' } },
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { tool_calls: [
+        { id: 'duplicate-success', function: { name: 'ws-topic-create', arguments: '{"title":"A"}' } },
+        { id: 'retry-failure', function: { name: 'ws-topic-create', arguments: '{"title":"B"}' } },
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'Done.' } }] });
+    const callTool = vi.fn()
+      .mockResolvedValueOnce({ ok: true, result: { slug: 'a' } })
+      .mockResolvedValueOnce({ ok: false, error: 'temporary failure' })
+      .mockResolvedValueOnce({ ok: true, result: { slug: 'b' } });
+    const journal = journalHarness();
+
+    const result = await new DesktopChatAgent(options(callModel, callTool, journal)).start({
+      mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'Create A and B', headers: {},
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(callTool).toHaveBeenCalledTimes(3);
+    expect(callTool.mock.calls.map(([, args]) => args)).toEqual([
+      { title: 'A' },
+      { title: 'B' },
+      { title: 'B' },
+    ]);
+    const calls = journal.current()?.events.filter((event) => event.type === 'tool_call');
+    expect(calls?.find((event) => event.callId === 'duplicate-success')).toMatchObject({ dedupedOfCallId: 'first-success' });
+    expect(calls?.find((event) => event.callId === 'retry-failure')).toMatchObject({ retryOfCallId: 'first-failure' });
+  });
+
   it('rejects and clears pending confirmations when the environment resets', async () => {
     const callModel = vi.fn().mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
       { id: 'a', function: { name: 'ws-topic-delete', arguments: '{"slug":"old"}' } },
@@ -573,6 +761,45 @@ describe('DesktopChatAgent', () => {
     expect(persisted).not.toContain('hidden-value');
     expect(persisted).not.toContain('authorization');
     expect(persisted).toContain('[redacted]');
+  });
+
+  it('sends image data to the model without persisting it in the command journal', async () => {
+    const imageData = 'data:image/png;base64,c2Vuc2l0aXZlLWltYWdlLWJ5dGVz';
+    const callModel = vi.fn(async () => ({ id: 'resp_image', output_text: 'A diagram.' }));
+    const journal = schemaValidatingJournalHarness();
+
+    await new DesktopChatAgent(options(callModel, undefined, journal)).start({
+      mode: 'responses',
+      url: 'https://example.test',
+      model: 'test',
+      message: 'Describe this.',
+      headers: {},
+      images: [{
+        id: 'attachment-1',
+        dataUrl: imageData,
+        filename: 'diagram.png',
+        mimeType: 'image/png',
+        qrPayloads: ['SC1:UE'],
+      }],
+    });
+
+    expect(JSON.stringify(callModel.mock.calls[0][0].body)).toContain(imageData);
+    expect(JSON.stringify(journal.current())).not.toContain(imageData);
+    expect(journal.current()?.request.userText).toBe('Describe this.');
+    expect(journal.current()?.request.attachments).toEqual([{
+      id: 'attachment-1',
+      filename: 'diagram.png',
+      mimeType: 'image/png',
+    }]);
+    expect(callModel.mock.calls[0][0].body.instructions).toContain(
+      '"diagram.png" is wm-attachment:attachment-1.',
+    );
+    expect(callModel.mock.calls[0][0].body.instructions).toContain(
+      'use ws-topic-update to preserve its existing body and add Markdown',
+    );
+    expect(callModel.mock.calls[0][0].body.instructions).toContain(
+      'A local QR decoder read this exact payload from the image: "SC1:UE".',
+    );
   });
 
   it('stops before another HTTP call once the total time cap is reached', async () => {

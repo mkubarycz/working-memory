@@ -5,6 +5,7 @@ import { defaultStatus, validateSpec } from '../registry.js';
 import { asError, asText } from '../toolResult.js';
 import {
   COMMAND_JOURNAL_KIND,
+  commandJournalAttachment,
   commandJournalEvent,
   completion,
   scopeRef,
@@ -66,7 +67,12 @@ export function registerWsCommandJournalOperations(server: McpServer, store: Sto
       inputSchema: {
         startedAt: z.number().int().nonnegative(),
         provider,
-        request: z.object({ userText: z.string().min(1).max(32_768) }).strict(),
+        request: z
+          .object({
+            userText: z.string().min(1).max(32_768),
+            attachments: z.array(commandJournalAttachment).max(20).optional(),
+          })
+          .strict(),
         primaryScope: scopeRef,
         entityRefs: z.array(scopeRef.extend({ relation: z.enum(['referenced', 'mutated']) }).strict()).max(500).optional(),
       },

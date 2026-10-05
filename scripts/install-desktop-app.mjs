@@ -8,6 +8,7 @@ import {
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { macCodeSignArguments } from './macos-code-signing.mjs';
 
 if (process.platform !== 'darwin' || process.env.CI) {
   console.log('install-desktop-app: skipped outside a local macOS build');
@@ -53,7 +54,7 @@ try {
   }
   const signed = spawnSync(
     '/usr/bin/codesign',
-    ['--force', '--deep', '--sign', '-', destination],
+    macCodeSignArguments(destination, { deep: true }),
     { encoding: 'utf8' },
   );
   if (signed.status !== 0) {

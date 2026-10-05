@@ -32,7 +32,7 @@ import {
   controlPlanePortFilePath,
   parsePortInfo,
   resolveControlPlaneHome,
-} from './controlPlaneShared';
+} from '../shared/controlPlaneShared';
 
 /** Client identity advertised to the control-plane during the MCP handshake. */
 const CLIENT_NAME = 'working-memory-extension';
@@ -597,11 +597,20 @@ export interface CommandJournal {
   startedAt: number;
   completedAt?: number;
   provider: { endpoint: string; mode: string; model: string };
-  request: { userText: string };
+  request: {
+    userText: string;
+    attachments?: CommandJournalAttachment[];
+  };
   primaryScope: CommandJournalScopeRef;
   entityRefs: CommandJournalEntityRef[];
   events: CommandJournalEvent[];
   completion?: CommandJournalCompletion;
+}
+
+export interface CommandJournalAttachment {
+  id: string;
+  filename: string;
+  mimeType: string;
 }
 
 export interface CommandJournalCreateInput {

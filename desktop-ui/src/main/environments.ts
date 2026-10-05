@@ -1,13 +1,13 @@
 import { homedir as systemHomedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { ControlPlaneClient } from '../../../src/controlPlaneClient';
+import { ControlPlaneClient } from '../../../shared/controlPlaneClient';
 import {
   CONTROL_PLANE_HOME_ENV,
   controlPlanePortFilePath,
   parsePortInfo,
   resolveControlPlaneHome,
-} from '../../../src/controlPlaneShared';
+} from '../../../shared/controlPlaneShared';
 
 export type EnvironmentSource = 'production' | 'override' | 'sandbox';
 

@@ -15,7 +15,7 @@ export interface CredentialStorage {
   decryptString(value: Buffer): string;
 }
 
-export type CredentialStorageMode = 'secure' | 'session' | 'unavailable';
+export type CredentialStorageMode = 'secure' | 'local' | 'session' | 'unavailable';
 
 export class CredentialManager {
   private sessionApiKey = '';
@@ -105,15 +105,17 @@ export function modelAuthHeaders(url: string, apiKey: string): Record<string, st
   return { authorization: `Bearer ${apiKey}` };
 }
 
-export function publicConfig(config: StoredConfig): {
+export function publicConfig(config: StoredConfig, credentialStorage: CredentialStorageMode = 'secure'): {
   endpoint: string;
   model: string;
   hasApiKey: boolean;
+  credentialStorage: CredentialStorageMode;
 } {
   return {
     endpoint: normalizeEndpoint(config.endpoint),
     model: config.model.trim(),
     hasApiKey: Boolean(config.encryptedApiKey),
+    credentialStorage,
   };
 }
 

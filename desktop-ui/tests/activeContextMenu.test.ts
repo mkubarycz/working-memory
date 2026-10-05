@@ -4,7 +4,7 @@ import {
   invokeActiveAction,
   topicSlugFromOpenUri,
 } from '../src/renderer/activeContextMenu';
-import type { WorkstreamVM } from '../../webview-ui/src/lib/types';
+import type { WorkstreamVM } from '../src/renderer/documents/types';
 
 function reactiveProxy<T extends object>(value: T, cache = new WeakMap<object, object>()): T {
   const existing = cache.get(value);

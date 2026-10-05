@@ -1,5 +1,5 @@
-import type { DocumentVM, SaveState } from '../../../webview-ui/src/lib/types';
-import type { PanelData } from '../../../src/panelData';
+import type { DocumentVM, SaveState } from './documents/types';
+import type { PanelData } from '../../../shared/panelData';
 import type { ContainerAppStatus, PendingConfirmation } from '../shared/contracts';
 import type { ChatRun, ChatToolRow, ToolDetail } from './chatHistory';
 

@@ -1,5 +1,5 @@
 import type { AppMcpEndpoint, ContainerAppDefinition, ContainerAppStatus } from '../shared/contracts';
-import type { DocumentVM } from '../../../webview-ui/src/lib/types';
+import type { DocumentVM } from './documents/types';
 
 export type { ContainerAppDefinition as ContainerAppItem } from '../shared/contracts';
 

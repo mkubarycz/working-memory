@@ -8,7 +8,7 @@
     PanelTopicsGroup,
     PanelWorkstream,
     PanelWorkstreamSection,
-  } from '../../../src/panelData';
+  } from '../../../shared/panelData';
   import type { DesktopEnvironment, PreparedResourceDrag } from '../shared/contracts';
   import {
     activeContextMenuItems,
