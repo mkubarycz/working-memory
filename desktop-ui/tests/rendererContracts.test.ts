@@ -112,6 +112,7 @@ describe('desktop tree icon contract', () => {
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
     const workstreamView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/WorkstreamView.svelte'), 'utf8');
     const topicCreateView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/TopicCreateView.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
     const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
 
@@ -129,6 +130,8 @@ describe('desktop tree icon contract', () => {
     expect(main).toContain("ipcMain.handle('topic:create'");
     expect(main).toContain('workstreams: [workstream]');
     expect(main).toContain('parents: input.parent ? [input.parent] : []');
+    expect(styles).toMatch(/\.active-group-add[^}]*color:\s*#ff5ca8[^}]*font-weight:\s*900/s);
+    expect(workstreamView).toMatch(/\.add-topic[^}]*color:\s*#ff5ca8[^}]*font-weight:\s*900/s);
   });
 
   it('renders queue and backlog as summaries while progress alone owns disclosure and graph details', () => {

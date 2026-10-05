@@ -371,8 +371,9 @@ button { cursor: pointer; }
 .topic-tree { position: relative; padding: 3px 4px 5px 8px; --graph-color: var(--ws-card-border); }
 .active-group { position: relative; min-width: 0; }
 .active-group-header { position: relative; display: flex; align-items: center; gap: 6px; width: 100%; min-height: 29px; padding: 3px 5px 3px 0; color: #b8b8b8; font-size: 10px; font-weight: 700; text-transform: uppercase; }
-.active-group-add { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-left: auto; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--desktop-active-fg); }
-.active-group-add:hover { background: var(--desktop-active-hover); color: #ffffff; }
+.active-group-add { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-left: auto; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #ff5ca8; font-size: 17px; font-weight: 900; }
+.active-group-add .codicon { font-weight: 900; }
+.active-group-add:hover { background: var(--desktop-active-hover); color: #ff85bd; }
 .graph-node-control { position: relative; z-index: 1; display: inline-grid; place-items: center; flex: 0 0 var(--active-tree-control-width); width: var(--active-tree-control-width); height: 26px; padding: 0; border: 0; background: transparent; color: var(--graph-color); }
 .graph-node-control:not(.graph-node-passive):hover { background: color-mix(in srgb, var(--graph-color) 22%, transparent); }
 .graph-node-dot { width: 10px; height: 10px; border: 2px solid var(--graph-color); border-radius: 50%; background: var(--ws-card-bg); }

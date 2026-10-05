@@ -1023,66 +1023,66 @@
     } catch (error) {
       documentError = error instanceof Error ? error.message : String(error);
     }
+  }
 
-    async function startTopicCreation(
-      workstream: string,
-      workstreamTitle: string,
-      parent?: { slug: string; title: string },
-    ): Promise<void> {
-      documentError = '';
-      try {
-        const topicTypes = await window.workingMemory.listTopicTypes();
-        const draft: TopicCreateDraftVM = {
-          kind: 'topic-create',
-          id: crypto.randomUUID(),
-          slug: null,
-          title: 'New Topic',
-          body: '',
-          topicType: topicTypes[0]?.slug ?? '',
-          topicTypes,
-          workstream,
-          workstreamTitle,
-          parent: parent?.slug ?? null,
-          parentTitle: parent?.title ?? null,
-        };
-        const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, draft);
-        documents = next.tabs;
-        selectedDocumentKey = next.selectedKey;
-        activateHeaderTab('log');
-      } catch (error) {
-        documentError = error instanceof Error ? error.message : String(error);
-      }
+  async function startTopicCreation(
+    workstream: string,
+    workstreamTitle: string,
+    parent?: { slug: string; title: string },
+  ): Promise<void> {
+    documentError = '';
+    try {
+      const topicTypes = await window.workingMemory.listTopicTypes();
+      const draft: TopicCreateDraftVM = {
+        kind: 'topic-create',
+        id: crypto.randomUUID(),
+        slug: null,
+        title: 'New Topic',
+        body: '',
+        topicType: topicTypes[0]?.slug ?? '',
+        topicTypes,
+        workstream,
+        workstreamTitle,
+        parent: parent?.slug ?? null,
+        parentTitle: parent?.title ?? null,
+      };
+      const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, draft);
+      documents = next.tabs;
+      selectedDocumentKey = next.selectedKey;
+      activateHeaderTab('log');
+    } catch (error) {
+      documentError = error instanceof Error ? error.message : String(error);
     }
+  }
 
-    async function createTopic(draft: TopicCreateDraftVM): Promise<void> {
-      const draftKey = documentTabKey(draft);
-      const created = await window.workingMemory.createTopic({
-        title: draft.title,
-        body: draft.body,
-        topicType: draft.topicType,
-        workstream: draft.workstream,
-        ...(draft.parent ? { parent: draft.parent } : {}),
-      });
-      const replaced = updateDocumentTab(
+  async function createTopic(draft: TopicCreateDraftVM): Promise<void> {
+    const draftKey = documentTabKey(draft);
+    const created = await window.workingMemory.createTopic({
+      title: draft.title,
+      body: draft.body,
+      topicType: draft.topicType,
+      workstream: draft.workstream,
+      ...(draft.parent ? { parent: draft.parent } : {}),
+    });
+    const replaced = updateDocumentTab(
+      { tabs: documents, selectedKey: selectedDocumentKey },
+      draftKey,
+      created,
+    );
+    documents = replaced.tabs;
+    selectedDocumentKey = replaced.selectedKey;
+    const workstreamKey = `workstream:${draft.workstream}`;
+    if (documents.some((document) => documentTabKey(document) === workstreamKey)) {
+      const refreshed = await window.workingMemory.openResource('workstream', draft.workstream);
+      const updated = updateDocumentTab(
         { tabs: documents, selectedKey: selectedDocumentKey },
-        draftKey,
-        created,
+        workstreamKey,
+        refreshed,
       );
-      documents = replaced.tabs;
-      selectedDocumentKey = replaced.selectedKey;
-      const workstreamKey = `workstream:${draft.workstream}`;
-      if (documents.some((document) => documentTabKey(document) === workstreamKey)) {
-        const refreshed = await window.workingMemory.openResource('workstream', draft.workstream);
-        const updated = updateDocumentTab(
-          { tabs: documents, selectedKey: selectedDocumentKey },
-          workstreamKey,
-          refreshed,
-        );
-        documents = updated.tabs;
-        selectedDocumentKey = updated.selectedKey;
-      }
-      await refreshActive();
+      documents = updated.tabs;
+      selectedDocumentKey = updated.selectedKey;
     }
+    await refreshActive();
   }
 
   async function mutate(operation: () => Promise<DocumentVM>): Promise<void> {

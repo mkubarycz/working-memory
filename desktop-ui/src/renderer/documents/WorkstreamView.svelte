@@ -372,7 +372,9 @@
     width: 24px;
     height: 24px;
     margin-left: 4px;
-    color: var(--vscode-foreground);
+    color: #ff5ca8;
+    font-size: 17px;
+    font-weight: 900;
     background: transparent;
     border: 0;
     border-radius: 4px;
@@ -381,6 +383,11 @@
 
   .add-topic:hover {
     background: var(--vscode-toolbar-hoverBackground);
+    color: #ff85bd;
+  }
+
+  .add-topic .codicon {
+    font-weight: 900;
   }
 
   .head {
