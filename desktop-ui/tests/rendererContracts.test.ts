@@ -129,7 +129,10 @@ describe('desktop tree icon contract', () => {
     expect(topicView).toContain('aria-label="Topic title"');
     expect(topicView).toContain('aria-label="Topic type"');
     expect(topicView).toContain('<HybridMarkdownEditor');
-    expect(topicView.indexOf('aria-label="Topic title"')).toBeLessThan(topicView.indexOf('aria-label="Topic type"'));
+    expect(topicView).toContain('class="title-field"');
+    expect(topicView).toContain('class:with-type-picker=');
+    expect(topicView).toMatch(/\.title-input\.with-type-picker[^}]*padding-left:\s*60px/s);
+    expect(topicView).toMatch(/\.type-picker[^}]*position:\s*absolute[^}]*left:\s*1px/s);
     expect(topicView).toMatch(/\.header-grid[^}]*max-height:\s*160px/s);
     expect(topicView).toMatch(/\.family-scroll[^}]*max-height:\s*112px/s);
     expect(styles).toContain('.document-host.topic-document { padding-top: 8px; }');

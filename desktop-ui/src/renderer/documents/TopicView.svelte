@@ -188,29 +188,31 @@
 
 <header class="head">
   {#if topic.editable}
-    <input
-      class="title-input"
-      value={topic.title}
-      oninput={onTitleInput}
-      aria-label="Topic title"
-      title={topic.title}
-      placeholder={titlePlaceholder}
-    />
-  {:else}
-    <h1 class="title" title={topic.title}>{topic.title}</h1>
-  {/if}
-  {#if topic.editable && (topic.topicTypes?.length ?? 0) > 0}
-    <label class="type-picker" title={`Topic type: ${typeLabel}`}>
-      <span aria-hidden="true" class="type-icon codicon codicon-{icon}"></span>
-      <span aria-hidden="true" class="type-picker-chevron codicon codicon-chevron-down"></span>
-      <select value={topic.topicType} onchange={onTopicTypeChange} aria-label="Topic type">
-        {#each topic.topicTypes ?? [] as topicType (topicType.slug)}
-          <option value={topicType.slug ?? ''}>{topicType.label}</option>
-        {/each}
-      </select>
-    </label>
+    <div class="title-field">
+      {#if (topic.topicTypes?.length ?? 0) > 0}
+        <label class="type-picker" title={`Topic type: ${typeLabel}`}>
+          <span aria-hidden="true" class="type-icon codicon codicon-{icon}"></span>
+          <span aria-hidden="true" class="type-picker-chevron codicon codicon-chevron-down"></span>
+          <select value={topic.topicType} onchange={onTopicTypeChange} aria-label="Topic type">
+            {#each topic.topicTypes ?? [] as topicType (topicType.slug)}
+              <option value={topicType.slug ?? ''}>{topicType.label}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      <input
+        class="title-input"
+        class:with-type-picker={(topic.topicTypes?.length ?? 0) > 0}
+        value={topic.title}
+        oninput={onTitleInput}
+        aria-label="Topic title"
+        title={topic.title}
+        placeholder={titlePlaceholder}
+      />
+    </div>
   {:else}
     <span class="type-icon codicon codicon-{icon}" title={typeLabel}></span>
+    <h1 class="title" title={topic.title}>{topic.title}</h1>
   {/if}
   {#if !draft}
     <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
@@ -428,15 +430,19 @@
   }
 
   .type-picker {
-    position: relative;
+    position: absolute;
+    z-index: 1;
+    top: 1px;
+    bottom: 1px;
+    left: 1px;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 1px;
-    flex: 0 0 auto;
-    min-width: 34px;
-    min-height: 32px;
-    padding: 0 3px;
-    border-radius: 4px;
+    width: 48px;
+    padding: 0 4px;
+    border-right: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.25));
+    border-radius: 4px 0 0 4px;
     cursor: pointer;
   }
 
@@ -466,7 +472,7 @@
   }
 
   .title-input {
-    flex: 1;
+    width: 100%;
     font-size: 1.5em;
     font-weight: 600;
     padding: 4px 8px;
@@ -474,6 +480,16 @@
     background: var(--vscode-input-background);
     border: 1px solid var(--vscode-input-border, transparent);
     border-radius: 4px;
+  }
+
+  .title-field {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .title-input.with-type-picker {
+    padding-left: 60px;
   }
 
   .title-input:focus {
