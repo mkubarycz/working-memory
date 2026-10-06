@@ -187,6 +187,18 @@
 </script>
 
 <header class="head">
+  {#if topic.editable}
+    <input
+      class="title-input"
+      value={topic.title}
+      oninput={onTitleInput}
+      aria-label="Topic title"
+      title={topic.title}
+      placeholder={titlePlaceholder}
+    />
+  {:else}
+    <h1 class="title" title={topic.title}>{topic.title}</h1>
+  {/if}
   {#if topic.editable && (topic.topicTypes?.length ?? 0) > 0}
     <label class="type-picker" title={`Topic type: ${typeLabel}`}>
       <span aria-hidden="true" class="type-icon codicon codicon-{icon}"></span>
@@ -199,18 +211,6 @@
     </label>
   {:else}
     <span class="type-icon codicon codicon-{icon}" title={typeLabel}></span>
-  {/if}
-  {#if topic.editable}
-    <input
-      class="title-input"
-      value={topic.title}
-      oninput={onTitleInput}
-      aria-label="Topic title"
-      title={topic.title}
-      placeholder={titlePlaceholder}
-    />
-  {:else}
-    <h1 class="title" title={topic.title}>{topic.title}</h1>
   {/if}
   {#if !draft}
     <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
@@ -486,6 +486,7 @@
     flex-direction: column;
     gap: 12px;
     padding: 10px 14px;
+    overflow-y: auto;
     background: var(--vscode-editor-background);
   }
 
@@ -731,6 +732,7 @@
     border-radius: 6px;
     overflow: hidden;
     align-items: stretch;
+    max-height: 160px;
   }
 
   @media (min-width: 720px) {
@@ -739,17 +741,17 @@
     }
   }
 
-  /* The family column stretches to the attributes table's height (grid stretch).
-     The scroll list is absolutely positioned so it is OUT of flow and never adds
-     to the row height — the table is sized by the attributes alone, and the
-     lineage scrolls inside whatever height that gives us. min-height keeps it
-     usable when the layout collapses to a single column (family stacks below). */
+  @media (max-width: 719px) {
+    .header-grid {
+      max-height: none;
+    }
+  }
+
   .family {
     position: relative;
     background: var(--vscode-editor-background);
     padding: 10px 12px;
     min-width: 0;
-    min-height: 160px;
     overflow: hidden;
   }
 
@@ -762,11 +764,8 @@
   }
 
   .family-scroll {
-    position: absolute;
-    top: 34px;
-    left: 12px;
-    right: 12px;
-    bottom: 10px;
+    max-height: 112px;
+    margin-top: 8px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;

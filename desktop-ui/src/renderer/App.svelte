@@ -1604,7 +1604,12 @@
             </button>
           </div>
         {/if}
-        <div class="document-host" role="tabpanel" inert={environmentLoading}>
+        <div
+          class="document-host"
+          class:topic-document={activeDocument?.kind === 'topic' || activeDocument?.kind === 'topic-create'}
+          role="tabpanel"
+          inert={environmentLoading}
+        >
           <div class="document-toolbar">
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>

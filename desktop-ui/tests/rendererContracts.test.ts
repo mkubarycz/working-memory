@@ -129,6 +129,10 @@ describe('desktop tree icon contract', () => {
     expect(topicView).toContain('aria-label="Topic title"');
     expect(topicView).toContain('aria-label="Topic type"');
     expect(topicView).toContain('<HybridMarkdownEditor');
+    expect(topicView.indexOf('aria-label="Topic title"')).toBeLessThan(topicView.indexOf('aria-label="Topic type"'));
+    expect(topicView).toMatch(/\.header-grid[^}]*max-height:\s*160px/s);
+    expect(topicView).toMatch(/\.family-scroll[^}]*max-height:\s*112px/s);
+    expect(styles).toContain('.document-host.topic-document { padding-top: 8px; }');
     expect(topicCreateView).toContain("error = 'Enter a topic title.'");
     expect(preload).toContain("createTopic: (input) => invoke('topic:create', input)");
     expect(main).toContain("ipcMain.handle('topic:create'");

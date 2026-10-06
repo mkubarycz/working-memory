@@ -279,6 +279,8 @@ button { cursor: pointer; }
 .document-tab-menu .codicon { color: var(--desktop-accent-strong); font-size: 15px; }
 .document-host { max-width: 940px; margin: 0 auto; padding: 24px 44px 54px; }
 .document-toolbar { min-height: 20px; display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.document-host.topic-document { padding-top: 8px; }
+.document-host.topic-document .document-toolbar:empty { display: none; }
 .document-error { color: #9b2f29; font-size: 13px; font-weight: 700; }
 .settings, .empty-state { max-width: 720px; margin: 0 auto; padding: 72px 48px; }
 .settings header, .empty-state { margin-bottom: 42px; }
