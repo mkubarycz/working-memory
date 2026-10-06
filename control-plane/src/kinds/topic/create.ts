@@ -14,6 +14,33 @@ import { validateMetadata, validateSpec, defaultStatus } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Topic, TOPIC_KIND, stringArray } from './topic.js';
 
+function slugFromTitle(title: string): string {
+  const normalized = title
+    .trim()
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+  if (normalized === '') {
+    return 'topic';
+  }
+  return /^[a-z]/.test(normalized) ? normalized : `topic-${normalized}`;
+}
+
+function availableSlug(title: string, store: Store): string {
+  const base = slugFromTitle(title);
+  let candidate = base;
+  let suffix = 2;
+  while (store.getDocument({ kind: TOPIC_KIND, slug: candidate, includeDeleted: true })) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 /**
  * Register the `ws-topic-create` tool on an MCP session's server. The tool
  * speaks the legacy topic shape and is backed by generic `store` document ops
@@ -26,8 +53,8 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
     {
       title: 'Topic: Create',
       description:
-        'Create a Topic. Provide a `title` (required, ≤120 chars) and a unique `slug` (required: ' +
-        'lowercase words separated with dashes; best practice 3-5 words, short and precise); optional `body`, ' +
+        'Create a Topic. Provide a `title` (required, ≤120 chars). Omit `slug` to generate a unique ' +
+        'lowercase dash-separated slug from the title, or provide an explicit valid slug; optional `body`, ' +
         "`status` ('open' | 'closed', default 'open'), `topicType` (default 'topic'), `parents` " +
         '(parent topic slugs), `workstreams` (member workstream slugs), and `focusedWorkstreams` ' +
         '(subset of `workstreams` this topic is pinned/focused in). Every topic MUST belong to ' +
@@ -39,7 +66,7 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
         slug: z
           .string()
           .optional()
-          .describe('Required unique slug: lowercase words separated with dashes; best practice 3-5 words, short and precise.'),
+          .describe('Optional explicit lowercase dash-separated slug. Omission generates a unique slug from title.'),
         title: z.string().describe('Topic title (required, 1–120 chars).'),
         body: z.string().optional().describe('Topic body (markdown).'),
         status: z
@@ -66,6 +93,7 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
       },
     },
     async ({ slug, title, body, status, topicType, parents, workstreams, focusedWorkstreams }) => {
+      const finalSlug = slug ?? availableSlug(title, store);
       const specInput: Record<string, unknown> = { title };
       if (body !== undefined) {
         specInput.body = body;
@@ -112,7 +140,7 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
       let validatedSpec: Record<string, unknown>;
       let docStatus: Record<string, unknown>;
       try {
-        validateMetadata(TOPIC_KIND, { slug, store });
+        validateMetadata(TOPIC_KIND, { slug: finalSlug, store });
         validatedSpec = validateSpec(TOPIC_KIND, specInput);
         docStatus = defaultStatus(TOPIC_KIND);
       } catch (err) {
@@ -120,7 +148,7 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
       }
       const doc = store.createDocument({
         kind: TOPIC_KIND,
-        slug,
+        slug: finalSlug,
         spec: validatedSpec,
         status: docStatus,
       });

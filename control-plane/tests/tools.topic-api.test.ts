@@ -443,11 +443,10 @@ async function connect(store: Store): Promise<{
     }
   });
 
-  it('requires a unique lowercase dash-separated slug and creates a visible workstream member', async () => {
+  it('validates explicit slugs and creates a visible workstream member', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       for (const arguments_ of [
-        { title: 'Missing', workstreams: ['ws-one'] },
         { slug: '   ', title: 'Blank', workstreams: ['ws-one'] },
         { slug: 'Not_valid', title: 'Invalid', workstreams: ['ws-one'] },
       ]) {
@@ -824,6 +823,25 @@ async function connect(store: Store): Promise<{
       expect(
         jsonOf<TopicList>(await client.callTool({ name: 'ws-topic-read', arguments: {} })).count,
       ).toBe(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it('ws-topic-create generates a unique slug from the title when omitted', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      const first = jsonOf<ITopic>(await client.callTool({
+        name: 'ws-topic-create',
+        arguments: { title: 'Test 1', workstreams: ['ws-a'] },
+      }));
+      const second = jsonOf<ITopic>(await client.callTool({
+        name: 'ws-topic-create',
+        arguments: { title: 'Test 1', workstreams: ['ws-a'] },
+      }));
+
+      expect(first.slug).toBe('test-1');
+      expect(second.slug).toBe('test-1-2');
     } finally {
       await close();
     }
