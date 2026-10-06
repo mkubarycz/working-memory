@@ -316,6 +316,8 @@ button { cursor: pointer; }
 .active-heading strong { font: 600 13px/1.2 var(--vscode-font-family); }
 .active-heading span { color: var(--desktop-active-muted); font-size: 10px; text-transform: uppercase; }
 .active-header-button, .active-twistie { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #b7b7b7; }
+.topic-backlog-button { position: relative; }
+.topic-backlog-badge { position: absolute; top: -3px; right: -4px; display: grid; place-items: center; min-width: 15px; height: 15px; padding: 0 4px; border: 1px solid #1f1f1f; border-radius: 8px; background: var(--desktop-accent-strong); color: #ffffff; font-size: 9px; font-weight: 800; line-height: 1; }
 .active-header-button:hover, .active-twistie:hover { background: var(--desktop-active-hover); color: #ffffff; }
 .active-header-button:focus-visible, .active-twistie:focus-visible, .graph-node-control:focus-visible, .active-open:focus-visible, .focused-topic-open:focus-visible, .focused-topic-pin:focus-visible { outline: 1px solid var(--desktop-accent); outline-offset: -1px; }
 .active-sections { display: grid; grid-template-rows: minmax(76px, auto) minmax(120px, 1fr) minmax(76px, auto); min-height: 0; overflow: hidden; }
@@ -410,13 +412,6 @@ button { cursor: pointer; }
 .active-context-submenu-arrow { justify-self: end; }
 .active-error, .active-empty { margin: 8px 10px; color: var(--desktop-active-muted); font-size: 11px; line-height: 1.35; }
 .active-error { color: #f1707a; }
-.topic-backlog-button { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: calc(100% - 12px); min-height: 32px; margin: 6px; padding: 5px 8px; border: 1px solid #4b474b; border-radius: 5px; background: #242225; color: var(--desktop-active-muted); text-align: left; }
-.topic-backlog-button:hover, .topic-backlog-button:focus-visible { outline: none; border-color: var(--desktop-accent); background: var(--desktop-active-hover); color: #ffffff; }
-.topic-backlog-button.has-items { color: #ffffff; }
-.topic-backlog-button .codicon { color: var(--desktop-accent); }
-.topic-backlog-button strong { display: grid; place-items: center; min-width: 20px; height: 18px; padding: 0 5px; border-radius: 9px; background: #4c484c; font-size: 10px; }
-.topic-backlog-button.has-items strong { background: var(--desktop-accent-strong); }
-
 @media (max-width: 1100px) {
   .document-host { padding-inline: 22px; }
   .active-description { display: none; }

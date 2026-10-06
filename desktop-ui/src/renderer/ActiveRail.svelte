@@ -781,6 +781,15 @@
     <button class="active-header-button" title="Restart to apply latest build" aria-label="Restart Working Memory" onclick={onRefresh}>
       <span aria-hidden="true" class="codicon codicon-refresh" class:codicon-modifier-spin={loading}></span>
     </button>
+    <button
+      class="active-header-button topic-backlog-button"
+      title="Open topics outside active workstreams"
+      aria-label={`Open topic backlog (${data?.topicBacklog?.length ?? 0})`}
+      onclick={onOpenTopicBacklog}
+    >
+      <span aria-hidden="true" class="codicon codicon-library"></span>
+      <span class="topic-backlog-badge">{data?.topicBacklog?.length ?? 0}</span>
+    </button>
     <button class="active-header-button" title="Settings" aria-label="Settings" onclick={onSettings}>
       <span aria-hidden="true" class="codicon codicon-settings-gear"></span>
     </button>
@@ -788,18 +797,6 @@
       <span aria-hidden="true" class="codicon codicon-chevron-left"></span>
     </button>
   </header>
-
-  <button
-    class="topic-backlog-button"
-    class:has-items={(data?.topicBacklog?.length ?? 0) > 0}
-    onclick={onOpenTopicBacklog}
-    aria-label={`Open topic backlog (${data?.topicBacklog?.length ?? 0})`}
-    title="Open topics outside active workstreams"
-  >
-    <span aria-hidden="true" class="codicon codicon-inbox"></span>
-    <span>Topic backlog</span>
-    <strong>{data?.topicBacklog?.length ?? 0}</strong>
-  </button>
 
   <div
     bind:this={sectionsElement}

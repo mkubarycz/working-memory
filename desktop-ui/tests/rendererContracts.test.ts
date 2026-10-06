@@ -119,6 +119,9 @@ describe('desktop tree icon contract', () => {
 
     expect(activeRail).toContain('aria-label="Add Topic..."');
     expect(activeRail).toContain("kind === 'create-child'");
+    expect(activeRail).toContain('class="active-header-button topic-backlog-button"');
+    expect(activeRail).toContain('codicon-library');
+    expect(activeRail).toContain('class="topic-backlog-badge"');
     expect(workstreamView).toContain("label: 'Add Child...'");
     expect(workstreamView).toContain('aria-label="Add Topic..."');
     expect(app).toContain("activeDocument?.kind === 'topic-create'");
