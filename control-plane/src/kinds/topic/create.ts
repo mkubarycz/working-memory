@@ -57,10 +57,8 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
         'lowercase dash-separated slug from the title, or provide an explicit valid slug; optional `body`, ' +
         "`status` ('open' | 'closed', default 'open'), `topicType` (default 'topic'), `parents` " +
         '(parent topic slugs), `workstreams` (member workstream slugs), and `focusedWorkstreams` ' +
-        '(subset of `workstreams` this topic is pinned/focused in). Every topic MUST belong to ' +
-        '≥1 workstream: choose the one the current session/task is about from context — NEVER an ' +
-        'arbitrary or random workstream; if you are not ≥90% sure which one it belongs to, ask the ' +
-        'user before creating it. The spec is validated ' +
+        '(subset of `workstreams` this topic is pinned/focused in). Topics may remain unassigned ' +
+        'when no workstream is supplied. The spec is validated ' +
         'against the Topic kind (invalid status rejected). Returns the created topic.',
       inputSchema: {
         slug: z
@@ -79,12 +77,9 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
           .array(z.string())
           .optional()
           .describe(
-            'Member workstream slugs (topic membership) — a topic MUST belong to ≥1 workstream. ' +
-              'Pick the workstream the current session/task is about, inferred from context; NEVER ' +
-              'assign an arbitrary or random workstream just to satisfy the requirement. If you are ' +
-              'less than ~90% confident which workstream this belongs to, ask the user instead of ' +
-              "guessing. May be omitted only when `parents` are given — then it inherits the parents' " +
-              'workstreams.',
+            'Member workstream slugs (topic membership). ' +
+              "When omitted and `parents` are given, the topic inherits the parents' workstreams. " +
+              'Otherwise omission creates an unassigned topic.',
           ),
         focusedWorkstreams: z
           .array(z.string())
@@ -111,8 +106,7 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
       //   - explicit non-empty `workstreams` → use as-is.
       //   - none supplied but `parents` given → inherit the UNION of those
       //     parents' current `workstreams` (resolve each parent slug via store).
-      //   - still empty after that → reject with the friendly invariant message,
-      //     so the schema `.min(1)` backstop only fires for genuine orphans.
+      //   - still empty after that → persist an unassigned topic.
       const suppliedWorkstreams = workstreams ?? [];
       let effectiveWorkstreams = suppliedWorkstreams;
       if (effectiveWorkstreams.length === 0 && parents !== undefined && parents.length > 0) {
@@ -126,12 +120,6 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
           }
         }
         effectiveWorkstreams = [...inherited];
-      }
-      if (effectiveWorkstreams.length === 0) {
-        return asError(
-          'a topic must belong to at least one workstream (none supplied and no parent ' +
-            'workstream to inherit)',
-        );
       }
       specInput.workstreams = effectiveWorkstreams;
       if (focusedWorkstreams !== undefined) {

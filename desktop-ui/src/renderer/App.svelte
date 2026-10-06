@@ -6,6 +6,7 @@
   import WorkstreamView from './documents/WorkstreamView.svelte';
   import TopicView from './documents/TopicView.svelte';
   import TopicCreateView from './documents/TopicCreateView.svelte';
+  import TopicBacklogView from './documents/TopicBacklogView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
     AlertVM,
@@ -14,6 +15,7 @@
     SaveState,
     TopicPatch,
     TopicCreateDraftVM,
+    TopicBacklogVM,
     WorkstreamVM,
   } from './documents/types';
   import { chatContextForDocument } from '../shared/contracts';
@@ -762,6 +764,11 @@
       const panel = await window.workingMemory.getActivePanel();
       if (generation !== environmentGeneration) return;
       activePanel = panel;
+      documents = documents.map((document) =>
+        document.kind === 'topic-backlog'
+          ? { ...document, topics: panel.topicBacklog ?? [] }
+          : document,
+      );
       if (activePanel.items.length === 0 && activePanel.emptyMessage !== 'No active workstreams.') {
         activeError = activePanel.emptyMessage;
       }
@@ -1054,6 +1061,20 @@
       activateHeaderTab('log');
     } catch (error) {
       documentError = error instanceof Error ? error.message : String(error);
+    }
+
+    function openTopicBacklog(): void {
+      const backlog: TopicBacklogVM = {
+        kind: 'topic-backlog',
+        id: 'open-topic-backlog',
+        slug: null,
+        title: 'Open topic backlog',
+        topics: activePanel?.topicBacklog ?? [],
+      };
+      const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, backlog);
+      documents = next.tabs;
+      selectedDocumentKey = next.selectedKey;
+      activateHeaderTab('log');
     }
   }
 
@@ -1502,6 +1523,7 @@
               .find((candidate) => candidate.slug === workstream);
             void startTopicCreation(workstream, card?.label ?? workstream, parent);
           }}
+          onOpenTopicBacklog={openTopicBacklog}
         />
       {/key}
     {/if}
@@ -1572,7 +1594,7 @@
                 title={document.title}
                 onclick={() => selectDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'container-app' ? 'server-environment' : 'file'}"></span>
+                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : 'file'}"></span>
                 <span>{document.kind === 'topic-create' && !document.title ? 'New Topic' : document.title}</span>
               </button>
               <button class="document-tab-close" title={`Close ${document.title}`} aria-label={`Close ${document.title}`} onclick={() => closeDocument(key)}>
@@ -1642,6 +1664,11 @@
               : ''}
             onAttachImages={attachImages}
             onCreate={() => createTopic(activeDocument as TopicCreateDraftVM)}
+          />
+        {:else if activeDocument?.kind === 'topic-backlog'}
+          <TopicBacklogView
+            backlog={activeDocument}
+            onOpenTopic={(slug) => void openResource('topic', slug)}
           />
         {:else if activeDocument?.kind === 'topic'}
           <TopicView

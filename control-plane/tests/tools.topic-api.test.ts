@@ -810,19 +810,17 @@ async function connect(store: Store): Promise<{
     }
   });
 
-  it('ws-topic-create with neither workstreams nor parents is rejected and persists nothing', async () => {
+  it('ws-topic-create with neither workstreams nor parents creates an unassigned topic', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
-      const orphan = await client.callTool({
+      const orphan = jsonOf<ITopic>(await client.callTool({
         name: 'ws-topic-create',
         arguments: { slug: 'orphan', title: 'Orphan' },
-      });
-      expect(isErrorResult(orphan)).toBe(true);
-      expect(textOf(orphan)).toMatch(/must belong to at least one workstream/i);
-      // Nothing persisted.
+      }));
+      expect(orphan.workstreams).toEqual([]);
       expect(
         jsonOf<TopicList>(await client.callTool({ name: 'ws-topic-read', arguments: {} })).count,
-      ).toBe(0);
+      ).toBe(1);
     } finally {
       await close();
     }
@@ -873,25 +871,48 @@ async function connect(store: Store): Promise<{
     }
   });
 
-  it('ws-topic-update clearing workstreams to [] is rejected and leaves the topic unchanged', async () => {
+  it('ws-topic-update can clear workstreams and clears stale focus membership', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       await client.callTool({
         name: 'ws-topic-create',
-        arguments: { slug: 'keep', title: 'Keep', workstreams: ['ws-a'] },
+        arguments: {
+          slug: 'keep',
+          title: 'Keep',
+          workstreams: ['ws-a'],
+          focusedWorkstreams: ['ws-a'],
+        },
       });
-      const rejected = await client.callTool({
+      const updated = jsonOf<ITopic>(await client.callTool({
         name: 'ws-topic-update',
         arguments: { slug: 'keep', workstreams: [] },
+      }));
+      expect(updated.workstreams).toEqual([]);
+      expect(updated.focusedWorkstreams).toEqual([]);
+      expect(updated.resourceVersion).toBe(2);
+    } finally {
+      await close();
+    }
+  });
+
+  it('ws-topic-update removes focus membership excluded by a workstream replacement', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    try {
+      await client.callTool({
+        name: 'ws-topic-create',
+        arguments: {
+          slug: 'focused',
+          title: 'Focused',
+          workstreams: ['ws-a', 'ws-b'],
+          focusedWorkstreams: ['ws-a', 'ws-b'],
+        },
       });
-      expect(isErrorResult(rejected)).toBe(true);
-      expect(textOf(rejected)).toMatch(/must belong to at least one workstream/i);
-      // Membership + version unchanged.
-      const still = jsonOf<TopicList>(
-        await client.callTool({ name: 'ws-topic-read', arguments: { slug: 'keep' } }),
-      );
-      expect(still.topics[0]?.workstreams).toEqual(['ws-a']);
-      expect(still.topics[0]?.resourceVersion).toBe(1);
+      const updated = jsonOf<ITopic>(await client.callTool({
+        name: 'ws-topic-update',
+        arguments: { slug: 'focused', workstreams: ['ws-b'] },
+      }));
+      expect(updated.workstreams).toEqual(['ws-b']);
+      expect(updated.focusedWorkstreams).toEqual(['ws-b']);
     } finally {
       await close();
     }

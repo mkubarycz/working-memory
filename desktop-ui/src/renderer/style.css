@@ -410,6 +410,12 @@ button { cursor: pointer; }
 .active-context-submenu-arrow { justify-self: end; }
 .active-error, .active-empty { margin: 8px 10px; color: var(--desktop-active-muted); font-size: 11px; line-height: 1.35; }
 .active-error { color: #f1707a; }
+.topic-backlog-button { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: calc(100% - 12px); min-height: 32px; margin: 6px; padding: 5px 8px; border: 1px solid #4b474b; border-radius: 5px; background: #242225; color: var(--desktop-active-muted); text-align: left; }
+.topic-backlog-button:hover, .topic-backlog-button:focus-visible { outline: none; border-color: var(--desktop-accent); background: var(--desktop-active-hover); color: #ffffff; }
+.topic-backlog-button.has-items { color: #ffffff; }
+.topic-backlog-button .codicon { color: var(--desktop-accent); }
+.topic-backlog-button strong { display: grid; place-items: center; min-width: 20px; height: 18px; padding: 0 5px; border-radius: 9px; background: #4c484c; font-size: 10px; }
+.topic-backlog-button.has-items strong { background: var(--desktop-accent-strong); }
 
 @media (max-width: 1100px) {
   .document-host { padding-inline: 22px; }

@@ -1,3 +1,5 @@
+import type { PanelTopicRow } from '../../../../shared/panelData';
+
 /**
  * Shared view-model + message types for the unified `.working-memory` document
  * custom editor (WM 14.2 "svelte-document-editor").
@@ -138,6 +140,14 @@ export interface TopicCreateDraftVM {
   parentTitle: string | null;
 }
 
+export interface TopicBacklogVM {
+  kind: 'topic-backlog';
+  id: 'open-topic-backlog';
+  slug: null;
+  title: 'Open topic backlog';
+  topics: PanelTopicRow[];
+}
+
 /** The topic detail view-model (kind = topic). */
 export interface TopicVM {
   kind: 'topic';
@@ -189,7 +199,12 @@ export interface GenericDocVM {
 }
 
 /** The discriminated document view-model pushed from the extension host. */
-export type DocumentVM = WorkstreamVM | TopicVM | TopicCreateDraftVM | GenericDocVM;
+export type DocumentVM =
+  | WorkstreamVM
+  | TopicVM
+  | TopicCreateDraftVM
+  | TopicBacklogVM
+  | GenericDocVM;
 
 /**
  * Save-status the header indicator renders. `saved` (green) only ever fires on

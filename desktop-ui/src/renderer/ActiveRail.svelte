@@ -46,6 +46,7 @@
     onTransferTopic: (request: TopicTransferRequest) => void;
     onReparentTopic: (slug: string, parent: string | null) => void;
     onAddTopic: (workstream: string, parent?: { slug: string; title: string }) => void;
+    onOpenTopicBacklog: () => void;
     onDiscoverEnvironments: () => Promise<void>;
     onSwitchEnvironment: (mcpUrl: string) => Promise<void>;
   }
@@ -55,6 +56,7 @@
     data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder, onTransferTopic,
     onReparentTopic,
     onAddTopic,
+    onOpenTopicBacklog,
     onDiscoverEnvironments, onSwitchEnvironment,
   }: Props = $props();
   const expanded = new SvelteSet<string>();
@@ -786,6 +788,18 @@
       <span aria-hidden="true" class="codicon codicon-chevron-left"></span>
     </button>
   </header>
+
+  <button
+    class="topic-backlog-button"
+    class:has-items={(data?.topicBacklog?.length ?? 0) > 0}
+    onclick={onOpenTopicBacklog}
+    aria-label={`Open topic backlog (${data?.topicBacklog?.length ?? 0})`}
+    title="Open topics outside active workstreams"
+  >
+    <span aria-hidden="true" class="codicon codicon-inbox"></span>
+    <span>Topic backlog</span>
+    <strong>{data?.topicBacklog?.length ?? 0}</strong>
+  </button>
 
   <div
     bind:this={sectionsElement}

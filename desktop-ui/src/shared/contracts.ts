@@ -170,7 +170,7 @@ interface ChatContextDocument {
 
 export function chatContextForDocument(document: ChatContextDocument | null): ChatContext | undefined {
   if (!document) return undefined;
-  if (document.kind === 'topic-create') return undefined;
+  if (document.kind === 'topic-create' || document.kind === 'topic-backlog') return undefined;
   const identifier = (document.slug ?? document.id).trim();
   if (!identifier) return undefined;
   const routeKind = ['workstream', 'topic', 'alert', 'topic-type'].includes(document.kind)
