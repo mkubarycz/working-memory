@@ -1062,20 +1062,20 @@
     } catch (error) {
       documentError = error instanceof Error ? error.message : String(error);
     }
+  }
 
-    function openTopicBacklog(): void {
-      const backlog: TopicBacklogVM = {
-        kind: 'topic-backlog',
-        id: 'open-topic-backlog',
-        slug: null,
-        title: 'Open topic backlog',
-        topics: activePanel?.topicBacklog ?? [],
-      };
-      const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, backlog);
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      activateHeaderTab('log');
-    }
+  function openTopicBacklog(): void {
+    const backlog: TopicBacklogVM = {
+      kind: 'topic-backlog',
+      id: 'open-topic-backlog',
+      slug: null,
+      title: 'Open topic backlog',
+      topics: activePanel?.topicBacklog ?? [],
+    };
+    const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, backlog);
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    activateHeaderTab('log');
   }
 
   async function createTopic(draft: TopicCreateDraftVM): Promise<void> {

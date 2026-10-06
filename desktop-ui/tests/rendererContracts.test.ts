@@ -122,6 +122,9 @@ describe('desktop tree icon contract', () => {
     expect(workstreamView).toContain("label: 'Add Child...'");
     expect(workstreamView).toContain('aria-label="Add Topic..."');
     expect(app).toContain("activeDocument?.kind === 'topic-create'");
+    expect(app).toMatch(
+      /async function startTopicCreation[\s\S]*?\n  \}\n\n  function openTopicBacklog\(\): void/,
+    );
     expect(app).toContain('await refreshActive()');
     expect(topicCreateView).toContain('<TopicView');
     expect(topicCreateView).toContain('titlePlaceholder="New Topic"');
