@@ -1037,9 +1037,11 @@
         kind: 'topic-create',
         id: crypto.randomUUID(),
         slug: null,
-        title: 'New Topic',
+        title: '',
         body: '',
-        topicType: topicTypes[0]?.slug ?? '',
+        topicType: topicTypes.find((topicType) => topicType.slug === 'topic')?.slug
+          ?? topicTypes[0]?.slug
+          ?? '',
         topicTypes,
         workstream,
         workstreamTitle,
@@ -1571,7 +1573,7 @@
                 onclick={() => selectDocument(key)}
               >
                 <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'container-app' ? 'server-environment' : 'file'}"></span>
-                <span>{document.title}</span>
+                <span>{document.kind === 'topic-create' && !document.title ? 'New Topic' : document.title}</span>
               </button>
               <button class="document-tab-close" title={`Close ${document.title}`} aria-label={`Close ${document.title}`} onclick={() => closeDocument(key)}>
                 <span aria-hidden="true" class="codicon codicon-close"></span>

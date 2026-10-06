@@ -1,6 +1,12 @@
 <script lang="ts">
-  import type { AttachmentRef, TopicCreateDraftVM } from './types';
-  import HybridMarkdownEditor from './HybridMarkdownEditor.svelte';
+  import type {
+    AttachmentRef,
+    RelationVM,
+    TopicCreateDraftVM,
+    TopicPatch,
+    TopicVM,
+  } from './types';
+  import TopicView from './TopicView.svelte';
 
   interface Props {
     draft: TopicCreateDraftVM;
@@ -19,15 +25,44 @@
   let creating = $state(false);
   let error = $state('');
 
+  const relation = (slug: string, title: string): RelationVM => ({
+    slug,
+    title,
+    alertCount: 0,
+    alertSeverity: null,
+  });
+
+  const topic = $derived<TopicVM>({
+    kind: 'topic',
+    title: draft.title,
+    slug: null,
+    status: 'open',
+    topicType: draft.topicType,
+    typeMeta: draft.topicTypes.find((candidate) => candidate.slug === draft.topicType) ?? null,
+    topicTypes: draft.topicTypes,
+    body: draft.body,
+    createdAt: 0,
+    updatedAt: 0,
+    resourceVersion: 0,
+    editable: true,
+    parents: draft.parent ? [relation(draft.parent, draft.parentTitle ?? draft.parent)] : [],
+    children: [],
+    workstreams: [relation(draft.workstream, draft.workstreamTitle)],
+    focusedWorkstreams: [],
+    alerts: [],
+  });
+
+  function updateDraft(patch: TopicPatch): void {
+    if (patch.title !== undefined) draft.title = patch.title;
+    if (patch.body !== undefined) draft.body = patch.body;
+    if (patch.topicType !== undefined) draft.topicType = patch.topicType;
+  }
+
   async function create(): Promise<void> {
     if (creating) return;
     error = '';
     if (!draft.title.trim()) {
       error = 'Enter a topic title.';
-      return;
-    }
-    if (!draft.topicType) {
-      error = 'Select a topic type.';
       return;
     }
     creating = true;
@@ -41,152 +76,80 @@
   }
 </script>
 
-<header class="head">
-  <span aria-hidden="true" class="type-icon codicon codicon-add"></span>
-  <input
-    class="title-input"
-    bind:value={draft.title}
-    aria-label="Topic title"
-    placeholder="New topic title"
-    disabled={creating}
-  />
-  <button class="create-button" disabled={creating} onclick={() => void create()}>
-    {creating ? 'Creating...' : 'Create'}
-  </button>
-</header>
-
-<section class="attrs" aria-label="New topic attributes">
-  <label>
-    <span>Topic type</span>
-    <select bind:value={draft.topicType} aria-label="Topic type" disabled={creating || draft.topicTypes.length === 0}>
-      <option value="">Select a type...</option>
-      {#each draft.topicTypes as topicType (topicType.slug)}
-        <option value={topicType.slug ?? ''}>{topicType.label}</option>
-      {/each}
-    </select>
-  </label>
-  <div>
-    <span>Workstream</span>
-    <strong>{draft.workstreamTitle}</strong>
-  </div>
-  {#if draft.parent}
-    <div>
-      <span>Parent</span>
-      <strong>{draft.parentTitle ?? draft.parent}</strong>
-    </div>
-  {/if}
-</section>
-
-{#if error}
-  <p class="error" role="alert">{error}</p>
-{/if}
-
-<section class="body">
-  <h2>Content</h2>
-  <HybridMarkdownEditor
-    value={draft.body}
+<div class="create-view">
+  <TopicView
+    {topic}
+    saveState="idle"
+    onSaveTopic={updateDraft}
+    onOpenTopic={() => {}}
+    onOpenWorkstream={() => {}}
+    onSetAlertStatus={() => {}}
     {attachmentBaseUrl}
-    onInput={(value) => (draft.body = value)}
     {onAttachImages}
+    titlePlaceholder="New Topic"
+    draft
   />
-</section>
+
+  {#if error}
+    <p class="create-error" role="alert">{error}</p>
+  {/if}
+
+  <div class="create-action">
+    <button disabled={creating} onclick={() => void create()}>
+      {creating ? 'Creating...' : 'Create Topic'}
+    </button>
+  </div>
+</div>
 
 <style>
-  .head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+  .create-view {
+    min-height: 100%;
+    padding-bottom: 72px;
   }
 
-  .type-icon {
-    font-size: 20px;
-  }
-
-  .title-input {
-    flex: 1;
-    min-width: 0;
-    padding: 5px 8px;
-    color: var(--vscode-input-foreground);
-    font-size: 1.5em;
-    font-weight: 600;
-    background: var(--vscode-input-background);
-    border: 1px solid var(--vscode-input-border, transparent);
-    border-radius: 4px;
-  }
-
-  .title-input:focus,
-  select:focus {
-    outline: 1px solid var(--vscode-focusBorder);
-  }
-
-  .create-button {
-    padding: 6px 14px;
-    color: var(--vscode-button-foreground);
-    background: var(--vscode-button-background);
-    border: 0;
-    border-radius: 4px;
-    cursor: pointer;
-  }
-
-  .create-button:hover:not(:disabled) {
-    background: var(--vscode-button-hoverBackground);
-  }
-
-  .create-button:disabled {
-    opacity: 0.65;
-    cursor: default;
-  }
-
-  .attrs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px 28px;
-    padding: 12px 14px;
-    border: 1px solid var(--vscode-widget-border);
-    border-radius: 6px;
-  }
-
-  .attrs label,
-  .attrs div {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .attrs span {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.78em;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  select {
-    min-width: 180px;
-    padding: 4px 7px;
-    color: var(--vscode-dropdown-foreground);
-    background: var(--vscode-dropdown-background);
-    border: 1px solid var(--vscode-dropdown-border, transparent);
-    border-radius: 4px;
-  }
-
-  .error {
-    margin: 0;
+  .create-error {
+    position: sticky;
+    bottom: 70px;
+    z-index: 4;
+    width: fit-content;
+    max-width: min(520px, 100%);
+    margin: 12px 0 0 auto;
     padding: 8px 10px;
     color: var(--vscode-errorForeground);
-    background: color-mix(in srgb, var(--vscode-errorForeground) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--vscode-errorForeground) 35%, transparent);
+    background: var(--vscode-editor-background);
+    border: 1px solid color-mix(in srgb, var(--vscode-errorForeground) 45%, transparent);
     border-radius: 4px;
   }
 
-  .body {
-    display: grid;
-    min-height: 320px;
-    gap: 8px;
+  .create-action {
+    position: sticky;
+    bottom: 14px;
+    z-index: 3;
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 16px;
+    pointer-events: none;
   }
 
-  .body h2 {
-    margin: 0;
-    font-size: 0.9em;
-    font-weight: 600;
+  .create-action button {
+    min-width: 132px;
+    padding: 9px 18px;
+    color: var(--vscode-button-foreground);
+    font-weight: 700;
+    background: #e93788;
+    border: 0;
+    border-radius: 6px;
+    box-shadow: 0 5px 18px rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  .create-action button:hover:not(:disabled) {
+    background: #f04b98;
+  }
+
+  .create-action button:disabled {
+    opacity: 0.65;
+    cursor: default;
   }
 </style>

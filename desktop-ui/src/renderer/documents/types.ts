@@ -148,6 +148,8 @@ export interface TopicVM {
   topicType: string;
   /** Resolved topic-type metadata (icon + label), or null when unresolved. */
   typeMeta: TopicTypeMetaVM | null;
+  /** Available topic types for the editable header selector. */
+  topicTypes?: TopicTypeMetaVM[];
   body: string;
   createdAt: number;
   updatedAt: number;
@@ -215,6 +217,7 @@ export interface TopicPatch {
   title?: string;
   status?: string;
   body?: string;
+  topicType?: string;
 }
 
 export interface AttachmentUpload {

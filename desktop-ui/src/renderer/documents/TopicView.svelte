@@ -16,6 +16,8 @@
     onSetAlertStatus: (id: string, status: AlertVM['status']) => void;
     attachmentBaseUrl?: string;
     onAttachImages?: (files: File[]) => Promise<AttachmentRef[]>;
+    titlePlaceholder?: string;
+    draft?: boolean;
   }
 
   let {
@@ -27,6 +29,8 @@
     onSetAlertStatus,
     attachmentBaseUrl = '',
     onAttachImages = async () => [],
+    titlePlaceholder = '',
+    draft = false,
   }: Props = $props();
 
   const STATUSES = ['open', 'closed'];
@@ -39,6 +43,14 @@
   function onStatusChange(event: Event): void {
     topic.status = (event.currentTarget as HTMLSelectElement).value;
     onSaveTopic({ status: topic.status });
+  }
+
+  function onTopicTypeChange(event: Event): void {
+    const topicType = (event.currentTarget as HTMLSelectElement).value;
+    const typeMeta = topic.topicTypes?.find((candidate) => candidate.slug === topicType) ?? null;
+    topic.topicType = topicType;
+    topic.typeMeta = typeMeta;
+    onSaveTopic({ topicType });
   }
 
   function onBodyInput(event: Event): void {
@@ -175,7 +187,19 @@
 </script>
 
 <header class="head">
-  <span class="type-icon codicon codicon-{icon}" title={typeLabel}></span>
+  {#if topic.editable && (topic.topicTypes?.length ?? 0) > 0}
+    <label class="type-picker" title={`Topic type: ${typeLabel}`}>
+      <span aria-hidden="true" class="type-icon codicon codicon-{icon}"></span>
+      <span aria-hidden="true" class="type-picker-chevron codicon codicon-chevron-down"></span>
+      <select value={topic.topicType} onchange={onTopicTypeChange} aria-label="Topic type">
+        {#each topic.topicTypes ?? [] as topicType (topicType.slug)}
+          <option value={topicType.slug ?? ''}>{topicType.label}</option>
+        {/each}
+      </select>
+    </label>
+  {:else}
+    <span class="type-icon codicon codicon-{icon}" title={typeLabel}></span>
+  {/if}
   {#if topic.editable}
     <input
       class="title-input"
@@ -183,21 +207,26 @@
       oninput={onTitleInput}
       aria-label="Topic title"
       title={topic.title}
+      placeholder={titlePlaceholder}
     />
   {:else}
     <h1 class="title" title={topic.title}>{topic.title}</h1>
   {/if}
-  <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
-  <SaveStatus state={saveState} />
+  {#if !draft}
+    <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
+    <SaveStatus state={saveState} />
+  {/if}
 </header>
 
-<div class="head-meta">
-  <span class="mono">{topic.slug ?? '—'}</span>
-  <span class="hm-dot">·</span>
-  <span>Created {fmtTs(topic.createdAt)}</span>
-  <span class="hm-dot">·</span>
-  <span>Updated {fmtTs(topic.updatedAt)}</span>
-</div>
+{#if !draft}
+  <div class="head-meta">
+    <span class="mono">{topic.slug ?? '—'}</span>
+    <span class="hm-dot">·</span>
+    <span>Created {fmtTs(topic.createdAt)}</span>
+    <span class="hm-dot">·</span>
+    <span>Updated {fmtTs(topic.updatedAt)}</span>
+  </div>
+{/if}
 
 <div class="header-grid">
 <section class="attrs" aria-label="Topic attributes">
@@ -396,6 +425,38 @@
   .type-icon {
     font-size: 1.4em;
     color: var(--vscode-symbolIcon-keywordForeground, var(--vscode-foreground));
+  }
+
+  .type-picker {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    flex: 0 0 auto;
+    min-width: 34px;
+    min-height: 32px;
+    padding: 0 3px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .type-picker:hover,
+  .type-picker:focus-within {
+    background: var(--vscode-toolbar-hoverBackground);
+  }
+
+  .type-picker-chevron {
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+  }
+
+  .type-picker select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
   }
 
   .title {

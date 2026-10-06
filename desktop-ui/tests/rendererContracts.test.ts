@@ -112,6 +112,7 @@ describe('desktop tree icon contract', () => {
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
     const workstreamView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/WorkstreamView.svelte'), 'utf8');
     const topicCreateView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/TopicCreateView.svelte'), 'utf8');
+    const topicView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/TopicView.svelte'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
     const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
@@ -122,9 +123,12 @@ describe('desktop tree icon contract', () => {
     expect(workstreamView).toContain('aria-label="Add Topic..."');
     expect(app).toContain("activeDocument?.kind === 'topic-create'");
     expect(app).toContain('await refreshActive()');
-    expect(topicCreateView).toContain('aria-label="Topic title"');
-    expect(topicCreateView).toContain('aria-label="Topic type"');
-    expect(topicCreateView).toContain('<HybridMarkdownEditor');
+    expect(topicCreateView).toContain('<TopicView');
+    expect(topicCreateView).toContain('titlePlaceholder="New Topic"');
+    expect(topicCreateView).toContain('class="create-action"');
+    expect(topicView).toContain('aria-label="Topic title"');
+    expect(topicView).toContain('aria-label="Topic type"');
+    expect(topicView).toContain('<HybridMarkdownEditor');
     expect(topicCreateView).toContain("error = 'Enter a topic title.'");
     expect(preload).toContain("createTopic: (input) => invoke('topic:create', input)");
     expect(main).toContain("ipcMain.handle('topic:create'");
