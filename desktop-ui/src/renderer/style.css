@@ -304,6 +304,10 @@ button { cursor: pointer; }
 .document-host.topic-document .document-toolbar:empty { display: none; }
 .document-error { color: #9b2f29; font-size: 13px; font-weight: 700; }
 .settings, .empty-state { max-width: 720px; margin: 0 auto; padding: 72px 48px; }
+.settings { position: relative; }
+.settings-close { position: absolute; top: 24px; right: 24px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #6c676b; font-size: 18px; }
+.settings-close:hover { background: var(--desktop-accent-soft); color: var(--desktop-accent-strong); }
+.settings-close:focus-visible { outline: 2px solid var(--desktop-accent-strong); outline-offset: 2px; }
 .settings header, .empty-state { margin-bottom: 42px; }
 .eyebrow { color: var(--desktop-accent-strong); text-transform: uppercase; font-size: 11px; font-weight: 800; letter-spacing: 0; }
 .settings h1, .empty-state h1 { font: 700 38px/1.1 var(--vscode-font-family); margin: 8px 0 12px; }

@@ -1598,6 +1598,14 @@
     <div class="stage-content">
     {#if page === 'settings'}
       <section class="settings">
+        <button
+          class="settings-close"
+          title="Close Settings"
+          aria-label="Close Settings"
+          onclick={() => (page = 'workspace')}
+        >
+          <span aria-hidden="true" class="codicon codicon-close"></span>
+        </button>
         <header>
           <p class="eyebrow">Configuration</p>
           <h1>AI models</h1>

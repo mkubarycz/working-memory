@@ -160,6 +160,8 @@ describe('desktop tree icon contract', () => {
 
     expect(app).toContain('>Models</button>');
     expect(app).toContain('>Routing matrix</button>');
+    expect(app).toContain('aria-label="Close Settings"');
+    expect(app).toContain("onclick={() => (page = 'workspace')}");
     expect(app).toContain('Add model profile');
     expect(app).toContain("id: 'deep', label: 'Deep Thought'");
     expect(app).toContain('bind:value={modelRouting[`${depth.id}:${speed}`]}');
