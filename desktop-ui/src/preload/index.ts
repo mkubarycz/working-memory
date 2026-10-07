@@ -18,6 +18,7 @@ const api: DesktopApi = {
   saveConfig: (input: SaveConfigInput) => invoke('config:save', input),
   testConnection: (input: SaveConfigInput) => invoke('config:test', input),
   sendChat: (message, context, images) => invoke('chat:send', message, context, images),
+  autocompleteTopic: (input) => invoke('topic:autocomplete', input),
   resolveChatConfirmation: (id, confirmed, context) => invoke('chat:confirm', id, confirmed, context),
   getChatHistory: (input = {}) => invoke('chat:history', input),
   getChatJournal: (id) => invoke('chat:journal', id),

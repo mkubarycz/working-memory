@@ -4,6 +4,7 @@ import {
   CredentialManager,
   modelAuthHeaders,
   modelEndpoint,
+  resolveModelProfile,
   normalizeEndpoint,
   publicConfig,
 } from '../src/main/config';
@@ -18,7 +19,39 @@ describe('desktop config', () => {
         model: 'demo',
         hasApiKey: true,
         credentialStorage: 'secure',
+        profiles: [{
+          id: 'default',
+          name: 'Default',
+          endpoint: 'https://models.example/v1',
+          model: 'demo',
+          hasApiKey: true,
+        }],
+        routing: {
+          'simple:slow': 'default',
+          'simple:medium': 'default',
+          'simple:fast': 'default',
+          'complex:slow': 'default',
+          'complex:medium': 'default',
+          'complex:fast': 'default',
+          'deep:slow': 'default',
+          'deep:medium': 'default',
+          'deep:fast': 'default',
+        },
       });
+  });
+
+  it('resolves each request through the configured speed and depth route', () => {
+    const config = {
+      endpoint: 'http://localhost:11434/v1',
+      model: 'primary',
+      profiles: [
+        { id: 'primary', name: 'Primary', endpoint: 'http://localhost:11434/v1', model: 'large' },
+        { id: 'quick', name: 'Quick', endpoint: 'http://localhost:11434/v1', model: 'small' },
+      ],
+      routing: { 'simple:fast': 'quick' },
+    };
+    expect(resolveModelProfile(config, 'fast', 'simple').id).toBe('quick');
+    expect(resolveModelProfile(config, 'medium', 'complex').id).toBe('primary');
   });
 
   it('preserves Responses endpoints and resolves other endpoints to Chat Completions', () => {

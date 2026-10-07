@@ -132,6 +132,8 @@ describe('desktop tree icon contract', () => {
     expect(topicCreateView).toContain('<TopicView');
     expect(topicCreateView).toContain('titlePlaceholder="New Topic"');
     expect(topicCreateView).toContain('class="create-action"');
+    expect(topicCreateView).toContain('shouldRequestTopicAutocomplete');
+    expect(topicCreateView).toContain('window.workingMemory.autocompleteTopic');
     expect(topicView).toContain('aria-label="Topic title"');
     expect(topicView).toContain('aria-label="Topic type"');
     expect(topicView).toContain('<HybridMarkdownEditor');
@@ -149,6 +151,22 @@ describe('desktop tree icon contract', () => {
     expect(main).toContain('parents: input.parent ? [input.parent] : []');
     expect(styles).toMatch(/\.active-group-add[^}]*color:\s*#ff5ca8[^}]*font-weight:\s*900/s);
     expect(workstreamView).toMatch(/\.add-topic[^}]*color:\s*#ff5ca8[^}]*font-weight:\s*900/s);
+  });
+
+  it('configures model profiles and the nine-cell AI routing matrix', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
+    const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
+
+    expect(app).toContain('>Models</button>');
+    expect(app).toContain('>Routing matrix</button>');
+    expect(app).toContain('Add model profile');
+    expect(app).toContain("id: 'deep', label: 'Deep Thought'");
+    expect(app).toContain('bind:value={modelRouting[`${depth.id}:${speed}`]}');
+    expect(preload).toContain("autocompleteTopic: (input) => invoke('topic:autocomplete', input)");
+    expect(main).toContain("resolveModelProfile(config, 'medium', 'complex')");
+    expect(main).toContain("resolveModelProfile(config, 'fast', 'simple')");
+    expect(main).toContain("ipcMain.handle('topic:autocomplete'");
   });
 
   it('renders queue and backlog as summaries while progress alone owns disclosure and graph details', () => {

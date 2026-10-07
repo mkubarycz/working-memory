@@ -115,12 +115,30 @@ export interface PublicConfig {
   model: string;
   hasApiKey: boolean;
   credentialStorage: 'secure' | 'local' | 'session' | 'unavailable';
+  profiles: PublicModelProfile[];
+  routing: ModelRouting;
+}
+
+export type AiSpeed = 'slow' | 'medium' | 'fast';
+export type AiDepth = 'simple' | 'complex' | 'deep';
+export type AiRouteKey = `${AiDepth}:${AiSpeed}`;
+export type ModelRouting = Record<AiRouteKey, string>;
+
+export interface PublicModelProfile {
+  id: string;
+  name: string;
+  endpoint: string;
+  model: string;
+  hasApiKey: boolean;
+}
+
+export interface EditableModelProfile extends PublicModelProfile {
+  apiKey?: string;
 }
 
 export interface SaveConfigInput {
-  endpoint: string;
-  model: string;
-  apiKey?: string;
+  profiles: EditableModelProfile[];
+  routing: ModelRouting;
 }
 
 export interface ConnectionResult {
@@ -130,6 +148,18 @@ export interface ConnectionResult {
 
 export interface ChatPromptImage {
   attachment: AttachmentRef;
+}
+
+export interface TopicAutocompleteInput {
+  body: string;
+  currentTitle: string;
+  currentTopicType: string;
+  topicTypes: Array<{ slug: string; label: string; description: string }>;
+}
+
+export interface TopicAutocompleteResult {
+  title: string;
+  topicType: string;
 }
 
 export interface BackendHealth {
@@ -255,6 +285,7 @@ export interface DesktopApi {
   saveConfig(input: SaveConfigInput): Promise<PublicConfig>;
   testConnection(input: SaveConfigInput): Promise<ConnectionResult>;
   sendChat(message: string, context?: ChatContext, images?: ChatPromptImage[]): Promise<ChatResult>;
+  autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAutocompleteResult>;
   resolveChatConfirmation(id: string, confirmed: boolean, context?: ChatContext): Promise<ChatResult>;
   getChatHistory(input?: CommandJournalHistoryInput): Promise<CommandJournalHistoryPage>;
   getChatJournal(id: string): Promise<CommandJournal | null>;

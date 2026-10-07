@@ -27,6 +27,8 @@
     DesktopEnvironment,
     DesktopEnvironmentState,
     DesktopResourceKind,
+    EditableModelProfile,
+    ModelRouting,
     PendingConfirmation,
     PublicConfig,
   } from '../shared/contracts';
@@ -95,6 +97,12 @@
   type HeaderTab = 'log' | 'container-apps';
   const HISTORY_PAGE_SIZE = 30;
   const HEADER_TABS: HeaderTab[] = ['log', 'container-apps'];
+  const AI_SPEEDS = ['slow', 'medium', 'fast'] as const;
+  const AI_DEPTHS = [
+    { id: 'simple', label: 'Simple' },
+    { id: 'complex', label: 'Complex' },
+    { id: 'deep', label: 'Deep Thought' },
+  ] as const;
   const desktopBuildLabel = formatDesktopBuildTimestamp(DESKTOP_BUILD_TIMESTAMP);
 
   interface ComposerImage {
@@ -121,10 +129,10 @@
   let documentTabMenuElement = $state<HTMLDivElement | null>(null);
   let busy = $state(false);
   let endpoint = $state('');
-  let model = $state('');
-  let apiKey = $state('');
-  let hasApiKey = $state(false);
   let credentialStorage = $state<PublicConfig['credentialStorage']>('secure');
+  let modelProfiles = $state<Array<EditableModelProfile & { apiKey: string }>>([]);
+  let modelRouting = $state<ModelRouting>({} as ModelRouting);
+  let settingsTab = $state<'models' | 'routing'>('models');
   let settingsStatus = $state('');
   let saving = $state(false);
   let testing = $state(false);
@@ -855,10 +863,31 @@
 
   function loadConfig(config: PublicConfig): void {
     endpoint = config.endpoint;
-    model = config.model;
-    hasApiKey = config.hasApiKey;
     credentialStorage = config.credentialStorage;
-    apiKey = '';
+    modelProfiles = config.profiles.map((profile) => ({ ...profile, apiKey: '' }));
+    modelRouting = { ...config.routing };
+  }
+
+  function addModelProfile(): void {
+    const id = crypto.randomUUID();
+    modelProfiles = [...modelProfiles, {
+      id,
+      name: `Model ${modelProfiles.length + 1}`,
+      endpoint: endpoint || 'http://localhost:11434/v1',
+      model: '',
+      hasApiKey: false,
+      apiKey: '',
+    }];
+  }
+
+  function removeModelProfile(id: string): void {
+    if (modelProfiles.length <= 1) return;
+    const next = modelProfiles.filter((profile) => profile.id !== id);
+    const fallback = next[0].id;
+    modelProfiles = next;
+    modelRouting = Object.fromEntries(
+      Object.entries(modelRouting).map(([key, profileId]) => [key, profileId === id ? fallback : profileId]),
+    ) as ModelRouting;
   }
 
   async function submitChat(
@@ -982,7 +1011,13 @@
     saving = true;
     settingsStatus = 'Saving…';
     try {
-      loadConfig(await window.workingMemory.saveConfig({ endpoint, model, apiKey }));
+      loadConfig(await window.workingMemory.saveConfig({
+        profiles: modelProfiles.map((profile) => ({
+          ...profile,
+          apiKey: profile.apiKey || undefined,
+        })),
+        routing: modelRouting,
+      }));
       settingsStatus = 'Saved';
     } catch (error) {
       settingsStatus = error instanceof Error ? error.message : String(error);
@@ -996,7 +1031,13 @@
     testing = true;
     settingsStatus = 'Testing…';
     try {
-      const result = await window.workingMemory.testConnection({ endpoint, model, apiKey });
+      const result = await window.workingMemory.testConnection({
+        profiles: modelProfiles.map((profile) => ({
+          ...profile,
+          apiKey: profile.apiKey || undefined,
+        })),
+        routing: modelRouting,
+      });
       observeOpenAi(result.ok ? 'healthy' : 'degraded', result.message);
       if (result.ok) {
         loadConfig(await window.workingMemory.getConfig());
@@ -1558,9 +1599,9 @@
       <section class="settings">
         <header>
           <p class="eyebrow">Configuration</p>
-          <h1>Model connection</h1>
+          <h1>AI models</h1>
           <p>
-            OpenAI-compatible Chat Completions or Responses endpoint.
+            Configure OpenAI-compatible model profiles and route AI work by speed and depth.
             {credentialStorage === 'secure'
               ? ' Credentials stay in OS-backed secure storage.'
               : credentialStorage === 'local'
@@ -1570,11 +1611,70 @@
                 : ' Secure storage is unavailable; API keys can be used for the current app session but are not written to disk.'}
           </p>
         </header>
-        <label>Endpoint<input bind:value={endpoint} placeholder="http://localhost:11434/v1" /></label>
-        <label>Model<input bind:value={model} placeholder="qwen3:14b" /></label>
-        <label>API key<input type="password" bind:value={apiKey} placeholder={hasApiKey ? (credentialStorage === 'session' ? 'Available this session' : 'Saved') : 'Optional for local endpoints'} autocomplete="new-password" /></label>
+        <div class="settings-tabs" role="tablist" aria-label="AI settings">
+          <button
+            role="tab"
+            aria-selected={settingsTab === 'models'}
+            onclick={() => (settingsTab = 'models')}
+          >Models</button>
+          <button
+            role="tab"
+            aria-selected={settingsTab === 'routing'}
+            onclick={() => (settingsTab = 'routing')}
+          >Routing matrix</button>
+        </div>
+        {#if settingsTab === 'models'}
+          <div class="model-profile-list">
+            {#each modelProfiles as profile, index (profile.id)}
+              <fieldset class="model-profile">
+                <legend>{profile.name || `Model ${index + 1}`}</legend>
+                <label>Name<input bind:value={profile.name} placeholder="Fast local model" /></label>
+                <label>Endpoint<input bind:value={profile.endpoint} placeholder="http://localhost:11434/v1" /></label>
+                <label>Model<input bind:value={profile.model} placeholder="qwen3:14b" /></label>
+                <label>
+                  API key
+                  <input
+                    type="password"
+                    bind:value={profile.apiKey}
+                    placeholder={profile.hasApiKey ? 'Saved' : 'Optional for local endpoints'}
+                    autocomplete="new-password"
+                  />
+                </label>
+                <button
+                  class="remove-model"
+                  disabled={modelProfiles.length <= 1}
+                  onclick={() => removeModelProfile(profile.id)}
+                >Remove</button>
+              </fieldset>
+            {/each}
+            <button class="add-model" onclick={addModelProfile}>
+              <span aria-hidden="true" class="codicon codicon-add"></span>
+              Add model profile
+            </button>
+          </div>
+        {:else}
+          <div class="routing-matrix">
+            <div class="routing-corner">Depth / speed</div>
+            {#each AI_SPEEDS as speed}
+              <div class="routing-column">{speed}</div>
+            {/each}
+            {#each AI_DEPTHS as depth}
+              <div class="routing-row">{depth.label}</div>
+              {#each AI_SPEEDS as speed}
+                <label>
+                  <span class="sr-only">{depth.label} / {speed}</span>
+                  <select bind:value={modelRouting[`${depth.id}:${speed}`]}>
+                    {#each modelProfiles as profile (profile.id)}
+                      <option value={profile.id}>{profile.name || profile.model}</option>
+                    {/each}
+                  </select>
+                </label>
+              {/each}
+            {/each}
+          </div>
+        {/if}
         <div class="settings-actions">
-          <button class="secondary" disabled={saving || testing} onclick={() => void testConnection()}>{testing ? 'Testing…' : 'Test Connection'}</button>
+          <button class="secondary" disabled={saving || testing} onclick={() => void testConnection()}>{testing ? 'Testing…' : 'Test Primary Model'}</button>
           <button class="primary" disabled={saving || testing} onclick={() => void saveSettings()}>{saving ? 'Saving…' : 'Save'}</button>
           <span>{settingsStatus}</span>
         </div>
