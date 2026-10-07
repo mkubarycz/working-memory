@@ -308,6 +308,10 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('recentRunsForContext(chatRuns, currentChatContext)');
     expect(app).toContain('aria-label="Recent messages"');
     expect(app).toContain('<span>Recent messages</span>');
+    expect(app).toContain('scopePreviewExpanded = true');
+    expect(app).toContain('aria-label="Latest response"');
+    expect(app).toContain('aria-label="Latest tool activity"');
+    expect(app).toContain("scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'");
     expect(app).not.toContain('Selected file:');
     expect(app).not.toContain('Current scope');
     expect(previewIndex).toBeGreaterThan(app.indexOf('<main class="main">'));

@@ -171,6 +171,7 @@
   let mentionActiveIndex = $state(0);
   let conversationPinned = true;
   let hasUnseenMessages = $state(false);
+  let scopePreviewExpanded = $state(false);
   let previewAttentionTarget: HTMLElement | null = null;
   let previewAttentionTimer: number | undefined;
   let environmentGeneration = 0;
@@ -527,6 +528,7 @@
     return timestamp ? new Date(timestamp).toLocaleTimeString() : 'never';
   }
   const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
+  const scopedLatestRun = $derived(scopedRecentRuns[0] ?? null);
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
     viewportWidth,
@@ -873,6 +875,7 @@
       Date.now(),
       images.map(({ attachment }) => attachment),
     )];
+    scopePreviewExpanded = true;
     busy = true;
     const generation = environmentGeneration;
     try {
@@ -1703,9 +1706,20 @@
     </div>
 
     {#if page === 'workspace'}
-      <section class="scope-preview" aria-label="Recent messages">
+      <section class="scope-preview" class:expanded={scopePreviewExpanded} aria-label="Recent messages">
         <div class="scope-preview-heading">
           <span>Recent messages</span>
+          <button
+            aria-expanded={scopePreviewExpanded}
+            aria-label={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
+            title={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
+            onclick={() => (scopePreviewExpanded = !scopePreviewExpanded)}
+          >
+            <span
+              aria-hidden="true"
+              class="codicon codicon-chevron-{scopePreviewExpanded ? 'down' : 'up'}"
+            ></span>
+          </button>
         </div>
         {#if scopedRecentRuns.length === 0}
           <p>No messages for this scope.</p>
@@ -1721,6 +1735,38 @@
               {/if}
             </div>
           {/each}
+        {/if}
+        {#if scopePreviewExpanded && scopedLatestRun}
+          <article class="scope-preview-response" aria-label="Latest response" aria-live="polite">
+            {#if scopedLatestRun.tools.length}
+              <ol class="scope-preview-tools" aria-label="Latest tool activity">
+                {#each scopedLatestRun.tools as tool (`preview:${tool.journalId}:${tool.sequence}`)}
+                  <li class:failed={tool.status === 'failure'} class:cancelled={tool.status === 'cancelled'}>
+                    <button onclick={() => void openToolDetail(tool)} aria-label={`Inspect ${tool.toolName}`}>
+                      <span aria-hidden="true" class={`codicon codicon-${tool.mode === 'write' ? 'edit' : 'book'}`}></span>
+                      <span>{tool.toolName}</span>
+                      <small>{tool.status}</small>
+                    </button>
+                  </li>
+                {/each}
+              </ol>
+            {:else if scopedLatestRun.progress?.length}
+              <ul class="scope-preview-tools">
+                {#each scopedLatestRun.progress as item}
+                  <li class:failed={item.status === 'failed'}>{item.name}: {item.summary}</li>
+                {/each}
+              </ul>
+            {/if}
+            <section class="scope-preview-assistant" class:partial={!scopedLatestRun.assistantText}>
+              <span>WM</span>
+              {#if scopedLatestRun.assistantText}
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                <div>{@html renderMarkdown(scopedLatestRun.assistantText)}</div>
+              {:else}
+                <p>{assistantFallback(scopedLatestRun)}</p>
+              {/if}
+            </section>
+          </article>
         {/if}
       </section>
       <div class="composer-shell">
