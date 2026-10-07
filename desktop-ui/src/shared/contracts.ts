@@ -115,6 +115,7 @@ export interface PublicConfig {
   model: string;
   hasApiKey: boolean;
   credentialStorage: 'secure' | 'local' | 'session' | 'unavailable';
+  humanName: string;
   profiles: PublicModelProfile[];
   routing: ModelRouting;
 }
@@ -139,6 +140,7 @@ export interface EditableModelProfile extends PublicModelProfile {
 export interface SaveConfigInput {
   profiles: EditableModelProfile[];
   routing: ModelRouting;
+  humanName: string;
 }
 
 export interface ConnectionResult {

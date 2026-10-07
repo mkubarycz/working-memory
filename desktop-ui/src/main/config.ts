@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 
 export const DEFAULT_ENDPOINT = 'http://localhost:11434/v1';
 export const DEFAULT_MODEL_PROFILE_ID = 'default';
+export const DEFAULT_HUMAN_NAME = 'Flesh Bag';
 
 export type AiSpeed = 'slow' | 'medium' | 'fast';
 export type AiDepth = 'simple' | 'complex' | 'deep';
@@ -20,6 +21,7 @@ export interface StoredConfig {
   endpoint: string;
   model: string;
   encryptedApiKey?: string;
+  humanName?: string;
   profiles?: StoredModelProfile[];
   routing?: Partial<Record<AiRouteKey, string>>;
 }
@@ -125,6 +127,7 @@ export function publicConfig(config: StoredConfig, credentialStorage: Credential
   model: string;
   hasApiKey: boolean;
   credentialStorage: CredentialStorageMode;
+  humanName: string;
   profiles: Array<{
     id: string;
     name: string;
@@ -141,6 +144,7 @@ export function publicConfig(config: StoredConfig, credentialStorage: Credential
     model: primary.model,
     hasApiKey: Boolean(primary.encryptedApiKey),
     credentialStorage,
+    humanName: config.humanName?.trim() || DEFAULT_HUMAN_NAME,
     profiles: profiles.map((profile) => ({
       id: profile.id,
       name: profile.name,
@@ -161,6 +165,7 @@ export async function readStoredConfig(file: string): Promise<StoredConfig> {
       ...(typeof parsed.encryptedApiKey === 'string' && parsed.encryptedApiKey
         ? { encryptedApiKey: parsed.encryptedApiKey }
         : {}),
+      ...(typeof parsed.humanName === 'string' ? { humanName: parsed.humanName.trim() } : {}),
       ...(Array.isArray(parsed.profiles)
         ? {
             profiles: parsed.profiles
@@ -249,6 +254,7 @@ export function normalizeModelConfig(config: StoredConfig): StoredConfig {
     endpoint: primary.endpoint,
     model: primary.model,
     ...(primary.encryptedApiKey ? { encryptedApiKey: primary.encryptedApiKey } : {}),
+    humanName: config.humanName?.trim() || DEFAULT_HUMAN_NAME,
     profiles,
     routing: modelRouting({ ...config, profiles }, primary.id),
   };

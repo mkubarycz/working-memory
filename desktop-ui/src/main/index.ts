@@ -193,6 +193,7 @@ async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
     endpoint: primary.endpoint,
     model: primary.model,
     ...(primary.encryptedApiKey ? { encryptedApiKey: primary.encryptedApiKey } : {}),
+    humanName: input.humanName.trim() || 'Flesh Bag',
     profiles,
     routing: input.routing,
   };

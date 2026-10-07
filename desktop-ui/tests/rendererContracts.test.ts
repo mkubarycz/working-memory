@@ -160,6 +160,8 @@ describe('desktop tree icon contract', () => {
 
     expect(app).toContain('>Models</button>');
     expect(app).toContain('>Routing matrix</button>');
+    expect(app).toContain('>Human</button>');
+    expect(app).toContain('placeholder="Flesh Bag"');
     expect(app).toContain('aria-label="Close Settings"');
     expect(app).toContain("onclick={() => (page = 'workspace')}");
     expect(app).toContain('Add model profile');
@@ -332,8 +334,8 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('aria-label="Latest response"');
     expect(app).toContain('aria-label="Latest tool activity"');
     expect(app).toContain("scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'");
-    expect(app).toContain('abbreviatedMessage(scopedPreviousRun.userText)');
     expect(app).toContain('class="scope-preview-human"');
+    expect(app).toContain('{humanInitials(humanName)}');
     expect(app).not.toContain('<small>{run.assistantText ?? assistantFallback(run)}</small>');
     expect(app).not.toContain('Selected file:');
     expect(app).not.toContain('Current scope');

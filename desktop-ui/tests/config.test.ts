@@ -19,6 +19,7 @@ describe('desktop config', () => {
         model: 'demo',
         hasApiKey: true,
         credentialStorage: 'secure',
+        humanName: 'Flesh Bag',
         profiles: [{
           id: 'default',
           name: 'Default',

@@ -64,7 +64,8 @@
     replaceSelectedTab,
     updateDocumentTab,
   } from './documentTabs';
-  import { abbreviatedMessage, chatRunDomId, recentRunsForContext } from './scopedChat';
+  import { chatRunDomId, recentRunsForContext } from './scopedChat';
+  import { humanInitials } from './humanIdentity';
   import { CHAT_HISTORY_POLL_INTERVAL_MS } from './chatPolling';
   import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
@@ -132,7 +133,8 @@
   let credentialStorage = $state<PublicConfig['credentialStorage']>('secure');
   let modelProfiles = $state<Array<EditableModelProfile & { apiKey: string }>>([]);
   let modelRouting = $state<ModelRouting>({} as ModelRouting);
-  let settingsTab = $state<'models' | 'routing'>('models');
+  let settingsTab = $state<'models' | 'routing' | 'human'>('models');
+  let humanName = $state('Flesh Bag');
   let settingsStatus = $state('');
   let saving = $state(false);
   let testing = $state(false);
@@ -537,7 +539,6 @@
   }
   const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
   const scopedLatestRun = $derived(scopedRecentRuns[0] ?? null);
-  const scopedPreviousRun = $derived(scopedRecentRuns[1] ?? null);
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
     viewportWidth,
@@ -867,6 +868,7 @@
     credentialStorage = config.credentialStorage;
     modelProfiles = config.profiles.map((profile) => ({ ...profile, apiKey: '' }));
     modelRouting = { ...config.routing };
+    humanName = config.humanName;
   }
 
   function addModelProfile(): void {
@@ -1018,6 +1020,7 @@
           apiKey: profile.apiKey || undefined,
         })),
         routing: modelRouting,
+        humanName,
       }));
       settingsStatus = 'Saved';
     } catch (error) {
@@ -1038,6 +1041,7 @@
           apiKey: profile.apiKey || undefined,
         })),
         routing: modelRouting,
+        humanName,
       });
       observeOpenAi(result.ok ? 'healthy' : 'degraded', result.message);
       if (result.ok) {
@@ -1631,6 +1635,11 @@
             aria-selected={settingsTab === 'routing'}
             onclick={() => (settingsTab = 'routing')}
           >Routing matrix</button>
+          <button
+            role="tab"
+            aria-selected={settingsTab === 'human'}
+            onclick={() => (settingsTab = 'human')}
+          >Human</button>
         </div>
         {#if settingsTab === 'models'}
           <div class="model-profile-list">
@@ -1661,7 +1670,7 @@
               Add model profile
             </button>
           </div>
-        {:else}
+        {:else if settingsTab === 'routing'}
           <div class="routing-matrix">
             <div class="routing-corner">Depth / speed</div>
             {#each AI_SPEEDS as speed}
@@ -1680,6 +1689,15 @@
                 </label>
               {/each}
             {/each}
+          </div>
+        {:else}
+          <div class="human-settings">
+            <label>
+              Human name
+              <input bind:value={humanName} placeholder="Flesh Bag" />
+            </label>
+            <p>Your initials appear beside your messages in the inline chat response.</p>
+            <span class="human-initials-preview">{humanInitials(humanName)}</span>
           </div>
         {/if}
         <div class="settings-actions">
@@ -1818,11 +1836,6 @@
       <section class="scope-preview" class:expanded={scopePreviewExpanded} aria-label="Recent messages">
         <div class="scope-preview-heading">
           <span>Recent messages</span>
-          {#if scopePreviewExpanded && scopedPreviousRun}
-            <small title={scopedPreviousRun.userText}>
-              {abbreviatedMessage(scopedPreviousRun.userText)}
-            </small>
-          {/if}
           <button
             aria-expanded={scopePreviewExpanded}
             aria-label={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
@@ -1852,7 +1865,7 @@
         {#if scopePreviewExpanded && scopedLatestRun}
           <article class="scope-preview-response" aria-label="Latest response" aria-live="polite">
             <section class="scope-preview-human">
-              <span aria-hidden="true" class="codicon codicon-person"></span>
+              <span aria-hidden="true">{humanInitials(humanName)}</span>
               <p>{scopedLatestRun.userText}</p>
             </section>
             {#if scopedLatestRun.tools.length}
