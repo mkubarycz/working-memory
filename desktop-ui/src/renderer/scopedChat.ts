@@ -5,6 +5,12 @@ export function chatRunDomId(run: ChatRun): string {
   return `chat-run-${encodeURIComponent(run.journalId ?? run.key)}`;
 }
 
+export function abbreviatedMessage(value: string, maxWords = 7): string {
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return words.join(' ');
+  return `${words.slice(0, maxWords).join(' ')}…`;
+}
+
 export function recentRunsForContext(
   runs: ChatRun[],
   context: ChatContext | undefined,

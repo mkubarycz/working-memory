@@ -108,6 +108,7 @@ button { cursor: pointer; }
 .scope-preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; min-width: 0; padding: 7px 16px 8px; border-top: 1px solid #c9c6c8; background: #e1dfe0; color: var(--desktop-chat-fg); }
 .scope-preview-heading { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .scope-preview-heading span { flex: 0 0 auto; color: var(--desktop-accent-strong); font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.scope-preview-heading small { margin-left: auto; overflow: hidden; color: var(--desktop-chat-muted); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .scope-preview-heading button { display: grid; place-items: center; width: 22px; height: 20px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--desktop-chat-muted); }
 .scope-preview-heading button:hover, .scope-preview-heading button:focus-visible { outline: none; background: rgba(255, 255, 255, .65); color: var(--desktop-accent-strong); }
 .scope-preview-heading button span { color: inherit; font-size: 12px; }
@@ -115,11 +116,15 @@ button { cursor: pointer; }
 .scope-preview-row:hover { border-left-color: var(--desktop-accent-strong); background: rgba(255, 255, 255, .7); }
 .scope-preview-main { display: grid; gap: 1px; min-width: 0; padding: 4px 7px; overflow: hidden; border: 0; background: transparent; color: var(--desktop-chat-fg); text-align: left; }
 .scope-preview-main:focus-visible { outline: 2px solid var(--desktop-accent-strong); outline-offset: -2px; }
-.scope-preview-main span, .scope-preview-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scope-preview-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scope-preview-main span { font-size: 11px; font-weight: 700; }
-.scope-preview-main small { color: var(--desktop-chat-muted); font-size: 10px; }
 .scope-preview > p { grid-column: 1 / -1; margin: 1px 0 0; color: var(--desktop-chat-muted); font-size: 10px; }
 .scope-preview-response { grid-column: 1 / -1; max-height: min(42vh, 420px); overflow-y: auto; border: 1px solid #c3bfc2; border-radius: 4px; background: #f7f6f6; }
+.scope-preview-human, .scope-preview-assistant { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 7px; padding: 8px; color: var(--desktop-chat-fg); font-size: 11px; line-height: 1.45; }
+.scope-preview-human { border-bottom: 1px solid #d8d5d7; }
+.scope-preview-human > span, .scope-preview-assistant > span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 3px; color: #24151c; font-size: 11px; font-weight: 900; }
+.scope-preview-human > span { background: #d3cfd2; }
+.scope-preview-human p { margin: 2px 0 0; white-space: pre-wrap; }
 .scope-preview-tools { display: grid; gap: 1px; margin: 0; padding: 5px; list-style: none; border-bottom: 1px solid #d8d5d7; }
 .scope-preview-tools li { min-width: 0; color: var(--desktop-chat-muted); font-size: 10px; }
 .scope-preview-tools li.failed { color: #91251f; }
@@ -128,8 +133,7 @@ button { cursor: pointer; }
 .scope-preview-tools button:hover, .scope-preview-tools button:focus-visible { outline: none; background: #e9e6e8; color: var(--desktop-chat-fg); }
 .scope-preview-tools button span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scope-preview-tools small { font-size: 9px; text-transform: uppercase; }
-.scope-preview-assistant { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 7px; padding: 8px; color: var(--desktop-chat-fg); font-size: 11px; line-height: 1.45; }
-.scope-preview-assistant > span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 3px; background: var(--desktop-accent); color: #24151c; font-size: 8px; font-weight: 900; }
+.scope-preview-assistant > span { background: var(--desktop-accent); font-size: 8px; }
 .scope-preview-assistant p, .scope-preview-assistant div p { margin: 0 0 7px; }
 .scope-preview-assistant div p:last-child { margin-bottom: 0; }
 .scope-preview-assistant.partial { color: var(--desktop-chat-muted); }

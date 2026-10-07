@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatRun } from '../src/renderer/chatHistory';
-import { chatRunDomId, recentRunsForContext } from '../src/renderer/scopedChat';
+import { abbreviatedMessage, chatRunDomId, recentRunsForContext } from '../src/renderer/scopedChat';
 
 function run(
   key: string,
@@ -44,5 +44,11 @@ describe('scoped chat previews', () => {
     ]);
 
     expect(recentRunsForContext([related, unrelated], context).map((item) => item.key)).toEqual(['created-topic']);
+  });
+
+  it('abbreviates older message context to seven words', () => {
+    expect(abbreviatedMessage('Add a feature to improve this recent message experience'))
+      .toBe('Add a feature to improve this recent…');
+    expect(abbreviatedMessage('hey')).toBe('hey');
   });
 });

@@ -64,7 +64,7 @@
     replaceSelectedTab,
     updateDocumentTab,
   } from './documentTabs';
-  import { chatRunDomId, recentRunsForContext } from './scopedChat';
+  import { abbreviatedMessage, chatRunDomId, recentRunsForContext } from './scopedChat';
   import { CHAT_HISTORY_POLL_INTERVAL_MS } from './chatPolling';
   import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
@@ -537,6 +537,7 @@
   }
   const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
   const scopedLatestRun = $derived(scopedRecentRuns[0] ?? null);
+  const scopedPreviousRun = $derived(scopedRecentRuns[1] ?? null);
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
     viewportWidth,
@@ -1809,6 +1810,11 @@
       <section class="scope-preview" class:expanded={scopePreviewExpanded} aria-label="Recent messages">
         <div class="scope-preview-heading">
           <span>Recent messages</span>
+          {#if scopePreviewExpanded && scopedPreviousRun}
+            <small title={scopedPreviousRun.userText}>
+              {abbreviatedMessage(scopedPreviousRun.userText)}
+            </small>
+          {/if}
           <button
             aria-expanded={scopePreviewExpanded}
             aria-label={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
@@ -1823,12 +1829,11 @@
         </div>
         {#if scopedRecentRuns.length === 0}
           <p>No messages for this scope.</p>
-        {:else}
+        {:else if !scopePreviewExpanded}
           {#each scopedRecentRuns as run (run.journalId ?? run.key)}
             <div class="scope-preview-row">
               <button class="scope-preview-main" onclick={() => void focusChatRun(run)} title="Show in history">
                 <span>{run.userText}</span>
-                <small>{run.assistantText ?? assistantFallback(run)}</small>
               </button>
               {#if isRetryableRun(run)}
                 <button class="retry-button" disabled={busy || pendingConfirmation !== null} onclick={() => void retryRun(run)}>Retry</button>
@@ -1838,6 +1843,10 @@
         {/if}
         {#if scopePreviewExpanded && scopedLatestRun}
           <article class="scope-preview-response" aria-label="Latest response" aria-live="polite">
+            <section class="scope-preview-human">
+              <span aria-hidden="true" class="codicon codicon-person"></span>
+              <p>{scopedLatestRun.userText}</p>
+            </section>
             {#if scopedLatestRun.tools.length}
               <ol class="scope-preview-tools" aria-label="Latest tool activity">
                 {#each scopedLatestRun.tools as tool (`preview:${tool.journalId}:${tool.sequence}`)}
