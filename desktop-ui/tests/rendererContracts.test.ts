@@ -62,7 +62,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('class="topic-tree" use:attachTreeConnector');
     expect(styles).not.toContain('.topic-tree::before');
     expect(styles).toMatch(/\.active-tree-node > \.active-row > \.graph-node-control[^}]*width:\s*var\(--active-tree-control-width\)/s);
-    expect(styles).toMatch(/\.active-card-header, \.active-row[^}]*min-height:\s*32px/s);
+    expect(styles).toMatch(/\.active-card-header, \.active-row[^}]*min-height:\s*28px/s);
     expect(styles).toMatch(/\.shell\.active-collapsed[^}]*grid-template-columns:\s*36px/s);
     expect(styles).toMatch(/\.shell\.chat-collapsed[^}]*36px/s);
     expect(app).toContain("aria-label={activeRailCollapsed ? 'Expand Active rail' : 'Collapse Active rail'}");
@@ -105,6 +105,8 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.focused-topic-pin[^}]*width:\s*30px[^}]*height:\s*30px/s);
     expect(styles).not.toContain('.focused-topic::before');
     expect(styles).toMatch(/\.tree-connector[^}]*pointer-events:\s*none/s);
+    expect(styles).toMatch(/\.active-alert[^}]*background:\s*#0078d4/s);
+    expect(styles).toMatch(/\.active-alert\.severe[^}]*background:\s*#c42b1c/s);
   });
 
   it('offers root and child topic creation from both topic trees', () => {

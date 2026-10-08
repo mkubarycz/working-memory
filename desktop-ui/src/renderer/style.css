@@ -397,21 +397,21 @@ button { cursor: pointer; }
 .ws-card-color-12 { --ws-card-bg: hsl(288, 18%, 12%); --ws-card-border: hsl(288, 22%, 36%); --ws-card-header-bg: hsl(288, 20%, 16%); --ws-card-glow: hsla(288, 35%, 55%, 0.22); }
 .ws-card-color-13 { --ws-card-bg: hsl(312, 18%, 12%); --ws-card-border: hsl(312, 22%, 36%); --ws-card-header-bg: hsl(312, 20%, 16%); --ws-card-glow: hsla(312, 35%, 55%, 0.22); }
 .ws-card-color-14 { --ws-card-bg: hsl(336, 18%, 12%); --ws-card-border: hsl(336, 22%, 36%); --ws-card-header-bg: hsl(336, 20%, 16%); --ws-card-glow: hsla(336, 35%, 55%, 0.22); }
-.active-card-header, .active-row { display: flex; align-items: center; min-width: 0; min-height: 32px; }
+.active-card-header, .active-row { display: flex; align-items: center; min-width: 0; min-height: 28px; }
 .active-card-header { padding: 0 5px; background: var(--ws-card-header-bg); }
 .active-card.summary { border-block-color: color-mix(in srgb, var(--ws-card-border) 62%, transparent); border-left-color: color-mix(in srgb, var(--ws-card-border) 70%, transparent); background: color-mix(in srgb, var(--ws-card-bg) 72%, #181818); box-shadow: none; }
 .active-card.summary .active-card-header { min-height: 30px; padding-left: 7px; background: transparent; color: var(--desktop-active-muted); }
 .active-card.summary .workstream-open { min-height: 28px; }
 .active-card-body { --active-tree-control-width: 22px; border-top: 1px solid var(--ws-card-border); }
 .active-open, .focused-topic-open, .focused-topic-pin { min-width: 0; border: 0; background: transparent; color: inherit; text-align: left; }
-.active-open { display: flex; align-items: center; flex: 1 1 auto; gap: 7px; min-height: 30px; padding: 3px 4px; }
+.active-open { display: flex; align-items: center; flex: 1 1 auto; gap: 7px; min-height: 26px; padding: 1px 4px; }
 .active-open:hover, .focused-topic-open:hover, .focused-topic-pin:hover { background: var(--desktop-active-hover); }
 .active-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workstream-open .active-label { font-size: 12px; font-weight: 650; }
 .active-description { flex: 0 0 auto; color: var(--desktop-active-muted); font-size: 10px; }
 .active-twistie-spacer { flex: 0 0 26px; width: 26px; height: 26px; }
 .active-twistie .codicon { width: 16px; height: 16px; font-size: 16px; line-height: 16px; }
-.active-alert { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px; background: #56565a; color: #ffffff; font-size: 10px; font-weight: 800; }
+.active-alert { display: inline-flex; align-items: center; justify-content: center; align-self: center; flex: 0 0 auto; min-width: 17px; height: 17px; margin: 0 5px 0 2px; padding: 0 5px; border-radius: 9px; background: #0078d4; color: #ffffff; font-size: 10px; font-weight: 800; line-height: 17px; }
 .active-alert.severe { background: #c42b1c; }
 .pinned-topics { padding: 3px 4px; border-bottom: 1px solid color-mix(in srgb, var(--ws-card-border) 72%, transparent); background: color-mix(in srgb, var(--ws-card-header-bg) 78%, transparent); }
 .focused-topic { display: flex; align-items: center; width: 100%; min-height: 30px; color: var(--desktop-active-fg); font-weight: 600; }
