@@ -202,7 +202,11 @@ interface ChatContextDocument {
 
 export function chatContextForDocument(document: ChatContextDocument | null): ChatContext | undefined {
   if (!document) return undefined;
-  if (document.kind === 'topic-create' || document.kind === 'topic-backlog') return undefined;
+  if (
+    document.kind === 'topic-create'
+    || document.kind === 'topic-backlog'
+    || document.kind === 'settings'
+  ) return undefined;
   const identifier = (document.slug ?? document.id).trim();
   if (!identifier) return undefined;
   const routeKind = ['workstream', 'topic', 'alert', 'topic-type'].includes(document.kind)
@@ -286,6 +290,7 @@ export interface DesktopApi {
   getOpenAiHealth(): Promise<ConnectionResult>;
   saveConfig(input: SaveConfigInput): Promise<PublicConfig>;
   testConnection(input: SaveConfigInput): Promise<ConnectionResult>;
+  testModelProfile(input: EditableModelProfile): Promise<ConnectionResult>;
   sendChat(message: string, context?: ChatContext, images?: ChatPromptImage[]): Promise<ChatResult>;
   autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAutocompleteResult>;
   resolveChatConfirmation(id: string, confirmed: boolean, context?: ChatContext): Promise<ChatResult>;

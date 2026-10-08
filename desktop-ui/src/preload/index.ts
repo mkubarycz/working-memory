@@ -17,6 +17,7 @@ const api: DesktopApi = {
   getOpenAiHealth: () => invoke('config:health'),
   saveConfig: (input: SaveConfigInput) => invoke('config:save', input),
   testConnection: (input: SaveConfigInput) => invoke('config:test', input),
+  testModelProfile: (input) => invoke('config:test-profile', input),
   sendChat: (message, context, images) => invoke('chat:send', message, context, images),
   autocompleteTopic: (input) => invoke('topic:autocomplete', input),
   resolveChatConfirmation: (id, confirmed, context) => invoke('chat:confirm', id, confirmed, context),

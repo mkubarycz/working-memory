@@ -155,18 +155,22 @@ describe('desktop tree icon contract', () => {
 
   it('configures model profiles and the nine-cell AI routing matrix', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const settings = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/SettingsView.svelte'), 'utf8');
     const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
     const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
 
-    expect(app).toContain('>Models</button>');
-    expect(app).toContain('>Routing matrix</button>');
-    expect(app).toContain('>Human</button>');
-    expect(app).toContain('placeholder="Flesh Bag"');
-    expect(app).toContain('aria-label="Close Settings"');
-    expect(app).toContain("onclick={() => (page = 'workspace')}");
-    expect(app).toContain('Add model profile');
-    expect(app).toContain("id: 'deep', label: 'Deep Thought'");
-    expect(app).toContain('bind:value={modelRouting[`${depth.id}:${speed}`]}');
+    expect(settings).toContain('>Models</button>');
+    expect(settings).toContain('>Routing matrix</button>');
+    expect(settings).toContain('>Human</button>');
+    expect(settings).toContain('placeholder="Flesh Bag"');
+    expect(settings).toContain('Add model profile');
+    expect(settings).toContain("id: 'deep', label: 'Deep Thought'");
+    expect(settings).toContain('bind:value={routing[`${depth.id}:${speed}`]}');
+    expect(settings).toContain("testingProfileId === profile.id ? 'Testing...' : 'Test'");
+    expect(app).toContain("{ kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' }");
+    expect(app).toContain('profiles: modelProfiles.map(modelProfileInput)');
+    expect(preload).toContain("testModelProfile: (input) => invoke('config:test-profile', input)");
+    expect(main).toContain("ipcMain.handle('config:test-profile'");
     expect(preload).toContain("autocompleteTopic: (input) => invoke('topic:autocomplete', input)");
     expect(main).toContain("resolveModelProfile(config, 'medium', 'complex')");
     expect(main).toContain("resolveModelProfile(config, 'fast', 'simple')");
@@ -414,7 +418,7 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('composerTextarea?.setSelectionRange(replacement.caret, replacement.caret)');
     expect(app).toContain('mentionKeyEventAction(event, mentionOpen, mentionApps.length, mentionActiveIndex)');
     expect(app).toMatch(/async function send\(\)[^]*closeMentionCompletion\(\);[^]*const submission = submitChat\(/);
-    expect(app).toContain("page = 'workspace';\n    closeMentionCompletion();");
+    expect(app).toContain('conversationPinned = true;\n    closeMentionCompletion();');
     expect(styles).toMatch(/\.mention-popup[^}]*position:\s*absolute/);
   });
 

@@ -7,6 +7,7 @@
   import TopicView from './documents/TopicView.svelte';
   import TopicCreateView from './documents/TopicCreateView.svelte';
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
+  import SettingsView from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
     AlertVM,
@@ -94,7 +95,6 @@
     type ToolDetail,
   } from './chatHistory';
 
-  type Page = 'workspace' | 'settings';
   type HeaderTab = 'log' | 'container-apps';
   const HISTORY_PAGE_SIZE = 30;
   const HEADER_TABS: HeaderTab[] = ['log', 'container-apps'];
@@ -111,7 +111,6 @@
     previewUrl: string;
   }
 
-  let page = $state<Page>('workspace');
   let input = $state('');
   let chatRuns = $state<ChatRun[]>([]);
   let historyLoading = $state(true);
@@ -133,11 +132,10 @@
   let credentialStorage = $state<PublicConfig['credentialStorage']>('secure');
   let modelProfiles = $state<Array<EditableModelProfile & { apiKey: string }>>([]);
   let modelRouting = $state<ModelRouting>({} as ModelRouting);
-  let settingsTab = $state<'models' | 'routing' | 'human'>('models');
   let humanName = $state('Flesh Bag');
   let settingsStatus = $state('');
   let saving = $state(false);
-  let testing = $state(false);
+  let testingProfileId = $state<string | null>(null);
   let pendingConfirmation = $state<PendingConfirmation | null>(null);
   let environments = $state<DesktopEnvironment[]>([]);
   let selectedEnvironment = $state<DesktopEnvironment | null>(null);
@@ -419,7 +417,6 @@
     );
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
-    page = 'workspace';
     activateHeaderTab('container-apps');
     restoreDocumentSaveStatus(next.selectedKey);
     await refreshContainerApp(app);
@@ -838,7 +835,6 @@
     focusedHeaderTab = 'log';
     busyContainerAppId = reset.busyContainerAppId;
     conversationPinned = true;
-    page = 'workspace';
     closeMentionCompletion();
   }
 
@@ -1009,19 +1005,37 @@
     }
   }
 
+  function modelProfileInput(profile: EditableModelProfile & { apiKey: string }): EditableModelProfile {
+    return {
+      id: profile.id,
+      name: profile.name,
+      endpoint: profile.endpoint,
+      model: profile.model,
+      hasApiKey: profile.hasApiKey,
+      ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
+    };
+  }
+
+  function settingsInput(): { profiles: EditableModelProfile[]; routing: ModelRouting; humanName: string } {
+    const routing = {} as ModelRouting;
+    for (const depth of AI_DEPTHS) {
+      for (const speed of AI_SPEEDS) {
+        routing[`${depth.id}:${speed}`] = modelRouting[`${depth.id}:${speed}`];
+      }
+    }
+    return {
+      profiles: modelProfiles.map(modelProfileInput),
+      routing,
+      humanName,
+    };
+  }
+
   async function saveSettings(): Promise<void> {
-    if (saving || testing) return;
+    if (saving || testingProfileId) return;
     saving = true;
     settingsStatus = 'Saving…';
     try {
-      loadConfig(await window.workingMemory.saveConfig({
-        profiles: modelProfiles.map((profile) => ({
-          ...profile,
-          apiKey: profile.apiKey || undefined,
-        })),
-        routing: modelRouting,
-        humanName,
-      }));
+      loadConfig(await window.workingMemory.saveConfig(settingsInput()));
       settingsStatus = 'Saved';
     } catch (error) {
       settingsStatus = error instanceof Error ? error.message : String(error);
@@ -1030,29 +1044,29 @@
     }
   }
 
-  async function testConnection(): Promise<void> {
-    if (saving || testing) return;
-    testing = true;
-    settingsStatus = 'Testing…';
+  async function testModelProfile(profile: EditableModelProfile & { apiKey: string }): Promise<void> {
+    if (saving || testingProfileId) return;
+    testingProfileId = profile.id;
+    settingsStatus = `Testing ${profile.name || profile.model}…`;
     try {
-      const result = await window.workingMemory.testConnection({
-        profiles: modelProfiles.map((profile) => ({
-          ...profile,
-          apiKey: profile.apiKey || undefined,
-        })),
-        routing: modelRouting,
-        humanName,
-      });
+      const result = await window.workingMemory.testModelProfile(modelProfileInput(profile));
       observeOpenAi(result.ok ? 'healthy' : 'degraded', result.message);
-      if (result.ok) {
-        loadConfig(await window.workingMemory.getConfig());
-      }
       settingsStatus = result.message;
     } catch (error) {
       settingsStatus = error instanceof Error ? error.message : String(error);
     } finally {
-      testing = false;
+      testingProfileId = null;
     }
+  }
+
+  function openSettings(): void {
+    const next = openDocumentTab(
+      { tabs: documents, selectedKey: selectedDocumentKey },
+      { kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' },
+    );
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    restoreDocumentSaveStatus(next.selectedKey);
   }
 
   function replaceActive(document: DocumentVM, key = selectedDocumentKey): void {
@@ -1557,7 +1571,7 @@
           onDiscoverEnvironments={discoverEnvironments}
           onSwitchEnvironment={switchEnvironment}
           onRefresh={() => window.workingMemory.restartDesktop()}
-          onSettings={() => (page = page === 'settings' ? 'workspace' : 'settings')}
+          onSettings={openSettings}
           onCollapse={() => (activeRailCollapsed = true)}
           onOpen={openRoute}
           onToggleFocus={toggleActiveFocus}
@@ -1600,113 +1614,7 @@
 
   <main class="main">
     <div class="stage-content">
-    {#if page === 'settings'}
-      <section class="settings">
-        <button
-          class="settings-close"
-          title="Close Settings"
-          aria-label="Close Settings"
-          onclick={() => (page = 'workspace')}
-        >
-          <span aria-hidden="true" class="codicon codicon-close"></span>
-        </button>
-        <header>
-          <p class="eyebrow">Configuration</p>
-          <h1>AI models</h1>
-          <p>
-            Configure OpenAI-compatible model profiles and route AI work by speed and depth.
-            {credentialStorage === 'secure'
-              ? ' Credentials stay in OS-backed secure storage.'
-              : credentialStorage === 'local'
-                ? ' Credentials are encrypted in this user profile without relying on macOS Keychain approval.'
-              : credentialStorage === 'session'
-                ? ' The API key is held in memory for this app session because secure storage is unavailable.'
-                : ' Secure storage is unavailable; API keys can be used for the current app session but are not written to disk.'}
-          </p>
-        </header>
-        <div class="settings-tabs" role="tablist" aria-label="AI settings">
-          <button
-            role="tab"
-            aria-selected={settingsTab === 'models'}
-            onclick={() => (settingsTab = 'models')}
-          >Models</button>
-          <button
-            role="tab"
-            aria-selected={settingsTab === 'routing'}
-            onclick={() => (settingsTab = 'routing')}
-          >Routing matrix</button>
-          <button
-            role="tab"
-            aria-selected={settingsTab === 'human'}
-            onclick={() => (settingsTab = 'human')}
-          >Human</button>
-        </div>
-        {#if settingsTab === 'models'}
-          <div class="model-profile-list">
-            {#each modelProfiles as profile, index (profile.id)}
-              <fieldset class="model-profile">
-                <legend>{profile.name || `Model ${index + 1}`}</legend>
-                <label>Name<input bind:value={profile.name} placeholder="Fast local model" /></label>
-                <label>Endpoint<input bind:value={profile.endpoint} placeholder="http://localhost:11434/v1" /></label>
-                <label>Model<input bind:value={profile.model} placeholder="qwen3:14b" /></label>
-                <label>
-                  API key
-                  <input
-                    type="password"
-                    bind:value={profile.apiKey}
-                    placeholder={profile.hasApiKey ? 'Saved' : 'Optional for local endpoints'}
-                    autocomplete="new-password"
-                  />
-                </label>
-                <button
-                  class="remove-model"
-                  disabled={modelProfiles.length <= 1}
-                  onclick={() => removeModelProfile(profile.id)}
-                >Remove</button>
-              </fieldset>
-            {/each}
-            <button class="add-model" onclick={addModelProfile}>
-              <span aria-hidden="true" class="codicon codicon-add"></span>
-              Add model profile
-            </button>
-          </div>
-        {:else if settingsTab === 'routing'}
-          <div class="routing-matrix">
-            <div class="routing-corner">Depth / speed</div>
-            {#each AI_SPEEDS as speed}
-              <div class="routing-column">{speed}</div>
-            {/each}
-            {#each AI_DEPTHS as depth}
-              <div class="routing-row">{depth.label}</div>
-              {#each AI_SPEEDS as speed}
-                <label>
-                  <span class="sr-only">{depth.label} / {speed}</span>
-                  <select bind:value={modelRouting[`${depth.id}:${speed}`]}>
-                    {#each modelProfiles as profile (profile.id)}
-                      <option value={profile.id}>{profile.name || profile.model}</option>
-                    {/each}
-                  </select>
-                </label>
-              {/each}
-            {/each}
-          </div>
-        {:else}
-          <div class="human-settings">
-            <label>
-              Human name
-              <input bind:value={humanName} placeholder="Flesh Bag" />
-            </label>
-            <p>Your initials appear beside your messages in the inline chat response.</p>
-            <span class="human-initials-preview">{humanInitials(humanName)}</span>
-          </div>
-        {/if}
-        <div class="settings-actions">
-          <button class="secondary" disabled={saving || testing} onclick={() => void testConnection()}>{testing ? 'Testing…' : 'Test Primary Model'}</button>
-          <button class="primary" disabled={saving || testing} onclick={() => void saveSettings()}>{saving ? 'Saving…' : 'Save'}</button>
-          <span>{settingsStatus}</span>
-        </div>
-      </section>
-    {:else if activeDocument}
+    {#if activeDocument}
       <div class="document-stage">
         <div class="document-tabs" role="tablist" aria-label="Open documents">
           {#each documents as document (documentTabKey(document))}
@@ -1724,7 +1632,7 @@
                 title={document.title}
                 onclick={() => selectDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : 'file'}"></span>
+                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : 'file'}"></span>
                 <span>{document.kind === 'topic-create' && !document.title ? 'New Topic' : document.title}</span>
               </button>
               <button class="document-tab-close" title={`Close ${document.title}`} aria-label={`Close ${document.title}`} onclick={() => closeDocument(key)}>
@@ -1765,7 +1673,22 @@
           <div class="document-toolbar">
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
-        {#if activeDocument?.kind === 'container-app' && selectedContainerApp}
+        {#if activeDocument?.kind === 'settings'}
+          <SettingsView
+            profiles={modelProfiles}
+            routing={modelRouting}
+            {humanName}
+            {credentialStorage}
+            {settingsStatus}
+            {saving}
+            {testingProfileId}
+            onHumanName={(value) => (humanName = value)}
+            onAddProfile={addModelProfile}
+            onRemoveProfile={removeModelProfile}
+            onTestProfile={testModelProfile}
+            onSave={saveSettings}
+          />
+        {:else if activeDocument?.kind === 'container-app' && selectedContainerApp}
           <ContainerAppDetail
             app={selectedContainerApp}
             status={containerAppStatuses[selectedContainerApp.id]}
@@ -1832,7 +1755,6 @@
     {/if}
     </div>
 
-    {#if page === 'workspace'}
       <section class="scope-preview" class:expanded={scopePreviewExpanded} aria-label="Recent messages">
         <div class="scope-preview-heading">
           <span>Recent messages</span>
@@ -2004,7 +1926,6 @@
           </button>
         </form>
       </div>
-    {/if}
   </main>
 
   {#if cameraOpen}

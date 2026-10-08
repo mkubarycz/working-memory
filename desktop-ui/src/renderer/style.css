@@ -303,10 +303,6 @@ button { cursor: pointer; }
 .document-host.topic-document .document-toolbar:empty { display: none; }
 .document-error { color: #9b2f29; font-size: 13px; font-weight: 700; }
 .settings, .empty-state { max-width: 720px; margin: 0 auto; padding: 72px 48px; }
-.settings { position: relative; }
-.settings-close { position: absolute; top: 24px; right: 24px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #6c676b; font-size: 18px; }
-.settings-close:hover { background: var(--desktop-accent-soft); color: var(--desktop-accent-strong); }
-.settings-close:focus-visible { outline: 2px solid var(--desktop-accent-strong); outline-offset: 2px; }
 .settings header, .empty-state { margin-bottom: 42px; }
 .eyebrow { color: var(--desktop-accent-strong); text-transform: uppercase; font-size: 11px; font-weight: 800; letter-spacing: 0; }
 .settings h1, .empty-state h1 { font: 700 38px/1.1 var(--vscode-font-family); margin: 8px 0 12px; }
@@ -328,7 +324,10 @@ button { cursor: pointer; }
 .model-profile-list { display: grid; gap: 12px; }
 .model-profile { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; padding: 14px; border: 1px solid #cbc7ca; border-radius: 6px; }
 .model-profile legend { padding: 0 6px; color: var(--desktop-accent-strong); font-weight: 800; }
-.model-profile .remove-model { position: absolute; top: -10px; right: 8px; padding: 3px 7px; border: 1px solid #cbc7ca; border-radius: 3px; background: var(--vscode-editor-background); color: #6c676b; font-size: 10px; }
+.model-profile-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+.model-profile-actions button { padding: 6px 10px; border: 1px solid #cbc7ca; border-radius: 3px; background: var(--vscode-editor-background); color: #6c676b; font-weight: 700; }
+.model-profile-actions .secondary { border-color: var(--desktop-accent-strong); color: var(--desktop-accent-strong); }
+.model-profile-actions button:disabled { opacity: .48; }
 .add-model { justify-self: start; display: inline-flex; align-items: center; gap: 5px; padding: 7px 10px; border: 1px solid var(--desktop-accent-strong); border-radius: 4px; background: transparent; color: var(--desktop-accent-strong); font-weight: 700; }
 .routing-matrix { display: grid; grid-template-columns: 120px repeat(3, minmax(120px, 1fr)); overflow: hidden; border: 1px solid #cbc7ca; border-radius: 6px; }
 .routing-matrix > * { min-width: 0; padding: 10px; border-right: 1px solid #d7d3d6; border-bottom: 1px solid #d7d3d6; }
@@ -339,10 +338,10 @@ button { cursor: pointer; }
 .routing-row { background: #f1eff0; color: var(--desktop-accent-strong); }
 .routing-matrix label { display: block; }
 .routing-matrix select { width: 100%; min-width: 0; padding: 7px; border: 1px solid #aaa5a9; border-radius: 3px; background: #ffffff; color: #292629; }
-.human-settings { position: relative; min-height: 120px; padding: 18px 80px 18px 18px; border: 1px solid #cbc7ca; border-radius: 6px; }
+.human-settings { display: grid; grid-template-columns: minmax(0, 1fr) 42px; align-items: end; gap: 0 16px; min-height: 120px; padding: 18px; border: 1px solid #cbc7ca; border-radius: 6px; }
 .human-settings label { margin: 0; }
-.human-settings p { margin: 8px 0 0; color: #6c676b; font-size: 11px; }
-.human-initials-preview { position: absolute; top: 22px; right: 22px; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 5px; background: #2d292c; color: var(--desktop-accent); font-size: 13px; font-weight: 900; }
+.human-settings p { grid-column: 1 / -1; margin: 8px 0 0; color: #6c676b; font-size: 11px; }
+.human-initials-preview { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 5px; background: #2d292c; color: var(--desktop-accent); font-size: 13px; font-weight: 900; }
 
 .active-rail-inner { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; height: 100%; }
 .active-rail-header { position: relative; display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 8px 10px; border-bottom: 1px solid var(--desktop-active-border); background: #1f1f1f; }

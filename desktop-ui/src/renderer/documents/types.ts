@@ -148,6 +148,13 @@ export interface TopicBacklogVM {
   topics: PanelTopicRow[];
 }
 
+export interface SettingsVM {
+  kind: 'settings';
+  id: 'desktop-settings';
+  slug: null;
+  title: 'Settings';
+}
+
 /** The topic detail view-model (kind = topic). */
 export interface TopicVM {
   kind: 'topic';
@@ -204,6 +211,7 @@ export type DocumentVM =
   | TopicVM
   | TopicCreateDraftVM
   | TopicBacklogVM
+  | SettingsVM
   | GenericDocVM;
 
 /**

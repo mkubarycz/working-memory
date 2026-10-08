@@ -62,6 +62,24 @@ describe('document tabs', () => {
     expect(state.tabs[0]?.kind === 'topic-backlog' && state.tabs[0].topics).toHaveLength(1);
   });
 
+  it('keeps one stable Settings tab while selecting topics independently', () => {
+    const settings: DocumentVM = {
+      kind: 'settings',
+      id: 'desktop-settings',
+      slug: null,
+      title: 'Settings',
+    };
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, settings);
+    state = openDocumentTab(state, topic('first'));
+    state = openDocumentTab(state, settings);
+
+    expect(state.tabs.map(documentTabKey)).toEqual(['settings:desktop-settings', 'topic:first']);
+    expect(state.selectedKey).toBe('settings:desktop-settings');
+    state = openDocumentTab(state, topic('first'));
+    expect(state.selectedKey).toBe('topic:first');
+    expect(state.tabs.map(documentTabKey)).toContain('settings:desktop-settings');
+  });
+
   it('replaces the selected document in place and closes to the nearest remaining tab', () => {
     let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
     state = openDocumentTab(state, topic('second'));

@@ -12,6 +12,7 @@ import type {
   DesktopEnvironmentState,
   PreparedResourceDrag,
   DesktopResourceKind,
+  EditableModelProfile,
   SaveConfigInput,
   TopicAutocompleteInput,
   TopicAutocompleteResult,
@@ -171,6 +172,7 @@ async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
     if (!id || !name || !profile.model.trim()) {
       throw new Error('Every model profile needs a name and model.');
     }
+
     if (ids.has(id)) throw new Error(`Duplicate model profile id: ${id}`);
     ids.add(id);
     const previous = currentProfiles.get(id);
@@ -200,6 +202,18 @@ async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
   await writeStoredConfig(configFile, next);
   if (input.profiles.some((profile) => profile.apiKey?.trim())) credentialMigrationError = '';
   return next;
+}
+
+async function configForProfileTest(input: EditableModelProfile): Promise<StoredConfig> {
+  if (!credentialVault) throw new Error('Credential storage has not been initialized');
+  const current = await readStoredConfig(configFile);
+  const previous = modelProfiles(current).find((profile) => profile.id === input.id);
+  const base: StoredConfig = {
+    endpoint: input.endpoint,
+    model: input.model,
+    ...(previous?.encryptedApiKey ? { encryptedApiKey: previous.encryptedApiKey } : {}),
+  };
+  return credentialVault.store(base, input.apiKey);
 }
 
 async function openWorkstream(query: string): Promise<ChatResult> {
@@ -620,6 +634,16 @@ function registerIpc(): void {
     try {
       const config = await saveConfig(input);
       return checkConfiguredModel(config, testConfiguredModel);
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+  ipcMain.handle('config:test-profile', async (_event, input: EditableModelProfile) => {
+    try {
+      return checkConfiguredModel(await configForProfileTest(input), testConfiguredModel);
     } catch (error) {
       return {
         ok: false,
