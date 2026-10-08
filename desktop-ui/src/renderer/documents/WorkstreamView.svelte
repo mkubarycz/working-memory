@@ -12,6 +12,7 @@
     saveState: SaveState;
     onSave: (patch: { title?: string; status?: string }) => void;
     onOpenTopic: (slug: string) => void;
+    onAddTopic: (parent?: { slug: string; title: string }) => void;
     onInvoke: (command: string, args: unknown[]) => void;
     onTogglePin: (slug: string) => void;
     onSetAlertStatus: (id: string, status: AlertVM['status']) => void;
@@ -22,6 +23,7 @@
     saveState,
     onSave,
     onOpenTopic,
+    onAddTopic,
     onInvoke,
     onTogglePin,
     onSetAlertStatus,
@@ -81,6 +83,12 @@
 
   function topicMenu(node: TreeTopicVM): MenuItem[] {
     const items: MenuItem[] = [
+      {
+        label: 'Add Child...',
+        icon: 'add',
+        disabled: false,
+        run: () => onAddTopic({ slug: node.slug, title: node.label }),
+      },
       {
         label: node.pinned ? 'Unpin from Workstream' : 'Pin to Workstream',
         icon: node.pinned ? 'pinned' : 'pin',
@@ -302,7 +310,13 @@
           </button>
         {/if}
         <span class="codicon codicon-{group.icon}"></span>
-        {group.label}
+        <span>{group.label}</span>
+        <button
+          class="add-topic"
+          title="Add Topic..."
+          aria-label="Add Topic..."
+          onclick={() => onAddTopic()}
+        ><span aria-hidden="true" class="codicon codicon-add"></span></button>
       </h2>
       {#if groupHasChildren}
         {#if groupOpen}
@@ -349,6 +363,31 @@
   .empty {
     color: var(--vscode-descriptionForeground);
     font-style: italic;
+  }
+
+  .add-topic {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    margin-left: 4px;
+    color: #ff5ca8;
+    font-size: 17px;
+    font-weight: 900;
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .add-topic:hover {
+    background: var(--vscode-toolbar-hoverBackground);
+    color: #ff85bd;
+  }
+
+  .add-topic .codicon {
+    font-weight: 900;
   }
 
   .head {

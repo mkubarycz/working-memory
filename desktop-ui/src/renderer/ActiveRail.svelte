@@ -45,6 +45,8 @@
     onReorder: (slug: string, section: PanelWorkstreamSection['section'], index: number) => Promise<void>;
     onTransferTopic: (request: TopicTransferRequest) => void;
     onReparentTopic: (slug: string, parent: string | null) => void;
+    onAddTopic: (workstream: string, parent?: { slug: string; title: string }) => void;
+    onOpenTopicBacklog: () => void;
     onDiscoverEnvironments: () => Promise<void>;
     onSwitchEnvironment: (mcpUrl: string) => Promise<void>;
   }
@@ -53,6 +55,8 @@
     environments, selectedEnvironment, environmentLoading, environmentError,
     data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder, onTransferTopic,
     onReparentTopic,
+    onAddTopic,
+    onOpenTopicBacklog,
     onDiscoverEnvironments, onSwitchEnvironment,
   }: Props = $props();
   const expanded = new SvelteSet<string>();
@@ -198,8 +202,31 @@
     if (!item.enabled) return;
     if (item.kind === 'move') return;
     menu = null;
-    if (item.kind === 'focus') onToggleFocus(workstream, item.topic);
+    if (item.kind === 'create-child') {
+      const topic = findTopic(workstream, item.topic);
+      onAddTopic(workstream, { slug: item.topic, title: topic?.label ?? item.topic });
+    } else if (item.kind === 'focus') onToggleFocus(workstream, item.topic);
     else onAction(workstream, item.action);
+  }
+
+  function findTopic(workstream: string, slug: string): PanelTopic | undefined {
+    const visit = (topics: PanelTopic[]): PanelTopic | undefined => {
+      for (const topic of topics) {
+        if (topicSlugFromOpenUri(topic.openUri) === slug) return topic;
+        const nested = visit(topic.children ?? []);
+        if (nested) return nested;
+      }
+      return undefined;
+    };
+    for (const section of sections) {
+      const card = section.workstreams.find((candidate) => candidate.slug === workstream);
+      if (!card) continue;
+      return visit([
+        ...card.focused_topics,
+        ...card.children.flatMap((group) => group.children),
+      ]);
+    }
+    return undefined;
   }
 
   function moveTopicFromMenu(
@@ -571,6 +598,15 @@
       {/if}
       <span aria-hidden="true" class="codicon codicon-{group.icon}"></span>
       <span>{group.label}</span>
+      <button
+        class="active-group-add"
+        title="Add Topic..."
+        aria-label="Add Topic..."
+        onclick={(event) => {
+          event.stopPropagation();
+          onAddTopic(workstream);
+        }}
+      ><span aria-hidden="true" class="codicon codicon-add"></span></button>
     </div>
     {#if !group.collapsible || open}
       <ul class="active-tree branch-tree">
@@ -744,6 +780,15 @@
     </div>
     <button class="active-header-button" title="Restart to apply latest build" aria-label="Restart Working Memory" onclick={onRefresh}>
       <span aria-hidden="true" class="codicon codicon-refresh" class:codicon-modifier-spin={loading}></span>
+    </button>
+    <button
+      class="active-header-button topic-backlog-button"
+      title="Open topics outside active workstreams"
+      aria-label={`Open topic backlog (${data?.topicBacklog?.length ?? 0})`}
+      onclick={onOpenTopicBacklog}
+    >
+      <span aria-hidden="true" class="codicon codicon-library"></span>
+      <span class="topic-backlog-badge">{data?.topicBacklog?.length ?? 0}</span>
     </button>
     <button class="active-header-button" title="Settings" aria-label="Settings" onclick={onSettings}>
       <span aria-hidden="true" class="codicon codicon-settings-gear"></span>

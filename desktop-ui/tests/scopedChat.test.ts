@@ -45,4 +45,5 @@ describe('scoped chat previews', () => {
 
     expect(recentRunsForContext([related, unrelated], context).map((item) => item.key)).toEqual(['created-topic']);
   });
+
 });

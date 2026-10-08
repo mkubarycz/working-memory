@@ -4,6 +4,7 @@ import type {
   AttachmentUpload,
   DocumentVM,
   TopicPatch,
+  TopicTypeMetaVM,
   WorkstreamVM,
 } from '../renderer/documents/types';
 import type { PanelData } from '../../../shared/panelData';
@@ -114,12 +115,32 @@ export interface PublicConfig {
   model: string;
   hasApiKey: boolean;
   credentialStorage: 'secure' | 'local' | 'session' | 'unavailable';
+  humanName: string;
+  profiles: PublicModelProfile[];
+  routing: ModelRouting;
+}
+
+export type AiSpeed = 'slow' | 'medium' | 'fast';
+export type AiDepth = 'simple' | 'complex' | 'deep';
+export type AiRouteKey = `${AiDepth}:${AiSpeed}`;
+export type ModelRouting = Record<AiRouteKey, string>;
+
+export interface PublicModelProfile {
+  id: string;
+  name: string;
+  endpoint: string;
+  model: string;
+  hasApiKey: boolean;
+}
+
+export interface EditableModelProfile extends PublicModelProfile {
+  apiKey?: string;
 }
 
 export interface SaveConfigInput {
-  endpoint: string;
-  model: string;
-  apiKey?: string;
+  profiles: EditableModelProfile[];
+  routing: ModelRouting;
+  humanName: string;
 }
 
 export interface ConnectionResult {
@@ -129,6 +150,18 @@ export interface ConnectionResult {
 
 export interface ChatPromptImage {
   attachment: AttachmentRef;
+}
+
+export interface TopicAutocompleteInput {
+  body: string;
+  currentTitle: string;
+  currentTopicType: string;
+  topicTypes: Array<{ slug: string; label: string; description: string }>;
+}
+
+export interface TopicAutocompleteResult {
+  title: string;
+  topicType: string;
 }
 
 export interface BackendHealth {
@@ -169,6 +202,11 @@ interface ChatContextDocument {
 
 export function chatContextForDocument(document: ChatContextDocument | null): ChatContext | undefined {
   if (!document) return undefined;
+  if (
+    document.kind === 'topic-create'
+    || document.kind === 'topic-backlog'
+    || document.kind === 'settings'
+  ) return undefined;
   const identifier = (document.slug ?? document.id).trim();
   if (!identifier) return undefined;
   const routeKind = ['workstream', 'topic', 'alert', 'topic-type'].includes(document.kind)
@@ -215,6 +253,14 @@ export interface ChatResult {
 
 export type DesktopResourceKind = 'workstream' | 'topic' | 'document' | 'alert' | 'topic-type';
 
+export interface TopicCreateInput {
+  title: string;
+  body: string;
+  topicType: string;
+  workstream: string;
+  parent?: string;
+}
+
 export interface DesktopWorkstreamReorderUpdate {
   slug: string;
   section: WorkstreamSection;
@@ -244,7 +290,9 @@ export interface DesktopApi {
   getOpenAiHealth(): Promise<ConnectionResult>;
   saveConfig(input: SaveConfigInput): Promise<PublicConfig>;
   testConnection(input: SaveConfigInput): Promise<ConnectionResult>;
+  testModelProfile(input: EditableModelProfile): Promise<ConnectionResult>;
   sendChat(message: string, context?: ChatContext, images?: ChatPromptImage[]): Promise<ChatResult>;
+  autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAutocompleteResult>;
   resolveChatConfirmation(id: string, confirmed: boolean, context?: ChatContext): Promise<ChatResult>;
   getChatHistory(input?: CommandJournalHistoryInput): Promise<CommandJournalHistoryPage>;
   getChatJournal(id: string): Promise<CommandJournal | null>;
@@ -256,6 +304,8 @@ export interface DesktopApi {
   onResourceDragResult(listener: (result: ResourceDragResult) => void): () => void;
   saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;
   saveTopic(identifier: string, patch: TopicPatch): Promise<DocumentVM>;
+  listTopicTypes(): Promise<TopicTypeMetaVM[]>;
+  createTopic(input: TopicCreateInput): Promise<DocumentVM>;
   reparentTopic(slug: string, parent: string | null): Promise<void>;
   uploadAttachment(file: AttachmentUpload): Promise<AttachmentRef>;
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;

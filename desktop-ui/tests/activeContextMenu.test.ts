@@ -46,6 +46,7 @@ describe('Active rail context-menu projection', () => {
         { slug: 'target', title: 'Target' },
       ],
     })).toEqual([
+      { kind: 'create-child', title: 'Add Child...', icon: 'add', enabled: true, topic: 'topic-one' },
       { kind: 'focus', title: 'Add to Focus', icon: 'pin', enabled: true, topic: 'topic-one' },
       {
         kind: 'move',
@@ -61,7 +62,7 @@ describe('Active rail context-menu projection', () => {
       focused: true,
       sourceWorkstream: 'source',
       moveTargets: [],
-    })[0]).toMatchObject({
+    })[1]).toMatchObject({
       title: 'Remove from Focus',
       icon: 'pinned',
     });
@@ -73,7 +74,7 @@ describe('Active rail context-menu projection', () => {
       focused: false,
       sourceWorkstream: 'source',
       moveTargets: [{ slug: 'source', title: 'Source' }],
-    })[1]).toMatchObject({
+    })[2]).toMatchObject({
       kind: 'move',
       enabled: false,
       targets: [],

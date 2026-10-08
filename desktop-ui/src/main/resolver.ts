@@ -123,6 +123,12 @@ export async function loadTopicViewModel(
     return { slug, title, alertCount: bubble.count, alertSeverity: bubble.severity };
   };
   const type = topicTypes.find((item) => item.slug === topic.topicType || item.id === topic.topicType);
+  const topicTypeOptions = topicTypes.map((item) => ({
+    slug: item.slug,
+    label: item.label,
+    icon: item.icon,
+    description: item.description,
+  }));
   return {
     kind: 'topic',
     title: topic.title,
@@ -130,6 +136,7 @@ export async function loadTopicViewModel(
     status: topic.status,
     topicType: topic.topicType,
     typeMeta: type ? { slug: type.slug, label: type.label, icon: type.icon, description: type.description } : null,
+    topicTypes: topicTypeOptions,
     body: topic.body,
     createdAt: topic.created_at,
     updatedAt: topic.updated_at,
