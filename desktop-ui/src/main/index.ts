@@ -12,7 +12,10 @@ import type {
   DesktopEnvironmentState,
   PreparedResourceDrag,
   DesktopResourceKind,
+  EditableModelProfile,
   SaveConfigInput,
+  TopicAutocompleteInput,
+  TopicAutocompleteResult,
 } from '../shared/contracts';
 import type { CommandJournalHistoryInput } from '../../../shared/controlPlaneClient';
 import type { ContainerClaim, ToolCallOutcome } from '../../../shared/controlPlaneClient';
@@ -20,10 +23,13 @@ import type { DocumentVM, TopicPatch } from '../renderer/documents/types';
 import {
   modelAuthHeaders,
   modelEndpoint,
+  modelProfiles,
   publicConfig,
   readStoredConfig,
+  resolveModelProfile,
   writeStoredConfig,
   type StoredConfig,
+  type StoredModelProfile,
 } from './config';
 import { checkConfiguredModel } from './modelHealth';
 import {
@@ -156,16 +162,58 @@ function decryptApiKey(config: StoredConfig): string {
 
 async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
   if (!credentialVault) throw new Error('Credential storage has not been initialized');
+  if (!input.profiles.length) throw new Error('Add at least one model profile.');
   const current = await readStoredConfig(configFile);
+  const currentProfiles = new Map(modelProfiles(current).map((profile) => [profile.id, profile]));
+  const ids = new Set<string>();
+  const profiles: StoredModelProfile[] = input.profiles.map((profile) => {
+    const id = profile.id.trim();
+    const name = profile.name.trim();
+    if (!id || !name || !profile.model.trim()) {
+      throw new Error('Every model profile needs a name and model.');
+    }
+
+    if (ids.has(id)) throw new Error(`Duplicate model profile id: ${id}`);
+    ids.add(id);
+    const previous = currentProfiles.get(id);
+    const base: StoredConfig = {
+      endpoint: profile.endpoint,
+      model: profile.model,
+      ...(previous?.encryptedApiKey ? { encryptedApiKey: previous.encryptedApiKey } : {}),
+    };
+    const stored = credentialVault!.store(base, profile.apiKey);
+    return {
+      id,
+      name,
+      endpoint: stored.endpoint,
+      model: stored.model,
+      ...(stored.encryptedApiKey ? { encryptedApiKey: stored.encryptedApiKey } : {}),
+    };
+  });
+  const primary = profiles[0];
+  const next: StoredConfig = {
+    endpoint: primary.endpoint,
+    model: primary.model,
+    ...(primary.encryptedApiKey ? { encryptedApiKey: primary.encryptedApiKey } : {}),
+    humanName: input.humanName.trim() || 'Flesh Bag',
+    profiles,
+    routing: input.routing,
+  };
+  await writeStoredConfig(configFile, next);
+  if (input.profiles.some((profile) => profile.apiKey?.trim())) credentialMigrationError = '';
+  return next;
+}
+
+async function configForProfileTest(input: EditableModelProfile): Promise<StoredConfig> {
+  if (!credentialVault) throw new Error('Credential storage has not been initialized');
+  const current = await readStoredConfig(configFile);
+  const previous = modelProfiles(current).find((profile) => profile.id === input.id);
   const base: StoredConfig = {
     endpoint: input.endpoint,
     model: input.model,
-    ...(current.encryptedApiKey ? { encryptedApiKey: current.encryptedApiKey } : {}),
+    ...(previous?.encryptedApiKey ? { encryptedApiKey: previous.encryptedApiKey } : {}),
   };
-  const next = credentialVault.store(base, input.apiKey);
-  await writeStoredConfig(configFile, next);
-  if (input.apiKey?.trim()) credentialMigrationError = '';
-  return next;
+  return credentialVault.store(base, input.apiKey);
 }
 
 async function openWorkstream(query: string): Promise<ChatResult> {
@@ -325,7 +373,7 @@ async function requestModel(request: ModelHttpRequest): Promise<unknown> {
   return response.json();
 }
 
-function configuredRequest(config: StoredConfig): { mode: ReturnType<typeof modelEndpoint>['mode']; url: string; headers: Record<string, string> } {
+function configuredRequest(config: StoredConfig | StoredModelProfile): { mode: ReturnType<typeof modelEndpoint>['mode']; url: string; headers: Record<string, string> } {
   const endpoint = modelEndpoint(config.endpoint);
   return {
     ...endpoint,
@@ -365,7 +413,8 @@ async function callConfiguredModel(
   context?: ChatContext,
   images: ChatPromptImage[] = [],
 ): Promise<ChatResult> {
-  const request = configuredRequest(config);
+  const profile = resolveModelProfile(config, 'medium', 'complex');
+  const request = configuredRequest(profile);
   const environment = environmentManager.currentEnvironment;
   if (images.length && !environment) {
     throw new Error('No healthy Working Memory environment is selected.');
@@ -396,7 +445,7 @@ async function callConfiguredModel(
   } : undefined;
   return presentAgentResult(await chatAgent.start({
     ...request,
-    model: config.model,
+    model: profile.model,
     message,
     context,
     images: await loadPromptImages(
@@ -407,6 +456,52 @@ async function callConfiguredModel(
     ),
     ...(appTools ? { appTools } : {}),
   }), context);
+}
+
+async function autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAutocompleteResult> {
+  const config = await readStoredConfig(configFile);
+  const profile = resolveModelProfile(config, 'fast', 'simple');
+  if (!profile.model.trim()) throw new Error('Configure a model for Fast / Simple requests first.');
+  const request = configuredRequest(profile);
+  const allowedTypes = input.topicTypes
+    .filter((type) => type.slug.trim())
+    .map((type) => `${type.slug}: ${type.label}${type.description ? ` — ${type.description}` : ''}`)
+    .join('\n');
+  const prompt =
+    'Suggest a concise title and the best topic type for this draft. ' +
+    'Return only JSON with string fields "title" and "topicType". ' +
+    `The title must be at most 120 characters. Allowed topic types:\n${allowedTypes}\n\n` +
+    `Current title: ${input.currentTitle}\nCurrent type: ${input.currentTopicType}\n\nDraft:\n${input.body.slice(0, 12_000)}`;
+  const body = request.mode === 'responses'
+    ? { model: profile.model, input: prompt }
+    : {
+        model: profile.model,
+        messages: [{ role: 'user', content: prompt }],
+      };
+  const parsed = parseModelTurn(
+    request.mode,
+    await requestModel({ ...request, body, timeoutMs: DESKTOP_MODEL_REQUEST_TIMEOUT_MS }),
+  );
+  let suggestion: unknown;
+  try {
+    suggestion = JSON.parse(parsed.text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim());
+  } catch {
+    throw new Error('Autocomplete model returned invalid JSON.');
+  }
+  if (!suggestion || typeof suggestion !== 'object') {
+    throw new Error('Autocomplete model returned an invalid suggestion.');
+  }
+  const title = 'title' in suggestion && typeof suggestion.title === 'string'
+    ? suggestion.title.trim().slice(0, 120)
+    : '';
+  const requestedType = 'topicType' in suggestion && typeof suggestion.topicType === 'string'
+    ? suggestion.topicType.trim()
+    : '';
+  const topicType = input.topicTypes.some((type) => type.slug === requestedType)
+    ? requestedType
+    : input.currentTopicType;
+  if (!title) throw new Error('Autocomplete model did not suggest a title.');
+  return { title, topicType };
 }
 
 function requireContainerAppId(rawId: string): string {
@@ -546,6 +641,16 @@ function registerIpc(): void {
       };
     }
   });
+  ipcMain.handle('config:test-profile', async (_event, input: EditableModelProfile) => {
+    try {
+      return checkConfiguredModel(await configForProfileTest(input), testConfiguredModel);
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
   ipcMain.handle('chat:send', async (
     _event,
     message: string,
@@ -563,6 +668,8 @@ function registerIpc(): void {
       return { message: `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}`, status: 'failed' };
     }
   });
+  ipcMain.handle('topic:autocomplete', (_event, input: TopicAutocompleteInput) =>
+    autocompleteTopic(input));
   ipcMain.handle('chat:confirm', async (_event, id: string, confirmed: boolean, context?: ChatContext) => {
     try {
       return await presentAgentResult(await chatAgent.resolveConfirmation(id, confirmed), context);
@@ -626,6 +733,36 @@ function registerIpc(): void {
     if (!current?.slug) throw new Error('This topic cannot be edited.');
     await controlPlane().topicUpdate({ slug: current.slug, ...patch });
     return loadResource('topic', current.slug);
+  });
+  ipcMain.handle('topic:list-types', async () => (await controlPlane().topicTypeRead())
+    .filter((topicType) => topicType.slug)
+    .map((topicType) => ({
+      slug: topicType.slug,
+      label: topicType.label,
+      icon: topicType.icon,
+      description: topicType.description,
+    })));
+  ipcMain.handle('topic:create', async (_event, input: {
+    title: string;
+    body: string;
+    topicType: string;
+    workstream: string;
+    parent?: string;
+  }) => {
+    const title = input.title.trim();
+    const topicType = input.topicType.trim();
+    const workstream = input.workstream.trim();
+    if (!title) throw new Error('A topic title is required.');
+    if (!topicType) throw new Error('A topic type is required.');
+    if (!workstream) throw new Error('A workstream is required.');
+    const created = await controlPlane().topicCreate({
+      title,
+      body: input.body,
+      topicType,
+      parents: input.parent ? [input.parent] : [],
+      workstreams: [workstream],
+    });
+    return loadResource('topic', created.slug ?? created.id);
   });
   ipcMain.handle('topic:reparent', async (_event, slug: string, parent: string | null) => {
     await controlPlane().topicUpdate({ slug, parents: parent ? [parent] : [] });

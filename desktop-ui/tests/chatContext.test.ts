@@ -45,4 +45,13 @@ describe('chatContextForDocument', () => {
       containerAppId: 'sunset-chess',
     });
   });
+
+  it('does not scope chat to an unsaved topic draft', () => {
+    expect(chatContextForDocument({
+      kind: 'topic-create',
+      id: 'draft-id',
+      slug: null,
+      title: 'New Topic',
+    })).toBeUndefined();
+  });
 });

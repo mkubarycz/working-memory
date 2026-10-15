@@ -189,6 +189,8 @@ export interface PanelData {
   tab: PanelTab;
   items: PanelItem[];
   emptyMessage: string;
+  /** Open topics whose membership does not intersect any active workstream. */
+  topicBacklog?: PanelTopicRow[];
 }
 
 /** Fallback codicon id when a topic-type isn't in the type map. */
@@ -770,8 +772,25 @@ export function buildWorkstreamPanels(input: {
     workstreams: buckets[s.section],
     emptyMessage: s.emptyMessage,
   }));
+  const activeWorkstreamSlugs = new Set(
+    input.workstreams
+      .filter((workstream) => workstream.status !== 'closed' && workstream.slug)
+      .map((workstream) => workstream.slug as string),
+  );
+  const topicBacklog = (input.topics ?? [])
+    .filter((topic) =>
+      topic.status === 'open' &&
+      topic.slug &&
+      !topic.workstreams.some((workstream) => activeWorkstreamSlugs.has(workstream)))
+    .map((topic) => buildControlPlaneTopicRow(topic, null, typeMap, alerts))
+    .sort((left, right) => left.label.localeCompare(right.label));
   return {
-    active: { tab: 'active', items: activeItems, emptyMessage: 'No active workstreams.' },
+    active: {
+      tab: 'active',
+      items: activeItems,
+      emptyMessage: 'No active workstreams.',
+      topicBacklog,
+    },
     archive: {
       tab: 'archive',
       items: archived,

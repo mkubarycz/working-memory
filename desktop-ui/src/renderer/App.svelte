@@ -5,6 +5,9 @@
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
   import TopicView from './documents/TopicView.svelte';
+  import TopicCreateView from './documents/TopicCreateView.svelte';
+  import TopicBacklogView from './documents/TopicBacklogView.svelte';
+  import SettingsView from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
     AlertVM,
@@ -12,6 +15,9 @@
     DocumentVM,
     SaveState,
     TopicPatch,
+    TopicCreateDraftVM,
+    TopicBacklogVM,
+    WorkstreamVM,
   } from './documents/types';
   import { chatContextForDocument } from '../shared/contracts';
   import type {
@@ -22,6 +28,8 @@
     DesktopEnvironment,
     DesktopEnvironmentState,
     DesktopResourceKind,
+    EditableModelProfile,
+    ModelRouting,
     PendingConfirmation,
     PublicConfig,
   } from '../shared/contracts';
@@ -58,6 +66,7 @@
     updateDocumentTab,
   } from './documentTabs';
   import { chatRunDomId, recentRunsForContext } from './scopedChat';
+  import { humanInitials } from './humanIdentity';
   import { CHAT_HISTORY_POLL_INTERVAL_MS } from './chatPolling';
   import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
@@ -86,10 +95,15 @@
     type ToolDetail,
   } from './chatHistory';
 
-  type Page = 'workspace' | 'settings';
   type HeaderTab = 'log' | 'container-apps';
   const HISTORY_PAGE_SIZE = 30;
   const HEADER_TABS: HeaderTab[] = ['log', 'container-apps'];
+  const AI_SPEEDS = ['slow', 'medium', 'fast'] as const;
+  const AI_DEPTHS = [
+    { id: 'simple', label: 'Simple' },
+    { id: 'complex', label: 'Complex' },
+    { id: 'deep', label: 'Deep Thought' },
+  ] as const;
   const desktopBuildLabel = formatDesktopBuildTimestamp(DESKTOP_BUILD_TIMESTAMP);
 
   interface ComposerImage {
@@ -97,7 +111,6 @@
     previewUrl: string;
   }
 
-  let page = $state<Page>('workspace');
   let input = $state('');
   let chatRuns = $state<ChatRun[]>([]);
   let historyLoading = $state(true);
@@ -116,13 +129,13 @@
   let documentTabMenuElement = $state<HTMLDivElement | null>(null);
   let busy = $state(false);
   let endpoint = $state('');
-  let model = $state('');
-  let apiKey = $state('');
-  let hasApiKey = $state(false);
   let credentialStorage = $state<PublicConfig['credentialStorage']>('secure');
+  let modelProfiles = $state<Array<EditableModelProfile & { apiKey: string }>>([]);
+  let modelRouting = $state<ModelRouting>({} as ModelRouting);
+  let humanName = $state('Flesh Bag');
   let settingsStatus = $state('');
   let saving = $state(false);
-  let testing = $state(false);
+  let testingProfileId = $state<string | null>(null);
   let pendingConfirmation = $state<PendingConfirmation | null>(null);
   let environments = $state<DesktopEnvironment[]>([]);
   let selectedEnvironment = $state<DesktopEnvironment | null>(null);
@@ -166,6 +179,7 @@
   let mentionActiveIndex = $state(0);
   let conversationPinned = true;
   let hasUnseenMessages = $state(false);
+  let scopePreviewExpanded = $state(false);
   let previewAttentionTarget: HTMLElement | null = null;
   let previewAttentionTimer: number | undefined;
   let environmentGeneration = 0;
@@ -403,7 +417,6 @@
     );
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
-    page = 'workspace';
     activateHeaderTab('container-apps');
     restoreDocumentSaveStatus(next.selectedKey);
     await refreshContainerApp(app);
@@ -522,6 +535,7 @@
     return timestamp ? new Date(timestamp).toLocaleTimeString() : 'never';
   }
   const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
+  const scopedLatestRun = $derived(scopedRecentRuns[0] ?? null);
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
     viewportWidth,
@@ -759,6 +773,11 @@
       const panel = await window.workingMemory.getActivePanel();
       if (generation !== environmentGeneration) return;
       activePanel = panel;
+      documents = documents.map((document) =>
+        document.kind === 'topic-backlog'
+          ? { ...document, topics: panel.topicBacklog ?? [] }
+          : document,
+      );
       if (activePanel.items.length === 0 && activePanel.emptyMessage !== 'No active workstreams.') {
         activeError = activePanel.emptyMessage;
       }
@@ -816,7 +835,6 @@
     focusedHeaderTab = 'log';
     busyContainerAppId = reset.busyContainerAppId;
     conversationPinned = true;
-    page = 'workspace';
     closeMentionCompletion();
   }
 
@@ -843,10 +861,32 @@
 
   function loadConfig(config: PublicConfig): void {
     endpoint = config.endpoint;
-    model = config.model;
-    hasApiKey = config.hasApiKey;
     credentialStorage = config.credentialStorage;
-    apiKey = '';
+    modelProfiles = config.profiles.map((profile) => ({ ...profile, apiKey: '' }));
+    modelRouting = { ...config.routing };
+    humanName = config.humanName;
+  }
+
+  function addModelProfile(): void {
+    const id = crypto.randomUUID();
+    modelProfiles = [...modelProfiles, {
+      id,
+      name: `Model ${modelProfiles.length + 1}`,
+      endpoint: endpoint || 'http://localhost:11434/v1',
+      model: '',
+      hasApiKey: false,
+      apiKey: '',
+    }];
+  }
+
+  function removeModelProfile(id: string): void {
+    if (modelProfiles.length <= 1) return;
+    const next = modelProfiles.filter((profile) => profile.id !== id);
+    const fallback = next[0].id;
+    modelProfiles = next;
+    modelRouting = Object.fromEntries(
+      Object.entries(modelRouting).map(([key, profileId]) => [key, profileId === id ? fallback : profileId]),
+    ) as ModelRouting;
   }
 
   async function submitChat(
@@ -863,6 +903,7 @@
       Date.now(),
       images.map(({ attachment }) => attachment),
     )];
+    scopePreviewExpanded = true;
     busy = true;
     const generation = environmentGeneration;
     try {
@@ -964,12 +1005,37 @@
     }
   }
 
+  function modelProfileInput(profile: EditableModelProfile & { apiKey: string }): EditableModelProfile {
+    return {
+      id: profile.id,
+      name: profile.name,
+      endpoint: profile.endpoint,
+      model: profile.model,
+      hasApiKey: profile.hasApiKey,
+      ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
+    };
+  }
+
+  function settingsInput(): { profiles: EditableModelProfile[]; routing: ModelRouting; humanName: string } {
+    const routing = {} as ModelRouting;
+    for (const depth of AI_DEPTHS) {
+      for (const speed of AI_SPEEDS) {
+        routing[`${depth.id}:${speed}`] = modelRouting[`${depth.id}:${speed}`];
+      }
+    }
+    return {
+      profiles: modelProfiles.map(modelProfileInput),
+      routing,
+      humanName,
+    };
+  }
+
   async function saveSettings(): Promise<void> {
-    if (saving || testing) return;
+    if (saving || testingProfileId) return;
     saving = true;
     settingsStatus = 'Saving…';
     try {
-      loadConfig(await window.workingMemory.saveConfig({ endpoint, model, apiKey }));
+      loadConfig(await window.workingMemory.saveConfig(settingsInput()));
       settingsStatus = 'Saved';
     } catch (error) {
       settingsStatus = error instanceof Error ? error.message : String(error);
@@ -978,22 +1044,29 @@
     }
   }
 
-  async function testConnection(): Promise<void> {
-    if (saving || testing) return;
-    testing = true;
-    settingsStatus = 'Testing…';
+  async function testModelProfile(profile: EditableModelProfile & { apiKey: string }): Promise<void> {
+    if (saving || testingProfileId) return;
+    testingProfileId = profile.id;
+    settingsStatus = `Testing ${profile.name || profile.model}…`;
     try {
-      const result = await window.workingMemory.testConnection({ endpoint, model, apiKey });
+      const result = await window.workingMemory.testModelProfile(modelProfileInput(profile));
       observeOpenAi(result.ok ? 'healthy' : 'degraded', result.message);
-      if (result.ok) {
-        loadConfig(await window.workingMemory.getConfig());
-      }
       settingsStatus = result.message;
     } catch (error) {
       settingsStatus = error instanceof Error ? error.message : String(error);
     } finally {
-      testing = false;
+      testingProfileId = null;
     }
+  }
+
+  function openSettings(): void {
+    const next = openDocumentTab(
+      { tabs: documents, selectedKey: selectedDocumentKey },
+      { kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' },
+    );
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    restoreDocumentSaveStatus(next.selectedKey);
   }
 
   function replaceActive(document: DocumentVM, key = selectedDocumentKey): void {
@@ -1020,6 +1093,82 @@
     } catch (error) {
       documentError = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  async function startTopicCreation(
+    workstream: string,
+    workstreamTitle: string,
+    parent?: { slug: string; title: string },
+  ): Promise<void> {
+    documentError = '';
+    try {
+      const topicTypes = await window.workingMemory.listTopicTypes();
+      const draft: TopicCreateDraftVM = {
+        kind: 'topic-create',
+        id: crypto.randomUUID(),
+        slug: null,
+        title: '',
+        body: '',
+        topicType: topicTypes.find((topicType) => topicType.slug === 'topic')?.slug
+          ?? topicTypes[0]?.slug
+          ?? '',
+        topicTypes,
+        workstream,
+        workstreamTitle,
+        parent: parent?.slug ?? null,
+        parentTitle: parent?.title ?? null,
+      };
+      const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, draft);
+      documents = next.tabs;
+      selectedDocumentKey = next.selectedKey;
+      activateHeaderTab('log');
+    } catch (error) {
+      documentError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function openTopicBacklog(): void {
+    const backlog: TopicBacklogVM = {
+      kind: 'topic-backlog',
+      id: 'open-topic-backlog',
+      slug: null,
+      title: 'Open topic backlog',
+      topics: activePanel?.topicBacklog ?? [],
+    };
+    const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, backlog);
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    activateHeaderTab('log');
+  }
+
+  async function createTopic(draft: TopicCreateDraftVM): Promise<void> {
+    const draftKey = documentTabKey(draft);
+    const created = await window.workingMemory.createTopic({
+      title: draft.title,
+      body: draft.body,
+      topicType: draft.topicType,
+      workstream: draft.workstream,
+      ...(draft.parent ? { parent: draft.parent } : {}),
+    });
+    const replaced = updateDocumentTab(
+      { tabs: documents, selectedKey: selectedDocumentKey },
+      draftKey,
+      created,
+    );
+    documents = replaced.tabs;
+    selectedDocumentKey = replaced.selectedKey;
+    const workstreamKey = `workstream:${draft.workstream}`;
+    if (documents.some((document) => documentTabKey(document) === workstreamKey)) {
+      const refreshed = await window.workingMemory.openResource('workstream', draft.workstream);
+      const updated = updateDocumentTab(
+        { tabs: documents, selectedKey: selectedDocumentKey },
+        workstreamKey,
+        refreshed,
+      );
+      documents = updated.tabs;
+      selectedDocumentKey = updated.selectedKey;
+    }
+    await refreshActive();
   }
 
   async function mutate(operation: () => Promise<DocumentVM>): Promise<void> {
@@ -1422,7 +1571,7 @@
           onDiscoverEnvironments={discoverEnvironments}
           onSwitchEnvironment={switchEnvironment}
           onRefresh={() => window.workingMemory.restartDesktop()}
-          onSettings={() => (page = page === 'settings' ? 'workspace' : 'settings')}
+          onSettings={openSettings}
           onCollapse={() => (activeRailCollapsed = true)}
           onOpen={openRoute}
           onToggleFocus={toggleActiveFocus}
@@ -1430,6 +1579,14 @@
           onReorder={reorderActiveWorkstream}
           onTransferTopic={transferActiveTopic}
           onReparentTopic={(slug, parent) => void reparentActiveTopic(slug, parent)}
+          onAddTopic={(workstream, parent) => {
+            const card = activePanel?.items
+              .filter((item) => item.kind === 'workstream-section')
+              .flatMap((section) => section.workstreams)
+              .find((candidate) => candidate.slug === workstream);
+            void startTopicCreation(workstream, card?.label ?? workstream, parent);
+          }}
+          onOpenTopicBacklog={openTopicBacklog}
         />
       {/key}
     {/if}
@@ -1457,32 +1614,7 @@
 
   <main class="main">
     <div class="stage-content">
-    {#if page === 'settings'}
-      <section class="settings">
-        <header>
-          <p class="eyebrow">Configuration</p>
-          <h1>Model connection</h1>
-          <p>
-            OpenAI-compatible Chat Completions or Responses endpoint.
-            {credentialStorage === 'secure'
-              ? ' Credentials stay in OS-backed secure storage.'
-              : credentialStorage === 'local'
-                ? ' Credentials are encrypted in this user profile without relying on macOS Keychain approval.'
-              : credentialStorage === 'session'
-                ? ' The API key is held in memory for this app session because secure storage is unavailable.'
-                : ' Secure storage is unavailable; API keys can be used for the current app session but are not written to disk.'}
-          </p>
-        </header>
-        <label>Endpoint<input bind:value={endpoint} placeholder="http://localhost:11434/v1" /></label>
-        <label>Model<input bind:value={model} placeholder="qwen3:14b" /></label>
-        <label>API key<input type="password" bind:value={apiKey} placeholder={hasApiKey ? (credentialStorage === 'session' ? 'Available this session' : 'Saved') : 'Optional for local endpoints'} autocomplete="new-password" /></label>
-        <div class="settings-actions">
-          <button class="secondary" disabled={saving || testing} onclick={() => void testConnection()}>{testing ? 'Testing…' : 'Test Connection'}</button>
-          <button class="primary" disabled={saving || testing} onclick={() => void saveSettings()}>{saving ? 'Saving…' : 'Save'}</button>
-          <span>{settingsStatus}</span>
-        </div>
-      </section>
-    {:else if activeDocument}
+    {#if activeDocument}
       <div class="document-stage">
         <div class="document-tabs" role="tablist" aria-label="Open documents">
           {#each documents as document (documentTabKey(document))}
@@ -1500,8 +1632,8 @@
                 title={document.title}
                 onclick={() => selectDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'container-app' ? 'server-environment' : 'file'}"></span>
-                <span>{document.title}</span>
+                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : 'file'}"></span>
+                <span>{document.kind === 'topic-create' && !document.title ? 'New Topic' : document.title}</span>
               </button>
               <button class="document-tab-close" title={`Close ${document.title}`} aria-label={`Close ${document.title}`} onclick={() => closeDocument(key)}>
                 <span aria-hidden="true" class="codicon codicon-close"></span>
@@ -1532,11 +1664,31 @@
             </button>
           </div>
         {/if}
-        <div class="document-host" role="tabpanel" inert={environmentLoading}>
+        <div
+          class="document-host"
+          class:topic-document={activeDocument?.kind === 'topic' || activeDocument?.kind === 'topic-create'}
+          role="tabpanel"
+          inert={environmentLoading}
+        >
           <div class="document-toolbar">
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
-        {#if activeDocument?.kind === 'container-app' && selectedContainerApp}
+        {#if activeDocument?.kind === 'settings'}
+          <SettingsView
+            profiles={modelProfiles}
+            routing={modelRouting}
+            {humanName}
+            {credentialStorage}
+            {settingsStatus}
+            {saving}
+            {testingProfileId}
+            onHumanName={(value) => (humanName = value)}
+            onAddProfile={addModelProfile}
+            onRemoveProfile={removeModelProfile}
+            onTestProfile={testModelProfile}
+            onSave={saveSettings}
+          />
+        {:else if activeDocument?.kind === 'container-app' && selectedContainerApp}
           <ContainerAppDetail
             app={selectedContainerApp}
             status={containerAppStatuses[selectedContainerApp.id]}
@@ -1549,9 +1701,27 @@
             {saveState}
             onSave={saveWorkstream}
             onOpenTopic={(slug) => void openResource('topic', slug)}
+            onAddTopic={(parent) => {
+              const workstream = activeDocument as WorkstreamVM;
+              if (workstream.slug) void startTopicCreation(workstream.slug, workstream.title, parent);
+            }}
             onInvoke={invokeAction}
             onTogglePin={togglePin}
             onSetAlertStatus={setAlertStatus}
+          />
+        {:else if activeDocument?.kind === 'topic-create'}
+          <TopicCreateView
+            draft={activeDocument as TopicCreateDraftVM}
+            attachmentBaseUrl={selectedEnvironment?.mcpUrl
+              ? new URL(selectedEnvironment.mcpUrl).origin
+              : ''}
+            onAttachImages={attachImages}
+            onCreate={() => createTopic(activeDocument as TopicCreateDraftVM)}
+          />
+        {:else if activeDocument?.kind === 'topic-backlog'}
+          <TopicBacklogView
+            backlog={activeDocument}
+            onOpenTopic={(slug) => void openResource('topic', slug)}
           />
         {:else if activeDocument?.kind === 'topic'}
           <TopicView
@@ -1585,25 +1755,70 @@
     {/if}
     </div>
 
-    {#if page === 'workspace'}
-      <section class="scope-preview" aria-label="Recent messages">
+      <section class="scope-preview" class:expanded={scopePreviewExpanded} aria-label="Recent messages">
         <div class="scope-preview-heading">
           <span>Recent messages</span>
+          <button
+            aria-expanded={scopePreviewExpanded}
+            aria-label={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
+            title={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
+            onclick={() => (scopePreviewExpanded = !scopePreviewExpanded)}
+          >
+            <span
+              aria-hidden="true"
+              class="codicon codicon-chevron-{scopePreviewExpanded ? 'down' : 'up'}"
+            ></span>
+          </button>
         </div>
         {#if scopedRecentRuns.length === 0}
           <p>No messages for this scope.</p>
-        {:else}
+        {:else if !scopePreviewExpanded}
           {#each scopedRecentRuns as run (run.journalId ?? run.key)}
             <div class="scope-preview-row">
               <button class="scope-preview-main" onclick={() => void focusChatRun(run)} title="Show in history">
                 <span>{run.userText}</span>
-                <small>{run.assistantText ?? assistantFallback(run)}</small>
               </button>
               {#if isRetryableRun(run)}
                 <button class="retry-button" disabled={busy || pendingConfirmation !== null} onclick={() => void retryRun(run)}>Retry</button>
               {/if}
             </div>
           {/each}
+        {/if}
+        {#if scopePreviewExpanded && scopedLatestRun}
+          <article class="scope-preview-response" aria-label="Latest response" aria-live="polite">
+            <section class="scope-preview-human">
+              <span aria-hidden="true">{humanInitials(humanName)}</span>
+              <p>{scopedLatestRun.userText}</p>
+            </section>
+            {#if scopedLatestRun.tools.length}
+              <ol class="scope-preview-tools" aria-label="Latest tool activity">
+                {#each scopedLatestRun.tools as tool (`preview:${tool.journalId}:${tool.sequence}`)}
+                  <li class:failed={tool.status === 'failure'} class:cancelled={tool.status === 'cancelled'}>
+                    <button onclick={() => void openToolDetail(tool)} aria-label={`Inspect ${tool.toolName}`}>
+                      <span aria-hidden="true" class={`codicon codicon-${tool.mode === 'write' ? 'edit' : 'book'}`}></span>
+                      <span>{tool.toolName}</span>
+                      <small>{tool.status}</small>
+                    </button>
+                  </li>
+                {/each}
+              </ol>
+            {:else if scopedLatestRun.progress?.length}
+              <ul class="scope-preview-tools">
+                {#each scopedLatestRun.progress as item}
+                  <li class:failed={item.status === 'failed'}>{item.name}: {item.summary}</li>
+                {/each}
+              </ul>
+            {/if}
+            <section class="scope-preview-assistant" class:partial={!scopedLatestRun.assistantText}>
+              <span>WM</span>
+              {#if scopedLatestRun.assistantText}
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                <div>{@html renderMarkdown(scopedLatestRun.assistantText)}</div>
+              {:else}
+                <p>{assistantFallback(scopedLatestRun)}</p>
+              {/if}
+            </section>
+          </article>
         {/if}
       </section>
       <div class="composer-shell">
@@ -1711,7 +1926,6 @@
           </button>
         </form>
       </div>
-    {/if}
   </main>
 
   {#if cameraOpen}

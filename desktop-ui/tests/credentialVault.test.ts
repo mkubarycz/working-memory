@@ -59,6 +59,27 @@ describe('DesktopCredentialVault', () => {
     expect(native.decryptString).toHaveBeenCalledTimes(1);
   });
 
+  it('migrates legacy credentials for every stored model profile', () => {
+    const native = nativeStorage();
+    const vault = new DesktopCredentialVault(native, 'darwin', temporaryKeyFile());
+    const encryptedApiKey = Buffer.from('native:profile-secret').toString('base64');
+
+    const migrated = vault.migrate({
+      endpoint: 'https://example.test',
+      model: 'primary',
+      profiles: [{
+        id: 'quick',
+        name: 'Quick',
+        endpoint: 'https://example.test',
+        model: 'small',
+        encryptedApiKey,
+      }],
+    });
+
+    expect(migrated.profiles?.[0]?.encryptedApiKey).toMatch(/^wm-local-v1:/);
+    expect(vault.decrypt(migrated.profiles![0])).toBe('profile-secret');
+  });
+
   it('uses OS-backed storage on Windows', () => {
     const native = nativeStorage();
     const vault = new DesktopCredentialVault(native, 'win32', temporaryKeyFile());

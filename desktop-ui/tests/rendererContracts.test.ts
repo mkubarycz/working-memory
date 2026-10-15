@@ -62,7 +62,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('class="topic-tree" use:attachTreeConnector');
     expect(styles).not.toContain('.topic-tree::before');
     expect(styles).toMatch(/\.active-tree-node > \.active-row > \.graph-node-control[^}]*width:\s*var\(--active-tree-control-width\)/s);
-    expect(styles).toMatch(/\.active-card-header, \.active-row[^}]*min-height:\s*32px/s);
+    expect(styles).toMatch(/\.active-card-header, \.active-row[^}]*min-height:\s*28px/s);
     expect(styles).toMatch(/\.shell\.active-collapsed[^}]*grid-template-columns:\s*36px/s);
     expect(styles).toMatch(/\.shell\.chat-collapsed[^}]*36px/s);
     expect(app).toContain("aria-label={activeRailCollapsed ? 'Expand Active rail' : 'Collapse Active rail'}");
@@ -105,6 +105,78 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.focused-topic-pin[^}]*width:\s*30px[^}]*height:\s*30px/s);
     expect(styles).not.toContain('.focused-topic::before');
     expect(styles).toMatch(/\.tree-connector[^}]*pointer-events:\s*none/s);
+    expect(styles).toMatch(/\.active-alert[^}]*background:\s*#0078d4/s);
+    expect(styles).toMatch(/\.active-alert\.severe[^}]*background:\s*#c42b1c/s);
+  });
+
+  it('offers root and child topic creation from both topic trees', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
+    const workstreamView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/WorkstreamView.svelte'), 'utf8');
+    const topicCreateView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/TopicCreateView.svelte'), 'utf8');
+    const topicView = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/TopicView.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+    const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
+    const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
+
+    expect(activeRail).toContain('aria-label="Add Topic..."');
+    expect(activeRail).toContain("kind === 'create-child'");
+    expect(activeRail).toContain('class="active-header-button topic-backlog-button"');
+    expect(activeRail).toContain('codicon-library');
+    expect(activeRail).toContain('class="topic-backlog-badge"');
+    expect(workstreamView).toContain("label: 'Add Child...'");
+    expect(workstreamView).toContain('aria-label="Add Topic..."');
+    expect(app).toContain("activeDocument?.kind === 'topic-create'");
+    expect(app).toMatch(
+      /async function startTopicCreation[\s\S]*?\n  \}\n\n  function openTopicBacklog\(\): void/,
+    );
+    expect(app).toContain('await refreshActive()');
+    expect(topicCreateView).toContain('<TopicView');
+    expect(topicCreateView).toContain('titlePlaceholder="New Topic"');
+    expect(topicCreateView).toContain('class="create-action"');
+    expect(topicCreateView).toContain('shouldRequestTopicAutocomplete');
+    expect(topicCreateView).toContain('window.workingMemory.autocompleteTopic');
+    expect(topicView).toContain('aria-label="Topic title"');
+    expect(topicView).toContain('aria-label="Topic type"');
+    expect(topicView).toContain('<HybridMarkdownEditor');
+    expect(topicView).toContain('class="title-field"');
+    expect(topicView).toContain('class:with-type-picker=');
+    expect(topicView).toMatch(/\.title-input\.with-type-picker[^}]*padding-left:\s*60px/s);
+    expect(topicView).toMatch(/\.type-picker[^}]*position:\s*absolute[^}]*left:\s*1px/s);
+    expect(topicView).toMatch(/\.header-grid[^}]*max-height:\s*160px/s);
+    expect(topicView).toMatch(/\.family-scroll[^}]*max-height:\s*112px/s);
+    expect(styles).toContain('.document-host.topic-document { padding-top: 8px; }');
+    expect(topicCreateView).toContain("error = 'Enter a topic title.'");
+    expect(preload).toContain("createTopic: (input) => invoke('topic:create', input)");
+    expect(main).toContain("ipcMain.handle('topic:create'");
+    expect(main).toContain('workstreams: [workstream]');
+    expect(main).toContain('parents: input.parent ? [input.parent] : []');
+    expect(styles).toMatch(/\.active-group-add[^}]*color:\s*#ff5ca8[^}]*font-weight:\s*900/s);
+    expect(workstreamView).toMatch(/\.add-topic[^}]*color:\s*#ff5ca8[^}]*font-weight:\s*900/s);
+  });
+
+  it('configures model profiles and the nine-cell AI routing matrix', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const settings = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/SettingsView.svelte'), 'utf8');
+    const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
+    const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
+
+    expect(settings).toContain('>Models</button>');
+    expect(settings).toContain('>Routing matrix</button>');
+    expect(settings).toContain('>Human</button>');
+    expect(settings).toContain('placeholder="Flesh Bag"');
+    expect(settings).toContain('Add model profile');
+    expect(settings).toContain("id: 'deep', label: 'Deep Thought'");
+    expect(settings).toContain('bind:value={routing[`${depth.id}:${speed}`]}');
+    expect(settings).toContain("testingProfileId === profile.id ? 'Testing...' : 'Test'");
+    expect(app).toContain("{ kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' }");
+    expect(app).toContain('profiles: modelProfiles.map(modelProfileInput)');
+    expect(preload).toContain("testModelProfile: (input) => invoke('config:test-profile', input)");
+    expect(main).toContain("ipcMain.handle('config:test-profile'");
+    expect(preload).toContain("autocompleteTopic: (input) => invoke('topic:autocomplete', input)");
+    expect(main).toContain("resolveModelProfile(config, 'medium', 'complex')");
+    expect(main).toContain("resolveModelProfile(config, 'fast', 'simple')");
+    expect(main).toContain("ipcMain.handle('topic:autocomplete'");
   });
 
   it('renders queue and backlog as summaries while progress alone owns disclosure and graph details', () => {
@@ -123,7 +195,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('class="graph-node-control"');
     expect(activeRail).toContain('class="graph-node-dot"');
     expect(activeRail).toContain('class="graph-node-control graph-node-passive"');
-    expect(activeRail).not.toMatch(/codicon-(?:add|remove)/);
+    expect(activeRail).not.toContain("codicon-{open ? 'remove' : 'add'}");
     expect(styles).toMatch(/\.active-card\.summary[^}]*box-shadow:\s*none/s);
     expect(styles).toContain('--graph-color: var(--ws-card-border)');
   });
@@ -264,6 +336,13 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('recentRunsForContext(chatRuns, currentChatContext)');
     expect(app).toContain('aria-label="Recent messages"');
     expect(app).toContain('<span>Recent messages</span>');
+    expect(app).toContain('scopePreviewExpanded = true');
+    expect(app).toContain('aria-label="Latest response"');
+    expect(app).toContain('aria-label="Latest tool activity"');
+    expect(app).toContain("scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'");
+    expect(app).toContain('class="scope-preview-human"');
+    expect(app).toContain('{humanInitials(humanName)}');
+    expect(app).not.toContain('<small>{run.assistantText ?? assistantFallback(run)}</small>');
     expect(app).not.toContain('Selected file:');
     expect(app).not.toContain('Current scope');
     expect(previewIndex).toBeGreaterThan(app.indexOf('<main class="main">'));
@@ -341,7 +420,7 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('composerTextarea?.setSelectionRange(replacement.caret, replacement.caret)');
     expect(app).toContain('mentionKeyEventAction(event, mentionOpen, mentionApps.length, mentionActiveIndex)');
     expect(app).toMatch(/async function send\(\)[^]*closeMentionCompletion\(\);[^]*const submission = submitChat\(/);
-    expect(app).toContain("page = 'workspace';\n    closeMentionCompletion();");
+    expect(app).toContain('conversationPinned = true;\n    closeMentionCompletion();');
     expect(styles).toMatch(/\.mention-popup[^}]*position:\s*absolute/);
   });
 

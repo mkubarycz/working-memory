@@ -38,6 +38,48 @@ describe('document tabs', () => {
     expect(state.selectedKey).toBe('container-app:sunset-chess');
   });
 
+  it('uses one stable tab identity for the open topic backlog', () => {
+    const backlog: DocumentVM = {
+      kind: 'topic-backlog',
+      id: 'open-topic-backlog',
+      slug: null,
+      title: 'Open topic backlog',
+      topics: [],
+    };
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, backlog);
+    state = openDocumentTab(state, { ...backlog, topics: [{
+      kind: 'topic-row',
+      id: 'topics:topic:root:orphan',
+      label: 'Orphan',
+      description: 'Open topic',
+      tooltip: 'Orphan',
+      icon: 'symbol-key',
+      openUri: 'working-memory:/topic/orphan.working-memory',
+      status: 'open',
+      recentEntryCount: 0,
+    }] });
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic-backlog:open-topic-backlog']);
+    expect(state.tabs[0]?.kind === 'topic-backlog' && state.tabs[0].topics).toHaveLength(1);
+  });
+
+  it('keeps one stable Settings tab while selecting topics independently', () => {
+    const settings: DocumentVM = {
+      kind: 'settings',
+      id: 'desktop-settings',
+      slug: null,
+      title: 'Settings',
+    };
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, settings);
+    state = openDocumentTab(state, topic('first'));
+    state = openDocumentTab(state, settings);
+
+    expect(state.tabs.map(documentTabKey)).toEqual(['settings:desktop-settings', 'topic:first']);
+    expect(state.selectedKey).toBe('settings:desktop-settings');
+    state = openDocumentTab(state, topic('first'));
+    expect(state.selectedKey).toBe('topic:first');
+    expect(state.tabs.map(documentTabKey)).toContain('settings:desktop-settings');
+  });
+
   it('replaces the selected document in place and closes to the nearest remaining tab', () => {
     let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
     state = openDocumentTab(state, topic('second'));
