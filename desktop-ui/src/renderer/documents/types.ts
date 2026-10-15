@@ -1,3 +1,5 @@
+import type { PanelTopicRow } from '../../../../shared/panelData';
+
 /**
  * Shared view-model + message types for the unified `.working-memory` document
  * custom editor (WM 14.2 "svelte-document-editor").
@@ -123,6 +125,36 @@ export interface TopicTypeMetaVM {
   description: string;
 }
 
+/** Local-only document tab used while authoring a topic before its first save. */
+export interface TopicCreateDraftVM {
+  kind: 'topic-create';
+  id: string;
+  slug: null;
+  title: string;
+  body: string;
+  topicType: string;
+  topicTypes: TopicTypeMetaVM[];
+  workstream: string;
+  workstreamTitle: string;
+  parent: string | null;
+  parentTitle: string | null;
+}
+
+export interface TopicBacklogVM {
+  kind: 'topic-backlog';
+  id: 'open-topic-backlog';
+  slug: null;
+  title: 'Open topic backlog';
+  topics: PanelTopicRow[];
+}
+
+export interface SettingsVM {
+  kind: 'settings';
+  id: 'desktop-settings';
+  slug: null;
+  title: 'Settings';
+}
+
 /** The topic detail view-model (kind = topic). */
 export interface TopicVM {
   kind: 'topic';
@@ -133,6 +165,8 @@ export interface TopicVM {
   topicType: string;
   /** Resolved topic-type metadata (icon + label), or null when unresolved. */
   typeMeta: TopicTypeMetaVM | null;
+  /** Available topic types for the editable header selector. */
+  topicTypes?: TopicTypeMetaVM[];
   body: string;
   createdAt: number;
   updatedAt: number;
@@ -172,7 +206,13 @@ export interface GenericDocVM {
 }
 
 /** The discriminated document view-model pushed from the extension host. */
-export type DocumentVM = WorkstreamVM | TopicVM | GenericDocVM;
+export type DocumentVM =
+  | WorkstreamVM
+  | TopicVM
+  | TopicCreateDraftVM
+  | TopicBacklogVM
+  | SettingsVM
+  | GenericDocVM;
 
 /**
  * Save-status the header indicator renders. `saved` (green) only ever fires on
@@ -200,6 +240,7 @@ export interface TopicPatch {
   title?: string;
   status?: string;
   body?: string;
+  topicType?: string;
 }
 
 export interface AttachmentUpload {

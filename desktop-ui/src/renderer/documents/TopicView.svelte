@@ -16,6 +16,8 @@
     onSetAlertStatus: (id: string, status: AlertVM['status']) => void;
     attachmentBaseUrl?: string;
     onAttachImages?: (files: File[]) => Promise<AttachmentRef[]>;
+    titlePlaceholder?: string;
+    draft?: boolean;
   }
 
   let {
@@ -27,6 +29,8 @@
     onSetAlertStatus,
     attachmentBaseUrl = '',
     onAttachImages = async () => [],
+    titlePlaceholder = '',
+    draft = false,
   }: Props = $props();
 
   const STATUSES = ['open', 'closed'];
@@ -39,6 +43,14 @@
   function onStatusChange(event: Event): void {
     topic.status = (event.currentTarget as HTMLSelectElement).value;
     onSaveTopic({ status: topic.status });
+  }
+
+  function onTopicTypeChange(event: Event): void {
+    const topicType = (event.currentTarget as HTMLSelectElement).value;
+    const typeMeta = topic.topicTypes?.find((candidate) => candidate.slug === topicType) ?? null;
+    topic.topicType = topicType;
+    topic.typeMeta = typeMeta;
+    onSaveTopic({ topicType });
   }
 
   function onBodyInput(event: Event): void {
@@ -175,29 +187,48 @@
 </script>
 
 <header class="head">
-  <span class="type-icon codicon codicon-{icon}" title={typeLabel}></span>
   {#if topic.editable}
-    <input
-      class="title-input"
-      value={topic.title}
-      oninput={onTitleInput}
-      aria-label="Topic title"
-      title={topic.title}
-    />
+    <div class="title-field">
+      {#if (topic.topicTypes?.length ?? 0) > 0}
+        <label class="type-picker" title={`Topic type: ${typeLabel}`}>
+          <span aria-hidden="true" class="type-icon codicon codicon-{icon}"></span>
+          <span aria-hidden="true" class="type-picker-chevron codicon codicon-chevron-down"></span>
+          <select value={topic.topicType} onchange={onTopicTypeChange} aria-label="Topic type">
+            {#each topic.topicTypes ?? [] as topicType (topicType.slug)}
+              <option value={topicType.slug ?? ''}>{topicType.label}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      <input
+        class="title-input"
+        class:with-type-picker={(topic.topicTypes?.length ?? 0) > 0}
+        value={topic.title}
+        oninput={onTitleInput}
+        aria-label="Topic title"
+        title={topic.title}
+        placeholder={titlePlaceholder}
+      />
+    </div>
   {:else}
+    <span class="type-icon codicon codicon-{icon}" title={typeLabel}></span>
     <h1 class="title" title={topic.title}>{topic.title}</h1>
   {/if}
-  <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
-  <SaveStatus state={saveState} />
+  {#if !draft}
+    <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
+    <SaveStatus state={saveState} />
+  {/if}
 </header>
 
-<div class="head-meta">
-  <span class="mono">{topic.slug ?? '—'}</span>
-  <span class="hm-dot">·</span>
-  <span>Created {fmtTs(topic.createdAt)}</span>
-  <span class="hm-dot">·</span>
-  <span>Updated {fmtTs(topic.updatedAt)}</span>
-</div>
+{#if !draft}
+  <div class="head-meta">
+    <span class="mono">{topic.slug ?? '—'}</span>
+    <span class="hm-dot">·</span>
+    <span>Created {fmtTs(topic.createdAt)}</span>
+    <span class="hm-dot">·</span>
+    <span>Updated {fmtTs(topic.updatedAt)}</span>
+  </div>
+{/if}
 
 <div class="header-grid">
 <section class="attrs" aria-label="Topic attributes">
@@ -398,6 +429,42 @@
     color: var(--vscode-symbolIcon-keywordForeground, var(--vscode-foreground));
   }
 
+  .type-picker {
+    position: absolute;
+    z-index: 1;
+    top: 1px;
+    bottom: 1px;
+    left: 1px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    width: 48px;
+    padding: 0 4px;
+    border-right: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.25));
+    border-radius: 4px 0 0 4px;
+    cursor: pointer;
+  }
+
+  .type-picker:hover,
+  .type-picker:focus-within {
+    background: var(--vscode-toolbar-hoverBackground);
+  }
+
+  .type-picker-chevron {
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+  }
+
+  .type-picker select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
+
   .title {
     margin: 0;
     font-size: 1.5em;
@@ -405,7 +472,7 @@
   }
 
   .title-input {
-    flex: 1;
+    width: 100%;
     font-size: 1.5em;
     font-weight: 600;
     padding: 4px 8px;
@@ -413,6 +480,16 @@
     background: var(--vscode-input-background);
     border: 1px solid var(--vscode-input-border, transparent);
     border-radius: 4px;
+  }
+
+  .title-field {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .title-input.with-type-picker {
+    padding-left: 60px;
   }
 
   .title-input:focus {
@@ -425,6 +502,7 @@
     flex-direction: column;
     gap: 12px;
     padding: 10px 14px;
+    overflow-y: auto;
     background: var(--vscode-editor-background);
   }
 
@@ -670,6 +748,7 @@
     border-radius: 6px;
     overflow: hidden;
     align-items: stretch;
+    max-height: 160px;
   }
 
   @media (min-width: 720px) {
@@ -678,17 +757,17 @@
     }
   }
 
-  /* The family column stretches to the attributes table's height (grid stretch).
-     The scroll list is absolutely positioned so it is OUT of flow and never adds
-     to the row height — the table is sized by the attributes alone, and the
-     lineage scrolls inside whatever height that gives us. min-height keeps it
-     usable when the layout collapses to a single column (family stacks below). */
+  @media (max-width: 719px) {
+    .header-grid {
+      max-height: none;
+    }
+  }
+
   .family {
     position: relative;
     background: var(--vscode-editor-background);
     padding: 10px 12px;
     min-width: 0;
-    min-height: 160px;
     overflow: hidden;
   }
 
@@ -701,11 +780,8 @@
   }
 
   .family-scroll {
-    position: absolute;
-    top: 34px;
-    left: 12px;
-    right: 12px;
-    bottom: 10px;
+    max-height: 112px;
+    margin-top: 8px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;

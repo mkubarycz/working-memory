@@ -65,15 +65,16 @@ export class DesktopCredentialVault {
   }
 
   migrate(config: StoredConfig): StoredConfig {
-    const encrypted = config.encryptedApiKey;
-    if (
-      this.platform !== 'darwin'
-      || !encrypted
-      || encrypted.startsWith(LOCAL_CREDENTIAL_PREFIX)
-    ) {
-      return config;
-    }
-    return this.store(config, this.decrypt(config));
+    if (this.platform !== 'darwin') return config;
+    const migrateOne = <T extends StoredConfig>(candidate: T): T => {
+      const encrypted = candidate.encryptedApiKey;
+      if (!encrypted || encrypted.startsWith(LOCAL_CREDENTIAL_PREFIX)) return candidate;
+      return this.store(candidate, this.decrypt(candidate)) as T;
+    };
+    const migrated = migrateOne(config);
+    const profiles = migrated.profiles?.map((profile) =>
+      migrateOne({ ...profile, profiles: undefined, routing: undefined }));
+    return profiles ? { ...migrated, profiles } : migrated;
   }
 
   private encryptLocal(value: string): string {
