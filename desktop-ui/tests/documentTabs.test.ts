@@ -6,7 +6,9 @@ import {
   closeOtherDocumentTabs,
   documentTabKey,
   openDocumentTab,
+  parseDocumentTabs,
   replaceSelectedTab,
+  serializeDocumentTabs,
   updateDocumentTab,
 } from '../src/renderer/documentTabs';
 import { containerAppDocument } from '../src/renderer/containerApps';
@@ -124,5 +126,31 @@ describe('document tabs', () => {
       selectedKey: 'topic:first',
     });
     expect(closeDocumentTabsToRight(state, 'topic:third')).toBe(state);
+  });
+
+  it('persists tab identities and selection without storing document bodies', () => {
+    const state = {
+      tabs: [
+        topic('first', 'First'),
+        containerAppDocument({ id: 'banking-app', displayName: 'Banking App', icon: 'credit-card' }),
+      ],
+      selectedKey: 'container-app:banking-app',
+    };
+    const serialized = serializeDocumentTabs(state);
+    expect(serialized).not.toContain('"body"');
+    expect(parseDocumentTabs(serialized)).toEqual({
+      version: 1,
+      tabs: [
+        { kind: 'topic', identifier: 'first' },
+        { kind: 'container-app', identifier: 'banking-app' },
+      ],
+      selectedKey: 'container-app:banking-app',
+    });
+    expect(parseDocumentTabs('{not-json')).toBeNull();
+    expect(parseDocumentTabs(JSON.stringify({
+      version: 1,
+      tabs: [{ kind: '', identifier: 'missing-kind' }],
+      selectedKey: null,
+    }))).toBeNull();
   });
 });

@@ -24,6 +24,7 @@
     ChatResult,
     BackendHealth,
     ChatPromptImage,
+    ContainerAppResourceReference,
     ContainerAppStatus,
     DesktopEnvironment,
     DesktopEnvironmentState,
@@ -33,6 +34,12 @@
     PendingConfirmation,
     PublicConfig,
   } from '../shared/contracts';
+  import {
+    CONTAINER_APP_RESOURCE_MIME,
+    composeContainerAppResourceMessage,
+    containerAppResourceLabel,
+    parseContainerAppResourceReference,
+  } from './resourceDrag';
   import {
     containerAppDocument,
     containerAppIdForDocument,
@@ -62,7 +69,9 @@
     closeOtherDocumentTabs,
     documentTabKey,
     openDocumentTab,
+    parseDocumentTabs,
     replaceSelectedTab,
+    serializeDocumentTabs,
     updateDocumentTab,
   } from './documentTabs';
   import { chatRunDomId, recentRunsForContext } from './scopedChat';
@@ -127,6 +136,10 @@
   let documentSaveErrors = $state<Record<string, string>>({});
   let documentTabMenu = $state<{ x: number; y: number; key: string } | null>(null);
   let documentTabMenuElement = $state<HTMLDivElement | null>(null);
+  let containerAppTabMenu = $state<{ x: number; y: number; key: string; appId: string } | null>(null);
+  let containerAppTabMenuElement = $state<HTMLDivElement | null>(null);
+  let containerAppViews = $state<Record<string, 'app' | 'info'>>({});
+  let containerAppReloadVersions = $state<Record<string, number>>({});
   let busy = $state(false);
   let endpoint = $state('');
   let credentialStorage = $state<PublicConfig['credentialStorage']>('secure');
@@ -167,6 +180,7 @@
   let composerElement = $state<HTMLFormElement | null>(null);
   let composerTextarea = $state<HTMLTextAreaElement | null>(null);
   let composerImages = $state<ComposerImage[]>([]);
+  let composerResources = $state<ContainerAppResourceReference[]>([]);
   let composerImageError = $state('');
   let composerImageWorking = $state(false);
   let cameraOpen = $state(false);
@@ -184,6 +198,7 @@
   let previewAttentionTimer: number | undefined;
   let environmentGeneration = 0;
   let historyRequestGeneration: number | null = null;
+  let documentTabsPersistenceReady = $state(false);
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
   const selectedContainerAppId = $derived(containerAppIdForDocument(activeDocument));
   const selectedContainerApp = $derived(containerApps.find((app) => app.id === selectedContainerAppId) ?? null);
@@ -286,6 +301,41 @@
     if (files.length === 0) return;
     event.preventDefault();
     void addComposerImages(files);
+  }
+
+  async function attachContainerAppResource(reference: ContainerAppResourceReference): Promise<void> {
+    const resourceKey = `${reference.appId}:${reference.resourceKind}:${reference.resourceId}`;
+    const existingIndex = composerResources.findIndex((candidate) =>
+      `${candidate.appId}:${candidate.resourceKind}:${candidate.resourceId}` === resourceKey);
+    composerResources = existingIndex === -1
+      ? [...composerResources, reference]
+      : composerResources.map((candidate, index) => index === existingIndex ? reference : candidate);
+    activeHeaderTab = 'log';
+    focusedHeaderTab = 'log';
+    chatRailCollapsed = false;
+    await tick();
+    composerTextarea?.focus();
+    composerTextarea?.setSelectionRange(input.length, input.length);
+  }
+
+  function removeComposerResource(index: number): void {
+    composerResources = composerResources.filter((_, current) => current !== index);
+  }
+
+  function handleComposerDragOver(event: DragEvent): void {
+    if (event.dataTransfer?.types.includes(CONTAINER_APP_RESOURCE_MIME)) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    }
+  }
+
+  function handleComposerDrop(event: DragEvent): void {
+    const rawReference = event.dataTransfer?.getData(CONTAINER_APP_RESOURCE_MIME);
+    if (!rawReference) return;
+    const reference = parseContainerAppResourceReference(rawReference);
+    if (!reference) return;
+    event.preventDefault();
+    void attachContainerAppResource(reference);
   }
 
   function stopCameraStream(): void {
@@ -417,9 +467,71 @@
     );
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
+    containerAppViews[app.id] = app.embeddable ? 'app' : 'info';
     activateHeaderTab('container-apps');
     restoreDocumentSaveStatus(next.selectedKey);
     await refreshContainerApp(app);
+  }
+
+  function containerAppView(app: ContainerAppItem): 'app' | 'info' {
+    return containerAppViews[app.id] ?? (app.embeddable ? 'app' : 'info');
+  }
+
+  async function openContainerAppTabMenu(
+    event: MouseEvent,
+    key: string,
+    appId: string,
+  ): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    selectDocument(key);
+    const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    containerAppTabMenu = { x: bounds.right - 8, y: bounds.bottom + 2, key, appId };
+    documentTabMenu = null;
+    await tick();
+    if (!containerAppTabMenu || !containerAppTabMenuElement) return;
+    const menuBounds = containerAppTabMenuElement.getBoundingClientRect();
+    containerAppTabMenu = {
+      ...containerAppTabMenu,
+      x: Math.max(4, Math.min(containerAppTabMenu.x - menuBounds.width, window.innerWidth - menuBounds.width - 4)),
+      y: Math.max(4, Math.min(containerAppTabMenu.y, window.innerHeight - menuBounds.height - 4)),
+    };
+    containerAppTabMenuElement.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }
+
+  function runContainerAppTabAction(
+    app: ContainerAppItem,
+    action: 'app' | 'info' | 'reload' | 'run' | 'open' | 'stop' | 'refresh',
+  ): void {
+    containerAppTabMenu = null;
+    if (action === 'app' || action === 'info') {
+      containerAppViews[app.id] = action;
+      return;
+    }
+    if (action === 'reload') {
+      containerAppReloadVersions[app.id] = (containerAppReloadVersions[app.id] ?? 0) + 1;
+      containerAppViews[app.id] = 'app';
+      return;
+    }
+    void runContainerAppAction(app, action);
+  }
+
+  function navigateContainerAppTabMenu(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      containerAppTabMenu = null;
+      return;
+    }
+    if (!containerAppTabMenuElement || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const items = [...containerAppTabMenuElement.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0
+      : event.key === 'End' ? items.length - 1
+        : event.key === 'ArrowDown' ? (current + 1) % items.length
+          : (current - 1 + items.length) % items.length;
+    items[next]?.focus();
   }
 
   async function runContainerAppAction(app: ContainerAppItem, action: 'run' | 'open' | 'stop' | 'refresh'): Promise<void> {
@@ -535,7 +647,7 @@
     return timestamp ? new Date(timestamp).toLocaleTimeString() : 'never';
   }
   const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
-  const scopedLatestRun = $derived(scopedRecentRuns[0] ?? null);
+  const scopedLatestRun = $derived(scopedRecentRuns.at(-1) ?? null);
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
     viewportWidth,
@@ -546,6 +658,27 @@
     active: 'working-memory.desktop.active-rail-width',
     chat: 'working-memory.desktop.chat-rail-width',
   } as const;
+  const DOCUMENT_TABS_STORAGE_PREFIX = 'working-memory.desktop.document-tabs:v1:';
+  const RESTORABLE_DOCUMENT_KINDS = new Set<DesktopResourceKind>([
+    'workstream',
+    'topic',
+    'document',
+    'alert',
+    'topic-type',
+  ]);
+
+  function documentTabsStorageKey(): string | null {
+    return selectedEnvironment?.id
+      ? `${DOCUMENT_TABS_STORAGE_PREFIX}${selectedEnvironment.id}`
+      : null;
+  }
+
+  $effect(() => {
+    const storageKey = documentTabsStorageKey();
+    const state = { tabs: documents, selectedKey: selectedDocumentKey };
+    if (!documentTabsPersistenceReady || !storageKey) return;
+    localStorage.setItem(storageKey, serializeDocumentTabs(state));
+  });
 
   async function applyChatResult(result: ChatResult, runKey: string): Promise<void> {
     chatRuns = reconcileLiveRun(chatRuns, runKey, result);
@@ -690,10 +823,9 @@
     window.addEventListener('resize', handleResize);
     void window.workingMemory.getConfig().then(loadConfig);
     void refreshOpenAiHealth();
-    void discoverEnvironments(true);
+    void initializeWorkspace();
     void refreshActive();
     void refreshLatestHistory(true);
-    void loadContainerApps();
     const stopListeningForDeepLinks = window.workingMemory.onOpenResource(
       (kind, identifier) => void openResource(kind, identifier),
     );
@@ -709,6 +841,63 @@
       clearPreviewAttention();
     };
   });
+
+  async function initializeWorkspace(): Promise<void> {
+    await Promise.all([
+      discoverEnvironments(true),
+      loadContainerApps(),
+    ]);
+    await restoreDocumentTabs();
+  }
+
+  async function restoreDocumentTabs(): Promise<void> {
+    documentTabsPersistenceReady = false;
+    const storageKey = documentTabsStorageKey();
+    const persisted = parseDocumentTabs(storageKey ? localStorage.getItem(storageKey) : null);
+    if (!persisted) {
+      documentTabsPersistenceReady = true;
+      return;
+    }
+    const restored: DocumentVM[] = [];
+    const restoreErrors: string[] = [];
+    for (const reference of persisted.tabs) {
+      try {
+        let document: DocumentVM | null = null;
+        if (reference.kind === 'container-app') {
+          const app = containerApps.find((candidate) => candidate.id === reference.identifier);
+          if (app) document = containerAppDocument(app);
+        } else if (RESTORABLE_DOCUMENT_KINDS.has(reference.kind as DesktopResourceKind)) {
+          document = await window.workingMemory.openResource(
+            reference.kind as DesktopResourceKind,
+            reference.identifier,
+          );
+        }
+        if (document && !restored.some((candidate) =>
+          documentTabKey(candidate) === documentTabKey(document!))) {
+          restored.push(document);
+        }
+      } catch (error) {
+        restoreErrors.push(
+          `${reference.kind}:${reference.identifier}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    documents = restored;
+    selectedDocumentKey = restored.some((document) =>
+      documentTabKey(document) === persisted.selectedKey)
+      ? persisted.selectedKey
+      : restored.at(-1) ? documentTabKey(restored.at(-1)!) : null;
+    const selectedAppId = containerAppIdForDocument(
+      documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null,
+    );
+    activeHeaderTab = selectedAppId ? 'container-apps' : 'log';
+    focusedHeaderTab = activeHeaderTab;
+    restoreDocumentSaveStatus(selectedDocumentKey);
+    if (restoreErrors.length) {
+      documentError = `Some tabs could not be restored: ${restoreErrors.join('; ')}`;
+    }
+    documentTabsPersistenceReady = true;
+  }
 
   function preferredRailWidths(): RailWidths {
     return { active: activeRailWidth, chat: chatRailWidth };
@@ -843,6 +1032,7 @@
     environmentError = '';
     try {
       await documentSaves.flushAll();
+      documentTabsPersistenceReady = false;
       environmentGeneration += 1;
       historyRequestGeneration = null;
       resetEnvironmentState();
@@ -851,6 +1041,7 @@
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
       await loadContainerApps();
+      await restoreDocumentTabs();
       await refreshBackendHealth();
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
@@ -928,7 +1119,7 @@
   }
 
   async function send(): Promise<void> {
-    const message = input.trim();
+    const message = composeContainerAppResourceMessage(input, composerResources);
     if ((!message && composerImages.length === 0) || busy || pendingConfirmation || composerImageWorking) return;
     const context = currentChatContext;
     const images = [...composerImages];
@@ -952,6 +1143,7 @@
         );
         input = '';
         writeComposerDraft(localStorage, selectedEnvironment?.id, '');
+        composerResources = [];
         clearComposerImages();
         await submission;
       }
@@ -1535,10 +1727,11 @@
 </script>
 
 <svelte:window
-  onclick={(event) => { documentTabMenu = null; handleDocumentClick(event); }}
+  onclick={(event) => { documentTabMenu = null; containerAppTabMenu = null; handleDocumentClick(event); }}
   onkeydown={(event) => {
     if (event.key === 'Escape') {
       documentTabMenu = null;
+      containerAppTabMenu = null;
       if (selectedTool) selectedTool = null;
     }
   }}
@@ -1619,6 +1812,10 @@
         <div class="document-tabs" role="tablist" aria-label="Open documents">
           {#each documents as document (documentTabKey(document))}
             {@const key = documentTabKey(document)}
+            {@const tabApp = document.kind === 'container-app'
+              ? containerApps.find((app) => app.id === (document.slug ?? document.id))
+              : undefined}
+            {@const tabAppStatus = tabApp ? containerAppStatuses[tabApp.id] : undefined}
             <div
               class="document-tab"
               class:selected={key === selectedDocumentKey}
@@ -1633,8 +1830,42 @@
                 onclick={() => selectDocument(key)}
               >
                 <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : 'file'}"></span>
+                {#if tabApp}
+                  <span
+                    class="container-app-tab-health"
+                    class:healthy={tabAppStatus?.ready}
+                    class:unhealthy={tabAppStatus !== undefined && !tabAppStatus.ready}
+                    title={tabAppStatus?.ready ? 'Healthy' : tabAppStatus?.state ?? 'Loading'}
+                    aria-label={tabAppStatus?.ready ? 'Healthy' : tabAppStatus?.state ?? 'Loading'}
+                  ></span>
+                {/if}
                 <span>{document.kind === 'topic-create' && !document.title ? 'New Topic' : document.title}</span>
               </button>
+              {#if tabApp}
+                {#if tabApp.embeddable}
+                  <button
+                    class="container-app-tab-refresh"
+                    disabled={!tabAppStatus?.ready}
+                    title={`Refresh ${tabApp.displayName}`}
+                    aria-label={`Refresh ${tabApp.displayName}`}
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      selectDocument(key);
+                      runContainerAppTabAction(tabApp, 'reload');
+                    }}
+                  >
+                    <span aria-hidden="true" class="codicon codicon-refresh"></span>
+                  </button>
+                {/if}
+                <button
+                  class="container-app-tab-gear"
+                  title={`${tabApp.displayName} actions`}
+                  aria-label={`${tabApp.displayName} actions`}
+                  onclick={(event) => void openContainerAppTabMenu(event, key, tabApp.id)}
+                >
+                  <span aria-hidden="true" class="codicon codicon-settings-gear"></span>
+                </button>
+              {/if}
               <button class="document-tab-close" title={`Close ${document.title}`} aria-label={`Close ${document.title}`} onclick={() => closeDocument(key)}>
                 <span aria-hidden="true" class="codicon codicon-close"></span>
               </button>
@@ -1664,8 +1895,49 @@
             </button>
           </div>
         {/if}
+        {#if containerAppTabMenu}
+          {@const menuApp = containerApps.find((app) => app.id === containerAppTabMenu?.appId)}
+          {@const menuStatus = menuApp ? containerAppStatuses[menuApp.id] : undefined}
+          {#if menuApp}
+            <div
+              bind:this={containerAppTabMenuElement}
+              class="document-tab-menu container-app-tab-menu"
+              role="menu"
+              aria-label={`${menuApp.displayName} actions`}
+              tabindex="-1"
+              style="left: {containerAppTabMenu.x}px; top: {containerAppTabMenu.y}px;"
+              onclick={(event) => event.stopPropagation()}
+              onkeydown={navigateContainerAppTabMenu}
+            >
+              {#if menuApp.embeddable}
+                <button role="menuitem" onclick={() => runContainerAppTabAction(menuApp, containerAppView(menuApp) === 'app' ? 'info' : 'app')}>
+                  <span aria-hidden="true" class="codicon codicon-{containerAppView(menuApp) === 'app' ? 'info' : 'open-preview'}"></span>
+                  <span>{containerAppView(menuApp) === 'app' ? 'App Info' : 'Show App'}</span>
+                </button>
+              {/if}
+              <button role="menuitem" disabled={busyContainerAppId !== null} onclick={() => runContainerAppTabAction(menuApp, 'run')}>
+                <span aria-hidden="true" class="codicon codicon-play"></span><span>Run</span>
+              </button>
+              {#if menuApp.embeddable}
+                <button role="menuitem" disabled={!menuStatus?.ready} onclick={() => runContainerAppTabAction(menuApp, 'reload')}>
+                  <span aria-hidden="true" class="codicon codicon-refresh"></span><span>Reload App</span>
+                </button>
+              {/if}
+              <button role="menuitem" disabled={!menuStatus?.ready} onclick={() => runContainerAppTabAction(menuApp, 'open')}>
+                <span aria-hidden="true" class="codicon codicon-link-external"></span><span>Open Externally</span>
+              </button>
+              <button role="menuitem" disabled={busyContainerAppId !== null} onclick={() => runContainerAppTabAction(menuApp, 'refresh')}>
+                <span aria-hidden="true" class="codicon codicon-sync"></span><span>Refresh Status</span>
+              </button>
+              <button role="menuitem" disabled={busyContainerAppId !== null} onclick={() => runContainerAppTabAction(menuApp, 'stop')}>
+                <span aria-hidden="true" class="codicon codicon-debug-stop"></span><span>Stop</span>
+              </button>
+            </div>
+          {/if}
+        {/if}
         <div
           class="document-host"
+          class:container-app-host={activeDocument?.kind === 'container-app'}
           class:topic-document={activeDocument?.kind === 'topic' || activeDocument?.kind === 'topic-create'}
           role="tabpanel"
           inert={environmentLoading}
@@ -1692,8 +1964,9 @@
           <ContainerAppDetail
             app={selectedContainerApp}
             status={containerAppStatuses[selectedContainerApp.id]}
-            busy={busyContainerAppId === selectedContainerApp.id}
-            onAction={(action) => void runContainerAppAction(selectedContainerApp!, action)}
+            view={containerAppView(selectedContainerApp)}
+            reloadVersion={containerAppReloadVersions[selectedContainerApp.id] ?? 0}
+            onAttachResource={(reference) => void attachContainerAppResource(reference)}
           />
         {:else if activeDocument?.kind === 'workstream'}
           <WorkstreamView
@@ -1831,7 +2104,13 @@
         {:else}
           <div class="composer-context composer-context-empty">No document selected</div>
         {/if}
-        <form bind:this={composerElement} class="composer" onsubmit={(event) => { event.preventDefault(); closeMentionCompletion(); void send(); }}>
+        <form
+          bind:this={composerElement}
+          class="composer"
+          ondragover={handleComposerDragOver}
+          ondrop={handleComposerDrop}
+          onsubmit={(event) => { event.preventDefault(); closeMentionCompletion(); void send(); }}
+        >
           <span id="mention-instructions" class="sr-only">Type at sign followed by a Container App name. Use up and down arrows to navigate, Enter or Tab to select, and Escape to dismiss.</span>
           {#if mentionOpen}
             <div class="mention-popup" id="container-app-mentions" role="listbox" aria-label="Container Apps">
@@ -1860,6 +2139,28 @@
               {:else}
                 <div class="mention-empty" role="status">No Container Apps match “{mentionToken?.query}”.</div>
               {/if}
+            </div>
+          {/if}
+          {#if composerResources.length}
+            <div class="composer-resources" aria-label="Attached app resources">
+              {#each composerResources as resource, index (`${resource.appId}:${resource.resourceKind}:${resource.resourceId}`)}
+                <article class="composer-resource">
+                  <span class="codicon codicon-link" aria-hidden="true"></span>
+                  <a href={resource.deepLink} title={containerAppResourceLabel(resource)}>
+                    {containerAppResourceLabel(resource)}
+                  </a>
+                  <small>@{resource.appId} · {resource.resourceKind}</small>
+                  <button
+                    type="button"
+                    class="composer-resource-remove"
+                    aria-label={`Remove ${resource.title}`}
+                    title="Remove resource"
+                    onclick={() => removeComposerResource(index)}
+                  >
+                    <span class="codicon codicon-close" aria-hidden="true"></span>
+                  </button>
+                </article>
+              {/each}
             </div>
           {/if}
           {#if composerImages.length}
@@ -1918,7 +2219,7 @@
           </button>
           <button
             class="send"
-            disabled={busy || pendingConfirmation !== null || composerImageWorking || (!input.trim() && composerImages.length === 0)}
+            disabled={busy || pendingConfirmation !== null || composerImageWorking || (!input.trim() && composerImages.length === 0 && composerResources.length === 0)}
             title="Send"
             aria-label="Send"
           >
@@ -2072,7 +2373,8 @@
                 {/each}
               </div>
             {/if}
-            <pre>{run.userText}</pre>
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+            <div class="user-markdown">{@html renderMarkdown(run.userText)}</div>
           </section>
 
           {#if run.tools.length}

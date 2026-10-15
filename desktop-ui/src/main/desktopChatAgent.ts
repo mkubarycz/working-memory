@@ -189,6 +189,8 @@ function systemPromptForInput(input: StartChatInput): string {
 
 const MUTATING_ACTION = /-(create|update|delete|run|reorder|transfer)$/;
 export const DESKTOP_MODEL_REQUEST_TIMEOUT_MS = 60_000;
+export const DESKTOP_DEFAULT_MAX_MODEL_TURNS = 24;
+export const DESKTOP_DEFAULT_TOTAL_TOOL_RUN_TIMEOUT_MS = 270_000;
 
 export class DesktopChatAgent {
   private readonly pending = new Map<string, Session>();
@@ -201,8 +203,8 @@ export class DesktopChatAgent {
   private readonly createId: () => string;
 
   constructor(private readonly options: DesktopChatAgentOptions) {
-    this.maxIterations = options.maxIterations ?? 8;
-    this.totalTimeoutMs = options.totalTimeoutMs ?? 90_000;
+    this.maxIterations = options.maxIterations ?? DESKTOP_DEFAULT_MAX_MODEL_TURNS;
+    this.totalTimeoutMs = options.totalTimeoutMs ?? DESKTOP_DEFAULT_TOTAL_TOOL_RUN_TIMEOUT_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DESKTOP_MODEL_REQUEST_TIMEOUT_MS;
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? (() => crypto.randomUUID());

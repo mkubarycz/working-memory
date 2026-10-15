@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DESKTOP_MODEL_REQUEST_TIMEOUT_MS, DesktopChatAgent } from '../src/main/desktopChatAgent';
+import {
+  DESKTOP_DEFAULT_MAX_MODEL_TURNS,
+  DESKTOP_DEFAULT_TOTAL_TOOL_RUN_TIMEOUT_MS,
+  DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
+  DesktopChatAgent,
+} from '../src/main/desktopChatAgent';
 import type { CommandJournal, CommandJournalEntityRef } from '../../shared/controlPlaneClient';
 import { commandJournalSpec } from '../../control-plane/src/kinds/commandjournal';
 
@@ -90,6 +95,29 @@ describe('DesktopChatAgent', () => {
 
     expect(DESKTOP_MODEL_REQUEST_TIMEOUT_MS).toBe(60_000);
     expect(callModel).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
+  });
+
+  it('allows 270 seconds for the total tool run while preserving the per-request cap', async () => {
+    const callModel = vi.fn(async () => ({ choices: [{ message: { content: 'Done.' } }] }));
+    let firstClockRead = true;
+    const agent = new DesktopChatAgent({
+      ...options(callModel),
+      now: () => {
+        if (firstClockRead) {
+          firstClockRead = false;
+          return 0;
+        }
+        return 240_000;
+      },
+    });
+
+    const result = await agent.start({
+      mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'read', headers: {},
+    });
+
+    expect(DESKTOP_DEFAULT_TOTAL_TOOL_RUN_TIMEOUT_MS).toBe(270_000);
+    expect(callModel).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 30_000 }));
+    expect(result.status).toBe('succeeded');
   });
 
   it('includes selected document identity and deictic-reference rules in model instructions', async () => {
@@ -666,6 +694,19 @@ describe('DesktopChatAgent', () => {
     const result = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'loop', headers: {} });
     expect(callModel).toHaveBeenCalledTimes(2);
     expect(result.message).toContain('Stopped after 2 model turns');
+  });
+
+  it('allows 24 model turns by default', async () => {
+    const callModel = vi.fn(async () => ({ choices: [{ message: { role: 'assistant', tool_calls: [
+      { id: crypto.randomUUID(), function: { name: 'ws-workstream-read', arguments: '{}' } },
+    ] } }] }));
+    const result = await new DesktopChatAgent(options(callModel)).start({
+      mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'loop', headers: {},
+    });
+
+    expect(DESKTOP_DEFAULT_MAX_MODEL_TURNS).toBe(24);
+    expect(callModel).toHaveBeenCalledTimes(DESKTOP_DEFAULT_MAX_MODEL_TURNS);
+    expect(result.message).toContain('Stopped after 24 model turns');
   });
 
   it('keeps an exact successful mutation repeat dedupe-only', async () => {

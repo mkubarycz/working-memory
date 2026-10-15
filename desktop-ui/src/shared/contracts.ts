@@ -106,8 +106,27 @@ export interface ContainerAppDefinition {
   id: ContainerAppId;
   displayName: string;
   icon: string;
+  embeddable?: boolean;
   mcp?: AppMcpEndpoint;
   application?: ApplicationContractMetadata;
+}
+
+export interface ContainerAppResourceReference {
+  version: 2;
+  appId: ContainerAppId;
+  resourceKind: string;
+  resourceId: string;
+  title: string;
+  deepLink: string;
+  preview?: {
+    date?: string;
+    description?: string;
+    amount?: string;
+    details?: Array<{ label: string; value: string }>;
+  };
+  context?: {
+    markdown?: string;
+  };
 }
 
 export interface PublicConfig {

@@ -20,5 +20,6 @@ export function recentRunsForContext(
     .filter((run) => matchesContext(run.scope) || run.entityRefs.some(matchesContext))
     .sort((left, right) => right.startedAt - left.startedAt
       || (right.journalId ?? right.key).localeCompare(left.journalId ?? left.key))
-    .slice(0, limit);
+    .slice(0, limit)
+    .reverse();
 }

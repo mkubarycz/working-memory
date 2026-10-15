@@ -47,12 +47,14 @@ import { parseModelTurn } from './modelTools';
 import { AppMcpService, parseAppResourceContract } from './appMcpService';
 import {
   appMentionSystemInstructions,
+  appToolRequiresConfirmation,
   resolveMentionedAppTools,
 } from './appToolRouting';
 import {
   containerAppDefinitions,
   containerAppRegistration,
   isContainerAppId,
+  isRegisteredContainerAppUiUrl,
   type ContainerAppRegistration,
 } from './containerAppRegistry';
 import {
@@ -429,7 +431,7 @@ async function callConfiguredModel(
     tools: mentioned.tools,
     systemInstructions: appMentionSystemInstructions(mentioned.contexts),
     requiresConfirmation: (name: string) =>
-      mentioned.routes.get(name)?.annotations?.readOnlyHint !== true,
+      appToolRequiresConfirmation(mentioned.routes.get(name)),
     callTool: async (name: string, args: Record<string, unknown>): Promise<ToolCallOutcome> => {
       const route = mentioned.routes.get(name);
       if (!route) return { ok: false, error: `Unknown application tool route: ${name}` };
@@ -567,17 +569,21 @@ async function testConfiguredModel(config: StoredConfig): Promise<string> {
   return parsed.text || 'Connected.';
 }
 
+function restartInstalledDesktop(): void {
+  if (!existsSync(STABLE_DESKTOP_EXECUTABLE)) {
+    dialog.showErrorBox(
+      'Working Memory update unavailable',
+      'The installed application was not found at /Applications/Working Memory.app.',
+    );
+    return;
+  }
+  app.relaunch({ execPath: STABLE_DESKTOP_EXECUTABLE, args: [] });
+  app.quit();
+}
+
 function registerIpc(): void {
   ipcMain.on('app:restart', () => {
-    if (!existsSync(STABLE_DESKTOP_EXECUTABLE)) {
-      dialog.showErrorBox(
-        'Working Memory update unavailable',
-        'The installed application was not found at /Applications/Working Memory.app.',
-      );
-      return;
-    }
-    app.relaunch({ execPath: STABLE_DESKTOP_EXECUTABLE, args: [] });
-    app.quit();
+    restartInstalledDesktop();
   });
   ipcMain.handle('environment:discover', async () => environmentState(await environmentManager.discover()));
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
@@ -598,6 +604,7 @@ function registerIpc(): void {
       if (!response.ok || body.ok !== true) {
         throw new Error(`Health check returned HTTP ${response.status}.`);
       }
+
       return {
         state: 'healthy' as const,
         endpoint,
@@ -965,6 +972,33 @@ async function createWindow(): Promise<BrowserWindow> {
       sandbox: true,
     },
   });
+  window.webContents.on('will-frame-navigate', (event) => {
+    if (event.isMainFrame) return;
+    const currentUrl = event.frame?.url;
+    const sameRegisteredApp = isRegisteredContainerAppUiUrl(event.url)
+      && (!currentUrl || new URL(currentUrl).origin === new URL(event.url).origin);
+    if (sameRegisteredApp) return;
+    event.preventDefault();
+    try {
+      const target = new URL(event.url);
+      if (target.protocol === 'http:' || target.protocol === 'https:') {
+        void shell.openExternal(target.toString());
+      }
+    } catch {
+      // The denied navigation is intentionally ignored.
+    }
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const target = new URL(url);
+      if (target.protocol === 'http:' || target.protocol === 'https:') {
+        void shell.openExternal(target.toString());
+      }
+    } catch {
+      // The denied popup is intentionally ignored.
+    }
+    return { action: 'deny' };
+  });
   mainWindow = window;
   window.on('move', () => saveWindowState(window));
   window.on('resize', () => saveWindowState(window));
@@ -1060,6 +1094,10 @@ if (!ownsSingleInstanceLock) {
   });
 
   app.on('second-instance', (_event, argv) => {
+    if (argv.includes('--refresh-desktop')) {
+      restartInstalledDesktop();
+      return;
+    }
     const target = deepLinkFromArgs(argv);
     if (target) {
       void openDeepLink(target).catch((error) => {

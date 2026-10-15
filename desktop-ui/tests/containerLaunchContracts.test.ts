@@ -110,7 +110,17 @@ describe('container app contracts and renderer', () => {
     expect(app).toContain("activateHeaderTab('log')");
     expect(app).toContain("let containerAppError = $state('');");
     expect(styles).toContain('@media (max-width: 760px)');
-    for (const action of ['Run', 'Open App', 'Stop', 'Refresh Status']) expect(detail).toContain(`>${action}</button>`);
+    for (const action of ['Run', 'Reload App', 'Open Externally', 'Stop', 'Refresh Status']) {
+      expect(app).toContain(`<span>${action}</span>`);
+    }
+    expect(app).toContain('<span>{containerAppView(menuApp) === \'app\' ? \'App Info\' : \'Show App\'}</span>');
+    expect(app).toContain('class="container-app-tab-health"');
+    expect(app).toContain('class="container-app-tab-refresh"');
+    expect(app).toContain('runContainerAppTabAction(tabApp, \'reload\')');
+    expect(app).toContain('class="container-app-tab-gear"');
+    expect(detail).toContain('class="container-app-frame"');
+    expect(detail).toContain("view === 'app' && app.embeddable");
+    expect(detail).toContain('sandbox="allow-forms allow-scripts allow-same-origin"');
     for (const field of ['Claim title', 'Claim', 'Repository', 'Build context', 'Image', 'Container', 'Docker context', 'State / health', 'Ports', 'URL', 'Last action']) {
       expect(detail).toContain(`['${field}'`);
     }

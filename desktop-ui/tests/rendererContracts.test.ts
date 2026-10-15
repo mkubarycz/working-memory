@@ -17,6 +17,7 @@ describe('desktop tree icon contract', () => {
     expect(preload).toContain("restartDesktop: () => ipcRenderer.send('app:restart')");
     expect(main).toContain("ipcMain.on('app:restart'");
     expect(main).toContain('app.relaunch({ execPath: STABLE_DESKTOP_EXECUTABLE, args: [] })');
+    expect(main).toContain("argv.includes('--refresh-desktop')");
   });
 
   it('loads codicons and gives expandable controls stable dimensions and labels', () => {
@@ -336,7 +337,8 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('recentRunsForContext(chatRuns, currentChatContext)');
     expect(app).toContain('aria-label="Recent messages"');
     expect(app).toContain('<span>Recent messages</span>');
-    expect(app).toContain('scopePreviewExpanded = true');
+    expect(app).toContain('scopePreviewExpanded = true;');
+    expect(app).toContain('scopedRecentRuns.at(-1) ?? null');
     expect(app).toContain('aria-label="Latest response"');
     expect(app).toContain('aria-label="Latest tool activity"');
     expect(app).toContain("scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'");
