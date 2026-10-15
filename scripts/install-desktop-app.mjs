@@ -65,4 +65,20 @@ try {
   throw error;
 }
 
-console.log(`install-desktop-app: updated ${destination} without restarting it`);
+const shouldRefresh = applicationsDirectory === '/Applications'
+  && process.env.WM_DESKTOP_SKIP_REFRESH !== '1';
+if (shouldRefresh) {
+  const refreshed = spawnSync(
+    '/usr/bin/open',
+    ['-na', destination, '--args', '--refresh-desktop'],
+    { encoding: 'utf8' },
+  );
+  if (refreshed.status !== 0) {
+    throw new Error(
+      `Unable to refresh the installed app: ${refreshed.stderr || refreshed.stdout}`,
+    );
+  }
+  console.log(`install-desktop-app: updated and refreshed ${destination}`);
+} else {
+  console.log(`install-desktop-app: updated ${destination}; refresh skipped`);
+}

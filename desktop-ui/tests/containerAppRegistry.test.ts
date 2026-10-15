@@ -4,6 +4,7 @@ import {
   CONTAINER_APP_REGISTRY,
   containerAppDefinitions,
   containerAppRegistration,
+  isRegisteredContainerAppUiUrl,
 } from '../src/main/containerAppRegistry';
 import { resolveContainerAppMentions } from '../src/main/appToolRouting';
 import {
@@ -20,10 +21,11 @@ describe('container app registry', () => {
         id: 'banking-app',
         displayName: 'Banking App',
         icon: 'credit-card',
+        embeddable: true,
         mcp: { transport: 'streamable-http', url: 'http://127.0.0.1:4174/mcp' },
         application: {
           id: 'banking-app',
-          contractVersion: '1.0',
+          contractVersion: '3.0',
           discovery: {
             toolName: 'contract-discover',
             url: 'http://127.0.0.1:4174/.well-known/banking-app-contract',
@@ -117,6 +119,14 @@ describe('container app registry', () => {
     expect(() => containerAppRegistration('sunset-chess-vnext')).toThrow('Unsupported container app');
     expect(() => containerAppRegistration('sunset-chess-1-2')).toThrow('Unsupported container app');
     expect(() => containerAppRegistration('banking')).toThrow('Unsupported container app');
+  });
+
+  it('allows embedded navigation only within registered loopback app URLs', () => {
+    expect(isRegisteredContainerAppUiUrl('http://127.0.0.1:4174/')).toBe(true);
+    expect(isRegisteredContainerAppUiUrl('http://127.0.0.1:4174/?resource=Account&id=cash')).toBe(true);
+    expect(isRegisteredContainerAppUiUrl('http://localhost:4174/')).toBe(false);
+    expect(isRegisteredContainerAppUiUrl('https://127.0.0.1:4174/')).toBe(false);
+    expect(isRegisteredContainerAppUiUrl('https://example.com/')).toBe(false);
   });
 
   it('exposes only the canonical Sunset Chess mention', () => {

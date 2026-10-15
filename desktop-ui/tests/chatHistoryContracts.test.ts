@@ -53,19 +53,26 @@ describe('desktop chat history IPC contract', () => {
     expect(app).toContain('No chat history.');
   });
 
-  it('renders independent Retry actions in scope previews and full journal rows', () => {
+  it('renders a collapsible scoped conversation above the composer with independent Retry actions', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
     const styles = readFileSync(resolve(desktopRoot, 'src/renderer/style.css'), 'utf8');
 
     expect(app).toContain('run.attachments.map((attachment) => ({');
     expect(app.match(/onclick=\{\(\) => void retryRun\(run\)\}/g)).toHaveLength(2);
+    expect(app).toContain('class:expanded={scopePreviewExpanded}');
+    expect(app).toContain("scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'");
     expect(app).toContain('class="scope-preview-row"');
-    expect(app).toContain('class="scope-preview-main"');
+    expect(app).toContain('class="scope-preview-response"');
+    expect(app).toContain('class="scope-preview-human"');
+    expect(app).toContain('class="scope-preview-tools"');
+    expect(app).toContain('class="scope-preview-assistant"');
+    expect(app).toContain('scopePreviewExpanded = true;');
     expect(app).toContain('class="run-actions"');
     expect(app).toContain('disabled={busy || pendingConfirmation !== null}');
     expect(app).toContain('One approval covers this bounded batch.');
     expect(app).toContain('pendingConfirmation.batchCount');
     expect(styles).toMatch(/\.retry-button\s*{[^}]*font-size:\s*10px/s);
+    expect(styles).toMatch(/\.scope-preview-response\s*{[^}]*max-height:\s*min\(42vh,\s*420px\)[^}]*overflow-y:\s*auto/s);
   });
 
   it('exposes discovery and switching through typed renderer-to-main IPC', () => {

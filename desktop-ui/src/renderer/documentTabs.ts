@@ -5,9 +5,56 @@ export interface DocumentTabsState {
   selectedKey: string | null;
 }
 
+export interface PersistedDocumentTabs {
+  version: 1;
+  tabs: Array<{ kind: string; identifier: string }>;
+  selectedKey: string | null;
+}
+
+const MAX_PERSISTED_TABS = 50;
+
 export function documentTabKey(document: DocumentVM): string {
   const identifier = document.slug ?? ('id' in document ? document.id : document.title);
   return `${document.kind}:${identifier}`;
+}
+
+export function serializeDocumentTabs(state: DocumentTabsState): string {
+  return JSON.stringify({
+    version: 1,
+    tabs: state.tabs.slice(0, MAX_PERSISTED_TABS).map((document) => ({
+      kind: document.kind,
+      identifier: document.slug ?? ('id' in document ? document.id : document.title),
+    })),
+    selectedKey: state.selectedKey,
+  } satisfies PersistedDocumentTabs);
+}
+
+export function parseDocumentTabs(value: string | null): PersistedDocumentTabs | null {
+  if (!value) return null;
+  try {
+    const candidate = JSON.parse(value) as Partial<PersistedDocumentTabs>;
+    if (
+      candidate.version !== 1
+      || !Array.isArray(candidate.tabs)
+      || candidate.tabs.length > MAX_PERSISTED_TABS
+      || (candidate.selectedKey !== null && typeof candidate.selectedKey !== 'string')
+    ) return null;
+    const tabs: PersistedDocumentTabs['tabs'] = [];
+    for (const tab of candidate.tabs) {
+      if (
+        !tab
+        || typeof tab !== 'object'
+        || typeof tab.kind !== 'string'
+        || !tab.kind.trim()
+        || typeof tab.identifier !== 'string'
+        || !tab.identifier.trim()
+      ) return null;
+      tabs.push({ kind: tab.kind, identifier: tab.identifier });
+    }
+    return { version: 1, tabs, selectedKey: candidate.selectedKey };
+  } catch {
+    return null;
+  }
 }
 
 export function openDocumentTab(state: DocumentTabsState, document: DocumentVM): DocumentTabsState {

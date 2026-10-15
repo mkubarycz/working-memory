@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   namespaceAppTools,
   appMentionSystemInstructions,
+  appToolRequiresConfirmation,
+  hasExplicitChangeSetCommitIntent,
+  hasExplicitChangeSetDiscardIntent,
   normalizeAppAlias,
   resolveContainerAppMentions,
   resolveMentionedAppTools,
@@ -168,6 +171,133 @@ describe('Container App chat routing', () => {
     expect(implicit.contexts).toEqual(explicit.contexts);
     expect(appMentionSystemInstructions(implicit.contexts))
       .toEqual(appMentionSystemInstructions(explicit.contexts));
+  });
+
+  it('suppresses change-set commits for ordinary app requests', async () => {
+    const result = await resolveMentionedAppTools(
+      '@banking-app update this account',
+      apps,
+      {
+        readClaim: async (appId) => ({
+          slug: appId,
+          title: 'Banking',
+          repository: '/banking',
+          mcp: bankingEndpoint,
+        }),
+        inspect: async () => ({ ready: true, state: 'healthy', error: null }),
+        connect: async () => undefined,
+        listTools: async (_appId, endpoint) => listed([
+          readTool,
+          {
+            name: 'change-set-commit',
+            description: 'Commit an open change set.',
+            inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+            annotations: { destructiveHint: true },
+          },
+        ], 4, endpoint),
+      },
+    );
+
+    expect(result.tools.map((tool) => tool.name)).toEqual(['app__banking-app__player-list']);
+    expect([...result.routes.values()].map((route) => route.originalToolName)).toEqual(['player-list']);
+  });
+
+  it('suppresses change-set discards for ordinary app requests', async () => {
+    const result = await resolveMentionedAppTools(
+      '@banking-app update this account',
+      apps,
+      {
+        readClaim: async (appId) => ({
+          slug: appId,
+          title: 'Banking',
+          repository: '/banking',
+          mcp: bankingEndpoint,
+        }),
+        inspect: async () => ({ ready: true, state: 'healthy', error: null }),
+        connect: async () => undefined,
+        listTools: async (_appId, endpoint) => listed([
+          readTool,
+          {
+            name: 'change-set-discard',
+            description: 'Discard an open change set.',
+            inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+            annotations: { destructiveHint: true },
+          },
+        ], 4, endpoint),
+      },
+    );
+
+    expect(result.tools.map((tool) => tool.name)).toEqual(['app__banking-app__player-list']);
+    expect([...result.routes.values()].map((route) => route.originalToolName)).toEqual(['player-list']);
+  });
+
+  it('recognizes explicit change-set discard intent', () => {
+    expect(hasExplicitChangeSetDiscardIntent('discard these staged changes')).toBe(true);
+    expect(hasExplicitChangeSetDiscardIntent('revert the change set')).toBe(true);
+    expect(hasExplicitChangeSetDiscardIntent('update this account')).toBe(false);
+  });
+
+  it('exposes change-set discards for explicit discard intent', async () => {
+    const result = await resolveMentionedAppTools(
+      '@banking-app discard these staged changes',
+      apps,
+      {
+        readClaim: async (appId) => ({
+          slug: appId,
+          title: 'Banking',
+          repository: '/banking',
+          mcp: bankingEndpoint,
+        }),
+        inspect: async () => ({ ready: true, state: 'healthy', error: null }),
+        connect: async () => undefined,
+        listTools: async (_appId, endpoint) => listed([
+          {
+            name: 'change-set-discard',
+            description: 'Discard an open change set.',
+            inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+            annotations: { destructiveHint: true },
+          },
+        ], 4, endpoint),
+      },
+    );
+
+    expect(result.tools.map((tool) => tool.name)).toEqual(['app__banking-app__change-set-discard']);
+    expect([...result.routes.values()].map((route) => route.originalToolName)).toEqual(['change-set-discard']);
+    expect(appToolRequiresConfirmation([...result.routes.values()][0])).toBe(true);
+  });
+
+  it('exposes change-set commits with their confirmation annotation for explicit commit intent', async () => {
+    const result = await resolveMentionedAppTools(
+      '@banking-app commit all these changes',
+      apps,
+      {
+        readClaim: async (appId) => ({
+          slug: appId,
+          title: 'Banking',
+          repository: '/banking',
+          mcp: bankingEndpoint,
+        }),
+        inspect: async () => ({ ready: true, state: 'healthy', error: null }),
+        connect: async () => undefined,
+        listTools: async (_appId, endpoint) => listed([{
+          name: 'change-set-commit',
+          description: 'Commit an open change set.',
+          inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+          annotations: { destructiveHint: true },
+        }], 4, endpoint),
+      },
+    );
+
+    expect(hasExplicitChangeSetCommitIntent('commit all these changes')).toBe(true);
+    expect(result.tools.map((tool) => tool.name)).toEqual(['app__banking-app__change-set-commit']);
+    const routes = [...result.routes.values()];
+    expect(routes).toEqual([
+      expect.objectContaining({
+        originalToolName: 'change-set-commit',
+        annotations: { destructiveHint: true },
+      }),
+    ]);
+    expect(appToolRequiresConfirmation(routes[0])).toBe(true);
   });
 
   it('uses the live claim MCP endpoint as source of truth', async () => {

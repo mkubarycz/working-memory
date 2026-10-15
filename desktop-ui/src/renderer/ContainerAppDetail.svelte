@@ -1,16 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { AppMcpStatus, AppMcpTool, AppResourceContract, ContainerAppStatus } from '../shared/contracts';
+  import type {
+    AppMcpStatus,
+    AppMcpTool,
+    AppResourceContract,
+    ContainerAppResourceReference,
+    ContainerAppStatus,
+  } from '../shared/contracts';
   import { effectiveContainerAppMcp, type ContainerAppItem } from './containerApps';
+  import { parseContainerAppResourceReference } from './resourceDrag';
 
   interface Props {
     app: ContainerAppItem;
     status?: ContainerAppStatus;
-    busy: boolean;
-    onAction: (action: 'run' | 'open' | 'stop' | 'refresh') => void;
+    view: 'app' | 'info';
+    reloadVersion: number;
+    onAttachResource: (reference: ContainerAppResourceReference) => void;
   }
 
-  let { app, status, busy, onAction }: Props = $props();
+  let { app, status, view, reloadVersion, onAttachResource }: Props = $props();
+  let embeddedFrame = $state<HTMLIFrameElement | null>(null);
   let mcpStatus = $state<AppMcpStatus | null>(null);
   let tools = $state<AppMcpTool[]>([]);
   let selectedTool = $state('');
@@ -21,6 +30,9 @@
   let contract = $state<AppResourceContract | null>(null);
   let contractBusy = $state(false);
   const mcpEndpoint = $derived(effectiveContainerAppMcp(app, status));
+  const embeddedUrl = $derived(app.embeddable
+    ? resolveEmbeddedUrl(status, app.application?.uiUrl)
+    : null);
   const contractResourceCount = $derived(contract
     ? Array.isArray(contract.resources)
       ? contract.resources.length
@@ -53,6 +65,22 @@
     ] : []),
     ['Last action', status.lastAction],
   ] : []);
+
+  function resolveEmbeddedUrl(
+    candidate: ContainerAppStatus | undefined,
+    registeredUiUrl: string | undefined,
+  ): string | null {
+    if (!candidate?.ready) return null;
+    try {
+      const url = new URL(registeredUiUrl ?? candidate.url);
+      return url.protocol === 'http:'
+        && (url.hostname === '127.0.0.1' || url.hostname === 'localhost')
+        ? url.toString()
+        : null;
+    } catch {
+      return null;
+    }
+  }
 
   async function refreshMcpStatus(): Promise<void> {
     mcpStatus = await window.workingMemory.getAppMcpStatus(app.id);
@@ -140,27 +168,60 @@
     }
   }
 
-  onMount(() => void refreshMcpStatus().then(async () => {
-    if (mcpStatus?.state === 'connected' && status?.application) await refreshContract();
-  }).catch((error) => {
-    mcpError = error instanceof Error ? error.message : String(error);
-  }));
+  function handleAppMessage(event: MessageEvent): void {
+    if (!embeddedFrame?.contentWindow || event.source !== embeddedFrame.contentWindow || !embeddedUrl) return;
+    let expectedOrigin: string;
+    try {
+      expectedOrigin = new URL(embeddedUrl).origin;
+    } catch {
+      return;
+    }
+    if (event.origin !== expectedOrigin || !event.data || typeof event.data !== 'object') return;
+    const message = event.data as { type?: unknown; reference?: unknown };
+    if (message.type !== 'kubarycz:container-app-resource') return;
+    const reference = parseContainerAppResourceReference(JSON.stringify(message.reference));
+    if (reference?.appId === app.id) onAttachResource(reference);
+  }
+
+  onMount(() => {
+    window.addEventListener('message', handleAppMessage);
+    void refreshMcpStatus().then(async () => {
+      if (mcpStatus?.state === 'connected' && status?.application) await refreshContract();
+    }).catch((error) => {
+      mcpError = error instanceof Error ? error.message : String(error);
+    });
+    return () => window.removeEventListener('message', handleAppMessage);
+  });
 </script>
 
-<section class="container-app-detail" aria-label={`${app.displayName} details`}>
-  <header>
-    <div>
-      <p class="eyebrow">Container app</p>
-      <h1>{app.displayName}</h1>
-    </div>
-    <span class="detail-state state-{status?.state ?? 'unknown'}">{busy ? 'Working…' : status?.state ?? 'Loading…'}</span>
-  </header>
-  <div class="container-app-detail-actions">
-    <button class="primary" disabled={busy} onclick={() => onAction('run')}>Run</button>
-    <button class="secondary" disabled={busy} onclick={() => onAction('open')}>Open App</button>
-    <button class="secondary" disabled={busy} onclick={() => onAction('stop')}>Stop</button>
-    <button class="secondary" disabled={busy} onclick={() => onAction('refresh')}>Refresh Status</button>
-  </div>
+<section
+  class="container-app-detail"
+  class:container-app-surface={view === 'app' && app.embeddable}
+  aria-label={view === 'app' ? `${app.displayName} application` : `${app.displayName} information`}
+>
+  {#if view === 'app' && app.embeddable}
+    {#if embeddedUrl}
+      {#key reloadVersion}
+      <iframe
+        bind:this={embeddedFrame}
+        class="container-app-frame"
+        title={`${app.displayName} application`}
+        src={embeddedUrl}
+        sandbox="allow-forms allow-scripts allow-same-origin"
+        referrerpolicy="no-referrer"
+      ></iframe>
+      {/key}
+    {:else}
+      <div class="container-app-frame-state">
+        Run the container and wait for a healthy status to use the embedded application.
+      </div>
+    {/if}
+  {:else}
+    <div class="container-app-info">
+      <header>
+        <p class="eyebrow">Container app</p>
+        <h1>{app.displayName}</h1>
+      </header>
   {#if status?.application}
     <section class="app-contract" aria-label={`${app.displayName} resource contract`}>
       <div class="container-app-detail-actions">
@@ -224,5 +285,7 @@
       {#if mcpError}<p class="container-app-error" role="alert">{mcpError}</p>{/if}
       {#if toolResult}<pre aria-label="Tool result">{toolResult}</pre>{/if}
     </section>
+  {/if}
+    </div>
   {/if}
 </section>

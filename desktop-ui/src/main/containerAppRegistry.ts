@@ -32,6 +32,7 @@ export const CONTAINER_APP_REGISTRY: readonly ContainerAppRegistration[] = [
     id: 'banking-app',
     displayName: 'Banking App',
     icon: 'credit-card',
+    embeddable: true,
     claimTitle: 'Banking App',
     sourceEnvironmentVariable: 'BANKING_APP_SOURCE',
     projectDirectory: 'BankingApp',
@@ -48,7 +49,7 @@ export const CONTAINER_APP_REGISTRY: readonly ContainerAppRegistration[] = [
     mcp: { transport: 'streamable-http', url: 'http://127.0.0.1:4174/mcp' },
     application: {
       id: 'banking-app',
-      contractVersion: '1.0',
+      contractVersion: '3.0',
       discovery: {
         toolName: 'contract-discover',
         url: 'http://127.0.0.1:4174/.well-known/banking-app-contract',
@@ -101,10 +102,11 @@ export function containerAppRegistration(id: string): ContainerAppRegistration {
 }
 
 export function containerAppDefinitions(): ContainerAppDefinition[] {
-  return CONTAINER_APP_REGISTRY.map(({ id, displayName, icon, mcp, application }) => ({
+  return CONTAINER_APP_REGISTRY.map(({ id, displayName, icon, embeddable, mcp, application }) => ({
     id,
     displayName,
     icon,
+    ...(embeddable ? { embeddable } : {}),
     ...(mcp ? { mcp } : {}),
     ...(application ? { application } : {}),
   }));
@@ -112,4 +114,23 @@ export function containerAppDefinitions(): ContainerAppDefinition[] {
 
 export function isContainerAppId(id: string): id is ContainerAppId {
   return CONTAINER_APP_REGISTRY.some((app) => app.id === id);
+}
+
+export function isRegisteredContainerAppUiUrl(rawUrl: string): boolean {
+  let candidate: URL;
+  try {
+    candidate = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  if (
+    candidate.protocol !== 'http:'
+    || (candidate.hostname !== '127.0.0.1' && candidate.hostname !== 'localhost')
+  ) return false;
+  return CONTAINER_APP_REGISTRY.some((app) => {
+    if (!app.application?.uiUrl) return false;
+    const registered = new URL(app.application.uiUrl);
+    return candidate.origin === registered.origin
+      && candidate.pathname.startsWith(registered.pathname);
+  });
 }

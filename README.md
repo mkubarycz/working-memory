@@ -49,9 +49,11 @@ npm run compile:desktop   # builds and updates /Applications/Working Memory.app 
 
 Local macOS desktop builds always update the stable
 `/Applications/Working Memory.app` bundle, which can be kept in the Dock. A
-build does not restart the running desktop process. Use the Refresh button in
-the desktop Active rail when you are ready to quit and relaunch into the newly
-built application. CI builds prepare the application bundle but skip the local
+build signals the installed desktop process to refresh after installation;
+set `WM_DESKTOP_SKIP_REFRESH=1` to suppress that behavior. The desktop stores
+open document-tab identities and the selected tab per Working Memory
+environment, then reopens current resource data in the same order after a
+restart. CI builds prepare the application bundle but skip the local
 `/Applications` installation.
 
 Local builds automatically use the reusable
@@ -128,9 +130,15 @@ one-liner above.
 ## Desktop container apps
 
 The desktop **Container Apps** right-rail tab lists registered local
-applications. Selecting one opens its resource document in the middle
-stage, where its launch, health, contract, MCP, and refresh actions remain
-available:
+applications. Selecting an app registered with `embeddable: true` opens its UI
+as a full-stage document tab. The tab health light and gear menu expose launch,
+reload, external-open, stop, refresh, and App Info actions. Non-embeddable apps
+open directly to App Info.
+
+On local macOS builds, the desktop installer signals the running installed
+copy to relaunch after the newly signed bundle is in place. Set
+`WM_DESKTOP_SKIP_REFRESH=1` only when a build must update the application
+without refreshing it.
 
 | App | ContainerClaim | Container | URL | Source override |
 |---|---|---|---|---|
@@ -195,16 +203,72 @@ that app's advertised MCP tools in a model request. For example,
 chooses the MCP tool and arguments from its description and schema. An app must
 already have a current ContainerClaim that advertises MCP and its managed
 container must be running and healthy; chat never starts it automatically.
+
+The selected document's scoped conversation is also shown immediately above
+the composer. Sending a command automatically expands this inline surface to
+show the latest human prompt, tool activity, and Working Memory response.
+Collapsing it with the header chevron replaces the detailed exchange with at
+most two abbreviated recent commands for the same document or Container App.
+The full run remains available through Chat history.
+
 Read-only MCP tools run directly, while app tools not explicitly annotated
 read-only require confirmation. Command journals record the provider-safe
 namespaced tool name, sanitized arguments/results, and confirmed app writes as
-mutations.
+mutations. An app's `change-set-commit` and `change-set-discard` tools are
+excluded from both the model tool list and routing table unless the current
+message explicitly asks to commit, discard, or revert the staged changes; when
+exposed, either operation still requires confirmation.
 
 Selecting a Container App document makes that app the implicit target for each
 submitted turn until another app or document is selected. This supplies the
 same tools and routing as its explicit `@container-app-id` mention without
 changing the user-visible or persisted message text. Explicit mentions still
 work and can add other registered apps to a request.
+
+### Container App resource references
+
+Embedded apps can expose draggable resources through the shared MIME type
+`application/vnd.kubarycz.container-app-resource+json`. Version 2 is:
+
+```json
+{
+  "version": 2,
+  "appId": "banking-app",
+  "resourceKind": "LedgerItem",
+  "resourceId": "projection-item:123",
+  "title": "Monthly mortgage",
+  "deepLink": "http://127.0.0.1:4174/?resource=LedgerItem&id=projection-item%3A123",
+  "preview": {
+    "date": "2026-02-01",
+    "description": "Monthly mortgage",
+    "amount": "$400.00",
+    "details": [{ "label": "Status", "value": "Planned" }]
+  }
+}
+```
+
+Required identity fields are version, app ID, resource kind, resource ID,
+title, and a registered loopback deep link. `preview` is optional and supports
+the common date, description, and amount fields plus a bounded list of generic
+label/value details. Apps set this JSON on the shared MIME during `dragstart`;
+they should also provide `text/plain`, `text/markdown`, and `text/uri-list`
+fallbacks. An embedded app may request the same attachment explicitly with:
+
+```js
+window.parent.postMessage({
+  type: 'kubarycz:container-app-resource',
+  reference
+}, '*');
+```
+
+Working Memory validates the source frame, app identity, loopback URL, and
+notation before accepting it. Dropping the resource into chat renders one
+Markdown link labeled from its preview, adds the canonical `@app-id`, and
+therefore gives the model the app's discovered MCP tools. The deep link's
+resource kind and ID are the authoritative app-owned identity; the model is
+instructed to resolve that identity through the app contract rather than
+treating it as a Working Memory document. Version 1 references remain accepted
+and are normalized to version 2.
 
 An explicit or implicit app target injects the live claim identity and MCP
 connection context into the desktop model prompt. The model is instructed to

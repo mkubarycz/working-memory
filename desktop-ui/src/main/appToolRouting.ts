@@ -81,6 +81,22 @@ const MAX_APP_SCHEMA_BYTES = 128 * 1024;
 
 const MODEL_NAME = /^[A-Za-z0-9_-]+$/;
 const MAX_MODEL_NAME_LENGTH = 64;
+const CHANGE_SET_COMMIT_TOOL = 'change-set-commit';
+const CHANGE_SET_DISCARD_TOOL = 'change-set-discard';
+const EXPLICIT_CHANGE_SET_COMMIT_INTENT = /\bcommit\b(?:(?:\s+\S+){0,4})?\s+\b(?:all\s+)?(?:these|those|the|this|my)?\s*(?:change[\s-]?set|changes|staged changes)\b/i;
+const EXPLICIT_CHANGE_SET_DISCARD_INTENT = /\b(?:discard|revert)\b(?:(?:\s+\S+){0,4})?\s+\b(?:all\s+)?(?:these|those|the|this|my)?\s*(?:change[\s-]?set|changes|staged changes)\b/i;
+
+export function hasExplicitChangeSetCommitIntent(message: string): boolean {
+  return EXPLICIT_CHANGE_SET_COMMIT_INTENT.test(message);
+}
+
+export function hasExplicitChangeSetDiscardIntent(message: string): boolean {
+  return EXPLICIT_CHANGE_SET_DISCARD_INTENT.test(message);
+}
+
+export function appToolRequiresConfirmation(route: AppToolRoute | undefined): boolean {
+  return route?.annotations?.readOnlyHint !== true;
+}
 
 export function resolveContainerAppMentions(
   text: string,
@@ -261,16 +277,24 @@ export async function resolveMentionedAppTools(
       endpoint: listing.endpoint,
     });
   }
-  const count = resolved.reduce((sum, app) => sum + app.tools.length, 0);
+  const exposeChangeSetCommit = hasExplicitChangeSetCommitIntent(message);
+  const exposeChangeSetDiscard = hasExplicitChangeSetDiscardIntent(message);
+  const visibleApps = resolved.map((app) => ({
+    ...app,
+    tools: app.tools.filter((tool) =>
+      (tool.name !== CHANGE_SET_COMMIT_TOOL || exposeChangeSetCommit)
+      && (tool.name !== CHANGE_SET_DISCARD_TOOL || exposeChangeSetDiscard)),
+  }));
+  const count = visibleApps.reduce((sum, app) => sum + app.tools.length, 0);
   if (count > MAX_APP_TOOLS) {
     throw new Error(`Mentioned Container Apps expose ${count} tools; the chat limit is ${MAX_APP_TOOLS}.`);
   }
-  const schemaBytes = Buffer.byteLength(JSON.stringify(resolved.map((app) =>
+  const schemaBytes = Buffer.byteLength(JSON.stringify(visibleApps.map((app) =>
     app.tools.map((tool) => tool.inputSchema))));
   if (schemaBytes > MAX_APP_SCHEMA_BYTES) {
     throw new Error(`Mentioned Container App MCP schemas exceed the ${MAX_APP_SCHEMA_BYTES}-byte chat limit.`);
   }
-  const namespaced = namespaceAppTools(resolved);
+  const namespaced = namespaceAppTools(visibleApps);
   for (const name of namespaced.routes.keys()) assertProviderSafeToolName(name);
   namespaced.contexts = resolved.map((app) => {
     const claim = claims.get(app.id)!;
@@ -320,6 +344,7 @@ export function appMentionSystemInstructions(contexts: readonly AppMentionContex
     `Mentioned application context: ${identity.join('; ')}.`,
     'Before any other mentioned-app operation, call each application contract-discovery tool to obtain its live Zod-derived resource contract and business rules.',
     'Then explicitly plan the resource envelopes and relationships needed by the request before invoking read or mutation tools.',
+    'A Container App resource link identifies an app-owned resource by its loopback deep-link resource kind and ID; use that identity with the mentioned application tools rather than treating the link as a Working Memory document.',
     'Use the live contract as authoritative; do not infer business rules from tool names or Working Memory metadata.',
     ...(missing.length ? [`No advertised contract-discovery tool was found for ${missing.join(', ')}; explain that limitation instead of guessing.`] : []),
   ].join(' ');

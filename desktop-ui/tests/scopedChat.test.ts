@@ -18,7 +18,7 @@ function run(
 describe('scoped chat previews', () => {
   const context = { kind: 'topic', routeKind: 'topic' as const, identifier: 'selected', title: 'Selected' };
 
-  it('returns at most the latest two runs matching kind and primary identifier exactly', () => {
+  it('returns the latest two matching runs in chronological display order', () => {
     const runs = [
       run('old', 10, 'Topic', 'selected'),
       run('wrong-kind', 40, 'Workstream', 'selected'),
@@ -26,7 +26,7 @@ describe('scoped chat previews', () => {
       run('middle', 20, 'topic', 'selected'),
       run('new', 30, 'topic', 'selected'),
     ];
-    expect(recentRunsForContext(runs, context).map((item) => item.key)).toEqual(['new', 'middle']);
+    expect(recentRunsForContext(runs, context).map((item) => item.key)).toEqual(['middle', 'new']);
   });
 
   it('returns no previews without a selected document and creates a stable encoded DOM id', () => {
@@ -44,5 +44,21 @@ describe('scoped chat previews', () => {
     ]);
 
     expect(recentRunsForContext([related, unrelated], context).map((item) => item.key)).toEqual(['created-topic']);
+  });
+
+  it('matches selected container-app context across canonical kind formatting', () => {
+    const appContext = {
+      kind: 'container-app',
+      routeKind: 'document' as const,
+      identifier: 'banking-app',
+      title: 'Banking App',
+      containerAppId: 'banking-app' as const,
+    };
+    const older = run('older-app-run', 10, 'ContainerApp', 'banking-app');
+    const latest = run('latest-app-run', 20, 'container-app', 'banking-app');
+    const other = run('other-app-run', 30, 'container-app', 'sunset-chess');
+
+    expect(recentRunsForContext([latest, other, older], appContext).map((item) => item.key))
+      .toEqual(['older-app-run', 'latest-app-run']);
   });
 });
