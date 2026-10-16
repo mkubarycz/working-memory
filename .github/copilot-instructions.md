@@ -47,5 +47,7 @@ restarting a running process.
 - Use native `working-memory://open/<kind>/<id>` links inside the desktop app.
   The loopback `http://127.0.0.1:7718/open/...` bridge remains only for Agent
   Window surfaces that block custom schemes.
-- Do not reintroduce VSIX release workflows. A standalone installer/updater is
-  required before release publishing resumes.
+- Do not reintroduce VSIX release workflows. Desktop releases ship as
+  electron-builder installers (macOS DMG/ZIP, Windows NSIS) built by
+  `.github/workflows/release.yml`; the installed app starts the bundled
+  control plane through Docker Desktop when no environment is running.

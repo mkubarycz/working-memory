@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import BrainMark from './BrainMark.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import type {
     PanelAction,
@@ -49,6 +50,7 @@
     onOpenTopicBacklog: () => void;
     onDiscoverEnvironments: () => Promise<void>;
     onSwitchEnvironment: (mcpUrl: string) => Promise<void>;
+    onManageInstances: () => void;
   }
 
   let {
@@ -57,7 +59,7 @@
     onReparentTopic,
     onAddTopic,
     onOpenTopicBacklog,
-    onDiscoverEnvironments, onSwitchEnvironment,
+    onDiscoverEnvironments, onSwitchEnvironment, onManageInstances,
   }: Props = $props();
   const expanded = new SvelteSet<string>();
   let seeded = $state(false);
@@ -729,7 +731,7 @@
   ondragleave={clearExternalDragVisual}
 >
   <header class="active-rail-header">
-    <div class="mark">WM</div>
+    <BrainMark />
     <div class="environment-selector">
       <button
         class="environment-trigger"
@@ -775,6 +777,14 @@
               </button>
             {/each}
           {/if}
+          <div class="environment-menu-separator" role="separator"></div>
+          <button
+            role="menuitem"
+            onclick={(event) => { event.stopPropagation(); environmentMenuOpen = false; onManageInstances(); }}
+          >
+            <span aria-hidden="true" class="codicon codicon-settings"></span>
+            <span>Manage instances…</span>
+          </button>
         </div>
       {/if}
     </div>

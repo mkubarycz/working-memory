@@ -1,6 +1,7 @@
 <script lang="ts">
   import type {
     EditableModelProfile,
+    CopilotModels,
     ModelRouting,
     PublicConfig,
   } from '../../shared/contracts';
@@ -43,6 +44,23 @@
     { id: 'deep', label: 'Deep Thought' },
   ] as const;
   let tab = $state<'models' | 'routing' | 'human'>('models');
+  let copilot = $state<CopilotModels | null>(null);
+  let loadingCopilot = $state(false);
+  let copilotStatus = $state('');
+
+  async function loadCopilotModels(): Promise<void> {
+    loadingCopilot = true;
+    copilotStatus = 'Checking local Copilot...';
+    try {
+      copilot = await window.workingMemory.listCopilotModels();
+      copilotStatus = `Signed in as ${copilot.account}. ${copilot.models.length} models available.`;
+    } catch (error) {
+      copilot = null;
+      copilotStatus = error instanceof Error ? error.message : String(error);
+    } finally {
+      loadingCopilot = false;
+    }
+  }
 </script>
 
 <section class="settings">
@@ -50,7 +68,7 @@
     <p class="eyebrow">Configuration</p>
     <h1>AI models</h1>
     <p>
-      Configure OpenAI-compatible model profiles and route AI work by speed and depth.
+      Configure GitHub Copilot or OpenAI-compatible model profiles and route AI work by speed and depth.
       {credentialStorage === 'secure'
         ? ' Credentials stay in OS-backed secure storage.'
         : credentialStorage === 'local'
@@ -71,17 +89,43 @@
         <fieldset class="model-profile">
           <legend>{profile.name || `Model ${index + 1}`}</legend>
           <label>Name<input bind:value={profile.name} placeholder="Fast local model" /></label>
-          <label>Endpoint<input bind:value={profile.endpoint} placeholder="http://localhost:11434/v1" /></label>
-          <label>Model<input bind:value={profile.model} placeholder="qwen3:14b" /></label>
           <label>
-            API key
-            <input
-              type="password"
-              bind:value={profile.apiKey}
-              placeholder={profile.hasApiKey ? 'Saved' : 'Optional for local endpoints'}
-              autocomplete="new-password"
-            />
+            Provider
+            <select
+              bind:value={profile.provider}
+              onchange={(event) => {
+                profile.model = event.currentTarget.value === 'copilot' ? 'auto' : '';
+                profile.apiKey = '';
+              }}
+            >
+              <option value="openai-compatible">OpenAI-compatible / Azure Foundry</option>
+              <option value="copilot">GitHub Copilot (local CLI)</option>
+            </select>
           </label>
+          {#if profile.provider === 'copilot'}
+            <p>Uses the local Copilot CLI and its GitHub sign-in, not an Azure API key.
+              Sign in from Terminal with <code>copilot login</code> if needed.
+              Copilot plan allowances and organization policies apply. No automatic Azure fallback.</p>
+            <label>Model
+              <input bind:value={profile.model} list="copilot-models" placeholder="auto" />
+            </label>
+            <button class="secondary" disabled={loadingCopilot || saving || testingProfileId !== null} onclick={() => void loadCopilotModels()}>
+              {loadingCopilot ? 'Loading models...' : 'Load Copilot models'}
+            </button>
+            <p role="status">{copilotStatus}</p>
+          {:else}
+            <label>Endpoint<input bind:value={profile.endpoint} placeholder="http://localhost:11434/v1" /></label>
+            <label>Model<input bind:value={profile.model} placeholder="qwen3:14b" /></label>
+            <label>
+              API key
+              <input
+                type="password"
+                bind:value={profile.apiKey}
+                placeholder={profile.hasApiKey ? 'Saved' : 'Optional for local endpoints'}
+                autocomplete="new-password"
+              />
+            </label>
+          {/if}
           <div class="model-profile-actions">
             <button
               class="secondary"
@@ -100,6 +144,11 @@
         <span aria-hidden="true" class="codicon codicon-add"></span>
         Add model profile
       </button>
+      <datalist id="copilot-models">
+        {#each copilot?.models ?? [] as model (model.id)}
+          <option value={model.id}>{model.name}</option>
+        {/each}
+      </datalist>
     </div>
   {:else if tab === 'routing'}
     <div class="routing-matrix">

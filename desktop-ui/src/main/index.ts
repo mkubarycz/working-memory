@@ -32,6 +32,7 @@ import {
   type StoredModelProfile,
 } from './config';
 import { checkConfiguredModel } from './modelHealth';
+import { LocalCopilotProvider } from './copilotProvider';
 import {
   DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
   DesktopChatAgent,
@@ -40,6 +41,7 @@ import {
 } from './desktopChatAgent';
 import {
   DesktopEnvironmentManager,
+  parseLoopbackMcpUrl,
   readPersistedEnvironment,
   writePersistedEnvironment,
 } from './environments';
@@ -88,6 +90,13 @@ import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
 import { loadPromptImages } from './promptImages';
 import { decodeQrPayloads } from './qrDecoder';
+import {
+  DataTierError,
+  DataTierManager,
+  DOCKER_DESKTOP_URL,
+  readManagedInstances,
+  type DataTierInstancesSnapshot,
+} from './dataTier';
 
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
 const STABLE_DESKTOP_EXECUTABLE = '/Applications/Working Memory.app/Contents/MacOS/Electron';
@@ -105,17 +114,92 @@ let pendingDeepLink: DesktopDeepLinkTarget | null = null;
 let desktopLinkBridge: DesktopLinkBridge | null = null;
 const dockerContainers = new DockerContainerService();
 const appMcp = new AppMcpService();
+const copilotProvider = new LocalCopilotProvider();
 const containerOperations = new Set<AbortController>();
 let containerEnvironmentGeneration = 0;
+let dataTier: DataTierManager | null = null;
+let dataTierLaunch: Promise<void> = Promise.resolve();
 
 const environmentManager = new DesktopEnvironmentManager<ControlPlaneClient>({
   createClient: (mcpUrl) => new ControlPlaneClient({ resolveUrl: () => mcpUrl }),
   readPersistedSelection: () => readPersistedEnvironment(environmentFile),
   writePersistedSelection: (mcpUrl) => writePersistedEnvironment(environmentFile, mcpUrl),
+  managedInstances: () => (app.isReady() ? readManagedInstances(dataTierStateDirectory()) : []),
 });
+
+function dataTierStateDirectory(): string {
+  return join(app.getPath('userData'), 'data-tier');
+}
 
 function controlPlane(): ControlPlaneClient {
   return environmentManager.currentClient;
+}
+
+/** Installed builds bundle the control-plane image context; source-tree runs do not. */
+function createDataTierManager(): DataTierManager | null {
+  const buildContext = join(process.resourcesPath, 'data-tier');
+  if (!existsSync(join(buildContext, 'Dockerfile'))) return null;
+  return new DataTierManager({
+    buildContext,
+    stateDirectory: dataTierStateDirectory(),
+    version: app.getVersion(),
+  });
+}
+
+async function discoverEnvironments(): Promise<DesktopEnvironmentState['environments']> {
+  return environmentManager.discover();
+}
+
+/** Connects to a running Working Memory, or starts/creates a managed instance when none is reachable. */
+async function startDataTierOnLaunch(): Promise<void> {
+  if (!dataTier || process.env.WM_DATA_TIER_AUTOSTART === '0') return;
+  const persisted = parseLoopbackMcpUrl(await readPersistedEnvironment(environmentFile) ?? '');
+  const persistedPort = persisted ? Number(persisted.port) : undefined;
+  const current = environmentManager.currentEnvironment;
+  // A reachable environment is enough unless the last-used one is a stopped managed instance.
+  if (current && (current.port === persistedPort || !dataTier.instances.some((instance) => instance.port === persistedPort))) return;
+  try {
+    const mcpUrl = await dataTier.ensureAvailable(persistedPort);
+    await environmentManager.initialize();
+    await environmentManager.switchTo(mcpUrl, () => chatAgent.reset());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[desktop] Unable to start the data tier:', error);
+    const dockerMissing = error instanceof DataTierError && error.code === 'docker-missing';
+    const buttons = dockerMissing ? ['Download Docker Desktop', 'Close'] : ['Retry', 'Close'];
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Working Memory data tier unavailable',
+      message: 'Working Memory could not start its local data tier.',
+      detail: message,
+      buttons,
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response !== 0) return;
+    if (dockerMissing) void shell.openExternal(DOCKER_DESKTOP_URL);
+    else await startDataTierOnLaunch();
+  }
+}
+
+async function dataTierSnapshot(): Promise<DataTierInstancesSnapshot | null> {
+  if (!dataTier) return null;
+  const [snapshot, environments] = await Promise.all([
+    dataTier.list(),
+    discoverEnvironments().catch(() => environmentManager.availableEnvironments),
+  ]);
+  const managed = new Set(snapshot.instances.map((instance) => instance.port));
+  return {
+    ...snapshot,
+    selfHosted: environments
+      .filter((environment) => !managed.has(environment.port))
+      .map(({ port, displayName, mcpUrl }) => ({ port, name: displayName, mcpUrl })),
+  };
+}
+
+function requireDataTier(): DataTierManager {
+  if (!dataTier) throw new Error('Instance management is available in installed builds that include the Working Memory data tier.');
+  return dataTier;
 }
 
 function environmentState(environments = [] as DesktopEnvironmentState['environments']): DesktopEnvironmentState {
@@ -148,6 +232,7 @@ const chatAgent = new DesktopChatAgent({
 const gracefulShutdown = createGracefulShutdown({
   resetAgent: async () => {
     await chatAgent.reset();
+    await copilotProvider.stop();
     await appMcp.disconnectAll();
     await desktopLinkBridge?.close();
   },
@@ -178,15 +263,21 @@ async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
     if (ids.has(id)) throw new Error(`Duplicate model profile id: ${id}`);
     ids.add(id);
     const previous = currentProfiles.get(id);
+    if (profile.provider && !['openai-compatible', 'copilot'].includes(profile.provider)) {
+      throw new Error('Unsupported model provider.');
+    }
+    const provider = profile.provider ?? 'openai-compatible';
     const base: StoredConfig = {
+      provider,
       endpoint: profile.endpoint,
       model: profile.model,
-      ...(previous?.encryptedApiKey ? { encryptedApiKey: previous.encryptedApiKey } : {}),
+      ...(provider !== 'copilot' && previous?.encryptedApiKey ? { encryptedApiKey: previous.encryptedApiKey } : {}),
     };
-    const stored = credentialVault!.store(base, profile.apiKey);
+    const stored = provider === 'copilot' ? base : credentialVault!.store(base, profile.apiKey);
     return {
       id,
       name,
+      provider,
       endpoint: stored.endpoint,
       model: stored.model,
       ...(stored.encryptedApiKey ? { encryptedApiKey: stored.encryptedApiKey } : {}),
@@ -194,6 +285,7 @@ async function saveConfig(input: SaveConfigInput): Promise<StoredConfig> {
   });
   const primary = profiles[0];
   const next: StoredConfig = {
+    provider: primary.provider,
     endpoint: primary.endpoint,
     model: primary.model,
     ...(primary.encryptedApiKey ? { encryptedApiKey: primary.encryptedApiKey } : {}),
@@ -210,12 +302,17 @@ async function configForProfileTest(input: EditableModelProfile): Promise<Stored
   if (!credentialVault) throw new Error('Credential storage has not been initialized');
   const current = await readStoredConfig(configFile);
   const previous = modelProfiles(current).find((profile) => profile.id === input.id);
+  if (input.provider && !['openai-compatible', 'copilot'].includes(input.provider)) {
+    throw new Error('Unsupported model provider.');
+  }
+  const provider = input.provider ?? 'openai-compatible';
   const base: StoredConfig = {
+    provider,
     endpoint: input.endpoint,
     model: input.model,
-    ...(previous?.encryptedApiKey ? { encryptedApiKey: previous.encryptedApiKey } : {}),
+    ...(provider !== 'copilot' && previous?.encryptedApiKey ? { encryptedApiKey: previous.encryptedApiKey } : {}),
   };
-  return credentialVault.store(base, input.apiKey);
+  return provider === 'copilot' ? base : credentialVault.store(base, input.apiKey);
 }
 
 async function openWorkstream(query: string): Promise<ChatResult> {
@@ -376,6 +473,9 @@ async function requestModel(request: ModelHttpRequest): Promise<unknown> {
 }
 
 function configuredRequest(config: StoredConfig | StoredModelProfile): { mode: ReturnType<typeof modelEndpoint>['mode']; url: string; headers: Record<string, string> } {
+  if (config.provider === 'copilot') {
+    return { mode: 'chat-completions', url: 'copilot://local', headers: {} };
+  }
   const endpoint = modelEndpoint(config.endpoint);
   return {
     ...endpoint,
@@ -416,6 +516,7 @@ async function callConfiguredModel(
   images: ChatPromptImage[] = [],
 ): Promise<ChatResult> {
   const profile = resolveModelProfile(config, 'medium', 'complex');
+  if (!profile.model.trim()) throw new Error('Configure a model for Medium / Complex requests first.');
   const request = configuredRequest(profile);
   const environment = environmentManager.currentEnvironment;
   if (images.length && !environment) {
@@ -448,6 +549,10 @@ async function callConfiguredModel(
   return presentAgentResult(await chatAgent.start({
     ...request,
     model: profile.model,
+    provider: profile.provider,
+    ...(profile.provider === 'copilot' ? {
+      modelTurn: copilotProvider.turn.bind(copilotProvider),
+    } : {}),
     message,
     context,
     images: await loadPromptImages(
@@ -480,13 +585,15 @@ async function autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAu
         model: profile.model,
         messages: [{ role: 'user', content: prompt }],
       };
-  const parsed = parseModelTurn(
-    request.mode,
-    await requestModel({ ...request, body, timeoutMs: DESKTOP_MODEL_REQUEST_TIMEOUT_MS }),
-  );
+  const text = profile.provider === 'copilot'
+    ? await copilotProvider.complete(profile.model, prompt, DESKTOP_MODEL_REQUEST_TIMEOUT_MS)
+    : parseModelTurn(
+        request.mode,
+        await requestModel({ ...request, body, timeoutMs: DESKTOP_MODEL_REQUEST_TIMEOUT_MS }),
+      ).text;
   let suggestion: unknown;
   try {
-    suggestion = JSON.parse(parsed.text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim());
+    suggestion = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim());
   } catch {
     throw new Error('Autocomplete model returned invalid JSON.');
   }
@@ -561,6 +668,10 @@ async function ensureConnectedClaim(id: string): Promise<ContainerClaim> {
 }
 
 async function testConfiguredModel(config: StoredConfig): Promise<string> {
+  if (config.provider === 'copilot') {
+    const response = await copilotProvider.complete(config.model, 'Reply with only: connected', DESKTOP_MODEL_REQUEST_TIMEOUT_MS);
+    return `GitHub Copilot (${config.model}): ${response}`;
+  }
   const request = configuredRequest(config);
   const body = request.mode === 'responses'
     ? { model: config.model, input: 'Reply with only: connected' }
@@ -570,28 +681,74 @@ async function testConfiguredModel(config: StoredConfig): Promise<string> {
 }
 
 function restartInstalledDesktop(): void {
-  if (!existsSync(STABLE_DESKTOP_EXECUTABLE)) {
-    dialog.showErrorBox(
-      'Working Memory update unavailable',
-      'The installed application was not found at /Applications/Working Memory.app.',
-    );
+  if (process.platform === 'darwin' && existsSync(STABLE_DESKTOP_EXECUTABLE)) {
+    app.relaunch({ execPath: STABLE_DESKTOP_EXECUTABLE, args: [] });
+    app.quit();
     return;
   }
-  app.relaunch({ execPath: STABLE_DESKTOP_EXECUTABLE, args: [] });
-  app.quit();
+  if (app.isPackaged) {
+    app.relaunch({ args: [] });
+    app.quit();
+    return;
+  }
+  dialog.showErrorBox(
+    'Working Memory update unavailable',
+    'No installed Working Memory application was found to restart.',
+  );
 }
 
 function registerIpc(): void {
   ipcMain.on('app:restart', () => {
     restartInstalledDesktop();
   });
-  ipcMain.handle('environment:discover', async () => environmentState(await environmentManager.discover()));
+  ipcMain.handle('environment:discover', async () => {
+    await dataTierLaunch;
+    return environmentState(await discoverEnvironments());
+  });
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
     containerEnvironmentGeneration += 1;
     for (const operation of containerOperations) operation.abort();
     await appMcp.disconnectAll();
     await environmentManager.switchTo(mcpUrl, () => chatAgent.reset());
     return environmentState(environmentManager.availableEnvironments);
+  });
+  ipcMain.handle('instances:list', () => dataTierSnapshot());
+  ipcMain.handle('instances:create', async (_event, name?: unknown) => {
+    await requireDataTier().create(typeof name === 'string' ? name : undefined);
+    return dataTierSnapshot();
+  });
+  ipcMain.handle('instances:start', async (_event, port: number) => {
+    await requireDataTier().start(port);
+    return dataTierSnapshot();
+  });
+  ipcMain.handle('instances:stop', async (_event, port: number) => {
+    if (environmentManager.currentEnvironment?.port === port) {
+      throw new Error('Switch to another instance before stopping the current one.');
+    }
+    await requireDataTier().stop(port);
+    return dataTierSnapshot();
+  });
+  ipcMain.handle('instances:upgrade', async (_event, port: number) => {
+    await requireDataTier().upgrade(port);
+    return dataTierSnapshot();
+  });
+  ipcMain.handle('instances:rename', async (_event, port: number, name: string) => {
+    await requireDataTier().rename(port, String(name ?? ''));
+    return dataTierSnapshot();
+  });
+  ipcMain.handle('instances:backup', async (event, port: number) => {
+    const manager = requireDataTier();
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options: Electron.OpenDialogOptions = {
+      title: 'Back up Working Memory database',
+      buttonLabel: 'Back Up Here',
+      defaultPath: app.getPath('desktop'),
+      properties: ['openDirectory', 'createDirectory'],
+    };
+    const selection = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    const directory = selection.filePaths[0];
+    if (selection.canceled || !directory) return null;
+    return manager.backup(port, directory);
   });
   ipcMain.handle('backend:health', async () => {
     const environment = environmentManager.currentEnvironment;
@@ -631,8 +788,9 @@ function registerIpc(): void {
     credentialVault?.mode() ?? 'unavailable',
   ));
   ipcMain.handle('config:health', async () => (
-    checkConfiguredModel(await readStoredConfig(configFile), testConfiguredModel)
+    checkConfiguredModel(resolveModelProfile(await readStoredConfig(configFile), 'medium', 'complex'), testConfiguredModel)
   ));
+  ipcMain.handle('config:copilot-models', () => copilotProvider.listModels());
   ipcMain.handle('config:save', async (_event, input: SaveConfigInput) => publicConfig(
     await saveConfig(input),
     credentialVault?.mode() ?? 'unavailable',
@@ -666,7 +824,7 @@ function registerIpc(): void {
   ) => {
     try {
       const config = await readStoredConfig(configFile);
-      if (config.model.trim()) return await callConfiguredModel(message, config, context, images);
+      if (resolveModelProfile(config, 'medium', 'complex').model.trim()) return await callConfiguredModel(message, config, context, images);
       const query = localWorkstreamQuery(message);
       return query
         ? await openWorkstream(query)
@@ -1136,6 +1294,8 @@ if (!ownsSingleInstanceLock) {
     environmentFile = join(app.getPath('userData'), 'environment.json');
     windowStateFile = join(app.getPath('userData'), 'window-state.json');
     await environmentManager.initialize();
+    dataTier = createDataTierManager();
+    dataTierLaunch = startDataTierOnLaunch();
     desktopLinkBridge = new DesktopLinkBridge(
       openDeepLink,
       undefined,

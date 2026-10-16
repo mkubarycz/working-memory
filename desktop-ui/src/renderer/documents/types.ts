@@ -148,6 +148,13 @@ export interface TopicBacklogVM {
   topics: PanelTopicRow[];
 }
 
+export interface InstancesVM {
+  kind: 'instances';
+  id: 'data-tier-instances';
+  slug: null;
+  title: 'Instances';
+}
+
 export interface SettingsVM {
   kind: 'settings';
   id: 'desktop-settings';
@@ -212,6 +219,7 @@ export type DocumentVM =
   | TopicCreateDraftVM
   | TopicBacklogVM
   | SettingsVM
+  | InstancesVM
   | GenericDocVM;
 
 /**

@@ -135,6 +135,7 @@ function prepareMacApp(appBundle, deepSign) {
     );
   }
   writeFileSync(infoPath, info);
+  cpSync(join(desktopRoot, 'build', 'icon.icns'), join(contents, 'Resources', 'electron.icns'));
 
   const appResources = join(contents, 'Resources', 'app');
   mkdirSync(appResources, { recursive: true });
@@ -147,10 +148,17 @@ function prepareMacApp(appBundle, deepSign) {
     `${JSON.stringify({
       name: 'working-memory-desktop',
       productName: 'Working Memory',
+      version: JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8')).version,
       type: 'module',
       main: 'out/main/index.js',
     }, null, 2)}\n`,
   );
+
+  const dataTier = join(contents, 'Resources', 'data-tier');
+  rmSync(dataTier, { recursive: true, force: true });
+  if (existsSync(join(desktopRoot, 'build', 'data-tier', 'Dockerfile'))) {
+    cpSync(join(desktopRoot, 'build', 'data-tier'), dataTier, { recursive: true });
+  }
 
   if (process.platform === 'darwin') {
     const signingRoot = mkdtempSync(join(tmpdir(), 'working-memory-sign-'));

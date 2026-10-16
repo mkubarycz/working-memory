@@ -30,10 +30,66 @@ It does two things at once:
 
 ## Installation status
 
-Working Memory no longer ships as a VS Code extension. The macOS development
-build installs the standalone application at
-`/Applications/Working Memory.app`. A versioned standalone installer/updater is
-still required before tagged builds can be distributed as releases.
+Working Memory no longer ships as a VS Code extension. Tagged releases publish
+standalone installers built by `.github/workflows/release.yml`:
+
+| Platform | Installer | Installs to |
+| --- | --- | --- |
+| macOS (Apple silicon) | `Working-Memory-<version>-mac-arm64.dmg` (or `.zip`) | drag to `/Applications` |
+| Windows (x64) | `Working-Memory-<version>-win-x64.exe` (NSIS) | per-user `%LOCALAPPDATA%\Programs\Working Memory`, Start Menu and desktop shortcuts |
+
+Both installers register the `working-memory://` URL scheme so chat links from
+VS Code and other apps open the desktop UI.
+
+**Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+Installers only install the app; the data tier is managed from inside it.
+
+On launch, Working Memory connects to a running data tier if one is
+reachable (for example an existing `working-memory-control-plane` on
+`127.0.0.1:7717`). Otherwise it starts Docker Desktop (if needed), builds the
+bundled control-plane image for its version, and starts its default
+instance with `docker compose`, creating it on a fresh install. The first
+start builds the image and can take several minutes.
+
+Open **environment menu > Manage instances…** to manage the data-tier
+instances the app created. Reachable Working Memory servers the app did not
+create (for example one started from this repo's `compose.yaml`) are listed as
+**Self-hosted**: you can make them current, but start, stop, upgrade, and
+backup are managed outside the app.
+
+- **Add instance** starts a new, empty data tier. The first instance uses
+  `7717` when it is free; others use the next free port from 7719–7799 (7718
+  is reserved for the desktop link bridge) and are named
+  `working-memory-control-plane-<port>`.
+- **Make current** switches the desktop app to that instance.
+- **Start / Stop** controls the container (the current instance cannot be
+  stopped).
+- **Upgrade** appears when an instance runs an older image than the app; it
+  rebuilds the instance with the new image and keeps its data.
+- **Rename** changes the display name shown in the environment picker.
+- **Back up…** writes a consistent SQLite snapshot
+  (`working-memory-<name>-<timestamp>.sqlite`) to a folder you choose
+  (default: Desktop). The instance must be running.
+
+Managed instances are recorded in the app's `data-tier/instances.json`
+(`~/Library/Application Support/Working Memory` on macOS,
+`%APPDATA%\Working Memory` on Windows). Data lives in:
+
+- macOS: `~/Library/Application Support/WorkingMemory` (bind mount); other
+  ports use `WorkingMemory-<port>`.
+- Windows: the Docker volume `working-memory-data` (SQLite WAL is unreliable
+  on Windows bind mounts); other ports use `working-memory-data-<port>`.
+
+Set `WM_DATA_TIER_AUTOSTART=0` to disable automatic data-tier startup.
+
+Builds are not code-signed or notarized yet. On macOS, use **System Settings >
+Privacy & Security > Open Anyway** (or `xattr -dr com.apple.quarantine
+"/Applications/Working Memory.app"`). On Windows, choose **More info > Run
+anyway** at the SmartScreen prompt. Intel Macs are not packaged; build locally.
+
+The macOS development build (`npm run compile:desktop`) still installs
+`/Applications/Working Memory.app` directly and uses your existing control
+plane.
 
 ---
 
@@ -64,6 +120,56 @@ cannot provide persistent Keychain trust. Other machines can set
 `WM_DESKTOP_CODESIGN_IDENTITY` to an installed certificate identity.
 When no identity is available, builds fall back to ad-hoc signing for CI and
 environments that do not access macOS Keychain credentials.
+
+## Desktop AI providers
+
+Settings > Models supports **OpenAI-compatible / Azure Foundry** and
+**GitHub Copilot (local CLI)** profiles. Fresh installs default to a single
+**GitHub Copilot** profile (model `auto`) on every routing cell. Existing
+configurations are unchanged; adding Copilot does not change existing
+endpoints, keys, or routing.
+
+To dogfood Copilot:
+
+1. Sign in with the account that has your Copilot license: install the
+   official [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli)
+   (`brew install copilot-cli`, or `winget install GitHub.Copilot` on Windows)
+   and run `copilot login`, or run `gh auth login`.
+3. Add a model profile in Settings and choose **GitHub Copilot (local CLI)**.
+4. Use **Load Copilot models**, choose a model (or `auto`), and **Test**.
+5. Assign that profile in **Routing matrix** and save. Chat currently uses
+   **Complex / medium**; topic title/type autocomplete uses **Simple / fast**.
+   Assign all nine cells to Copilot to replace Azure for all configured routes.
+
+The installed desktop app discovers the local CLI on PATH and in common
+Homebrew, WinGet, and user install locations (npm `.cmd` shims are ignored on
+Windows). When no CLI is found it uses the Copilot runtime bundled with the
+app. Set `WM_COPILOT_CLI_PATH` in the app's launch environment for a custom
+executable location, or to `bundled` to force the bundled runtime. It uses the CLI's existing
+authentication; Working Memory does not copy GitHub tokens into its model
+configuration. Copilot requires an eligible account and employer permission
+for CLI use; plan allowances, model access, and billing rules apply.
+
+This is a model-only integration: Copilot's shell, filesystem, MCP tools,
+skills, and repository instruction discovery are not enabled. The app sends
+the current transcript and tool schemas, validates JSON tool proposals, and
+executes them through Working Memory's existing confirmation and command
+journal path. Attached images are passed as image attachments. Each model
+turn uses an isolated session that is deleted afterward. Copilot errors are
+reported explicitly; requests never fall back to Azure automatically.
+Inherited `COPILOT_PROVIDER_*` BYOK overrides are removed from the runtime
+environment so selecting Copilot does not silently use an Azure endpoint.
+
+The normal test suite mocks Copilot and makes no billed model requests. To run
+the opt-in live test with a signed-in local CLI (uses your Copilot allowance):
+
+```bash
+WM_COPILOT_SMOKE=1 npm test --prefix desktop-ui -- tests/copilotProvider.integration.test.ts
+```
+
+Set `WM_COPILOT_SMOKE_MODEL` to test a different model; the default is
+`gpt-5.4-mini`. The smoke test uses synthetic prompts and tool results, never
+mutates Working Memory documents, and deletes its temporary Copilot sessions.
 
 ## Persistent control-plane container
 
@@ -375,10 +481,15 @@ Rules:
 
 ## Releasing
 
-VSIX releases are retired. Do not cut another tagged release until the
-standalone desktop installer/updater workflow is implemented. Local macOS
-builds remain installable through `npm run compile:desktop`.
-tag.
+VSIX releases are retired. `.github/workflows/release.yml` builds the macOS
+DMG/ZIP and Windows NSIS installer on every pull request and push to `main`
+and keeps them as workflow-run artifacts (version
+`<desktop-ui version>-build.<run number>`). Push a `v<version>` tag (for
+example `v0.90.0`) to build that version and publish a GitHub Release; `0.x`
+and suffixed versions are marked prerelease, `1.0.0` and later are full
+releases. The app's footer shows the build time. Build installers locally with
+`npm run package:mac --prefix desktop-ui` or `npm run package:win --prefix
+desktop-ui` (output: `desktop-ui/release/`). There is no auto-updater yet.
 
 ### Migration safety
 

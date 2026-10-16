@@ -38,7 +38,7 @@ describe('desktop chat history IPC contract', () => {
 
     expect(CHAT_HISTORY_POLL_INTERVAL_MS).toBeGreaterThanOrEqual(2_000);
     expect(CHAT_HISTORY_POLL_INTERVAL_MS).toBeLessThanOrEqual(5_000);
-    expect(app).toContain('void refreshLatestHistory(true);');
+    expect(app).toContain('await Promise.all([refreshActive(), refreshLatestHistory(true), refreshBackendHealth(), loadContainerApps()]);');
     expect(app).toContain('window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS)');
     expect(app).toContain('window.clearInterval(historyPoll);');
     expect(app).toContain('if (historyRequestGeneration === generation) return;');

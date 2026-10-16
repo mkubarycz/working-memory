@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
+  import BrainMark from './BrainMark.svelte';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
@@ -8,6 +9,7 @@
   import TopicCreateView from './documents/TopicCreateView.svelte';
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
   import SettingsView from './documents/SettingsView.svelte';
+  import InstancesView from './documents/InstancesView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
     AlertVM,
@@ -824,12 +826,9 @@
     void window.workingMemory.getConfig().then(loadConfig);
     void refreshOpenAiHealth();
     void initializeWorkspace();
-    void refreshActive();
-    void refreshLatestHistory(true);
     const stopListeningForDeepLinks = window.workingMemory.onOpenResource(
       (kind, identifier) => void openResource(kind, identifier),
     );
-    void refreshBackendHealth();
     const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
     const backendHealthPoll = window.setInterval(() => void refreshBackendHealth(), 30_000);
     return () => {
@@ -843,10 +842,9 @@
   });
 
   async function initializeWorkspace(): Promise<void> {
-    await Promise.all([
-      discoverEnvironments(true),
-      loadContainerApps(),
-    ]);
+    // Discovery waits for the launch-time data-tier start, which may change the selected environment.
+    await discoverEnvironments(true);
+    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshBackendHealth(), loadContainerApps()]);
     await restoreDocumentTabs();
   }
 
@@ -1063,6 +1061,7 @@
     modelProfiles = [...modelProfiles, {
       id,
       name: `Model ${modelProfiles.length + 1}`,
+      provider: 'openai-compatible',
       endpoint: endpoint || 'http://localhost:11434/v1',
       model: '',
       hasApiKey: false,
@@ -1201,6 +1200,7 @@
     return {
       id: profile.id,
       name: profile.name,
+      provider: profile.provider,
       endpoint: profile.endpoint,
       model: profile.model,
       hasApiKey: profile.hasApiKey,
@@ -1259,6 +1259,21 @@
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
     restoreDocumentSaveStatus(next.selectedKey);
+  }
+
+  function openInstances(): void {
+    const next = openDocumentTab(
+      { tabs: documents, selectedKey: selectedDocumentKey },
+      { kind: 'instances', id: 'data-tier-instances', slug: null, title: 'Instances' },
+    );
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    restoreDocumentSaveStatus(next.selectedKey);
+  }
+
+  async function makeInstanceCurrent(mcpUrl: string): Promise<void> {
+    await switchEnvironment(mcpUrl);
+    openInstances();
   }
 
   function replaceActive(document: DocumentVM, key = selectedDocumentKey): void {
@@ -1763,6 +1778,7 @@
           error={activeError}
           onDiscoverEnvironments={discoverEnvironments}
           onSwitchEnvironment={switchEnvironment}
+          onManageInstances={openInstances}
           onRefresh={() => window.workingMemory.restartDesktop()}
           onSettings={openSettings}
           onCollapse={() => (activeRailCollapsed = true)}
@@ -1829,7 +1845,7 @@
                 title={document.title}
                 onclick={() => selectDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : 'file'}"></span>
+                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : document.kind === 'instances' ? 'server' : 'file'}"></span>
                 {#if tabApp}
                   <span
                     class="container-app-tab-health"
@@ -1959,6 +1975,12 @@
             onRemoveProfile={removeModelProfile}
             onTestProfile={testModelProfile}
             onSave={saveSettings}
+          />
+        {:else if activeDocument?.kind === 'instances'}
+          <InstancesView
+            selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
+            onMakeCurrent={makeInstanceCurrent}
+            onInstancesChanged={() => discoverEnvironments()}
           />
         {:else if activeDocument?.kind === 'container-app' && selectedContainerApp}
           <ContainerAppDetail
@@ -2294,7 +2316,7 @@
       ><span aria-hidden="true" class="codicon codicon-chevron-left"></span></button>
     {:else}
       <header class="desktop-header">
-        <div class="mark">WM</div>
+        <BrainMark />
         <div class="desktop-header-tabs" role="tablist" aria-label="Desktop views">
           <button
             id="desktop-tab-log"
@@ -2552,10 +2574,10 @@
     </span>
     <span
       class="backend-status state-{openAiHealth.state}"
-      title="Endpoint: {endpoint || 'not configured'}&#10;Signal: startup connectivity test or normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
+      title="Provider: {modelProfiles.find((profile) => profile.id === modelRouting['complex:medium'])?.provider === 'copilot' ? 'Local GitHub Copilot' : endpoint || 'not configured'}&#10;Signal: startup connectivity test or normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
     >
       <span class="status-dot"></span>
-      OpenAI: {openAiHealth.state}
+      AI: {openAiHealth.state}
     </span>
     <span class="desktop-build-status">Built {desktopBuildLabel}</span>
   </footer>

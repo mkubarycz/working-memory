@@ -1,0 +1,53 @@
+appId: com.kubarycz.working-memory
+productName: Working Memory
+copyright: Copyright © Michael Kubarycz
+artifactName: Working-Memory-${version}-${os}-${arch}.${ext}
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+  # Working Memory disables Copilot tools; omit the runtime's desktop-automation helper app.
+  - '!node_modules/@github/copilot-sdk-*/plugins/computer-use/**'
+extraResources:
+  - from: build/data-tier
+    to: data-tier
+# The Copilot SDK copies its native runtime to the user's cache before launching it.
+asarUnpack:
+  - node_modules/@github/copilot-sdk-*/**
+protocols:
+  - name: Working Memory
+    schemes:
+      - working-memory
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  # Ad-hoc signature until a Developer ID certificate and notarization are configured.
+  identity: '-'
+  hardenedRuntime: false
+  icon: build/icon.icns
+  extendInfo:
+    NSCameraUsageDescription: Working Memory uses the camera to attach photos to chat prompts and topics.
+dmg:
+  title: Working Memory ${version}
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  executableName: Working Memory
+  icon: build/icon.png
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createStartMenuShortcut: true
+  createDesktopShortcut: true
+  shortcutName: Working Memory
+  uninstallDisplayName: Working Memory
+  include: build/installer.nsh

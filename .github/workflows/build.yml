@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  pull_request:
 
 jobs:
   build:
@@ -33,6 +34,9 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Typecheck desktop UI
+        run: npm run typecheck --prefix desktop-ui
 
       - name: Test desktop UI
         run: npm test --prefix desktop-ui

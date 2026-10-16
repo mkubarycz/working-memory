@@ -1,8 +1,10 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import type { ModelProvider } from '../shared/contracts';
 
 export const DEFAULT_ENDPOINT = 'http://localhost:11434/v1';
 export const DEFAULT_MODEL_PROFILE_ID = 'default';
+export const DEFAULT_COPILOT_MODEL = 'auto';
 export const DEFAULT_HUMAN_NAME = 'Flesh Bag';
 
 export type AiSpeed = 'slow' | 'medium' | 'fast';
@@ -12,12 +14,14 @@ export type AiRouteKey = `${AiDepth}:${AiSpeed}`;
 export interface StoredModelProfile {
   id: string;
   name: string;
+  provider?: ModelProvider;
   endpoint: string;
   model: string;
   encryptedApiKey?: string;
 }
 
 export interface StoredConfig {
+  provider?: ModelProvider;
   endpoint: string;
   model: string;
   encryptedApiKey?: string;
@@ -131,6 +135,7 @@ export function publicConfig(config: StoredConfig, credentialStorage: Credential
   profiles: Array<{
     id: string;
     name: string;
+    provider: ModelProvider;
     endpoint: string;
     model: string;
     hasApiKey: boolean;
@@ -148,6 +153,7 @@ export function publicConfig(config: StoredConfig, credentialStorage: Credential
     profiles: profiles.map((profile) => ({
       id: profile.id,
       name: profile.name,
+      provider: profile.provider ?? 'openai-compatible',
       endpoint: profile.endpoint,
       model: profile.model,
       hasApiKey: Boolean(profile.encryptedApiKey),
@@ -160,6 +166,7 @@ export async function readStoredConfig(file: string): Promise<StoredConfig> {
   try {
     const parsed = JSON.parse(await readFile(file, 'utf8')) as Partial<StoredConfig>;
     const config: StoredConfig = {
+      provider: parsed.provider === 'copilot' ? 'copilot' : 'openai-compatible',
       endpoint: normalizeEndpoint(parsed.endpoint ?? ''),
       model: typeof parsed.model === 'string' ? parsed.model.trim() : '',
       ...(typeof parsed.encryptedApiKey === 'string' && parsed.encryptedApiKey
@@ -180,6 +187,7 @@ export async function readStoredConfig(file: string): Promise<StoredConfig> {
               .map((profile) => ({
                 id: profile.id.trim(),
                 name: profile.name.trim(),
+                provider: profile.provider === 'copilot' ? 'copilot' as const : 'openai-compatible' as const,
                 endpoint: normalizeEndpoint(profile.endpoint),
                 model: profile.model.trim(),
                 ...(typeof profile.encryptedApiKey === 'string' && profile.encryptedApiKey
@@ -195,8 +203,24 @@ export async function readStoredConfig(file: string): Promise<StoredConfig> {
     };
     return normalizeModelConfig(config);
   } catch {
-    return normalizeModelConfig({ endpoint: DEFAULT_ENDPOINT, model: '' });
+    return defaultStoredConfig();
   }
+}
+
+/** Fresh installs use the signed-in Copilot account instead of assuming a local Ollama server. */
+export function defaultStoredConfig(): StoredConfig {
+  return normalizeModelConfig({
+    provider: 'copilot',
+    endpoint: DEFAULT_ENDPOINT,
+    model: DEFAULT_COPILOT_MODEL,
+    profiles: [{
+      id: DEFAULT_MODEL_PROFILE_ID,
+      name: 'GitHub Copilot',
+      provider: 'copilot',
+      endpoint: DEFAULT_ENDPOINT,
+      model: DEFAULT_COPILOT_MODEL,
+    }],
+  });
 }
 
 export async function writeStoredConfig(file: string, config: StoredConfig): Promise<void> {
@@ -208,6 +232,7 @@ export function modelProfiles(config: StoredConfig): StoredModelProfile[] {
   if (config.profiles?.length) {
     return config.profiles.map((profile) => ({
       ...profile,
+      provider: profile.provider ?? 'openai-compatible',
       endpoint: normalizeEndpoint(profile.endpoint),
       model: profile.model.trim(),
     }));
@@ -215,6 +240,7 @@ export function modelProfiles(config: StoredConfig): StoredModelProfile[] {
   return [{
     id: DEFAULT_MODEL_PROFILE_ID,
     name: 'Default',
+    provider: config.provider ?? 'openai-compatible',
     endpoint: normalizeEndpoint(config.endpoint),
     model: config.model.trim(),
     ...(config.encryptedApiKey ? { encryptedApiKey: config.encryptedApiKey } : {}),
@@ -251,6 +277,7 @@ export function normalizeModelConfig(config: StoredConfig): StoredConfig {
   const profiles = modelProfiles(config);
   const primary = profiles[0];
   return {
+    provider: primary.provider,
     endpoint: primary.endpoint,
     model: primary.model,
     ...(primary.encryptedApiKey ? { encryptedApiKey: primary.encryptedApiKey } : {}),

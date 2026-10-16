@@ -28,8 +28,12 @@ media/codicons/
 # compile:webview). Generated artifact; source of truth is webview-ui/.
 media/webview-ui/
 
-# Platform-specific Electron runtime staged for VSIX packaging.
+# Platform-specific Electron runtime staged for local desktop installs.
 desktop-ui/runtime/
+
+# Desktop installer outputs and the staged control-plane build context.
+desktop-ui/release/
+desktop-ui/build/data-tier/
 
 # Repository-pinned Cruft environment, cache, and disposable smoke projects.
 .tools/

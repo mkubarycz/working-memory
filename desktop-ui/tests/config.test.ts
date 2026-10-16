@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   chatCompletionsUrl,
   CredentialManager,
@@ -7,6 +10,9 @@ import {
   resolveModelProfile,
   normalizeEndpoint,
   publicConfig,
+  normalizeModelConfig,
+  readStoredConfig,
+  writeStoredConfig,
 } from '../src/main/config';
 
 describe('desktop config', () => {
@@ -23,6 +29,7 @@ describe('desktop config', () => {
         profiles: [{
           id: 'default',
           name: 'Default',
+          provider: 'openai-compatible',
           endpoint: 'https://models.example/v1',
           model: 'demo',
           hasApiKey: true,
@@ -39,6 +46,60 @@ describe('desktop config', () => {
           'deep:fast': 'default',
         },
       });
+
+  });
+
+  it('persists mixed providers and keeps each of the nine routes on its selected profile', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wm-provider-config-'));
+    try {
+      const config = normalizeModelConfig({
+        endpoint: 'https://example.services.ai.azure.com/openai/v1/responses',
+        model: 'azure-model',
+        profiles: [
+          { id: 'azure', name: 'Azure', endpoint: 'https://example.services.ai.azure.com/openai/v1/responses', model: 'azure-model', encryptedApiKey: 'azure-secret' },
+          { id: 'copilot', name: 'Copilot', provider: 'copilot', endpoint: '', model: 'auto' },
+        ],
+        routing: { 'complex:medium': 'copilot', 'simple:fast': 'copilot' },
+      });
+      const file = join(directory, 'config.json');
+      await writeStoredConfig(file, config);
+      const restored = await readStoredConfig(file);
+      expect(resolveModelProfile(restored, 'medium', 'complex').provider).toBe('copilot');
+      expect(resolveModelProfile(restored, 'fast', 'simple').provider).toBe('copilot');
+      expect(resolveModelProfile(restored, 'slow', 'deep')).toMatchObject({
+        provider: 'openai-compatible', model: 'azure-model', encryptedApiKey: 'azure-secret',
+      });
+      expect(Object.keys(publicConfig(restored).routing)).toHaveLength(9);
+      expect(publicConfig(restored).profiles[1]).toMatchObject({ provider: 'copilot', hasApiKey: false });
+      expect(JSON.stringify(publicConfig(restored))).not.toContain('azure-secret');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults fresh installs to Copilot on every route instead of a local Ollama server', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wm-fresh-config-'));
+    try {
+      const fresh = await readStoredConfig(join(directory, 'missing.json'));
+      expect(publicConfig(fresh).profiles).toEqual([expect.objectContaining({
+        id: 'default', name: 'GitHub Copilot', provider: 'copilot', model: 'auto', hasApiKey: false,
+      })]);
+      expect(new Set(Object.values(publicConfig(fresh).routing))).toEqual(new Set(['default']));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves Copilot as the primary provider on reload', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wm-primary-provider-'));
+    try {
+      const file = join(directory, 'config.json');
+      await writeStoredConfig(file, normalizeModelConfig({ provider: 'copilot', endpoint: '', model: 'auto' }));
+      expect(await readStoredConfig(file)).toMatchObject({ provider: 'copilot' });
+      expect(publicConfig(await readStoredConfig(file)).profiles[0].provider).toBe('copilot');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('resolves each request through the configured speed and depth route', () => {

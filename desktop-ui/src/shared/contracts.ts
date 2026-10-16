@@ -143,10 +143,17 @@ export type AiSpeed = 'slow' | 'medium' | 'fast';
 export type AiDepth = 'simple' | 'complex' | 'deep';
 export type AiRouteKey = `${AiDepth}:${AiSpeed}`;
 export type ModelRouting = Record<AiRouteKey, string>;
+export type ModelProvider = 'openai-compatible' | 'copilot';
+
+export interface CopilotModels {
+  account: string;
+  models: Array<{ id: string; name: string }>;
+}
 
 export interface PublicModelProfile {
   id: string;
   name: string;
+  provider: ModelProvider;
   endpoint: string;
   model: string;
   hasApiKey: boolean;
@@ -225,6 +232,7 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
     document.kind === 'topic-create'
     || document.kind === 'topic-backlog'
     || document.kind === 'settings'
+    || document.kind === 'instances'
   ) return undefined;
   const identifier = (document.slug ?? document.id).trim();
   if (!identifier) return undefined;
@@ -298,10 +306,52 @@ export interface ResourceDragResult {
   error?: string;
 }
 
+/** A Docker data-tier instance created by this desktop install. */
+export interface ManagedDataTierInstance {
+  port: number;
+  name: string;
+  createdAt: string;
+}
+
+export type DataTierInstanceState = 'running' | 'starting' | 'unhealthy' | 'stopped' | 'missing' | 'unknown';
+
+export interface DataTierInstanceStatus extends ManagedDataTierInstance {
+  mcpUrl: string;
+  container: string;
+  state: DataTierInstanceState;
+  /** App version whose image the container runs, or null when unknown. */
+  version: string | null;
+  updateAvailable: boolean;
+}
+
+export interface DataTierInstancesSnapshot {
+  appVersion: string;
+  /** Null when Docker is reachable; otherwise why instance status is unavailable. */
+  dockerError: string | null;
+  instances: DataTierInstanceStatus[];
+  /** Reachable Working Memory servers this app did not create: connect-only. */
+  selfHosted: SelfHostedInstance[];
+}
+
+export interface SelfHostedInstance {
+  port: number;
+  name: string;
+  mcpUrl: string;
+}
+
 export interface DesktopApi {
   listContainerApps(): Promise<ContainerAppDefinition[]>;
   discoverEnvironments(): Promise<DesktopEnvironmentState>;
   switchEnvironment(mcpUrl: string): Promise<DesktopEnvironmentState>;
+  /** Null when this build cannot manage data-tier instances (no bundled data tier). */
+  listInstances(): Promise<DataTierInstancesSnapshot | null>;
+  createInstance(name?: string): Promise<DataTierInstancesSnapshot | null>;
+  startInstance(port: number): Promise<DataTierInstancesSnapshot | null>;
+  stopInstance(port: number): Promise<DataTierInstancesSnapshot | null>;
+  upgradeInstance(port: number): Promise<DataTierInstancesSnapshot | null>;
+  renameInstance(port: number, name: string): Promise<DataTierInstancesSnapshot | null>;
+  /** Returns the backup file path, or null when the folder picker was cancelled. */
+  backupInstance(port: number): Promise<string | null>;
   getActivePanel(): Promise<PanelData>;
   reorderWorkstreams(updates: DesktopWorkstreamReorderUpdate[]): Promise<void>;
   getConfig(): Promise<PublicConfig>;
@@ -310,6 +360,7 @@ export interface DesktopApi {
   saveConfig(input: SaveConfigInput): Promise<PublicConfig>;
   testConnection(input: SaveConfigInput): Promise<ConnectionResult>;
   testModelProfile(input: EditableModelProfile): Promise<ConnectionResult>;
+  listCopilotModels(): Promise<CopilotModels>;
   sendChat(message: string, context?: ChatContext, images?: ChatPromptImage[]): Promise<ChatResult>;
   autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAutocompleteResult>;
   resolveChatConfirmation(id: string, confirmed: boolean, context?: ChatContext): Promise<ChatResult>;
