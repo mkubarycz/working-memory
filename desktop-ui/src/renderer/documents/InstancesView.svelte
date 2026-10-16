@@ -82,7 +82,7 @@
     const name = newName.trim();
     void run(
       'add',
-      'Adding instance… The first build can take several minutes.',
+      'Adding instance… Loading the bundled backend image can take a few minutes.',
       () => window.workingMemory.createInstance(name || undefined),
       'Instance added.',
     ).then((added) => {
@@ -195,7 +195,7 @@
               <button
                 class="secondary"
                 disabled={busy !== null}
-                onclick={() => void run(`${instance.port}:upgrade`, `Upgrading ${instance.name} to ${snapshot?.appVersion}… This rebuilds the image and keeps its data.`, () => window.workingMemory.upgradeInstance(instance.port), 'Upgraded.')}
+                onclick={() => void run(`${instance.port}:upgrade`, `Upgrading ${instance.name} to ${snapshot?.appVersion}… This loads the bundled image and keeps its data.`, () => window.workingMemory.upgradeInstance(instance.port), 'Upgraded.')}
               >{busy === `${instance.port}:upgrade` ? 'Upgrading…' : `Upgrade to ${snapshot?.appVersion}`}</button>
             {/if}
             <button

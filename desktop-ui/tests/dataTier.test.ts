@@ -43,19 +43,20 @@ describe('data tier launcher', () => {
   });
 
   it('keeps Windows SQLite in a Docker volume and reuses the macOS application-data store', () => {
-    const win = dataTierCompose(windows, 'C:\\Program Files\\Working Memory\\resources\\data-tier', '1.2.3');
+    const win = dataTierCompose(windows, '1.2.3');
     expect(win).toMatchObject({
       name: 'working-memory',
       services: { 'control-plane': {
         container_name: 'working-memory-control-plane',
         image: 'working-memory-control-plane:1.2.3',
-        build: { context: 'C:\\Program Files\\Working Memory\\resources\\data-tier', dockerfile: 'Dockerfile' },
+        pull_policy: 'never',
         ports: ['127.0.0.1:7717:7717'],
         volumes: [{ type: 'volume', source: 'working-memory-data', target: '/data' }],
       } },
       volumes: { 'working-memory-data': { name: 'working-memory-data' } },
     });
-    expect(dataTierCompose(mac, '/Applications/Working Memory.app/Contents/Resources/data-tier', '1.2.3')).toMatchObject({
+    expect(JSON.stringify(win)).not.toContain('"build"');
+    expect(dataTierCompose(mac, '1.2.3')).toMatchObject({
       services: { 'control-plane': {
         volumes: [{ type: 'bind', source: '/Users/me/Library/Application Support/WorkingMemory', target: '/data' }],
       } },
@@ -72,7 +73,7 @@ describe('data tier launcher', () => {
       container: 'working-memory-control-plane-7721',
       volume: 'working-memory-data-7721',
     });
-    expect(dataTierCompose(mac, '/ctx', '1', 7721)).toMatchObject({
+    expect(dataTierCompose(mac, '1', 7721)).toMatchObject({
       name: 'working-memory-7721',
       services: { 'control-plane': {
         container_name: 'working-memory-control-plane-7721',
@@ -81,7 +82,7 @@ describe('data tier launcher', () => {
         volumes: [{ source: '/Users/me/Library/Application Support/WorkingMemory-7721' }],
       } },
     });
-    expect(dataTierCompose(windows, 'C:\\ctx', '1', 7721)).toMatchObject({
+    expect(dataTierCompose(windows, '1', 7721)).toMatchObject({
       volumes: { 'working-memory-data-7721': { name: 'working-memory-data-7721' } },
     });
   });
@@ -132,7 +133,9 @@ describe('data tier launcher', () => {
     await expect(manager.create()).resolves.toEqual({ port: 7717, name: 'Working Memory', createdAt: '2026-10-16T12:00:00.000Z' });
     expect(launchDetached).toHaveBeenCalledWith(desktop, []);
     const composeFile = join(directory, 'instances', '7717', 'compose.yaml');
-    expect(calls.filter((args) => args[0] === 'compose')).toEqual([['compose', '--file', composeFile, 'up', '--detach', '--wait']]);
+    expect(calls).toContainEqual(['load', '--input', join('C:\\ctx', 'image.tar')]);
+    expect(calls.findIndex((args) => args[0] === 'load')).toBeLessThan(calls.findIndex((args) => args[0] === 'compose'));
+    expect(calls.filter((args) => args[0] === 'compose')).toEqual([['compose', '--file', composeFile, 'up', '--detach', '--wait', '--no-build', '--pull', 'never']]);
     expect(JSON.parse(readFileSync(composeFile, 'utf8'))).toMatchObject({
       name: 'working-memory',
       services: { 'control-plane': { image: 'working-memory-control-plane:2.0.0' } },
@@ -140,6 +143,29 @@ describe('data tier launcher', () => {
     expect(JSON.parse(readFileSync(join(directory, 'instances.json'), 'utf8'))).toEqual({
       instances: [{ port: 7717, name: 'Working Memory', createdAt: '2026-10-16T12:00:00.000Z' }],
     });
+  });
+
+  it('surfaces image-load failures before Compose and permits retrying', async () => {
+    let fail = true;
+    const calls: string[][] = [];
+    const runner: CommandRunner = {
+      run: vi.fn(async (_file, args) => {
+        calls.push(args);
+        if (args[0] === 'load' && fail) throw new CommandExecutionError('archive is corrupt');
+        return { stdout: '', stderr: '' };
+      }),
+    };
+    const manager = new DataTierManager({
+      ...windows, buildContext: 'C:\\resources\\data-tier', stateDirectory: stateDirectory(), version: '1',
+      runner, healthy: async () => true, portAvailable: async () => true,
+      fileExists: (candidate) => candidate.endsWith('docker.exe'),
+    });
+    await expect(manager.create()).rejects.toThrow('archive is corrupt');
+    expect(manager.instances).toEqual([]);
+    expect(calls.some((args) => args[0] === 'compose')).toBe(false);
+    fail = false;
+    await manager.create();
+    expect(calls.filter((args) => args[0] === 'load')).toHaveLength(2);
   });
 
   it('surfaces Compose failures with the Docker error output and does not record the instance', async () => {
@@ -215,7 +241,7 @@ describe('data tier launcher', () => {
       // Keep tests away from the real macOS application-data folder.
       (manager as unknown as { writeComposeFile: (port: number) => string }).writeComposeFile = (port) => {
         const file = join(directory, `compose-${port}.yaml`);
-        writeFileSync(file, JSON.stringify(dataTierCompose(mac, '/ctx', version, port)));
+        writeFileSync(file, JSON.stringify(dataTierCompose(mac, version, port)));
         return file;
       };
       return { directory, manager, calls, containers };
@@ -224,10 +250,11 @@ describe('data tier launcher', () => {
     const running = (version: string): FakeContainer => ({ state: 'running', status: 'Up 2 hours (healthy)', image: `working-memory-control-plane:${version}` });
 
     it('skips 7717 and the 7718 link bridge when another Working Memory owns the default port', async () => {
-      const { manager } = harness({ containers: { 'working-memory-control-plane': running('latest') }, busyPorts: [7719] });
+      const { manager, calls } = harness({ containers: { 'working-memory-control-plane': running('latest') }, busyPorts: [7719] });
       await expect(manager.create('Scratch')).resolves.toMatchObject({ port: 7720, name: 'Scratch' });
       await expect(manager.create()).resolves.toMatchObject({ port: 7721, name: 'Working Memory 7721' });
       expect(manager.instances.map((instance) => instance.port)).toEqual([7720, 7721]);
+      expect(calls.filter((args) => args[0] === 'load')).toHaveLength(1);
     });
 
     it('lists only managed instances with state, version, and available upgrades', async () => {

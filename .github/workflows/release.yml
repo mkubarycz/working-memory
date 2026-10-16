@@ -19,15 +19,79 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            version="$INPUT_VERSION"
+          else
+            base="$(node -p "require('./desktop-ui/package.json').version")"
+            version="${base}-build.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  backend:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            os: ubuntu-24.04-arm
+          - arch: amd64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          docker build --platform linux/${{ matrix.arch }} --tag "working-memory-control-plane:$VERSION" .
+          docker run --detach --network none --name backend-smoke "working-memory-control-plane:$VERSION"
+          trap 'docker logs backend-smoke; docker rm --force backend-smoke' EXIT
+          healthy=false
+          for attempt in {1..30}; do
+            if docker exec backend-smoke node -e "fetch('http://127.0.0.1:7717/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
+              healthy=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$healthy" != true ]]; then
+            echo "Prebuilt backend failed its offline health check" >&2
+            exit 1
+          fi
+          docker save --output "$RUNNER_TEMP/image.tar" "working-memory-control-plane:$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image.tar
+          compression-level: 1
+          if-no-files-found: error
+
   package:
+    needs: [version, backend]
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
             target: mac
+            arch: arm64
           - os: windows-latest
             target: win
+            arch: amd64
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -43,23 +107,11 @@ jobs:
             package-lock.json
             desktop-ui/package-lock.json
 
-      - name: Resolve version
-        id: version
-        shell: bash
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            version="${GITHUB_REF_NAME#v}"
-          elif [[ -n "$INPUT_VERSION" ]]; then
-            version="$INPUT_VERSION"
-          else
-            # Untagged builds need a unique version: it tags the bundled data-tier image,
-            # and an unchanged tag would keep running an older control plane.
-            base="$(node -p "require('./desktop-ui/package.json').version")"
-            version="${base}-build.${GITHUB_RUN_NUMBER}"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Download prebuilt backend image
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-${{ matrix.arch }}
+          path: backend-image
 
       - name: Install dependencies
         run: npm ci
@@ -81,7 +133,8 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           # mac.identity is explicitly '-' (ad-hoc); no signing credentials are used.
           CSC_FOR_PULL_REQUEST: 'true'
-        run: npm run package:${{ matrix.target }} --prefix desktop-ui -- -c.extraMetadata.version=${{ steps.version.outputs.version }}
+          WM_DATA_TIER_IMAGE_ARCHIVE: ${{ github.workspace }}/backend-image/image.tar
+        run: npm run package:${{ matrix.target }} --prefix desktop-ui -- -c.extraMetadata.version=${{ needs.version.outputs.version }}
 
       - name: Verify packaged macOS signatures
         if: matrix.target == 'mac'
@@ -90,7 +143,7 @@ jobs:
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: working-memory-${{ matrix.target }}-${{ steps.version.outputs.version }}
+          name: working-memory-${{ matrix.target }}-${{ needs.version.outputs.version }}
           if-no-files-found: error
           path: |
             desktop-ui/release/*.dmg
@@ -107,6 +160,7 @@ jobs:
         with:
           path: installers
           merge-multiple: true
+          pattern: working-memory-*
 
       - name: Publish GitHub Release
         env:

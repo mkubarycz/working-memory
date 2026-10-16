@@ -138,7 +138,7 @@ function controlPlane(): ControlPlaneClient {
 /** Installed builds bundle the control-plane image context; source-tree runs do not. */
 function createDataTierManager(): DataTierManager | null {
   const buildContext = join(process.resourcesPath, 'data-tier');
-  if (!existsSync(join(buildContext, 'Dockerfile'))) return null;
+  if (!existsSync(join(buildContext, 'image.tar'))) return null;
   return new DataTierManager({
     buildContext,
     stateDirectory: dataTierStateDirectory(),

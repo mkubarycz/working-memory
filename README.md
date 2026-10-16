@@ -46,10 +46,14 @@ Installers only install the app; the data tier is managed from inside it.
 
 On launch, Working Memory connects to a running data tier if one is
 reachable (for example an existing `working-memory-control-plane` on
-`127.0.0.1:7717`). Otherwise it starts Docker Desktop (if needed), builds the
-bundled control-plane image for its version, and starts its default
-instance with `docker compose`, creating it on a fresh install. The first
-start builds the image and can take several minutes.
+`127.0.0.1:7717`). Otherwise it starts Docker Desktop (if needed), loads the
+prebuilt control-plane image bundled in the installer, and starts its default
+instance with `docker compose`, creating it on a fresh install. Loading the
+image can take a few minutes. No npm downloads, local image builds, registry
+login, or backend registry access are needed on the installed computer.
+CI builds Linux ARM64 images for Mac installers and Linux x64 images for
+Windows installers. Local `npm run build` / packaging builds the image using
+Docker first; CI supplies it via `WM_DATA_TIER_IMAGE_ARCHIVE`.
 
 Open **environment menu > Manage instances…** to manage the data-tier
 instances the app created. Reachable Working Memory servers the app did not
@@ -65,7 +69,7 @@ backup are managed outside the app.
 - **Start / Stop** controls the container (the current instance cannot be
   stopped).
 - **Upgrade** appears when an instance runs an older image than the app; it
-  rebuilds the instance with the new image and keeps its data.
+  recreates the container with the bundled image and keeps its data.
 - **Rename** changes the display name shown in the environment picker.
 - **Back up…** writes a consistent SQLite snapshot
   (`working-memory-<name>-<timestamp>.sqlite`) to a folder you choose

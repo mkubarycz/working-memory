@@ -30,7 +30,8 @@ jobs:
         run: npm run compile
 
       - name: Build desktop UI
-        run: npm run compile:desktop
+        working-directory: desktop-ui
+        run: npx electron-vite build
 
       - name: Test
         run: npm test

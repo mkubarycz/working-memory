@@ -34,7 +34,7 @@ export interface DataTierHost {
 }
 
 export interface DataTierOptions extends Partial<DataTierHost> {
-  /** Directory containing the bundled control-plane Dockerfile build context. */
+  /** Directory containing the prebuilt control-plane image archive. */
   buildContext: string;
   /** Writable directory for instance state and generated Compose files. */
   stateDirectory: string;
@@ -177,7 +177,6 @@ export function dataTierHostDirectory(host: DataTierHost, port = DEFAULT_CONTROL
  */
 export function dataTierCompose(
   host: DataTierHost,
-  buildContext: string,
   version: string,
   port = DEFAULT_CONTROL_PLANE_SERVICE_PORT,
 ): Record<string, unknown> {
@@ -191,7 +190,7 @@ export function dataTierCompose(
       [DATA_TIER_SERVICE]: {
         container_name: names.container,
         image: `${IMAGE_REPOSITORY}:${version}`,
-        build: { context: buildContext, dockerfile: 'Dockerfile' },
+        pull_policy: 'never',
         init: true,
         restart: 'unless-stopped',
         environment: {
@@ -320,6 +319,7 @@ export class DataTierManager {
   private readonly now: () => Date;
   private readonly timeouts: DataTierTimeouts;
   private queue: Promise<unknown> = Promise.resolve();
+  private imageLoaded = false;
 
   constructor(private readonly options: DataTierOptions) {
     this.host = {
@@ -546,9 +546,20 @@ export class DataTierManager {
   }
 
   private async composeUp(docker: string, env: NodeJS.ProcessEnv, port: number): Promise<void> {
+    if (!this.imageLoaded) {
+      try {
+        await this.runner.run(docker, ['load', '--input', join(this.options.buildContext, 'image.tar')], {
+          timeoutMs: this.timeouts.composeUp,
+          env,
+        });
+        this.imageLoaded = true;
+      } catch (error) {
+        throw new DataTierError(`Unable to load the bundled Working Memory backend image.\n${commandDetail(error)}`, 'start-failed');
+      }
+    }
     const composeFile = this.writeComposeFile(port);
     try {
-      await this.runner.run(docker, ['compose', '--file', composeFile, 'up', '--detach', '--wait'], {
+      await this.runner.run(docker, ['compose', '--file', composeFile, 'up', '--detach', '--wait', '--no-build', '--pull', 'never'], {
         timeoutMs: this.timeouts.composeUp,
         env,
       });
@@ -639,7 +650,7 @@ export class DataTierManager {
     // JSON is valid YAML and escapes Windows paths safely.
     writeFileSync(
       composeFile,
-      `${JSON.stringify(dataTierCompose(this.host, this.options.buildContext, this.options.version, port), null, 2)}\n`,
+      `${JSON.stringify(dataTierCompose(this.host, this.options.version, port), null, 2)}\n`,
       { mode: 0o600 },
     );
     return composeFile;

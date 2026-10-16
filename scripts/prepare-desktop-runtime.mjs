@@ -156,7 +156,7 @@ function prepareMacApp(appBundle, deepSign) {
 
   const dataTier = join(contents, 'Resources', 'data-tier');
   rmSync(dataTier, { recursive: true, force: true });
-  if (existsSync(join(desktopRoot, 'build', 'data-tier', 'Dockerfile'))) {
+  if (existsSync(join(desktopRoot, 'build', 'data-tier', 'image.tar'))) {
     cpSync(join(desktopRoot, 'build', 'data-tier'), dataTier, { recursive: true });
   }
 
