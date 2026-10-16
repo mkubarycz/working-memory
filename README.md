@@ -491,6 +491,13 @@ releases. The app's footer shows the build time. Build installers locally with
 `npm run package:mac --prefix desktop-ui` or `npm run package:win --prefix
 desktop-ui` (output: `desktop-ui/release/`). There is no auto-updater yet.
 
+macOS builds use free ad-hoc signing, including pull-request builds. CI extracts
+the ZIP and mounts the DMG to verify each packaged app with
+`codesign --verify --deep --strict` before uploading artifacts. Run the same
+check locally with `bash scripts/verify-mac-installers.sh desktop-ui/release`.
+This verifies signature integrity, not publisher trust or notarization; macOS
+may still require explicit approval to open the app.
+
 ### Migration safety
 
 See `schema/005_safe_topic_rebuild_template.sql` for the safe table-rebuild

@@ -79,7 +79,13 @@ jobs:
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # mac.identity is explicitly '-' (ad-hoc); no signing credentials are used.
+          CSC_FOR_PULL_REQUEST: 'true'
         run: npm run package:${{ matrix.target }} --prefix desktop-ui -- -c.extraMetadata.version=${{ steps.version.outputs.version }}
+
+      - name: Verify packaged macOS signatures
+        if: matrix.target == 'mac'
+        run: bash scripts/verify-mac-installers.sh desktop-ui/release
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
