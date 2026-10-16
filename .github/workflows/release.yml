@@ -75,9 +75,10 @@ jobs:
           docker save --output "$RUNNER_TEMP/image.tar" "working-memory-control-plane:$VERSION"
       - uses: actions/upload-artifact@v4
         with:
-          name: backend-${{ matrix.arch }}
+          name: ci-only-backend-linux-${{ matrix.arch }}
           path: ${{ runner.temp }}/image.tar
           compression-level: 1
+          retention-days: 1
           if-no-files-found: error
 
   package:
@@ -110,7 +111,7 @@ jobs:
       - name: Download prebuilt backend image
         uses: actions/download-artifact@v4
         with:
-          name: backend-${{ matrix.arch }}
+          name: ci-only-backend-linux-${{ matrix.arch }}
           path: backend-image
 
       - name: Install dependencies
@@ -143,11 +144,10 @@ jobs:
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: working-memory-${{ matrix.target }}-${{ needs.version.outputs.version }}
+          name: working-memory-installer-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.version.outputs.version }}
           if-no-files-found: error
           path: |
             desktop-ui/release/*.dmg
-            desktop-ui/release/*.zip
             desktop-ui/release/*.exe
 
   publish:
@@ -160,7 +160,7 @@ jobs:
         with:
           path: installers
           merge-multiple: true
-          pattern: working-memory-*
+          pattern: working-memory-installer-*
 
       - name: Publish GitHub Release
         env:

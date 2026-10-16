@@ -35,7 +35,7 @@ standalone installers built by `.github/workflows/release.yml`:
 
 | Platform | Installer | Installs to |
 | --- | --- | --- |
-| macOS (Apple silicon) | `Working-Memory-<version>-mac-arm64.dmg` (or `.zip`) | drag to `/Applications` |
+| macOS (Apple silicon) | `Working-Memory-<version>-mac-arm64.dmg` | drag to `/Applications` |
 | Windows (x64) | `Working-Memory-<version>-win-x64.exe` (NSIS) | per-user `%LOCALAPPDATA%\Programs\Working Memory`, Start Menu and desktop shortcuts |
 
 Both installers register the `working-memory://` URL scheme so chat links from
@@ -486,7 +486,7 @@ Rules:
 ## Releasing
 
 VSIX releases are retired. `.github/workflows/release.yml` builds the macOS
-DMG/ZIP and Windows NSIS installer on every pull request and push to `main`
+DMG and Windows NSIS installer on every pull request and push to `main`
 and keeps them as workflow-run artifacts (version
 `<desktop-ui version>-build.<run number>`). Push a `v<version>` tag (for
 example `v0.90.0`) to build that version and publish a GitHub Release; `0.x`
@@ -495,8 +495,15 @@ releases. The app's footer shows the build time. Build installers locally with
 `npm run package:mac --prefix desktop-ui` or `npm run package:win --prefix
 desktop-ui` (output: `desktop-ui/release/`). There is no auto-updater yet.
 
-macOS builds use free ad-hoc signing, including pull-request builds. CI extracts
-the ZIP and mounts the DMG to verify each packaged app with
+Download the `working-memory-installer-<platform>-<architecture>-<version>`
+artifact for your computer. GitHub wraps each artifact in a ZIP; the Mac
+download contains only the DMG, not a second copy of the app.
+The `ci-only-backend-linux-<architecture>` artifacts transfer backend images
+between build jobs, are already included in the installers, and expire after
+one day. They are not separate downloads needed for installation.
+
+macOS builds use free ad-hoc signing, including pull-request builds. CI mounts
+the DMG to verify the packaged app with
 `codesign --verify --deep --strict` before uploading artifacts. Run the same
 check locally with `bash scripts/verify-mac-installers.sh desktop-ui/release`.
 This verifies signature integrity, not publisher trust or notarization; macOS

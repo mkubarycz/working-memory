@@ -14,20 +14,11 @@ cleanup() {
 trap cleanup EXIT
 
 shopt -s nullglob
-archives=("$output"/*.zip)
 images=("$output"/*.dmg)
-if [[ ${#archives[@]} -eq 0 || ${#images[@]} -eq 0 ]]; then
-  echo "Expected both ZIP and DMG installers in $output" >&2
+if [[ ${#images[@]} -eq 0 ]]; then
+  echo "Expected a DMG installer in $output" >&2
   exit 1
 fi
-
-for archive in "${archives[@]}"; do
-  echo "Verifying ZIP: $archive"
-  mkdir "$scratch/zip"
-  ditto -x -k "$archive" "$scratch/zip"
-  codesign --verify --deep --strict --verbose=2 "$scratch/zip/Working Memory.app"
-  rm -r "$scratch/zip"
-done
 
 for image in "${images[@]}"; do
   echo "Verifying DMG: $image"

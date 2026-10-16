@@ -26,8 +26,6 @@ mac:
   target:
     - target: dmg
       arch: [arm64]
-    - target: zip
-      arch: [arm64]
   # Ad-hoc signature until a Developer ID certificate and notarization are configured.
   identity: '-'
   hardenedRuntime: false
