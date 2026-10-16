@@ -75,6 +75,8 @@ jobs:
         run: npm test --prefix desktop-ui
 
       - name: Build installer
+        # PowerShell splits `-c.extraMetadata.version=...` into two arguments.
+        shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run package:${{ matrix.target }} --prefix desktop-ui -- -c.extraMetadata.version=${{ steps.version.outputs.version }}
