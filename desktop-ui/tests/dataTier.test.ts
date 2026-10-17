@@ -130,7 +130,12 @@ describe('data tier launcher', () => {
       healthy: async () => healthy, fileExists: (candidate) => candidate === docker || candidate === desktop,
       portAvailable: async () => true, sleep: async () => {}, now: () => new Date('2026-10-16T12:00:00Z'),
     });
-    await expect(manager.create()).resolves.toEqual({ port: 7717, name: 'Working Memory', createdAt: '2026-10-16T12:00:00.000Z' });
+    await expect(manager.create()).resolves.toEqual({
+      port: 7717,
+      name: 'Working Memory',
+      createdAt: '2026-10-16T12:00:00.000Z',
+      image: 'working-memory-control-plane:2.0.0',
+    });
     expect(launchDetached).toHaveBeenCalledWith(desktop, []);
     const composeFile = join(directory, 'instances', '7717', 'compose.yaml');
     expect(calls).toContainEqual(['load', '--input', join('C:\\ctx', 'image.tar')]);
@@ -141,7 +146,7 @@ describe('data tier launcher', () => {
       services: { 'control-plane': { image: 'working-memory-control-plane:2.0.0' } },
     });
     expect(JSON.parse(readFileSync(join(directory, 'instances.json'), 'utf8'))).toEqual({
-      instances: [{ port: 7717, name: 'Working Memory', createdAt: '2026-10-16T12:00:00.000Z' }],
+      instances: [{ port: 7717, name: 'Working Memory', createdAt: '2026-10-16T12:00:00.000Z', image: 'working-memory-control-plane:2.0.0' }],
     });
   });
 
@@ -239,9 +244,9 @@ describe('data tier launcher', () => {
         now: () => new Date(2026, 9, 16, 9, 5, 7),
       });
       // Keep tests away from the real macOS application-data folder.
-      (manager as unknown as { writeComposeFile: (port: number) => string }).writeComposeFile = (port) => {
+      (manager as unknown as { writeComposeFile: (port: number, image: string) => string }).writeComposeFile = (port, image) => {
         const file = join(directory, `compose-${port}.yaml`);
-        writeFileSync(file, JSON.stringify(dataTierCompose(mac, version, port)));
+        writeFileSync(file, JSON.stringify(dataTierCompose(mac, image, port)));
         return file;
       };
       return { directory, manager, calls, containers };
@@ -305,9 +310,29 @@ describe('data tier launcher', () => {
       await manager.upgrade(7720);
       expect(containers.get('working-memory-control-plane-7720')?.image).toBe('working-memory-control-plane:2.0.0');
       await expect(manager.rename(7720, '  Renamed ')).resolves.toMatchObject({ name: 'Renamed' });
-      expect(manager.instances).toEqual([{ port: 7720, name: 'Renamed', createdAt: '' }]);
+      expect(manager.instances).toEqual([{ port: 7720, name: 'Renamed', createdAt: '', image: 'working-memory-control-plane:2.0.0' }]);
       await expect(manager.rename(7720, '   ')).rejects.toThrow('name is required');
       await expect(manager.start(7799)).rejects.toMatchObject({ code: 'not-found' });
+    });
+
+    it('pulls channel backend images from GHCR and reports updates against the channel target', async () => {
+      const image = 'ghcr.io/mkubarycz/working-memory-control-plane:2.1.0-build.7';
+      const { manager, calls, containers } = harness({
+        instances: [{ port: 7720, name: 'Work' }],
+        containers: { 'working-memory-control-plane-7720': running('2.0.0') },
+      });
+      const target = { version: '2.1.0-build.7', image };
+      expect((await manager.list(target)).instances[0]).toMatchObject({ version: '2.0.0', updateAvailable: true });
+      await manager.upgrade(7720, target);
+      expect(calls).toContainEqual(['pull', image]);
+      expect(calls.some((args) => args[0] === 'load')).toBe(false);
+      expect(containers.get('working-memory-control-plane-7720')?.image).toBe(image);
+      expect(manager.instances[0].image).toBe(image);
+      expect((await manager.list(target)).instances[0]).toMatchObject({ version: '2.1.0-build.7', updateAvailable: false });
+      // A restart keeps the channel image instead of falling back to the bundled one.
+      containers.delete('working-memory-control-plane-7720');
+      await manager.start(7720);
+      expect(containers.get('working-memory-control-plane-7720')?.image).toBe(image);
     });
 
     it('recreates a managed instance whose container was removed', async () => {

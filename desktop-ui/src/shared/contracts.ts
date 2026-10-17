@@ -232,7 +232,6 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
     document.kind === 'topic-create'
     || document.kind === 'topic-backlog'
     || document.kind === 'settings'
-    || document.kind === 'instances'
   ) return undefined;
   const identifier = (document.slug ?? document.id).trim();
   if (!identifier) return undefined;
@@ -306,11 +305,36 @@ export interface ResourceDragResult {
   error?: string;
 }
 
+/** Off: never download (local builds); Canary: latest main build; Stable: tagged releases. */
+export type UpdateChannel = 'off' | 'canary' | 'stable';
+
+export interface DesktopUpdateState {
+  /** False when this build cannot replace itself (local builds, unsupported platforms). */
+  supported: boolean;
+  unsupportedReason: string | null;
+  currentVersion: string;
+  channel: UpdateChannel;
+  phase: 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'ready' | 'installing' | 'error';
+  available: { version: string; publishedAt: string | null; releaseUrl: string } | null;
+  /** Download progress between 0 and 1 while downloading. */
+  progress: number | null;
+  error: string | null;
+  checkedAt: string | null;
+}
+
+export interface BackendUpdateTarget {
+  version: string;
+  /** Fully qualified image reference, for example ghcr.io/…/working-memory-control-plane:1.0.0. */
+  image: string;
+}
+
 /** A Docker data-tier instance created by this desktop install. */
 export interface ManagedDataTierInstance {
   port: number;
   name: string;
   createdAt: string;
+  /** Image the instance was last composed with; absent means the image bundled with the app. */
+  image?: string;
 }
 
 export type DataTierInstanceState = 'running' | 'starting' | 'unhealthy' | 'stopped' | 'missing' | 'unknown';
@@ -319,13 +343,19 @@ export interface DataTierInstanceStatus extends ManagedDataTierInstance {
   mcpUrl: string;
   container: string;
   state: DataTierInstanceState;
-  /** App version whose image the container runs, or null when unknown. */
+  /** Backend version the container runs, or null when unknown. */
   version: string | null;
+  /** True when the container differs from the backend channel's target version. */
   updateAvailable: boolean;
 }
 
 export interface DataTierInstancesSnapshot {
   appVersion: string;
+  backendChannel: UpdateChannel;
+  /** Version instances should run for the backend channel; Off targets the bundled image. */
+  backendTarget: BackendUpdateTarget | null;
+  /** Why the channel target could not be resolved, for example while offline. */
+  backendTargetError: string | null;
   /** Null when Docker is reachable; otherwise why instance status is unavailable. */
   dockerError: string | null;
   instances: DataTierInstanceStatus[];
@@ -348,7 +378,16 @@ export interface DesktopApi {
   createInstance(name?: string): Promise<DataTierInstancesSnapshot | null>;
   startInstance(port: number): Promise<DataTierInstancesSnapshot | null>;
   stopInstance(port: number): Promise<DataTierInstancesSnapshot | null>;
+  /** Recreates the instance on the backend channel's target version, keeping its data. */
   upgradeInstance(port: number): Promise<DataTierInstancesSnapshot | null>;
+  setBackendUpdateChannel(channel: UpdateChannel): Promise<DataTierInstancesSnapshot | null>;
+  getDesktopUpdate(): Promise<DesktopUpdateState>;
+  setDesktopUpdateChannel(channel: UpdateChannel): Promise<DesktopUpdateState>;
+  checkDesktopUpdate(): Promise<DesktopUpdateState>;
+  downloadDesktopUpdate(): Promise<DesktopUpdateState>;
+  /** Quits, installs the downloaded update, and relaunches. */
+  installDesktopUpdate(): Promise<void>;
+  onDesktopUpdate(listener: (state: DesktopUpdateState) => void): () => void;
   renameInstance(port: number, name: string): Promise<DataTierInstancesSnapshot | null>;
   /** Returns the backup file path, or null when the folder picker was cancelled. */
   backupInstance(port: number): Promise<string | null>;

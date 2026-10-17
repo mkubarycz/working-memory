@@ -55,8 +55,8 @@ CI builds Linux ARM64 images for Mac installers and Linux x64 images for
 Windows installers. Local `npm run build` / packaging builds the image using
 Docker first; CI supplies it via `WM_DATA_TIER_IMAGE_ARCHIVE`.
 
-Open **environment menu > Manage instances…** to manage the data-tier
-instances the app created. Reachable Working Memory servers the app did not
+Open **environment menu > Manage instances…** (or **Settings > Instances**) to
+manage the data-tier instances the app created. Reachable Working Memory servers the app did not
 create (for example one started from this repo's `compose.yaml`) are listed as
 **Self-hosted**: you can make them current, but start, stop, upgrade, and
 backup are managed outside the app.
@@ -68,8 +68,14 @@ backup are managed outside the app.
 - **Make current** switches the desktop app to that instance.
 - **Start / Stop** controls the container (the current instance cannot be
   stopped).
-- **Upgrade** appears when an instance runs an older image than the app; it
-  recreates the container with the bundled image and keeps its data.
+- **Backend update channel** chooses which backend version instances should
+  run: **Off** uses the image bundled with the app, **Canary** follows the
+  latest `main` build, and **Stable** follows the latest tagged release.
+  Canary and Stable images are pulled from
+  `ghcr.io/mkubarycz/working-memory-control-plane`.
+- **Update to <version>** appears when an instance runs a different version
+  than the channel's target; it recreates the container with that image and
+  keeps its data.
 - **Rename** changes the display name shown in the environment picker.
 - **Back up…** writes a consistent SQLite snapshot
   (`working-memory-<name>-<timestamp>.sqlite`) to a folder you choose
@@ -94,6 +100,24 @@ anyway** at the SmartScreen prompt. Intel Macs are not packaged; build locally.
 The macOS development build (`npm run compile:desktop`) still installs
 `/Applications/Working Memory.app` directly and uses your existing control
 plane.
+
+### Desktop updates
+
+**Settings > Updates** picks the desktop update channel: **Off**, **Canary**
+(the rolling `canary` release rebuilt on every push to `main`), or **Stable**
+(the latest non-prerelease `vX.Y.Z` release). Installer builds default to
+Canary for `-build.N` versions and Stable for tagged versions; local
+`npm run build` builds default to Off. The app checks 15 seconds after launch
+and every six hours, then offers **Download** and **Restart and install**.
+
+Each release carries an `update.json` manifest with the installer SHA-256 and
+size; downloads that do not match are discarded. On macOS the updater copies
+the app out of the DMG next to the installed bundle, checks its bundle id and
+signature, and swaps it in after the app quits, so the app must live in a
+folder you can write to (such as `/Applications`). On Windows it runs the NSIS
+installer silently and relaunches. Electron's built-in updater is not used
+because Squirrel.Mac requires a paid Developer ID signature. Set
+`WM_UPDATE_RELEASES_URL` to test against another releases URL.
 
 ---
 
@@ -494,12 +518,18 @@ Rules:
 VSIX releases are retired. `.github/workflows/release.yml` builds the macOS
 DMG and Windows NSIS installer on every pull request and push to `main`
 and keeps them as workflow-run artifacts (version
-`<desktop-ui version>-build.<run number>`). Push a `v<version>` tag (for
-example `v0.90.0`) to build that version and publish a GitHub Release; `0.x`
-and suffixed versions are marked prerelease, `1.0.0` and later are full
-releases. The app's footer shows the build time. Build installers locally with
-`npm run package:mac --prefix desktop-ui` or `npm run package:win --prefix
-desktop-ui` (output: `desktop-ui/release/`). There is no auto-updater yet.
+`<desktop-ui version>-build.<run number>`). Pushes to `main` also push the
+backend image to GHCR and replace the rolling `canary` prerelease (installers
+plus `update.json`). Push a `v<version>` tag (for example `v0.90.0`) to build
+that version and publish a GitHub Release; plain `vX.Y.Z` tags are full
+releases that the Stable channel follows, and suffixed versions such as
+`v1.0.0-rc.1` are prereleases. The app's footer shows the build time. Build
+installers locally with `npm run package:mac --prefix desktop-ui` or
+`npm run package:win --prefix desktop-ui` (output: `desktop-ui/release/`).
+
+The GHCR package `working-memory-control-plane` must be public so installed
+apps can pull it without logging in. After the first push from `main`, set it
+to **Public** under the package's **Package settings**.
 
 Download the `working-memory-installer-<platform>-<architecture>-<version>`
 artifact for your computer. GitHub wraps each artifact in a ZIP; the Mac

@@ -356,7 +356,21 @@ button { cursor: pointer; }
 .model-profile-actions .secondary { border-color: var(--desktop-accent-strong); color: var(--desktop-accent-strong); }
 .model-profile-actions button:disabled { opacity: .48; }
 .add-model { justify-self: start; display: inline-flex; align-items: center; gap: 5px; padding: 7px 10px; border: 1px solid var(--desktop-accent-strong); border-radius: 4px; background: transparent; color: var(--desktop-accent-strong); font-weight: 700; }
-.instances { max-width: 860px; }
+.settings > header { margin-bottom: 0; }
+.settings-intro, .instances > p:first-child, .updates > p:first-child { margin: 0 0 18px; color: #6c676b; line-height: 1.5; }
+.settings .backend-channel, .update-channels { margin: 0 0 18px; }
+.backend-channel select { max-width: 360px; padding: 7px; border: 1px solid #aaa5a9; border-radius: 3px; background: #ffffff; color: #292629; }
+.backend-channel .instances-hint { margin: 0; font-weight: 400; }
+.update-channels { display: grid; gap: 10px; padding: 14px; border: 1px solid #cbc7ca; border-radius: 6px; }
+.update-channels legend { padding: 0 6px; color: var(--desktop-accent-strong); font-weight: 800; }
+.settings .update-channels label { display: flex; align-items: baseline; gap: 10px; margin: 0; font-weight: 400; color: #4b474a; }
+.settings .update-channels input { width: auto; }
+.update-version { color: #4b474a; }
+.update-status { display: grid; gap: 6px; margin-top: 10px; color: #4b474a; }
+.update-status progress { width: 100%; max-width: 360px; accent-color: var(--desktop-accent-strong); }
+.update-checked { color: #6c676b; font-size: 12px; }
+.updates .settings-actions { margin-top: 16px; }
+.updates .settings-actions a { color: var(--desktop-accent-strong); font-weight: 700; }
 .instances-note { padding: 10px 12px; border: 1px solid #e3c9d4; border-radius: 4px; background: var(--desktop-accent-soft); color: #4b3842; line-height: 1.5; }
 .instance-list { display: grid; gap: 10px; margin: 18px 0; }
 .instance { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: auto auto; gap: 8px 14px; align-items: center; padding: 12px 14px; border: 1px solid #cbc7ca; border-radius: 6px; }

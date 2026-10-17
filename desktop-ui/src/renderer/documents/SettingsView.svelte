@@ -1,3 +1,7 @@
+<script lang="ts" module>
+  export type SettingsTab = 'models' | 'routing' | 'human' | 'instances' | 'updates';
+</script>
+
 <script lang="ts">
   import { untrack } from 'svelte';
   import type {
@@ -7,6 +11,8 @@
     PublicConfig,
   } from '../../shared/contracts';
   import { humanInitials } from '../humanIdentity';
+  import InstancesView from './InstancesView.svelte';
+  import UpdatesView from './UpdatesView.svelte';
 
   interface Props {
     profiles: Array<EditableModelProfile & { apiKey: string }>;
@@ -21,6 +27,10 @@
     onRemoveProfile: (id: string) => void;
     onTestProfile: (profile: EditableModelProfile & { apiKey: string }) => Promise<void>;
     onSave: () => Promise<void>;
+    tab?: SettingsTab;
+    selectedMcpUrl: string | null;
+    onMakeCurrent: (mcpUrl: string) => Promise<void>;
+    onInstancesChanged: () => Promise<void>;
   }
 
   let {
@@ -36,6 +46,10 @@
     onRemoveProfile,
     onTestProfile,
     onSave,
+    tab = $bindable('models'),
+    selectedMcpUrl,
+    onMakeCurrent,
+    onInstancesChanged,
   }: Props = $props();
 
   const SPEEDS = ['slow', 'medium', 'fast'] as const;
@@ -44,7 +58,6 @@
     { id: 'complex', label: 'Complex' },
     { id: 'deep', label: 'Deep Thought' },
   ] as const;
-  let tab = $state<'models' | 'routing' | 'human'>('models');
   let copilot = $state<CopilotModels | null>(null);
   let loadingCopilot = $state(false);
   let copilotStatus = $state('');
@@ -78,9 +91,17 @@
 
 <section class="settings">
   <header>
-    <p class="eyebrow">Configuration</p>
-    <h1>AI models</h1>
-    <p>
+    <h1>Settings</h1>
+  </header>
+  <div class="settings-tabs" role="tablist" aria-label="Settings">
+    <button role="tab" aria-selected={tab === 'models'} onclick={() => (tab = 'models')}>Models</button>
+    <button role="tab" aria-selected={tab === 'routing'} onclick={() => (tab = 'routing')}>Routing matrix</button>
+    <button role="tab" aria-selected={tab === 'human'} onclick={() => (tab = 'human')}>Human</button>
+    <button role="tab" aria-selected={tab === 'instances'} onclick={() => (tab = 'instances')}>Instances</button>
+    <button role="tab" aria-selected={tab === 'updates'} onclick={() => (tab = 'updates')}>Updates</button>
+  </div>
+  {#if tab === 'models'}
+    <p class="settings-intro">
       Configure GitHub Copilot or OpenAI-compatible model profiles and route AI work by speed and depth.
       {credentialStorage === 'secure'
         ? ' Credentials stay in OS-backed secure storage.'
@@ -90,13 +111,6 @@
           ? ' The API key is held in memory for this app session because secure storage is unavailable.'
           : ' Secure storage is unavailable; API keys can be used for the current app session but are not written to disk.'}
     </p>
-  </header>
-  <div class="settings-tabs" role="tablist" aria-label="AI settings">
-    <button role="tab" aria-selected={tab === 'models'} onclick={() => (tab = 'models')}>Models</button>
-    <button role="tab" aria-selected={tab === 'routing'} onclick={() => (tab = 'routing')}>Routing matrix</button>
-    <button role="tab" aria-selected={tab === 'human'} onclick={() => (tab = 'human')}>Human</button>
-  </div>
-  {#if tab === 'models'}
     <div class="model-profile-list">
       {#each profiles as profile, index (profile.id)}
         <fieldset class="model-profile">
@@ -190,6 +204,10 @@
         {/each}
       {/each}
     </div>
+  {:else if tab === 'instances'}
+    <InstancesView {selectedMcpUrl} {onMakeCurrent} {onInstancesChanged} />
+  {:else if tab === 'updates'}
+    <UpdatesView />
   {:else}
     <div class="human-settings">
       <label>
@@ -204,10 +222,12 @@
       <p>Your initials appear beside your messages in the inline chat response.</p>
     </div>
   {/if}
-  <div class="settings-actions">
-    <button class="primary" disabled={saving || testingProfileId !== null} onclick={() => void onSave()}>
-      {saving ? 'Saving...' : 'Save'}
-    </button>
-    <span>{settingsStatus}</span>
-  </div>
+  {#if tab !== 'instances' && tab !== 'updates'}
+    <div class="settings-actions">
+      <button class="primary" disabled={saving || testingProfileId !== null} onclick={() => void onSave()}>
+        {saving ? 'Saving...' : 'Save'}
+      </button>
+      <span>{settingsStatus}</span>
+    </div>
+  {/if}
 </section>

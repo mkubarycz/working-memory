@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { DataTierInstanceStatus, DataTierInstancesSnapshot } from '../../shared/contracts';
+  import type { DataTierInstanceStatus, DataTierInstancesSnapshot, UpdateChannel } from '../../shared/contracts';
 
   interface Props {
     selectedMcpUrl: string | null;
@@ -121,20 +121,20 @@
     }
   }
 
+  function setChannel(channel: UpdateChannel): void {
+    void run('channel', 'Checking the backend channel…', () => window.workingMemory.setBackendUpdateChannel(channel), '');
+  }
+
   function active(instance: DataTierInstanceStatus): boolean {
     return instance.state === 'running' || instance.state === 'starting' || instance.state === 'unhealthy';
   }
 </script>
 
-<section class="settings instances">
-  <header>
-    <p class="eyebrow">Data tier</p>
-    <h1>Instances</h1>
-    <p>
-      Each instance is a separate Working Memory control plane running in Docker with its own data.
-      {#if snapshot}This app installs version {snapshot.appVersion}.{/if}
-    </p>
-  </header>
+<div class="instances">
+  <p>
+    Each instance is a separate Working Memory control plane running in Docker with its own data.
+    {#if snapshot}This app bundles backend version {snapshot.appVersion}.{/if}
+  </p>
 
   {#if !supported}
     <p class="instances-note">
@@ -146,6 +146,28 @@
       <p class="instances-note" role="alert">
         {snapshot.dockerError} Starting or adding an instance starts Docker Desktop when it is installed.
       </p>
+    {/if}
+
+    {#if snapshot}
+      <label class="backend-channel">
+        Backend update channel
+        <select
+          value={snapshot.backendChannel}
+          disabled={busy !== null}
+          onchange={(event) => setChannel(event.currentTarget.value as UpdateChannel)}
+        >
+          <option value="off">Off — use the version bundled with this app</option>
+          <option value="canary">Canary — latest build from main</option>
+          <option value="stable">Stable — tagged releases only</option>
+        </select>
+        <span class="instances-hint">
+          {#if snapshot.backendTargetError}
+            {snapshot.backendTargetError}
+          {:else if snapshot.backendTarget}
+            Instances update to {snapshot.backendTarget.version}. Upgrades keep each instance's data.
+          {/if}
+        </span>
+      </label>
     {/if}
 
     <div class="instance-list" aria-busy={loading}>
@@ -195,8 +217,8 @@
               <button
                 class="secondary"
                 disabled={busy !== null}
-                onclick={() => void run(`${instance.port}:upgrade`, `Upgrading ${instance.name} to ${snapshot?.appVersion}… This loads the bundled image and keeps its data.`, () => window.workingMemory.upgradeInstance(instance.port), 'Upgraded.')}
-              >{busy === `${instance.port}:upgrade` ? 'Upgrading…' : `Upgrade to ${snapshot?.appVersion}`}</button>
+                onclick={() => void run(`${instance.port}:upgrade`, `Updating ${instance.name} to ${snapshot?.backendTarget?.version}… Downloading the image can take a few minutes; data is kept.`, () => window.workingMemory.upgradeInstance(instance.port), 'Updated.')}
+              >{busy === `${instance.port}:upgrade` ? 'Updating…' : `Update to ${snapshot?.backendTarget?.version}`}</button>
             {/if}
             <button
               disabled={busy !== null || instance.state !== 'running'}
@@ -244,4 +266,4 @@
   {/if}
 
   {#if status}<p class="instances-status" role="status">{status}</p>{/if}
-</section>
+</div>

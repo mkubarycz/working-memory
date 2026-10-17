@@ -1,7 +1,10 @@
 name: Installers
 
-# PRs and pushes to main build installers as workflow artifacts. Pushing a v* tag
-# also publishes them as a GitHub Release (0.x and suffixed versions are prereleases).
+# PRs build installers as workflow artifacts. Pushes to main also push the backend
+# image to GHCR and replace the rolling `canary` prerelease. Pushing a v* tag publishes
+# a GitHub Release (suffixed versions such as v1.2.0-rc.1 are prereleases); plain vX.Y.Z
+# tags become the latest release that the Stable update channel follows. Each release
+# carries an update.json manifest read by the desktop updater.
 on:
   push:
     branches:
@@ -150,10 +153,46 @@ jobs:
             desktop-ui/release/*.dmg
             desktop-ui/release/*.exe
 
-  publish:
-    if: github.ref_type == 'tag'
-    needs: package
+  publish-backend:
+    if: github.event_name == 'push'
+    needs: [version, package]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download backend images
+        uses: actions/download-artifact@v4
+        with:
+          path: backend-images
+          pattern: ci-only-backend-linux-*
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Push multi-arch backend image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/working-memory-control-plane"
+          for arch in arm64 amd64; do
+            docker load --input "backend-images/ci-only-backend-linux-$arch/image.tar"
+            docker tag "working-memory-control-plane:$VERSION" "$repository:$VERSION-$arch"
+            docker push "$repository:$VERSION-$arch"
+          done
+          docker buildx imagetools create --tag "$repository:$VERSION" "$repository:$VERSION-arm64" "$repository:$VERSION-amd64"
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [version, package, publish-backend]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-${{ github.ref_type == 'tag' && github.ref_name || 'canary' }}
+      cancel-in-progress: false
     steps:
       - name: Download installers
         uses: actions/download-artifact@v4
@@ -162,16 +201,77 @@ jobs:
           merge-multiple: true
           pattern: working-memory-installer-*
 
-      - name: Publish GitHub Release
+      - name: Write update manifest
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            channel=stable
+            tag="$GITHUB_REF_NAME"
+          else
+            channel=canary
+            tag=canary
+          fi
+          CHANNEL="$channel" TAG="$tag" REPOSITORY_OWNER="${GITHUB_REPOSITORY_OWNER,,}" node <<'EOF'
+          const { createHash } = require('node:crypto');
+          const { readFileSync, readdirSync, writeFileSync } = require('node:fs');
+          const asset = (pattern) => {
+            const file = readdirSync('installers').find((name) => pattern.test(name));
+            if (!file) throw new Error(`No installer matches ${pattern}`);
+            const data = readFileSync(`installers/${file}`);
+            return { file, sha256: createHash('sha256').update(data).digest('hex'), size: data.length };
+          };
+          const { VERSION, CHANNEL, TAG, REPOSITORY_OWNER, GITHUB_SHA } = process.env;
+          const manifest = {
+            channel: CHANNEL,
+            version: VERSION,
+            tag: TAG,
+            commit: GITHUB_SHA,
+            publishedAt: new Date().toISOString(),
+            desktop: {
+              'darwin-arm64': asset(/-mac-arm64\.dmg$/),
+              'win32-x64': asset(/-win-x64\.exe$/),
+            },
+            backend: { image: `ghcr.io/${REPOSITORY_OWNER}/working-memory-control-plane:${VERSION}` },
+          };
+          writeFileSync('update.json', `${JSON.stringify(manifest, null, 2)}\n`);
+          console.log(JSON.stringify(manifest, null, 2));
+          EOF
+
+      - name: Publish canary release
+        if: github.ref_type != 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          prerelease=()
-          if [[ "$version" == 0.* || "$version" == *-* ]]; then prerelease=(--prerelease); fi
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" installers/* --clobber
+          notes="Rolling build $VERSION from main at $GITHUB_SHA. Replaced on every push to main."
+          if gh release view canary >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/canary" -f sha="$GITHUB_SHA" -F force=true
+            gh release edit canary --title "Working Memory canary ($VERSION)" --notes "$notes" --prerelease
+            gh release upload canary installers/* --clobber
+            # update.json goes last so clients never see a manifest before its installers exist.
+            gh release upload canary update.json --clobber
+            keep=" update.json $(cd installers && ls | tr '\n' ' ')"
+            gh release view canary --json assets --jq '.assets[].name' | while read -r name; do
+              if [[ "$keep" != *" $name "* ]]; then gh release delete-asset canary "$name" --yes; fi
+            done
           else
-            gh release create "$GITHUB_REF_NAME" installers/* --title "Working Memory $version" --generate-notes "${prerelease[@]}"
+            gh release create canary installers/* update.json --target "$GITHUB_SHA" \
+              --title "Working Memory canary ($VERSION)" --notes "$notes" --prerelease
+          fi
+
+      - name: Publish tagged release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          prerelease=()
+          if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" installers/* update.json --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" installers/* update.json --title "Working Memory $VERSION" --generate-notes "${prerelease[@]}"
           fi

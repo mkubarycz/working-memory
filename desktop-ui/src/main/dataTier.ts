@@ -12,7 +12,9 @@ import {
   ExecFileCommandRunner,
   type CommandRunner,
 } from './dockerContainerService';
+import { parseBackendImage } from './updateChannels';
 import type {
+  BackendUpdateTarget,
   DataTierInstanceState,
   DataTierInstanceStatus,
   DataTierInstancesSnapshot,
@@ -143,6 +145,15 @@ export const DATA_TIER_INSTANCE_PORT_FIRST = 7719;
 export const DATA_TIER_INSTANCE_PORT_LAST = 7799;
 export const DATA_TIER_STATE_FILE = 'instances.json';
 const IMAGE_REPOSITORY = 'working-memory-control-plane';
+
+/** Local tag of the image archive bundled with an installer build. */
+export function bundledImage(version: string): string {
+  return `${IMAGE_REPOSITORY}:${version}`;
+}
+
+function isBundledImage(image: string): boolean {
+  return image.startsWith(`${IMAGE_REPOSITORY}:`);
+}
 const CONTAINER_DATABASE = '/data/journal.sqlite';
 
 /** Docker and host names for one data-tier instance; the default instance keeps the original names. */
@@ -177,9 +188,11 @@ export function dataTierHostDirectory(host: DataTierHost, port = DEFAULT_CONTROL
  */
 export function dataTierCompose(
   host: DataTierHost,
-  version: string,
+  /** A bundled-image version, or a fully qualified image reference. */
+  versionOrImage: string,
   port = DEFAULT_CONTROL_PLANE_SERVICE_PORT,
 ): Record<string, unknown> {
+  const image = versionOrImage.includes(':') ? versionOrImage : bundledImage(versionOrImage);
   const names = dataTierInstanceNames(port);
   const dataMount = host.platform === 'win32'
     ? { type: 'volume', source: names.volume, target: '/data' }
@@ -189,7 +202,7 @@ export function dataTierCompose(
     services: {
       [DATA_TIER_SERVICE]: {
         container_name: names.container,
-        image: `${IMAGE_REPOSITORY}:${version}`,
+        image,
         pull_policy: 'never',
         init: true,
         restart: 'unless-stopped',
@@ -224,10 +237,15 @@ export function parseManagedInstances(raw: string): ManagedDataTierInstance[] {
       const name = typeof candidate.name === 'string' && candidate.name.trim()
         ? candidate.name.trim().slice(0, 80)
         : defaultInstanceName(candidate.port);
+      const image = typeof candidate.image === 'string'
+        && (isBundledImage(candidate.image) || parseBackendImage(candidate.image))
+        ? candidate.image
+        : undefined;
       byPort.set(candidate.port, {
         port: candidate.port,
         name,
         createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : '',
+        ...(image ? { image } : {}),
       });
     }
     return [...byPort.values()].sort((left, right) => left.port - right.port);
@@ -284,8 +302,8 @@ function mcpUrl(port: number): string {
 }
 
 function imageVersion(image: string): string | null {
-  const prefix = `${IMAGE_REPOSITORY}:`;
-  return image.startsWith(prefix) ? image.slice(prefix.length) || null : null;
+  if (isBundledImage(image)) return image.slice(IMAGE_REPOSITORY.length + 1) || null;
+  return parseBackendImage(image)?.version ?? null;
 }
 
 function containerState(dockerState: string, status: string): DataTierInstanceState {
@@ -319,7 +337,7 @@ export class DataTierManager {
   private readonly now: () => Date;
   private readonly timeouts: DataTierTimeouts;
   private queue: Promise<unknown> = Promise.resolve();
-  private imageLoaded = false;
+  private bundledImageLoaded = false;
 
   constructor(private readonly options: DataTierOptions) {
     this.host = {
@@ -345,21 +363,29 @@ export class DataTierManager {
     return readManagedInstances(this.options.stateDirectory);
   }
 
-  /** Reports each managed instance's container state without starting Docker Desktop. */
-  async list(): Promise<DataTierInstancesSnapshot> {
+  /** The image bundled with this installer build. */
+  get bundledTarget(): BackendUpdateTarget {
+    return { version: this.options.version, image: bundledImage(this.options.version) };
+  }
+
+  /**
+   * Reports each managed instance's container state without starting Docker Desktop.
+   * Instances whose version differs from `target` (default: the bundled image) need an update.
+   */
+  async list(target: BackendUpdateTarget = this.bundledTarget): Promise<Omit<DataTierInstancesSnapshot, 'backendChannel' | 'backendTarget' | 'backendTargetError'>> {
     const instances = this.instances;
     // Self-hosted servers come from environment discovery, which the manager does not own.
     const base = { appVersion: this.options.version, selfHosted: [] };
     const docker = dockerCliPath(this.host, this.fileExists);
     if (!docker) {
-      return { ...base, dockerError: 'Docker Desktop is not installed.', instances: instances.map((instance) => this.status(instance)) };
+      return { ...base, dockerError: 'Docker Desktop is not installed.', instances: instances.map((instance) => this.status(instance, target)) };
     }
     const env = dockerEnvironment(this.host, docker);
     let containers: Map<string, { state: string; status: string; image: string }>;
     try {
       containers = await this.containers(docker, env);
     } catch {
-      return { ...base, dockerError: 'Docker Desktop is not running.', instances: instances.map((instance) => this.status(instance)) };
+      return { ...base, dockerError: 'Docker Desktop is not running.', instances: instances.map((instance) => this.status(instance, target)) };
     }
     return {
       ...base,
@@ -368,6 +394,7 @@ export class DataTierManager {
         const container = containers.get(dataTierInstanceNames(instance.port).container);
         return this.status(
           instance,
+          target,
           container ? containerState(container.state, container.status) : 'missing',
           container ? imageVersion(container.image) : null,
         );
@@ -384,8 +411,9 @@ export class DataTierManager {
         port,
         name: name?.trim().slice(0, 80) || defaultInstanceName(port),
         createdAt: this.now().toISOString(),
+        image: this.bundledTarget.image,
       };
-      await this.composeUp(docker, env, port);
+      await this.composeUp(docker, env, port, instance.image);
       this.writeInstances([...this.instances, instance]);
       return instance;
     });
@@ -393,11 +421,11 @@ export class DataTierManager {
 
   start(port: number): Promise<void> {
     return this.serialize(async () => {
-      this.require(port);
+      const instance = this.require(port);
       const { docker, env } = await this.docker();
       const container = (await this.containers(docker, env)).get(dataTierInstanceNames(port).container);
       if (!container) {
-        await this.composeUp(docker, env, port);
+        await this.composeUp(docker, env, port, instance.image ?? this.bundledTarget.image);
         return;
       }
       if (container.state !== 'running') {
@@ -415,12 +443,22 @@ export class DataTierManager {
     });
   }
 
-  /** Rebuilds the instance from this app version's image and keeps its data. */
-  upgrade(port: number): Promise<void> {
+  /**
+   * Recreates the instance on `target` (default: the bundled image) and keeps its data.
+   * A target matching the bundled version uses the local archive instead of pulling.
+   */
+  upgrade(port: number, target: BackendUpdateTarget = this.bundledTarget): Promise<void> {
     return this.serialize(async () => {
       this.require(port);
+      const image = target.version === this.options.version ? this.bundledTarget.image : target.image;
       const { docker, env } = await this.docker();
-      await this.composeUp(docker, env, port);
+      await this.composeUp(docker, env, port, image);
+      const instances = this.instances;
+      const updated = instances.find((candidate) => candidate.port === port);
+      if (updated) {
+        updated.image = image;
+        this.writeInstances(instances);
+      }
     });
   }
 
@@ -481,6 +519,7 @@ export class DataTierManager {
 
   private status(
     instance: ManagedDataTierInstance,
+    target: BackendUpdateTarget,
     state: DataTierInstanceState = 'unknown',
     version: string | null = null,
   ): DataTierInstanceStatus {
@@ -490,7 +529,7 @@ export class DataTierManager {
       container: dataTierInstanceNames(instance.port).container,
       state,
       version,
-      updateAvailable: version !== null && version !== this.options.version,
+      updateAvailable: version !== null && version !== target.version,
     };
   }
 
@@ -545,19 +584,27 @@ export class DataTierManager {
     );
   }
 
-  private async composeUp(docker: string, env: NodeJS.ProcessEnv, port: number): Promise<void> {
-    if (!this.imageLoaded) {
+  private async composeUp(docker: string, env: NodeJS.ProcessEnv, port: number, image: string): Promise<void> {
+    if (isBundledImage(image)) {
+      if (!this.bundledImageLoaded) {
+        try {
+          await this.runner.run(docker, ['load', '--input', join(this.options.buildContext, 'image.tar')], {
+            timeoutMs: this.timeouts.composeUp,
+            env,
+          });
+          this.bundledImageLoaded = true;
+        } catch (error) {
+          throw new DataTierError(`Unable to load the bundled Working Memory backend image.\n${commandDetail(error)}`, 'start-failed');
+        }
+      }
+    } else {
       try {
-        await this.runner.run(docker, ['load', '--input', join(this.options.buildContext, 'image.tar')], {
-          timeoutMs: this.timeouts.composeUp,
-          env,
-        });
-        this.imageLoaded = true;
+        await this.runner.run(docker, ['pull', image], { timeoutMs: this.timeouts.composeUp, env });
       } catch (error) {
-        throw new DataTierError(`Unable to load the bundled Working Memory backend image.\n${commandDetail(error)}`, 'start-failed');
+        throw new DataTierError(`Unable to download the Working Memory backend image ${image}.\n${commandDetail(error)}`, 'start-failed');
       }
     }
-    const composeFile = this.writeComposeFile(port);
+    const composeFile = this.writeComposeFile(port, image);
     try {
       await this.runner.run(docker, ['compose', '--file', composeFile, 'up', '--detach', '--wait', '--no-build', '--pull', 'never'], {
         timeoutMs: this.timeouts.composeUp,
@@ -642,7 +689,7 @@ export class DataTierManager {
   }
 
   /** Writes the instance's Compose file; macOS/Linux also create its bind-mounted data folder. */
-  protected writeComposeFile(port: number): string {
+  protected writeComposeFile(port: number, image: string): string {
     if (this.host.platform !== 'win32') mkdirSync(dataTierHostDirectory(this.host, port), { recursive: true });
     const directory = join(this.options.stateDirectory, 'instances', String(port));
     mkdirSync(directory, { recursive: true });
@@ -650,7 +697,7 @@ export class DataTierManager {
     // JSON is valid YAML and escapes Windows paths safely.
     writeFileSync(
       composeFile,
-      `${JSON.stringify(dataTierCompose(this.host, this.options.version, port), null, 2)}\n`,
+      `${JSON.stringify(dataTierCompose(this.host, image, port), null, 2)}\n`,
       { mode: 0o600 },
     );
     return composeFile;

@@ -8,8 +8,7 @@
   import TopicView from './documents/TopicView.svelte';
   import TopicCreateView from './documents/TopicCreateView.svelte';
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
-  import SettingsView from './documents/SettingsView.svelte';
-  import InstancesView from './documents/InstancesView.svelte';
+  import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
     AlertVM,
@@ -1251,7 +1250,10 @@
     }
   }
 
-  function openSettings(): void {
+  let settingsTab = $state<SettingsTab>('models');
+
+  function openSettings(tab?: SettingsTab): void {
+    if (tab) settingsTab = tab;
     const next = openDocumentTab(
       { tabs: documents, selectedKey: selectedDocumentKey },
       { kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' },
@@ -1262,13 +1264,7 @@
   }
 
   function openInstances(): void {
-    const next = openDocumentTab(
-      { tabs: documents, selectedKey: selectedDocumentKey },
-      { kind: 'instances', id: 'data-tier-instances', slug: null, title: 'Instances' },
-    );
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    restoreDocumentSaveStatus(next.selectedKey);
+    openSettings('instances');
   }
 
   async function makeInstanceCurrent(mcpUrl: string): Promise<void> {
@@ -1780,7 +1776,7 @@
           onSwitchEnvironment={switchEnvironment}
           onManageInstances={openInstances}
           onRefresh={() => window.workingMemory.restartDesktop()}
-          onSettings={openSettings}
+          onSettings={() => openSettings()}
           onCollapse={() => (activeRailCollapsed = true)}
           onOpen={openRoute}
           onToggleFocus={toggleActiveFocus}
@@ -1845,7 +1841,7 @@
                 title={document.title}
                 onclick={() => selectDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : document.kind === 'instances' ? 'server' : 'file'}"></span>
+                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : 'file'}"></span>
                 {#if tabApp}
                   <span
                     class="container-app-tab-health"
@@ -1975,9 +1971,7 @@
             onRemoveProfile={removeModelProfile}
             onTestProfile={testModelProfile}
             onSave={saveSettings}
-          />
-        {:else if activeDocument?.kind === 'instances'}
-          <InstancesView
+            bind:tab={settingsTab}
             selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
             onMakeCurrent={makeInstanceCurrent}
             onInstancesChanged={() => discoverEnvironments()}

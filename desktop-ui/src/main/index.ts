@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, screen, shell } from 'electron';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -89,6 +89,16 @@ import { DesktopLinkBridge } from './linkBridge';
 import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
 import { LEGACY_USER_DATA_NAME, migrateLegacyUserData } from './userDataMigration';
+import { DesktopUpdater } from './desktopUpdater';
+import {
+  defaultDesktopChannel,
+  fetchUpdateManifest,
+  isUpdateChannel,
+  readUpdateSettings,
+  writeUpdateSettings,
+  type BackendUpdateTarget,
+  type UpdateSettings,
+} from './updateChannels';
 import { loadPromptImages } from './promptImages';
 import { decodeQrPayloads } from './qrDecoder';
 import {
@@ -137,6 +147,81 @@ function controlPlane(): ControlPlaneClient {
 }
 
 /** Installed builds bundle the control-plane image context; source-tree runs do not. */
+let updateSettingsFile = '';
+let updateSettings: UpdateSettings = { desktopChannel: 'off', backendChannel: 'off' };
+let desktopUpdater: DesktopUpdater | null = null;
+
+/** Builds installed by `npm run build` mark themselves so they never self-update by default. */
+function isLocalBuild(): boolean {
+  try {
+    return JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')).workingMemoryBuild === 'local';
+  } catch {
+    return false;
+  }
+}
+
+async function saveUpdateSettings(patch: Partial<UpdateSettings>): Promise<void> {
+  updateSettings = { ...updateSettings, ...patch };
+  await writeUpdateSettings(updateSettingsFile, updateSettings);
+}
+
+function broadcastDesktopUpdate(): void {
+  if (!desktopUpdater) return;
+  const state = desktopUpdater.state;
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('updates:state', state);
+  }
+}
+
+async function initializeUpdates(): Promise<void> {
+  updateSettingsFile = join(app.getPath('userData'), 'updates.json');
+  const defaultChannel = defaultDesktopChannel(app.getVersion(), isLocalBuild());
+  updateSettings = await readUpdateSettings(updateSettingsFile, {
+    desktopChannel: defaultChannel,
+    backendChannel: defaultChannel,
+  });
+  desktopUpdater = new DesktopUpdater({
+    currentVersion: app.getVersion(),
+    channel: updateSettings.desktopChannel,
+    saveChannel: (desktopChannel) => saveUpdateSettings({ desktopChannel }),
+    downloadDirectory: join(app.getPath('userData'), 'updates'),
+    executablePath: process.execPath,
+    quit: () => app.quit(),
+    onState: () => broadcastDesktopUpdate(),
+  });
+  desktopUpdater.startSchedule();
+}
+
+const BACKEND_TARGET_CACHE_MS = 5 * 60_000;
+let backendTargetCache: { channel: string; at: number; result: { target: BackendUpdateTarget | null; error: string | null } } | null = null;
+
+/** The backend version managed instances should run for the selected backend channel. */
+async function backendTarget(): Promise<{ target: BackendUpdateTarget | null; error: string | null }> {
+  const manager = requireDataTier();
+  const channel = updateSettings.backendChannel;
+  if (channel === 'off') return { target: manager.bundledTarget, error: null };
+  if (backendTargetCache?.channel === channel && Date.now() - backendTargetCache.at < BACKEND_TARGET_CACHE_MS) {
+    return backendTargetCache.result;
+  }
+  let result: { target: BackendUpdateTarget | null; error: string | null };
+  try {
+    const manifest = await fetchUpdateManifest(channel, { timeoutMs: 8_000 });
+    result = manifest?.backend
+      ? { target: manifest.backend, error: null }
+      : { target: null, error: `No ${channel} backend release has been published yet.` };
+  } catch (error) {
+    // Failures are not cached so the next refresh retries.
+    return { target: null, error: error instanceof Error ? error.message : String(error) };
+  }
+  backendTargetCache = { channel, at: Date.now(), result };
+  return result;
+}
+
+function requireDesktopUpdater(): DesktopUpdater {
+  if (!desktopUpdater) throw new Error('Updates are not ready yet.');
+  return desktopUpdater;
+}
+
 function createDataTierManager(): DataTierManager | null {
   const buildContext = join(process.resourcesPath, 'data-tier');
   if (!existsSync(join(buildContext, 'image.tar'))) return null;
@@ -185,13 +270,19 @@ async function startDataTierOnLaunch(): Promise<void> {
 
 async function dataTierSnapshot(): Promise<DataTierInstancesSnapshot | null> {
   if (!dataTier) return null;
+  const { target, error: backendTargetError } = await backendTarget();
   const [snapshot, environments] = await Promise.all([
-    dataTier.list(),
+    // Without a resolved channel target, report versions but flag no updates.
+    dataTier.list(target ?? { version: '', image: '' }),
     discoverEnvironments().catch(() => environmentManager.availableEnvironments),
   ]);
+  if (!target) for (const instance of snapshot.instances) instance.updateAvailable = false;
   const managed = new Set(snapshot.instances.map((instance) => instance.port));
   return {
     ...snapshot,
+    backendChannel: updateSettings.backendChannel,
+    backendTarget: target,
+    backendTargetError,
     selfHosted: environments
       .filter((environment) => !managed.has(environment.port))
       .map(({ port, displayName, mcpUrl }) => ({ port, name: displayName, mcpUrl })),
@@ -730,9 +821,25 @@ function registerIpc(): void {
     return dataTierSnapshot();
   });
   ipcMain.handle('instances:upgrade', async (_event, port: number) => {
-    await requireDataTier().upgrade(port);
+    const { target, error } = await backendTarget();
+    if (!target) throw new Error(error ?? 'No backend update is available.');
+    await requireDataTier().upgrade(port, target);
     return dataTierSnapshot();
   });
+  ipcMain.handle('instances:set-channel', async (_event, channel: unknown) => {
+    if (!isUpdateChannel(channel)) throw new Error('Unknown update channel.');
+    await saveUpdateSettings({ backendChannel: channel });
+    backendTargetCache = null;
+    return dataTierSnapshot();
+  });
+  ipcMain.handle('updates:get', () => requireDesktopUpdater().state);
+  ipcMain.handle('updates:set-channel', (_event, channel: unknown) => {
+    if (!isUpdateChannel(channel)) throw new Error('Unknown update channel.');
+    return requireDesktopUpdater().setChannel(channel);
+  });
+  ipcMain.handle('updates:check', () => requireDesktopUpdater().check());
+  ipcMain.handle('updates:download', () => requireDesktopUpdater().download());
+  ipcMain.handle('updates:install', () => requireDesktopUpdater().install());
   ipcMain.handle('instances:rename', async (_event, port: number, name: string) => {
     await requireDataTier().rename(port, String(name ?? ''));
     return dataTierSnapshot();
@@ -1305,6 +1412,7 @@ if (!ownsSingleInstanceLock) {
     environmentFile = join(app.getPath('userData'), 'environment.json');
     windowStateFile = join(app.getPath('userData'), 'window-state.json');
     await environmentManager.initialize();
+    await initializeUpdates();
     dataTier = createDataTierManager();
     dataTierLaunch = startDataTierOnLaunch();
     desktopLinkBridge = new DesktopLinkBridge(

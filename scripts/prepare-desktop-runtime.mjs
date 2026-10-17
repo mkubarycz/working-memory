@@ -158,6 +158,8 @@ function prepareMacApp(appBundle, deepSign) {
       version: JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8')).version,
       type: 'module',
       main: 'out/main/index.js',
+      // Local builds update through `npm run build`; their Updates channel defaults to Off.
+      workingMemoryBuild: 'local',
     }, null, 2)}\n`,
   );
 
