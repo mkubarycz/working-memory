@@ -145,11 +145,12 @@ To dogfood Copilot:
    **Complex / medium**; topic title/type autocomplete uses **Simple / fast**.
    Assign all nine cells to Copilot to replace Azure for all configured routes.
 
-The installed desktop app discovers the local CLI on PATH and in common
-Homebrew, WinGet, and user install locations (npm `.cmd` shims are ignored on
-Windows). When no CLI is found it uses the Copilot runtime bundled with the
-app. Set `WM_COPILOT_CLI_PATH` in the app's launch environment for a custom
-executable location, or to `bundled` to force the bundled runtime. It uses the CLI's existing
+The installed desktop app uses the native Copilot runtime bundled with the
+app. It does not require Node.js on PATH or automatically select an installed
+CLI launcher. Set `WM_COPILOT_CLI_PATH` in the app's launch environment only
+to explicitly select an external executable, whose runtime dependencies you
+must provide; `bundled` selects the default runtime. Inherited
+`COPILOT_CLI_PATH` overrides are ignored. It uses the CLI's existing
 authentication; Working Memory does not copy GitHub tokens into its model
 configuration. Copilot requires an eligible account and employer permission
 for CLI use; plan allowances, model access, and billing rules apply.

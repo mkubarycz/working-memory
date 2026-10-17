@@ -1,6 +1,5 @@
 import { accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
-import { posix, win32 } from 'node:path';
 import { CopilotClient, RuntimeConnection, type CopilotSession } from '@github/copilot-sdk';
 import type { CopilotModels } from '../shared/contracts';
 import type { ModelConversation, ParsedModelTurn } from './modelTools';
@@ -8,37 +7,24 @@ import type { ModelConversation, ParsedModelTurn } from './modelTools';
 export function copilotEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
   return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] =>
     entry[1] !== undefined && !entry[0].startsWith('COPILOT_PROVIDER_')
-    && !['COPILOT_MODEL', 'COPILOT_OFFLINE', 'ELECTRON_RUN_AS_NODE'].includes(entry[0])));
+    && !['COPILOT_MODEL', 'COPILOT_OFFLINE', 'COPILOT_CLI_PATH', 'ELECTRON_RUN_AS_NODE'].includes(entry[0])));
 }
 
 /**
- * Prefer a locally installed native Copilot CLI so updates follow the user's install. Returns
- * undefined to use the SDK's bundled runtime. Windows npm shims (copilot.cmd) are skipped because
- * the SDK would launch their JavaScript entrypoint with Electron's executable instead of Node.
+ * Use the SDK's native bundled runtime unless the user explicitly selects an external CLI.
+ * Auto-discovered launchers may require Node on PATH, which GUI apps need not inherit.
  */
 export function localCopilotPath(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
-  home = homedir(),
   exists: (candidate: string) => boolean = (candidate) => isExecutable(candidate, platform),
 ): string | undefined {
-  const pathModule = platform === 'win32' ? win32 : posix;
   if (env.WM_COPILOT_CLI_PATH === 'bundled') return undefined;
   if (env.WM_COPILOT_CLI_PATH) {
     if (exists(env.WM_COPILOT_CLI_PATH)) return env.WM_COPILOT_CLI_PATH;
     throw new Error(`WM_COPILOT_CLI_PATH does not point to an executable Copilot CLI: ${env.WM_COPILOT_CLI_PATH}`);
   }
-  const executable = platform === 'win32' ? 'copilot.exe' : 'copilot';
-  const pathDirectories = (env.PATH ?? env.Path ?? '').split(platform === 'win32' ? ';' : ':').filter(Boolean);
-  const extraDirectories = platform === 'win32'
-    ? [
-        pathModule.join(env.LOCALAPPDATA || pathModule.join(home, 'AppData', 'Local'), 'Microsoft', 'WinGet', 'Links'),
-        pathModule.join(env.LOCALAPPDATA || pathModule.join(home, 'AppData', 'Local'), 'Programs', 'GitHub Copilot'),
-      ]
-    : ['/opt/homebrew/bin', '/usr/local/bin', pathModule.join(home, '.local', 'bin'), pathModule.join(home, '.copilot', 'bin')];
-  return [...pathDirectories, ...extraDirectories]
-    .map((directory) => pathModule.join(directory, executable))
-    .find(exists);
+  return undefined;
 }
 
 function isExecutable(candidate: string, platform: NodeJS.Platform): boolean {

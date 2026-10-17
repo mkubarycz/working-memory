@@ -1,6 +1,3 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendToolResults, createModelConversation } from '../src/main/modelTools';
 
@@ -31,7 +28,7 @@ vi.mock('@github/copilot-sdk', () => ({
   RuntimeConnection: { forStdio: (options: unknown) => options },
 }));
 
-import { copilotEnvironment, localCopilotPath, LocalCopilotProvider, parseCopilotTurn } from '../src/main/copilotProvider';
+import { copilotConnection, copilotEnvironment, localCopilotPath, LocalCopilotProvider, parseCopilotTurn } from '../src/main/copilotProvider';
 
 const tools = [{ name: 'ws-topic-read', inputSchema: { type: 'object', properties: { slug: { type: 'string' } } } }];
 
@@ -84,6 +81,7 @@ describe('local Copilot provider', () => {
       PATH: '/bin', GH_TOKEN: 'github-token', COPILOT_PROVIDER_BASE_URL: 'https://azure.example',
       COPILOT_PROVIDER_API_KEY: 'azure-key', COPILOT_MODEL: 'azure-model', COPILOT_OFFLINE: 'true',
       ELECTRON_RUN_AS_NODE: '1', EMPTY: undefined,
+      COPILOT_CLI_PATH: '/external/copilot',
     })).toEqual({ PATH: '/bin', GH_TOKEN: 'github-token' });
   });
 
@@ -91,23 +89,21 @@ describe('local Copilot provider', () => {
     expect(() => localCopilotPath({ WM_COPILOT_CLI_PATH: '/not-a-real-cli/copilot' })).toThrow('does not point to an executable');
   });
 
-  it('falls back to the bundled SDK runtime when no native CLI is installed', () => {
-    const empty = mkdtempSync(join(tmpdir(), 'wm-copilot-'));
-    try {
-      expect(localCopilotPath({ Path: empty, LOCALAPPDATA: empty }, 'win32', empty)).toBeUndefined();
-      expect(localCopilotPath({ WM_COPILOT_CLI_PATH: 'bundled' }, 'darwin', empty)).toBeUndefined();
-    } finally {
-      rmSync(empty, { recursive: true, force: true });
-    }
+  it.each(['darwin', 'win32'] as const)('uses the bundled runtime even when external launchers exist on %s', (platform) => {
+    const exists = vi.fn(() => true);
+    expect(localCopilotPath({ PATH: '/usr/local/bin', Path: 'C:\\npm' }, platform, exists)).toBeUndefined();
+    expect(exists).not.toHaveBeenCalled();
   });
 
-  it('finds WinGet copilot.exe and ignores npm copilot.cmd shims on Windows', () => {
-    const env = { Path: 'C:\\Users\\me\\AppData\\Roaming\\npm', LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' };
-    const shim = 'C:\\Users\\me\\AppData\\Roaming\\npm\\copilot.cmd';
-    const winget = 'C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Links\\copilot.exe';
-    expect(localCopilotPath(env, 'win32', 'C:\\Users\\me', (candidate) => candidate === shim)).toBeUndefined();
-    expect(localCopilotPath(env, 'win32', 'C:\\Users\\me', (candidate) => candidate === shim || candidate === winget))
-      .toBe(winget);
+  it('does not let inherited SDK overrides bypass the bundled runtime selection', () => {
+    expect(copilotConnection({
+      PATH: '/usr/bin:/bin', COPILOT_CLI_PATH: '/external/copilot', WM_COPILOT_CLI_PATH: 'bundled',
+    })).toEqual({ env: { PATH: '/usr/bin:/bin', WM_COPILOT_CLI_PATH: 'bundled' } });
+  });
+
+  it('accepts an explicitly configured external executable on Windows', () => {
+    const path = 'C:\\Copilot\\copilot.exe';
+    expect(localCopilotPath({ WM_COPILOT_CLI_PATH: path }, 'win32', (candidate) => candidate === path)).toBe(path);
   });
 
   it('reports missing authentication without creating a session', async () => {

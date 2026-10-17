@@ -143,6 +143,13 @@ function prepareMacApp(appBundle, deepSign) {
     recursive: true,
     preserveTimestamps: true,
   });
+  const runtimePackage = `copilot-sdk-${process.platform}-${process.arch}`;
+  const runtimeDestination = join(appResources, 'node_modules', '@github', runtimePackage);
+  rmSync(runtimeDestination, { recursive: true, force: true });
+  cpSync(join(desktopRoot, 'node_modules', '@github', runtimePackage), runtimeDestination, {
+    recursive: true,
+    filter: (source) => !source.split(sep).join('/').includes('/plugins/computer-use'),
+  });
   writeFileSync(
     join(appResources, 'package.json'),
     `${JSON.stringify({
