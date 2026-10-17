@@ -12,11 +12,26 @@ describe('desktop tree icon contract', () => {
     expect(settings).toContain('OpenAI-compatible / Azure Foundry');
     expect(settings).toContain('GitHub Copilot (local CLI)');
     expect(settings).toContain("event.currentTarget.value === 'copilot' ? 'auto' : ''");
-    expect(settings).toContain('Load Copilot models');
+    expect(settings).not.toContain('Load Copilot models');
     expect(settings).toContain('copilot login');
     expect(settings).toContain("{#if profile.provider === 'copilot'}");
     expect(app).toContain('provider: profile.provider');
     expect(preload).toContain("listCopilotModels: () => invoke('config:copilot-models')");
+  });
+
+  it('automatically loads a shared Copilot model dropdown for existing and newly selected providers', () => {
+    const settings = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/SettingsView.svelte'), 'utf8');
+    expect(settings).toMatch(/\$effect\(\(\) => \{[\s\S]*profiles\.some\(\(profile\) => profile\.provider === 'copilot'\)/);
+    expect(settings).toContain('if (!requestedCopilotModels)');
+    expect(settings).toContain('void loadCopilotModels();');
+    expect(settings).toContain('<select bind:value={profile.model}>');
+    expect(settings).toContain('<option value="auto">Auto (Copilot default)</option>');
+    expect(settings).toContain('!copilot?.models.some((model) => model.id === profile.model)');
+    expect(settings).toContain('<option value={profile.model}>{profile.model}</option>');
+    expect(settings).toContain('<option value={model.id}>{model.name}</option>');
+    expect(settings).toContain('Retry loading models');
+    expect(settings).toContain("copilotStatus = error instanceof Error ? error.message : String(error)");
+    expect(settings).not.toContain('<datalist');
   });
 
   it('uses Refresh as the explicit desktop restart boundary', () => {

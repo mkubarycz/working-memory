@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type {
     EditableModelProfile,
     CopilotModels,
@@ -47,6 +48,18 @@
   let copilot = $state<CopilotModels | null>(null);
   let loadingCopilot = $state(false);
   let copilotStatus = $state('');
+  let requestedCopilotModels = false;
+
+  $effect(() => {
+    if (profiles.some((profile) => profile.provider === 'copilot')) {
+      untrack(() => {
+        if (!requestedCopilotModels) {
+          requestedCopilotModels = true;
+          void loadCopilotModels();
+        }
+      });
+    }
+  });
 
   async function loadCopilotModels(): Promise<void> {
     loadingCopilot = true;
@@ -107,11 +120,23 @@
               Sign in from Terminal with <code>copilot login</code> if needed.
               Copilot plan allowances and organization policies apply. No automatic Azure fallback.</p>
             <label>Model
-              <input bind:value={profile.model} list="copilot-models" placeholder="auto" />
+              <select bind:value={profile.model}>
+                <option value="auto">Auto (Copilot default)</option>
+                {#if profile.model && profile.model !== 'auto' && !copilot?.models.some((model) => model.id === profile.model)}
+                  <option value={profile.model}>{profile.model}</option>
+                {/if}
+                {#each copilot?.models ?? [] as model (model.id)}
+                  {#if model.id !== 'auto'}
+                    <option value={model.id}>{model.name}</option>
+                  {/if}
+                {/each}
+              </select>
             </label>
-            <button class="secondary" disabled={loadingCopilot || saving || testingProfileId !== null} onclick={() => void loadCopilotModels()}>
-              {loadingCopilot ? 'Loading models...' : 'Load Copilot models'}
-            </button>
+            {#if !loadingCopilot && copilot === null}
+              <button class="secondary" disabled={saving || testingProfileId !== null} onclick={() => void loadCopilotModels()}>
+                Retry loading models
+              </button>
+            {/if}
             <p role="status">{copilotStatus}</p>
           {:else}
             <label>Endpoint<input bind:value={profile.endpoint} placeholder="http://localhost:11434/v1" /></label>
@@ -144,11 +169,6 @@
         <span aria-hidden="true" class="codicon codicon-add"></span>
         Add model profile
       </button>
-      <datalist id="copilot-models">
-        {#each copilot?.models ?? [] as model (model.id)}
-          <option value={model.id}>{model.name}</option>
-        {/each}
-      </datalist>
     </div>
   {:else if tab === 'routing'}
     <div class="routing-matrix">

@@ -140,7 +140,8 @@ To dogfood Copilot:
    (`brew install copilot-cli`, or `winget install GitHub.Copilot` on Windows)
    and run `copilot login`, or run `gh auth login`.
 3. Add a model profile in Settings and choose **GitHub Copilot (local CLI)**.
-4. Use **Load Copilot models**, choose a model (or `auto`), and **Test**.
+4. The model dropdown loads automatically. Choose a model (or `auto`) and **Test**.
+   If loading fails, the error is displayed with **Retry loading models**.
 5. Assign that profile in **Routing matrix** and save. Chat currently uses
    **Complex / medium**; topic title/type autocomplete uses **Simple / fast**.
    Assign all nine cells to Copilot to replace Azure for all configured routes.
