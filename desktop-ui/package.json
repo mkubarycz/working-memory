@@ -1,15 +1,19 @@
 {
   "name": "working-memory-desktop",
+  "productName": "Working Memory",
   "version": "0.1.1",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build && node ../scripts/prepare-desktop-runtime.mjs && node ../scripts/install-desktop-app.mjs",
+    "build": "electron-vite build && node ../scripts/prepare-data-tier-bundle.mjs && node ../scripts/prepare-desktop-runtime.mjs && node ../scripts/install-desktop-app.mjs",
     "start": "npm run build && electron out/main/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package": "electron-vite build && node ../scripts/prepare-data-tier-bundle.mjs && electron-builder --publish never",
+    "package:mac": "npm run package -- --mac",
+    "package:win": "npm run package -- --win"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
@@ -17,6 +21,7 @@
     "@codemirror/language": "^6.12.4",
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.13",
+    "@github/copilot-sdk": "^1.0.22",
     "@lezer/highlight": "^1.2.5",
     "@lezer/markdown": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -28,10 +33,14 @@
     "@sveltejs/vite-plugin-svelte": "^6.0.0",
     "@types/markdown-it": "^14.2.0",
     "@types/node": "^22.15.0",
+    "@vscode/codicons": "^0.0.45",
     "electron": "^37.2.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^4.0.0",
     "typescript": "^5.8.3",
     "vite": "^7.0.0",
     "vitest": "^4.0.0"
-  }
+  },
+  "description": "Working Memory desktop application",
+  "author": "Michael Kubarycz"
 }

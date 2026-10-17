@@ -25,6 +25,7 @@ export interface CommandRunner {
 export interface CommandRunOptions {
   timeoutMs: number;
   signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface ClaimClient {
@@ -120,6 +121,7 @@ export class ExecFileCommandRunner implements CommandRunner {
         maxBuffer: 10 * 1024 * 1024,
         timeout: options.timeoutMs,
         signal: options.signal,
+        ...(options.env ? { env: options.env } : {}),
       }, (error, stdout, stderr) => {
         if (error) {
           if ((error as NodeJS.ErrnoException & { killed?: boolean }).killed

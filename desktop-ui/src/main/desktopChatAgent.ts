@@ -94,6 +94,8 @@ export interface StartChatInput {
   model: string;
   message: string;
   headers: Record<string, string>;
+  provider?: 'openai-compatible' | 'copilot';
+  modelTurn?: (conversation: ModelConversation, timeoutMs: number, signal: AbortSignal) => Promise<ParsedModelTurn>;
   images?: ModelImageInput[];
   context?: ChatContext;
   appTools?: {
@@ -109,6 +111,7 @@ interface Session {
   conversation: ModelConversation;
   url: string;
   headers: Record<string, string>;
+  modelTurn?: StartChatInput['modelTurn'];
   startedAt: number;
   iterations: number;
   progress: ToolProgress[];
@@ -135,6 +138,7 @@ interface Session {
 }
 
 interface ActiveRun {
+  controller: AbortController;
   generation: number;
   cancelled: boolean;
   dependencies: DesktopChatDependencies;
@@ -227,6 +231,7 @@ export class DesktopChatAgent {
     const run: ActiveRun = {
       generation: this.generation,
       cancelled: false,
+      controller: new AbortController(),
       dependencies: this.options.resolveDependencies?.() ?? this.options,
       external: new Set(),
       journalTail: Promise.resolve(),
@@ -254,7 +259,7 @@ export class DesktopChatAgent {
     try {
       journal = await this.external(run, run.dependencies.journal.create({
         startedAt,
-        provider: { endpoint: sanitizedEndpoint(input.url), mode: input.mode, model: input.model.slice(0, 256) },
+        provider: { endpoint: sanitizedEndpoint(input.url), mode: input.provider === 'copilot' ? 'copilot' : input.mode, model: input.model.slice(0, 256) },
         request: {
           userText: sanitizeJournalText(input.message, secretValues).slice(0, 32_768),
           ...(input.images?.length ? {
@@ -283,6 +288,7 @@ export class DesktopChatAgent {
       }),
       url: input.url,
       headers: input.headers,
+      modelTurn: input.modelTurn,
       startedAt,
       iterations: 0,
       progress: [],
@@ -379,15 +385,18 @@ export class DesktopChatAgent {
         return this.finish(session, 'Stopped after reaching the total tool-run time limit.', 'interrupted', 'total_timeout');
       }
       session.iterations += 1;
-      let payload: unknown;
+      let turn: ParsedModelTurn;
       const modelStartedAt = this.now();
       try {
-        payload = await this.external(session.run, this.options.callModel({
-          url: session.url,
-          headers: session.headers,
-          body: modelTurnRequest(session.conversation),
-          timeoutMs: Math.max(1, Math.min(this.requestTimeoutMs, this.totalTimeoutMs - (this.now() - session.startedAt))),
-        }));
+        const timeoutMs = Math.max(1, Math.min(this.requestTimeoutMs, this.totalTimeoutMs - (this.now() - session.startedAt)));
+        turn = session.modelTurn
+          ? await this.external(session.run, session.modelTurn(session.conversation, timeoutMs, session.run.controller.signal))
+          : parseModelTurn(session.conversation.mode, await this.external(session.run, this.options.callModel({
+              url: session.url,
+              headers: session.headers,
+              body: modelTurnRequest(session.conversation),
+              timeoutMs,
+            })));
         this.assertCurrent(session.run);
       } catch (error) {
         if (isEnvironmentChanged(error)) throw error;
@@ -404,7 +413,6 @@ export class DesktopChatAgent {
       }
       const modelDurationMs = Math.max(0, this.now() - modelStartedAt);
       session.modelMs += modelDurationMs;
-      const turn = parseModelTurn(session.conversation.mode, payload);
       const secretValues = secretHeaderValues(session.headers);
       addUsage(session, turn.usage);
       const modelTurnId = this.nextEventId(session, 'model-turn');
@@ -714,6 +722,7 @@ export class DesktopChatAgent {
   private async interrupt(run: ActiveRun, confirmationId?: string): Promise<DesktopAgentResult | undefined> {
     if (run.interruption) return run.interruption;
     run.cancelled = true;
+    run.controller.abort();
     run.interruption = (async () => {
       await Promise.allSettled([...run.external]);
       await run.journalTail.catch(() => {});

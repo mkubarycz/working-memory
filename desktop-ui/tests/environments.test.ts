@@ -35,6 +35,33 @@ describe('desktop environment discovery', () => {
     ]);
   });
 
+  it('probes the default loopback service when a volume-backed data tier has no host port file', async () => {
+    const probe = vi.fn(async (environment: DesktopEnvironment) => environment.port === 7717);
+    const result = await discoverDesktopEnvironments({
+      platform: 'win32',
+      env: { LOCALAPPDATA: 'C:\\Users\\test\\AppData\\Local' },
+      homedir: 'C:\\Users\\test',
+      readTextFile: async () => { throw new Error('missing'); },
+      probe,
+    });
+    expect(result).toEqual([expect.objectContaining({ mcpUrl: 'http://127.0.0.1:7717/mcp', source: 'production' })]);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('probes managed data-tier instances alongside the default port and shows their names', async () => {
+    const probe = vi.fn(async (environment: DesktopEnvironment) => environment.port !== 7719);
+    const result = await discoverDesktopEnvironments({
+      platform: 'win32',
+      env: { LOCALAPPDATA: 'C:\\Users\\test\\AppData\\Local' },
+      homedir: 'C:\\Users\\test',
+      readTextFile: async () => { throw new Error('missing'); },
+      probe,
+      managedInstances: () => [{ port: 7720, name: 'Work' }, { port: 7719, name: 'Down' }, { port: 7717, name: 'Home' }],
+    });
+    expect(result.map((environment) => [environment.port, environment.displayName])).toEqual([[7717, 'Home'], [7720, 'Work']]);
+    expect(probe).toHaveBeenCalledTimes(3);
+  });
+
   it('rejects malformed, stale, dead, and duplicate candidates', async () => {
     const overrideFile = '/tmp/wm/run/control-plane.port.json';
     const readTextFile = vi.fn(async (filePath: string) => ({
@@ -133,6 +160,14 @@ describe('desktop environment manager', () => {
       { url: 'http://127.0.0.1:8811/mcp', calls: ['journal:create'] },
     ]);
     expect(persisted).toEqual(['http://127.0.0.1:8811/mcp']);
+  });
+
+  it('persists an explicit switch to the environment that is already selected', async () => {
+    const { instance, clients, persisted } = manager();
+    await instance.initialize();
+    await instance.switchTo('http://127.0.0.1:7717/mcp');
+    expect(persisted).toEqual(['http://127.0.0.1:7717/mcp']);
+    expect(clients).toHaveLength(1);
   });
 });
 

@@ -1,10 +1,18 @@
+<script lang="ts" module>
+  export type SettingsTab = 'models' | 'routing' | 'human' | 'instances' | 'updates';
+</script>
+
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type {
     EditableModelProfile,
+    CopilotModels,
     ModelRouting,
     PublicConfig,
   } from '../../shared/contracts';
   import { humanInitials } from '../humanIdentity';
+  import InstancesView from './InstancesView.svelte';
+  import UpdatesView from './UpdatesView.svelte';
 
   interface Props {
     profiles: Array<EditableModelProfile & { apiKey: string }>;
@@ -19,6 +27,10 @@
     onRemoveProfile: (id: string) => void;
     onTestProfile: (profile: EditableModelProfile & { apiKey: string }) => Promise<void>;
     onSave: () => Promise<void>;
+    tab?: SettingsTab;
+    selectedMcpUrl: string | null;
+    onMakeCurrent: (mcpUrl: string) => Promise<void>;
+    onInstancesChanged: () => Promise<void>;
   }
 
   let {
@@ -34,6 +46,10 @@
     onRemoveProfile,
     onTestProfile,
     onSave,
+    tab = $bindable('models'),
+    selectedMcpUrl,
+    onMakeCurrent,
+    onInstancesChanged,
   }: Props = $props();
 
   const SPEEDS = ['slow', 'medium', 'fast'] as const;
@@ -42,15 +58,51 @@
     { id: 'complex', label: 'Complex' },
     { id: 'deep', label: 'Deep Thought' },
   ] as const;
-  let tab = $state<'models' | 'routing' | 'human'>('models');
+  let copilot = $state<CopilotModels | null>(null);
+  let loadingCopilot = $state(false);
+  let copilotStatus = $state('');
+  let requestedCopilotModels = false;
+
+  $effect(() => {
+    if (profiles.some((profile) => profile.provider === 'copilot')) {
+      untrack(() => {
+        if (!requestedCopilotModels) {
+          requestedCopilotModels = true;
+          void loadCopilotModels();
+        }
+      });
+    }
+  });
+
+  async function loadCopilotModels(): Promise<void> {
+    loadingCopilot = true;
+    copilotStatus = 'Checking local Copilot...';
+    try {
+      copilot = await window.workingMemory.listCopilotModels();
+      copilotStatus = `Signed in as ${copilot.account}. ${copilot.models.length} models available.`;
+    } catch (error) {
+      copilot = null;
+      copilotStatus = error instanceof Error ? error.message : String(error);
+    } finally {
+      loadingCopilot = false;
+    }
+  }
 </script>
 
 <section class="settings">
   <header>
-    <p class="eyebrow">Configuration</p>
-    <h1>AI models</h1>
-    <p>
-      Configure OpenAI-compatible model profiles and route AI work by speed and depth.
+    <h1>Settings</h1>
+  </header>
+  <div class="settings-tabs" role="tablist" aria-label="Settings">
+    <button role="tab" aria-selected={tab === 'models'} onclick={() => (tab = 'models')}>Models</button>
+    <button role="tab" aria-selected={tab === 'routing'} onclick={() => (tab = 'routing')}>Routing matrix</button>
+    <button role="tab" aria-selected={tab === 'human'} onclick={() => (tab = 'human')}>Human</button>
+    <button role="tab" aria-selected={tab === 'instances'} onclick={() => (tab = 'instances')}>Instances</button>
+    <button role="tab" aria-selected={tab === 'updates'} onclick={() => (tab = 'updates')}>Updates</button>
+  </div>
+  {#if tab === 'models'}
+    <p class="settings-intro">
+      Configure GitHub Copilot or OpenAI-compatible model profiles and route AI work by speed and depth.
       {credentialStorage === 'secure'
         ? ' Credentials stay in OS-backed secure storage.'
         : credentialStorage === 'local'
@@ -59,29 +111,60 @@
           ? ' The API key is held in memory for this app session because secure storage is unavailable.'
           : ' Secure storage is unavailable; API keys can be used for the current app session but are not written to disk.'}
     </p>
-  </header>
-  <div class="settings-tabs" role="tablist" aria-label="AI settings">
-    <button role="tab" aria-selected={tab === 'models'} onclick={() => (tab = 'models')}>Models</button>
-    <button role="tab" aria-selected={tab === 'routing'} onclick={() => (tab = 'routing')}>Routing matrix</button>
-    <button role="tab" aria-selected={tab === 'human'} onclick={() => (tab = 'human')}>Human</button>
-  </div>
-  {#if tab === 'models'}
     <div class="model-profile-list">
       {#each profiles as profile, index (profile.id)}
         <fieldset class="model-profile">
           <legend>{profile.name || `Model ${index + 1}`}</legend>
           <label>Name<input bind:value={profile.name} placeholder="Fast local model" /></label>
-          <label>Endpoint<input bind:value={profile.endpoint} placeholder="http://localhost:11434/v1" /></label>
-          <label>Model<input bind:value={profile.model} placeholder="qwen3:14b" /></label>
           <label>
-            API key
-            <input
-              type="password"
-              bind:value={profile.apiKey}
-              placeholder={profile.hasApiKey ? 'Saved' : 'Optional for local endpoints'}
-              autocomplete="new-password"
-            />
+            Provider
+            <select
+              bind:value={profile.provider}
+              onchange={(event) => {
+                profile.model = event.currentTarget.value === 'copilot' ? 'auto' : '';
+                profile.apiKey = '';
+              }}
+            >
+              <option value="openai-compatible">OpenAI-compatible / Azure Foundry</option>
+              <option value="copilot">GitHub Copilot (local CLI)</option>
+            </select>
           </label>
+          {#if profile.provider === 'copilot'}
+            <p>Uses the local Copilot CLI and its GitHub sign-in, not an Azure API key.
+              Sign in from Terminal with <code>copilot login</code> if needed.
+              Copilot plan allowances and organization policies apply. No automatic Azure fallback.</p>
+            <label>Model
+              <select bind:value={profile.model}>
+                <option value="auto">Auto (Copilot default)</option>
+                {#if profile.model && profile.model !== 'auto' && !copilot?.models.some((model) => model.id === profile.model)}
+                  <option value={profile.model}>{profile.model}</option>
+                {/if}
+                {#each copilot?.models ?? [] as model (model.id)}
+                  {#if model.id !== 'auto'}
+                    <option value={model.id}>{model.name}</option>
+                  {/if}
+                {/each}
+              </select>
+            </label>
+            {#if !loadingCopilot && copilot === null}
+              <button class="secondary" disabled={saving || testingProfileId !== null} onclick={() => void loadCopilotModels()}>
+                Retry loading models
+              </button>
+            {/if}
+            <p role="status">{copilotStatus}</p>
+          {:else}
+            <label>Endpoint<input bind:value={profile.endpoint} placeholder="http://localhost:11434/v1" /></label>
+            <label>Model<input bind:value={profile.model} placeholder="qwen3:14b" /></label>
+            <label>
+              API key
+              <input
+                type="password"
+                bind:value={profile.apiKey}
+                placeholder={profile.hasApiKey ? 'Saved' : 'Optional for local endpoints'}
+                autocomplete="new-password"
+              />
+            </label>
+          {/if}
           <div class="model-profile-actions">
             <button
               class="secondary"
@@ -121,6 +204,10 @@
         {/each}
       {/each}
     </div>
+  {:else if tab === 'instances'}
+    <InstancesView {selectedMcpUrl} {onMakeCurrent} {onInstancesChanged} />
+  {:else if tab === 'updates'}
+    <UpdatesView />
   {:else}
     <div class="human-settings">
       <label>
@@ -135,10 +222,12 @@
       <p>Your initials appear beside your messages in the inline chat response.</p>
     </div>
   {/if}
-  <div class="settings-actions">
-    <button class="primary" disabled={saving || testingProfileId !== null} onclick={() => void onSave()}>
-      {saving ? 'Saving...' : 'Save'}
-    </button>
-    <span>{settingsStatus}</span>
-  </div>
+  {#if tab !== 'instances' && tab !== 'updates'}
+    <div class="settings-actions">
+      <button class="primary" disabled={saving || testingProfileId !== null} onclick={() => void onSave()}>
+        {saving ? 'Saving...' : 'Save'}
+      </button>
+      <span>{settingsStatus}</span>
+    </div>
+  {/if}
 </section>

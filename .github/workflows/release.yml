@@ -1,0 +1,277 @@
+name: Installers
+
+# PRs build installers as workflow artifacts. Pushes to main also push the backend
+# image to GHCR and replace the rolling `canary` prerelease. Pushing a v* tag publishes
+# a GitHub Release (suffixed versions such as v1.2.0-rc.1 are prereleases); plain vX.Y.Z
+# tags become the latest release that the Stable update channel follows. Each release
+# carries an update.json manifest read by the desktop updater.
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Installer version (for example 0.16.1). Defaults to desktop-ui/package.json.'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            version="$INPUT_VERSION"
+          else
+            base="$(node -p "require('./desktop-ui/package.json').version")"
+            version="${base}-build.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  backend:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            os: ubuntu-24.04-arm
+          - arch: amd64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          docker build --platform linux/${{ matrix.arch }} --tag "working-memory-control-plane:$VERSION" .
+          docker run --detach --network none --name backend-smoke "working-memory-control-plane:$VERSION"
+          trap 'docker logs backend-smoke; docker rm --force backend-smoke' EXIT
+          healthy=false
+          for attempt in {1..30}; do
+            if docker exec backend-smoke node -e "fetch('http://127.0.0.1:7717/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
+              healthy=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$healthy" != true ]]; then
+            echo "Prebuilt backend failed its offline health check" >&2
+            exit 1
+          fi
+          docker save --output "$RUNNER_TEMP/image.tar" "working-memory-control-plane:$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-only-backend-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image.tar
+          compression-level: 1
+          retention-days: 1
+          if-no-files-found: error
+
+  package:
+    needs: [version, backend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: mac
+            arch: arm64
+          - os: windows-latest
+            target: win
+            arch: amd64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            desktop-ui/package-lock.json
+
+      - name: Download prebuilt backend image
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-only-backend-linux-${{ matrix.arch }}
+          path: backend-image
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install desktop UI dependencies
+        run: npm ci --prefix desktop-ui
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Test desktop UI
+        if: matrix.target == 'mac'
+        run: npm test --prefix desktop-ui
+
+      - name: Build installer
+        # PowerShell splits `-c.extraMetadata.version=...` into two arguments.
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # mac.identity is explicitly '-' (ad-hoc); no signing credentials are used.
+          CSC_FOR_PULL_REQUEST: 'true'
+          WM_DATA_TIER_IMAGE_ARCHIVE: ${{ github.workspace }}/backend-image/image.tar
+        run: npm run package:${{ matrix.target }} --prefix desktop-ui -- -c.extraMetadata.version=${{ needs.version.outputs.version }}
+
+      - name: Verify packaged macOS signatures
+        if: matrix.target == 'mac'
+        run: bash scripts/verify-mac-installers.sh desktop-ui/release
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: working-memory-installer-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.version.outputs.version }}
+          if-no-files-found: error
+          path: |
+            desktop-ui/release/*.dmg
+            desktop-ui/release/*.exe
+
+  publish-backend:
+    if: github.event_name == 'push'
+    needs: [version, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download backend images
+        uses: actions/download-artifact@v4
+        with:
+          path: backend-images
+          pattern: ci-only-backend-linux-*
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Push multi-arch backend image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/working-memory-control-plane"
+          for arch in arm64 amd64; do
+            docker load --input "backend-images/ci-only-backend-linux-$arch/image.tar"
+            docker tag "working-memory-control-plane:$VERSION" "$repository:$VERSION-$arch"
+            docker push "$repository:$VERSION-$arch"
+          done
+          docker buildx imagetools create --tag "$repository:$VERSION" "$repository:$VERSION-arm64" "$repository:$VERSION-amd64"
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [version, package, publish-backend]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-${{ github.ref_type == 'tag' && github.ref_name || 'canary' }}
+      cancel-in-progress: false
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+          pattern: working-memory-installer-*
+
+      - name: Write update manifest
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            channel=stable
+            tag="$GITHUB_REF_NAME"
+          else
+            channel=canary
+            tag=canary
+          fi
+          CHANNEL="$channel" TAG="$tag" REPOSITORY_OWNER="${GITHUB_REPOSITORY_OWNER,,}" node <<'EOF'
+          const { createHash } = require('node:crypto');
+          const { readFileSync, readdirSync, writeFileSync } = require('node:fs');
+          const asset = (pattern) => {
+            const file = readdirSync('installers').find((name) => pattern.test(name));
+            if (!file) throw new Error(`No installer matches ${pattern}`);
+            const data = readFileSync(`installers/${file}`);
+            return { file, sha256: createHash('sha256').update(data).digest('hex'), size: data.length };
+          };
+          const { VERSION, CHANNEL, TAG, REPOSITORY_OWNER, GITHUB_SHA } = process.env;
+          const manifest = {
+            channel: CHANNEL,
+            version: VERSION,
+            tag: TAG,
+            commit: GITHUB_SHA,
+            publishedAt: new Date().toISOString(),
+            desktop: {
+              'darwin-arm64': asset(/-mac-arm64\.dmg$/),
+              'win32-x64': asset(/-win-x64\.exe$/),
+            },
+            backend: { image: `ghcr.io/${REPOSITORY_OWNER}/working-memory-control-plane:${VERSION}` },
+          };
+          writeFileSync('update.json', `${JSON.stringify(manifest, null, 2)}\n`);
+          console.log(JSON.stringify(manifest, null, 2));
+          EOF
+
+      - name: Publish canary release
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          notes="Rolling build $VERSION from main at $GITHUB_SHA. Replaced on every push to main."
+          if gh release view canary >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/canary" -f sha="$GITHUB_SHA" -F force=true
+            gh release edit canary --title "Working Memory canary ($VERSION)" --notes "$notes" --prerelease
+            gh release upload canary installers/* --clobber
+            # update.json goes last so clients never see a manifest before its installers exist.
+            gh release upload canary update.json --clobber
+            keep=" update.json $(cd installers && ls | tr '\n' ' ')"
+            gh release view canary --json assets --jq '.assets[].name' | while read -r name; do
+              if [[ "$keep" != *" $name "* ]]; then gh release delete-asset canary "$name" --yes; fi
+            done
+          else
+            gh release create canary installers/* update.json --target "$GITHUB_SHA" \
+              --title "Working Memory canary ($VERSION)" --notes "$notes" --prerelease
+          fi
+
+      - name: Publish tagged release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          prerelease=()
+          if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" installers/* update.json --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" installers/* update.json --title "Working Memory $VERSION" --generate-notes "${prerelease[@]}"
+          fi

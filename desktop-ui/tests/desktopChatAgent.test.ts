@@ -86,6 +86,68 @@ function deferred<T>() {
 }
 
 describe('DesktopChatAgent', () => {
+  it('executes Copilot proposals through the existing tool loop and journals the actual provider', async () => {
+    const callModel = vi.fn();
+    const callTool = vi.fn(async () => ({ ok: true, result: { title: 'Roadmap' } }));
+    const journal = schemaValidatingJournalHarness();
+    const modelTurn = vi.fn()
+      .mockResolvedValueOnce({
+        text: '', calls: [{ id: 'copilot-read', name: 'ws-workstream-read', arguments: { slug: 'roadmap' } }],
+        assistantMessage: { role: 'assistant', content: '' },
+      })
+      .mockResolvedValueOnce({ text: 'Roadmap found.', calls: [] });
+    const result = await new DesktopChatAgent(options(callModel, callTool, journal)).start({
+      mode: 'chat-completions', provider: 'copilot', url: 'copilot://local', model: 'auto',
+      message: 'Read roadmap', headers: {}, modelTurn,
+    });
+    expect(result).toMatchObject({ status: 'succeeded', message: 'Roadmap found.' });
+    expect(callTool).toHaveBeenCalledWith('ws-workstream-read', { slug: 'roadmap' });
+    expect(callModel).not.toHaveBeenCalled();
+    expect(journal.current()?.provider).toEqual({ endpoint: 'copilot://local', mode: 'copilot', model: 'auto' });
+    expect(modelTurn.mock.calls[1][0].chatMessages).toContainEqual(expect.objectContaining({ role: 'tool' }));
+  });
+
+  it('requires confirmation for Copilot destructive proposals and never calls Azure', async () => {
+    const callModel = vi.fn();
+    const callTool = vi.fn(async () => ({ ok: true, result: {} }));
+    const modelTurn = vi.fn()
+      .mockResolvedValueOnce({
+        text: '', calls: [{ id: 'delete-call', name: 'ws-topic-delete', arguments: { slug: 'old-topic' } }],
+      })
+      .mockResolvedValueOnce({ text: 'Cancelled.', calls: [] });
+    const agent = new DesktopChatAgent(options(callModel, callTool));
+    const pending = await agent.start({
+      mode: 'chat-completions', provider: 'copilot', url: 'copilot://local', model: 'auto',
+      message: 'Delete old topic', headers: {}, modelTurn,
+    });
+    expect(pending.pendingConfirmation).toBeDefined();
+    expect(callTool).not.toHaveBeenCalled();
+    await agent.resolveConfirmation(pending.pendingConfirmation!.id, false);
+    expect(callTool).not.toHaveBeenCalled();
+    expect(callModel).not.toHaveBeenCalled();
+  });
+
+  it('aborts a provider model turn when the environment changes', async () => {
+    const callModel = vi.fn();
+    const started = deferred<AbortSignal>();
+    const modelTurn = vi.fn((_conversation, _timeout, signal: AbortSignal) => {
+      started.resolve(signal);
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+      });
+    });
+    const agent = new DesktopChatAgent(options(callModel));
+    const run = agent.start({
+      mode: 'chat-completions', provider: 'copilot', url: 'copilot://local', model: 'auto',
+      message: 'Read', headers: {}, modelTurn,
+    });
+    const signal = await started.promise;
+    await agent.reset();
+    expect(signal.aborted).toBe(true);
+    expect(await run).toMatchObject({ status: 'interrupted' });
+    expect(callModel).not.toHaveBeenCalled();
+  });
+
   it('allows 60 seconds for each model request by default', async () => {
     const callModel = vi.fn(async () => ({ choices: [{ message: { content: 'Done.' } }] }));
 

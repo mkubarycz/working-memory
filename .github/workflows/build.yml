@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  pull_request:
 
 jobs:
   build:
@@ -29,10 +30,14 @@ jobs:
         run: npm run compile
 
       - name: Build desktop UI
-        run: npm run compile:desktop
+        working-directory: desktop-ui
+        run: npx electron-vite build
 
       - name: Test
         run: npm test
+
+      - name: Typecheck desktop UI
+        run: npm run typecheck --prefix desktop-ui
 
       - name: Test desktop UI
         run: npm test --prefix desktop-ui
