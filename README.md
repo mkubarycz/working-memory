@@ -110,7 +110,11 @@ npm run compile:desktop   # builds and updates /Applications/Working Memory.app 
 Local macOS desktop builds always update the stable
 `/Applications/Working Memory.app` bundle, which can be kept in the Dock. A
 build signals the installed desktop process to refresh after installation;
-set `WM_DESKTOP_SKIP_REFRESH=1` to suppress that behavior. The desktop stores
+set `WM_DESKTOP_SKIP_REFRESH=1` to suppress that behavior. Local and installer
+builds share the `Working Memory` app identity, so a build always refreshes the
+running app instead of starting a second copy. Settings from earlier installer
+builds (stored under `working-memory-desktop`) are copied into a fresh profile
+on first launch; the old folder is left in place. The desktop stores
 open document-tab identities and the selected tab per Working Memory
 environment, then reopens current resource data in the same order after a
 restart. CI builds prepare the application bundle but skip the local

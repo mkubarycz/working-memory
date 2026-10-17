@@ -88,6 +88,7 @@ import {
 import { DesktopLinkBridge } from './linkBridge';
 import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
+import { LEGACY_USER_DATA_NAME, migrateLegacyUserData } from './userDataMigration';
 import { loadPromptImages } from './promptImages';
 import { decodeQrPayloads } from './qrDecoder';
 import {
@@ -1236,6 +1237,16 @@ function registerDesktopProtocol(): void {
   if (!registered) {
     console.error(`[desktop] Unable to register ${WORKING_MEMORY_PROTOCOL}:// links`);
   }
+}
+
+try {
+  const migrated = migrateLegacyUserData(
+    app.getPath('userData'),
+    join(app.getPath('appData'), LEGACY_USER_DATA_NAME),
+  );
+  if (migrated.length) console.log(`[desktop] Migrated legacy settings: ${migrated.join(', ')}`);
+} catch (error) {
+  console.error('[desktop] Legacy settings migration failed:', error);
 }
 
 const ownsSingleInstanceLock = app.requestSingleInstanceLock({ refreshDesktop: true });
