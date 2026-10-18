@@ -5,6 +5,7 @@ import { ControlPlaneClient } from '../../../shared/controlPlaneClient';
 import {
   CONTROL_PLANE_HOME_ENV,
   controlPlanePortFilePath,
+  DEFAULT_CONTROL_PLANE_SERVICE_PORT,
   parsePortInfo,
   resolveControlPlaneHome,
 } from '../../../shared/controlPlaneShared';
@@ -32,6 +33,8 @@ export interface EnvironmentDiscoveryDependencies {
   readTextFile?: (filePath: string) => Promise<string>;
   probe?: (environment: DesktopEnvironment) => Promise<boolean>;
   createClient?: (mcpUrl: string) => EnvironmentClient;
+  /** App-managed data-tier instances to probe directly and label with their friendly names. */
+  managedInstances?: () => Array<{ port: number; name: string }>;
 }
 
 export interface EnvironmentManagerDependencies extends EnvironmentDiscoveryDependencies {
@@ -161,6 +164,28 @@ export async function discoverDesktopEnvironments(
     if (await probe(environment)) discovered.set(mcpUrl, environment);
   }
 
+  // Volume-backed data tiers (Windows) and added instances keep their port file out of reach.
+  const managed = dependencies.managedInstances?.() ?? [];
+  const directPorts = [DEFAULT_CONTROL_PLANE_SERVICE_PORT, ...managed.map((instance) => instance.port)];
+  for (const port of new Set(directPorts)) {
+    const mcpUrl = `http://127.0.0.1:${port}/mcp`;
+    if (!parseLoopbackMcpUrl(mcpUrl) || seen.has(mcpUrl)) continue;
+    seen.add(mcpUrl);
+    const environment: DesktopEnvironment = {
+      id: mcpUrl,
+      port,
+      displayName: String(port),
+      mcpUrl,
+      source: 'production',
+    };
+    if (await probe(environment)) discovered.set(mcpUrl, environment);
+  }
+
+  for (const instance of managed) {
+    const environment = discovered.get(`http://127.0.0.1:${instance.port}/mcp`);
+    if (environment && instance.name) environment.displayName = instance.name;
+  }
+
   return [...discovered.values()].sort((left, right) =>
     SOURCE_PRIORITY[left.source] - SOURCE_PRIORITY[right.source] || left.port - right.port);
 }
@@ -204,6 +229,8 @@ export class DesktopEnvironmentManager<TClient extends EnvironmentClient = Envir
 
   async discover(): Promise<DesktopEnvironment[]> {
     this.environments = await discoverDesktopEnvironments(this.dependencies);
+    const selected = this.selected;
+    if (selected) this.selected = this.environments.find((environment) => environment.mcpUrl === selected.mcpUrl) ?? selected;
     return [...this.environments];
   }
 
@@ -226,8 +253,8 @@ export class DesktopEnvironmentManager<TClient extends EnvironmentClient = Envir
   }
 
   private async select(environment: DesktopEnvironment, persist: boolean): Promise<void> {
-    if (this.selected?.mcpUrl === environment.mcpUrl && this.client) return;
     if (persist) await this.writePersistedSelection(environment.mcpUrl);
+    if (this.selected?.mcpUrl === environment.mcpUrl && this.client) return;
     const previous = this.client;
     this.client = this.createClient(environment.mcpUrl);
     this.selected = environment;

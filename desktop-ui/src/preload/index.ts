@@ -10,6 +10,24 @@ const api: DesktopApi = {
   listContainerApps: () => invoke('container:list'),
   discoverEnvironments: () => invoke('environment:discover'),
   switchEnvironment: (mcpUrl) => invoke('environment:switch', mcpUrl),
+  listInstances: () => invoke('instances:list'),
+  createInstance: (name) => invoke('instances:create', name),
+  startInstance: (port) => invoke('instances:start', port),
+  stopInstance: (port) => invoke('instances:stop', port),
+  upgradeInstance: (port) => invoke('instances:upgrade', port),
+  setBackendUpdateChannel: (channel) => invoke('instances:set-channel', channel),
+  getDesktopUpdate: () => invoke('updates:get'),
+  setDesktopUpdateChannel: (channel) => invoke('updates:set-channel', channel),
+  checkDesktopUpdate: () => invoke('updates:check'),
+  downloadDesktopUpdate: () => invoke('updates:download'),
+  installDesktopUpdate: () => invoke('updates:install'),
+  onDesktopUpdate: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state);
+    ipcRenderer.on('updates:state', handler);
+    return () => ipcRenderer.removeListener('updates:state', handler);
+  },
+  renameInstance: (port, name) => invoke('instances:rename', port, name),
+  backupInstance: (port) => invoke('instances:backup', port),
   getActivePanel: () => invoke('active:get'),
   reorderWorkstreams: (updates) => invoke('active:reorder', updates),
   getConfig: () => invoke('config:get'),
@@ -18,6 +36,7 @@ const api: DesktopApi = {
   saveConfig: (input: SaveConfigInput) => invoke('config:save', input),
   testConnection: (input: SaveConfigInput) => invoke('config:test', input),
   testModelProfile: (input) => invoke('config:test-profile', input),
+  listCopilotModels: () => invoke('config:copilot-models'),
   sendChat: (message, context, images) => invoke('chat:send', message, context, images),
   autocompleteTopic: (input) => invoke('topic:autocomplete', input),
   resolveChatConfirmation: (id, confirmed, context) => invoke('chat:confirm', id, confirmed, context),

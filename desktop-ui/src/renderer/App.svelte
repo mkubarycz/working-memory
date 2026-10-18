@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
+  import BrainMark from './BrainMark.svelte';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
   import TopicView from './documents/TopicView.svelte';
   import TopicCreateView from './documents/TopicCreateView.svelte';
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
-  import SettingsView from './documents/SettingsView.svelte';
+  import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
     AlertVM,
@@ -824,12 +825,9 @@
     void window.workingMemory.getConfig().then(loadConfig);
     void refreshOpenAiHealth();
     void initializeWorkspace();
-    void refreshActive();
-    void refreshLatestHistory(true);
     const stopListeningForDeepLinks = window.workingMemory.onOpenResource(
       (kind, identifier) => void openResource(kind, identifier),
     );
-    void refreshBackendHealth();
     const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
     const backendHealthPoll = window.setInterval(() => void refreshBackendHealth(), 30_000);
     return () => {
@@ -843,10 +841,9 @@
   });
 
   async function initializeWorkspace(): Promise<void> {
-    await Promise.all([
-      discoverEnvironments(true),
-      loadContainerApps(),
-    ]);
+    // Discovery waits for the launch-time data-tier start, which may change the selected environment.
+    await discoverEnvironments(true);
+    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshBackendHealth(), loadContainerApps()]);
     await restoreDocumentTabs();
   }
 
@@ -1063,6 +1060,7 @@
     modelProfiles = [...modelProfiles, {
       id,
       name: `Model ${modelProfiles.length + 1}`,
+      provider: 'openai-compatible',
       endpoint: endpoint || 'http://localhost:11434/v1',
       model: '',
       hasApiKey: false,
@@ -1201,6 +1199,7 @@
     return {
       id: profile.id,
       name: profile.name,
+      provider: profile.provider,
       endpoint: profile.endpoint,
       model: profile.model,
       hasApiKey: profile.hasApiKey,
@@ -1251,7 +1250,10 @@
     }
   }
 
-  function openSettings(): void {
+  let settingsTab = $state<SettingsTab>('models');
+
+  function openSettings(tab?: SettingsTab): void {
+    if (tab) settingsTab = tab;
     const next = openDocumentTab(
       { tabs: documents, selectedKey: selectedDocumentKey },
       { kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' },
@@ -1259,6 +1261,15 @@
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
     restoreDocumentSaveStatus(next.selectedKey);
+  }
+
+  function openInstances(): void {
+    openSettings('instances');
+  }
+
+  async function makeInstanceCurrent(mcpUrl: string): Promise<void> {
+    await switchEnvironment(mcpUrl);
+    openInstances();
   }
 
   function replaceActive(document: DocumentVM, key = selectedDocumentKey): void {
@@ -1763,8 +1774,9 @@
           error={activeError}
           onDiscoverEnvironments={discoverEnvironments}
           onSwitchEnvironment={switchEnvironment}
+          onManageInstances={openInstances}
           onRefresh={() => window.workingMemory.restartDesktop()}
-          onSettings={openSettings}
+          onSettings={() => openSettings()}
           onCollapse={() => (activeRailCollapsed = true)}
           onOpen={openRoute}
           onToggleFocus={toggleActiveFocus}
@@ -1939,6 +1951,7 @@
           class="document-host"
           class:container-app-host={activeDocument?.kind === 'container-app'}
           class:topic-document={activeDocument?.kind === 'topic' || activeDocument?.kind === 'topic-create'}
+          class:settings-host={activeDocument?.kind === 'settings'}
           role="tabpanel"
           inert={environmentLoading}
         >
@@ -1959,6 +1972,10 @@
             onRemoveProfile={removeModelProfile}
             onTestProfile={testModelProfile}
             onSave={saveSettings}
+            bind:tab={settingsTab}
+            selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
+            onMakeCurrent={makeInstanceCurrent}
+            onInstancesChanged={() => discoverEnvironments()}
           />
         {:else if activeDocument?.kind === 'container-app' && selectedContainerApp}
           <ContainerAppDetail
@@ -2294,7 +2311,7 @@
       ><span aria-hidden="true" class="codicon codicon-chevron-left"></span></button>
     {:else}
       <header class="desktop-header">
-        <div class="mark">WM</div>
+        <BrainMark />
         <div class="desktop-header-tabs" role="tablist" aria-label="Desktop views">
           <button
             id="desktop-tab-log"
@@ -2552,10 +2569,10 @@
     </span>
     <span
       class="backend-status state-{openAiHealth.state}"
-      title="Endpoint: {endpoint || 'not configured'}&#10;Signal: startup connectivity test or normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
+      title="Provider: {modelProfiles.find((profile) => profile.id === modelRouting['complex:medium'])?.provider === 'copilot' ? 'Local GitHub Copilot' : endpoint || 'not configured'}&#10;Signal: startup connectivity test or normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
     >
       <span class="status-dot"></span>
-      OpenAI: {openAiHealth.state}
+      AI: {openAiHealth.state}
     </span>
     <span class="desktop-build-status">Built {desktopBuildLabel}</span>
   </footer>

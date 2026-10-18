@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2a2b"/><stop offset="1" stop-color="#141414"/></linearGradient></defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" fill="none" stroke="#383838" stroke-width="3"/>
+  <!-- Brain glyph from the retired VS Code extension's activity-bar icon (media/brain.svg). -->
+  <path transform="translate(224 224) scale(24)" fill="#e83e8c" d="M9 3a3 3 0 0 0-3 3v.18A3 3 0 0 0 3 9v2a3 3 0 0 0 1.5 2.6A3 3 0 0 0 3 16v1a4 4 0 0 0 4 4h2a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H9zm6 0a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h2a4 4 0 0 0 4-4v-1a3 3 0 0 0-1.5-2.4A3 3 0 0 0 21 11V9a3 3 0 0 0-3-2.82V6a3 3 0 0 0-3-3h0z"/>
+</svg>
