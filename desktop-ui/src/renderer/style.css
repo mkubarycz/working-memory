@@ -356,9 +356,13 @@ button { cursor: pointer; }
 .model-profile-actions .secondary { border-color: var(--desktop-accent-strong); color: var(--desktop-accent-strong); }
 .model-profile-actions button:disabled { opacity: .48; }
 .add-model { justify-self: start; display: inline-flex; align-items: center; gap: 5px; padding: 7px 10px; border: 1px solid var(--desktop-accent-strong); border-radius: 4px; background: transparent; color: var(--desktop-accent-strong); font-weight: 700; }
-.settings { padding-top: 20px; }
+/* Fill the host so the tab strip keeps one width; grid items with auto margins shrink to their content. */
+.document-host.settings-host { box-sizing: border-box; width: 100%; padding-top: 16px; }
+.settings-host .document-toolbar:empty { display: none; }
+.settings-host .settings { box-sizing: border-box; width: 100%; max-width: 860px; padding: 0 0 48px; }
 .settings > header { margin-bottom: 0; }
 .settings > header h1 { margin-top: 0; }
+.settings-host .instances { max-width: none; }
 .settings-intro, .instances > p:first-child, .updates > p:first-child { margin: 0 0 18px; color: #6c676b; line-height: 1.5; }
 .settings .backend-channel, .update-channels { margin: 0 0 18px; }
 .backend-channel select { max-width: 360px; padding: 7px; border: 1px solid #aaa5a9; border-radius: 3px; background: #ffffff; color: #292629; }

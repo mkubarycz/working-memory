@@ -1951,6 +1951,7 @@
           class="document-host"
           class:container-app-host={activeDocument?.kind === 'container-app'}
           class:topic-document={activeDocument?.kind === 'topic' || activeDocument?.kind === 'topic-create'}
+          class:settings-host={activeDocument?.kind === 'settings'}
           role="tabpanel"
           inert={environmentLoading}
         >
