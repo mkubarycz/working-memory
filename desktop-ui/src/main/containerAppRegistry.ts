@@ -1,122 +1,34 @@
-import type { DockerRuntimeSpec } from '../../../shared/controlPlaneClient';
-import type { ContainerAppDefinition, ContainerAppId } from '../shared/contracts';
+import type { ContainerClaim } from '../../../shared/controlPlaneClient';
+import type { ContainerAppDefinition } from '../shared/contracts';
 
-export interface ContainerAppRegistration extends ContainerAppDefinition {
-  claimTitle: string;
-  sourceEnvironmentVariable: string;
-  projectDirectory: string;
-  runtime: Omit<DockerRuntimeSpec, 'buildContext' | 'dockerfile'>;
-  mcp?: ContainerAppDefinition['mcp'];
-  application?: ContainerAppDefinition['application'];
+export function containerAppRegistration(id: string, claims: ContainerClaim[]): ContainerClaim {
+  const claim = claims.find((candidate) => candidate.slug === id && candidate.runtime);
+  if (!claim) throw new Error(`Unsupported container app: ${id}. No live Docker ContainerClaim exists.`);
+  return claim;
 }
 
-export const CONTAINER_APP_REGISTRY: readonly ContainerAppRegistration[] = [
-  {
-    id: 'clarinet-hero',
-    displayName: 'Claranet Hero',
-    icon: 'server-environment',
-    claimTitle: 'Clarinet Hero',
-    sourceEnvironmentVariable: 'CLARINET_HERO_SOURCE',
-    projectDirectory: 'ClarinetHero',
-    runtime: {
-      type: 'docker',
-      imageName: 'clarinet-hero:local',
-      containerName: 'working-memory-clarinet-hero',
-      hostPort: 4173,
-      containerPort: 80,
-      healthPath: '/',
-      entryPath: '/',
-    },
-  },
-  {
-    id: 'banking-app',
-    displayName: 'Banking App',
-    icon: 'credit-card',
-    embeddable: true,
-    claimTitle: 'Banking App',
-    sourceEnvironmentVariable: 'BANKING_APP_SOURCE',
-    projectDirectory: 'BankingApp',
-    runtime: {
-      type: 'docker',
-      imageName: 'banking-app:local',
-      containerName: 'working-memory-banking-app',
-      hostPort: 4174,
-      containerPort: 4174,
-      healthPath: '/health',
-      entryPath: '/',
-      volumes: [{ name: 'working-memory-banking-app-data', mountPath: '/data' }],
-    },
-    mcp: { transport: 'streamable-http', url: 'http://127.0.0.1:4174/mcp' },
-    application: {
-      id: 'banking-app',
-      contractVersion: '3.0',
-      discovery: {
-        toolName: 'contract-discover',
-        url: 'http://127.0.0.1:4174/.well-known/banking-app-contract',
-      },
-      capabilities: ['contract-discovery'],
-      dataOwnership: 'application',
-      healthUrl: 'http://127.0.0.1:4174/health',
-      uiUrl: 'http://127.0.0.1:4174/',
-      httpUrl: 'http://127.0.0.1:4174/api',
-    },
-  },
-  {
-    id: 'sunset-chess',
-    displayName: 'Sunset Chess',
-    icon: 'device-camera',
-    claimTitle: 'Sunset Chess',
-    sourceEnvironmentVariable: 'SUNSET_CHESS_SOURCE',
-    projectDirectory: 'SunsetChess',
-    runtime: {
-      type: 'docker',
-      imageName: 'sunset-chess:1.2',
-      containerName: 'working-memory-sunset-chess',
-      hostPort: 4175,
-      containerPort: 4175,
-      healthPath: '/health',
-      entryPath: '/',
-      volumes: [{ name: 'working-memory-sunset-chess-data', mountPath: '/data' }],
-    },
-    mcp: { transport: 'streamable-http', url: 'http://127.0.0.1:4175/mcp' },
-    application: {
-      id: 'sunset-chess',
-      contractVersion: '1.0',
-      discovery: {
-        toolName: 'contract-discover',
-        url: 'http://127.0.0.1:4175/.well-known/sunset-chess-contract',
-      },
-      capabilities: ['contract-discovery'],
-      dataOwnership: 'application',
-      healthUrl: 'http://127.0.0.1:4175/health',
-      uiUrl: 'http://127.0.0.1:4175/',
-      httpUrl: 'http://127.0.0.1:4175/api',
-    },
-  },
-];
-
-export function containerAppRegistration(id: string): ContainerAppRegistration {
-  const registration = CONTAINER_APP_REGISTRY.find((candidate) => candidate.id === id);
-  if (!registration) throw new Error(`Unsupported container app: ${id}`);
-  return registration;
+export function containerAppDefinitions(claims: ContainerClaim[]): ContainerAppDefinition[] {
+  return claims.filter((claim) => claim.runtime).map((claim) => {
+    const embeddable = claim.desktop?.embeddable ?? false;
+    return {
+      id: claim.slug,
+      displayName: claim.title,
+      icon: claim.desktop?.icon ?? 'server-environment',
+      ...(embeddable ? { embeddable } : {}),
+      ...(claim.mcp ? { mcp: claim.mcp } : {}),
+      ...(claim.application ? { application: claim.application } : {}),
+    };
+  });
 }
 
-export function containerAppDefinitions(): ContainerAppDefinition[] {
-  return CONTAINER_APP_REGISTRY.map(({ id, displayName, icon, embeddable, mcp, application }) => ({
-    id,
-    displayName,
-    icon,
-    ...(embeddable ? { embeddable } : {}),
-    ...(mcp ? { mcp } : {}),
-    ...(application ? { application } : {}),
-  }));
+export function isContainerAppId(id: string, claims: ContainerClaim[]): boolean {
+  return claims.some((claim) => claim.slug === id && claim.runtime);
 }
 
-export function isContainerAppId(id: string): id is ContainerAppId {
-  return CONTAINER_APP_REGISTRY.some((app) => app.id === id);
-}
-
-export function isRegisteredContainerAppUiUrl(rawUrl: string): boolean {
+export function isRegisteredContainerAppUiUrl(
+  rawUrl: string,
+  apps: Array<Pick<ContainerClaim, 'application' | 'runtime'>>,
+): boolean {
   let candidate: URL;
   try {
     candidate = new URL(rawUrl);
@@ -127,10 +39,16 @@ export function isRegisteredContainerAppUiUrl(rawUrl: string): boolean {
     candidate.protocol !== 'http:'
     || (candidate.hostname !== '127.0.0.1' && candidate.hostname !== 'localhost')
   ) return false;
-  return CONTAINER_APP_REGISTRY.some((app) => {
-    if (!app.application?.uiUrl) return false;
-    const registered = new URL(app.application.uiUrl);
+  return apps.some((app) => {
+    const uiUrl = app.application?.uiUrl ?? (app.runtime
+      ? `http://localhost:${app.runtime.hostPort}${app.runtime.entryPath}`
+      : undefined);
+    if (!uiUrl) return false;
+    const registered = new URL(uiUrl);
     return candidate.origin === registered.origin
-      && candidate.pathname.startsWith(registered.pathname);
+      && (candidate.pathname === registered.pathname
+        || candidate.pathname.startsWith(registered.pathname.endsWith('/')
+          ? registered.pathname
+          : `${registered.pathname}/`));
   });
 }

@@ -27,9 +27,12 @@ export function registerWsContainerClaimCreate(server: McpServer, store: Store):
         application: z.record(z.string(), z.unknown()).optional().describe(
           'Optional application contract metadata: identity, version, discovery tool, capabilities, data ownership, and endpoints.',
         ),
+        desktop: z.record(z.string(), z.unknown()).optional().describe(
+          'Optional desktop presentation: codicon icon name and embeddable boolean. Docker claims appear automatically in the desktop app catalog.',
+        ),
       },
     },
-    async ({ slug, title, repository, sourceRevision, runtime, mcp, application }) => {
+    async ({ slug, title, repository, sourceRevision, runtime, mcp, application, desktop }) => {
       const specInput: Record<string, unknown> = { title, repository };
       if (sourceRevision !== undefined) {
         specInput.sourceRevision = sourceRevision;
@@ -37,6 +40,7 @@ export function registerWsContainerClaimCreate(server: McpServer, store: Store):
       if (runtime !== undefined) specInput.runtime = runtime;
       if (mcp !== undefined) specInput.mcp = mcp;
       if (application !== undefined) specInput.application = application;
+      if (desktop !== undefined) specInput.desktop = desktop;
       try {
         validateMetadata(CONTAINER_CLAIM_KIND, { slug, store });
         const spec = validateSpec(CONTAINER_CLAIM_KIND, specInput);

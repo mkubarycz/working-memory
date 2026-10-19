@@ -39,10 +39,10 @@ export async function loadRegisteredContainerApps(
   onStatus: (app: ContainerAppDefinition, status: ContainerAppStatus) => void,
   onError: (error: unknown) => void,
 ): Promise<void> {
-  const apps = await list();
-  // Registry definitions are process-wide; an environment change must never discard them.
-  onApps(apps);
   const environment = currentEnvironment();
+  const apps = await list();
+  if (currentEnvironment() !== environment) return;
+  onApps(apps);
   await refreshRegisteredContainerApps(
     apps,
     inspect,

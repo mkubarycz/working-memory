@@ -40,6 +40,7 @@ export interface IContainerClaim {
   runtime?: DockerRuntimeSpec;
   mcp?: AppMcpEndpoint;
   application?: ApplicationContractMetadata;
+  desktop?: { icon?: string; embeddable?: boolean };
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -55,6 +56,7 @@ export class ContainerClaim implements IContainerClaim {
   runtime?: DockerRuntimeSpec;
   mcp?: AppMcpEndpoint;
   application?: ApplicationContractMetadata;
+  desktop?: { icon?: string; embeddable?: boolean };
   created_at: number;
   updated_at: number;
   resourceVersion: number;
@@ -71,6 +73,12 @@ export class ContainerClaim implements IContainerClaim {
     if (isDockerRuntimeSpec(spec.runtime)) this.runtime = spec.runtime;
     if (isAppMcpEndpoint(spec.mcp)) this.mcp = spec.mcp;
     if (isApplicationContractMetadata(spec.application)) this.application = spec.application;
+    if (isRecord(spec.desktop)) {
+      this.desktop = {
+        ...(typeof spec.desktop.icon === 'string' ? { icon: spec.desktop.icon } : {}),
+        ...(typeof spec.desktop.embeddable === 'boolean' ? { embeddable: spec.desktop.embeddable } : {}),
+      };
+    }
     this.created_at = env.metadata.createdAt;
     this.updated_at = env.metadata.updatedAt;
     this.resourceVersion = env.metadata.resourceVersion;

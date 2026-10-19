@@ -55,14 +55,9 @@ import {
 import {
   containerAppDefinitions,
   containerAppRegistration,
-  isContainerAppId,
   isRegisteredContainerAppUiUrl,
-  type ContainerAppRegistration,
 } from './containerAppRegistry';
-import {
-  DockerContainerService,
-  resolveContainerAppClaim,
-} from './dockerContainerService';
+import { DockerContainerService } from './dockerContainerService';
 import { createGracefulShutdown } from './gracefulShutdown';
 import {
   readWindowBounds,
@@ -128,6 +123,7 @@ const appMcp = new AppMcpService();
 const copilotProvider = new LocalCopilotProvider();
 const containerOperations = new Set<AbortController>();
 let containerEnvironmentGeneration = 0;
+let registeredContainerApps: ContainerClaim[] = [];
 let dataTier: DataTierManager | null = null;
 let dataTierLaunch: Promise<void> = Promise.resolve();
 
@@ -614,7 +610,7 @@ async function callConfiguredModel(
   if (images.length && !environment) {
     throw new Error('No healthy Working Memory environment is selected.');
   }
-  const mentioned = await resolveMentionedAppTools(message, containerAppDefinitions(), {
+  const mentioned = await resolveMentionedAppTools(message, await readContainerAppDefinitions(), {
     readClaim: currentClaim,
     inspect: (claim) => dockerContainers.inspect(claim),
     connect: async (appId, endpoint) => { await appMcp.connect(appId, endpoint); },
@@ -705,9 +701,17 @@ async function autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAu
   return { title, topicType };
 }
 
-function requireContainerAppId(rawId: string): string {
-  if (!isContainerAppId(rawId)) throw new Error(`Unsupported container app: ${rawId}`);
-  return rawId;
+async function requireContainerAppId(rawId: string): Promise<string> {
+  return (await liveClaim(rawId)).slug;
+}
+
+async function readContainerAppDefinitions(): Promise<ReturnType<typeof containerAppDefinitions>> {
+  const generation = containerEnvironmentGeneration;
+  const claims = await controlPlane().containerClaimRead();
+  const definitions = containerAppDefinitions(claims);
+  if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed while loading container apps.');
+  registeredContainerApps = claims.filter((claim) => claim.runtime);
+  return definitions;
 }
 
 function beginContainerOperation(): { client: ControlPlaneClient; signal: AbortSignal; end: () => void } {
@@ -726,22 +730,14 @@ function beginContainerOperation(): { client: ControlPlaneClient; signal: AbortS
 
 async function containerAppClaim(
   client: ControlPlaneClient,
-  registration: ContainerAppRegistration,
-): Promise<ReturnType<typeof resolveContainerAppClaim>> {
-  const [existing] = await client.containerClaimRead({ slug: registration.id });
-  return resolveContainerAppClaim(registration, existing);
+  id: string,
+): Promise<ContainerClaim> {
+  return containerAppRegistration(id, await client.containerClaimRead({ slug: id }));
 }
 
 async function currentClaim(id: string): Promise<ContainerClaim | undefined> {
   const [claim] = await controlPlane().containerClaimRead({ slug: id });
-  if (!claim) return undefined;
-  const desired = resolveContainerAppClaim(containerAppRegistration(id), claim);
-  return {
-    ...claim,
-    ...desired,
-    mcp: desired.mcp,
-    application: desired.application,
-  };
+  return claim?.runtime ? claim : undefined;
 }
 
 async function liveClaim(id: string): Promise<ContainerClaim> {
@@ -799,6 +795,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
     containerEnvironmentGeneration += 1;
+    registeredContainerApps = [];
     for (const operation of containerOperations) operation.abort();
     await appMcp.disconnectAll();
     await environmentManager.switchTo(mcpUrl, () => chatAgent.reset());
@@ -1082,14 +1079,12 @@ function registerIpc(): void {
     return loadResource(context.kind, context.identifier);
   });
   ipcMain.handle('action:invoke', (_event, workstream, command, args) => invokeAction(workstream, command, args));
-  ipcMain.handle('container:list', () => containerAppDefinitions());
+  ipcMain.handle('container:list', () => readContainerAppDefinitions());
   ipcMain.handle('container:run', async (_event, rawId: string) => {
-    const registration = containerAppRegistration(requireContainerAppId(rawId));
     const scope = beginContainerOperation();
     try {
-      return await dockerContainers.ensure(
-        scope.client,
-        await containerAppClaim(scope.client, registration),
+      return await dockerContainers.launch(
+        await containerAppClaim(scope.client, rawId),
         scope.signal,
       );
     } finally {
@@ -1097,11 +1092,10 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle('container:inspect', async (_event, rawId: string) => {
-    const registration = containerAppRegistration(requireContainerAppId(rawId));
     const scope = beginContainerOperation();
     try {
       return await dockerContainers.inspect(
-        await containerAppClaim(scope.client, registration),
+        await containerAppClaim(scope.client, rawId),
         scope.signal,
       );
     } finally {
@@ -1109,30 +1103,24 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle('container:stop', async (_event, rawId: string) => {
-    const id = requireContainerAppId(rawId);
-    const registration = containerAppRegistration(id);
     const scope = beginContainerOperation();
     try {
       const result = await dockerContainers.stop(
-        await containerAppClaim(scope.client, registration),
+        await containerAppClaim(scope.client, rawId),
         scope.signal,
       );
-      await appMcp.disconnect(id).catch(() => undefined);
+      await appMcp.disconnect(rawId);
       return result;
     } finally {
       scope.end();
     }
   });
   ipcMain.handle('container:open', async (_event, rawId: string) => {
-    const id = requireContainerAppId(rawId);
-    const registration = containerAppRegistration(id);
     const scope = beginContainerOperation();
     try {
-      const status = await dockerContainers.inspect(
-        await containerAppClaim(scope.client, registration),
-        scope.signal,
-      );
-      if (!status.ready) throw new Error(`${registration.displayName} is not healthy.`);
+      const claim = await containerAppClaim(scope.client, rawId);
+      const status = await dockerContainers.inspect(claim, scope.signal);
+      if (!status.ready) throw new Error(`${claim.title} is not healthy.`);
       const url = new URL(status.url);
       if (url.protocol !== 'http:' || url.hostname !== 'localhost') {
         throw new Error('Container app URLs must use localhost HTTP.');
@@ -1144,19 +1132,18 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle('app-mcp:status', async (_event, rawId: string) => {
-    const id = requireContainerAppId(rawId);
-    const claim = await liveClaim(id).catch(() => undefined);
-    return appMcp.status(id, claim?.mcp);
+    const claim = await liveClaim(rawId);
+    return appMcp.status(rawId, claim.mcp);
   });
   ipcMain.handle('app-mcp:connect', async (_event, rawId: string) => {
-    const id = requireContainerAppId(rawId);
+    const id = await requireContainerAppId(rawId);
     const claim = await ensureConnectedClaim(id);
     return appMcp.status(id, claim.mcp);
   });
-  ipcMain.handle('app-mcp:disconnect', (_event, rawId: string) =>
-    appMcp.disconnect(requireContainerAppId(rawId)));
+  ipcMain.handle('app-mcp:disconnect', async (_event, rawId: string) =>
+    appMcp.disconnect(await requireContainerAppId(rawId)));
   ipcMain.handle('app-mcp:list-tools', async (_event, rawId: string) => {
-    const id = requireContainerAppId(rawId);
+    const id = await requireContainerAppId(rawId);
     await ensureConnectedClaim(id);
     return appMcp.listTools(id);
   });
@@ -1166,12 +1153,12 @@ function registerIpc(): void {
     name: string,
     args: Record<string, unknown>,
   ) => {
-    const id = requireContainerAppId(rawId);
+    const id = await requireContainerAppId(rawId);
     await ensureConnectedClaim(id);
     return appMcp.callTool(id, name, args);
   });
   ipcMain.handle('app-mcp:contract', async (_event, rawId: string) => {
-    const id = requireContainerAppId(rawId);
+    const id = await requireContainerAppId(rawId);
     const claim = await ensureConnectedClaim(id);
     if (!claim.application) throw new Error(`Container App @${id} has no application contract metadata.`);
     const result = await appMcp.callTool(id, claim.application.discovery.toolName, {});
@@ -1241,7 +1228,7 @@ async function createWindow(): Promise<BrowserWindow> {
   window.webContents.on('will-frame-navigate', (event) => {
     if (event.isMainFrame) return;
     const currentUrl = event.frame?.url;
-    const sameRegisteredApp = isRegisteredContainerAppUiUrl(event.url)
+    const sameRegisteredApp = isRegisteredContainerAppUiUrl(event.url, registeredContainerApps)
       && (!currentUrl || new URL(currentUrl).origin === new URL(event.url).origin);
     if (sameRegisteredApp) return;
     event.preventDefault();

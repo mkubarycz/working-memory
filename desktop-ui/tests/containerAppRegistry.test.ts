@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import type { ContainerClaim } from '../../shared/controlPlaneClient';
 import {
-  CONTAINER_APP_REGISTRY,
-  containerAppDefinitions,
-  containerAppRegistration,
-  isRegisteredContainerAppUiUrl,
+  containerAppDefinitions as definitionsFromClaims,
+  containerAppRegistration as claimRegistration,
+  isRegisteredContainerAppUiUrl as registeredUiUrl,
 } from '../src/main/containerAppRegistry';
+import { CONTAINER_APP_FIXTURES } from './fixtures/containerApps';
 import { resolveContainerAppMentions } from '../src/main/appToolRouting';
 import {
   effectiveContainerAppMcp,
@@ -13,10 +14,74 @@ import {
   refreshRegisteredContainerApps,
 } from '../src/renderer/containerApps';
 
+const claims: ContainerClaim[] = CONTAINER_APP_FIXTURES.map((app) => ({
+  id: app.id,
+  slug: app.id,
+  title: app.displayName,
+  repository: `/source/${app.id}`,
+  runtime: { ...app.runtime, buildContext: `/source/${app.id}`, dockerfile: `/source/${app.id}/Dockerfile` },
+  mcp: app.mcp,
+  application: app.application,
+  desktop: { icon: app.icon, embeddable: app.embeddable ?? false },
+  created_at: 1,
+  updated_at: 1,
+  resourceVersion: 1,
+}));
+const containerAppDefinitions = () => definitionsFromClaims(claims);
+const containerAppRegistration = (id: string) => claimRegistration(id, claims);
+const isRegisteredContainerAppUiUrl = (url: string) => registeredUiUrl(url, containerAppDefinitions());
+
 describe('container app registry', () => {
+  it('discovers arbitrary persisted Docker claims without a compiled-in app definition', () => {
+    const custom: ContainerClaim = {
+      ...claims[0],
+      id: 'new-id',
+      slug: 'brand-new-app',
+      title: 'My New App',
+      sourceRevision: 'feature/new-app',
+      desktop: { icon: 'beaker', embeddable: true },
+      application: { ...claims[1].application!, uiUrl: 'http://127.0.0.1:4999/app' },
+    };
+    const definitions = definitionsFromClaims([custom]);
+    expect(definitions).toEqual([expect.objectContaining({
+      id: 'brand-new-app', displayName: 'My New App', icon: 'beaker', embeddable: true,
+    })]);
+    expect(claimRegistration(custom.slug, [custom])).toBe(custom);
+    expect(claimRegistration(custom.slug, [custom]).sourceRevision).toBe('feature/new-app');
+    expect(resolveContainerAppMentions('@brand-new-app help', definitions).appIds).toEqual([custom.slug]);
+    expect(registeredUiUrl('http://127.0.0.1:4999/app/resource', definitions)).toBe(true);
+    expect(registeredUiUrl('http://127.0.0.1:4999/application', definitions)).toBe(false);
+    expect(registeredUiUrl('http://127.0.0.1:4998/app', definitions)).toBe(false);
+    expect(definitionsFromClaims([])).toEqual([]);
+    expect(definitionsFromClaims([{ ...custom, runtime: undefined }])).toEqual([]);
+    expect(() => claimRegistration(custom.slug, [])).toThrow('No live Docker ContainerClaim');
+  });
+
+  it('uses authored metadata instead of overwriting claims with defaults', () => {
+    const claim = { ...claims[1], title: 'Renamed bank', mcp: undefined, application: undefined,
+      desktop: { icon: 'beaker', embeddable: false } };
+    expect(definitionsFromClaims([claim])).toEqual([{
+      id: 'banking-app', displayName: 'Renamed bank', icon: 'beaker',
+    }]);
+    expect(claimRegistration('banking-app', [claim])).toBe(claim);
+  });
+
+  it('uses the same generic presentation defaults for every app ID', () => {
+    for (const slug of ['clarinet-hero', 'banking-app', 'sunset-chess', 'brand-new-app']) {
+      expect(definitionsFromClaims([{ ...claims[0], slug, desktop: undefined }])).toEqual([{
+        id: slug, displayName: claims[0].title, icon: 'server-environment',
+      }]);
+    }
+  });
+
+  it('permits runtime UI navigation without requiring an MCP application contract', () => {
+    const claim = { ...claims[0], slug: 'simple-web-app', application: undefined };
+    expect(registeredUiUrl('http://localhost:4173/', [claim])).toBe(true);
+    expect(registeredUiUrl('http://localhost:4174/', [claim])).toBe(false);
+  });
   it('publishes all app definitions to the renderer', () => {
     expect(containerAppDefinitions()).toEqual([
-      { id: 'clarinet-hero', displayName: 'Claranet Hero', icon: 'server-environment' },
+      { id: 'clarinet-hero', displayName: 'Clarinet Hero', icon: 'server-environment' },
       {
         id: 'banking-app',
         displayName: 'Banking App',
@@ -60,10 +125,10 @@ describe('container app registry', () => {
   });
 
   it('keeps claims, containers, ports, volumes, and URLs isolated', () => {
-    const [clarinet, banking, sunset] = CONTAINER_APP_REGISTRY;
-    expect(new Set(CONTAINER_APP_REGISTRY.map((app) => app.id)).size).toBe(3);
-    expect(new Set(CONTAINER_APP_REGISTRY.map((app) => app.runtime.containerName)).size).toBe(3);
-    expect(new Set(CONTAINER_APP_REGISTRY.map((app) => app.runtime.hostPort)).size).toBe(3);
+    const [clarinet, banking, sunset] = CONTAINER_APP_FIXTURES;
+    expect(new Set(CONTAINER_APP_FIXTURES.map((app) => app.id)).size).toBe(3);
+    expect(new Set(CONTAINER_APP_FIXTURES.map((app) => app.runtime.containerName)).size).toBe(3);
+    expect(new Set(CONTAINER_APP_FIXTURES.map((app) => app.runtime.hostPort)).size).toBe(3);
     expect(clarinet.runtime.hostPort).toBe(4173);
     expect(banking.runtime.hostPort).toBe(4174);
     expect(banking.runtime.containerName).toBe('working-memory-banking-app');
@@ -87,9 +152,6 @@ describe('container app registry', () => {
     expect(sunset).toMatchObject({
       id: 'sunset-chess',
       displayName: 'Sunset Chess',
-      claimTitle: 'Sunset Chess',
-      sourceEnvironmentVariable: 'SUNSET_CHESS_SOURCE',
-      projectDirectory: 'SunsetChess',
       runtime: {
         imageName: 'sunset-chess:1.2',
         containerName: 'working-memory-sunset-chess',
@@ -153,11 +215,13 @@ describe('container app registry', () => {
     expect(effectiveContainerAppMcp({ mcp: registryEndpoint }, {})).toBeUndefined();
   });
 
-  it('keeps Sunset Chess as registry data rather than app-specific service or IPC logic', () => {
-    for (const path of ['src/main/dockerContainerService.ts', 'src/main/index.ts']) {
+  it('keeps app-specific definitions out of production discovery, service, and IPC code', () => {
+    for (const path of ['src/main/containerAppRegistry.ts', 'src/main/dockerContainerService.ts', 'src/main/index.ts']) {
       const source = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
-      expect(source).not.toMatch(/sunset[-_ ]chess/i);
-      expect(source).not.toContain('SUNSET_CHESS_SOURCE');
+      expect(source).not.toMatch(/sunset[-_ ]chess|banking[-_ ]app|clarinet[-_ ]hero/i);
+      expect(source).not.toContain('sourceEnvironmentVariable');
+      expect(source).not.toContain('projectDirectory');
+      expect(source).not.toContain('resolveContainerAppClaim');
     }
   });
 
@@ -222,7 +286,7 @@ describe('container app registry', () => {
     expect(staleStatuses).toEqual([]);
   });
 
-  it('keeps an asynchronous registry result across an environment switch and refreshes all statuses', async () => {
+  it('discards an asynchronous catalog result from a previously selected environment', async () => {
     let resolveList!: (apps: ReturnType<typeof containerAppDefinitions>) => void;
     const list = new Promise<ReturnType<typeof containerAppDefinitions>>((resolve) => {
       resolveList = resolve;
@@ -247,7 +311,7 @@ describe('container app registry', () => {
     resolveList(containerAppDefinitions());
     await loading;
 
-    expect(visible).toEqual(['clarinet-hero', 'banking-app', 'sunset-chess']);
-    expect(statuses).toEqual(['clarinet-hero', 'banking-app', 'sunset-chess']);
+    expect(visible).toEqual([]);
+    expect(statuses).toEqual([]);
   });
 });

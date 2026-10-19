@@ -1,0 +1,46 @@
+import type { DockerRuntimeSpec } from '../../../shared/controlPlaneClient';
+import type { ContainerAppDefinition } from '../../src/shared/contracts';
+
+interface ContainerAppFixture extends ContainerAppDefinition {
+  runtime: Omit<DockerRuntimeSpec, 'buildContext' | 'dockerfile'>;
+}
+
+export const CONTAINER_APP_FIXTURES: readonly ContainerAppFixture[] = [
+  {
+    id: 'clarinet-hero', displayName: 'Clarinet Hero', icon: 'server-environment',
+    runtime: {
+      type: 'docker', imageName: 'clarinet-hero:local', containerName: 'working-memory-clarinet-hero',
+      hostPort: 4173, containerPort: 80, healthPath: '/', entryPath: '/',
+    },
+  },
+  {
+    id: 'banking-app', displayName: 'Banking App', icon: 'credit-card', embeddable: true,
+    runtime: {
+      type: 'docker', imageName: 'banking-app:local', containerName: 'working-memory-banking-app',
+      hostPort: 4174, containerPort: 4174, healthPath: '/health', entryPath: '/',
+      volumes: [{ name: 'working-memory-banking-app-data', mountPath: '/data' }],
+    },
+    mcp: { transport: 'streamable-http', url: 'http://127.0.0.1:4174/mcp' },
+    application: {
+      id: 'banking-app', contractVersion: '3.0',
+      discovery: { toolName: 'contract-discover', url: 'http://127.0.0.1:4174/.well-known/banking-app-contract' },
+      capabilities: ['contract-discovery'], dataOwnership: 'application',
+      healthUrl: 'http://127.0.0.1:4174/health', uiUrl: 'http://127.0.0.1:4174/', httpUrl: 'http://127.0.0.1:4174/api',
+    },
+  },
+  {
+    id: 'sunset-chess', displayName: 'Sunset Chess', icon: 'device-camera',
+    runtime: {
+      type: 'docker', imageName: 'sunset-chess:1.2', containerName: 'working-memory-sunset-chess',
+      hostPort: 4175, containerPort: 4175, healthPath: '/health', entryPath: '/',
+      volumes: [{ name: 'working-memory-sunset-chess-data', mountPath: '/data' }],
+    },
+    mcp: { transport: 'streamable-http', url: 'http://127.0.0.1:4175/mcp' },
+    application: {
+      id: 'sunset-chess', contractVersion: '1.0',
+      discovery: { toolName: 'contract-discover', url: 'http://127.0.0.1:4175/.well-known/sunset-chess-contract' },
+      capabilities: ['contract-discovery'], dataOwnership: 'application',
+      healthUrl: 'http://127.0.0.1:4175/health', uiUrl: 'http://127.0.0.1:4175/', httpUrl: 'http://127.0.0.1:4175/api',
+    },
+  },
+];

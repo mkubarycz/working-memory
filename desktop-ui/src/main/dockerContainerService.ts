@@ -1,6 +1,4 @@
 import { execFile } from 'node:child_process';
-import { statSync } from 'node:fs';
-import { resolve } from 'node:path';
 import type {
   ContainerClaim,
   ContainerClaimCreateInput,
@@ -8,7 +6,6 @@ import type {
   DockerRuntimeSpec,
 } from '../../../shared/controlPlaneClient';
 import type { ContainerAppStatus, ContainerStopResult } from '../shared/contracts';
-import type { ContainerAppRegistration } from './containerAppRegistry';
 
 export const MANAGED_LABEL = 'com.kubarycz.working-memory.managed';
 export const CLAIM_LABEL = 'com.kubarycz.working-memory.claim';
@@ -67,13 +64,6 @@ export interface DockerOperationTimeouts {
   start: number;
   stop: number;
   remove: number;
-}
-
-export interface ContainerAppSourceOptions {
-  configuredPath?: string;
-  cwd?: string;
-  searchRoots?: string[];
-  pathKind?: (path: string) => 'file' | 'directory' | null;
 }
 
 const DEFAULT_TIMEOUTS: DockerOperationTimeouts = {
@@ -173,6 +163,10 @@ export class DockerContainerService {
       return failure('claim_error', `Unable to ensure the ${desired.title} ContainerClaim.`, error);
     }
 
+    return this.launch(claim, signal);
+  }
+
+  async launch(claim: ContainerClaim, signal?: AbortSignal): Promise<ContainerLaunchResult> {
     if (!claim.runtime || claim.runtime.type !== 'docker') {
       return { status: 'error', code: 'claim_error', message: 'ContainerClaim has no Docker runtime specification.' };
     }
@@ -435,50 +429,6 @@ export class DockerContainerService {
   }
 }
 
-export function resolveContainerAppClaim(
-  app: ContainerAppRegistration,
-  existing?: ContainerClaim,
-  options: ContainerAppSourceOptions = {},
-): ContainerClaimCreateInput {
-  const pathKind = options.pathKind ?? defaultPathKind;
-  const cwd = options.cwd ?? process.cwd();
-  const configured = options.configuredPath ?? process.env[app.sourceEnvironmentVariable];
-  const candidates = unique([
-    ...(configured ? [configured] : []),
-    ...(existing && validContainerAppSource(existing.repository, existing.runtime, pathKind)
-      ? [existing.repository]
-      : []),
-    ...(options.searchRoots ?? []),
-    resolve(cwd, app.projectDirectory),
-    resolve(cwd, 'projects', app.projectDirectory),
-    resolve(cwd, '..', app.projectDirectory),
-    resolve(cwd, '..', '..', app.projectDirectory),
-  ]).map((candidate) => resolve(candidate));
-  const repository = candidates.find((candidate) => (
-    pathKind(candidate) === 'directory'
-    && pathKind(resolve(candidate, 'Dockerfile')) === 'file'
-    && pathKind(resolve(candidate, 'package.json')) === 'file'
-  ));
-  if (!repository) {
-    throw new Error(
-      `${app.displayName} source was not found. Set ${app.sourceEnvironmentVariable} to a checkout containing Dockerfile and package.json. Checked: ${candidates.join(', ')}.`,
-    );
-  }
-
-  return {
-    slug: app.id,
-    title: app.claimTitle,
-    repository,
-    runtime: {
-      buildContext: repository,
-      dockerfile: resolve(repository, 'Dockerfile'),
-      ...app.runtime,
-    },
-    ...(app.mcp ? { mcp: app.mcp } : {}),
-    ...(app.application ? { application: app.application } : {}),
-  };
-}
-
 function containerMatches(
   inspect: DockerInspect,
   slug: string,
@@ -520,7 +470,7 @@ function appStatus(
   const runtime = desired.runtime!;
   return {
     id: desired.slug,
-    displayName: desired.slug === 'clarinet-hero' ? 'Claranet Hero' : desired.title,
+    displayName: desired.title,
     claimTitle: desired.title,
     claimSlug: desired.slug,
     repository: desired.repository,
@@ -590,32 +540,6 @@ function parseDockerEndpoint(stdout: string): string | null {
 function errorDetail(error: unknown): string {
   if (error instanceof CommandExecutionError) return error.stderr.trim() || error.message;
   return error instanceof Error ? error.message : String(error);
-}
-
-function defaultPathKind(path: string): 'file' | 'directory' | null {
-  try {
-    const stat = statSync(path);
-    if (stat.isFile()) return 'file';
-    if (stat.isDirectory()) return 'directory';
-  } catch {
-    // A missing or inaccessible candidate is not a usable source checkout.
-  }
-  return null;
-}
-
-function validContainerAppSource(
-  repository: string,
-  runtime: DockerRuntimeSpec | undefined,
-  pathKind: (path: string) => 'file' | 'directory' | null,
-): runtime is DockerRuntimeSpec {
-  return runtime?.type === 'docker'
-    && pathKind(repository) === 'directory'
-    && pathKind(runtime.buildContext) === 'directory'
-    && pathKind(runtime.dockerfile) === 'file';
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
 }
 
 function validateVolumes(volumes: DockerRuntimeSpec['volumes']): void {

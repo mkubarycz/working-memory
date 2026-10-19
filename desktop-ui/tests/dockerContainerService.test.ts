@@ -6,11 +6,10 @@ import {
   DockerContainerService,
   ExecFileCommandRunner,
   MANAGED_LABEL,
-  resolveContainerAppClaim,
   type ClaimClient,
   type CommandRunner,
 } from '../src/main/dockerContainerService';
-import { CONTAINER_APP_REGISTRY } from '../src/main/containerAppRegistry';
+import { CONTAINER_APP_FIXTURES } from './fixtures/containerApps';
 import type { ContainerClaimCreateInput } from '../../shared/controlPlaneClient';
 
 const desired: ContainerClaimCreateInput = {
@@ -316,7 +315,7 @@ describe('DockerContainerService', () => {
       });
       const status = await new DockerContainerService({ runner, readiness: async () => true }).inspect(desired);
       expect(status).toMatchObject({
-        displayName: 'Claranet Hero',
+        displayName: 'Clarinet Hero',
         claimSlug: 'clarinet-hero',
         state: 'healthy',
         ready: true,
@@ -428,108 +427,20 @@ describe('ExecFileCommandRunner', () => {
   });
 });
 
-describe('resolveContainerAppClaim', () => {
-  const clarinet = CONTAINER_APP_REGISTRY[0];
-  const banking = CONTAINER_APP_REGISTRY[1];
-  const sunset = CONTAINER_APP_REGISTRY[2];
-  const validPaths = (root: string) => (path: string) => {
-    if (path === root) return 'directory' as const;
-    if (path === `${root}/Dockerfile` || path === `${root}/package.json`) return 'file' as const;
-    return null;
-  };
-
-  it('preserves a valid existing source while enforcing registry runtime identity', () => {
-    const existing = claim({
-      repository: '/saved/source',
-      runtime: { ...desired.runtime, buildContext: '/saved/source', dockerfile: '/saved/source/Dockerfile' },
-    });
-    const resolved = resolveContainerAppClaim(clarinet, existing, { pathKind: validPaths('/saved/source') });
-    expect(resolved.repository).toBe('/saved/source');
-    expect(resolved.runtime).toEqual({
-      ...clarinet.runtime,
-      buildContext: '/saved/source',
-      dockerfile: '/saved/source/Dockerfile',
-    });
-  });
-
-  it('prefers a configured source and reports every checked candidate when none is valid', () => {
-    const configured = resolveContainerAppClaim(clarinet, undefined, {
-      configuredPath: '/configured/source',
-      cwd: '/workspace',
-      pathKind: validPaths('/configured/source'),
-    });
-    expect(configured.repository).toBe('/configured/source');
-
-    expect(() => resolveContainerAppClaim(clarinet, undefined, {
-      configuredPath: '/missing/source',
-      cwd: '/workspace',
-      searchRoots: ['/another/missing'],
-      pathKind: () => null,
-    })).toThrow(/CLARINET_HERO_SOURCE.*\/missing\/source.*\/another\/missing/);
-  });
-
-  it('resolves a second registry app without app-specific code', () => {
-    const resolved = resolveContainerAppClaim(banking, undefined, {
-      configuredPath: '/workspace/projects/BankingApp',
-      pathKind: validPaths('/workspace/projects/BankingApp'),
-    });
-
-    expect(resolved).toMatchObject({
-      slug: 'banking-app',
-      title: 'Banking App',
-      repository: '/workspace/projects/BankingApp',
-      runtime: {
-        imageName: 'banking-app:local',
-        containerName: 'working-memory-banking-app',
-        hostPort: 4174,
-        containerPort: 4174,
-        entryPath: '/',
-        healthPath: '/health',
-        volumes: [{ name: 'working-memory-banking-app-data', mountPath: '/data' }],
-      },
-    });
-  });
-
-  it('resolves canonical contract-capable Sunset Chess from one registry entry', () => {
-    const resolved = resolveContainerAppClaim(sunset, undefined, {
-      cwd: '/workspace',
-      pathKind: validPaths('/workspace/projects/SunsetChess'),
-    });
-    expect(resolved).toMatchObject({
-      slug: 'sunset-chess',
-      title: 'Sunset Chess',
-      repository: '/workspace/projects/SunsetChess',
-      runtime: {
-        imageName: 'sunset-chess:1.2',
-        containerName: 'working-memory-sunset-chess',
-        hostPort: 4175,
-        containerPort: 4175,
-        entryPath: '/',
-        healthPath: '/health',
-        volumes: [{ name: 'working-memory-sunset-chess-data', mountPath: '/data' }],
-      },
-      mcp: { transport: 'streamable-http', url: 'http://127.0.0.1:4175/mcp' },
-      application: {
-        id: 'sunset-chess',
-        contractVersion: '1.0',
-        discovery: {
-          toolName: 'contract-discover',
-          url: 'http://127.0.0.1:4175/.well-known/sunset-chess-contract',
-        },
-        capabilities: ['contract-discovery'],
-        dataOwnership: 'application',
-        healthUrl: 'http://127.0.0.1:4175/health',
-        uiUrl: 'http://127.0.0.1:4175/',
-        httpUrl: 'http://127.0.0.1:4175/api',
-      },
-    });
-  });
+describe('claim-owned container isolation', () => {
+  const banking = CONTAINER_APP_FIXTURES[1];
 
   it('cannot stop another app container when given the banking definition', async () => {
-      const bankingDesired = resolveContainerAppClaim(banking, undefined, {
-        configuredPath: '/repo/BankingApp',
-        pathKind: validPaths('/repo/BankingApp'),
-      });
+      const bankingDesired: ContainerClaimCreateInput = {
+        slug: banking.id,
+        title: banking.displayName,
+        repository: '/repo/BankingApp',
+        runtime: {
+          ...banking.runtime,
+          buildContext: '/repo/BankingApp',
+          dockerfile: '/repo/BankingApp/Dockerfile',
+        },
+      };
       const calls: string[][] = [];
       const runner = localRunner(async (args) => {
         if (args[0] === 'container' && args[1] === 'inspect') {

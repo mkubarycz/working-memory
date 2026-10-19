@@ -12,7 +12,7 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
       title: 'Container Claim: Update',
       description:
         'Update the authored intent of a live ContainerClaim by `slug`. Pass only `title`, ' +
-        '`repository`, `sourceRevision`, runtime, MCP, or application metadata; the stable slug is not changed.',
+        '`repository`, `sourceRevision`, runtime, MCP, application, or desktop metadata; the stable slug is not changed.',
       inputSchema: {
         slug: z.string().describe('Slug of the live claim to update.'),
         title: z.string().optional().describe('Replacement human-readable title.'),
@@ -25,6 +25,7 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
         runtime: z.record(z.string(), z.unknown()).nullable().optional(),
         mcp: z.record(z.string(), z.unknown()).nullable().optional(),
         application: z.record(z.string(), z.unknown()).nullable().optional(),
+        desktop: z.record(z.string(), z.unknown()).nullable().optional(),
       },
     },
     async ({ slug, ...input }) => {
@@ -41,7 +42,7 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
       let spec: Record<string, unknown>;
       try {
         const merged = { ...existing.spec, ...patch };
-        for (const optional of ['sourceRevision', 'runtime', 'mcp', 'application']) {
+        for (const optional of ['sourceRevision', 'runtime', 'mcp', 'application', 'desktop']) {
           if (merged[optional] === null) delete merged[optional];
         }
         spec = validateSpec(CONTAINER_CLAIM_KIND, merged);

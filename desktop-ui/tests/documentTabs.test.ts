@@ -1,14 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { DocumentVM } from '../src/renderer/documents/types';
 import {
   closeDocumentTab,
   closeDocumentTabsToRight,
   closeOtherDocumentTabs,
   documentTabKey,
+  keepSelectedTabVisible,
   openDocumentTab,
   parseDocumentTabs,
   replaceSelectedTab,
   serializeDocumentTabs,
+  selectedTabScrollLeft,
   updateDocumentTab,
 } from '../src/renderer/documentTabs';
 import { containerAppDocument } from '../src/renderer/containerApps';
@@ -22,12 +24,12 @@ function topic(slug: string, title = slug): DocumentVM {
 }
 
 describe('document tabs', () => {
-  it('appends first-opened documents in order and selects an existing tab without duplication', () => {
+  it('inserts new documents on the left and selects an existing tab without duplication', () => {
     let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
     state = openDocumentTab(state, topic('second'));
     state = openDocumentTab(state, topic('first', 'First refreshed'));
-    expect(state.tabs.map(documentTabKey)).toEqual(['topic:first', 'topic:second']);
-    expect(state.tabs[0]?.title).toBe('First refreshed');
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic:second', 'topic:first']);
+    expect(state.tabs[1]?.title).toBe('First refreshed');
     expect(state.selectedKey).toBe('topic:first');
   });
 
@@ -75,7 +77,7 @@ describe('document tabs', () => {
     state = openDocumentTab(state, topic('first'));
     state = openDocumentTab(state, settings);
 
-    expect(state.tabs.map(documentTabKey)).toEqual(['settings:desktop-settings', 'topic:first']);
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic:first', 'settings:desktop-settings']);
     expect(state.selectedKey).toBe('settings:desktop-settings');
     state = openDocumentTab(state, topic('first'));
     expect(state.selectedKey).toBe('topic:first');
@@ -86,7 +88,7 @@ describe('document tabs', () => {
     let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
     state = openDocumentTab(state, topic('second'));
     state = replaceSelectedTab(state, topic('second', 'Second saved'));
-    expect(state.tabs.map((tab) => tab.title)).toEqual(['first', 'Second saved']);
+    expect(state.tabs.map((tab) => tab.title)).toEqual(['Second saved', 'first']);
     state = closeDocumentTab(state, 'topic:second');
     expect(state.selectedKey).toBe('topic:first');
     expect(closeDocumentTab(state, 'missing')).toBe(state);
@@ -96,7 +98,7 @@ describe('document tabs', () => {
     let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
     state = openDocumentTab(state, topic('second'));
     state = updateDocumentTab(state, 'topic:first', topic('first', 'First saved'));
-    expect(state.tabs[0]?.title).toBe('First saved');
+    expect(state.tabs[1]?.title).toBe('First saved');
     expect(state.selectedKey).toBe('topic:second');
   });
 
@@ -112,6 +114,13 @@ describe('document tabs', () => {
     expect(closeOtherDocumentTabs(state, 'topic:missing')).toBe(state);
   });
 
+  it('reveals the entire selected tab on either edge and after the stage narrows', () => {
+    expect(selectedTabScrollLeft(300, 400, 100, 150)).toBe(100);
+    expect(selectedTabScrollLeft(0, 400, 450, 150)).toBe(200);
+    expect(selectedTabScrollLeft(100, 400, 150, 150)).toBe(100);
+    expect(selectedTabScrollLeft(100, 200, 150, 180)).toBe(130);
+    expect(selectedTabScrollLeft(200, 400, 0, 150)).toBe(0);
+  });
   it('closes tabs to the right and falls back to the context target when selection is removed', () => {
     const state = {
       tabs: [topic('first'), topic('second'), topic('third')],
@@ -126,6 +135,47 @@ describe('document tabs', () => {
       selectedKey: 'topic:first',
     });
     expect(closeDocumentTabsToRight(state, 'topic:third')).toBe(state);
+  });
+
+  it('reveals a selected tab again when closing other tabs changes its position', () => {
+    let onMutation = () => {};
+    const disconnect = vi.fn();
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect = disconnect;
+    });
+    vi.stubGlobal('MutationObserver', class {
+      constructor(callback: () => void) { onMutation = callback; }
+      observe() {}
+      disconnect = disconnect;
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const strip = { scrollLeft: 0, clientWidth: 400, getBoundingClientRect: () => ({ left: 0 }) };
+    let tabLeft = 800;
+    const node = {
+      parentElement: strip,
+      offsetWidth: 150,
+      getBoundingClientRect: () => ({ left: tabLeft - strip.scrollLeft }),
+    };
+    try {
+      const action = keepSelectedTabVisible(node as HTMLElement, true);
+      expect(strip.scrollLeft).toBe(550);
+      tabLeft = 100;
+      onMutation();
+      expect(strip.scrollLeft).toBe(100);
+      action.update(false);
+      tabLeft = 800;
+      onMutation();
+      expect(strip.scrollLeft).toBe(100);
+      action.destroy();
+      expect(disconnect).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('persists tab identities and selection without storing document bodies', () => {

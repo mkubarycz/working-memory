@@ -29,10 +29,12 @@ describe('container app contracts and renderer', () => {
     expect(main).toContain("ipcMain.handle('container:open'");
     expect(main).toContain("ipcMain.handle('app-mcp:contract'");
     expect(main).toContain('readClaim: currentClaim');
-    expect(main).toContain('resolveContainerAppClaim(containerAppRegistration(id), claim)');
+    expect(main).toContain('const claims = await controlPlane().containerClaimRead()');
+    expect(main).toContain('containerAppDefinitions(claims)');
+    expect(main).not.toContain('resolveContainerAppClaim(');
     expect(main).toContain('requireContainerAppId(rawId)');
     expect(main).toContain('const scope = beginContainerOperation()');
-    expect(main).toContain('containerAppClaim(scope.client, registration)');
+    expect(main).toContain('containerAppClaim(scope.client, rawId)');
     expect(main).toContain('containerEnvironmentGeneration += 1');
     expect(main).toContain('for (const operation of containerOperations) operation.abort()');
     expect(main).toContain("url.hostname !== 'localhost'");

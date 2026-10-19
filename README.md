@@ -267,10 +267,20 @@ URL schemes.
 To install a build instead of debugging, use the prebuilt GitHub Release
 one-liner above.
 
+## Document stage
+
+New document tabs open on the left. Selecting a tab reveals it in the navigation
+strip, including after resizing the stage or closing neighboring tabs. Empty
+new-topic forms use the same available document width as populated topics;
+typing does not change the form's width.
+
 ## Desktop container apps
 
-The desktop **Container Apps** right-rail tab lists registered local
-applications. Selecting an app registered with `embeddable: true` opens its UI
+The desktop **Container Apps** right-rail tab lists live ContainerClaims with a
+Docker `runtime` in the selected environment. Claims are the persisted app
+catalog, not a compiled-in allowlist: adding an app requires no Working Memory
+source changes, rebuild, or installation. Selecting an app registered with
+`desktop.embeddable: true` opens its UI
 as a full-stage document tab. The tab health light and gear menu expose launch,
 reload, external-open, stop, refresh, and App Info actions. Non-embeddable apps
 open directly to App Info.
@@ -280,23 +290,42 @@ copy to relaunch after the newly signed bundle is in place. Set
 `WM_DESKTOP_SKIP_REFRESH=1` only when a build must update the application
 without refreshing it.
 
-| App | ContainerClaim | Container | URL | Source override |
-|---|---|---|---|---|
-| Clarinet Hero | `clarinet-hero` | `working-memory-clarinet-hero` | <http://localhost:4173/> | `CLARINET_HERO_SOURCE` |
-| Banking App | `banking-app` | `working-memory-banking-app` | <http://localhost:4174/> | `BANKING_APP_SOURCE` |
-| Sunset Chess | `sunset-chess` | `working-memory-sunset-chess` | <http://localhost:4175/> | `SUNSET_CHESS_SOURCE` |
+Register an app with `ws-containerclaim-create` (or a generic `ContainerClaim`
+document), providing a unique `slug`, `title`, `repository`, and complete
+Docker `runtime` (`buildContext`, `dockerfile`, image/container names, ports,
+health/entry paths, and optional named volumes). Add `mcp` and `application`
+metadata for chat tools and live contracts. Optional `desktop` metadata accepts
+a codicon `icon` name and `embeddable` boolean; new apps default to a generic
+icon and App Info rather than embedding. There are no app-name-specific
+presentation defaults: icons and embedding preferences belong in each claim's
+`desktop` configuration, including for previously bundled app registrations.
 
-Each action is routed by app ID through one registry-driven orchestration path.
-The launcher creates or updates the durable claim, builds its Dockerfile, and
+For example, Sunset Chess 1.4 can be registered with slug `sunset-chess-1-4`,
+its dedicated source worktree, image `sunset-chess:1.4`, container
+`working-memory-sunset-chess-1-4`, host port 4176/container port 4175, and
+named volume `working-memory-sunset-chess-1-4-data` mounted at `/data`.
+It can advertise application identity `sunset-chess` independently of its
+registration slug. Neither the original app nor its volume needs to change.
+
+The catalog refreshes every 30 seconds, at startup, and on environment switches.
+Updates through `ws-containerclaim-update` change the same persisted definition;
+deleting a claim removes it from the catalog without stopping or deleting its
+container or data. A claim without a Docker runtime is intent-only and is not
+listed. Registration itself never launches a container.
+
+Each action is routed by claim slug through one generic orchestration path.
+The launcher reads the authored claim without replacing its runtime, endpoints,
+or source revision with compiled defaults, builds its Dockerfile, and
 reconciles only the exactly labeled managed container. The browser opens an app
 only after an HTTP readiness check succeeds. Docker must already be installed
 and running; the launcher uses only a validated local Unix-socket Docker
 context and reports missing CLI, daemon, timeout, build, ownership-conflict,
 startup, and readiness failures without removing unrelated containers. Set
 `WORKING_MEMORY_DOCKER_CONTEXT` to prefer a context; otherwise the launcher
-checks `desktop-linux`, `orbstack`, and `default`. Existing valid source paths
-are retained; otherwise use the app-specific source override or place the
-checkout in its discoverable sibling/workspace project path.
+checks `desktop-linux`, `orbstack`, and `default`. Configure local source paths
+in the claim's repository and runtime; no app-specific environment variable is
+required. `sourceRevision` records intent; the launcher does not check out or
+switch the repository's branch.
 
 ContainerClaims may include a validated Docker `volumes` list and an optional
 app-scoped MCP descriptor (`{ transport: "streamable-http", url }`). Sunset
