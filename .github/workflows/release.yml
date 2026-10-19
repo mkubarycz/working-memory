@@ -130,6 +130,10 @@ jobs:
         if: matrix.target == 'mac'
         run: npm test --prefix desktop-ui
 
+      - name: Test Windows container lifecycle
+        if: matrix.target == 'win'
+        run: npm test --prefix desktop-ui -- tests/dockerContainerService.test.ts
+
       - name: Build installer
         # PowerShell splits `-c.extraMetadata.version=...` into two arguments.
         shell: bash
