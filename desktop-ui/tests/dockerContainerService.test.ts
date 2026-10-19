@@ -44,12 +44,13 @@ function client(existing = claim()): ClaimClient {
 function localRunner(
   handler: (args: string[], options?: { timeoutMs: number; signal?: AbortSignal }) => Promise<{ stdout: string; stderr: string }>,
   calls: string[][] = [],
+  endpoint = 'unix:///local/docker.sock',
 ): CommandRunner {
   return {
     run: vi.fn(async (_file, args, options) => {
       calls.push(args);
       const command = args.slice(2);
-      if (command[0] === 'context') return { stdout: '"unix:///local/docker.sock"\n', stderr: '' };
+      if (command[0] === 'context') return { stdout: `${JSON.stringify(endpoint)}\n`, stderr: '' };
       if (command[0] === 'info') return { stdout: '"27.0.0"\n', stderr: '' };
       return handler(command, options);
     }),
@@ -138,12 +139,96 @@ describe('DockerContainerService', () => {
       .resolves.toMatchObject({ status: 'error', code: 'start_failed' });
   });
 
-  it('refuses a configured remote context before build, start, or removal', async () => {
+  it.each([
+    { endpoint: 'npipe:////./pipe/dockerDesktopLinuxEngine', context: undefined },
+    { endpoint: 'npipe:////./pipe/dockerDesktopLinuxEngine', context: 'desktop-linux' },
+    { endpoint: 'npipe:////./pipe/docker_engine', context: 'default' },
+  ])('launches, inspects, and stops a local Windows pipe ($endpoint, $context)', async ({ endpoint, context }) => {
+    const calls: string[][] = [];
+    let exists = false;
+    const runner = localRunner(async (args) => {
+      if (args[0] === 'image') return { stdout: 'sha256:new\n', stderr: '' };
+      if (args[0] === 'container' && args[1] === 'inspect') {
+        if (!exists) throw new CommandExecutionError('not found', 1, 'No such container');
+        return {
+          stdout: JSON.stringify([{
+            Image: 'sha256:new',
+            State: { Running: true },
+            Config: {
+              Image: desired.runtime!.imageName,
+              Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: desired.slug },
+            },
+            HostConfig: { PortBindings: { '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '4173' }] } },
+          }]),
+          stderr: '',
+        };
+      }
+      if (args[0] === 'container' && args[1] === 'run') exists = true;
+      return { stdout: '', stderr: '' };
+    }, calls, endpoint);
+    const service = new DockerContainerService({ runner, dockerContext: context, env: {}, readiness: async () => true });
+    await expect(service.launch(claim())).resolves.toMatchObject({ status: 'ready', action: 'created' });
+    await expect(service.inspect(desired)).resolves.toMatchObject({ state: 'healthy', ready: true });
+    await expect(service.stop(desired)).resolves.toMatchObject({ status: 'stopped' });
+    expect(calls.every((args) => args[0] === '--context' && args[1] === (context ?? 'desktop-linux'))).toBe(true);
+    expect(calls.some((args) => args[2] === 'info')).toBe(true);
+    expect(calls.some((args) => args[2] === 'build')).toBe(true);
+    expect(calls.some((args) => args[2] === 'container' && args[3] === 'run')).toBe(true);
+    expect(calls.some((args) => args[2] === 'container' && args[3] === 'stop')).toBe(true);
+    expect(calls.flat()).not.toContain('rm');
+  });
+
+  it('requires a healthy daemon on an explicitly selected Windows pipe without falling back', async () => {
+    const runner: CommandRunner = {
+      run: vi.fn(async (_file, args) => {
+        if (args[2] === 'context') {
+          return { stdout: '"npipe:////./pipe/dockerDesktopLinuxEngine"', stderr: '' };
+        }
+        throw new CommandExecutionError('Docker Desktop is not running', 1);
+      }),
+    };
+    const result = await new DockerContainerService({ runner, dockerContext: 'desktop-linux' }).launch(claim());
+    expect(result).toMatchObject({ status: 'error', code: 'docker_unavailable' });
+    expect(result.status === 'error' && result.message).toContain('Docker Desktop is not running');
+    expect(runner.run).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runner.run).mock.calls.every(([, args]) => args[1] === 'desktop-linux')).toBe(true);
+  });
+
+  it('finds the healthy default Windows pipe when Docker Desktop context is unavailable', async () => {
     const calls: string[][] = [];
     const runner: CommandRunner = {
       run: vi.fn(async (_file, args) => {
         calls.push(args);
-        return { stdout: '"tcp://remote.example:2376"\n', stderr: '' };
+        if (args[2] === 'context') {
+          if (args[1] === 'orbstack') throw new CommandExecutionError('context not found', 1);
+          return { stdout: JSON.stringify(`npipe:////./pipe/${args[1] === 'default' ? 'docker_engine' : 'dockerDesktopLinuxEngine'}`), stderr: '' };
+        }
+        if (args[2] === 'info') {
+          if (args[1] === 'desktop-linux') throw new CommandExecutionError('pipe unavailable', 1);
+          return { stdout: '"27.0.0"', stderr: '' };
+        }
+        throw new CommandExecutionError('not found', 1, 'No such container');
+      }),
+    };
+    await expect(new DockerContainerService({ runner, env: {} }).inspect(desired))
+      .resolves.toMatchObject({ state: 'missing', dockerContext: 'default' });
+    expect(calls.filter((args) => args[2] === 'info').map((args) => args[1])).toEqual(['desktop-linux', 'default']);
+  });
+
+  it.each([
+    'tcp://remote.example:2376',
+    'ssh://remote.example',
+    'npipe:////remote.example/pipe/docker_engine',
+    'npipe://remote.example/pipe/docker_engine',
+    'npipe:////.remote.example/pipe/docker_engine',
+    'npipe:////./pipe/',
+    'npipe:////./pipe/docker_engine/extra',
+  ])('refuses a configured remote or invalid endpoint %s before build, start, or removal', async (endpoint) => {
+    const calls: string[][] = [];
+    const runner: CommandRunner = {
+      run: vi.fn(async (_file, args) => {
+        calls.push(args);
+        return { stdout: `${JSON.stringify(endpoint)}\n`, stderr: '' };
       }),
     };
     const result = await new DockerContainerService({

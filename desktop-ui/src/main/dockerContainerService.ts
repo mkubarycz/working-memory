@@ -401,7 +401,9 @@ export class DockerContainerService {
           signal,
         );
         const endpoint = parseDockerEndpoint(inspected.stdout);
-        if (!endpoint?.startsWith('unix://')) {
+        const local = endpoint?.startsWith('unix://')
+          || /^npipe:\/\/\/\/\.\/pipe\/[a-zA-Z0-9_.-]+$/.test(endpoint ?? '');
+        if (!local) {
           const detail = endpoint || 'unknown endpoint';
           if (configured) {
             throw new Error(`Configured Docker context "${context}" is not local (${detail}).`);
@@ -425,7 +427,7 @@ export class DockerContainerService {
         checked.push(`${context} (${errorDetail(error)})`);
       }
     }
-    throw new Error(`Checked ${checked.join(', ') || 'no contexts'}; none had a healthy local Unix socket.`);
+    throw new Error(`Checked ${checked.join(', ') || 'no contexts'}; none had a healthy local Unix socket or Windows named pipe.`);
   }
 }
 

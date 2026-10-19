@@ -320,8 +320,9 @@ The launcher reads the authored claim without replacing its runtime, endpoints,
 or source revision with compiled defaults, builds its Dockerfile, and
 reconciles only the exactly labeled managed container. The browser opens an app
 only after an HTTP readiness check succeeds. Docker must already be installed
-and running; the launcher uses only a validated local Unix-socket Docker
-context and reports missing CLI, daemon, timeout, build, ownership-conflict,
+and running; the launcher uses only a validated local Unix socket or Windows
+named pipe (`npipe:////./pipe/...`). Remote TCP, SSH, and named-pipe hosts are
+not permitted. The launcher reports missing CLI, daemon, timeout, build, ownership-conflict,
 startup, and readiness failures without removing unrelated containers. Set
 `WORKING_MEMORY_DOCKER_CONTEXT` to prefer a context; otherwise the launcher
 checks `desktop-linux`, `orbstack`, and `default`. Configure local source paths
