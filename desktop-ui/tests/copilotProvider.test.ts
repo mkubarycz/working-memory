@@ -28,7 +28,7 @@ vi.mock('@github/copilot-sdk', () => ({
   RuntimeConnection: { forStdio: (options: unknown) => options },
 }));
 
-import { copilotConnection, copilotEnvironment, localCopilotPath, LocalCopilotProvider, parseCopilotTurn } from '../src/main/copilotProvider';
+import { copilotConnection, copilotEnvironment, localCopilotPath, LocalCopilotProvider, parseCopilotTurn, unpackedCopilotPath } from '../src/main/copilotProvider';
 
 const tools = [{ name: 'ws-topic-read', inputSchema: { type: 'object', properties: { slug: { type: 'string' } } } }];
 
@@ -50,7 +50,7 @@ afterEach(() => {
 });
 
 describe('local Copilot provider', () => {
-  it('uses the local CLI, reuses sign-in, discovers permitted models, and starts once', async () => {
+  it('uses the local CLI, reuses sign-in and client, and discovers permitted models', async () => {
     const provider = new LocalCopilotProvider();
     expect(await provider.listModels()).toEqual({
       account: 'test-user', models: [{ id: 'auto', name: 'Auto' }, { id: 'allowed', name: 'Allowed' }],
@@ -59,7 +59,8 @@ describe('local Copilot provider', () => {
     expect(sdk.construct).toHaveBeenCalledWith(expect.objectContaining({
       connection: expect.objectContaining({ path: process.execPath }),
     }));
-    expect(sdk.client.start).toHaveBeenCalledTimes(1);
+    expect(sdk.client.start).toHaveBeenCalledTimes(2);
+    expect(sdk.construct).toHaveBeenCalledTimes(1);
     expect(sdk.client.createSession).toHaveBeenCalledWith(expect.objectContaining({
       model: 'auto',
       availableTools: [],
@@ -106,6 +107,48 @@ describe('local Copilot provider', () => {
     expect(localCopilotPath({ WM_COPILOT_CLI_PATH: path }, 'win32', (candidate) => candidate === path)).toBe(path);
   });
 
+  it('launches the unpacked Windows runtime rather than a path inside app.asar', () => {
+    expect(unpackedCopilotPath(
+      'C:\\Program Files\\Working Memory\\resources\\app.asar\\node_modules\\@github\\copilot-sdk-win32-x64\\package.json',
+      'win32', 'x64',
+    )).toBe('C:\\Program Files\\Working Memory\\resources\\app.asar.unpacked\\node_modules\\@github\\copilot-sdk-win32-x64\\prebuilds\\win32-x64\\copilot-runtime.exe');
+  });
+
+  it('launches the unpacked macOS runtime and leaves unarchived installations to the SDK', () => {
+    expect(unpackedCopilotPath(
+      '/Applications/Working Memory.app/Contents/Resources/app.asar/node_modules/@github/copilot-sdk-darwin-arm64/package.json',
+      'darwin', 'arm64',
+    )).toBe('/Applications/Working Memory.app/Contents/Resources/app.asar.unpacked/node_modules/@github/copilot-sdk-darwin-arm64/prebuilds/darwin-arm64/copilot-runtime');
+    expect(unpackedCopilotPath(
+      '/app/node_modules/@github/copilot-sdk-darwin-arm64/package.json', 'darwin', 'arm64',
+    )).toBeUndefined();
+    expect(unpackedCopilotPath(
+      '/app/app.asar.unpacked/node_modules/@github/copilot-sdk-darwin-arm64/package.json', 'darwin', 'arm64',
+    )).toBeUndefined();
+  });
+
+  it('reports a missing unpacked runtime before attempting to start it', () => {
+    expect(() => copilotConnection({ WM_COPILOT_CLI_PATH: 'bundled' },
+      () => '/missing/app.asar/node_modules/@github/copilot-sdk/package.json',
+    )).toThrow('Reinstall Working Memory');
+  });
+
+  it('creates a fresh client after startup fails and allows a later request', async () => {
+    sdk.client.start.mockRejectedValueOnce(new Error('CLI process exited during startup'));
+    const provider = new LocalCopilotProvider();
+    await expect(provider.complete('auto', 'hello', 1000)).rejects.toThrow('CLI process exited during startup');
+    expect(await provider.complete('auto', 'hello again', 1000)).toBe('connected');
+    expect(sdk.construct).toHaveBeenCalledTimes(2);
+  });
+
+  it('checks the runtime again after a previously successful connection', async () => {
+    const provider = new LocalCopilotProvider();
+    await provider.listModels();
+    sdk.client.start.mockRejectedValueOnce(new Error('Runtime has disconnected'));
+    await expect(provider.complete('auto', 'hello', 1000)).rejects.toThrow('Runtime has disconnected');
+    expect(sdk.client.start).toHaveBeenCalledTimes(2);
+  });
+
   it('reports missing authentication without creating a session', async () => {
     sdk.client.getAuthStatus.mockResolvedValue({ isAuthenticated: false });
     await expect(new LocalCopilotProvider().complete('auto', 'hello', 1000)).rejects.toThrow('copilot login');
@@ -117,6 +160,27 @@ describe('local Copilot provider', () => {
     await expect(new LocalCopilotProvider().complete('blocked', 'hello', 1000)).rejects.toThrow('organization policy');
     expect(sdk.client.deleteSession).toHaveBeenCalledWith('isolated-session');
     expect(sdk.client.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the original request error when deleting a dead session also fails', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    sdk.session.sendAndWait.mockRejectedValueOnce(new Error('Runtime exited: startup diagnostic'));
+    sdk.client.deleteSession.mockRejectedValueOnce(new Error('Cannot call write after a stream was destroyed'));
+    try {
+      await expect(new LocalCopilotProvider().complete('auto', 'hello', 1000))
+        .rejects.toThrow('Runtime exited: startup diagnostic');
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to delete session'), expect.any(Error),
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('reports session cleanup failures after an otherwise successful request', async () => {
+    sdk.client.deleteSession.mockRejectedValueOnce(new Error('Session cleanup failed'));
+    await expect(new LocalCopilotProvider().complete('auto', 'hello', 1000))
+      .rejects.toThrow('Session cleanup failed');
   });
 
   it('rejects empty responses', async () => {
