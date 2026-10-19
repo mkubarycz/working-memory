@@ -69,6 +69,7 @@
     closeDocumentTabsToRight,
     closeOtherDocumentTabs,
     documentTabKey,
+    keepSelectedTabVisible,
     openDocumentTab,
     parseDocumentTabs,
     replaceSelectedTab,
@@ -442,12 +443,19 @@
   }
 
   async function loadContainerApps(): Promise<void> {
+    const generation = environmentGeneration;
     try {
       await loadRegisteredContainerApps(
         () => window.workingMemory.listContainerApps(),
         (id) => window.workingMemory.inspectContainerApp(id),
         () => environmentGeneration,
-        (apps) => { containerApps = apps; },
+        (apps) => {
+          containerApps = apps;
+          for (const document of documents) {
+            const id = containerAppIdForDocument(document);
+            if (id && !apps.some((app) => app.id === id)) closeDocument(documentTabKey(document));
+          }
+        },
         (app, status) => {
           containerAppStatuses[app.id] = status;
           if (status.error) containerAppError = status.error;
@@ -457,7 +465,9 @@
         },
       );
     } catch (error) {
-      containerAppError = error instanceof Error ? error.message : String(error);
+      if (generation === environmentGeneration) {
+        containerAppError = error instanceof Error ? error.message : String(error);
+      }
     }
   }
 
@@ -830,10 +840,12 @@
     );
     const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
     const backendHealthPoll = window.setInterval(() => void refreshBackendHealth(), 30_000);
+    const containerCatalogPoll = window.setInterval(() => void loadContainerApps(), 30_000);
     return () => {
       stopListeningForDeepLinks();
       window.clearInterval(historyPoll);
       window.clearInterval(backendHealthPoll);
+      window.clearInterval(containerCatalogPoll);
       window.removeEventListener('resize', handleResize);
       document.body.classList.remove('resizing-rails');
       clearPreviewAttention();
@@ -1016,6 +1028,7 @@
     activeError = reset.activeError;
     hasUnseenMessages = reset.hasUnseenMessages;
     containerAppStatuses = reset.containerAppStatuses;
+    containerApps = [];
     containerAppError = '';
     activeHeaderTab = 'log';
     focusedHeaderTab = 'log';
@@ -1830,6 +1843,7 @@
             {@const tabAppStatus = tabApp ? containerAppStatuses[tabApp.id] : undefined}
             <div
               class="document-tab"
+              use:keepSelectedTabVisible={key === selectedDocumentKey}
               class:selected={key === selectedDocumentKey}
               role="presentation"
               oncontextmenu={(event) => void openDocumentTabMenu(event, key)}

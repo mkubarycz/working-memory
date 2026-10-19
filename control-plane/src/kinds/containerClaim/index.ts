@@ -57,6 +57,10 @@ const containerClaim: KindModule = {
         runtime: dockerRuntime.optional(),
         mcp: mcpEndpoint.optional(),
         application: applicationMetadata.optional(),
+        desktop: z.object({
+          icon: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).optional(),
+          embeddable: z.boolean().optional(),
+        }).strict().optional(),
       })
       .strict(),
     validateMetadata: ({ slug, store, excludeId }) => {

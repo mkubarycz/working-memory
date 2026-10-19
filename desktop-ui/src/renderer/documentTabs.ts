@@ -13,6 +13,55 @@ export interface PersistedDocumentTabs {
 
 const MAX_PERSISTED_TABS = 50;
 
+export function selectedTabScrollLeft(
+  scrollLeft: number,
+  viewportWidth: number,
+  tabLeft: number,
+  tabWidth: number,
+): number {
+  if (tabLeft < scrollLeft) return tabLeft;
+  if (tabLeft + tabWidth > scrollLeft + viewportWidth) {
+    return Math.max(0, tabLeft + tabWidth - viewportWidth);
+  }
+  return scrollLeft;
+}
+
+export function keepSelectedTabVisible(node: HTMLElement, selected: boolean) {
+  let frame = 0;
+  const reveal = () => {
+    cancelAnimationFrame(frame);
+    if (!selected) return;
+    frame = requestAnimationFrame(() => {
+      const strip = node.parentElement;
+      if (!selected || !strip) return;
+      const tabLeft = node.getBoundingClientRect().left
+        - strip.getBoundingClientRect().left + strip.scrollLeft;
+      strip.scrollLeft = selectedTabScrollLeft(
+        strip.scrollLeft, strip.clientWidth, tabLeft, node.offsetWidth,
+      );
+    });
+  };
+  const observer = new ResizeObserver(reveal);
+  const mutations = new MutationObserver(reveal);
+  observer.observe(node);
+  if (node.parentElement) {
+    observer.observe(node.parentElement);
+    mutations.observe(node.parentElement, { childList: true });
+  }
+  reveal();
+  return {
+    update(value: boolean) {
+      selected = value;
+      reveal();
+    },
+    destroy() {
+      observer.disconnect();
+      mutations.disconnect();
+      cancelAnimationFrame(frame);
+    },
+  };
+}
+
 export function documentTabKey(document: DocumentVM): string {
   const identifier = document.slug ?? ('id' in document ? document.id : document.title);
   return `${document.kind}:${identifier}`;
@@ -62,7 +111,7 @@ export function openDocumentTab(state: DocumentTabsState, document: DocumentVM):
   const index = state.tabs.findIndex((tab) => documentTabKey(tab) === key);
   return {
     tabs: index < 0
-      ? [...state.tabs, document]
+      ? [document, ...state.tabs]
       : state.tabs.map((tab, candidate) => candidate === index ? document : tab),
     selectedKey: key,
   };

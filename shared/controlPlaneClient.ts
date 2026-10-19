@@ -245,9 +245,15 @@ export interface ContainerClaim {
   runtime?: DockerRuntimeSpec;
   mcp?: AppMcpEndpoint;
   application?: ApplicationContractMetadata;
+  desktop?: ContainerAppPresentation;
   created_at: number;
   updated_at: number;
   resourceVersion: number;
+}
+
+export interface ContainerAppPresentation {
+  icon?: string;
+  embeddable?: boolean;
 }
 
 export interface ContainerClaimReadInput {
@@ -265,6 +271,7 @@ export interface ContainerClaimCreateInput {
   runtime?: DockerRuntimeSpec;
   mcp?: AppMcpEndpoint;
   application?: ApplicationContractMetadata;
+  desktop?: ContainerAppPresentation;
 }
 
 export interface ContainerClaimUpdateInput {
@@ -275,6 +282,7 @@ export interface ContainerClaimUpdateInput {
   runtime?: DockerRuntimeSpec | null;
   mcp?: AppMcpEndpoint | null;
   application?: ApplicationContractMetadata | null;
+  desktop?: ContainerAppPresentation | null;
 }
 
 /**

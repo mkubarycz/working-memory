@@ -34,6 +34,7 @@ interface Claim {
   sourceRevision?: string;
   runtime?: { type: string; volumes?: Array<{ name: string; mountPath: string }> };
   mcp?: { transport: string; url: string };
+  desktop?: { icon?: string; embeddable?: boolean };
   application?: {
     id: string;
     contractVersion: string;
@@ -105,6 +106,7 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
               volumes: [{ name: 'working-memory-dev-data', mountPath: '/data' }],
             },
             mcp: { transport: 'streamable-http', url: 'http://localhost:8080/mcp' },
+            desktop: { icon: 'beaker', embeddable: true },
             application: {
               id: 'working-memory-dev',
               contractVersion: '1.0.0',
@@ -129,9 +131,10 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
         dataOwnership: 'application',
       });
       expect(created.runtime?.volumes).toEqual([{ name: 'working-memory-dev-data', mountPath: '/data' }]);
+      expect(created.desktop).toEqual({ icon: 'beaker', embeddable: true });
       expect(Object.keys(created).sort()).toEqual(
         [
-          'application', 'created_at', 'id', 'mcp', 'repository', 'resourceVersion',
+          'application', 'created_at', 'desktop', 'id', 'mcp', 'repository', 'resourceVersion',
           'runtime', 'slug', 'title', 'updated_at',
         ].sort(),
       );
@@ -139,21 +142,26 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       const updated = jsonOf<Claim>(
         await client.callTool({
           name: 'ws-containerclaim-update',
-          arguments: { slug: created.slug, sourceRevision: 'feature/container-claims' },
+          arguments: {
+            slug: created.slug, sourceRevision: 'feature/container-claims',
+            desktop: { icon: 'rocket', embeddable: false },
+          },
         }),
       );
       expect(updated.sourceRevision).toBe('feature/container-claims');
       expect(updated.repository).toBe(created.repository);
       expect(updated.application).toEqual(created.application);
+      expect(updated.desktop).toEqual({ icon: 'rocket', embeddable: false });
       expect(updated.resourceVersion).toBe(2);
 
       const resetToDefault = jsonOf<Claim>(
         await client.callTool({
           name: 'ws-containerclaim-update',
-          arguments: { slug: created.slug, sourceRevision: null },
+          arguments: { slug: created.slug, sourceRevision: null, desktop: null },
         }),
       );
       expect(resetToDefault.sourceRevision).toBeUndefined();
+      expect(resetToDefault.desktop).toBeUndefined();
       expect(resetToDefault.resourceVersion).toBe(3);
 
       const read = jsonOf<{ count: number; claims: Claim[] }>(
@@ -283,6 +291,17 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       });
       expect(isErrorResult(invalidApplication)).toBe(true);
       expect(textOf(invalidApplication)).toContain('dataOwnership');
+      for (const desktop of [
+        { icon: 'not a class' },
+        { embeddable: 'yes' },
+        { unknownField: true },
+      ]) {
+        const invalidDesktop = await client.callTool({
+          name: 'ws-containerclaim-create',
+          arguments: { slug: 'invalid-desktop', title: 'Invalid desktop', repository: 'owner/repo', desktop },
+        });
+        expect(isErrorResult(invalidDesktop)).toBe(true);
+      }
     } finally {
       await close();
     }

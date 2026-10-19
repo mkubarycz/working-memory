@@ -5,6 +5,15 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = resolve(import.meta.dirname, '../..');
 
 describe('desktop tree icon contract', () => {
+  it('keeps selected tabs visible and gives empty topic drafts a content-independent stage width', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+    expect(app).toContain('use:keepSelectedTabVisible={key === selectedDocumentKey}');
+    expect(styles).toMatch(/\.document-host\s*{[^}]*box-sizing:\s*border-box[^}]*width:\s*100%[^}]*min-width:\s*0/s);
+    expect(styles).toMatch(/\.document-stage\s*{[^}]*min-width:\s*0/s);
+    expect(app).toContain('const containerCatalogPoll');
+    expect(app).toContain('window.clearInterval(containerCatalogPoll)');
+  });
   it('offers local Copilot alongside Azure without sending endpoint credentials to Copilot', () => {
     const settings = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/SettingsView.svelte'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
