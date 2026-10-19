@@ -14,7 +14,7 @@ files:
 extraResources:
   - from: build/data-tier
     to: data-tier
-# The Copilot SDK copies its native runtime to the user's cache before launching it.
+# Native executables must be launched from app.asar.unpacked, not inside app.asar.
 asarUnpack:
   - node_modules/@github/copilot-sdk-*/**
 protocols:

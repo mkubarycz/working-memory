@@ -176,7 +176,9 @@ To dogfood Copilot:
 
 The installed desktop app uses the native Copilot runtime bundled with the
 app. It does not require Node.js on PATH or automatically select an installed
-CLI launcher. Set `WM_COPILOT_CLI_PATH` in the app's launch environment only
+CLI launcher. Packaged installations launch the native executable from
+`app.asar.unpacked`; development and local unarchived builds use the SDK's
+default runtime path. Set `WM_COPILOT_CLI_PATH` in the app's launch environment only
 to explicitly select an external executable, whose runtime dependencies you
 must provide; `bundled` selects the default runtime. Inherited
 `COPILOT_CLI_PATH` overrides are ignored. It uses the CLI's existing

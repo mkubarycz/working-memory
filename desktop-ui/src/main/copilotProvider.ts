@@ -1,5 +1,7 @@
 import { accessSync, constants } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
+import { posix, win32 } from 'node:path';
 import { CopilotClient, RuntimeConnection, type CopilotSession } from '@github/copilot-sdk';
 import type { CopilotModels } from '../shared/contracts';
 import type { ModelConversation, ParsedModelTurn } from './modelTools';
@@ -37,8 +39,28 @@ function isExecutable(candidate: string, platform: NodeJS.Platform): boolean {
   }
 }
 
-export function copilotConnection(env: NodeJS.ProcessEnv = process.env): ReturnType<typeof RuntimeConnection.forStdio> {
-  const path = localCopilotPath(env);
+export function unpackedCopilotPath(
+  packageJson: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string | undefined {
+  const unpacked = packageJson.replace(/\.asar([\\/])/i, '.asar.unpacked$1');
+  if (unpacked === packageJson) return undefined;
+  const paths = platform === 'win32' ? win32 : posix;
+  return paths.join(paths.dirname(unpacked), 'prebuilds', `${platform}-${arch}`,
+    platform === 'win32' ? 'copilot-runtime.exe' : 'copilot-runtime');
+}
+
+export function copilotConnection(
+  env: NodeJS.ProcessEnv = process.env,
+  resolvePackage: (id: string) => string = createRequire(import.meta.url).resolve,
+): ReturnType<typeof RuntimeConnection.forStdio> {
+  const path = localCopilotPath(env) ?? unpackedCopilotPath(
+    resolvePackage(`@github/copilot-sdk-${process.platform}-${process.arch}/package.json`),
+  );
+  if (path && !isExecutable(path, process.platform)) {
+    throw new Error(`Copilot runtime is missing or not executable: ${path}. Reinstall Working Memory.`);
+  }
   return RuntimeConnection.forStdio({ ...(path ? { path } : {}), env: copilotEnvironment(env) });
 }
 
@@ -93,10 +115,13 @@ export class LocalCopilotProvider {
   private async connect(): Promise<Client> {
     if (!this.starting) {
       const client = this.client ??= this.createClient();
-      this.starting = client.start().then(() => client).catch((error: unknown) => {
-        this.starting = undefined;
+      const starting = client.start().then(() => client).catch((error: unknown) => {
+        if (this.client === client) this.client = undefined;
         throw error;
+      }).finally(() => {
+        if (this.starting === starting) this.starting = undefined;
       });
+      this.starting = starting;
     }
     const client = await this.starting;
     const auth = await client.getAuthStatus();
@@ -182,6 +207,7 @@ export class LocalCopilotProvider {
       });
       const abort = () => { void session.abort().catch((error: unknown) => console.error('[copilot] Failed to abort model request:', error)); };
       signal.addEventListener('abort', abort, { once: true });
+      let requestFailed = false;
       try {
         if (signal.aborted) abort();
         signal.throwIfAborted();
@@ -189,9 +215,17 @@ export class LocalCopilotProvider {
         const text = response?.data.content;
         if (!text?.trim()) throw new Error('Copilot returned no response. Check model access and retry.');
         return text;
+      } catch (error) {
+        requestFailed = true;
+        throw error;
       } finally {
         signal.removeEventListener('abort', abort);
-        await client.deleteSession(session.sessionId);
+        try {
+          await client.deleteSession(session.sessionId);
+        } catch (error) {
+          if (!requestFailed) throw error;
+          console.error('[copilot] Failed to delete session after model request failed:', error);
+        }
       }
     });
   }
