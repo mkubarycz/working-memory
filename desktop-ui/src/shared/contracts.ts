@@ -375,7 +375,20 @@ export type DocumentChangeEvent = { mcpUrl: string } & (
   | { error: string }
 );
 
+export interface SharedTopicReceipt {
+  id: string; slug: string; title: string; duplicate: boolean; statusUrl: string; submittedAt: string;
+}
+export interface FeedbackServer { id: string; name: string; address: string }
+export interface FeedbackContext {
+  desktop: { version: string; build: string };
+  backend: { version: string };
+}
+export interface FeedbackPreparation { servers: FeedbackServer[]; context: FeedbackContext }
+export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt } | { status: 'choose'; servers: FeedbackServer[] };
+
 export interface DesktopApi {
+  prepareFeedback(slug: string, requestId: string): Promise<FeedbackPreparation>;
+  sendFeedback(slug: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
   startDocumentChanges(): Promise<void>;
   onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;

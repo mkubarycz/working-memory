@@ -410,6 +410,56 @@ merely switching tabs does not clear it. Unread state is retained separately
 for each selected data environment, and loading old history does not mark
 every historical response unread.
 
+### Local Send Feedback prototype
+
+An existing topic's square **Send Feedback** control prepares a copy and discovers
+Feedback servers on the local network. Review the desktop version/build timestamp
+and the selected backend's reported version, then click **Send**. One server is
+preselected; multiple servers require a choice. Preparing or choosing a server
+does not transmit topic content. After success, **Send** becomes **Done**.
+No receiver URL or secret is required. Discovery probes IPv4 LAN broadcasts and
+loopback using UDP 7721; topic content travels only over HTTPS on TCP 7720.
+
+Pending edits must save successfully before sharing. The title, Markdown,
+topic type, and referenced screenshot images are copied, but relationships,
+alerts, history, and lifecycle status are not. The receiver creates an open
+topic in its **Inbox** workstream and remaps image IDs into that environment.
+After delivery, the source topic receives an appended, dated **Sent as feedback
+to Working Memory platform** note with a **Click to check status** link. Its
+authored content and lifecycle status are otherwise preserved. The note uses
+the latest source body and a resource-version guard, so concurrent edits are
+not overwritten. Keep the dialog open when retrying an uncertain delivery:
+retries use the same request ID and do not create duplicate topics. If delivery
+succeeds but the note cannot save, the error says so; clicking **Send** again
+retries the note without reposting the feedback.
+The incoming copy includes a **Feedback environment** section with the desktop
+version, exact build timestamp, and version reported by the selected backend's
+`wm-ping` response, not the bundled image or update-channel target. These details
+are captured with the topic snapshot and remain stable across retries.
+
+The receiver is an independent **Feedback** container/repository, registered
+using a ContainerClaim rather than application-specific code. Its primary
+HTTP status UI is loopback-only on 7722. Generic Docker runtime `additionalPorts`
+publish the receiving TCP port and discovery UDP port with explicit
+`hostIp: "0.0.0.0"`; omitted host IPs default to loopback. The existing primary
+UI/health port remains loopback-only for all apps.
+
+The receiver persists its self-signed certificate in its own named volume.
+Only the feedback request accepts that self-signed certificate, and it verifies
+the fingerprint advertised in discovery before transmitting content. Normal
+TLS verification elsewhere is unchanged. **Trusted LAN only:** discovery and
+senders are unauthenticated, so encryption does not establish a trusted server
+identity or prevent malicious LAN impersonation. Do not expose it to the
+internet or transfer work content without authorization.
+
+The Feedback app lists previously submitted items with their live titles and
+statuses, and topic links open in a new tab. It uses the receipt marker already
+persisted on imported topics rather than duplicating topic data or owning a
+second database. Monitoring links remain on the receiver's HTTPS API and show
+the latest status, refreshing every 15 seconds. Browsers may require trusting
+the receiver's self-signed certificate when opening these links externally;
+the sender's scoped certificate acceptance does not change browser trust.
+
 Read-only MCP tools run directly, while app tools not explicitly annotated
 read-only require confirmation. Command journals record the provider-safe
 namespaced tool name, sanitized arguments/results, and confirmed app writes as

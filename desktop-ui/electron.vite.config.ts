@@ -6,6 +6,9 @@ const buildTimestamp = new Date().toISOString();
 
 export default defineConfig({
   main: {
+    define: {
+      __WM_BUILD_TIMESTAMP__: JSON.stringify(buildTimestamp),
+    },
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'src/main/index.ts'),

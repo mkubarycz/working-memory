@@ -33,6 +33,8 @@ import {
 } from './config';
 import { checkConfiguredModel } from './modelHealth';
 import { LocalCopilotProvider } from './copilotProvider';
+import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
+declare const __WM_BUILD_TIMESTAMP__: string;
 import {
   DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
   DesktopChatAgent,
@@ -110,6 +112,7 @@ const WINDOW_DEFAULTS = { defaultWidth: 1280, defaultHeight: 820, minWidth: 900,
 const WINDOW_STATE_SAVE_DELAY_MS = 250;
 let configFile = '';
 let credentialVault: DesktopCredentialVault | null = null;
+let feedbackSender: FeedbackSender | undefined;
 let credentialMigrationError = '';
 let environmentFile = '';
 let windowStateFile = '';
@@ -825,6 +828,14 @@ function restartInstalledDesktop(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('feedback:prepare', (_event, slug: string, requestId: string) => {
+    if (!feedbackSender) throw new Error('Feedback is not initialized.');
+    return feedbackSender.prepare(slug, requestId);
+  });
+  ipcMain.handle('feedback:send', (_event, slug: string, requestId: string, serverId?: string) => {
+    if (!feedbackSender) throw new Error('Feedback is not initialized.');
+    return feedbackSender.send(slug, requestId, serverId);
+  });
   ipcMain.handle('documents:watch', () => startDocumentChanges());
   ipcMain.on('app:restart', () => {
     restartInstalledDesktop();
@@ -1245,6 +1256,16 @@ function saveWindowState(window: BrowserWindow, immediately = false): void {
   }, WINDOW_STATE_SAVE_DELAY_MS);
 }
 
+function followDesktopResourceLink(rawUrl: string): boolean {
+  const target = parseDesktopDeepLink(rawUrl);
+  if (!target) return false;
+  void openDeepLink(target).catch(error => {
+    console.error('[desktop] Container app resource link failed:', error);
+    dialog.showErrorBox('Unable to open Working Memory resource', error instanceof Error ? error.message : String(error));
+  });
+  return true;
+}
+
 async function createWindow(): Promise<BrowserWindow> {
   const primaryDisplayId = screen.getPrimaryDisplay().id;
   const displays = screen.getAllDisplays().map((display) => ({
@@ -1273,6 +1294,7 @@ async function createWindow(): Promise<BrowserWindow> {
       && (!currentUrl || new URL(currentUrl).origin === new URL(event.url).origin);
     if (sameRegisteredApp) return;
     event.preventDefault();
+    if (followDesktopResourceLink(event.url)) return;
     try {
       const target = new URL(event.url);
       if (target.protocol === 'http:' || target.protocol === 'https:') {
@@ -1283,6 +1305,7 @@ async function createWindow(): Promise<BrowserWindow> {
     }
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
+    if (followDesktopResourceLink(url)) return { action: 'deny' };
     try {
       const target = new URL(url);
       if (target.protocol === 'http:' || target.protocol === 'https:') {
@@ -1428,6 +1451,25 @@ if (!ownsSingleInstanceLock) {
       process.platform,
       join(app.getPath('userData'), 'credential-vault.key'),
     );
+    feedbackSender = new FeedbackSender(async (slug) => {
+      const client = controlPlane();
+      const environment = environmentManager.currentEnvironment;
+      if (!environment) throw new Error('No Working Memory environment is selected.');
+      const sourceUrl = environment.mcpUrl;
+      const [[topic], ping] = await Promise.all([client.topicRead({ slug }), client.callTool('wm-ping', {})]);
+      if (!topic) throw new Error('The feedback topic was not found.');
+      if (!ping.ok) throw new Error(`Unable to read the selected backend version: ${ping.error ?? 'Backend unavailable.'}`);
+      const result = ping.result;
+      if (!result || typeof result !== 'object' || !('version' in result)
+        || typeof result.version !== 'string' || !result.version.trim()) {
+        throw new Error('The selected backend did not report its version.');
+      }
+      return {
+        topic, sourceUrl,
+        recordReceipt: receipt => recordFeedbackReceipt(client, topic.id, receipt),
+        context: { desktop: { version: app.getVersion(), build: __WM_BUILD_TIMESTAMP__ }, backend: { version: result.version } },
+      };
+    });
     try {
       const storedConfig = await readStoredConfig(configFile);
       const migratedConfig = credentialVault.migrate(storedConfig);

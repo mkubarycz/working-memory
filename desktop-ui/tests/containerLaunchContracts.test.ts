@@ -122,7 +122,7 @@ describe('container app contracts and renderer', () => {
     expect(app).toContain('class="container-app-tab-gear"');
     expect(detail).toContain('class="container-app-frame"');
     expect(detail).toContain("view === 'app' && app.embeddable");
-    expect(detail).toContain('sandbox="allow-forms allow-scripts allow-same-origin"');
+    expect(detail).toContain('sandbox="allow-forms allow-scripts allow-same-origin allow-popups"');
     for (const field of ['Claim title', 'Claim', 'Repository', 'Build context', 'Image', 'Container', 'Docker context', 'State / health', 'Ports', 'URL', 'Last action']) {
       expect(detail).toContain(`['${field}'`);
     }

@@ -172,6 +172,11 @@ export class DockerContainerService {
     }
 
     const runtime = claim.runtime;
+    try {
+      runtimePorts(runtime);
+    } catch (error) {
+      return failure('claim_error', 'ContainerClaim has invalid published ports.', error);
+    }
     let context: string;
     try {
       context = await this.resolveDockerContext(signal);
@@ -285,6 +290,11 @@ export class DockerContainerService {
   async inspect(desired: ContainerClaimCreateInput, signal?: AbortSignal): Promise<ContainerAppStatus> {
     const runtime = desired.runtime;
     if (!runtime || runtime.type !== 'docker') return appStatus(desired, null, 'error', false, 'Status failed', 'ContainerClaim has no Docker runtime specification.');
+    try {
+      runtimePorts(runtime);
+    } catch (error) {
+      return appStatus(desired, null, 'error', false, 'Status failed', error instanceof Error ? error.message : String(error));
+    }
     let context: string;
     try {
       context = await this.resolveDockerContext(signal);
@@ -371,7 +381,9 @@ export class DockerContainerService {
     await this.docker(context, [
       'container', 'run', '--detach', '--name', runtime.containerName,
       '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=${slug}`,
-      '--publish', `127.0.0.1:${runtime.hostPort}:${runtime.containerPort}`,
+      ...runtimePorts(runtime).flatMap((port) => [
+        '--publish', `${port.hostIp}:${port.hostPort}:${port.containerPort}${port.protocol === 'udp' ? '/udp' : ''}`,
+      ]),
       ...volumeArgs,
       runtime.imageName,
     ], this.timeouts.start, signal);
@@ -437,28 +449,50 @@ function containerMatches(
   runtime: DockerRuntimeSpec,
   imageId: string,
 ): boolean {
-  const binding = inspect.HostConfig?.PortBindings?.[`${runtime.containerPort}/tcp`]?.[0];
   return inspect.Image === imageId
     && inspect.Config?.Image === runtime.imageName
     && inspect.Config?.Labels?.[MANAGED_LABEL] === 'true'
     && inspect.Config?.Labels?.[CLAIM_LABEL] === slug
-    && binding?.HostIp === '127.0.0.1'
-    && binding.HostPort === String(runtime.hostPort)
+    && portsMatch(inspect, runtime)
     && volumesMatch(inspect, runtime);
 }
 
 function containerOwnedByClaim(inspect: DockerInspect, slug: string, runtime: DockerRuntimeSpec): boolean {
-  const binding = inspect.HostConfig?.PortBindings?.[`${runtime.containerPort}/tcp`]?.[0];
   return inspect.Config?.Image === runtime.imageName
     && inspect.Config?.Labels?.[MANAGED_LABEL] === 'true'
     && inspect.Config?.Labels?.[CLAIM_LABEL] === slug
-    && binding?.HostIp === '127.0.0.1'
-    && binding.HostPort === String(runtime.hostPort)
+    && portsMatch(inspect, runtime)
     && volumesMatch(inspect, runtime);
 }
 
 function appHealthUrl(runtime: DockerRuntimeSpec): string {
   return `http://localhost:${runtime.hostPort}${runtime.healthPath}`;
+}
+
+function runtimePorts(runtime: DockerRuntimeSpec) {
+  const ports = [
+    { hostPort: runtime.hostPort, containerPort: runtime.containerPort, protocol: 'tcp' as const, hostIp: '127.0.0.1' },
+    ...(runtime.additionalPorts ?? []).map((port) => ({ ...port, hostIp: port.hostIp ?? '127.0.0.1' })),
+  ];
+  if (ports.length > 11 || ports.some((port) =>
+    !Number.isInteger(port.hostPort) || port.hostPort < 1 || port.hostPort > 65535
+    || !Number.isInteger(port.containerPort) || port.containerPort < 1 || port.containerPort > 65535
+    || !['tcp', 'udp'].includes(port.protocol) || !['127.0.0.1', '0.0.0.0'].includes(port.hostIp))) {
+    throw new Error('Invalid container port configuration.');
+  }
+  if (new Set(ports.map((port) => `${port.hostPort}/${port.protocol}`)).size !== ports.length) {
+    throw new Error('Duplicate published container port.');
+  }
+  return ports;
+}
+
+function portsMatch(inspect: DockerInspect, runtime: DockerRuntimeSpec): boolean {
+  const expected = runtimePorts(runtime);
+  const bindings = Object.entries(inspect.HostConfig?.PortBindings ?? {}).flatMap(([key, entries]) =>
+    (entries ?? []).map((binding) => ({ key, ...binding })));
+  return bindings.length === expected.length && expected.every((port) => bindings.some((binding) =>
+    binding.key === `${port.containerPort}/${port.protocol}` && binding.HostIp === port.hostIp
+    && binding.HostPort === String(port.hostPort)));
 }
 
 function appStatus(

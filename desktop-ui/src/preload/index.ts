@@ -7,6 +7,8 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const api: DesktopApi = {
+  prepareFeedback: (slug, requestId) => invoke('feedback:prepare', slug, requestId),
+  sendFeedback: (slug, requestId, serverId) => invoke('feedback:send', slug, requestId, serverId),
   startDocumentChanges: () => invoke('documents:watch'),
   onDocumentChanges: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);

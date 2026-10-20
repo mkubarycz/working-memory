@@ -52,6 +52,9 @@ body.resizing-active-sections { cursor: row-resize; user-select: none; }
 #app { max-width: none; margin: 0; padding: 0; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
+.feedback-button { display: inline-grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 0; border: 1px solid #bcb7bc; border-radius: 3px; color: var(--desktop-accent-strong); background: transparent; }
+.feedback-button:hover { background: var(--desktop-accent-soft); }
+.feedback-button:focus-visible { outline: 2px solid var(--desktop-accent-strong); outline-offset: 2px; }
 
 .shell { display: grid; grid-template-columns: var(--active-rail-width) 0 minmax(320px, 1fr) 0 var(--chat-rail-width); grid-template-rows: minmax(0, 1fr) auto; height: 100vh; }
 .shell.active-collapsed { grid-template-columns: 36px 0 minmax(320px, 1fr) 0 var(--chat-rail-width); }

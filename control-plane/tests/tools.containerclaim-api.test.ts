@@ -73,6 +73,27 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
     await loadKinds();
   });
 
+  it('round-trips explicitly configured LAN TCP/UDP ports and rejects unsafe host addresses', async () => {
+    const { client, close } = await connect(openStore(':memory:'));
+    const runtime = {
+      type: 'docker', buildContext: '/Feedback', dockerfile: '/Feedback/Dockerfile',
+      imageName: 'feedback:local', containerName: 'feedback', hostPort: 7722, containerPort: 7722,
+      healthPath: '/health', entryPath: '/',
+      additionalPorts: [{ hostPort: 7721, containerPort: 7721, protocol: 'udp', hostIp: '0.0.0.0' }],
+    };
+    try {
+      const created = await client.callTool({ name: 'ws-containerclaim-create', arguments: {
+        slug: 'feedback', title: 'Feedback', repository: '/Feedback', runtime,
+      } });
+      expect(isErrorResult(created)).toBe(false);
+      expect(jsonOf<{ runtime: typeof runtime }>(created).runtime.additionalPorts).toEqual(runtime.additionalPorts);
+      const rejected = await client.callTool({ name: 'ws-containerclaim-update', arguments: {
+        slug: 'feedback', runtime: { ...runtime, additionalPorts: [{ ...runtime.additionalPorts[0], hostIp: '8.8.8.8' }] },
+      } });
+      expect(isErrorResult(rejected)).toBe(true);
+    } finally { await close(); }
+  });
+
   it('exposes CRUD and round-trips intent without runtime state', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {

@@ -58,6 +58,60 @@ function localRunner(
 }
 
 describe('DockerContainerService', () => {
+  it('rejects duplicate published ports before building or modifying any container', async () => {
+    const calls: string[][] = [];
+    const duplicate = {
+      ...desired,
+      runtime: { ...desired.runtime!, additionalPorts: [{ hostPort: 4173, containerPort: 7720, protocol: 'tcp' as const }] },
+    };
+    const service = new DockerContainerService({ runner: localRunner(async () => ({ stdout: '', stderr: '' }), calls) });
+    expect(await service.launch(claim(duplicate))).toMatchObject({ status: 'error', code: 'claim_error' });
+    expect(await service.inspect(duplicate)).toMatchObject({ state: 'error', ready: false });
+    expect(await service.stop(duplicate)).toMatchObject({ status: 'error' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('publishes configured TCP/UDP LAN ports while keeping the primary UI port on loopback', async () => {
+    const calls: string[][] = [];
+    const extended = {
+      ...desired,
+      runtime: {
+        ...desired.runtime!,
+        additionalPorts: [
+          { hostPort: 7720, containerPort: 7720, protocol: 'tcp' as const, hostIp: '0.0.0.0' as const },
+          { hostPort: 7721, containerPort: 7721, protocol: 'udp' as const, hostIp: '0.0.0.0' as const },
+        ],
+      },
+    };
+    let existing = false;
+    const inspect = {
+      Config: { Image: extended.runtime.imageName, Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: extended.slug } },
+      State: { Running: true },
+      HostConfig: { PortBindings: {
+        '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '4173' }],
+        '7720/tcp': [{ HostIp: '0.0.0.0', HostPort: '7720' }],
+        '7721/udp': [{ HostIp: '0.0.0.0', HostPort: '7721' }],
+      } },
+    };
+    const runner = localRunner(async (args) => {
+      if (args[0] === 'image') return { stdout: 'sha256:new', stderr: '' };
+      if (args[0] === 'container' && args[1] === 'inspect') {
+        if (!existing) throw new CommandExecutionError('not found', 1, 'No such container');
+        return { stdout: JSON.stringify([inspect]), stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    }, calls);
+    const service = new DockerContainerService({ runner, readiness: async () => true });
+    expect(await service.launch(claim(extended))).toMatchObject({ status: 'ready' });
+    expect(calls.find(args => args.includes('run'))).toEqual(expect.arrayContaining([
+      '127.0.0.1:4173:80', '0.0.0.0:7720:7720', '0.0.0.0:7721:7721/udp',
+    ]));
+    existing = true;
+    expect(await service.inspect(extended)).toMatchObject({ ready: true });
+    inspect.HostConfig.PortBindings['7721/udp'][0].HostIp = '127.0.0.1';
+    expect(await service.inspect(extended)).toMatchObject({ state: 'error', ready: false });
+  });
+
   it('clears stale optional claim metadata that the registry no longer advertises', async () => {
     const stale = claim({
       application: {
