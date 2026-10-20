@@ -364,24 +364,24 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.document-tab-menu[^}]*position:\s*fixed[^}]*z-index:\s*30/s);
   });
 
-  it('shows at most two current-scope messages and targets stable history elements', () => {
+  it('shows five recent current-scope rows or all expanded exchanges and targets stable history elements', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const recent = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/RecentMessages.svelte'), 'utf8');
     const focus = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/chatRunFocus.ts'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
-    const previewIndex = app.indexOf('<section class="scope-preview"');
+    const previewIndex = app.indexOf('<RecentMessages');
     const composerIndex = app.indexOf('<div class="composer-shell">');
     const chatRailIndex = app.indexOf('<aside class="chat-rail">');
 
-    expect(app).toContain('recentRunsForContext(chatRuns, currentChatContext)');
-    expect(app).toContain('aria-label="Recent messages"');
-    expect(app).toContain('<span>Recent messages</span>');
+    expect(recent).toContain('recentRunsForContext(runs, context)');
+    expect(recent).toContain('aria-label="Recent messages"');
+    expect(recent).toContain('<span>Recent messages</span>');
     expect(app).toContain('scopePreviewExpanded = true;');
-    expect(app).toContain('scopedRecentRuns.at(-1) ?? null');
-    expect(app).toContain('aria-label="Latest response"');
-    expect(app).toContain('aria-label="Latest tool activity"');
-    expect(app).toContain("scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'");
-    expect(app).toContain('class="scope-preview-human"');
-    expect(app).toContain('{humanInitials(humanName)}');
+    expect(recent).toContain('{#each allRuns as run (run.journalId ?? run.key)}');
+    expect(recent).toContain('Expand for all messages and details');
+    expect(app).toContain('bind:expanded={scopePreviewExpanded}');
+    expect(recent).toContain('class="scope-preview-human"');
+    expect(recent).toContain('{humanInitials(humanName)}');
     expect(app).not.toContain('<small>{run.assistantText ?? assistantFallback(run)}</small>');
     expect(app).not.toContain('Selected file:');
     expect(app).not.toContain('Current scope');
@@ -389,7 +389,7 @@ describe('desktop tree icon contract', () => {
     expect(previewIndex).toBeLessThan(composerIndex);
     expect(composerIndex).toBeLessThan(chatRailIndex);
     expect(app.slice(chatRailIndex)).not.toContain('class="scope-preview"');
-    expect(app).toContain('No messages for this scope.');
+    expect(recent).toContain('No messages for this scope.');
     expect(app).toContain("activateLog: () => activateHeaderTab('log')");
     expect(app).toContain('expandChatRail: () => (chatRailCollapsed = false)');
     expect(app).toContain('getTarget: () => document.getElementById(chatRunDomId(run))');

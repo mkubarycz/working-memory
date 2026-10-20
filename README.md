@@ -411,16 +411,23 @@ container must be running and healthy; chat never starts it automatically.
 
 The selected document's scoped conversation is also shown immediately above
 the composer. Sending a command automatically expands this inline surface to
-show the latest human prompt, tool activity, and Working Memory response.
-Collapsing it with the header chevron replaces the detailed exchange with at
-most two abbreviated recent commands for the same document or Container App.
-The full run remains available through Chat history.
+show all available exchanges for that document or Container App, including runs
+that reference it from another scope. Collapsing it shows the latest five rows:
+older rows use one line, while the newest response uses up to four lines.
+Use **Expand for all messages and details** to view the full scoped conversation.
+History is paged independently of the global Log; loading older scoped messages
+does not advance the Log's **Load older** cursor. With no document selected, use
+the Log for global conversations.
 
 Chat requests and write confirmations are scoped to their originating
 conversation. You can switch to another topic and submit a query while the
 first is still running; a background completion does not select its document.
 The Log is a live chronological timeline, with a timestamped command dot and
 nested tool activity, confirmation, and response for each query.
+Both surfaces summarize tool activity as a count (for example, **5 tool calls**).
+Click the summary, or focus it and press Enter/Space, to reveal tools and outcomes;
+individual tools still open the full inspector. Failed, cancelled, and pending
+counts remain visible in the summary, and confirmations stay outside it.
 
 New completed responses add gray unread-count badges to associated topic and
 workstream surfaces and a red dot to open document tabs. A response is marked

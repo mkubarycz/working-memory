@@ -53,17 +53,20 @@ describe('desktop chat history IPC contract', () => {
 
   it('renders a collapsible scoped conversation above the composer with independent Retry actions', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
+    const recent = readFileSync(resolve(desktopRoot, 'src/renderer/RecentMessages.svelte'), 'utf8');
     const styles = readFileSync(resolve(desktopRoot, 'src/renderer/style.css'), 'utf8');
 
     expect(app).toContain('run.attachments.map((attachment) => ({');
-    expect(app.match(/onclick=\{\(\) => void retryRun\(run\)\}/g)).toHaveLength(2);
-    expect(app).toContain('class:expanded={scopePreviewExpanded}');
-    expect(app).toContain("scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'");
-    expect(app).toContain('class="scope-preview-row"');
-    expect(app).toContain('class="scope-preview-response"');
-    expect(app).toContain('class="scope-preview-human"');
-    expect(app).toContain('class="scope-preview-tools"');
-    expect(app).toContain('class="scope-preview-assistant"');
+    expect(app).toContain('onRetry={(run) => void retryRun(run)}');
+    expect(recent).toContain('onclick={() => onRetry(run)}');
+    expect(app).toContain('bind:expanded={scopePreviewExpanded}');
+    expect(recent).toContain('class:expanded');
+    expect(recent).toContain('Expand for all messages and details');
+    expect(recent).toContain('class="scope-preview-row"');
+    expect(recent).toContain('class="scope-preview-response"');
+    expect(recent).toContain('class="scope-preview-human"');
+    expect(recent).toContain('<ToolActivity');
+    expect(recent).toContain('class="scope-preview-assistant"');
     expect(app).toContain('scopePreviewExpanded = true;');
     expect(app).toContain('class="run-actions"');
     expect(app).toContain('disabled={runBlocked(run)}');
@@ -73,7 +76,22 @@ describe('desktop chat history IPC contract', () => {
     expect(app).toContain('class="timeline-details"');
     expect(app).toContain('use:observeResponse=');
     expect(styles).toMatch(/\.retry-button\s*{[^}]*font-size:\s*10px/s);
-    expect(styles).toMatch(/\.scope-preview-response\s*{[^}]*max-height:\s*min\(42vh,\s*420px\)[^}]*overflow-y:\s*auto/s);
+    expect(styles).toMatch(/\.scope-preview-history\s*{[^}]*max-height:\s*min\(42vh,\s*420px\)[^}]*overflow-y:\s*auto/s);
+    expect(styles).toMatch(/\.scope-preview-main \.scope-preview-text\s*{[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/s);
+    expect(styles).toMatch(/\.scope-preview-row\.latest \.scope-preview-text\s*{[^}]*-webkit-line-clamp:\s*4/s);
+  });
+
+  it('keeps global pagination, unread, and focus separate from the complete scoped cache', () => {
+    const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
+    expect(app).toContain('{#each chatRuns as run (run.key)}');
+    expect(app).toContain('loadedScopeKey === scopedHistoryKey ? scopedHistory : []');
+    expect(app).toContain('const isCurrent = () => !cancelled && generation === environmentGeneration');
+    expect(app).toContain('return () => { cancelled = true; }');
+    expect(app).toContain('scopedHistoryRevision += 1');
+    expect(app).toContain('scopedHistory = scopedHistory.filter((summary) => summary.id !== entry.id)');
+    expect(app).toContain('use:observeResponse=');
+    expect(app).toContain('id={chatRunDomId(run)}');
+    expect(app).toContain('onFocus={(run) => void focusChatRun(run)}');
   });
 
   it('exposes discovery and switching through typed renderer-to-main IPC', () => {
@@ -92,12 +110,14 @@ describe('desktop chat history IPC contract', () => {
 
   it('renders linked pink user commands and compact read/write tool rows', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
+    const tools = readFileSync(resolve(desktopRoot, 'src/renderer/ToolActivity.svelte'), 'utf8');
     const styles = readFileSync(resolve(desktopRoot, 'src/renderer/style.css'), 'utf8');
 
     expect(app).toContain('targetForRef(run.scope)');
     expect(app).toContain('class="user-scope"');
-    expect(app).toContain("tool.mode === 'write' ? 'edit' : 'book'");
-    expect(app).toContain('class="tool-entity"');
+    expect(tools).toContain("tool.mode === 'write' ? 'edit' : 'book'");
+    expect(tools).toContain('class="tool-entity"');
+    expect(app).toContain('<ToolActivity {run}');
     expect(styles).toMatch(/\.user-entry\s*{[^}]*background:\s*#bfc0c4/s);
     expect(app).toContain('<div class="user-markdown">{@html renderMarkdown(run.userText)}</div>');
     expect(styles).toMatch(/\.user-markdown\s*{[^}]*ui-monospace/s);
