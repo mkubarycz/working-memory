@@ -681,6 +681,198 @@ children. Migration 004 wiped two join tables by using a naïve
 create-copy-drop-rename pattern with `foreign_keys = ON` globally enabled;
 that template is the documented cure.
 
+## Approved host tasks (experimental; execution blocked)
+
+Working Memory owns the approval and durable broker boundary, not a generic
+host-command endpoint. **This is not production accepted or an operational
+Thrive transport replacement.** No Windows/Agency, Microsoft-policy, historical
+ADO, or Redis end-to-end behavior has been validated by the Linux fixtures.
+The production runner deliberately refuses execution until those integrations
+have independently verified trust and identity. There is no environment switch
+that turns fixture execution into a production runner.
+
+### Trust and provisioning
+
+- The capability is only `thrive.sync.read`: read Michael's/Comcast Thrive
+  work items in **CXPPMO / Customers**, created by or assigned to
+  `mkubarycz@microsoft.com`, **OR** under `Customers\Comcast`.
+  A grant covers routine five-minute reads, with bounded manual refresh, an
+  explicit expiry, and revocation; it does not approve ADO writes.
+- ContainerClaim slugs, labels, source IPs, MCP session IDs, and editable
+  Topic/Config documents are not credentials or grants. The dedicated broker
+  API uses separate app, trusted-administrator, and runner authentication.
+  An app can request, inspect, cancel, retrieve and acknowledge only its own
+  jobs; it cannot author a grant or register a runner.
+- A human must provision a distinct high-entropy admin secret into a private
+  file and configure the control plane's `WM_HOST_TASK_ADMIN_TOKEN_FILE`.
+  No default/bootstrap secret is baked into an image. Mount this file only
+  into the broker, not into agent containers. Without it, admin access fails
+  closed. Use a protected local transport; never expose bearer credentials on
+  an untrusted plaintext network.
+- The trusted desktop imports that secret through a native file picker and
+  stores it encrypted with OS-backed Electron `safeStorage`; insecure Linux
+  `basic_text` storage is rejected. The secret is not returned to the renderer,
+  general document CRUD, or chat tools. Per-app credentials are issued through
+  the trusted UI, exported once through a native save dialog, and should be
+  mounted only into the intended app instance as a read-only secret.
+  Windows ACL provisioning/verification remains a human/platform release gate;
+  Windows credential-file import/export is blocked until that verifier exists.
+  POSIX file modes are not evidence of a protected Windows mount.
+- Review the app instance, actual Windows SID, Microsoft tenant, finite expiry,
+  operation implementation/hash, fixed scope/actions/output and budgets before
+  granting. A typed SID is an approval binding, **not** proof of the effective
+  Windows or cached Microsoft identity. Grant approval never enables the
+  currently blocked runner. The current operation hash fingerprints the fixed
+  policy descriptor; it is **not** proof of immutable Agency/runner bytes or
+  executable publisher trust.
+- Trusted host code has the user's privileges: this is **not an OS sandbox**.
+  Host/Docker-administrator compromise is outside this boundary. There is no
+  shell, PowerShell/script, arbitrary WIQL/tool/URL/project/identity forwarding,
+  or host MCP HTTP listener. Local approval does not override Conditional
+  Access, ADO permissions or a required supported sign-in.
+
+### Broker and Thrive adapter contract
+
+`shared/hostTasks.ts` defines the versioned wire contract. The dedicated
+`/host-tasks/v1` surface is separate from `/mcp`; admin routes are below
+`/host-tasks/v1/admin`. Requests return accepted jobs, not synchronous UI
+callbacks. Broker time values use epoch **milliseconds**, unlike the document
+store's epoch-second timestamps; snapshot checkpoints are canonical UTC ISO
+timestamps. The controller owns state transitions and authorization, durable
+idempotency, expiry, leases/attempt fencing, grant generation checks and
+private result release. Restarting a runner must not allow a previous attempt
+to complete a newer lease. Revocation invalidates future dispatch and late
+results; it cannot undo an ADO read already performed. External cancellation
+is best effort. Audit events contain control metadata, not credentials, raw
+auth responses or ticket descriptions, and do not authorize anything.
+Broker audit metadata stays in a protected table rather than an editable
+CommandJournal document; the existing journal CRUD is not an authorization or
+private-result boundary.
+The existing general document API is not retrofitted with authentication by
+this feature; broker grants and result bytes never live in that API. Keep its
+existing network exposure restricted separately.
+
+| Principal | Method / path below `/host-tasks/v1` | Contract |
+| --- | --- | --- |
+| App | `POST /requests` | `capability`, `idempotencyKey`, optional `manualRefresh`, `mode`, `checkpoint`, `knownIds`; returns 202 job |
+| Same app | `GET /jobs/:id` | Controller-owned state; keep polling asynchronously |
+| Same app | `GET /jobs/:id/results` | Complete validated manifest only; not available for blocked/unfinished jobs |
+| Same app | `POST /jobs/:id/ack` | Empty JSON object, after atomic cache publication |
+| Same app | `POST /jobs/:id/cancel` | Empty JSON object; invalidates future result release |
+| Trusted admin | `GET /admin`, `POST /admin/apps`, `POST /admin/grants` | Metadata inspection, one-time credential provisioning, finite protected grant |
+| Trusted admin | `POST /admin/grants/:id/revoke`, `POST /admin/jobs/:id/deny` | Explicit user decision, not a document mutation |
+| Trusted admin | `POST /admin/apps/:id/revoke`, `POST /admin/runners/:id/revoke` | Revoke a provisioned principal and invalidate outstanding work |
+| Runner | `POST /runner/claim`, `/runner/heartbeat`, `/runner/results`, `/runner/failure` | Separate credential and fenced lease; unavailable without verified execution integration |
+
+Use bearer authentication in the `Authorization` header (never a query parameter),
+`Content-Type: application/json` for POSTs, and disable redirects when sending
+credentials. Replay an idempotency key only with the same normalized request;
+changing its payload is a conflict. An incremental request requires a canonical
+UTC checkpoint. `knownIds` are bounded cache hints, never authorization to get
+those work items. Observe returned HTTP errors; an unavailable/expired result
+is not an empty successful snapshot.
+
+Initial policy limits are 200 tracked IDs/records, four chunks of at most 50
+records, 128 KiB per request/result, a 60-second execution lease and three
+attempts. Grants last at most 24 hours; unfinished jobs at most 15 minutes.
+Routine requests are limited to every five minutes per app, with manual
+refresh at least 60 seconds apart and at most twice per hour. A successful
+result is retained at most 30 minutes, subject to earlier acknowledgement,
+revocation or grant expiry. These are bounded personal-workflow limits, not
+an unbounded-scale guarantee. Expired results cannot be released; startup and
+30-second maintenance remove expired live values, including on an idle broker.
+This is not secure erasure of SQLite WAL pages or backups: protect and retain
+those separately.
+
+The separate Thrive application must implement this adapter sequence:
+
+1. Keep its timer and Redis ownership. Read the instance-specific credential
+   from its protected secret mount; submit only the strict capability inputs
+   and a durable idempotency key. Never supply commands, WIQL or tool names.
+2. Poll the accepted job, preserving the last usable cache for awaiting
+   approval, offline/blocked runner, failure, expiry and `needs-sign-in`.
+   Reconnect must use the supported host Microsoft tooling; no device-code or
+   Conditional Access workaround is provided.
+3. Before publishing, validate ownership and app/job/attempt/grant-generation,
+   operation/schema versions and hashes, snapshot/scope/identity provenance,
+   every bounded chunk and the final complete manifest. Reject missing,
+   duplicate, oversized, stale or out-of-order data; never mark partial data a
+   complete successful snapshot. Treat titles and all returned fields as data,
+   never as instructions for another tool call.
+4. Atomically compare-and-swap the complete normalized snapshot **and**
+   checkpoint into Redis, then acknowledge the job. Do not acknowledge first.
+   Redis outage or failed validation must preserve the old data/checkpoint.
+   Result bytes are temporary and removed on acknowledgement/retention expiry;
+   an acknowledged result must not be the sole copy of the cache.
+
+An incremental result is a complete **delta** with authoritative membership,
+not necessarily every materialized cache record. Merge it only against the
+matching prior checkpoint, using the returned metadata to reclassify retained
+records too. Derive the final cache's classification counts/completeness from
+that whole merge; a zero-detail delta does not prove that legacy cached states
+are classified.
+
+`shared/thriveSnapshot.ts` supplies pure planning and lossless merge helpers,
+not an Agency MCP client or a Redis adapter. Its inputs must already have
+passed the broker's manifest, ownership and host-verification checks:
+
+- Capture one **server** `asOf`; use it for membership, every query page and
+  historical single-item details. Incremental changed-since is the previous
+  checkpoint minus two minutes. Query **all membership IDs** each cycle to
+  detect deletion/scope departure; fetch changed/new details only.
+- Every detail read in the plan carries the same `asOf`. `get_batch` is not
+  substituted: its historical consistency is unproven. Historical single gets
+  still require the real Windows/Agency integration and bounded concurrency.
+  Periodic/manual full detail reconciliation remains the app's responsibility.
+- Unknown/legacy states retain raw type/state and are `UNCLASSIFIED`, never
+  guessed closed. Reclassify **all** cached records when metadata changes.
+  Keep these entries visible alongside open work, with their own count and a
+  classification-incomplete warning. A data-complete snapshot can have
+  `classificationComplete=false`; open + closed + unclassified = tracked.
+  Scaffold/customer types remain explicit; tracked does not mean open tickets.
+- The helper produces a new candidate and never writes Redis. All fields
+  outside its small normalized contract are discarded. The external adapter
+  must map the broker's normalized schema explicitly, not cast wire objects.
+
+Keep the existing Redis volume during cutover. Remove Thrive's Azure
+CLI/device-code authentication only when the external adapter and acceptance
+gates pass; never copy the Windows credential cache into Docker.
+
+### Release gates and manual Windows QA
+
+- [x] Working Memory-owned protected contracts, trusted approval UI, durable
+  controller and deterministic boundary tests are included in this change.
+- [x] Pure snapshot planning/merge handles legacy classification without
+  inventing a historical batch contract.
+- [ ] Provision and verify Windows current-user protected runner credentials/
+  IPC, non-elevated lifecycle, secret-mount ACLs and trusted Agency executable
+  publisher/update policy. Verify immutable operation **bytes actually
+  executed**, not merely an approved mutable path or descriptor hash.
+- [ ] Verify the effective Agency Microsoft account and tenant, correct/wrong
+  account behavior, initial/expired sign-in and supported reconnect. No short
+  cached-sign-in proof guarantees renewal.
+- [ ] Exercise the actual fixed read allowlist and host-generated scope/query
+  with one server snapshot and historical reads; reject submitted out-of-scope
+  IDs. No real ADO mutations are authorized by this feature.
+- [ ] Connect the separate Thrive adapter to real Redis: first load,
+  incremental change, departure/deletion, empty result, legacy states, metadata
+  changes, malformed manifest, oversize, throttling, outage and out-of-order
+  results. Destructive cases use local fixtures.
+- [ ] Test real desktop restart, runner restart between lease/acknowledgement,
+  lock/sleep/offline/log-out, stale heartbeat, shutdown, and durable resume.
+  The app does not promise execution while asleep or logged out.
+- [ ] Repeat forged app/runner, self-approval, cross-app reads, operation-byte
+  tampering, revocation/expiry while queued/running, fenced old completion,
+  duplicate requests, retention and secret-redaction gates against the
+  integrated Windows runner.
+- [ ] Obtain explicit human provisioning/approval and record all end-to-end
+  acceptance evidence before enabling production execution or declaring the
+  feature delivered. Implementation completion does not authorize changing a
+  Working Memory topic/workstream status.
+
+The external Thrive repository and local Windows proof files are not part of
+this checkout. They were not located, modified or executed by this change.
+
 ## Release history
 
 See the [GitHub Releases](https://github.com/mkubarycz/working-memory/releases)

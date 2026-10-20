@@ -7,6 +7,13 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const api: DesktopApi = {
+  getHostTasks: () => invoke('host-tasks:get'),
+  provisionHostTaskAdmin: () => invoke('host-tasks:provision-admin'),
+  exportHostTaskApp: (input) => invoke('host-tasks:export-app', input),
+  revokeHostTaskApp: (id) => invoke('host-tasks:revoke-app', id),
+  approveHostTaskGrant: (input) => invoke('host-tasks:approve', input),
+  revokeHostTaskGrant: (id) => invoke('host-tasks:revoke', id),
+  denyHostTaskJob: (id) => invoke('host-tasks:deny', id),
   prepareFeedback: (slug, requestId) => invoke('feedback:prepare', slug, requestId),
   sendFeedback: (slug, requestId, serverId) => invoke('feedback:send', slug, requestId, serverId),
   startDocumentChanges: () => invoke('documents:watch'),

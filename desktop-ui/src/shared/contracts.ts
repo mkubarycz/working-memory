@@ -9,6 +9,7 @@ import type {
 } from '../renderer/documents/types';
 import type { PanelData } from '../../../shared/panelData';
 import type { DocumentChanges } from '../../../shared/documentChanges';
+import type { HostTaskDesktopApi } from './hostTasks';
 import type { WorkstreamSection } from '../../../shared/panelData';
 import type {
   ApplicationContractMetadata,
@@ -388,7 +389,7 @@ export interface FeedbackContext {
 export interface FeedbackPreparation { servers: FeedbackServer[]; context: FeedbackContext }
 export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt } | { status: 'choose'; servers: FeedbackServer[] };
 
-export interface DesktopApi {
+export interface DesktopApi extends HostTaskDesktopApi {
   prepareFeedback(slug: string, requestId: string): Promise<FeedbackPreparation>;
   sendFeedback(slug: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
   startDocumentChanges(): Promise<void>;

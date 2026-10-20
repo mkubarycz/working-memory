@@ -86,6 +86,8 @@ import {
 import { DesktopLinkBridge } from './linkBridge';
 import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
+import { HostTaskCredentialVault } from './hostTaskBroker';
+import { registerHostTaskIpc } from './hostTaskIpc';
 import { LEGACY_USER_DATA_NAME, migrateLegacyUserData } from './userDataMigration';
 import { DesktopUpdater } from './desktopUpdater';
 import {
@@ -802,6 +804,15 @@ function restartInstalledDesktop(): void {
 }
 
 function registerIpc(): void {
+  registerHostTaskIpc({
+    ipc: ipcMain,
+    dialog,
+    getWindow: () => mainWindow,
+    getEnvironment: () => environmentManager.currentEnvironment,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
+    vault: new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets')),
+    platform: process.platform,
+  });
   ipcMain.handle('feedback:prepare', (_event, slug: string, requestId: string) => {
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
     return feedbackSender.prepare(slug, requestId);

@@ -19,6 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { ensureHostTaskSchema } from './hostTasks.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -349,6 +350,7 @@ export function openStore(dbFilePath: string): Store {
   // No `.pragma()` helper on DatabaseSync — use exec (repo convention).
   db.exec('PRAGMA journal_mode = WAL');
   ensureSchema(db);
+  ensureHostTaskSchema(db);
 
   const changeListeners = new Set<(changes: DocumentChange[]) => void>();
   function notifyDocumentsChanged(documents: DocumentEnvelope[]): void {

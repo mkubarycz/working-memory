@@ -7,6 +7,7 @@
   import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
   import type { TopicVM } from './documents/types';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
+  import HostTasks from './HostTasks.svelte';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
   import TopicView from './documents/TopicView.svelte';
@@ -162,6 +163,7 @@
   let modelRouting = $state<ModelRouting>({} as ModelRouting);
   let humanName = $state('Flesh Bag');
   let settingsStatus = $state('');
+  let hostTasksVisible = $state(false);
   let saving = $state(false);
   let testingProfileId = $state<string | null>(null);
   let environments = $state<DesktopEnvironment[]>([]);
@@ -2436,6 +2438,10 @@
     {/if}
   </main>
 
+  {#if hostTasksVisible}
+    {#key selectedEnvironment?.mcpUrl}<HostTasks onClose={() => { hostTasksVisible = false; }} />{/key}
+  {/if}
+
   {#if cameraOpen}
     <div class="camera-backdrop" role="presentation">
       <div class="camera-dialog" role="dialog" aria-modal="true" aria-labelledby="camera-title">
@@ -2762,6 +2768,8 @@
   </aside>
 
   <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
+    <button aria-haspopup="dialog" aria-expanded={hostTasksVisible} style="font: inherit; padding: 0 6px; line-height: inherit;"
+      onclick={() => { hostTasksVisible = true; }}>Host-task approvals</button>
     <span
       class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
       title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"
