@@ -1,12 +1,15 @@
 <script lang="ts">
   import type { TopicBacklogVM } from './types';
+  import UnreadBadge from '../UnreadBadge.svelte';
+  import { unreadResponseCount, type UnreadResponse } from '../chatUnread';
 
   interface Props {
+    unreadResponses?: UnreadResponse[];
     backlog: TopicBacklogVM;
     onOpenTopic: (slug: string) => void;
   }
 
-  let { backlog, onOpenTopic }: Props = $props();
+  let { backlog, onOpenTopic, unreadResponses = [] }: Props = $props();
 
   function slugFromUri(openUri: string): string {
     try {
@@ -46,6 +49,7 @@
         {#if topic.alertCount}
           <span class="alert-count" class:severe={topic.alertSeverity === 'alert'}>{topic.alertCount}</span>
         {/if}
+        <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id, slug)} />
         <span aria-hidden="true" class="codicon codicon-chevron-right"></span>
       </button>
     {/each}

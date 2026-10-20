@@ -8,6 +8,7 @@ import type {
   WorkstreamVM,
 } from '../renderer/documents/types';
 import type { PanelData } from '../../../shared/panelData';
+import type { DocumentChanges } from '../../../shared/documentChanges';
 import type { WorkstreamSection } from '../../../shared/panelData';
 import type {
   ApplicationContractMetadata,
@@ -369,7 +370,14 @@ export interface SelfHostedInstance {
   mcpUrl: string;
 }
 
+export type DocumentChangeEvent = { mcpUrl: string } & (
+  | { change: DocumentChanges }
+  | { error: string }
+);
+
 export interface DesktopApi {
+  startDocumentChanges(): Promise<void>;
+  onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;
   discoverEnvironments(): Promise<DesktopEnvironmentState>;
   switchEnvironment(mcpUrl: string): Promise<DesktopEnvironmentState>;

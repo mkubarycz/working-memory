@@ -11,8 +11,8 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain('use:keepSelectedTabVisible={key === selectedDocumentKey}');
     expect(styles).toMatch(/\.document-host\s*{[^}]*box-sizing:\s*border-box[^}]*width:\s*100%[^}]*min-width:\s*0/s);
     expect(styles).toMatch(/\.document-stage\s*{[^}]*min-width:\s*0/s);
-    expect(app).toContain('const containerCatalogPoll');
-    expect(app).toContain('window.clearInterval(containerCatalogPoll)');
+    expect(app).toContain('onDocumentChanges(handleDocumentChanges)');
+    expect(app).not.toContain('const containerCatalogPoll');
   });
   it('offers local Copilot alongside Azure without sending endpoint credentials to Copilot', () => {
     const settings = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/SettingsView.svelte'), 'utf8');

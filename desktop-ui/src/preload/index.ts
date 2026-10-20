@@ -7,6 +7,12 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const api: DesktopApi = {
+  startDocumentChanges: () => invoke('documents:watch'),
+  onDocumentChanges: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
+    ipcRenderer.on('documents:changed', handler);
+    return () => ipcRenderer.removeListener('documents:changed', handler);
+  },
   listContainerApps: () => invoke('container:list'),
   discoverEnvironments: () => invoke('environment:discover'),
   switchEnvironment: (mcpUrl) => invoke('environment:switch', mcpUrl),

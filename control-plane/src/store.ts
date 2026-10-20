@@ -19,6 +19,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+export interface DocumentChange {
+  id: string;
+  kind: string;
+  slug: string | null;
+  resourceVersion: number;
+  deleted: boolean;
+}
 
 /** The parsed, caller-facing document envelope. */
 export interface DocumentEnvelope {
@@ -157,6 +164,8 @@ export class NotFoundError extends Error {
 }
 
 export interface Store {
+  getResourceVersion(): number;
+  onDocumentsChanged(listener: (changes: DocumentChange[]) => void): () => void;
   /**
    * Soft-delete a document by stamping `deleted_at` (bumps the global
    * `resource_version`). **Kind-agnostic** — no kind lookup / spec validation,
@@ -341,6 +350,25 @@ export function openStore(dbFilePath: string): Store {
   db.exec('PRAGMA journal_mode = WAL');
   ensureSchema(db);
 
+  const changeListeners = new Set<(changes: DocumentChange[]) => void>();
+  function notifyDocumentsChanged(documents: DocumentEnvelope[]): void {
+    if (!documents.length) return;
+    const changes = documents.map(({ kind, metadata }): DocumentChange => ({
+      id: metadata.id,
+      kind,
+      slug: metadata.slug,
+      resourceVersion: metadata.resourceVersion,
+      deleted: metadata.deletedAt !== null,
+    }));
+    for (const listener of changeListeners) {
+      try {
+        listener(changes);
+      } catch (error) {
+        console.error('[store] Document-change listener failed after commit:', error);
+      }
+    }
+  }
+
   function createAttachment(input: CreateAttachmentInput): Attachment {
     const data = Buffer.from(input.data);
     const sha256 = createHash('sha256').update(data).digest('hex');
@@ -403,7 +431,7 @@ export function openStore(dbFilePath: string): Store {
       throw err;
     }
 
-    return {
+    const document: DocumentEnvelope = {
       kind: input.kind,
       metadata: {
         id,
@@ -417,6 +445,8 @@ export function openStore(dbFilePath: string): Store {
       spec,
       status,
     };
+    notifyDocumentsChanged([document]);
+    return document;
   }
 
   function listDocuments(input: ListDocumentsInput = {}): DocumentEnvelope[] {
@@ -553,7 +583,9 @@ export function openStore(dbFilePath: string): Store {
         .prepare('SELECT * FROM resources WHERE id = ?')
         .get(input.id) as unknown as ResourceRow;
       db.exec('COMMIT');
-      return rowToEnvelope(updated);
+      const document = rowToEnvelope(updated);
+      notifyDocumentsChanged([document]);
+      return document;
     } catch (err) {
       // ConflictError/NotFoundError already rolled back above; guard the rest.
       if (!(err instanceof ConflictError) && !(err instanceof NotFoundError)) {
@@ -611,6 +643,7 @@ export function openStore(dbFilePath: string): Store {
         updated.push(rowToEnvelope(row));
       }
       db.exec('COMMIT');
+      notifyDocumentsChanged(updated);
       return updated;
     } catch (error) {
       db.exec('ROLLBACK');
@@ -672,7 +705,9 @@ export function openStore(dbFilePath: string): Store {
         .prepare('SELECT * FROM resources WHERE id = ?')
         .get(input.id) as unknown as ResourceRow;
       db.exec('COMMIT');
-      return rowToEnvelope(deleted);
+      const document = rowToEnvelope(deleted);
+      notifyDocumentsChanged([document]);
+      return document;
     } catch (err) {
       // ConflictError/NotFoundError already rolled back above; guard the rest.
       if (!(err instanceof ConflictError) && !(err instanceof NotFoundError)) {
@@ -718,7 +753,9 @@ export function openStore(dbFilePath: string): Store {
         .prepare('SELECT * FROM resources WHERE id = ?')
         .get(input.id) as unknown as ResourceRow;
       db.exec('COMMIT');
-      return rowToEnvelope(restored);
+      const document = rowToEnvelope(restored);
+      notifyDocumentsChanged([document]);
+      return document;
     } catch (err) {
       if (!(err instanceof NotFoundError)) {
         db.exec('ROLLBACK');
@@ -730,6 +767,14 @@ export function openStore(dbFilePath: string): Store {
   return {
     db,
     path: dbFilePath,
+    getResourceVersion() {
+      const row = db.prepare("SELECT value FROM store_meta WHERE key = 'resource_version'").get() as { value: number };
+      return row.value;
+    },
+    onDocumentsChanged(listener) {
+      changeListeners.add(listener);
+      return () => { changeListeners.delete(listener); };
+    },
     createAttachment,
     getAttachment,
     createDocument,
@@ -741,6 +786,7 @@ export function openStore(dbFilePath: string): Store {
     deleteDocument,
     restoreDocument,
     close(): void {
+      changeListeners.clear();
       db.close();
     },
   };

@@ -32,6 +32,7 @@ import {
   SERVICE_VERSION,
 } from './config.js';
 import { openStore, type Store, ConflictError, NotFoundError } from './store.js';
+import { createDocumentChangeFeed } from './documentChangeFeed.js';
 import {
   getKind,
   validateMetadata,
@@ -473,6 +474,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const providedStore = opts.store;
   const store = providedStore ?? openStore(':memory:');
   const ownsStore = providedStore === undefined;
+  const changeFeed = createDocumentChangeFeed(store);
 
   // Per-server session registry (stateful Streamable HTTP), keyed by MCP
   // session id. Supports multiple concurrent clients, each with its own MCP
@@ -547,6 +549,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
 
     if (req.method === 'GET' && url.pathname === HEALTH_PATH) {
       endJson(res, 200, { ok: true, version, uptime: (Date.now() - startedAt) / 1000 });
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/changes') {
+      changeFeed.handle(req, res, url);
       return;
     }
 
@@ -637,6 +644,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     port: boundPort,
     url: `http://${host}:${boundPort}`,
     close(): Promise<void> {
+      changeFeed.close();
       for (const transport of transports.values()) {
         void Promise.resolve(transport.close()).catch(() => undefined);
       }

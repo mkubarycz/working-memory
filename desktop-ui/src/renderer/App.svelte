@@ -2,6 +2,7 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
   import BrainMark from './BrainMark.svelte';
+  import UnreadBadge from './UnreadBadge.svelte';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
@@ -32,7 +33,7 @@
     DesktopResourceKind,
     EditableModelProfile,
     ModelRouting,
-    PendingConfirmation,
+    DocumentChangeEvent,
     PublicConfig,
   } from '../shared/contracts';
   import {
@@ -76,9 +77,11 @@
     serializeDocumentTabs,
     updateDocumentTab,
   } from './documentTabs';
-  import { chatRunDomId, recentRunsForContext } from './scopedChat';
+  import { chatRunDomId, recentRunsForContext, matchesChatContext, chatContextBusy, chatContextPending, chatContextKey } from './scopedChat';
+  import { createDocumentChangeQueue, documentMatchesChange, documentRefreshTarget } from './documentChanges';
+  import type { DocumentChanges } from '../../../shared/documentChanges';
+  import { collectUnreadResponses, observeResponse, parseUnreadResponses, responseKey, unreadResponseCount, type UnreadResponse } from './chatUnread';
   import { humanInitials } from './humanIdentity';
-  import { CHAT_HISTORY_POLL_INTERVAL_MS } from './chatPolling';
   import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
@@ -129,7 +132,12 @@
   let historyCursor = $state<string | undefined>();
   let selectedTool = $state<SelectedTool | null>(null);
   let toolInspectorElement = $state<HTMLElement | null>(null);
-  let pendingRunKey = $state<string | null>(null);
+  let unreadResponses = $state<UnreadResponse[]>([]);
+  let unreadEnvironment = $state<string | null>(null);
+  let liveUpdateError = $state('');
+  let historyInitialized = false;
+  let activeChatContexts = $state<string[]>([]);
+  const deferredDocumentRefreshes = new Set<string>();
   let documents = $state<DocumentVM[]>([]);
   let selectedDocumentKey = $state<string | null>(null);
   let saveState = $state<SaveState>('idle');
@@ -142,7 +150,6 @@
   let containerAppTabMenuElement = $state<HTMLDivElement | null>(null);
   let containerAppViews = $state<Record<string, 'app' | 'info'>>({});
   let containerAppReloadVersions = $state<Record<string, number>>({});
-  let busy = $state(false);
   let endpoint = $state('');
   let credentialStorage = $state<PublicConfig['credentialStorage']>('secure');
   let modelProfiles = $state<Array<EditableModelProfile & { apiKey: string }>>([]);
@@ -151,7 +158,6 @@
   let settingsStatus = $state('');
   let saving = $state(false);
   let testingProfileId = $state<string | null>(null);
-  let pendingConfirmation = $state<PendingConfirmation | null>(null);
   let environments = $state<DesktopEnvironment[]>([]);
   let selectedEnvironment = $state<DesktopEnvironment | null>(null);
   let environmentLoading = $state(false);
@@ -205,6 +211,40 @@
   const selectedContainerAppId = $derived(containerAppIdForDocument(activeDocument));
   const selectedContainerApp = $derived(containerApps.find((app) => app.id === selectedContainerAppId) ?? null);
   const currentChatContext = $derived(chatContextForDocument(activeDocument));
+  const busy = $derived(contextBusy(currentChatContext));
+  const pendingRun = $derived(chatContextPending(chatRuns, currentChatContext));
+  const pendingConfirmation = $derived(pendingRun?.pendingConfirmation ?? null);
+
+  function setChatRuns(next: ChatRun[], includeNew = historyInitialized): void {
+    unreadResponses = collectUnreadResponses(unreadResponses, chatRuns, next, includeNew);
+    chatRuns = next;
+  }
+
+  function markResponseViewed(key: string): void {
+    unreadResponses = unreadResponses.filter((record) => record.key !== key);
+  }
+
+  function restoreUnreadResponses(): void {
+    const id = selectedEnvironment?.id ?? null;
+    unreadResponses = parseUnreadResponses(id ? localStorage.getItem(`working-memory.desktop.unread:${id}`) : null);
+    unreadEnvironment = id;
+  }
+
+  $effect(() => {
+    const id = selectedEnvironment?.id;
+    if (id && unreadEnvironment === id) {
+      localStorage.setItem(`working-memory.desktop.unread:${id}`, JSON.stringify(unreadResponses));
+    }
+  });
+
+  function runBlocked(run: ChatRun): boolean {
+    const context = chatContextForScope(run.scope);
+    return contextBusy(context) || Boolean(chatContextPending(chatRuns, context));
+  }
+
+  function contextBusy(context: typeof currentChatContext): boolean {
+    return activeChatContexts.includes(chatContextKey(context)) || chatContextBusy(chatRuns, context);
+  }
   const mentionApps = $derived(mentionToken ? filterMentionApps(containerApps, mentionToken.query) : []);
   const mentionOpen = $derived(mentionToken !== null);
 
@@ -609,6 +649,9 @@
       documentSaveStates[key] = 'saved';
       documentSaveErrors[key] = '';
       if (key === selectedDocumentKey) saveState = 'saved';
+      if (deferredDocumentRefreshes.delete(key)) {
+        void refreshOpenDocument(key).catch((error) => { liveUpdateError = String(error); });
+      }
       void refreshActive();
     },
     onError: (key, error) => {
@@ -622,6 +665,85 @@
       void refreshActive();
     },
   });
+
+  const documentChanges = createDocumentChangeQueue(refreshChangedDocuments, (error) => {
+    liveUpdateError = error instanceof Error ? error.message : String(error);
+  });
+
+  function handleDocumentChanges(event: DocumentChangeEvent): void {
+    if (event.mcpUrl !== selectedEnvironment?.mcpUrl) return;
+    if ('error' in event) {
+      liveUpdateError = event.error;
+      return;
+    }
+    liveUpdateError = '';
+    documentChanges.enqueue(event.change);
+  }
+
+  async function startDocumentChanges(): Promise<void> {
+    try {
+      await window.workingMemory.startDocumentChanges();
+    } catch (error) {
+      liveUpdateError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function documentIsDirty(key: string): boolean {
+    return ['pending', 'saving', 'error'].includes(documentSaveStates[key] ?? '');
+  }
+
+  async function refreshOpenDocument(key: string): Promise<void> {
+    const document = documents.find((candidate) => documentTabKey(candidate) === key);
+    if (!document) return;
+    const target = documentRefreshTarget(document);
+    if (!target) return;
+    if (documentIsDirty(key)) { deferredDocumentRefreshes.add(key); return; }
+    const generation = environmentGeneration;
+    const refreshed = await window.workingMemory.openResource(target.kind, target.identifier);
+    if (generation !== environmentGeneration) return;
+    if (documentIsDirty(key)) { deferredDocumentRefreshes.add(key); return; }
+    const current = documents.find((candidate) => documentTabKey(candidate) === key);
+    if (!current) return;
+    if ('resourceVersion' in refreshed && 'resourceVersion' in current
+      && refreshed.resourceVersion < current.resourceVersion) return;
+    replaceActive(refreshed, key);
+  }
+
+  async function refreshChangedDocuments(change: DocumentChanges): Promise<void> {
+    const generation = environmentGeneration;
+    const journals = change.changes.filter((entry) => entry.kind.toLowerCase() === 'commandjournal');
+    if (change.reset) {
+      const activeJournals = chatRuns.filter((run) => run.journalId
+        && ['running', 'submitting', 'awaiting_confirmation'].includes(run.status));
+      await refreshLatestHistory();
+      await Promise.all(activeJournals.map((run) => refreshJournal(run.journalId!)));
+    }
+    else await Promise.all(journals.map(async (entry) => {
+      if (entry.deleted) setChatRuns(chatRuns.filter((run) => run.journalId !== entry.id));
+      else await refreshJournal(entry.id);
+    }));
+    if (generation !== environmentGeneration) return;
+    const related = change.changes.filter((entry) => entry.kind.toLowerCase() !== 'commandjournal');
+    if (!change.reset && !related.length) return;
+    for (const document of [...documents]) {
+      const key = documentTabKey(document);
+      const deleted = related.some((entry) => entry.deleted && documentMatchesChange(document, entry));
+      if (!deleted) continue;
+      if (documentIsDirty(key)) {
+        deferredDocumentRefreshes.add(key);
+        liveUpdateError = `“${document.title}” was deleted externally. Your unsaved draft has been kept.`;
+      } else {
+        const state = closeDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key);
+        documents = state.tabs;
+        selectedDocumentKey = state.selectedKey;
+      }
+    }
+    await Promise.all([
+      refreshActive(),
+      ...documents.map((document) => refreshOpenDocument(documentTabKey(document))),
+      ...(change.reset || related.some((entry) => entry.kind.toLowerCase() === 'containerclaim') ? [loadContainerApps()] : []),
+    ]);
+  }
 
   async function refreshBackendHealth(): Promise<void> {
     if (backendHealthChecking) return;
@@ -692,11 +814,12 @@
   });
 
   async function applyChatResult(result: ChatResult, runKey: string): Promise<void> {
-    chatRuns = reconcileLiveRun(chatRuns, runKey, result);
-    pendingConfirmation = result.pendingConfirmation ?? null;
-    pendingRunKey = result.pendingConfirmation ? (result.journalId ?? runKey) : null;
+    const source = chatRuns.find((run) => run.key === runKey || run.journalId === runKey
+      || (result.journalId && run.journalId === result.journalId));
+    const foreground = source && matchesChatContext(source.scope, currentChatContext);
+    setChatRuns(reconcileLiveRun(chatRuns, runKey, result));
     const document = result.document ?? result.workstream;
-    if (document) {
+    if (document && foreground) {
       const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
@@ -718,9 +841,11 @@
     try {
       const journal = await window.workingMemory.getChatJournal(id);
       if (generation !== environmentGeneration) return;
-      if (journal) chatRuns = mergeHistoryRuns(chatRuns, [journalToSummary(journal)]);
-    } catch {
-      // The live result remains usable while a transient history refresh fails.
+      if (journal) setChatRuns(mergeHistoryRuns(chatRuns, [journalToSummary(journal)]));
+    } catch (error) {
+      if (generation === environmentGeneration) {
+        historyError = error instanceof Error ? error.message : String(error);
+      }
     }
   }
 
@@ -733,7 +858,8 @@
     try {
       const historyPage = await window.workingMemory.getChatHistory({ limit: HISTORY_PAGE_SIZE });
       if (generation !== environmentGeneration) return;
-      chatRuns = refreshLatestRuns(chatRuns, historyPage.journals);
+      setChatRuns(refreshLatestRuns(chatRuns, historyPage.journals), !initialize && historyInitialized);
+      historyInitialized = true;
       if (initialize) historyCursor = historyPage.nextCursor;
     } catch (error) {
       if (generation !== environmentGeneration) return;
@@ -760,7 +886,7 @@
         cursor: historyCursor,
       });
       if (generation !== environmentGeneration) return;
-      chatRuns = mergeHistoryRuns(chatRuns, historyPage.journals);
+      setChatRuns(mergeHistoryRuns(chatRuns, historyPage.journals), false);
       historyCursor = historyPage.nextCursor;
       await tick();
       if (conversationElement) {
@@ -816,7 +942,7 @@
   }
 
   $effect(() => {
-    void chatRuns.length;
+    void chatRuns;
     void busy;
     void pendingConfirmation;
     const shouldStick = conversationPinned;
@@ -838,14 +964,13 @@
     const stopListeningForDeepLinks = window.workingMemory.onOpenResource(
       (kind, identifier) => void openResource(kind, identifier),
     );
-    const historyPoll = window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS);
+    const stopListeningForChanges = window.workingMemory.onDocumentChanges(handleDocumentChanges);
     const backendHealthPoll = window.setInterval(() => void refreshBackendHealth(), 30_000);
-    const containerCatalogPoll = window.setInterval(() => void loadContainerApps(), 30_000);
     return () => {
       stopListeningForDeepLinks();
-      window.clearInterval(historyPoll);
+      stopListeningForChanges();
+      documentChanges.clear();
       window.clearInterval(backendHealthPoll);
-      window.clearInterval(containerCatalogPoll);
       window.removeEventListener('resize', handleResize);
       document.body.classList.remove('resizing-rails');
       clearPreviewAttention();
@@ -855,8 +980,10 @@
   async function initializeWorkspace(): Promise<void> {
     // Discovery waits for the launch-time data-tier start, which may change the selected environment.
     await discoverEnvironments(true);
+    restoreUnreadResponses();
     await Promise.all([refreshActive(), refreshLatestHistory(true), refreshBackendHealth(), loadContainerApps()]);
     await restoreDocumentTabs();
+    await startDocumentChanges();
   }
 
   async function restoreDocumentTabs(): Promise<void> {
@@ -1008,6 +1135,13 @@
   function resetEnvironmentState(): void {
     const reset = emptyEnvironmentBoundRendererState();
     documentSaves.clear();
+    documentChanges.clear();
+    deferredDocumentRefreshes.clear();
+    unreadEnvironment = null;
+    unreadResponses = [];
+    liveUpdateError = '';
+    historyInitialized = false;
+    activeChatContexts = [];
     documentSaveStates = {};
     documentSaveErrors = {};
     input = reset.input;
@@ -1020,9 +1154,6 @@
     historyError = reset.historyError;
     historyCursor = reset.historyCursor;
     selectedTool = reset.selectedTool;
-    pendingRunKey = reset.pendingRunKey;
-    busy = reset.busy;
-    pendingConfirmation = reset.pendingConfirmation;
     activePanel = reset.activePanel;
     activeLoading = reset.activeLoading;
     activeError = reset.activeError;
@@ -1048,11 +1179,13 @@
       resetEnvironmentState();
       const state = await window.workingMemory.switchEnvironment(mcpUrl);
       applyEnvironmentState(state);
+      restoreUnreadResponses();
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
       await loadContainerApps();
       await restoreDocumentTabs();
       await refreshBackendHealth();
+      await startDocumentChanges();
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -1096,8 +1229,12 @@
     context = currentChatContext,
     images: ChatPromptImage[] = [],
   ): Promise<string | null> {
-    if (!message.trim() || busy || pendingConfirmation) return 'The chat request cannot be sent right now.';
+    if (!message.trim() || contextBusy(context) || chatContextPending(chatRuns, context)) {
+      return 'This conversation already has a request or confirmation in progress.';
+    }
     const runKey = crypto.randomUUID();
+    const contextKey = chatContextKey(context);
+    activeChatContexts = [...activeChatContexts, contextKey];
     chatRuns = [...chatRuns, createLiveRun(
       runKey,
       message,
@@ -1106,7 +1243,6 @@
       images.map(({ attachment }) => attachment),
     )];
     scopePreviewExpanded = true;
-    busy = true;
     const generation = environmentGeneration;
     try {
       const result = await window.workingMemory.sendChat(message, context, images);
@@ -1119,13 +1255,15 @@
     } catch (error) {
       const message = `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}`;
       if (generation === environmentGeneration) {
-        chatRuns = chatRuns.map((run) => run.key === runKey
+        setChatRuns(chatRuns.map((run) => run.key === runKey
           ? { ...run, status: 'failed', assistantText: message }
-          : run);
+          : run));
       }
       return message;
     } finally {
-      if (generation === environmentGeneration) busy = false;
+      if (generation === environmentGeneration) {
+        activeChatContexts = activeChatContexts.filter((key) => key !== contextKey);
+      }
     }
   }
 
@@ -1135,7 +1273,6 @@
     const context = currentChatContext;
     const images = [...composerImages];
     const promptImages = images;
-    composerImageWorking = true;
     composerImageError = '';
     try {
       const modelImages = promptImages.map((image) => ({
@@ -1160,13 +1297,11 @@
       }
     } catch (error) {
       composerImageError = error instanceof Error ? error.message : String(error);
-    } finally {
-      composerImageWorking = false;
     }
   }
 
   async function retryRun(run: ChatRun): Promise<void> {
-    if (!isRetryableRun(run) || busy || pendingConfirmation) return;
+    if (!isRetryableRun(run) || runBlocked(run)) return;
     await submitChat(
       run.userText,
       chatContextForScope(run.scope),
@@ -1185,26 +1320,31 @@
     writeComposerDraft(localStorage, selectedEnvironment?.id, value);
   }
 
-  async function resolveConfirmation(confirmed: boolean): Promise<void> {
-    const pending = pendingConfirmation;
-    const runKey = pendingRunKey;
-    if (!pending || !runKey || busy) return;
-    busy = true;
-    pendingConfirmation = null;
+  async function resolveConfirmation(confirmed: boolean, run: ChatRun): Promise<void> {
+    const pending = run.pendingConfirmation;
+    const runKey = run.key;
+    const context = chatContextForScope(run.scope);
+    if (!pending || contextBusy(context)) return;
+    const contextKey = chatContextKey(context);
+    activeChatContexts = [...activeChatContexts, contextKey];
+    setChatRuns(chatRuns.map((candidate) => candidate.key === runKey
+      ? { ...candidate, status: 'running', pendingConfirmation: undefined } : candidate));
     const generation = environmentGeneration;
     try {
-      const result = await window.workingMemory.resolveChatConfirmation(pending.id, confirmed, currentChatContext);
+      const result = await window.workingMemory.resolveChatConfirmation(pending.id, confirmed, context);
       if (generation === environmentGeneration) {
         observeOpenAi(result.status === 'failed' ? 'degraded' : 'healthy', `Request ${result.status}.`);
         await applyChatResult(result, runKey);
       }
     } catch (error) {
       if (generation !== environmentGeneration) return;
-      chatRuns = chatRuns.map((run) => run.key === runKey || run.journalId === runKey
+      setChatRuns(chatRuns.map((run) => run.key === runKey || run.journalId === runKey
         ? { ...run, status: 'failed', assistantText: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}` }
-        : run);
+        : run));
     } finally {
-      if (generation === environmentGeneration) busy = false;
+      if (generation === environmentGeneration) {
+        activeChatContexts = activeChatContexts.filter((key) => key !== contextKey);
+      }
     }
   }
 
@@ -1778,6 +1918,7 @@
     {:else}
       {#key selectedEnvironment?.id ?? 'no-environment'}
         <ActiveRail
+          {unreadResponses}
           {environments}
           {selectedEnvironment}
           {environmentLoading}
@@ -1831,6 +1972,11 @@
   ></div>
 
   <main class="main">
+    {#if liveUpdateError}
+      <div class="document-error live-update-error" role="alert">Live updates: {liveUpdateError}
+        <button onclick={() => void startDocumentChanges()}>Retry</button>
+      </div>
+    {/if}
     <div class="stage-content">
     {#if activeDocument}
       <div class="document-stage">
@@ -1865,7 +2011,10 @@
                     aria-label={tabAppStatus?.ready ? 'Healthy' : tabAppStatus?.state ?? 'Loading'}
                   ></span>
                 {/if}
-                <span>{document.kind === 'topic-create' && !document.title ? 'New Topic' : document.title}</span>
+                <span class="document-tab-label">{document.kind === 'topic-create' && !document.title ? 'New Topic' : document.title}</span>
+                {#if unreadResponseCount(unreadResponses, document.kind, document.slug, 'id' in document ? document.id : undefined) > 0}
+                  <span class="tab-unread-dot" title="Unread response" aria-label="Unread response"></span>
+                {/if}
               </button>
               {#if tabApp}
                 {#if tabApp.embeddable}
@@ -2001,6 +2150,7 @@
           />
         {:else if activeDocument?.kind === 'workstream'}
           <WorkstreamView
+            {unreadResponses}
             ws={activeDocument}
             {saveState}
             onSave={saveWorkstream}
@@ -2024,11 +2174,13 @@
           />
         {:else if activeDocument?.kind === 'topic-backlog'}
           <TopicBacklogView
+            {unreadResponses}
             backlog={activeDocument}
             onOpenTopic={(slug) => void openResource('topic', slug)}
           />
         {:else if activeDocument?.kind === 'topic'}
           <TopicView
+            {unreadResponses}
             topic={activeDocument}
             {saveState}
             onSaveTopic={saveTopic}
@@ -2083,7 +2235,7 @@
                 <span>{run.userText}</span>
               </button>
               {#if isRetryableRun(run)}
-                <button class="retry-button" disabled={busy || pendingConfirmation !== null} onclick={() => void retryRun(run)}>Retry</button>
+                <button class="retry-button" disabled={runBlocked(run)} onclick={() => void retryRun(run)}>Retry</button>
               {/if}
             </div>
           {/each}
@@ -2113,7 +2265,8 @@
                 {/each}
               </ul>
             {/if}
-            <section class="scope-preview-assistant" class:partial={!scopedLatestRun.assistantText}>
+            <section class="scope-preview-assistant" class:partial={!scopedLatestRun.assistantText}
+              use:observeResponse={{ key: responseKey(scopedLatestRun), enabled: unreadResponses.some((record) => record.key === responseKey(scopedLatestRun)), onViewed: markResponseViewed }}>
               <span>WM</span>
               {#if scopedLatestRun.assistantText}
                 <!-- eslint-disable-next-line svelte/no-at-html-tags -->
@@ -2384,6 +2537,13 @@
       {#each chatRuns as run (run.key)}
         {@const scopeTarget = targetForRef(run.scope)}
         <article id={chatRunDomId(run)} class="chat-run" data-journal-id={run.journalId} tabindex="-1">
+          <header class="timeline-command">
+            <span class="timeline-dot" aria-hidden="true"></span>
+            <time datetime={new Date(run.startedAt).toISOString()}>{new Date(run.startedAt).toLocaleString()}</time>
+            <span class="timeline-state">{run.status.replaceAll('_', ' ')}</span>
+            <UnreadBadge count={unreadResponses.some((record) => record.key === responseKey(run)) ? 1 : 0} />
+          </header>
+          <div class="timeline-details">
           <section class="user-entry">
             {#if scopeTarget}
               <button class="user-scope" onclick={() => void openResource(scopeTarget.kind, scopeTarget.identifier)}>
@@ -2437,7 +2597,8 @@
             </ul>
           {/if}
 
-          <section class="assistant-entry" class:partial={!run.assistantText}>
+          <section class="assistant-entry" class:partial={!run.assistantText}
+            use:observeResponse={{ key: responseKey(run), enabled: unreadResponses.some((record) => record.key === responseKey(run)), onViewed: markResponseViewed }}>
             <span>WM</span>
             {#if run.assistantText}
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
@@ -2448,12 +2609,11 @@
           </section>
           {#if isRetryableRun(run)}
             <div class="run-actions">
-              <button class="retry-button" disabled={busy || pendingConfirmation !== null} onclick={() => void retryRun(run)}>Retry</button>
+              <button class="retry-button" disabled={runBlocked(run)} onclick={() => void retryRun(run)}>Retry</button>
             </div>
           {/if}
-        </article>
-      {/each}
-      {#if pendingConfirmation}
+      {#if run.status === 'awaiting_confirmation' && run.pendingConfirmation}
+        {@const pendingConfirmation = run.pendingConfirmation}
         <section class="confirmation" aria-label="Tool action confirmation">
           <strong>
             {pendingConfirmation.batchCount
@@ -2471,12 +2631,17 @@
             <pre>{JSON.stringify(pendingConfirmation.arguments, null, 2)}</pre>
           {/if}
           <div>
-            <button class="confirm" disabled={busy} onclick={() => void resolveConfirmation(true)}>Confirm</button>
-            <button class="cancel" disabled={busy} onclick={() => void resolveConfirmation(false)}>Cancel</button>
+            <button class="confirm" onclick={() => void resolveConfirmation(true, run)}>Confirm</button>
+            <button class="cancel" onclick={() => void resolveConfirmation(false, run)}>Cancel</button>
           </div>
         </section>
       {/if}
-      {#if busy}<div class="thinking">Resolving…</div>{/if}
+          </div>
+        </article>
+      {/each}
+      {#if chatRuns.some((run) => run.status === 'running' || run.status === 'submitting')}
+        <div class="thinking">Queries in progress…</div>
+      {/if}
       </div>
       {#if hasUnseenMessages}
         <button class="new-message-indicator" aria-label="Jump to newest message" title="Jump to newest message" onclick={() => scrollConversationToBottom('smooth')}>

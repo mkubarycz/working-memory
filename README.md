@@ -309,7 +309,21 @@ named volume `working-memory-sunset-chess-1-4-data` mounted at `/data`.
 It can advertise application identity `sunset-chess` independently of its
 registration slug. Neither the original app nor its volume needs to change.
 
-The catalog refreshes every 30 seconds, at startup, and on environment switches.
+The catalog loads at startup and on environment switches, then refreshes when a
+ContainerClaim changes. The desktop listens to a commit-driven, metadata-only
+`GET /changes` long poll on the selected control plane; an idle connection does
+not reload documents or the catalog. External MCP writes refresh the Active
+rail and open documents, coalescing bursts of changes. Pending, saving, or failed
+local edits are preserved rather than overwritten. Reconnecting beyond the
+bounded replay window triggers a full refresh.
+
+Live updates require the 1.1.1 control-plane image as well as the desktop update.
+Upgrade an existing data-tier instance through **Settings > Instances** to use
+the new endpoint. Selecting an older backend shows an explicit upgrade warning;
+it does not silently fall back to continuous document polling. Changing
+environments cancels the previous watch and ignores stale notifications.
+Document created/updated timestamps are stored as Unix seconds and displayed
+in the user's local date and time.
 Updates through `ws-containerclaim-update` change the same persisted definition;
 deleting a claim removes it from the catalog without stopping or deleting its
 container or data. A claim without a Docker runtime is intent-only and is not
@@ -382,6 +396,19 @@ show the latest human prompt, tool activity, and Working Memory response.
 Collapsing it with the header chevron replaces the detailed exchange with at
 most two abbreviated recent commands for the same document or Container App.
 The full run remains available through Chat history.
+
+Chat requests and write confirmations are scoped to their originating
+conversation. You can switch to another topic and submit a query while the
+first is still running; a background completion does not select its document.
+The Log is a live chronological timeline, with a timestamped command dot and
+nested tool activity, confirmation, and response for each query.
+
+New completed responses add gray unread-count badges to associated topic and
+workstream surfaces and a red dot to open document tabs. A response is marked
+read after it is visible in a focused window for three continuous seconds;
+merely switching tabs does not clear it. Unread state is retained separately
+for each selected data environment, and loading old history does not mark
+every historical response unread.
 
 Read-only MCP tools run directly, while app tools not explicitly annotated
 read-only require confirmation. Command journals record the provider-safe
