@@ -73,13 +73,17 @@
     closeDocumentTab,
     closeDocumentTabsToRight,
     closeOtherDocumentTabs,
+    createDocumentOpenGuard,
     documentTabKey,
     keepSelectedTabVisible,
     openDocumentTab,
     parseDocumentTabs,
+    promoteDocumentTab,
+    promoteOnDocumentInput,
     replaceSelectedTab,
     serializeDocumentTabs,
     updateDocumentTab,
+    type DocumentTabsState,
   } from './documentTabs';
   import { chatRunDomId, recentRunsForContext, matchesChatContext, chatContextBusy, chatContextPending, chatContextKey } from './scopedChat';
   import { createDocumentChangeQueue, documentMatchesChange, documentRefreshTarget } from './documentChanges';
@@ -146,6 +150,17 @@
   const deferredDocumentRefreshes = new Set<string>();
   let documents = $state<DocumentVM[]>([]);
   let selectedDocumentKey = $state<string | null>(null);
+  let previewDocumentKey = $state<string | null>(null);
+  const documentOpens = createDocumentOpenGuard();
+  const closedDuringRestore = new Set<string>();
+
+  function documentTabsState(): DocumentTabsState {
+    return { tabs: documents, selectedKey: selectedDocumentKey, previewKey: previewDocumentKey };
+  }
+
+  function promoteDocument(key = selectedDocumentKey): void {
+    previewDocumentKey = promoteDocumentTab(documentTabsState(), key).previewKey ?? null;
+  }
   let saveState = $state<SaveState>('idle');
   let documentError = $state('');
   let documentSaveStates = $state<Record<string, SaveState>>({});
@@ -273,6 +288,7 @@
     const token = mentionToken;
     if (!token) return;
     const replacement = replaceMentionToken(input, token, app.id);
+    promoteDocument();
     input = replacement.value;
     writeComposerDraft(localStorage, selectedEnvironment?.id, input);
     closeMentionCompletion();
@@ -327,6 +343,7 @@
       composerImageError = validationError;
       return;
     }
+    promoteDocument();
     composerImageWorking = true;
     try {
       const attachments = await attachImages(files);
@@ -352,6 +369,7 @@
   }
 
   async function attachContainerAppResource(reference: ContainerAppResourceReference): Promise<void> {
+    promoteDocument();
     const resourceKey = `${reference.appId}:${reference.resourceKind}:${reference.resourceId}`;
     const existingIndex = composerResources.findIndex((candidate) =>
       `${candidate.appId}:${candidate.resourceKind}:${candidate.resourceId}` === resourceKey);
@@ -437,6 +455,7 @@
       cameraError = 'Unable to capture a camera frame.';
       return;
     }
+    promoteDocument();
     context.drawImage(cameraVideo, 0, 0);
     canvas.toBlob((blob) => {
       if (!blob) {
@@ -518,12 +537,15 @@
   }
 
   async function openContainerAppDetail(app: ContainerAppItem): Promise<void> {
+    documentOpens.invalidate();
     const next = openDocumentTab(
-      { tabs: documents, selectedKey: selectedDocumentKey },
+      documentTabsState(),
       containerAppDocument(app),
+      false,
     );
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
     containerAppViews[app.id] = app.embeddable ? 'app' : 'info';
     activateHeaderTab('container-apps');
     restoreDocumentSaveStatus(next.selectedKey);
@@ -739,9 +761,7 @@
         deferredDocumentRefreshes.add(key);
         liveUpdateError = `“${document.title}” was deleted externally. Your unsaved draft has been kept.`;
       } else {
-        const state = closeDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key);
-        documents = state.tabs;
-        selectedDocumentKey = state.selectedKey;
+        applyDocumentTabs(closeDocumentTab(documentTabsState(), key));
       }
     }
     await Promise.all([
@@ -814,7 +834,7 @@
 
   $effect(() => {
     const storageKey = documentTabsStorageKey();
-    const state = { tabs: documents, selectedKey: selectedDocumentKey };
+    const state = documentTabsState();
     if (!documentTabsPersistenceReady || !storageKey) return;
     localStorage.setItem(storageKey, serializeDocumentTabs(state));
   });
@@ -826,9 +846,11 @@
     setChatRuns(reconcileLiveRun(chatRuns, runKey, result));
     const document = result.document ?? result.workstream;
     if (document && foreground) {
-      const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
+      documentOpens.invalidate();
+      const next = openDocumentTab(documentTabsState(), document, false);
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
+      previewDocumentKey = next.previewKey ?? null;
       activateHeaderTab('log');
       documentError = '';
     }
@@ -993,6 +1015,9 @@
   }
 
   async function restoreDocumentTabs(): Promise<void> {
+    closedDuringRestore.clear();
+    const isCurrent = documentOpens.capture();
+    const generation = environmentGeneration;
     documentTabsPersistenceReady = false;
     const storageKey = documentTabsStorageKey();
     const persisted = parseDocumentTabs(storageKey ? localStorage.getItem(storageKey) : null);
@@ -1024,7 +1049,16 @@
         );
       }
     }
+    if (generation !== environmentGeneration) return;
+    if (!isCurrent()) {
+      const existingKeys = new Set(documents.map(documentTabKey));
+      documents = [...documents, ...restored.filter((document) =>
+        !existingKeys.has(documentTabKey(document)) && !closedDuringRestore.has(documentTabKey(document)))];
+      documentTabsPersistenceReady = true;
+      return;
+    }
     documents = restored;
+    previewDocumentKey = null;
     selectedDocumentKey = restored.some((document) =>
       documentTabKey(document) === persisted.selectedKey)
       ? persisted.selectedKey
@@ -1155,6 +1189,8 @@
     input = reset.input;
     documents = reset.documents;
     selectedDocumentKey = null;
+    previewDocumentKey = null;
+    documentOpens.invalidate();
     saveState = reset.saveState;
     documentError = reset.documentError;
     chatRuns = reset.chatRuns;
@@ -1210,6 +1246,7 @@
   }
 
   function addModelProfile(): void {
+    promoteDocument();
     const id = crypto.randomUUID();
     modelProfiles = [...modelProfiles, {
       id,
@@ -1224,6 +1261,7 @@
 
   function removeModelProfile(id: string): void {
     if (modelProfiles.length <= 1) return;
+    promoteDocument();
     const next = modelProfiles.filter((profile) => profile.id !== id);
     const fallback = next[0].id;
     modelProfiles = next;
@@ -1240,6 +1278,7 @@
     if (!message.trim() || contextBusy(context) || chatContextPending(chatRuns, context)) {
       return 'This conversation already has a request or confirmation in progress.';
     }
+    if (matchesChatContext(liveScope(context), currentChatContext)) promoteDocument();
     const runKey = crypto.randomUUID();
     const contextKey = chatContextKey(context);
     activeChatContexts = [...activeChatContexts, contextKey];
@@ -1324,6 +1363,7 @@
   }
 
   function updateComposerDraft(value: string): void {
+    if (value !== input) promoteDocument();
     input = value;
     writeComposerDraft(localStorage, selectedEnvironment?.id, value);
   }
@@ -1414,13 +1454,15 @@
   let settingsTab = $state<SettingsTab>('models');
 
   function openSettings(tab?: SettingsTab): void {
+    documentOpens.invalidate();
     if (tab) settingsTab = tab;
     const next = openDocumentTab(
-      { tabs: documents, selectedKey: selectedDocumentKey },
+      documentTabsState(),
       { kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' },
     );
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
     restoreDocumentSaveStatus(next.selectedKey);
   }
 
@@ -1435,10 +1477,11 @@
 
   function replaceActive(document: DocumentVM, key = selectedDocumentKey): void {
     const next = key
-      ? updateDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key, document)
-      : replaceSelectedTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
+      ? updateDocumentTab(documentTabsState(), key, document)
+      : replaceSelectedTab(documentTabsState(), document);
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
   }
 
   function restoreDocumentSaveStatus(key: string | null): void {
@@ -1447,14 +1490,29 @@
   }
 
   async function openResource(kind: DesktopResourceKind, identifier: string): Promise<void> {
+    documentOpens.invalidate();
+    const existing = documents.find((document) => documentTabKey(document) === `${kind}:${identifier}`);
+    if (existing) {
+      selectDocument(documentTabKey(existing));
+      return;
+    }
+    const isCurrent = documentOpens.capture();
+    const generation = environmentGeneration;
     try {
       const document = await window.workingMemory.openResource(kind, identifier);
-      const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document);
+      if (!isCurrent() || generation !== environmentGeneration) return;
+      if (documents.some((tab) => documentTabKey(tab) === documentTabKey(document))) {
+        selectDocument(documentTabKey(document));
+        return;
+      }
+      const next = openDocumentTab(documentTabsState(), document);
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
+      previewDocumentKey = next.previewKey ?? null;
       activateHeaderTab('log');
       restoreDocumentSaveStatus(next.selectedKey);
     } catch (error) {
+      if (!isCurrent() || generation !== environmentGeneration) return;
       documentError = error instanceof Error ? error.message : String(error);
     }
   }
@@ -1465,9 +1523,13 @@
     parent?: { slug: string; title: string },
     newWorkstream = false,
   ): Promise<void> {
+    documentOpens.invalidate();
+    const isCurrent = documentOpens.capture();
+    const generation = environmentGeneration;
     documentError = '';
     try {
       const topicTypes = await window.workingMemory.listTopicTypes();
+      if (!isCurrent() || generation !== environmentGeneration) return;
       const draft: TopicCreateDraftVM = {
         kind: 'topic-create',
         id: crypto.randomUUID(),
@@ -1484,16 +1546,19 @@
         parent: parent?.slug ?? null,
         parentTitle: parent?.title ?? null,
       };
-      const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, draft);
+      const next = openDocumentTab(documentTabsState(), draft, false);
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
+      previewDocumentKey = next.previewKey ?? null;
       activateHeaderTab('log');
     } catch (error) {
+      if (!isCurrent() || generation !== environmentGeneration) return;
       documentError = error instanceof Error ? error.message : String(error);
     }
   }
 
   function openTopicBacklog(): void {
+    documentOpens.invalidate();
     const backlog: TopicBacklogVM = {
       kind: 'topic-backlog',
       id: 'open-topic-backlog',
@@ -1501,38 +1566,43 @@
       title: 'Open topic backlog',
       topics: activePanel?.topicBacklog ?? [],
     };
-    const next = openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, backlog);
+    const next = openDocumentTab(documentTabsState(), backlog);
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
     activateHeaderTab('log');
   }
 
   async function createTopic(draft: TopicCreateDraftVM): Promise<void> {
     const draftKey = documentTabKey(draft);
+    promoteDocument(draftKey);
     const created = await createTopicFromDraft(draft, window.workingMemory);
     const replaced = updateDocumentTab(
-      { tabs: documents, selectedKey: selectedDocumentKey },
+      documentTabsState(),
       draftKey,
       created,
     );
     documents = replaced.tabs;
     selectedDocumentKey = replaced.selectedKey;
+    previewDocumentKey = replaced.previewKey ?? null;
     const workstreamKey = `workstream:${draft.workstream}`;
     if (documents.some((document) => documentTabKey(document) === workstreamKey)) {
       const refreshed = await window.workingMemory.openResource('workstream', draft.workstream);
       const updated = updateDocumentTab(
-        { tabs: documents, selectedKey: selectedDocumentKey },
+        documentTabsState(),
         workstreamKey,
         refreshed,
       );
       documents = updated.tabs;
       selectedDocumentKey = updated.selectedKey;
+      previewDocumentKey = updated.previewKey ?? null;
     }
     await refreshActive();
   }
 
   async function mutate(operation: () => Promise<DocumentVM>): Promise<void> {
     const targetKey = selectedDocumentKey;
+    promoteDocument(targetKey);
     saveState = 'saving';
     documentError = '';
     try {
@@ -1547,6 +1617,7 @@
   }
 
   async function mutateFromRail(workstream: string, operation: () => Promise<DocumentVM>): Promise<void> {
+    promoteDocument(`workstream:${workstream}`);
     let mutationError = '';
     try {
       const document = await operation();
@@ -1593,7 +1664,7 @@
         key: target.key,
         document: await window.workingMemory.openResource(target.kind, target.identifier),
       })));
-      let state = { tabs: documents, selectedKey: selectedDocumentKey };
+      let state = documentTabsState();
       for (const result of refreshed) {
         if (result.status === 'fulfilled') {
           state = updateDocumentTab(state, result.value.key, result.value.document);
@@ -1601,6 +1672,7 @@
       }
       documents = state.tabs;
       selectedDocumentKey = state.selectedKey;
+      previewDocumentKey = state.previewKey ?? null;
       restoreDocumentSaveStatus(state.selectedKey);
       const failedRefreshes = refreshed.filter((result) => result.status === 'rejected').length;
       if (failedRefreshes > 0) {
@@ -1662,7 +1734,7 @@
           key: documentTabKey(document),
           document: await window.workingMemory.openResource('topic', document.slug!),
         })));
-      let state = { tabs: documents, selectedKey: selectedDocumentKey };
+      let state = documentTabsState();
       for (const result of refreshed) {
         if (result.status === 'fulfilled') {
           state = updateDocumentTab(state, result.value.key, result.value.document);
@@ -1670,28 +1742,37 @@
       }
       documents = state.tabs;
       selectedDocumentKey = state.selectedKey;
+      previewDocumentKey = state.previewKey ?? null;
       restoreDocumentSaveStatus(state.selectedKey);
     }
   }
 
-  function saveWorkstream(patch: { title?: string; status?: string }): void {
-    const document = activeDocument;
+  function saveWorkstream(document: DocumentVM | null, patch: { title?: string; status?: string }): void {
     if (document?.kind !== 'workstream' || !document.slug) return;
+    promoteDocument(documentTabKey(document));
     documentSaves.schedule(documentTabKey(document), patch);
   }
 
-  function saveTopic(patch: TopicPatch): void {
-    const document = activeDocument;
+  function saveTopic(document: DocumentVM | null, patch: TopicPatch): void {
     if (document?.kind !== 'topic' || !document.slug) return;
+    promoteDocument(documentTabKey(document));
     documentSaves.schedule(documentTabKey(document), patch);
   }
 
   async function attachImages(files: File[]): Promise<AttachmentRef[]> {
-    return Promise.all(files.map(async (file) => window.workingMemory.uploadAttachment({
-      name: file.name || 'image',
-      type: file.type,
-      data: await file.arrayBuffer(),
-    })));
+    if (files.length) promoteDocument();
+    const generation = environmentGeneration;
+    const attachments = await Promise.all(files.map(async (file) => {
+      const data = await file.arrayBuffer();
+      if (generation !== environmentGeneration) throw new Error('The Working Memory environment changed during attachment upload.');
+      return window.workingMemory.uploadAttachment({
+        name: file.name || 'image',
+        type: file.type,
+        data,
+      });
+    }));
+    if (generation !== environmentGeneration) throw new Error('The Working Memory environment changed during attachment upload.');
+    return attachments;
   }
 
   function setAlertStatus(id: string, status: AlertVM['status']): void {
@@ -1750,6 +1831,7 @@
 
   function selectDocument(key: string): void {
     if (documents.some((document) => documentTabKey(document) === key)) {
+      documentOpens.invalidate();
       selectedDocumentKey = key;
       activateHeaderTab('log');
       restoreDocumentSaveStatus(key);
@@ -1784,15 +1866,18 @@
     if (next) focusHeaderTab(next);
   }
 
-  function applyDocumentTabs(next: { tabs: DocumentVM[]; selectedKey: string | null }): void {
+  function applyDocumentTabs(next: DocumentTabsState): void {
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
     restoreDocumentSaveStatus(next.selectedKey);
   }
 
   function closeDocument(key: string): void {
+    documentOpens.invalidate();
+    if (!documentTabsPersistenceReady) closedDuringRestore.add(key);
     documentTabMenu = null;
-    applyDocumentTabs(closeDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, key));
+    applyDocumentTabs(closeDocumentTab(documentTabsState(), key));
   }
 
   async function openDocumentTabMenu(event: MouseEvent, key: string): Promise<void> {
@@ -1815,12 +1900,20 @@
     const key = documentTabMenu?.key;
     documentTabMenu = null;
     if (!key) return;
-    const state = { tabs: documents, selectedKey: selectedDocumentKey };
-    applyDocumentTabs(action === 'close'
+    documentOpens.invalidate();
+    const state = documentTabsState();
+    const next = action === 'close'
       ? closeDocumentTab(state, key)
       : action === 'others'
         ? closeOtherDocumentTabs(state, key)
-        : closeDocumentTabsToRight(state, key));
+        : closeDocumentTabsToRight(state, key);
+    if (!documentTabsPersistenceReady) {
+      for (const document of state.tabs) {
+        const documentKey = documentTabKey(document);
+        if (!next.tabs.some((tab) => documentTabKey(tab) === documentKey)) closedDuringRestore.add(documentKey);
+      }
+    }
+    applyDocumentTabs(next);
   }
 
   function navigateDocumentTabMenu(event: KeyboardEvent): void {
@@ -2000,6 +2093,7 @@
               class="document-tab"
               use:keepSelectedTabVisible={key === selectedDocumentKey}
               class:selected={key === selectedDocumentKey}
+              class:preview={key === previewDocumentKey}
               role="presentation"
               oncontextmenu={(event) => void openDocumentTabMenu(event, key)}
             >
@@ -2007,8 +2101,9 @@
                 class="document-tab-select"
                 role="tab"
                 aria-selected={key === selectedDocumentKey}
-                title={document.title}
+                title={key === previewDocumentKey ? `${document.title} — Preview (double-click to keep open)` : document.title}
                 onclick={() => selectDocument(key)}
+                ondblclick={() => promoteDocument(key)}
               >
                 <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : 'file'}"></span>
                 {#if tabApp}
@@ -2121,6 +2216,7 @@
         {/if}
         <div
           class="document-host"
+          use:promoteOnDocumentInput={() => promoteDocument()}
           class:container-app-host={activeDocument?.kind === 'container-app'}
           class:topic-document={activeDocument?.kind === 'topic' || activeDocument?.kind === 'topic-create'}
           class:settings-host={activeDocument?.kind === 'settings'}
@@ -2130,6 +2226,7 @@
           <div class="document-toolbar">
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
+        {#key selectedDocumentKey}
         {#if activeDocument?.kind === 'settings'}
           <SettingsView
             profiles={modelProfiles}
@@ -2162,7 +2259,7 @@
             {unreadResponses}
             ws={activeDocument}
             {saveState}
-            onSave={saveWorkstream}
+            onSave={saveWorkstream.bind(null, activeDocument)}
             onOpenTopic={(slug) => void openResource('topic', slug)}
             onAddTopic={(parent) => {
               const workstream = activeDocument as WorkstreamVM;
@@ -2179,7 +2276,7 @@
               ? new URL(selectedEnvironment.mcpUrl).origin
               : ''}
             onAttachImages={attachImages}
-            onCreate={() => createTopic(activeDocument as TopicCreateDraftVM)}
+            onCreate={createTopic.bind(null, activeDocument as TopicCreateDraftVM)}
           />
         {:else if activeDocument?.kind === 'topic-backlog'}
           <TopicBacklogView
@@ -2193,7 +2290,7 @@
             topic={activeDocument}
             onShare={(topic) => { sharingTopic = topic; }}
             {saveState}
-            onSaveTopic={saveTopic}
+            onSaveTopic={saveTopic.bind(null, activeDocument)}
             onOpenTopic={(slug) => void openResource('topic', slug)}
             onOpenWorkstream={(slug) => void openResource('workstream', slug)}
             onSetAlertStatus={setAlertStatus}
@@ -2210,6 +2307,7 @@
             onOpenExternal={openLink}
           />
         {/if}
+        {/key}
         </div>
       </div>
     {:else}

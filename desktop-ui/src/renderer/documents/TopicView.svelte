@@ -69,6 +69,11 @@
     onSaveTopic({ body: topic.body });
   }
 
+  function updateBody(target: TopicVM, save: (patch: TopicPatch) => void, body: string): void {
+    target.body = body;
+    save({ body });
+  }
+
   let bodyInput = $state<HTMLTextAreaElement | null>(null);
   let attachmentError = $state('');
   let attachingImages = $state(false);
@@ -77,6 +82,8 @@
     if (files.length === 0 || attachingImages) {
       return;
     }
+    const target = topic;
+    const save = onSaveTopic;
     const selectionStart = bodyInput?.selectionStart ?? topic.body.length;
     const selectionEnd = bodyInput?.selectionEnd ?? selectionStart;
     attachingImages = true;
@@ -86,12 +93,11 @@
       const markdown = attachments
         .map((attachment) => `![${attachment.filename.replace(/[\[\]]/g, '')}](wm-attachment:${attachment.id})`)
         .join('\n\n');
-      const before = topic.body.slice(0, selectionStart);
-      const after = topic.body.slice(selectionEnd);
+      const before = target.body.slice(0, selectionStart);
+      const after = target.body.slice(selectionEnd);
       const prefix = before && !before.endsWith('\n') ? '\n\n' : '';
       const suffix = after && !after.startsWith('\n') ? '\n\n' : '';
-      topic.body = `${before}${prefix}${markdown}${suffix}${after}`;
-      onSaveTopic({ body: topic.body });
+      updateBody(target, save, `${before}${prefix}${markdown}${suffix}${after}`);
       requestAnimationFrame(() => {
         const cursor = before.length + prefix.length + markdown.length;
         bodyInput?.focus();
@@ -386,10 +392,7 @@
         <HybridMarkdownEditor
           value={topic.body}
           {attachmentBaseUrl}
-          onInput={(body) => {
-            topic.body = body;
-            onSaveTopic({ body });
-          }}
+          onInput={updateBody.bind(null, topic, onSaveTopic)}
           {onAttachImages}
         />
       {:else if topic.editable && bodyMode === 'source'}

@@ -324,6 +324,7 @@ button { cursor: pointer; }
 .container-app-detail dt { color: #625d61; font-weight: 700; }
 .container-app-error { padding: 10px 12px; border-left: 3px solid #91251f; background: #f8e3e1; color: #761d17; }
 .document-tab-select > .document-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-tab.preview .document-tab-label { font-style: italic; }
 .document-tab-select .codicon { flex: 0 0 auto; color: var(--desktop-accent-strong); }
 .document-tab-close { display: grid; place-items: center; flex: 0 0 30px; width: 30px; padding: 0; border: 0; background: transparent; color: #777176; }
 .document-tab-close:hover, .document-tab-select:hover { background: #dedadd; color: #262326; }
