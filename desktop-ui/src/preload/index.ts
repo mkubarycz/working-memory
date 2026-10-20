@@ -74,6 +74,7 @@ const api: DesktopApi = {
   saveWorkstream: (identifier, patch) => invoke('workstream:save', identifier, patch),
   saveTopic: (identifier, patch) => invoke('topic:save', identifier, patch),
   listTopicTypes: () => invoke('topic:list-types'),
+  createWorkstream: (title) => invoke('workstream:create', title),
   createTopic: (input) => invoke('topic:create', input),
   reparentTopic: (slug, parent) => invoke('topic:reparent', slug, parent),
   uploadAttachment: (file) => invoke('attachment:upload', file),

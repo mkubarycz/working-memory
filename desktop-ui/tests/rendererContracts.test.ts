@@ -173,7 +173,7 @@ describe('desktop tree icon contract', () => {
     expect(topicCreateView).toContain('<TopicView');
     expect(topicCreateView).toContain('titlePlaceholder="New Topic"');
     expect(topicCreateView).toContain('class="create-action"');
-    expect(topicCreateView).toContain('shouldRequestTopicAutocomplete');
+    expect(topicCreateView).toContain('topicAutocompleteDelay');
     expect(topicCreateView).toContain('window.workingMemory.autocompleteTopic');
     expect(topicView).toContain('aria-label="Topic title"');
     expect(topicView).toContain('aria-label="Topic type"');
@@ -318,7 +318,7 @@ describe('desktop tree icon contract', () => {
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
 
     expect(styles).toMatch(/\.active-section-header[^}]*background:\s*var\(--desktop-accent\)/s);
-    expect(styles).toMatch(/\.active-section-header\.resizable[^}]*cursor:\s*row-resize[^}]*touch-action:\s*none/s);
+    expect(styles).toMatch(/\.active-section-heading\.resizable[^}]*cursor:\s*row-resize[^}]*touch-action:\s*none/s);
     expect(activeRail).toContain("role={section.section !== 'queue' ? 'separator' : undefined}");
     expect(activeRail).toContain("aria-orientation={section.section !== 'queue' ? 'horizontal' : undefined}");
     expect(activeRail).toContain('onpointerdown=');

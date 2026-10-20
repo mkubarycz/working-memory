@@ -8,10 +8,7 @@
     TopicVM,
   } from './types';
   import TopicView from './TopicView.svelte';
-  import {
-    shouldRequestTopicAutocomplete,
-    TOPIC_AUTOCOMPLETE_IDLE_MS,
-  } from '../topicAutocomplete';
+  import { topicAutocompleteDelay } from '../topicAutocomplete';
 
   interface Props {
     draft: TopicCreateDraftVM;
@@ -30,12 +27,15 @@
   let creating = $state(false);
   let error = $state('');
   let autocompleteStatus = $state('');
+  let autocompleteError = $state(false);
   let titleAuthored = false;
   let typeAuthored = false;
+  let workstreamTitleAuthored = false;
   let lastRequestedAt = 0;
   let lastSuggestedBody = '';
   let autocompleteTimer: number | undefined;
   let autocompleteGeneration = 0;
+  const creatingWorkstream = $derived(draft.newWorkstreamTitle !== undefined && !draft.workstream);
 
   const relation = (slug: string, title: string): RelationVM => ({
     slug,
@@ -59,7 +59,7 @@
     editable: true,
     parents: draft.parent ? [relation(draft.parent, draft.parentTitle ?? draft.parent)] : [],
     children: [],
-    workstreams: [relation(draft.workstream, draft.workstreamTitle)],
+    workstreams: draft.workstream ? [relation(draft.workstream, draft.workstreamTitle)] : [],
     focusedWorkstreams: [],
     alerts: [],
   });
@@ -71,6 +71,7 @@
     }
     if (patch.body !== undefined) {
       draft.body = patch.body;
+      autocompleteGeneration += 1;
       scheduleAutocomplete();
     }
     if (patch.topicType !== undefined) {
@@ -79,15 +80,19 @@
     }
   }
 
-  function scheduleAutocomplete(): void {
+  function scheduleAutocomplete(retry = false): void {
     if (autocompleteTimer !== undefined) window.clearTimeout(autocompleteTimer);
-    if (!shouldRequestTopicAutocomplete({
+    const delay = topicAutocompleteDelay({
       body: draft.body,
-      lastSuggestedBody,
+      lastSuggestedBody: retry ? '' : lastSuggestedBody,
       lastRequestedAt,
       now: Date.now(),
-    })) return;
-    autocompleteTimer = window.setTimeout(() => void requestAutocomplete(), TOPIC_AUTOCOMPLETE_IDLE_MS);
+    });
+    autocompleteError = false;
+    autocompleteStatus = '';
+    if (delay === null) return;
+    autocompleteStatus = 'Waiting to suggest titles and type...';
+    autocompleteTimer = window.setTimeout(() => void requestAutocomplete(), delay);
   }
 
   async function requestAutocomplete(): Promise<void> {
@@ -95,8 +100,8 @@
     const body = draft.body;
     const generation = ++autocompleteGeneration;
     lastRequestedAt = Date.now();
-    lastSuggestedBody = body;
-    autocompleteStatus = 'Suggesting title and type...';
+    autocompleteError = false;
+    autocompleteStatus = creatingWorkstream ? 'Suggesting titles and type...' : 'Suggesting title and type...';
     try {
       const suggestion = await window.workingMemory.autocompleteTopic({
         body,
@@ -107,13 +112,19 @@
           label,
           description,
         })),
+        ...(creatingWorkstream ? { currentWorkstreamTitle: draft.newWorkstreamTitle } : {}),
       });
       if (generation !== autocompleteGeneration) return;
+      lastSuggestedBody = body;
       if (!titleAuthored) draft.title = suggestion.title;
       if (!typeAuthored) draft.topicType = suggestion.topicType;
-      autocompleteStatus = 'Title and type suggested';
+      if (creatingWorkstream && !workstreamTitleAuthored && suggestion.workstreamTitle !== undefined) {
+        draft.newWorkstreamTitle = suggestion.workstreamTitle;
+      }
+      autocompleteStatus = creatingWorkstream ? 'Titles and type suggested' : 'Title and type suggested';
     } catch (reason) {
       if (generation !== autocompleteGeneration) return;
+      autocompleteError = true;
       autocompleteStatus = reason instanceof Error ? reason.message : String(reason);
     }
   }
@@ -128,6 +139,10 @@
     error = '';
     if (!draft.title.trim()) {
       error = 'Enter a topic title.';
+      return;
+    }
+    if (creatingWorkstream && !draft.newWorkstreamTitle?.trim()) {
+      error = 'Enter a workstream title.';
       return;
     }
     creating = true;
@@ -152,6 +167,11 @@
     {attachmentBaseUrl}
     {onAttachImages}
     titlePlaceholder="New Topic"
+    newWorkstreamTitle={creatingWorkstream ? draft.newWorkstreamTitle : undefined}
+    onNewWorkstreamTitleChange={(title) => {
+      workstreamTitleAuthored = true;
+      draft.newWorkstreamTitle = title;
+    }}
     draft
   />
 
@@ -159,12 +179,17 @@
     <p class="create-error" role="alert">{error}</p>
   {/if}
   {#if autocompleteStatus}
-    <p class="autocomplete-status" role="status">{autocompleteStatus}</p>
+    <p class="autocomplete-status" role={autocompleteError ? 'alert' : 'status'}>
+      {autocompleteStatus}
+      {#if autocompleteError}
+        <button type="button" onclick={() => scheduleAutocomplete(true)}>Retry suggestions</button>
+      {/if}
+    </p>
   {/if}
 
   <div class="create-action">
     <button disabled={creating} onclick={() => void create()}>
-      {creating ? 'Creating...' : 'Create Topic'}
+      {creating ? 'Creating...' : creatingWorkstream ? 'Create Workstream & Topic' : 'Create Topic'}
     </button>
   </div>
 </div>
