@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { GenericDocVM } from './types';
+  import { formatDocumentTimestamp as fmtTs } from '../documentDates';
 
   interface Props {
     doc: GenericDocVM;
@@ -7,14 +8,6 @@
 
   let { doc }: Props = $props();
 
-  function fmtTs(ts: number): string {
-    if (!ts) return '—';
-    try {
-      return new Date(ts).toLocaleString();
-    } catch {
-      return String(ts);
-    }
-  }
 </script>
 
 <header class="head">

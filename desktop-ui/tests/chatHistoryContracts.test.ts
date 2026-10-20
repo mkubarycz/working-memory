@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CHAT_HISTORY_POLL_INTERVAL_MS } from '../src/renderer/chatPolling';
 
 const desktopRoot = resolve(import.meta.dirname, '..');
 
@@ -33,18 +32,17 @@ describe('desktop chat history IPC contract', () => {
     expect(main.match(/status: 'failed'/g)?.length).toBeGreaterThanOrEqual(4);
   });
 
-  it('polls newest history without overlapping or clobbering the older-page cursor and clears the timer', () => {
+  it('refreshes changed journals without polling or clobbering the older-page cursor', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
 
-    expect(CHAT_HISTORY_POLL_INTERVAL_MS).toBeGreaterThanOrEqual(2_000);
-    expect(CHAT_HISTORY_POLL_INTERVAL_MS).toBeLessThanOrEqual(5_000);
     expect(app).toContain('await Promise.all([refreshActive(), refreshLatestHistory(true), refreshBackendHealth(), loadContainerApps()]);');
-    expect(app).toContain('window.setInterval(() => void refreshLatestHistory(), CHAT_HISTORY_POLL_INTERVAL_MS)');
-    expect(app).toContain('window.clearInterval(historyPoll);');
+    expect(app).toContain('window.workingMemory.onDocumentChanges(handleDocumentChanges)');
+    expect(app).toContain('stopListeningForChanges();');
+    expect(app).not.toContain('setInterval(() => void refreshLatestHistory()');
     expect(app).toContain('if (historyRequestGeneration === generation) return;');
-    expect(app).toContain('chatRuns = refreshLatestRuns(chatRuns, historyPage.journals);');
+    expect(app).toContain('setChatRuns(refreshLatestRuns(chatRuns, historyPage.journals)');
     expect(app).toContain('if (initialize) historyCursor = historyPage.nextCursor;');
-    expect(app).toContain('chatRuns = mergeHistoryRuns(chatRuns, historyPage.journals);');
+    expect(app).toContain('setChatRuns(mergeHistoryRuns(chatRuns, historyPage.journals), false)');
     expect(app).toContain('historyCursor = historyPage.nextCursor;');
     expect(app).toContain('cursor: historyCursor');
     expect(app).toContain('onclick={() => void loadOlderHistory()}');
@@ -68,9 +66,12 @@ describe('desktop chat history IPC contract', () => {
     expect(app).toContain('class="scope-preview-assistant"');
     expect(app).toContain('scopePreviewExpanded = true;');
     expect(app).toContain('class="run-actions"');
-    expect(app).toContain('disabled={busy || pendingConfirmation !== null}');
+    expect(app).toContain('disabled={runBlocked(run)}');
     expect(app).toContain('One approval covers this bounded batch.');
     expect(app).toContain('pendingConfirmation.batchCount');
+    expect(app).toContain('class="timeline-command"');
+    expect(app).toContain('class="timeline-details"');
+    expect(app).toContain('use:observeResponse=');
     expect(styles).toMatch(/\.retry-button\s*{[^}]*font-size:\s*10px/s);
     expect(styles).toMatch(/\.scope-preview-response\s*{[^}]*max-height:\s*min\(42vh,\s*420px\)[^}]*overflow-y:\s*auto/s);
   });

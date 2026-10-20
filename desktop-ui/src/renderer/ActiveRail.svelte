@@ -1,6 +1,8 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import BrainMark from './BrainMark.svelte';
+  import UnreadBadge from './UnreadBadge.svelte';
+  import { unreadResponseCount, type UnreadResponse } from './chatUnread';
   import { SvelteSet } from 'svelte/reactivity';
   import type {
     PanelAction,
@@ -30,6 +32,7 @@
   import { planTopicTransfer, type TopicDragSource, type TopicTransferRequest } from './topicTransfer';
 
   interface Props {
+    unreadResponses?: UnreadResponse[];
     environments: DesktopEnvironment[];
     selectedEnvironment: DesktopEnvironment | null;
     environmentLoading: boolean;
@@ -54,6 +57,7 @@
   }
 
   let {
+    unreadResponses = [],
     environments, selectedEnvironment, environmentLoading, environmentError,
     data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder, onTransferTopic,
     onReparentTopic,
@@ -564,6 +568,7 @@
         <span class="active-label">{node.label}</span>
       </button>
       {@render alertBubble(node.alertCount, node.alertSeverity)}
+      <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', node.id, topicSlug)} />
     </div>
     {#if children.length > 0 && open}
       <ul class="active-tree branch-tree">
@@ -669,6 +674,7 @@
         <span class="active-label">{workstream.label}</span>
       </button>
       {@render alertBubble(workstream.alertCount, workstream.alertSeverity)}
+      <UnreadBadge count={unreadResponseCount(unreadResponses, 'workstream', workstream.id, workstream.slug)} />
     </div>
     {#if expandable && open}
       <div class="active-card-body">
@@ -707,6 +713,7 @@
                   <span aria-hidden="true" class="codicon codicon-{topic.icon}"></span>
                   <span class="active-label">{topic.label}</span>
                   {@render alertBubble(topic.alertCount, topic.alertSeverity)}
+                  <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id, topicSlug)} />
                 </button>
               </div>
             {/each}

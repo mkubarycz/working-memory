@@ -126,6 +126,44 @@ let containerEnvironmentGeneration = 0;
 let registeredContainerApps: ContainerClaim[] = [];
 let dataTier: DataTierManager | null = null;
 let dataTierLaunch: Promise<void> = Promise.resolve();
+let documentChangeController: AbortController | undefined;
+
+function startDocumentChanges(): void {
+  documentChangeController?.abort();
+  const controller = new AbortController();
+  documentChangeController = controller;
+  const client = controlPlane();
+  const mcpUrl = environmentManager.currentEnvironment!.mcpUrl;
+  void (async () => {
+    let retryMs = 1_000;
+    while (!controller.signal.aborted && environmentManager.currentEnvironment?.mcpUrl === mcpUrl) {
+      try {
+        await client.watchDocumentChanges((change) => {
+          retryMs = 1_000;
+          mainWindow?.webContents.send('documents:changed', { mcpUrl, change });
+        }, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.error('[desktop] Live document updates disconnected:', error);
+        mainWindow?.webContents.send('documents:changed', {
+          mcpUrl, error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (controller.signal.aborted) return;
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          controller.signal.removeEventListener('abort', done);
+          resolve();
+        };
+        const timer = setTimeout(done, retryMs);
+        controller.signal.addEventListener('abort', done, { once: true });
+        if (controller.signal.aborted) done();
+      });
+      retryMs = Math.min(retryMs * 2, 30_000);
+    }
+  })().catch((error) => console.error('[desktop] Live document watcher failed:', error));
+}
 
 const environmentManager = new DesktopEnvironmentManager<ControlPlaneClient>({
   createClient: (mcpUrl) => new ControlPlaneClient({ resolveUrl: () => mcpUrl }),
@@ -319,6 +357,7 @@ const chatAgent = new DesktopChatAgent({
 
 const gracefulShutdown = createGracefulShutdown({
   resetAgent: async () => {
+    documentChangeController?.abort();
     await chatAgent.reset();
     await copilotProvider.stop();
     await appMcp.disconnectAll();
@@ -786,6 +825,7 @@ function restartInstalledDesktop(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('documents:watch', () => startDocumentChanges());
   ipcMain.on('app:restart', () => {
     restartInstalledDesktop();
   });
@@ -794,6 +834,7 @@ function registerIpc(): void {
     return environmentState(await discoverEnvironments());
   });
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
+    documentChangeController?.abort();
     containerEnvironmentGeneration += 1;
     registeredContainerApps = [];
     for (const operation of containerOperations) operation.abort();
@@ -1257,7 +1298,10 @@ async function createWindow(): Promise<BrowserWindow> {
   window.on('resize', () => saveWindowState(window));
   window.on('close', () => saveWindowState(window, true));
   window.on('closed', () => {
-    if (mainWindow === window) mainWindow = null;
+    if (mainWindow === window) {
+      documentChangeController?.abort();
+      mainWindow = null;
+    }
   });
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL);

@@ -1,5 +1,8 @@
 <script lang="ts">
   import type { AlertVM, AttachmentRef, SaveState, TopicPatch, TopicVM } from './types';
+  import { formatDocumentTimestamp as fmtTs } from '../documentDates';
+  import UnreadBadge from '../UnreadBadge.svelte';
+  import { unreadResponseCount, type UnreadResponse } from '../chatUnread';
   import { getTopicTypeConfig, iconForTopic } from './viewRegistry';
   import { renderMarkdown } from './markdown';
   import { imageFilesFromTransfer } from './imageFiles';
@@ -8,6 +11,7 @@
   import HybridMarkdownEditor from './HybridMarkdownEditor.svelte';
 
   interface Props {
+    unreadResponses?: UnreadResponse[];
     topic: TopicVM;
     saveState: SaveState;
     onSaveTopic: (patch: TopicPatch) => void;
@@ -21,6 +25,7 @@
   }
 
   let {
+    unreadResponses = [],
     topic,
     saveState,
     onSaveTopic,
@@ -120,17 +125,6 @@
     void attachImages(files);
   }
 
-  function fmtTs(ts: number): string {
-    if (!ts) {
-      return '—';
-    }
-    try {
-      return new Date(ts).toLocaleString();
-    } catch {
-      return String(ts);
-    }
-  }
-
   // Type-aware icon + label: the control-plane TopicType icon drives the header,
   // with a registry override / shared fallback resolved in `iconForTopic`.
   const icon = $derived(iconForTopic(topic.topicType, topic.typeMeta?.icon));
@@ -215,6 +209,7 @@
     <h1 class="title" title={topic.title}>{topic.title}</h1>
   {/if}
   {#if !draft}
+    <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.slug)} />
     <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
     <SaveStatus state={saveState} />
   {/if}

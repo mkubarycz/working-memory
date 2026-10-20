@@ -28,6 +28,7 @@ import * as os from 'node:os';
 import { readFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { parseDocumentChanges, type DocumentChanges } from './documentChanges';
 import {
   controlPlanePortFilePath,
   parsePortInfo,
@@ -855,6 +856,27 @@ const sseDecliningFetch = (url: string | URL, init?: RequestInit): Promise<Respo
  * one reconnects (handling daemon restarts / dropped connections).
  */
 export class ControlPlaneClient {
+  private readonly lifetime = new AbortController();
+
+  async watchDocumentChanges(onChange: (change: DocumentChanges) => void, signal: AbortSignal): Promise<void> {
+    const mcpUrl = this.resolveUrl();
+    if (!mcpUrl) throw new Error('No Working Memory environment is available for live updates.');
+    const stopped = AbortSignal.any([signal, this.lifetime.signal]);
+    let version: number | undefined;
+    while (!stopped.aborted) {
+      const url = new URL('/changes', mcpUrl);
+      if (version !== undefined) url.searchParams.set('since', String(version));
+      const response = await fetch(url, { signal: AbortSignal.any([stopped, AbortSignal.timeout(35_000)]) });
+      if (!response.ok) {
+        throw new Error(response.status === 404
+          ? 'Live updates require upgrading the selected Working Memory data-tier instance.'
+          : `Working Memory live updates failed: HTTP ${response.status}.`);
+      }
+      const change = parseDocumentChanges(await response.json());
+      if (change.reset || change.resourceVersion !== version) onChange(change);
+      version = change.resourceVersion;
+    }
+  }
   private readonly resolveUrl: () => string | null;
   private readonly onError: (err: unknown) => void;
   private client: Client | null = null;
@@ -1847,6 +1869,7 @@ export class ControlPlaneClient {
   /** Close the client + transport and release the singleton. */
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.lifetime.abort();
     const client = this.client;
     const transport = this.transport;
     this.client = null;

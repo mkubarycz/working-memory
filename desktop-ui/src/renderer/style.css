@@ -148,6 +148,11 @@ button { cursor: pointer; }
 .load-older:hover:not(:disabled) { border-color: var(--desktop-accent-strong); color: var(--desktop-accent-strong); }
 .load-older:disabled { cursor: default; opacity: .55; }
 .chat-run { position: relative; margin: 0 0 22px; scroll-margin-block: 12px; }
+.timeline-command { display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; color: var(--desktop-chat-muted); font-size: 10px; }
+.timeline-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--desktop-accent-strong); }
+.timeline-state { margin-left: auto; text-transform: capitalize; }
+.timeline-details { margin-left: 13px; padding-left: 10px; border-left: 2px solid rgba(89, 85, 91, .2); }
+.tab-unread-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #c52e3c; }
 .chat-run:focus-visible { outline: 2px solid var(--desktop-accent-strong); outline-offset: -2px; }
 .chat-run.preview-attention::after { content: ""; position: absolute; z-index: 2; inset: 0; border: 2px solid var(--desktop-accent-strong); pointer-events: none; animation: chat-run-attention .55s ease-in-out 2; }
 @keyframes chat-run-attention {
@@ -277,7 +282,8 @@ button { cursor: pointer; }
 .camera-dialog button:disabled { opacity: .45; }
 .camera-preview, .camera-review { display: block; width: 100%; max-height: min(65vh, 560px); object-fit: contain; background: #181718; }
 .camera-error { margin: 0; color: #91251f; font-size: 12px; }
-.main { display: grid; grid-template-rows: minmax(0, 1fr) auto auto; min-width: 0; min-height: 0; overflow: hidden; background: #faf9f7; }
+.main { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; min-width: 0; min-height: 0; overflow: hidden; background: #faf9f7; }
+.live-update-error { position: absolute; top: 0; right: 0; left: 0; z-index: 4; }
 .backend-status { display: inline-flex; align-items: center; gap: 5px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #777; }
 .backend-status.state-healthy .status-dot { background: #2f8f46; }
@@ -314,7 +320,7 @@ button { cursor: pointer; }
 .container-app-detail dt, .container-app-detail dd { margin: 0; padding: 9px 12px; overflow-wrap: anywhere; }
 .container-app-detail dt { color: #625d61; font-weight: 700; }
 .container-app-error { padding: 10px 12px; border-left: 3px solid #91251f; background: #f8e3e1; color: #761d17; }
-.document-tab-select > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-tab-select > .document-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .document-tab-select .codicon { flex: 0 0 auto; color: var(--desktop-accent-strong); }
 .document-tab-close { display: grid; place-items: center; flex: 0 0 30px; width: 30px; padding: 0; border: 0; background: transparent; color: #777176; }
 .document-tab-close:hover, .document-tab-select:hover { background: #dedadd; color: #262326; }

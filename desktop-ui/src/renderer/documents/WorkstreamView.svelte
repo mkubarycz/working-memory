@@ -1,5 +1,8 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
+  import { formatDocumentTimestamp as fmtTs } from '../documentDates';
+  import UnreadBadge from '../UnreadBadge.svelte';
+  import { unreadResponseCount, type UnreadResponse } from '../chatUnread';
   import type { WorkstreamVM, TreeTopicVM, AlertVM } from './types';
   import type { SaveState } from './types';
   import { defaultExpandedIds, cascadeExpandIds, type ExpandableNode } from './treeExpansion';
@@ -8,6 +11,7 @@
   import AlertCallouts from './AlertCallouts.svelte';
 
   interface Props {
+    unreadResponses?: UnreadResponse[];
     ws: WorkstreamVM;
     saveState: SaveState;
     onSave: (patch: { title?: string; status?: string }) => void;
@@ -19,6 +23,7 @@
   }
 
   let {
+    unreadResponses = [],
     ws,
     saveState,
     onSave,
@@ -163,16 +168,6 @@
     onSave({ status: ws.status });
   }
 
-  function fmtTs(ts: number): string {
-    if (!ts) {
-      return '—';
-    }
-    try {
-      return new Date(ts).toLocaleString();
-    } catch {
-      return String(ts);
-    }
-  }
 </script>
 
 <svelte:window onclick={onWindowClick} onkeydown={onWindowKeydown} />
@@ -270,6 +265,7 @@
               title="{node.alertCount} open alert{node.alertCount === 1 ? '' : 's'}"
             >{node.alertCount}</span>
           {/if}
+          <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', node.id, node.slug)} />
         </button>
         {#if node.pinned}
           <button

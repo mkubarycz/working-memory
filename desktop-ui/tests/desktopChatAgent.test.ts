@@ -14,11 +14,11 @@ const tools = [
   { name: 'ws-topic-delete', inputSchema: { type: 'object', properties: { slug: { type: 'string' } }, required: ['slug'] } },
 ];
 
-function journalHarness() {
+function journalHarness(id = 'journal-1') {
   let current: CommandJournal | undefined;
   const create = vi.fn(async (input): Promise<CommandJournal> => {
     current = {
-      id: 'journal-1', resourceVersion: 1, createdAt: input.startedAt, updatedAt: input.startedAt,
+      id, resourceVersion: 1, createdAt: input.startedAt, updatedAt: input.startedAt,
       schemaVersion: 2, status: 'running', ...input, entityRefs: input.entityRefs ?? [], events: [],
     };
     return current;
@@ -86,6 +86,63 @@ function deferred<T>() {
 }
 
 describe('DesktopChatAgent', () => {
+  it('routes two pending topic confirmations to their original journals and tool clients', async () => {
+    const proposal = (slug: string) => ({ choices: [{ message: { content: null, tool_calls: [
+      { id: slug, function: { name: 'ws-topic-delete', arguments: JSON.stringify({ slug }) } },
+    ] } }] });
+    const callModel = vi.fn().mockResolvedValueOnce(proposal('first')).mockResolvedValueOnce(proposal('second'))
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'Second deleted.' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'First cancelled.' } }] });
+    const journals = [journalHarness('first-journal'), journalHarness('second-journal')];
+    const clients = [vi.fn(async () => ({ ok: true, result: {} })), vi.fn(async () => ({ ok: true, result: {} }))];
+    let next = 0;
+    let confirmation = 0;
+    const agent = new DesktopChatAgent({
+      ...options(callModel),
+      createId: () => `approval-${++confirmation}`,
+      resolveDependencies: () => {
+        const index = next++;
+        return { listTools: async () => tools, callTool: clients[index], journal: journals[index] };
+      },
+    });
+    const input = { mode: 'chat-completions' as const, url: 'https://example.test', model: 'test', headers: {} };
+    const first = await agent.start({ ...input, message: 'Delete first', context: { kind: 'Topic', routeKind: 'topic', identifier: 'first', title: 'First' } });
+    const second = await agent.start({ ...input, message: 'Delete second', context: { kind: 'Topic', routeKind: 'topic', identifier: 'second', title: 'Second' } });
+    expect(first.pendingConfirmation!.id).not.toBe(second.pendingConfirmation!.id);
+    expect(clients.every((client) => client.mock.calls.length === 0)).toBe(true);
+    expect(await agent.resolveConfirmation(second.pendingConfirmation!.id, true)).toMatchObject({ journalId: 'second-journal', message: 'Second deleted.' });
+    expect(journals[0].current()?.status).toBe('awaiting_confirmation');
+    expect(await agent.resolveConfirmation(first.pendingConfirmation!.id, false)).toMatchObject({ journalId: 'first-journal', message: 'First cancelled.' });
+    expect(clients[0]).not.toHaveBeenCalled();
+    expect(clients[1]).toHaveBeenCalledWith('ws-topic-delete', { slug: 'second' });
+  });
+
+  it('runs two topic queries concurrently and finalizes their independent journals out of order', async () => {
+    const firstModel = deferred<unknown>();
+    const secondModel = deferred<unknown>();
+    const callModel = vi.fn().mockImplementationOnce(() => firstModel.promise).mockImplementationOnce(() => secondModel.promise);
+    const journals = [journalHarness('first-journal'), journalHarness('second-journal')];
+    let next = 0;
+    const agent = new DesktopChatAgent({
+      ...options(callModel),
+      resolveDependencies: () => ({ listTools: async () => tools, callTool: vi.fn(), journal: journals[next++] }),
+    });
+    const input = { mode: 'chat-completions' as const, url: 'https://example.test', model: 'test', headers: {} };
+    let firstFinished = false;
+    const first = agent.start({ ...input, message: 'First query', context: { kind: 'Topic', routeKind: 'topic', identifier: 'first', title: 'First' } });
+    void first.then(() => { firstFinished = true; });
+    const second = agent.start({ ...input, message: 'Second query', context: { kind: 'Topic', routeKind: 'topic', identifier: 'second', title: 'Second' } });
+    await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(2));
+    secondModel.resolve({ choices: [{ message: { content: 'Second response' } }] });
+    expect(await second).toMatchObject({ journalId: 'second-journal', message: 'Second response', status: 'succeeded' });
+    expect(firstFinished).toBe(false);
+    expect(journals[0].current()?.status).toBe('running');
+    firstModel.resolve({ choices: [{ message: { content: 'First response' } }] });
+    expect(await first).toMatchObject({ journalId: 'first-journal', message: 'First response', status: 'succeeded' });
+    expect(journals[0].current()?.primaryScope.id).toBe('first');
+    expect(journals[1].current()?.primaryScope.id).toBe('second');
+  });
+
   it('executes Copilot proposals through the existing tool loop and journals the actual provider', async () => {
     const callModel = vi.fn();
     const callTool = vi.fn(async () => ({ ok: true, result: { title: 'Roadmap' } }));
