@@ -10,6 +10,7 @@ import {
   HOST_TASK_OPERATION_VERSION,
   HOST_TASK_STATES,
   canonicalHostTaskPolicyJson,
+  isHostTaskCredential,
   type HostTaskOperation,
   type HostTaskAppProvisionInput,
   type HostTaskAppProvisionResult,
@@ -149,7 +150,7 @@ export class HostTaskCredentialVault {
 }
 
 function validSecret(value: unknown): string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{32,256}$/.test(value)) {
+  if (!isHostTaskCredential(value)) {
     throw new Error('Invalid host-task credential.');
   }
   return value;
@@ -235,7 +236,7 @@ export class HostTaskAdminClient {
     const disclosure = projectHostTaskPolicy(policy);
     reviewedHostTaskOperation(disclosure.operation, disclosure.policyHash);
     const approval: HostTaskGrantApprovalInput = {
-      ...validateGrant(input), operationHash: HOST_TASK_POLICY_HASH, operationVersion: HOST_TASK_OPERATION_VERSION,
+      ...validateGrant(input), policyHash: HOST_TASK_POLICY_HASH, operationVersion: HOST_TASK_OPERATION_VERSION,
     };
     await this.request('/grants', approval);
   }

@@ -4,6 +4,12 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 
+// Standalone control-plane compilation cannot import root shared runtime files.
+// Keep this boundary predicate parity-tested against shared/hostTasks.ts.
+export function isHostTaskCredential(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{32,256}$/.exec(value)?.[0] === value;
+}
+
 const scope = Object.freeze({
   organization: 'CXPPMO', project: 'Customers',
   identity: 'mkubarycz@microsoft.com', areaPath: 'Customers\\Comcast',
@@ -83,7 +89,7 @@ export function loadHostTaskAdminCredential(
     if (length !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
         after.ctimeMs !== stat.ctimeMs) throw new Error();
     const token = buffer.subarray(0, length).toString('utf8').trim();
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error();
+    if (!isHostTaskCredential(token)) throw new Error();
     return token;
   } catch {
     // Do not include filenames, credentials or raw filesystem errors.
@@ -223,7 +229,7 @@ export class HostTaskBroker {
     }
     this.clock = options.hostTaskClock ?? Date.now;
     const credential = options.hostTaskAdminCredential;
-    if (credential !== undefined && !/^[A-Za-z0-9_-]{32,256}$/.test(credential)) {
+    if (credential !== undefined && !isHostTaskCredential(credential)) {
       throw new Error('Host-task admin credential must be a 32–256 character externally provisioned secret.');
     }
     this.adminHash = credential === undefined ? undefined : hostTaskHash(credential);
@@ -477,10 +483,15 @@ export class HostTaskBroker {
       if (path === '/admin/grants') {
         const input = identitySchema.extend({
           appId: uuid, expiresAt: z.number().int(),
-          operationHash: z.string().regex(/^[0-9a-f]{64}$/),
+          policyHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+          operationHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
           operationVersion: z.number().int().positive(),
-        }).strict().parse(body);
-        if (input.operationHash !== HOST_TASK_POLICY_HASH || input.operationVersion !== HOST_TASK_OPERATION.version) {
+        }).strict().superRefine((input, ctx) => {
+          if (!input.policyHash && !input.operationHash) ctx.addIssue({ code: 'custom', message: 'policy_hash_required' });
+        }).parse(body);
+        if ((input.policyHash ?? input.operationHash) !== HOST_TASK_POLICY_HASH ||
+            input.operationHash !== undefined && input.operationHash !== HOST_TASK_POLICY_HASH ||
+            input.operationVersion !== HOST_TASK_OPERATION.version) {
           fail(409, 'policy_changed');
         }
         if (!this.get('SELECT id FROM host_task_apps WHERE id=? AND revoked_at IS NULL', input.appId)) fail(404, 'app_not_found');
@@ -697,7 +708,7 @@ export class HostTaskBroker {
       if (url.search) fail(400, 'query_not_allowed');
       const auth = req.headers.authorization;
       const token = typeof auth === 'string' && auth.startsWith('Bearer ') &&
-        /^[A-Za-z0-9_-]{32,256}$/.test(auth.slice(7)) ? auth.slice(7) : '';
+        isHostTaskCredential(auth.slice(7)) ? auth.slice(7) : '';
       const path = url.pathname.slice('/host-tasks/v1'.length);
       if (path === '/admin' || path.startsWith('/admin/')) this.admin(token);
       else this.auth(token, path.startsWith('/runner/') ? 'runners' : 'apps');

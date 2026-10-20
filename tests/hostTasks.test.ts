@@ -5,9 +5,9 @@ import * as path from 'node:path';
 import { openStore, type Store } from '../control-plane/src/store';
 import {
   HostTaskBroker, HOST_TASK_BLOCKED_REASON, HOST_TASK_OPERATION, HOST_TASK_OPERATION_HASH,
-  hostTaskHash, type HostTaskExecutionFixture, type HostTaskFixtureSnapshot,
+  hostTaskHash, isHostTaskCredential as backendCredential, type HostTaskExecutionFixture, type HostTaskFixtureSnapshot,
 } from '../control-plane/src/hostTasks';
-import { canonicalHostTaskChunkJson, canonicalHostTaskPolicyJson, canonicalHostTaskStateMetadataJson, type HostTaskOperation, type HostTaskRecord } from '../shared/hostTasks';
+import { canonicalHostTaskChunkJson, canonicalHostTaskPolicyJson, canonicalHostTaskStateMetadataJson, isHostTaskCredential, type HostTaskOperation, type HostTaskRecord } from '../shared/hostTasks';
 
 const sid = 'S-1-5-21-123-456-789-1001';
 const tenant = '12345678-1234-4234-8234-123456789012';
@@ -99,6 +99,19 @@ function record(id = 1) {
 const rejects = (fn: () => unknown, code: string) => expect(fn).toThrow(code);
 
 describe('host-task broker authorization and fixed capability', () => {
+  it('keeps shared/native and standalone backend credential validation identical and strict', () => {
+    const cases: Array<[unknown, boolean]> = [
+      [undefined, false], [null, false], [0, false], [{}, false],
+      ['a'.repeat(31), false], ['a'.repeat(32), true], ['a'.repeat(256), true],
+      ['a'.repeat(257), false], ['_'.repeat(32), true], ['-'.repeat(32), true],
+      [`${'a'.repeat(32)}\n`, false], [` ${'a'.repeat(32)}`, false],
+      [`${'a'.repeat(32)}\u202E`, false], ['+'.repeat(32), false],
+    ];
+    for (const [value, expected] of cases) {
+      expect(isHostTaskCredential(value)).toBe(expected);
+      expect(backendCredential(value)).toBe(expected);
+    }
+  });
   it('starts disabled without an explicitly injected admin credential', () => {
     const store = openStore(':memory:'); stores.push(store);
     const broker = new HostTaskBroker(store.db);
@@ -252,6 +265,19 @@ describe('host-task broker authorization and fixed capability', () => {
     expect(grants[0].id).toBe(f.grant.id);
     expect(grants[0].revokedAt).toBeNull();
     expect(grants[0].generation).toBe(1);
+  });
+  it('accepts canonical policyHash approval and rejects contradictory compatibility hashes', () => {
+    const f = fixture();
+    const input = {
+      appId: f.app.appId, windowsSid: sid, tenantId: tenant, expiresAt: f.now + 3600000,
+      policyHash: HOST_TASK_OPERATION_HASH, operationVersion: HOST_TASK_OPERATION.version,
+    };
+    const grant = f.call('/admin/grants', input);
+    expect(grant.policyHash).toBe(HOST_TASK_OPERATION_HASH);
+    rejects(() => f.call('/admin/grants', { ...input, operationHash: '0'.repeat(64) }), 'policy_changed');
+    rejects(() => f.call('/admin/grants', { ...input, policyHash: '0'.repeat(64), operationHash: HOST_TASK_OPERATION_HASH }), 'policy_changed');
+    const current = f.call('/admin', undefined, admin, 'GET').grants.find((row: any) => row.id === grant.id);
+    expect(current.revokedAt).toBeNull();
   });
   it('revokes app credentials durably, cancels leases, and scrubs already released results', () => {
     const f = fixture(true, true);

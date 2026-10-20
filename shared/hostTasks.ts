@@ -1,4 +1,8 @@
 /** Protected host broker contract. Credentials are returned only at provisioning. */
+export const HOST_TASK_CREDENTIAL_PATTERN = /^[A-Za-z0-9_-]{32,256}$/;
+export function isHostTaskCredential(value: unknown): value is string {
+  return typeof value === 'string' && HOST_TASK_CREDENTIAL_PATTERN.exec(value)?.[0] === value;
+}
 export const HOST_TASK_CAPABILITY = 'thrive.sync.read' as const;
 export const HOST_TASK_OPERATION_VERSION = 4 as const;
 /** Reviewed descriptor digest only: NOT an executable-byte hash or code-verification attestation. */
@@ -116,16 +120,19 @@ export interface HostTaskAppProvisionResult {
   appId: string;
   credential: string;
 }
-export interface HostTaskGrantApprovalInput {
+interface HostTaskGrantApprovalFields {
   appId: string;
   windowsSid: string;
   tenantId: string;
   /** Epoch milliseconds, future and at most 24 hours from approval. */
   expiresAt: number;
-  /** Trusted native confirmation binding to the policy, NOT implementation bytes. */
-  operationHash: string;
   operationVersion: number;
 }
+/** Native policy-confirmation binding; operationHash is a compatibility alias. */
+export type HostTaskGrantApprovalInput = HostTaskGrantApprovalFields & (
+  { policyHash: string; operationHash?: string } |
+  { policyHash?: string; operationHash: string }
+);
 export interface HostTaskRecord {
   id: number;
   title: string;

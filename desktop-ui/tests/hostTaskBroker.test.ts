@@ -45,7 +45,8 @@ afterEach(() => {
 });
 
 describe('trusted host-task transport', () => {
-  it.each(['short', 'a'.repeat(31), 'a'.repeat(257), 'a'.repeat(32) + '\r\n'])(
+  it.each(['short', 'a'.repeat(31), 'a'.repeat(257), 'a'.repeat(32) + '\r\n',
+    ...['\n', '\r', '\u2028', '\u2029'].map((suffix) => 'a'.repeat(32) + suffix)])(
     'rejects invalid broker credentials before transport',
     (invalid) => {
       const fetcher = vi.fn();
@@ -181,7 +182,7 @@ describe('trusted host-task transport', () => {
     await client.grant(input, hostTaskPolicy);
     const payload = JSON.parse(fetcher.mock.calls[0][1].body);
     expect(payload).toEqual({
-      ...input, operationHash: HOST_TASK_OPERATION_HASH, operationVersion: HOST_TASK_OPERATION_VERSION,
+      ...input, policyHash: HOST_TASK_OPERATION_HASH, operationVersion: HOST_TASK_OPERATION_VERSION,
     });
     expect(payload).not.toHaveProperty('credential');
   });

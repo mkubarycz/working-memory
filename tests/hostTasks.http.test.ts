@@ -17,7 +17,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 const admin = randomBytes(32).toString('hex');
-const approvalBinding = { operationHash: HOST_TASK_OPERATION_HASH, operationVersion: HOST_TASK_OPERATION.version };
+const approvalBinding = { policyHash: HOST_TASK_OPERATION_HASH, operationVersion: HOST_TASK_OPERATION.version };
 async function fixture(enabled = true, store?: Store) {
   const server = await startServer({ port: 0, store, hostTaskAdminCredential: enabled ? admin : undefined });
   servers.push(server);
