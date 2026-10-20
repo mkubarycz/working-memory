@@ -24,6 +24,12 @@ const dockerRuntime = z.object({
     name: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/),
     mountPath: z.string().startsWith('/').max(500),
   }).strict()).max(20).optional(),
+  additionalPorts: z.array(z.object({
+    hostPort: z.number().int().min(1).max(65535),
+    containerPort: z.number().int().min(1).max(65535),
+    protocol: z.enum(['tcp', 'udp']),
+    hostIp: z.enum(['127.0.0.1', '0.0.0.0']).optional(),
+  }).strict()).max(10).optional(),
 }).strict();
 
 const mcpEndpoint = z.object({

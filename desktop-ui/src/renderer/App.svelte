@@ -3,6 +3,8 @@
   import ActiveRail from './ActiveRail.svelte';
   import BrainMark from './BrainMark.svelte';
   import UnreadBadge from './UnreadBadge.svelte';
+  import ShareTopicDialog from './ShareTopicDialog.svelte';
+  import type { TopicVM } from './documents/types';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
@@ -133,6 +135,7 @@
   let selectedTool = $state<SelectedTool | null>(null);
   let toolInspectorElement = $state<HTMLElement | null>(null);
   let unreadResponses = $state<UnreadResponse[]>([]);
+  let sharingTopic = $state<TopicVM | null>(null);
   let unreadEnvironment = $state<string | null>(null);
   let liveUpdateError = $state('');
   let historyInitialized = false;
@@ -1136,6 +1139,7 @@
     const reset = emptyEnvironmentBoundRendererState();
     documentSaves.clear();
     documentChanges.clear();
+    sharingTopic = null;
     deferredDocumentRefreshes.clear();
     unreadEnvironment = null;
     unreadResponses = [];
@@ -2182,6 +2186,7 @@
           <TopicView
             {unreadResponses}
             topic={activeDocument}
+            onShare={(topic) => { sharingTopic = topic; }}
             {saveState}
             onSaveTopic={saveTopic}
             onOpenTopic={(slug) => void openResource('topic', slug)}
@@ -2411,6 +2416,9 @@
           </button>
         </form>
       </div>
+    {#if sharingTopic}
+      <ShareTopicDialog topic={sharingTopic} beforeShare={() => documentSaves.flushAll()} onClose={() => { sharingTopic = null; }} />
+    {/if}
   </main>
 
   {#if cameraOpen}

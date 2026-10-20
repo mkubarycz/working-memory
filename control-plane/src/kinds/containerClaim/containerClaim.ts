@@ -13,6 +13,7 @@ export interface DockerRuntimeSpec {
   healthPath: string;
   entryPath: string;
   volumes?: Array<{ name: string; mountPath: string }>;
+  additionalPorts?: Array<{ hostPort: number; containerPort: number; protocol: 'tcp' | 'udp'; hostIp?: '127.0.0.1' | '0.0.0.0' }>;
 }
 
 export interface AppMcpEndpoint {

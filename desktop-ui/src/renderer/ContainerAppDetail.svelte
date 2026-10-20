@@ -207,7 +207,7 @@
         class="container-app-frame"
         title={`${app.displayName} application`}
         src={embeddedUrl}
-        sandbox="allow-forms allow-scripts allow-same-origin"
+        sandbox="allow-forms allow-scripts allow-same-origin allow-popups"
         referrerpolicy="no-referrer"
       ></iframe>
       {/key}
