@@ -21,6 +21,7 @@
     onSetAlertStatus: (id: string, status: AlertVM['status']) => void;
     attachmentBaseUrl?: string;
     onAttachImages?: (files: File[]) => Promise<AttachmentRef[]>;
+    onOpenLink?: (href: string) => void;
     titlePlaceholder?: string;
     draft?: boolean;
   }
@@ -36,6 +37,7 @@
     onSetAlertStatus,
     attachmentBaseUrl = '',
     onAttachImages = async () => [],
+    onOpenLink,
     titlePlaceholder = '',
     draft = false,
   }: Props = $props();
@@ -377,6 +379,7 @@
             onSaveTopic({ body });
           }}
           {onAttachImages}
+          {onOpenLink}
         />
       {:else if topic.editable && bodyMode === 'source'}
         <textarea

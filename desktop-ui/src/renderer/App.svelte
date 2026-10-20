@@ -2196,6 +2196,7 @@
               ? new URL(selectedEnvironment.mcpUrl).origin
               : ''}
             onAttachImages={attachImages}
+            onOpenLink={openLink}
           />
         {:else if activeDocument}
           <DocumentView
