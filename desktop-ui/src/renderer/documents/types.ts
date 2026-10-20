@@ -136,6 +136,7 @@ export interface TopicCreateDraftVM {
   topicTypes: TopicTypeMetaVM[];
   workstream: string;
   workstreamTitle: string;
+  newWorkstreamTitle?: string;
   parent: string | null;
   parentTitle: string | null;
 }

@@ -34,6 +34,7 @@ import {
 import { checkConfiguredModel } from './modelHealth';
 import { LocalCopilotProvider } from './copilotProvider';
 import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
+import { parseTopicAutocomplete, topicAutocompletePrompt } from './topicAutocomplete';
 declare const __WM_BUILD_TIMESTAMP__: string;
 import {
   DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
@@ -700,15 +701,7 @@ async function autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAu
   const profile = resolveModelProfile(config, 'fast', 'simple');
   if (!profile.model.trim()) throw new Error('Configure a model for Fast / Simple requests first.');
   const request = configuredRequest(profile);
-  const allowedTypes = input.topicTypes
-    .filter((type) => type.slug.trim())
-    .map((type) => `${type.slug}: ${type.label}${type.description ? ` — ${type.description}` : ''}`)
-    .join('\n');
-  const prompt =
-    'Suggest a concise title and the best topic type for this draft. ' +
-    'Return only JSON with string fields "title" and "topicType". ' +
-    `The title must be at most 120 characters. Allowed topic types:\n${allowedTypes}\n\n` +
-    `Current title: ${input.currentTitle}\nCurrent type: ${input.currentTopicType}\n\nDraft:\n${input.body.slice(0, 12_000)}`;
+  const prompt = topicAutocompletePrompt(input);
   const body = request.mode === 'responses'
     ? { model: profile.model, input: prompt }
     : {
@@ -721,26 +714,7 @@ async function autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAu
         request.mode,
         await requestModel({ ...request, body, timeoutMs: DESKTOP_MODEL_REQUEST_TIMEOUT_MS }),
       ).text;
-  let suggestion: unknown;
-  try {
-    suggestion = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim());
-  } catch {
-    throw new Error('Autocomplete model returned invalid JSON.');
-  }
-  if (!suggestion || typeof suggestion !== 'object') {
-    throw new Error('Autocomplete model returned an invalid suggestion.');
-  }
-  const title = 'title' in suggestion && typeof suggestion.title === 'string'
-    ? suggestion.title.trim().slice(0, 120)
-    : '';
-  const requestedType = 'topicType' in suggestion && typeof suggestion.topicType === 'string'
-    ? suggestion.topicType.trim()
-    : '';
-  const topicType = input.topicTypes.some((type) => type.slug === requestedType)
-    ? requestedType
-    : input.currentTopicType;
-  if (!title) throw new Error('Autocomplete model did not suggest a title.');
-  return { title, topicType };
+  return parseTopicAutocomplete(text, input);
 }
 
 async function requireContainerAppId(rawId: string): Promise<string> {
@@ -1043,6 +1017,13 @@ function registerIpc(): void {
         error: message,
       });
     }
+  });
+  ipcMain.handle('workstream:create', async (_event, rawTitle: string) => {
+    const title = rawTitle.trim();
+    if (!title || title.length > 120) throw new Error('Enter a workstream title of 1 to 120 characters.');
+    const created = await controlPlane().wsCreate({ title, status: 'progress' });
+    if (!created.slug) throw new Error('The created workstream did not return a slug.');
+    return { slug: created.slug, title: created.title };
   });
   ipcMain.handle('workstream:save', async (_event, identifier: string, patch: { title?: string; status?: string }) => {
     const current = await loadWorkstreamViewModel(controlPlane(), identifier);

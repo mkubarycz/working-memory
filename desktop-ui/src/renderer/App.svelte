@@ -4,12 +4,14 @@
   import BrainMark from './BrainMark.svelte';
   import UnreadBadge from './UnreadBadge.svelte';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
+  import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
   import type { TopicVM } from './documents/types';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
   import TopicView from './documents/TopicView.svelte';
   import TopicCreateView from './documents/TopicCreateView.svelte';
+  import { createTopicFromDraft } from './topicCreation';
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
   import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
@@ -87,7 +89,7 @@
   import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
-  import { topicTransferRefreshTargets, type TopicTransferRequest } from './topicTransfer';
+  import { topicTransferRefreshTargets, type TopicDragSource, type TopicTransferRequest } from './topicTransfer';
   import type { WorkstreamSection } from '../../../shared/panelData';
   import type { RailSide, RailWidths } from './railLayout';
   import {
@@ -136,6 +138,7 @@
   let toolInspectorElement = $state<HTMLElement | null>(null);
   let unreadResponses = $state<UnreadResponse[]>([]);
   let sharingTopic = $state<TopicVM | null>(null);
+  let movingToNewWorkstream = $state<TopicDragSource | null>(null);
   let unreadEnvironment = $state<string | null>(null);
   let liveUpdateError = $state('');
   let historyInitialized = false;
@@ -1140,6 +1143,7 @@
     documentSaves.clear();
     documentChanges.clear();
     sharingTopic = null;
+    movingToNewWorkstream = null;
     deferredDocumentRefreshes.clear();
     unreadEnvironment = null;
     unreadResponses = [];
@@ -1459,6 +1463,7 @@
     workstream: string,
     workstreamTitle: string,
     parent?: { slug: string; title: string },
+    newWorkstream = false,
   ): Promise<void> {
     documentError = '';
     try {
@@ -1475,6 +1480,7 @@
         topicTypes,
         workstream,
         workstreamTitle,
+        ...(newWorkstream ? { newWorkstreamTitle: '' } : {}),
         parent: parent?.slug ?? null,
         parentTitle: parent?.title ?? null,
       };
@@ -1503,13 +1509,7 @@
 
   async function createTopic(draft: TopicCreateDraftVM): Promise<void> {
     const draftKey = documentTabKey(draft);
-    const created = await window.workingMemory.createTopic({
-      title: draft.title,
-      body: draft.body,
-      topicType: draft.topicType,
-      workstream: draft.workstream,
-      ...(draft.parent ? { parent: draft.parent } : {}),
-    });
+    const created = await createTopicFromDraft(draft, window.workingMemory);
     const replaced = updateDocumentTab(
       { tabs: documents, selectedKey: selectedDocumentKey },
       draftKey,
@@ -1567,10 +1567,11 @@
     void mutateFromRail(workstream, () => invokeActiveAction(window.workingMemory.invokeAction, workstream, action));
   }
 
-  async function transferActiveTopic(request: TopicTransferRequest): Promise<void> {
+  async function transferActiveTopic(request: TopicTransferRequest): Promise<boolean> {
     activeLoading = true;
     activeError = '';
     let transferError = '';
+    let transferred = false;
     try {
       await documentSaves.flushAll();
       await window.workingMemory.invokeAction(
@@ -1582,6 +1583,7 @@
           move: request.move,
         }],
       );
+      transferred = true;
       const targets = topicTransferRefreshTargets(
         documents,
         request.sourceWorkstream,
@@ -1611,6 +1613,7 @@
       await refreshActive();
       if (transferError) activeError = transferError;
     }
+    return transferred;
   }
 
   async function reorderActiveWorkstream(
@@ -1949,6 +1952,8 @@
               .find((candidate) => candidate.slug === workstream);
             void startTopicCreation(workstream, card?.label ?? workstream, parent);
           }}
+          onAddWorkstream={() => void startTopicCreation('', '', undefined, true)}
+          onMoveToNewWorkstream={(source) => { movingToNewWorkstream = source; }}
           onOpenTopicBacklog={openTopicBacklog}
         />
       {/key}
@@ -2015,7 +2020,7 @@
                     aria-label={tabAppStatus?.ready ? 'Healthy' : tabAppStatus?.state ?? 'Loading'}
                   ></span>
                 {/if}
-                <span class="document-tab-label">{document.kind === 'topic-create' && !document.title ? 'New Topic' : document.title}</span>
+                <span class="document-tab-label">{document.kind === 'topic-create' && !document.title ? (document.newWorkstreamTitle !== undefined ? 'New Workstream' : 'New Topic') : document.title}</span>
                 {#if unreadResponseCount(unreadResponses, document.kind, document.slug, 'id' in document ? document.id : undefined) > 0}
                   <span class="tab-unread-dot" title="Unread response" aria-label="Unread response"></span>
                 {/if}
@@ -2418,6 +2423,16 @@
       </div>
     {#if sharingTopic}
       <ShareTopicDialog topic={sharingTopic} beforeShare={() => documentSaves.flushAll()} onClose={() => { sharingTopic = null; }} />
+    {/if}
+    {#if movingToNewWorkstream}
+      <MoveToNewWorkstreamDialog
+        source={movingToNewWorkstream}
+        beforeMove={() => documentSaves.flushAll()}
+        onMove={async (request) => {
+          if (!await transferActiveTopic(request)) throw new Error(activeError || 'The topic could not be moved.');
+        }}
+        onClose={() => { movingToNewWorkstream = null; }}
+      />
     {/if}
   </main>
 

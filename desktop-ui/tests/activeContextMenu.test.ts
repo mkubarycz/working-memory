@@ -68,7 +68,7 @@ describe('Active rail context-menu projection', () => {
     });
   });
 
-  it('disables Move to when no other open workstream is available', () => {
+  it('keeps Move to available for creating a new workstream when no other target exists', () => {
     expect(activeContextMenuItems([], {
       topic: 'topic-one',
       focused: false,
@@ -76,14 +76,34 @@ describe('Active rail context-menu projection', () => {
       moveTargets: [{ slug: 'source', title: 'Source' }],
     })[2]).toMatchObject({
       kind: 'move',
-      enabled: false,
+      enabled: true,
       targets: [],
     });
+  });
+
+  it('disables Move to when the topic or source is unavailable', () => {
+    for (const source of [
+      { topic: '', sourceWorkstream: 'source' },
+      { topic: 'topic-one', sourceWorkstream: '' },
+    ]) {
+      expect(activeContextMenuItems([], { ...source, focused: false, moveTargets: [] })[2])
+        .toMatchObject({ kind: 'move', enabled: false });
+    }
   });
 
   it('extracts and decodes the topic slug from a panel URI', () => {
     expect(topicSlugFromOpenUri('working-memory:/topic/design%20notes.working-memory')).toBe('design notes');
     expect(topicSlugFromOpenUri('not a uri')).toBe('');
+  });
+
+  it('omits the redundant Add to workstream action while retaining move and removal', () => {
+    const items = activeContextMenuItems([
+      { command: 'workingMemory.topic.addToWorkstream', title: 'Add to workstream' },
+      { command: 'workingMemory.topic.removeFromWorkstream', title: 'Remove from workstream' },
+    ], { topic: 'topic-one', focused: false, sourceWorkstream: 'source', moveTargets: [] });
+    expect(items.map(({ title }) => title)).toEqual([
+      'Add Child...', 'Add to Focus', 'Move to...', 'Remove from workstream',
+    ]);
   });
 
   it('projects Queue action proxies before the bridge and accepts a cloneable result', async () => {

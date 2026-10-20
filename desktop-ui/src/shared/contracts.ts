@@ -184,11 +184,13 @@ export interface TopicAutocompleteInput {
   currentTitle: string;
   currentTopicType: string;
   topicTypes: Array<{ slug: string; label: string; description: string }>;
+  currentWorkstreamTitle?: string;
 }
 
 export interface TopicAutocompleteResult {
   title: string;
   topicType: string;
+  workstreamTitle?: string;
 }
 
 export interface BackendHealth {
@@ -435,6 +437,7 @@ export interface DesktopApi {
   saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;
   saveTopic(identifier: string, patch: TopicPatch): Promise<DocumentVM>;
   listTopicTypes(): Promise<TopicTypeMetaVM[]>;
+  createWorkstream(title: string): Promise<{ slug: string; title: string }>;
   createTopic(input: TopicCreateInput): Promise<DocumentVM>;
   reparentTopic(slug: string, parent: string | null): Promise<void>;
   uploadAttachment(file: AttachmentUpload): Promise<AttachmentRef>;

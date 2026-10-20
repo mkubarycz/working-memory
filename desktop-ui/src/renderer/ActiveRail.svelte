@@ -50,6 +50,8 @@
     onTransferTopic: (request: TopicTransferRequest) => void;
     onReparentTopic: (slug: string, parent: string | null) => void;
     onAddTopic: (workstream: string, parent?: { slug: string; title: string }) => void;
+    onAddWorkstream: () => void;
+    onMoveToNewWorkstream: (source: TopicDragSource) => void;
     onOpenTopicBacklog: () => void;
     onDiscoverEnvironments: () => Promise<void>;
     onSwitchEnvironment: (mcpUrl: string) => Promise<void>;
@@ -62,6 +64,8 @@
     data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder, onTransferTopic,
     onReparentTopic,
     onAddTopic,
+    onAddWorkstream,
+    onMoveToNewWorkstream,
     onOpenTopicBacklog,
     onDiscoverEnvironments, onSwitchEnvironment, onManageInstances,
   }: Props = $props();
@@ -250,6 +254,14 @@
     if (!request) return;
     menu = null;
     onTransferTopic(request);
+  }
+
+  function moveToNewWorkstreamFromMenu(event: MouseEvent, topic: string): void {
+    event.stopPropagation();
+    const sourceWorkstream = menu?.workstream;
+    if (!sourceWorkstream || !topic) return;
+    menu = null;
+    onMoveToNewWorkstream({ slug: topic, sourceWorkstream });
   }
 
   function openMoveSubmenu(event: KeyboardEvent): void {
@@ -827,9 +839,10 @@
     {#if !data && loading}<p class="active-empty">Loading active work…</p>{/if}
     {#each sections as section (section.id)}
       <section class="active-section section-{section.section}" class:drop-target={dropTarget?.section === section.section} aria-label={section.label}>
+        <header class="active-section-header">
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <header
-          class="active-section-header"
+        <div
+          class="active-section-heading"
           class:resizable={section.section !== 'queue'}
           role={section.section !== 'queue' ? 'separator' : undefined}
           aria-label={section.section !== 'queue' ? `Resize ${section.label} section` : undefined}
@@ -842,7 +855,14 @@
           onpointercancel={finishSectionResize}
           onkeydown={(event) => section.section !== 'queue' && resizeSectionWithKeyboard(section.section, event)}
         >
-          <span>{section.label}</span><span>{section.workstreams.length}</span>
+          <span>{section.label}</span>
+        </div>
+          {#if section.section === 'progress'}
+            <button class="active-section-add" type="button" title="New Workstream" aria-label="New Workstream" onclick={onAddWorkstream}>
+              NEW WORKSTREAM
+            </button>
+          {/if}
+          <span class="active-section-count">{section.workstreams.length}</span>
         </header>
         <div
           class="active-section-content"
@@ -910,6 +930,10 @@
             tabindex="-1"
             onkeydown={navigateMoveSubmenu}
           >
+            <button role="menuitem" onclick={(event) => moveToNewWorkstreamFromMenu(event, item.topic)}>
+              <span aria-hidden="true" class="codicon codicon-add"></span>
+              <span>New Workstream...</span>
+            </button>
             {#each item.targets as target (target.slug)}
               <button
                 role="menuitem"

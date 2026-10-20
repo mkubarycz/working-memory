@@ -23,6 +23,8 @@
     onAttachImages?: (files: File[]) => Promise<AttachmentRef[]>;
     titlePlaceholder?: string;
     draft?: boolean;
+    newWorkstreamTitle?: string;
+    onNewWorkstreamTitleChange?: (title: string) => void;
   }
 
   let {
@@ -38,6 +40,8 @@
     onAttachImages = async () => [],
     titlePlaceholder = '',
     draft = false,
+    newWorkstreamTitle,
+    onNewWorkstreamTitleChange,
   }: Props = $props();
 
   const STATUSES = ['open', 'closed'];
@@ -251,6 +255,16 @@
   <div class="attr">
     <span class="k">Workstreams</span>
     <span class="v ws-cell">
+      {#if draft && newWorkstreamTitle !== undefined}
+        <input
+          class="new-workstream-input"
+          value={newWorkstreamTitle}
+          oninput={(event) => onNewWorkstreamTitleChange?.(event.currentTarget.value)}
+          placeholder="New workstream"
+          aria-label="New workstream"
+          maxlength="120"
+        />
+      {/if}
       {#each topic.workstreams as w (w.slug)}
         <button
           class="ws-chip"
@@ -264,7 +278,7 @@
           {/if}
         </button>
       {/each}
-      {#if topic.workstreams.length === 0}—{/if}
+      {#if topic.workstreams.length === 0 && newWorkstreamTitle === undefined}—{/if}
     </span>
   </div>
   {#each extraSettings as setting (setting.label)}
@@ -918,6 +932,18 @@
     color: var(--vscode-textLink-foreground);
     cursor: pointer;
     font-size: 0.95em;
+  }
+
+  .new-workstream-input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 4px 6px;
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 4px;
+    color: var(--vscode-input-foreground);
+    background: var(--vscode-input-background);
+    font: inherit;
   }
 
   .ws-chip:hover {

@@ -1,3 +1,5 @@
+import type { DesktopApi } from '../shared/contracts';
+
 export interface TopicDragSource {
   slug: string;
   sourceWorkstream: string;
@@ -6,6 +8,36 @@ export interface TopicDragSource {
 export interface TopicTransferRequest extends TopicDragSource {
   targetWorkstream: string;
   move: boolean;
+}
+
+export interface NewWorkstreamMoveDraft extends TopicDragSource {
+  title: string;
+  targetWorkstream: string;
+}
+
+export async function moveTopicToNewWorkstream(
+  draft: NewWorkstreamMoveDraft,
+  api: Pick<DesktopApi, 'createWorkstream'>,
+  transfer: (request: TopicTransferRequest) => Promise<void>,
+): Promise<void> {
+  if (!draft.targetWorkstream) {
+    const workstream = await api.createWorkstream(draft.title);
+    draft.targetWorkstream = workstream.slug;
+    draft.title = workstream.title;
+  }
+  try {
+    await transfer({
+      slug: draft.slug,
+      sourceWorkstream: draft.sourceWorkstream,
+      targetWorkstream: draft.targetWorkstream,
+      move: true,
+    });
+  } catch (reason) {
+    throw new Error(
+      `Workstream "${draft.title}" was created, but the topic could not be moved. ` +
+      `Retry to move it to the same workstream. ${reason instanceof Error ? reason.message : String(reason)}`,
+    );
+  }
 }
 
 export interface TopicTransferRefreshCandidate {
