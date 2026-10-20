@@ -7,12 +7,13 @@
 import { describe, test, expect } from 'vitest';
 import {
   buildAlertVMs,
+  buildAlertHistoryVMs,
   alertBubbleForTopic,
-  RECENT_CLOSED_ALERT_MS,
 } from '../shared/viewModels/alertVms';
 import type { Alert } from '../shared/controlPlaneClient';
 
-const NOW = 1_000_000_000_000;
+// Control-plane `updated_at` values are epoch SECONDS (see control-plane store).
+const NOW = 1_000_000_000;
 
 function alert(over: Partial<Alert>): Alert {
   return {
@@ -38,7 +39,7 @@ describe('buildAlertVMs', () => {
       alert({ id: 'in', topics: ['t1', 'x'] }),
       alert({ id: 'out', topics: ['y', 'z'] }),
     ];
-    const vms = buildAlertVMs(alerts, ['t1'], NOW);
+    const vms = buildAlertVMs(alerts, ['t1']);
     expect(vms.map((v) => v.id)).toEqual(['in']);
   });
 
@@ -47,52 +48,43 @@ describe('buildAlertVMs', () => {
       alert({ id: 'a', topics: ['t2'] }),
       alert({ id: 'b', topics: ['t9'] }),
     ];
-    const vms = buildAlertVMs(alerts, ['t1', 't2', 't3'], NOW);
+    const vms = buildAlertVMs(alerts, ['t1', 't2', 't3']);
     expect(vms.map((v) => v.id)).toEqual(['a']);
   });
 
-  test('hides a closed alert older than the recent window', () => {
-    const stale = alert({
-      id: 'stale',
-      status: 'closed',
-      updated_at: NOW - RECENT_CLOSED_ALERT_MS - 1,
-    });
-    expect(buildAlertVMs([stale], ['t1'], NOW)).toEqual([]);
-  });
-
-  test('keeps a recently-closed alert but marks it dimmed', () => {
-    const recent = alert({
-      id: 'recent',
-      status: 'closed',
-      updated_at: NOW - 1000,
-    });
-    const vms = buildAlertVMs([recent], ['t1'], NOW);
-    expect(vms).toHaveLength(1);
-    expect(vms[0].dimmed).toBe(true);
+  test('excludes closed alerts from the open callouts', () => {
+    const vms = buildAlertVMs(
+      [
+        alert({ id: 'open', status: 'alert' }),
+        alert({ id: 'closed', status: 'closed', updated_at: NOW }),
+      ],
+      ['t1'],
+    );
+    expect(vms.map((v) => v.id)).toEqual(['open']);
   });
 
   test('open alerts are never dimmed', () => {
     const vms = buildAlertVMs(
       [alert({ status: 'alert' }), alert({ id: 'i', status: 'informational' })],
       ['t1'],
-      NOW,
     );
     expect(vms.every((v) => v.dimmed === false)).toBe(true);
   });
 
-  test('orders active → informational → closed, newest-first within a tier', () => {
+  test('orders active → informational, newest-first then id within a tier', () => {
     const alerts = [
       alert({ id: 'closed', status: 'closed', updated_at: NOW - 500 }),
       alert({ id: 'info-old', status: 'informational', updated_at: NOW - 10 }),
-      alert({ id: 'info-new', status: 'informational', updated_at: NOW - 5 }),
+      alert({ id: 'info-new-b', status: 'informational', updated_at: NOW - 5 }),
+      alert({ id: 'info-new-a', status: 'informational', updated_at: NOW - 5 }),
       alert({ id: 'active', status: 'alert', updated_at: NOW - 100 }),
     ];
-    const vms = buildAlertVMs(alerts, ['t1'], NOW);
+    const vms = buildAlertVMs(alerts, ['t1']);
     expect(vms.map((v) => v.id)).toEqual([
       'active',
-      'info-new',
+      'info-new-a',
+      'info-new-b',
       'info-old',
-      'closed',
     ]);
   });
 
@@ -100,9 +92,50 @@ describe('buildAlertVMs', () => {
     const vms = buildAlertVMs(
       [alert({ title: '  ', description: 'first line\nsecond' })],
       ['t1'],
-      NOW,
     );
     expect(vms[0].title).toBe('first line');
+  });
+});
+
+describe('buildAlertHistoryVMs', () => {
+  test('a just-closed alert appears in history immediately (seconds timestamps)', () => {
+    const closed = alert({ id: 'just-closed', status: 'closed', updated_at: NOW });
+    expect(buildAlertVMs([closed], ['t1'])).toEqual([]);
+    const history = buildAlertHistoryVMs([closed], ['t1']);
+    expect(history).toMatchObject([{ id: 'just-closed', status: 'closed', dimmed: true }]);
+  });
+
+  test('keeps older closed alerts with no recency cutoff', () => {
+    const history = buildAlertHistoryVMs(
+      [alert({ id: 'ancient', status: 'closed', updated_at: 1 })],
+      ['t1'],
+    );
+    expect(history.map((v) => v.id)).toEqual(['ancient']);
+  });
+
+  test('contains only closed alerts in scope (workstream member slugs)', () => {
+    const alerts = [
+      alert({ id: 'member', status: 'closed', topics: ['t2'] }),
+      alert({ id: 'outsider', status: 'closed', topics: ['t9'] }),
+      alert({ id: 'open', status: 'alert', topics: ['t2'] }),
+      alert({ id: 'info', status: 'informational', topics: ['t1'] }),
+    ];
+    expect(buildAlertHistoryVMs(alerts, ['t1', 't2']).map((v) => v.id)).toEqual(['member']);
+  });
+
+  test('orders most recently closed first, then by id for ties', () => {
+    const alerts = [
+      alert({ id: 'old', status: 'closed', updated_at: NOW - 86_400 * 365 }),
+      alert({ id: 'tie-b', status: 'closed', updated_at: NOW - 60 }),
+      alert({ id: 'newest', status: 'closed', updated_at: NOW }),
+      alert({ id: 'tie-a', status: 'closed', updated_at: NOW - 60 }),
+    ];
+    expect(buildAlertHistoryVMs(alerts, ['t1']).map((v) => v.id)).toEqual([
+      'newest',
+      'tie-a',
+      'tie-b',
+      'old',
+    ]);
   });
 });
 

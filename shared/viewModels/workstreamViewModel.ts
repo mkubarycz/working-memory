@@ -11,7 +11,7 @@ import {
   type PanelTopic,
   type PanelTopicsGroup,
 } from '../panelData';
-import { buildAlertVMs, type AlertVM } from './alertVms';
+import { buildAlertHistoryVMs, buildAlertVMs, type AlertVM } from './alertVms';
 
 export interface WorkstreamViewModel {
   kind: 'workstream';
@@ -26,6 +26,8 @@ export interface WorkstreamViewModel {
   topics: Array<{ title: string; slug: string; status: string; pinned: boolean }>;
   tree: WorkstreamTreeGroupViewModel[];
   alerts: AlertVM[];
+  /** Closed (dismissed) alerts for member topics, most recently closed first. */
+  alertHistory: AlertVM[];
 }
 
 export interface WorkstreamTreeActionViewModel {
@@ -112,7 +114,6 @@ export async function readWorkstream(
 export async function loadWorkstreamViewModel(
   client: ControlPlaneClient,
   identifier: string,
-  now = Date.now(),
 ): Promise<WorkstreamViewModel | null> {
   const workstream = await readWorkstream(client, identifier);
   if (!workstream) return null;
@@ -163,6 +164,7 @@ export async function loadWorkstreamViewModel(
     editable: Boolean(slug),
     topics: ordered,
     tree: groups.map(treeGroup),
-    alerts: buildAlertVMs(alerts, memberSlugs, now),
+    alerts: buildAlertVMs(alerts, memberSlugs),
+    alertHistory: buildAlertHistoryVMs(alerts, memberSlugs),
   };
 }

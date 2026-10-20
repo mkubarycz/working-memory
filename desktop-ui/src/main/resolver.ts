@@ -1,6 +1,6 @@
 import type { ControlPlaneClient, DocumentEnvelope, Topic, Workstream } from '../../../shared/controlPlaneClient';
 import { buildWorkstreamPanels, type PanelData, type WorkstreamSection } from '../../../shared/panelData';
-import { alertBubbleForTopic, buildAlertVMs } from '../../../shared/viewModels/alertVms';
+import { alertBubbleForTopic, buildAlertHistoryVMs, buildAlertVMs } from '../../../shared/viewModels/alertVms';
 import type { GenericDocVM, RelationVM, TopicVM } from '../renderer/documents/types';
 import type { DesktopWorkstreamReorderUpdate } from '../shared/contracts';
 export { loadWorkstreamViewModel } from '../../../shared/viewModels/workstreamViewModel';
@@ -103,7 +103,6 @@ async function readTopic(client: ControlPlaneClient, identifier: string): Promis
 export async function loadTopicViewModel(
   client: ControlPlaneClient,
   identifier: string,
-  now = Date.now(),
 ): Promise<TopicVM | null> {
   const topic = await readTopic(client, identifier);
   if (!topic) return null;
@@ -149,7 +148,8 @@ export async function loadTopicViewModel(
       : [],
     workstreams: topic.workstreams.map((slug) => relation(slug, workstreamTitles)),
     focusedWorkstreams: topic.focusedWorkstreams.map((slug) => relation(slug, workstreamTitles)),
-    alerts: buildAlertVMs(alerts, topic.slug ? [topic.slug] : [], now),
+    alerts: buildAlertVMs(alerts, topic.slug ? [topic.slug] : []),
+    alertHistory: buildAlertHistoryVMs(alerts, topic.slug ? [topic.slug] : []),
   };
 }
 

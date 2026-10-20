@@ -62,6 +62,7 @@
     workstreams: [relation(draft.workstream, draft.workstreamTitle)],
     focusedWorkstreams: [],
     alerts: [],
+    alertHistory: [],
   });
 
   function updateDraft(patch: TopicPatch): void {

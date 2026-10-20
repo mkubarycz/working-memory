@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AlertVM } from './types';
   import { renderMarkdown } from './markdown';
+  import { formatDocumentTimestamp as fmtTs } from '../documentDates';
 
   interface Props {
     alerts: AlertVM[];
@@ -48,6 +49,9 @@
       >
         <div class="callout-head">
           <span class="callout-title">{a.title}</span>
+          {#if a.status === 'closed'}
+            <span class="callout-meta">Closed {fmtTs(a.updatedAt)}</span>
+          {/if}
         </div>
         {#if a.description.trim()}
           <!-- Safe to inject: renderMarkdown uses markdown-it `html: false`, so
@@ -106,7 +110,7 @@
     background: color-mix(in srgb, #000 28%, var(--vscode-editor-background));
   }
 
-  /* Recently-closed: muted, kept only so Reopen stays reachable. */
+  /* Closed: muted in the alert-history log, kept so Reopen stays reachable. */
   .callout.closed {
     border-left-color: var(--vscode-charts-green, #89d185);
   }
@@ -123,6 +127,11 @@
 
   .callout-title {
     font-weight: 600;
+  }
+
+  .callout-meta {
+    font-size: 0.8em;
+    color: var(--vscode-descriptionForeground);
   }
 
   .callout-body {

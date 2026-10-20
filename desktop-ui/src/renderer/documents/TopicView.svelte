@@ -8,6 +8,7 @@
   import { imageFilesFromTransfer } from './imageFiles';
   import SaveStatus from './SaveStatus.svelte';
   import AlertCallouts from './AlertCallouts.svelte';
+  import AlertHistory from './AlertHistory.svelte';
   import HybridMarkdownEditor from './HybridMarkdownEditor.svelte';
 
   interface Props {
@@ -402,6 +403,8 @@
     </div>
   </div>
 </section>
+
+<AlertHistory alerts={topic.alertHistory ?? []} {onSetAlertStatus} />
 
 <style>
   .head {

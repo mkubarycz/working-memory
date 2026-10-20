@@ -294,6 +294,29 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.desktop-status-bar\s*{[^}]*grid-column:\s*1\s*\/\s*-1/s);
   });
 
+  it('renders closed alerts in a labelled history log at the bottom of topic and workstream views', () => {
+    const docs = resolve(repoRoot, 'desktop-ui/src/renderer/documents');
+    const history = readFileSync(resolve(docs, 'AlertHistory.svelte'), 'utf8');
+    const callouts = readFileSync(resolve(docs, 'AlertCallouts.svelte'), 'utf8');
+    const topicView = readFileSync(resolve(docs, 'TopicView.svelte'), 'utf8');
+    const workstreamView = readFileSync(resolve(docs, 'WorkstreamView.svelte'), 'utf8');
+    const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
+
+    expect(history).toContain('aria-label="Alert history"');
+    expect(history).toContain('<span>Alert history</span>');
+    expect(history).toContain('<AlertCallouts {alerts} {onSetAlertStatus} />');
+    expect(callouts).toContain("{ label: 'Reopen (Alert)', icon: 'bell', status: 'alert' }");
+    expect(callouts).toContain('Closed {fmtTs(a.updatedAt)}');
+    for (const [view, scope] of [[topicView, 'topic'], [workstreamView, 'ws']] as const) {
+      const markup = view.slice(0, view.indexOf('<style>'));
+      expect(markup).toContain(`<AlertCallouts alerts={${scope}.alerts} {onSetAlertStatus} />`);
+      const historyAt = markup.indexOf(`<AlertHistory alerts={${scope}.alertHistory ?? []} {onSetAlertStatus} />`);
+      expect(historyAt).toBeGreaterThan(markup.indexOf('<AlertCallouts'));
+      expect(markup.slice(historyAt)).not.toMatch(/<section|<AlertCallouts/);
+    }
+    expect(main).toMatch(/'alert:set-status'[\s\S]*?alertUpdate\(\{ id, status \}\);\s*return loadResource\(context\.kind, context\.identifier\);/);
+  });
+
   it('subdues closed topics without rendering topic status text or muting alerts', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');

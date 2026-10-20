@@ -17,59 +17,63 @@ export interface AlertVM {
   dimmed: boolean;
 }
 
-/**
- * Window (ms) a CLOSED alert stays visible after its last update so its Reopen
- * actions remain reachable; older closed alerts are hidden entirely. Mirrors
- * the retired journal renderer's 1-hour `topicAlertsWithRecentClosed` cutoff.
- */
-export const RECENT_CLOSED_ALERT_MS = 60 * 60 * 1000;
-
-/** Sort rank so active alerts float above informational above closed. */
+/** Sort rank so active alerts float above informational. */
 function alertStatusRank(status: string): number {
-  if (status === 'alert') {
-    return 0;
-  }
-  if (status === 'informational') {
-    return 1;
-  }
-  return 2;
+  return status === 'alert' ? 0 : 1;
+}
+
+function scopedAlerts(alerts: Alert[], scopeSlugs: readonly string[]): Alert[] {
+  const scope = new Set(scopeSlugs);
+  return alerts.filter((a) => a.topics.some((t) => scope.has(t)));
+}
+
+function toAlertVM(a: Alert): AlertVM {
+  return {
+    id: a.id,
+    title: a.title.trim() || a.description.split('\n')[0] || 'Alert',
+    description: a.description,
+    recommendedAction: a.recommended_action,
+    status: a.status,
+    updatedAt: a.updated_at,
+    dimmed: a.status === 'closed',
+  };
 }
 
 /**
- * Shape the scoped, ordered alert callouts for a workstream / topic view. Pure
- * (no client, no VS Code APIs) so it is unit-tested directly.
+ * Shape the scoped, ordered OPEN alert callouts for a workstream / topic view.
+ * Pure (no client, no VS Code APIs) so it is unit-tested directly.
  *
  * Scope: an alert is relevant when its `topics` intersect `scopeSlugs` (a single
  * topic slug for the topic view; the member-topic slugs for the workstream
- * view). A CLOSED alert is kept only when it was updated within
- * {@link RECENT_CLOSED_ALERT_MS} of `now` (surfaced dimmed, still reopenable);
- * older closed alerts drop out. Ordered active → informational → recent-closed,
- * newest-first within each tier.
+ * view). Closed alerts are excluded here and surfaced by
+ * {@link buildAlertHistoryVMs} instead. Ordered active → informational,
+ * newest-first within each tier, then by id for a stable order.
  */
-export function buildAlertVMs(
-  alerts: Alert[],
-  scopeSlugs: readonly string[],
-  now: number,
-): AlertVM[] {
-  const scope = new Set(scopeSlugs);
-  return alerts
-    .filter((a) => a.topics.some((t) => scope.has(t)))
-    .filter(
-      (a) => a.status !== 'closed' || now - a.updated_at <= RECENT_CLOSED_ALERT_MS,
-    )
+export function buildAlertVMs(alerts: Alert[], scopeSlugs: readonly string[]): AlertVM[] {
+  return scopedAlerts(alerts, scopeSlugs)
+    .filter((a) => a.status !== 'closed')
     .sort((a, b) => {
       const rank = alertStatusRank(a.status) - alertStatusRank(b.status);
-      return rank !== 0 ? rank : b.updated_at - a.updated_at;
+      if (rank !== 0) return rank;
+      return b.updated_at - a.updated_at || a.id.localeCompare(b.id);
     })
-    .map((a) => ({
-      id: a.id,
-      title: a.title.trim() || a.description.split('\n')[0] || 'Alert',
-      description: a.description,
-      recommendedAction: a.recommended_action,
-      status: a.status,
-      updatedAt: a.updated_at,
-      dimmed: a.status === 'closed',
-    }));
+    .map(toAlertVM);
+}
+
+/**
+ * Shape the scoped CLOSED (dismissed) alerts for the alert-history log at the
+ * bottom of a workstream / topic view. Every closed alert in scope is kept — no
+ * recency cutoff — so older dismissals stay reachable and reopenable. Ordered
+ * most-recently-updated (i.e. most recently closed) first, then by id.
+ */
+export function buildAlertHistoryVMs(
+  alerts: Alert[],
+  scopeSlugs: readonly string[],
+): AlertVM[] {
+  return scopedAlerts(alerts, scopeSlugs)
+    .filter((a) => a.status === 'closed')
+    .sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id))
+    .map(toAlertVM);
 }
 
 export interface AlertBubble {

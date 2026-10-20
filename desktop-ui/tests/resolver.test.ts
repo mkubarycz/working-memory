@@ -3,6 +3,7 @@ import type { Alert, Topic, TopicType, Workstream } from '../../shared/controlPl
 import {
   chooseWorkstream,
   loadActivePanelData,
+  loadTopicViewModel,
   loadWorkstreamViewModel,
   localWorkstreamQuery,
   persistWorkstreamReorder,
@@ -54,14 +55,60 @@ describe('workstream resolver', () => {
       alertRead: async () => [alert],
     } as never;
 
-    const vm = await loadWorkstreamViewModel(client, roadmap.slug!, 10_000);
+    const vm = await loadWorkstreamViewModel(client, roadmap.slug!);
 
     expect(vm?.editable).toBe(true);
     expect(vm?.alerts).toMatchObject([{ id: 'alert-1', status: 'alert' }]);
+    expect(vm?.alertHistory).toEqual([]);
     expect(vm?.tree[0].children[0]).toMatchObject({
       kind: 'topic', slug: 'desktop-parity', icon: 'rocket', pinned: true,
       alertCount: 1, alertSeverity: 'alert',
     });
+  });
+
+  it('moves a closed alert into the persisted topic + workstream history log', async () => {
+    const topic: Topic = {
+      id: 'topic-1', slug: 'desktop-parity', title: 'Desktop parity', body: '', status: 'open',
+      topicType: 'feature', parents: [], workstreams: [roadmap.slug!],
+      focusedWorkstreams: [], created_at: 1, updated_at: 2, resourceVersion: 3,
+    };
+    const outsider: Topic = { ...topic, id: 'topic-2', slug: 'elsewhere', title: 'Elsewhere', workstreams: [] };
+    const base = {
+      slug: null, description: '', recommended_action: '', dedupe_key: null, created_by: 'test',
+      created_at: 1, resourceVersion: 1,
+    } as const;
+    // Control-plane timestamps are epoch seconds; the store is the source of truth across reloads.
+    const store: Alert[] = [
+      { ...base, id: 'live', title: 'Live', status: 'alert', topics: [topic.slug!], updated_at: 1_700_000_000 },
+      { ...base, id: 'old-closed', title: 'Old', status: 'closed', topics: [topic.slug!], updated_at: 1_000 },
+      { ...base, id: 'other-closed', title: 'Other', status: 'closed', topics: [outsider.slug!], updated_at: 1_700_000_000 },
+    ];
+    const client = {
+      wsRead: async () => [roadmap],
+      topicRead: async (input: { slug?: string; workstream?: string } = {}) => {
+        if (input.slug) return [topic, outsider].filter((item) => item.slug === input.slug);
+        if (input.workstream) return [topic];
+        return [topic, outsider];
+      },
+      topicTypeRead: async () => [],
+      alertRead: async () => store.map((item) => ({ ...item })),
+    } as never;
+
+    const before = await loadTopicViewModel(client, topic.slug!);
+    expect(before?.alerts.map((item) => item.id)).toEqual(['live']);
+    expect(before?.alertHistory.map((item) => item.id)).toEqual(['old-closed']);
+
+    // Close the live alert (status-only update, no delete/recreate) and reload.
+    store[0] = { ...store[0], status: 'closed', updated_at: 1_700_000_100 };
+    const topicVm = await loadTopicViewModel(client, topic.slug!);
+    expect(topicVm?.alerts).toEqual([]);
+    expect(topicVm?.alertHistory.map((item) => item.id)).toEqual(['live', 'old-closed']);
+    expect(topicVm?.alertHistory[0]).toMatchObject({ status: 'closed', dimmed: true });
+
+    const wsVm = await loadWorkstreamViewModel(client, roadmap.slug!);
+    expect(wsVm?.alerts).toEqual([]);
+    expect(wsVm?.alertHistory.map((item) => item.id)).toEqual(['live', 'old-closed']);
+    expect(wsVm?.tree[0].children[0]).toMatchObject({ slug: topic.slug, alertCount: 0 });
   });
 
   it('maps the shared Active panel sections, nested topics, focus, and alerts', async () => {

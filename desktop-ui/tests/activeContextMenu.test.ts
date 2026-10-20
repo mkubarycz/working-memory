@@ -105,6 +105,7 @@ describe('Active rail context-menu projection', () => {
       topics: [],
       tree: [],
       alerts: [],
+      alertHistory: [],
     };
     let invocation: { channel: string; args: unknown[] } | undefined;
     const ipcRenderer = {

@@ -9,6 +9,7 @@
   import { sortTreeChildren } from './treeSort';
   import SaveStatus from './SaveStatus.svelte';
   import AlertCallouts from './AlertCallouts.svelte';
+  import AlertHistory from './AlertHistory.svelte';
 
   interface Props {
     unreadResponses?: UnreadResponse[];
@@ -328,6 +329,8 @@
     {/each}
   </section>
 {/if}
+
+<AlertHistory alerts={ws.alertHistory ?? []} {onSetAlertStatus} />
 
 {#if menu}
   <div

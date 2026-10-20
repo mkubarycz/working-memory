@@ -79,8 +79,10 @@ export interface WorkstreamVM {
   topics: WorkstreamTopicVM[];
   /** Full nested topic tree, mirroring the left rail's card. */
   tree: TreeGroupVM[];
-  /** Alerts relevant to this workstream (union of its topics' alerts). */
+  /** Open alerts relevant to this workstream (union of its topics' alerts). */
   alerts: AlertVM[];
+  /** Closed (dismissed) alerts for member topics, most recently closed first. */
+  alertHistory: AlertVM[];
 }
 
 /** A related document reference (parent topic, member workstream, …). */
@@ -97,8 +99,8 @@ export interface RelationVM {
 /**
  * A single alert rendered as a callout on the workstream / topic views. Mirrors
  * the control-plane Alert kind (see `Alert` in the control-plane client) but
- * flattened + scoped for display: `dimmed` is true for a recently-closed alert
- * kept visible only so its Reopen actions remain reachable.
+ * flattened + scoped for display: `dimmed` is true for a closed alert shown in
+ * the alert-history log, where its Reopen actions remain reachable.
  */
 export interface AlertVM {
   /** Alert document id (uuid) — the handle for status transitions. */
@@ -109,7 +111,7 @@ export interface AlertVM {
   /** Authored lifecycle status driving the callout color + button set. */
   status: 'alert' | 'informational' | 'closed';
   updatedAt: number;
-  /** True for a closed-but-recent alert (shown muted, still reopenable). */
+  /** True for a closed alert (shown muted in the history log, still reopenable). */
   dimmed: boolean;
 }
 
@@ -178,8 +180,10 @@ export interface TopicVM {
   children: RelationVM[];
   workstreams: RelationVM[];
   focusedWorkstreams: RelationVM[];
-  /** Alerts whose `topics` include this topic's slug. */
+  /** Open alerts whose `topics` include this topic's slug. */
   alerts: AlertVM[];
+  /** Closed (dismissed) alerts for this topic, most recently closed first. */
+  alertHistory: AlertVM[];
 }
 
 /** A flattened `spec` field rendered by the generic fallback view. */
