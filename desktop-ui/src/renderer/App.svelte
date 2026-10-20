@@ -79,7 +79,7 @@
     serializeDocumentTabs,
     updateDocumentTab,
   } from './documentTabs';
-  import { chatRunDomId, recentRunsForContext, matchesChatContext, chatContextBusy, chatContextPending, chatContextKey } from './scopedChat';
+  import { collapseChatOnInteraction, chatRunDomId, recentRunsForContext, matchesChatContext, chatContextBusy, chatContextPending, chatContextKey } from './scopedChat';
   import { createDocumentChangeQueue, documentMatchesChange, documentRefreshTarget } from './documentChanges';
   import type { DocumentChanges } from '../../../shared/documentChanges';
   import { collectUnreadResponses, observeResponse, parseUnreadResponses, responseKey, unreadResponseCount, type UnreadResponse } from './chatUnread';
@@ -1911,7 +1911,7 @@
   class:chat-collapsed={chatRailCollapsed}
   style={`--active-rail-width: ${resolvedRailWidths.active}px; --chat-rail-width: ${resolvedRailWidths.chat}px;`}
 >
-  <aside class="active-rail">
+  <aside class="active-rail" use:collapseChatOnInteraction={() => (scopePreviewExpanded = false)}>
     {#if activeRailCollapsed}
       <button
         class="rail-reveal active-rail-reveal"
@@ -1981,7 +1981,7 @@
         <button onclick={() => void startDocumentChanges()}>Retry</button>
       </div>
     {/if}
-    <div class="stage-content">
+    <div class="stage-content" use:collapseChatOnInteraction={() => (scopePreviewExpanded = false)}>
     {#if activeDocument}
       <div class="document-stage">
         <div class="document-tabs" role="tablist" aria-label="Open documents">
