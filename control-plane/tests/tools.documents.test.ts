@@ -88,6 +88,7 @@ describe('generic ID-only document tools', () => {
   it('deletes and restores by ID including unregistered legacy kinds, with optional CAS', async () => {
     const { store, call, create } = await connect();
     const doc = await create('Keep');
+    expect(error(await call('wm-document-delete', { id: doc.metadata.id, slug: 'obsolete' }))).toBe(true);
     expect(error(await call('wm-document-delete', { id: doc.metadata.id, expectedResourceVersion: -1 }))).toBe(true);
     const deleted = json<DocumentEnvelope>(await call('wm-document-delete', { id: doc.metadata.id }));
     expect(deleted.metadata.deletedAt).not.toBeNull();

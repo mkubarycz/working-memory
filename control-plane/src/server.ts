@@ -259,7 +259,7 @@ export function createMcpServer(
         'changed since you read it); when omitted the current live row is deleted ' +
         'unconditionally. Unknown or already-deleted ids (or already-live ids on restore) are ' +
         'rejected. Returns the affected document envelope.',
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().describe('The id (uuid) of the document to delete (or restore).'),
         restore: z
           .boolean()
@@ -270,7 +270,7 @@ export function createMcpServer(
           .int()
           .optional()
           .describe('Optional CAS guard for deletes: the resourceVersion you read via wm-document-read.'),
-      },
+      }).strict(),
     },
     async ({ id, restore, expectedResourceVersion }) => {
       // No spec validation here, so unregistered-kind documents remain manageable.
