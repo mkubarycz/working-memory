@@ -445,7 +445,7 @@ export interface DesktopApi {
   reparentTopic(slug: string, parent: string | null): Promise<void>;
   uploadAttachment(file: AttachmentUpload): Promise<AttachmentRef>;
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;
-  getAgentMessages(input?: { limit?: number; offset?: number }): Promise<AgentMessageVM[]>;
+  getAgentMessages(): Promise<AgentMessageVM[]>;
   recordAgentMessageDecision(id: string, decision: AgentMessageDecisionInput): Promise<void>;
   setAgentMessageStatus(
     id: string,

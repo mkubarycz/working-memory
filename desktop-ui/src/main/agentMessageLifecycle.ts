@@ -3,17 +3,9 @@ import { toAgentMessageVM, type AgentMessageVM } from '../../../shared/viewModel
 
 export async function listAgentMessages(
   client: ControlPlaneClient,
-  input: { limit?: number; offset?: number } = {},
 ): Promise<AgentMessageVM[]> {
-  const { limit, offset = 0 } = input;
-  if (!Number.isInteger(offset) || offset < 0
-    || (limit !== undefined && (!Number.isInteger(limit) || limit < 1))) {
-    throw new Error('Invalid agent message page request.');
-  }
-  // The canonical API returns the complete history; paginate only after a stable sort.
   return (await client.agentMessageRead())
     .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id))
-    .slice(offset, limit === undefined ? undefined : offset + limit)
     .map(toAgentMessageVM);
 }
 

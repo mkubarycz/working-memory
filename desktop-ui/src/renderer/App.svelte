@@ -967,7 +967,7 @@
     const loaded = new Map<string, AgentMessageVM>();
     try {
       await loadAllAgentMessages(
-        (input) => window.workingMemory.getAgentMessages(input),
+        () => window.workingMemory.getAgentMessages(),
         isCurrent,
         (page) => {
           page.forEach((message) => loaded.set(message.id, message));
