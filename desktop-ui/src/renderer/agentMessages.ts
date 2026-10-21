@@ -70,22 +70,11 @@ export function scopedMessageRows(runs: ChatRun[], messages: AgentMessageVM[],
 }
 
 export async function loadAllAgentMessages(
-  readPage: (input: { limit: number; offset: number }) => Promise<AgentMessageVM[]>,
+  readAll: () => Promise<AgentMessageVM[]>,
   isCurrent: () => boolean,
   onPage: (messages: AgentMessageVM[]) => void,
 ): Promise<void> {
-  const limit = 100;
-  let offset = 0;
-  const seen = new Set<string>();
-  while (isCurrent()) {
-    const page = await readPage({ limit, offset });
-    if (!isCurrent()) return;
-    if (!page.length) return;
-    const fresh = page.filter((message) => !seen.has(message.id));
-    if (!fresh.length) throw new Error('Agent message pagination did not advance.');
-    fresh.forEach((message) => seen.add(message.id));
-    onPage(fresh);
-    if (page.length < limit) return;
-    offset += page.length;
-  }
+  if (!isCurrent()) return;
+  const messages = await readAll();
+  if (isCurrent()) onPage(messages);
 }

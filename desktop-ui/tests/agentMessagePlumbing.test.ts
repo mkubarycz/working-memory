@@ -34,27 +34,19 @@ describe('AgentMessage desktop plumbing', () => {
     await expect(recordAgentMessageDecision({ agentMessageUpdate } as never, message.id, decision)).rejects.toThrow('Invalid');
     expect(agentMessageUpdate).not.toHaveBeenCalled();
   });
-  it('pages the entire history past 100 messages without dropping resolved records', async () => {
+  it('reads and sorts the entire history in one canonical snapshot', async () => {
     const messages = Array.from({ length: 205 }, (_, index) => ({
       ...message, id: `message-${index}`, created_at: index, status: 'resolved' as const,
     }));
     const agentMessageRead = vi.fn().mockResolvedValue(messages.reverse());
     const client = { agentMessageRead } as never;
-    const all = [
-      ...await listAgentMessages(client, { limit: 100, offset: 0 }),
-      ...await listAgentMessages(client, { limit: 100, offset: 100 }),
-      ...await listAgentMessages(client, { limit: 100, offset: 200 }),
-    ];
+    const all = await listAgentMessages(client);
     expect(all).toHaveLength(205);
     expect(new Set(all.map((item) => item.id)).size).toBe(205);
+    expect(all[0].id).toBe('message-0');
     expect(all[204].id).toBe('message-204');
-    expect(agentMessageRead.mock.calls).toEqual([[], [], []]);
-  });
-
-  it.each([{ offset: -1 }, { limit: 0 }, { offset: 0.5 }])('rejects invalid IPC page %j', async (input) => {
-    const agentMessageRead = vi.fn();
-    await expect(listAgentMessages({ agentMessageRead } as never, input)).rejects.toThrow('Invalid');
-    expect(agentMessageRead).not.toHaveBeenCalled();
+    expect(agentMessageRead).toHaveBeenCalledTimes(1);
+    expect(agentMessageRead).toHaveBeenCalledWith();
   });
   it('retains old acknowledged/resolved messages and scopes only the relevant history', () => {
     const messages: AgentMessage[] = [

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { loadAllAgentMessages, mergeMessageRows, messageNeedsAttention, messagesForContext, messageStatusActions } from '../src/renderer/agentMessages';
@@ -93,27 +93,24 @@ describe('canonical agent message timeline', () => {
     ], { ...context, kind: 'Workstream', identifier: '', id: undefined }, missingIdentity)).toEqual([]);
   });
 
-  it('loads all independent pages, including older attention, and counts only open attention messages', async () => {
+  it('loads the complete history once, including older attention, and counts only open attention messages', async () => {
     const all = Array.from({ length: 205 }, (_, index) => message(index, {
       attention: index === 200 || index === 201, status: index === 201 ? 'resolved' : 'open',
     }));
     const loaded: AgentMessageVM[] = [];
-    const offsets: number[] = [];
-    await loadAllAgentMessages(async ({ limit, offset }) => {
-      offsets.push(offset); return all.slice(offset, offset + limit);
-    }, () => true, (page) => loaded.push(...page));
-    expect(offsets).toEqual([0, 100, 200]);
+    const readAll = vi.fn().mockResolvedValue(all);
+    await loadAllAgentMessages(readAll, () => true, (page) => loaded.push(...page));
+    expect(readAll).toHaveBeenCalledTimes(1);
     expect(loaded).toHaveLength(205);
     expect(loaded.filter(messageNeedsAttention).map((item) => item.id)).toEqual(['message-200']);
     expect(messageNeedsAttention(message(1, { status: 'acknowledged', attention: true }))).toBe(false);
   });
 
-  it('rejects repeated pages and guards stale environment completion before publishing', async () => {
-    const page = Array.from({ length: 100 }, (_, index) => message(index));
-    await expect(loadAllAgentMessages(async () => page, () => true, () => {})).rejects.toThrow('did not advance');
+  it('guards stale environment completion before publishing', async () => {
+    const messages = Array.from({ length: 100 }, (_, index) => message(index));
     let current = true;
     const published: AgentMessageVM[] = [];
-    await loadAllAgentMessages(async () => { current = false; return page; }, () => current,
+    await loadAllAgentMessages(async () => { current = false; return messages; }, () => current,
       (items) => published.push(...items));
     expect(published).toEqual([]);
   });

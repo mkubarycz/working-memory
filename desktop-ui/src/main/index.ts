@@ -1108,7 +1108,7 @@ function registerIpc(): void {
     }
     return loadResource('workstream', workstream);
   });
-  ipcMain.handle('agent-message:list', (_event, input) => listAgentMessages(controlPlane(), input));
+  ipcMain.handle('agent-message:list', () => listAgentMessages(controlPlane()));
   ipcMain.handle('agent-message:record-decision', (_event, id, decision) =>
     recordAgentMessageDecision(controlPlane(), id, decision));
   ipcMain.handle('agent-message:set-status', async (_event, id, status) => {
