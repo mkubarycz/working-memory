@@ -89,13 +89,15 @@ export function registerWsAlertUpdate(server: McpServer, store: Store): void {
         const { id: _id, slug: _slug, created_at: _created, updated_at: _updated, resourceVersion: _version, ...base } = legacy;
         if (base.dedupe_key === null) delete (base as Partial<typeof base>).dedupe_key;
         const parsed = validateSpec(ALERT_KIND, { ...base, ...patch });
-        const mapping = legacyToMessage(parsed);
+        const mapping = legacyToMessage(parsed, parsed.description === existing.spec.description
+          ? existing.spec.legacy_source as Record<string, unknown> | undefined : undefined);
         const lifecycle = status === undefined
           ? { category: existing.spec.category, status: existing.spec.status, attention: existing.spec.attention }
           : { category: status === 'closed' ? existing.spec.category : mapping.category, status: mapping.status, attention: mapping.attention };
         validatedSpec = {
           ...existing.spec, ...parsed,
           title: mapping.title, recommended_action: mapping.recommended_action,
+          dedupe_key: mapping.dedupe_key,
           ...lifecycle,
         };
       } catch (err) {

@@ -32,6 +32,18 @@ const client = () => new ControlPlaneClient({ resolveUrl: () => 'http://127.0.0.
 describe('canonical AgentMessage shared client', () => {
   beforeEach(() => callTool.mockReset());
 
+  it('preserves whitespace bodies only on imported Alert history', async () => {
+    const description = ' \t\r\n ';
+    const legacy_source = { migration_version: 3, row: { kind: 'Alert', spec: JSON.stringify({ description }) } };
+    callTool.mockResolvedValue(text({ count: 1, messages: [{ ...envelope, spec: { ...envelope.spec, description, legacy_source } }] }));
+    expect((await client().agentMessageRead())[0].description).toBe(description);
+    for (const source of [undefined, { adapter: 'Alert' }, { migration_version: 3, row: {} },
+      { ...legacy_source, row: { kind: 'Topic', spec: '{}' } }]) {
+      callTool.mockResolvedValue(text({ count: 1, messages: [{ ...envelope, spec: { ...envelope.spec, description, legacy_source: source } }] }));
+      await expect(client().agentMessageRead()).rejects.toThrow('Malformed');
+    }
+  });
+
   it('parses an approval decision as communication with a server epoch-seconds timestamp', async () => {
     const decision = { outcome: 'approved', decided_by: 'Reviewer', reason: '**Reviewed**', decided_at: 300 };
     callTool.mockResolvedValue(text({ count: 1, messages: [{ ...envelope, spec: { ...envelope.spec, decision } }] }));

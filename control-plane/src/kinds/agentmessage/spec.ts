@@ -36,6 +36,18 @@ export const agentMessageSpec = z.object({
   legacy_source: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 
+export const persistedAgentMessageSpec = agentMessageSpec.extend({
+  description: z.string(),
+}).refine((spec) => {
+  if (spec.description.trim()) return true;
+  const source = spec.legacy_source;
+  const row = source?.row;
+  return spec.description.length > 0 && source?.migration_version === 3
+    && row !== null && typeof row === 'object' && !Array.isArray(row)
+    && 'kind' in row && row.kind === 'Alert'
+    && 'spec' in row && typeof row.spec === 'string';
+}, { message: 'A meaningful nonblank body is required except for preserved migrated Alert history.', path: ['description'] });
+
 // Zod optional(default(...)) still materializes defaults on omitted patch keys.
 // Remove creation defaults before making fields optional, so edits stay partial.
 export const agentMessagePatch = z.object({
@@ -51,8 +63,9 @@ export const agentMessagePatch = z.object({
 
 export type AgentMessageSpec = z.infer<typeof agentMessageSpec>;
 
-export function legacyToMessage(input: Record<string, unknown>): AgentMessageSpec {
+export function legacyToMessage(input: Record<string, unknown>, migrationSource?: Record<string, unknown>): AgentMessageSpec {
   const { status = 'alert', ...rest } = input;
+  if (rest.dedupe_key === '') delete rest.dedupe_key;
   const mapping = {
     alert: { category: 'request', status: 'open', attention: true },
     informational: { category: 'completion', status: 'open', attention: false },
@@ -74,7 +87,10 @@ export function legacyToMessage(input: Record<string, unknown>): AgentMessageSpe
   const recommended_action = mapped.attention && typeof action === 'string' && !action.trim()
     ? `Review the message "${title}" and decide the next step.`
     : action;
-  return agentMessageSpec.parse({ agent_id: SYSTEM_IMPORT_AGENT_ID, ...rest, title, recommended_action, ...mapped });
+  const spec = { agent_id: SYSTEM_IMPORT_AGENT_ID, ...rest, title, recommended_action, ...mapped };
+  return migrationSource
+    ? persistedAgentMessageSpec.parse({ ...spec, legacy_source: migrationSource })
+    : agentMessageSpec.parse(spec);
 }
 
 export function messageToLegacyStatus(spec: Record<string, unknown>): 'alert' | 'informational' | 'closed' {

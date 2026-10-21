@@ -18,6 +18,8 @@ const md = new MarkdownIt({
   breaks: false,
 });
 
+export const unescapeMarkdown = md.utils.unescapeAll;
+
 const defaultImageRenderer = md.renderer.rules.image;
 
 export function resolveMarkdownImageSource(src: string, attachmentBaseUrl = ''): string {

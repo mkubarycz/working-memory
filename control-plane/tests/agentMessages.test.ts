@@ -10,6 +10,7 @@ import { loadKinds } from '../src/kinds/loader';
 import { startServer } from '../src/server';
 import { ensureSystemImportAgent } from '../src/agentMessageMigration';
 import { SYSTEM_IMPORT_AGENT_ID } from '../src/kinds/agent/spec';
+import { ControlPlaneClient } from '../../shared/controlPlaneClient';
 
 const directories: string[] = [];
 const stores: Store[] = [];
@@ -104,6 +105,17 @@ describe('canonical AgentMessage store', () => {
     expect(store.listDocuments({ kind: 'AgentMessage' })).toHaveLength(1);
     expect(() => store.createDocument({ kind: 'Alert', spec: { description: 'x', status: 'approval' } })).toThrow(/Unsupported/);
   });
+  it('treats empty compatibility keys as absent without allowing new blank bodies', () => {
+    const store = memory();
+    const spec = { description: 'Legacy caller', dedupe_key: '' };
+    const first = store.createDocument({ kind: 'Alert', spec });
+    const second = store.createDocument({ kind: 'Alert', spec });
+    expect(second.metadata.id).not.toBe(first.metadata.id);
+    expect(first.spec.dedupe_key).toBeUndefined();
+    expect(first.spec.legacy_source).toEqual({ adapter: 'Alert', spec });
+    expect(() => store.createDocument({ kind: 'Alert', spec: { description: ' \r\n\t', dedupe_key: '' } })).toThrow(/nonblank/);
+    expect(() => create(store, message({ dedupe_key: '' }))).toThrow();
+  });
   it('reserves migration snapshots and enforces canonical validation for delete, restore and batch writes', () => {
     const store = memory();
     expect(() => create(store, message({ legacy_source: { fake: true } }))).toThrow(/reserved/);
@@ -162,6 +174,67 @@ describe('canonical AgentMessage store', () => {
 });
 
 describe('versioned automatic Alert migration', () => {
+  it.each([null, 30])('preserves whitespace-only historical bodies and empty keys with deletedAt=%s', async (deletedAt) => {
+    const description = ' \t\r\n ';
+    const file = legacyDatabase([
+      { spec: { description, dedupe_key: '', status: 'alert' }, deletedAt },
+      { spec: { dedupe_key: '', status: 'informational' }, deletedAt },
+    ]);
+    const store = openStore(file);
+    const original = store.getDocument({ id: 'old-0', includeDeleted: true })!;
+    expect(original.spec).toMatchObject({ description, title: 'Legacy agent message' });
+    expect(original.spec.dedupe_key).toBeUndefined();
+    expect(original.metadata).toMatchObject({ createdAt: 10, updatedAt: 20, deletedAt });
+    const source = original.spec.legacy_source as { row: { spec: string } };
+    expect(JSON.parse(source.row.spec)).toMatchObject({ description, dedupe_key: '' });
+    const snapshot = store.listDocuments({ kind: 'AgentMessage', includeDeleted: true });
+    store.close();
+    const reopened = openStore(file);
+    stores.push(reopened);
+    expect(reopened.listDocuments({ kind: 'AgentMessage', includeDeleted: true })).toEqual(snapshot);
+    const server = await startServer({ port: 0, store: reopened });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      expect(await client.agentMessageRead({ includeDeleted: true })).toHaveLength(2);
+      let current = (await client.agentMessageReadPage({ includeDeleted: true })).messages.find((item) => item.id === 'old-0')!;
+      expect(current.description).toBe(description);
+      if (deletedAt !== null) current = await client.agentMessageRestore({ id: current.id });
+      current = await client.agentMessageUpdate({ id: current.id, title: 'Still preserved' });
+      expect(current.description).toBe(description);
+      current = await client.agentMessageUpdate({ id: current.id, status: 'acknowledged', attention: false });
+      expect(current.description).toBe(description);
+      const generic = await client.updateDocument({
+        id: current.id, expectedResourceVersion: current.resourceVersion, spec: { title: 'Generic edit' },
+      });
+      expect(generic.error).toBeUndefined();
+      expect(generic.document?.spec.description).toBe(description);
+      await client.agentMessageUpdate({ id: current.id, status: 'resolved' });
+      const legacy = await client.alertUpdate({ id: current.id, status: 'closed', dedupe_key: '' });
+      expect(legacy.description).toBe(description);
+      expect(legacy.dedupe_key).toBeNull();
+      expect((await client.agentMessageRead({ id: current.id }))[0]).toMatchObject({ description, status: 'resolved' });
+      await client.agentMessageDelete({ id: current.id });
+      expect((await client.agentMessageRestore({ id: current.id })).description).toBe(description);
+      const persisted = reopened.getDocument({ id: current.id })!;
+      expect(persisted.spec.legacy_source).toEqual(original.spec.legacy_source);
+      expect(() => create(reopened, message({ description, legacy_source: original.spec.legacy_source }))).toThrow();
+      expect(() => reopened.updateDocument({
+        id: persisted.metadata.id, expectedResourceVersion: persisted.metadata.resourceVersion,
+        spec: { ...persisted.spec, description: '\t' },
+      })).toThrow(/nonblank/);
+      expect(() => reopened.updateDocuments([{
+        id: persisted.metadata.id, expectedResourceVersion: persisted.metadata.resourceVersion,
+        spec: { ...persisted.spec, description: '\n' },
+      }])).toThrow(/nonblank/);
+      const repaired = await client.agentMessageUpdate({ id: current.id, description: 'Authored replacement' });
+      await expect(client.agentMessageUpdate({ id: repaired.id, description })).rejects.toThrow(/nonblank/);
+      const invalid = await client.updateDocument({
+        id: repaired.id, expectedResourceVersion: repaired.resourceVersion, spec: { description },
+      });
+      expect(invalid.error).toMatch(/nonblank/);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it('migrates live/closed/deleted rows losslessly with stable identity, history and timestamps; second open is a no-op', () => {
     const file = legacyDatabase([
       { spec: { status: 'alert', title: '# Title', custom_history: ['a', 'b'] } },
@@ -190,6 +263,7 @@ describe('versioned automatic Alert migration', () => {
     [{ spec: { status: 'alert' } }, { raw: '{broken' }],
     [{ spec: { status: 'alert' } }, { spec: { status: 'unsupported' } }],
     [{ spec: { status: 'alert' } }, { spec: { title: 42 } }],
+    [{ spec: { status: 'alert' } }, { spec: { description: '' } }],
     [{ spec: { dedupe_key: 'collision' } }, { spec: { dedupe_key: 'collision', status: 'informational' } }],
   ])('rolls back all rows and version marker on malformed data or collisions', (...rows) => {
     const file = legacyDatabase(rows);

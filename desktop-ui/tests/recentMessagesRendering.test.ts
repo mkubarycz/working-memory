@@ -32,6 +32,15 @@ function props(runs: ChatRun[], extra = {}) {
   };
 }
 
+function timelineDisclosures(html: string) {
+  return [...html.matchAll(/<details\b([^>]*class="chat-run message-entry[^"]*"[^>]*)>\s*<summary\b([^>]*)>([\s\S]*?)<\/summary>/g)]
+    .map((match) => ({
+      open: /\sopen(?:\s|=|$)/.test(match[1]),
+      summaryAttributes: match[2],
+      summary: match[3],
+    }));
+}
+
 beforeAll(async () => {
   server = await createServer({
     configFile: false, root: new URL('..', import.meta.url).pathname,
@@ -90,7 +99,10 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(6);
     expect(html).toContain('awaiting confirmation');
     expect(html).toContain('Protected write');
-    expect(html).toContain('aria-label="Expand message"');
+    const pendingSummary = timelineDisclosures(html).find((entry) => entry.summary.includes('Protected write'));
+    expect(pendingSummary?.open).toBe(false);
+    expect(pendingSummary?.summary).toContain('awaiting confirmation');
+    expect(pendingSummary?.summaryAttributes).not.toMatch(/aria-label(?:ledby)?=/);
     expect(html.match(/Protected write/g)).toHaveLength(1);
     expect(html).not.toContain('class="confirm"');
     expect(html).not.toContain('class="cancel"');
@@ -126,6 +138,16 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     expect(timestamp).toContain(`datetime="${new Date(1_792_540_000_000).toISOString()}"`);
   });
 
+  it('shows a display-only placeholder for preserved blank history in cards and both timelines', () => {
+    const historical = message(1, { description: ' \t\r\n ' });
+    const standalone = render(AgentMessageCard, { props: { message: historical, onSetStatus: noop } }).body;
+    const shared = { ...props([]), agentMessages: [historical], expanded: true };
+    const recent = render(RecentMessages, { props: shared }).body;
+    const log = render(MessageTimeline, { props: shared }).body;
+    for (const html of [standalone, recent, log]) expect(html).toContain('No message content');
+    expect(historical.description).toBe(' \t\r\n ');
+  });
+
   it('uses identical exchange markup in both surfaces with explicit scope, focus and stable-id options', () => {
     const runs = [run(1)];
     const shared = { ...props(runs), agentMessages: [], expanded: true };
@@ -141,7 +163,10 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
       expect(html).toContain('class="message-avatar assistant-avatar" title="Working Memory" aria-hidden="true">WM</span>');
       expect(html.indexOf('human-avatar')).toBeLessThan(html.indexOf('class="tool-activity"'));
       expect(html.indexOf('class="tool-activity"')).toBeLessThan(html.indexOf('assistant-avatar'));
-      expect(html).toContain('aria-label="Collapse message"');
+      const [entry] = timelineDisclosures(html);
+      expect(entry.open).toBe(true);
+      expect(entry.summary).toContain('succeeded');
+      expect(entry.summaryAttributes).not.toMatch(/aria-label(?:ledby)?=/);
       expect(html).toContain('class="timeline-dot"');
     }
     expect(log).toContain('id="chat-run-run-1"');
@@ -159,13 +184,46 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     expect(expanded.match(/class="agent-message(?:\s|")/g)).toHaveLength(1);
     expect(expanded).not.toContain('global-attention');
     const collapsed = render(MessageTimeline, { props: { ...shared, expanded: false } }).body;
-    expect(collapsed.match(/aria-label="Expand message"/g)).toHaveLength(2);
+    const entries = timelineDisclosures(collapsed);
+    expect(entries).toHaveLength(2);
+    expect(entries.every((entry) => !entry.open)).toBe(true);
+    expect(entries[0].summary).toContain('Canonical 1: &lt;script>');
+    expect(entries[0].summary).toContain('Needs your attention');
+    expect(entries[0].summary).toContain('open');
+    expect(entries[1].summary).toContain('Response 2');
+    expect(entries[1].summary).toContain('succeeded');
+    expect(entries.every((entry) => !/aria-label(?:ledby)?=/.test(entry.summaryAttributes))).toBe(true);
     expect(collapsed).toContain('Response 2');
     expect(collapsed).toContain('succeeded');
     expect(collapsed).toContain('&lt;script>');
     expect(collapsed).not.toContain('<script>');
     expect(collapsed).not.toContain('class="timeline-details"');
     expect(collapsed.match(/class="timeline-dot"/g)).toHaveLength(2);
+  });
+
+  it.each([false, true])('retains native disclosure state and text-derived names in both surfaces when expanded=%s', (expanded) => {
+    const shared = {
+      ...props([run(2)]), expanded,
+      agentMessages: [message(1, { category: 'request', attention: true })],
+    };
+    const recent = render(RecentMessages, { props: shared }).body;
+    const log = render(MessageTimeline, { props: shared }).body;
+    for (const html of [recent, log]) {
+      const entries = timelineDisclosures(html);
+      expect(entries).toHaveLength(2);
+      for (const entry of entries) {
+        expect(entry.open).toBe(expanded);
+        expect(entry.summaryAttributes).not.toMatch(/aria-label(?:ledby)?=|aria-expanded=|role=/);
+        expect(entry.summary).toContain('timeline-dot');
+        if (expanded) expect(entry.summary).toContain('<time ');
+      }
+      expect(entries[0].summary).toContain('Needs your attention');
+      expect(entries[1].summary).toContain('succeeded');
+      if (!expanded) {
+        expect(entries[0].summary).toContain('Canonical 1: Message body 1');
+        expect(entries[1].summary).toContain('Response 2');
+      }
+    }
   });
 
   it.each(['selected-id', 'selected-slug'])('puts the topic-type context icon above initials for scope %s', (identifier) => {

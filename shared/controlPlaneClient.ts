@@ -1805,6 +1805,10 @@ export class ControlPlaneClient {
     if (!object(value) || value.kind !== 'AgentMessage' || !object(value.metadata) || !object(value.spec)) return fail();
     const metadata = value.metadata;
     const spec = value.spec;
+    const source = object(spec.legacy_source) ? spec.legacy_source : undefined;
+    const preservedLegacyBody = typeof spec.description === 'string' && spec.description.length > 0
+      && source?.migration_version === 3 && object(source.row)
+      && source.row.kind === 'Alert' && typeof source.row.spec === 'string';
     if (typeof metadata.id !== 'string' || !metadata.id || metadata.slug !== null
       || !Number.isSafeInteger(metadata.createdAt) || (metadata.createdAt as number) < 0
       || !Number.isSafeInteger(metadata.updatedAt) || (metadata.updatedAt as number) < 0
@@ -1813,7 +1817,7 @@ export class ControlPlaneClient {
       || !Number.isSafeInteger(metadata.resourceVersion) || (metadata.resourceVersion as number) < 1
       || !['title', 'description', 'recommended_action', 'created_by', 'agent_id', 'agent_name'].every((key) => typeof spec[key] === 'string')
       || !(spec.agent_id as string).trim() || !(spec.agent_name as string).trim()
-      || !(spec.title as string).trim() || !(spec.description as string).trim()
+      || !(spec.title as string).trim() || (!(spec.description as string).trim() && !preservedLegacyBody)
       || !['request', 'approval', 'error', 'completion'].includes(spec.category as string)
       || !['info', 'warning', 'error'].includes(spec.severity as string)
       || !['open', 'acknowledged', 'resolved'].includes(spec.status as string)

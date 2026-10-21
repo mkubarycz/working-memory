@@ -30,7 +30,13 @@
       <time datetime={new Date(message.createdAt * 1000).toISOString()}>{new Date(message.createdAt * 1000).toLocaleString()}</time>
     {/if}
   </header>
-  <div class="markdown-body">{@html renderMarkdown(message.description)}</div>
+  <div class="markdown-body">
+    {#if message.description.trim()}
+      {@html renderMarkdown(message.description)}
+    {:else}
+      <p>No message content</p>
+    {/if}
+  </div>
   {#if message.recommendedAction}
     <strong>Recommended action</strong>
     <div class="markdown-body">{@html renderMarkdown(message.recommendedAction)}</div>

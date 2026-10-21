@@ -14,6 +14,7 @@ import {
   WidgetType,
   type DecorationSet,
 } from '@codemirror/view';
+import { unescapeMarkdown } from './markdown';
 
 const HIDDEN_MARKS = new Set([
   'CodeMark',
@@ -101,7 +102,7 @@ function normalizeLinkLabel(label: string): string {
 function linkDestination(raw: string): string {
   const trimmed = raw.trim();
   const unwrapped = trimmed.startsWith('<') && trimmed.endsWith('>') ? trimmed.slice(1, -1) : trimmed;
-  return unwrapped.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+  return unescapeMarkdown(unwrapped);
 }
 
 /** Only links the desktop app can route are opened on click; anything else stays editable. */
@@ -135,7 +136,7 @@ function linkHref(
 ): string | null {
   const url = node.getChild('URL');
   if (node.name === 'Autolink') {
-    const destination = url ? linkDestination(state.doc.sliceString(url.from, url.to)) : '';
+    const destination = url ? state.doc.sliceString(url.from, url.to) : '';
     return /^[a-z][a-z0-9+.-]*:/i.test(destination) ? destination : null;
   }
   if (url) return linkDestination(state.doc.sliceString(url.from, url.to));

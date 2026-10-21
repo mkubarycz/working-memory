@@ -271,6 +271,47 @@ describe('live Markdown link clicks', () => {
     expect(isOpenableMarkdownHref('/topic/x.working-memory')).toBe(true);
   });
 
+  it.each([
+    ['https://example.test/?a=1&amp;b=2', 'https://example.test/?a=1&b=2'],
+    ['https://example.test/?a=1&#38;b=2', 'https://example.test/?a=1&b=2'],
+    ['https://example.test/?a=1&#x26;b=2', 'https://example.test/?a=1&b=2'],
+    ['https://example.test/x\\(1\\)?a=1&amp;b=2', 'https://example.test/x(1)?a=1&b=2'],
+    ['https://example.test/?a=1\\&amp;b=2', 'https://example.test/?a=1&amp;b=2'],
+    ['https://example.test/?a=1&amp;amp;b=2', 'https://example.test/?a=1&amp;b=2'],
+    ['https://example.test/?a=1&unknown;b=2', 'https://example.test/?a=1&unknown;b=2'],
+  ])('decodes Markdown destinations once without changing source: %s', (destination, expected) => {
+    for (const doc of [
+      `[open](${destination})`,
+      `[open](<${destination}>)`,
+      `[open][docs]\n\n[docs]: <${destination}>`,
+      `[open][]\n\n[open]: ${destination}`,
+      `[open]\n\n[open]: ${destination}`,
+    ]) {
+      const state = createState(doc);
+      expect(renderedMarkdownLinkAt(state, at(doc, 'open'))?.href).toBe(expected);
+      expect(state.doc.toString()).toBe(doc);
+    }
+  });
+
+  it.each([
+    'https://example.test/?a=1&amp;b=2',
+    'https://example.test/x\\(1\\)?a=1&#38;b=2',
+  ])('preserves literal entities and backslashes in autolinks: %s', (destination) => {
+    const doc = `<${destination}>`;
+    const state = createState(doc);
+    expect(renderedMarkdownLinkAt(state, at(doc, 'https'))?.href).toBe(destination);
+    expect(state.doc.toString()).toBe(doc);
+  });
+
+  it('rejects unsafe schemes after decoding Markdown entities', () => {
+    for (const doc of [
+      '[open](javascript&#58;alert%281%29)',
+      '[open][docs]\n\n[docs]: javascript&#58;alert%281%29',
+    ]) {
+      expect(renderedMarkdownLinkAt(createState(doc), at(doc, 'open'))).toBeNull();
+    }
+  });
+
   it('marks only rendered links as click targets and drops the expanded editing line', () => {
     const doc = '[one](https://one.example)\n[two](https://two.example)';
     expect(linkTargets(createState(doc, 0))).toEqual([

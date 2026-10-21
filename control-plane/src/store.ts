@@ -20,7 +20,7 @@ import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { ensureSystemImportAgent, migrateAgentMessages } from './agentMessageMigration.js';
-import { agentMessageSpec, legacyToMessage, AGENT_MESSAGE_KIND } from './kinds/agentmessage/spec.js';
+import { agentMessageSpec, persistedAgentMessageSpec, legacyToMessage, AGENT_MESSAGE_KIND } from './kinds/agentmessage/spec.js';
 import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec, normalizeAgentName } from './kinds/agent/spec.js';
 export interface DocumentChange {
   id: string;
@@ -375,8 +375,11 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function validateMessage(spec: Record<string, unknown>, excludeId?: string, allowLegacySource = false): Record<string, unknown> {
-    const parsed = agentMessageSpec.parse(spec);
     const previous = excludeId ? getDocument({ id: excludeId, includeDeleted: true }) : null;
+    const source = previous?.spec.legacy_source as Record<string, unknown> | undefined;
+    // Only an unchanged migrated body may retain historical whitespace.
+    const preserveBody = source?.migration_version === 3 && spec.description === previous?.spec.description;
+    const parsed = (preserveBody ? persistedAgentMessageSpec : agentMessageSpec).parse(spec);
     const agent = getDocument({ id: parsed.agent_id });
     if (agent?.kind !== AGENT_KIND) throw new Error(`Unknown live registered Agent: ${parsed.agent_id}. Register with ws-agent-create first.`);
     if (previous && parsed.agent_id !== previous.spec.agent_id) throw new Error('AgentMessage sender agent_id is immutable.');
@@ -385,7 +388,6 @@ export function openStore(dbFilePath: string): Store {
       throw new Error('AgentMessage agent_name is server-owned and immutable; provide only your registered agent_id.');
     }
     parsed.agent_name = String(senderName);
-    const source = previous?.spec.legacy_source as Record<string, unknown> | undefined;
     // Only migrated rows grandfather old topic slugs, not newly created adapter records.
     const historical = !!source && source.row !== null && typeof source.row === 'object' && !Array.isArray(source.row);
     if (parsed.status !== 'open' && parsed.attention) {

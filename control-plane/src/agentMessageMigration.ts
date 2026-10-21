@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { agentMessageSpec, legacyToMessage } from './kinds/agentmessage/spec.js';
+import { persistedAgentMessageSpec, legacyToMessage } from './kinds/agentmessage/spec.js';
 import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, normalizeAgentName } from './kinds/agent/spec.js';
 
 export function ensureSystemImportAgent(db: DatabaseSync): boolean {
@@ -73,9 +73,8 @@ export function migrateAgentMessages(db: DatabaseSync): void {
         // Preserve unknown historical fields verbatim, but never admit them as authored canonical fields.
         const allowed = ['title', 'description', 'recommended_action', 'status', 'dedupe_key', 'created_by', 'topics'];
         const legacy = Object.fromEntries(Object.entries(normalized).filter(([key]) => allowed.includes(key)));
-        const spec = legacyToMessage(legacy);
+        const spec = legacyToMessage(legacy, { migration_version: 3, row: { ...row } });
         spec.agent_name = 'System Import';
-        spec.legacy_source = { migration_version: 3, row: { ...row } };
         db.prepare("UPDATE resources SET kind = 'AgentMessage', spec = ?, resource_version = ? WHERE id = ?")
           .run(JSON.stringify(spec), nextVersion(), row.id as string);
         converted.add(row.id as string);
@@ -91,7 +90,7 @@ export function migrateAgentMessages(db: DatabaseSync): void {
         const agent = db.prepare("SELECT spec FROM resources WHERE id = ? AND kind = 'Agent' AND deleted_at IS NULL")
           .get(agentId) as { spec: string } | undefined;
         if (!agent) throw new Error(`Unknown registered Agent: ${agentId}`);
-        const spec = agentMessageSpec.parse({ ...raw, agent_id: agentId, agent_name: raw.agent_name ?? JSON.parse(agent.spec).name });
+        const spec = persistedAgentMessageSpec.parse({ ...raw, agent_id: agentId, agent_name: raw.agent_name ?? JSON.parse(agent.spec).name });
         // Earlier migration revisions retained the old RV, making a surviving
         // desktop feed cursor blind to the conversion. Advance those rows once.
         if (raw.agent_id == null || raw.agent_name == null

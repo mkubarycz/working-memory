@@ -383,6 +383,11 @@ Recent messages and Log use the same exchange layout, with a pink caller
 initials box and registered name for agent messages.
 The original resource row, including legacy history and fields unknown to the
 new model, remains in immutable `legacy_source` migration provenance.
+Empty legacy deduplication keys are treated as absent; their original value
+remains in provenance. Historical whitespace-only bodies are preserved exactly
+and shown as "No message content" without saving that placeholder. This exception
+applies only to migrated history and unchanged bodies on later lifecycle edits;
+new messages still require nonblank content.
 Malformed records or incompatible migration versions fail explicitly and roll
 back conversion; reopening retries an unapplied conversion rather than
 continuing a partially converted store.

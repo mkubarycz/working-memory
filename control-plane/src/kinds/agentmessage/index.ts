@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { KindModule } from '../base.js';
 import { Base } from '../base.js';
 import { asError, asText } from '../toolResult.js';
-import { AGENT_MESSAGE_KIND, agentMessageSpec, agentMessagePatch } from './spec.js';
+import { AGENT_MESSAGE_KIND, agentMessageSpec, persistedAgentMessageSpec, agentMessagePatch } from './spec.js';
 
 const guidance = 'Agent Messages preserve Markdown source. Use attention=true only for a human decision or intervention. ' +
   'Every message requires your registered agent_id: look up your name with ws-agent-read, register with ws-agent-create if needed, and remember/reuse metadata.id. ' +
@@ -13,7 +13,7 @@ const agentMessage: KindModule = {
   name: AGENT_MESSAGE_KIND,
   descriptor: {
     extends: Base,
-    spec: agentMessageSpec,
+    spec: persistedAgentMessageSpec,
     fts: (row) => `${row.spec.title}\n${row.spec.description}`,
   },
   registerApi(server, store) {
