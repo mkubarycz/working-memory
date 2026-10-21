@@ -73,6 +73,9 @@ export function migrateAgentMessages(db: DatabaseSync): void {
         // Preserve unknown historical fields verbatim, but never admit them as authored canonical fields.
         const allowed = ['title', 'description', 'recommended_action', 'status', 'dedupe_key', 'created_by', 'topics'];
         const legacy = Object.fromEntries(Object.entries(normalized).filter(([key]) => allowed.includes(key)));
+        if (Array.isArray(legacy.topics)) {
+          legacy.topics = legacy.topics.filter((topic) => topic !== '');
+        }
         const spec = legacyToMessage(legacy, { migration_version: 3, row: { ...row } });
         spec.agent_name = 'System Import';
         db.prepare("UPDATE resources SET kind = 'AgentMessage', spec = ?, resource_version = ? WHERE id = ?")
