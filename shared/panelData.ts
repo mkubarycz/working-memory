@@ -269,11 +269,10 @@ export function sectionForStatus(status: string): WorkstreamSection {
 }
 
 /**
- * Active-tab "send to section" actions for a workstream's context menu. Omits
+ * Active-tab lifecycle actions for a workstream's context menu. Omits
  * the section the workstream is already in. Each invokes the
- * `working-memory.setWorkstreamSection` command (registered in extension.ts),
- * which patches the lifecycle `status` via the control-plane workstream domain
- * layer and refreshes the panel.
+ * `working-memory.setWorkstreamSection` command, which patches only the
+ * workstream lifecycle status and refreshes the panel.
  */
 function sectionMoveActions(ws: { id: string; status: string }): PanelAction[] {
   const current = sectionForStatus(ws.status);
@@ -649,7 +648,15 @@ function buildDomainWorkstreamCard(
               args: [{ id }],
             },
           ]
-        : sectionMoveActions({ id, status });
+        : [
+            ...sectionMoveActions({ id, status }),
+            {
+              command: 'working-memory.setWorkstreamSection',
+              title: 'Close Workstream',
+              args: [{ id, section: 'closed' }],
+              icon: 'check',
+            },
+          ];
   const { groups: children, focusedTopics, members } = buildWorkstreamTree(
     ws.id,
     tab,

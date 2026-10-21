@@ -192,6 +192,20 @@ describe('workstream resolver', () => {
       roadmap.id!,
     )).toEqual({ kind: 'workstream', operation: 'move', id: roadmap.id, section: 'progress' });
     expect(resolveDesktopAction(
+      'working-memory.setWorkstreamSection',
+      [{ id: roadmap.id, section: 'closed' }],
+      roadmap.id,
+    )).toEqual({ kind: 'workstream', operation: 'move', id: roadmap.id, section: 'closed' });
+    expect(resolveDesktopAction(
+      'working-memory.reopenWorkstream',
+      [{ id: roadmap.id }],
+      roadmap.id,
+    )).toEqual({ kind: 'workstream', operation: 'move', id: roadmap.id, section: 'progress' });
+    for (const args of [[], [{ id: '', section: 'closed' }], [{ id: roadmap.id, section: 'invalid' }]]) {
+      expect(() => resolveDesktopAction('working-memory.setWorkstreamSection', args, roadmap.id))
+        .toThrow();
+    }
+    expect(resolveDesktopAction(
       'workingMemory.topic.removeFromWorkstream',
       [{ topicId: 'topic-1' }],
       roadmap.id!,

@@ -5,6 +5,11 @@ import {
   topicIdFromOpenUri,
 } from '../src/renderer/activeContextMenu';
 import type { WorkstreamVM } from '../src/renderer/documents/types';
+import { openStore } from '../../control-plane/src/store';
+import { startServer } from '../../control-plane/src/server';
+import { loadKinds } from '../../control-plane/src/kinds/loader';
+import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { loadActivePanelData, loadWorkstreamViewModel, resolveDesktopAction } from '../src/main/resolver';
 
 function reactiveProxy<T extends object>(value: T, cache = new WeakMap<object, object>()): T {
   const existing = cache.get(value);
@@ -150,5 +155,53 @@ describe('Active rail context-menu projection', () => {
     expect(() => structuredClone(invocation)).not.toThrow();
     expect(incoming).toEqual(returned);
     expect(() => structuredClone(incoming)).not.toThrow();
+  });
+
+  it('persists Close Workstream from the menu, archives only that workstream, and supports reopening', async () => {
+    await loadKinds();
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      const workstream = await client.wsCreate({ title: 'Close from menu', status: 'progress' });
+      const other = await client.wsCreate({ title: 'Unchanged', status: 'queue' });
+      const topic = store.createDocument({
+        kind: 'Topic', spec: { title: 'Keep open', status: 'open', workstreams: [workstream.id], parents: [] },
+      });
+      const before = store.getDocument({ id: topic.metadata.id });
+      const active = await loadActivePanelData(client);
+      const card = active.items.flatMap((item) => item.kind === 'workstream-section' ? item.workstreams : [])
+        .find((item) => item.id === workstream.id)!;
+      const close = activeContextMenuItems(card.actions).find((item) => item.title === 'Close Workstream');
+      expect(close).toMatchObject({ kind: 'action', enabled: true, icon: 'check' });
+      if (close?.kind !== 'action') throw new Error('Close menu item is missing.');
+
+      const invoke = async (id: string, command: string, args: unknown[]) => {
+        const action = resolveDesktopAction(command, args, id);
+        if (action.kind !== 'workstream') throw new Error('Expected a workstream action.');
+        await client.wsUpdate({ id: action.id, status: action.section });
+        const vm = await loadWorkstreamViewModel(client, id);
+        if (!vm) throw new Error('Updated workstream is missing.');
+        return vm;
+      };
+      expect(await invokeActiveAction(invoke, workstream.id, close.action)).toMatchObject({ id: workstream.id, status: 'closed' });
+      expect((await client.wsRead({ id: other.id }))[0].status).toBe('queue');
+      expect(store.getDocument({ id: topic.metadata.id })).toEqual(before);
+      const refreshed = await loadActivePanelData(client);
+      expect(refreshed.items.flatMap((item) => item.kind === 'workstream-section' ? item.workstreams : [])
+        .some((item) => item.id === workstream.id)).toBe(false);
+
+      expect(await invokeActiveAction(invoke, workstream.id, {
+        command: 'working-memory.reopenWorkstream', title: 'Reopen Workstream', args: [{ id: workstream.id }],
+      })).toMatchObject({ status: 'progress' });
+      expect(store.getDocument({ id: topic.metadata.id })).toEqual(before);
+      await expect(invokeActiveAction(invoke, 'missing', {
+        ...close.action, args: [{ id: 'missing', section: 'closed' }],
+      })).rejects.toThrow('Unknown workstream');
+    } finally {
+      await client.dispose();
+      await server.close();
+      store.close();
+    }
   });
 });

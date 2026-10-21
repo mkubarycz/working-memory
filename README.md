@@ -33,6 +33,10 @@ For   **topics**, topic types, Agent Messages, and related control-plane documen
   an In Progress workstream and saves the description as its first topic;
   nothing is created until you confirm. If the topic save fails after workstream
   creation, the draft keeps that workstream for retry rather than creating another.
+- **Close a workstream:** right-click its row in the Active rail and choose
+  **Close Workstream**. It moves to the archive; its topics, memberships, and
+  authored content remain unchanged. **Reopen Workstream** returns it to
+  In Progress.
 - **Move to a new workstream:** right-click a topic in the Active rail, then
   **Move to... > New Workstream...**. Its saved title and body are used to suggest
   an editable workstream name. **Move** creates the In Progress workstream and

@@ -35,6 +35,33 @@ function topic(id: string, workstreams: string[], status: Topic['status'] = 'ope
 }
 
 describe('active topic backlog', () => {
+  it('offers closing in every active section and reopening only in the archive', () => {
+    const panels = buildWorkstreamPanels({
+      available: true,
+      workstreams: [
+        workstream('queued', 'queue'),
+        workstream('active', 'progress'),
+        workstream('backlog', 'backlog'),
+        workstream('archived', 'closed'),
+      ],
+    });
+    const sections = panels.active.items.filter((item) => item.kind === 'workstream-section');
+    for (const section of sections) {
+      for (const card of section.workstreams) {
+        expect(card.actions.filter((action) => action.title === 'Close Workstream')).toEqual([{
+          command: 'working-memory.setWorkstreamSection',
+          title: 'Close Workstream',
+          args: [{ id: card.id, section: 'closed' }],
+          icon: 'check',
+        }]);
+        expect(card.actions.some((action) => action.command === 'working-memory.reopenWorkstream')).toBe(false);
+      }
+    }
+    expect(panels.archive.items).toMatchObject([{
+      actions: [{ command: 'working-memory.reopenWorkstream', title: 'Reopen Workstream', args: [{ id: 'id-archived' }] }],
+    }]);
+  });
+
   it('includes open topics outside active workstreams', () => {
     const panels = buildWorkstreamPanels({
       available: true,

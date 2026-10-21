@@ -186,7 +186,7 @@ export function toGenericDocumentViewModel(document: DocumentEnvelope): GenericD
 export type DesktopAction =
   | { kind: 'topic'; operation: 'attach' | 'detach'; id: string; workstream: string }
   | { kind: 'topic'; operation: 'transfer'; id: string; sourceWorkstream: string; targetWorkstream: string; move: boolean }
-  | { kind: 'workstream'; operation: 'move'; id: string; section: WorkstreamSection };
+  | { kind: 'workstream'; operation: 'move'; id: string; section: WorkstreamSection | 'closed' };
 
 export function resolveDesktopAction(
   command: string,
@@ -194,13 +194,16 @@ export function resolveDesktopAction(
   workstream: string,
 ): DesktopAction {
   const value = args[0];
-  if (command === 'working-memory.setWorkstreamSection') {
+  if (command === 'working-memory.setWorkstreamSection' || command === 'working-memory.reopenWorkstream') {
     if (!value || typeof value !== 'object') {
       throw new Error('This action is missing its workstream details.');
     }
     const id = 'id' in value && typeof value.id === 'string' ? value.id : '';
+    if (command === 'working-memory.reopenWorkstream' && id) {
+      return { kind: 'workstream', operation: 'move', id, section: 'progress' };
+    }
     const section = 'section' in value &&
-      (value.section === 'queue' || value.section === 'progress' || value.section === 'backlog')
+      (value.section === 'queue' || value.section === 'progress' || value.section === 'backlog' || value.section === 'closed')
       ? value.section
       : null;
     if (id && section) return { kind: 'workstream', operation: 'move', id, section };
