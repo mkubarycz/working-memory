@@ -46,6 +46,7 @@ const DESKTOP_TOOL_FAMILIES = [
   'topic',
   'topictype',
   'agent-message',
+  'agent',
 ];
 
 export function desktopToolDescriptors(tools: CanonicalToolDef[]): CanonicalToolDef[] {

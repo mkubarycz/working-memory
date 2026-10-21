@@ -19,8 +19,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { migrateAgentMessages } from './agentMessageMigration.js';
+import { ensureSystemImportAgent, migrateAgentMessages } from './agentMessageMigration.js';
 import { agentMessageSpec, legacyToMessage, AGENT_MESSAGE_KIND } from './kinds/agentmessage/spec.js';
+import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec } from './kinds/agent/spec.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -357,9 +358,32 @@ export function openStore(dbFilePath: string): Store {
 
   const canonicalKind = (kind: string | undefined) => kind === 'Alert' ? AGENT_MESSAGE_KIND : kind;
 
+  function validateAgent(spec: Record<string, unknown>, excludeId?: string): Record<string, unknown> {
+    const parsed = agentSpec.parse(spec);
+    if (parsed.name.toLowerCase() === 'system import' && excludeId !== SYSTEM_IMPORT_AGENT_ID) {
+      throw new Error('System Import is reserved for historical and compatibility messages.');
+    }
+    if (excludeId === SYSTEM_IMPORT_AGENT_ID && parsed.name !== 'System Import') {
+      throw new Error('The System Import agent cannot be renamed.');
+    }
+    const existing = db.prepare(`SELECT id FROM resources WHERE kind = 'Agent' AND deleted_at IS NULL
+      AND lower(trim(json_extract(spec, '$.name'))) = lower(?) AND id != ?`)
+      .get(parsed.name, excludeId ?? '') as { id: string } | undefined;
+    if (existing) throw new Error(`Agent name "${parsed.name}" is already registered as ${existing.id}. Look it up with ws-agent-read and reuse its ID.`);
+    return parsed;
+  }
+
   function validateMessage(spec: Record<string, unknown>, excludeId?: string, allowLegacySource = false): Record<string, unknown> {
     const parsed = agentMessageSpec.parse(spec);
     const previous = excludeId ? getDocument({ id: excludeId, includeDeleted: true }) : null;
+    const agent = getDocument({ id: parsed.agent_id });
+    if (agent?.kind !== AGENT_KIND) throw new Error(`Unknown live registered Agent: ${parsed.agent_id}. Register with ws-agent-create first.`);
+    if (previous && parsed.agent_id !== previous.spec.agent_id) throw new Error('AgentMessage sender agent_id is immutable.');
+    const senderName = previous?.spec.agent_name ?? agentSpec.parse(agent.spec).name;
+    if (parsed.agent_name !== undefined && parsed.agent_name !== senderName) {
+      throw new Error('AgentMessage agent_name is server-owned and immutable; provide only your registered agent_id.');
+    }
+    parsed.agent_name = String(senderName);
     const source = previous?.spec.legacy_source as Record<string, unknown> | undefined;
     // Only migrated rows grandfather old topic slugs, not newly created adapter records.
     const historical = !!source && source.row !== null && typeof source.row === 'object' && !Array.isArray(source.row);
@@ -415,8 +439,8 @@ export function openStore(dbFilePath: string): Store {
   function guardMessageReferences(id: string): void {
     const target = getDocument({ id });
     if (!target) return;
-    for (const doc of listDocuments({ kind: AGENT_MESSAGE_KIND })) {
-      if ((doc.spec.relations as Array<{ id: string }>).some((ref) => ref.id === id) ||
+    for (const doc of listDocuments({ kind: AGENT_MESSAGE_KIND, includeDeleted: target.kind === AGENT_KIND })) {
+      if (doc.spec.agent_id === id || (doc.spec.relations as Array<{ id: string }>).some((ref) => ref.id === id) ||
           (target.kind === 'Topic' && (doc.spec.topics as string[]).includes(target.metadata.slug ?? ''))) {
         throw new Error(`Cannot delete document ${id}: referenced by AgentMessage ${doc.metadata.id}. Unlink it first.`);
       }
@@ -472,11 +496,19 @@ export function openStore(dbFilePath: string): Store {
     const legacyInput = input.kind === 'Alert';
     if (legacyInput) {
       const source = input.spec ?? {};
+      if (source.agent_id === undefined) {
+        db.exec('BEGIN IMMEDIATE');
+        let created: boolean;
+        try { created = ensureSystemImportAgent(db); db.exec('COMMIT'); }
+        catch (error) { db.exec('ROLLBACK'); throw error; }
+        if (created) notifyDocumentsChanged([getDocument({ id: SYSTEM_IMPORT_AGENT_ID })!]);
+      }
       input = {
         ...input, kind: AGENT_MESSAGE_KIND,
         spec: { ...legacyToMessage(source), legacy_source: { adapter: 'Alert', spec: source } },
       };
     }
+    if (input.kind === AGENT_KIND) input = { ...input, spec: validateAgent(input.spec ?? {}) };
     if (input.kind === AGENT_MESSAGE_KIND) {
       if (input.status !== undefined && Object.keys(input.status).length) throw new Error('AgentMessage envelope status must be empty.');
       input = { ...input, spec: validateMessage(input.spec ?? {}, undefined, legacyInput) };
@@ -492,8 +524,8 @@ export function openStore(dbFilePath: string): Store {
             if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => `${JSON.stringify(key)}:${stable(val)}`).join(',')}}`;
             return JSON.stringify(value);
           };
-          const { legacy_source: _legacy, status: _status, attention: _attention, ...previousSpec } = previous.spec;
-          const { legacy_source: _requestedLegacy, status: _requestedStatus, attention: _requestedAttention, ...requestedSpec } = input.spec!;
+          const { legacy_source: _legacy, status: _status, attention: _attention, agent_name: _senderName, ...previousSpec } = previous.spec;
+          const { legacy_source: _requestedLegacy, status: _requestedStatus, attention: _requestedAttention, agent_name: _requestedSenderName, ...requestedSpec } = input.spec!;
           const authored = (value: Record<string, unknown>) => {
             if (!value.decision || typeof value.decision !== 'object') return value;
             const { decided_at: _time, ...decision } = value.decision as Record<string, unknown>;
@@ -639,6 +671,7 @@ export function openStore(dbFilePath: string): Store {
 
   function updateDocument(input: UpdateDocumentInput): DocumentEnvelope {
     const existing = getDocument({ id: input.id });
+    if (existing?.kind === AGENT_KIND) input = { ...input, spec: validateAgent(input.spec, input.id) };
     if (existing?.kind === 'Topic' && input.slug !== undefined && input.slug !== existing.metadata.slug) {
       guardMessageReferences(input.id);
     }
@@ -727,6 +760,7 @@ export function openStore(dbFilePath: string): Store {
       const updated: DocumentEnvelope[] = [];
       for (const input of inputs) {
         const document = getDocument({ id: input.id });
+        if (document?.kind === AGENT_KIND) input.spec = validateAgent(input.spec, input.id);
         if (document?.kind === 'Topic' && input.slug !== undefined && input.slug !== document.metadata.slug) {
           guardMessageReferences(input.id);
         }
@@ -782,6 +816,7 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function deleteDocument(input: DeleteDocumentInput): DocumentEnvelope {
+    if (input.id === SYSTEM_IMPORT_AGENT_ID) throw new Error('The System Import agent cannot be deleted.');
     const target = getDocument({ id: input.id });
     if (target?.kind === AGENT_MESSAGE_KIND) validateMessage(target.spec, input.id);
     guardMessageReferences(input.id);
@@ -852,6 +887,7 @@ export function openStore(dbFilePath: string): Store {
 
   function restoreDocument(input: RestoreDocumentInput): DocumentEnvelope {
     const deleted = getDocument({ id: input.id, includeDeleted: true });
+    if (deleted?.kind === AGENT_KIND) validateAgent(deleted.spec, input.id);
     if (deleted?.kind === AGENT_MESSAGE_KIND) validateMessage(deleted.spec, input.id, true);
     const now = nowSeconds();
 

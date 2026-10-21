@@ -2,6 +2,8 @@ import type { AgentMessage } from '../controlPlaneClient';
 
 export interface AgentMessageVM {
   id: string;
+  agentId: string;
+  agentName: string;
   title: string;
   description: string;
   recommendedAction: string;
@@ -23,6 +25,8 @@ export interface AgentMessageVM {
 export function toAgentMessageVM(message: AgentMessage): AgentMessageVM {
   return {
     id: message.id,
+    agentId: message.agent_id,
+    agentName: message.agent_name,
     title: message.title.trim() || message.description.split('\n')[0] || 'Agent message',
     description: message.description,
     recommendedAction: message.recommended_action,

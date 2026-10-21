@@ -563,6 +563,12 @@ export interface AlertDeleteInput {
 }
 
 export type AgentMessageCategory = 'request' | 'approval' | 'error' | 'completion';
+export interface RegisteredAgent {
+  id: string;
+  name: string;
+  description: string;
+  resourceVersion: number;
+}
 export type AgentMessageSeverity = 'info' | 'warning' | 'error';
 export type AgentMessageStatus = 'open' | 'acknowledged' | 'resolved';
 export interface AgentMessageRelation { kind: string; id: string }
@@ -587,6 +593,8 @@ export interface AgentMessageDecision extends AgentMessageDecisionInput {
 
 export interface AgentMessage {
   id: string;
+  agent_id: string;
+  agent_name: string;
   slug: null;
   title: string;
   description: string;
@@ -610,6 +618,8 @@ export interface AgentMessage {
 }
 
 export interface AgentMessageCreateInput {
+  /** Look up/register with agentRead/agentCreate, remember the id, and reuse it. */
+  agent_id: string;
   title: string;
   description: string;
   category: AgentMessageCategory;
@@ -1750,6 +1760,44 @@ export class ControlPlaneClient {
     return this.topicUpdate({ slug: input.slug, focusedWorkstreams });
   }
 
+  private parseAgentEnvelope(value: unknown): RegisteredAgent {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new ControlPlaneClientError('Malformed control-plane Agent response');
+    }
+    const envelope = value as Partial<DocumentEnvelope>;
+    if (envelope.kind !== 'Agent' || !envelope.metadata || !envelope.spec
+      || typeof envelope.metadata.id !== 'string' || !envelope.metadata.id
+      || !Number.isSafeInteger(envelope.metadata.resourceVersion) || envelope.metadata.resourceVersion < 1
+      || typeof envelope.spec.name !== 'string' || !envelope.spec.name.trim()
+      || typeof envelope.spec.description !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane Agent response');
+    }
+    return { id: envelope.metadata.id, name: envelope.spec.name, description: envelope.spec.description,
+      resourceVersion: envelope.metadata.resourceVersion };
+  }
+
+  async agentRead(input: { id?: string; name?: string; includeDeleted?: boolean } = {}): Promise<RegisteredAgent[]> {
+    const parsed = parseToolText(await this.callDomainTool('ws-agent-read', { ...input })) as
+      { count?: unknown; agents?: unknown } | null;
+    if (!parsed || !Array.isArray(parsed.agents) || parsed.count !== parsed.agents.length) {
+      throw new ControlPlaneClientError('Malformed control-plane Agent list response');
+    }
+    return parsed.agents.map((agent) => this.parseAgentEnvelope(agent));
+  }
+
+  async agentCreate(input: { name: string; description?: string }): Promise<RegisteredAgent> {
+    return this.parseAgentEnvelope(parseToolText(await this.callDomainTool('ws-agent-create', { ...input })));
+  }
+
+  async agentUpdate(input: { id: string; expectedResourceVersion: number; name?: string; description?: string }): Promise<RegisteredAgent> {
+    const { id, expectedResourceVersion, ...spec } = input;
+    return this.parseAgentEnvelope(parseToolText(await this.callDomainTool('ws-agent-update', { id, expectedResourceVersion, spec })));
+  }
+
+  async agentDelete(input: { id: string; expectedResourceVersion?: number; restore?: boolean }): Promise<RegisteredAgent> {
+    return this.parseAgentEnvelope(parseToolText(await this.callDomainTool('ws-agent-delete', { ...input })));
+  }
+
   private parseAgentMessageEnvelope(value: unknown): AgentMessage {
     const fail = (): never => { throw new ControlPlaneClientError('Malformed control-plane AgentMessage response'); };
     const object = (candidate: unknown): candidate is Record<string, unknown> =>
@@ -1763,7 +1811,8 @@ export class ControlPlaneClient {
       || (metadata.deletedAt !== undefined && metadata.deletedAt !== null
         && (!Number.isSafeInteger(metadata.deletedAt) || (metadata.deletedAt as number) < 0))
       || !Number.isSafeInteger(metadata.resourceVersion) || (metadata.resourceVersion as number) < 1
-      || !['title', 'description', 'recommended_action', 'created_by'].every((key) => typeof spec[key] === 'string')
+      || !['title', 'description', 'recommended_action', 'created_by', 'agent_id', 'agent_name'].every((key) => typeof spec[key] === 'string')
+      || !(spec.agent_id as string).trim() || !(spec.agent_name as string).trim()
       || !(spec.title as string).trim() || !(spec.description as string).trim()
       || !['request', 'approval', 'error', 'completion'].includes(spec.category as string)
       || !['info', 'warning', 'error'].includes(spec.severity as string)
@@ -1788,6 +1837,8 @@ export class ControlPlaneClient {
       || Object.keys(spec.decision).some((key) => !['outcome', 'decided_by', 'reason', 'decided_at'].includes(key)))) return fail();
     return {
       id: metadata.id,
+      agent_id: spec.agent_id as string,
+      agent_name: spec.agent_name as string,
       slug: null,
       title: spec.title as string,
       description: spec.description as string,

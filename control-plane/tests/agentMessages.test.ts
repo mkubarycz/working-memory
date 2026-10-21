@@ -8,11 +8,13 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { openStore, type DocumentEnvelope, type Store } from '../src/store';
 import { loadKinds } from '../src/kinds/loader';
 import { startServer } from '../src/server';
+import { ensureSystemImportAgent } from '../src/agentMessageMigration';
+import { SYSTEM_IMPORT_AGENT_ID } from '../src/kinds/agent/spec';
 
 const directories: string[] = [];
 const stores: Store[] = [];
-const memory = () => { const store = openStore(':memory:'); stores.push(store); return store; };
-const message = (extra: Record<string, unknown> = {}) => ({ title: 'Human review', description: '# Authored\n\n![image](wm-attachment:abc)', category: 'request', recommended_action: 'Review the proposed changes and decide whether to proceed.', ...extra });
+const memory = () => { const store = openStore(':memory:'); ensureSystemImportAgent(store.db); stores.push(store); return store; };
+const message = (extra: Record<string, unknown> = {}) => ({ agent_id: SYSTEM_IMPORT_AGENT_ID, title: 'Human review', description: '# Authored\n\n![image](wm-attachment:abc)', category: 'request', recommended_action: 'Review the proposed changes and decide whether to proceed.', ...extra });
 const create = (store: Store, spec = message()) => store.createDocument({ kind: 'AgentMessage', spec });
 
 afterEach(() => {
@@ -52,7 +54,7 @@ describe('canonical AgentMessage store', () => {
     for (const extra of [{ category: 'alert' }, { status: 'closed' }, { attention: 'yes' }, { execute: true }, { status: 'resolved', attention: true }, { title: '' }, { title: '  ' }, { description: '  ' }, { attention: true, recommended_action: '' }, { attention: true, category: 'completion' }, { provenance: { approved: true } }]) {
       expect(() => create(store, message(extra))).toThrow();
     }
-    expect(store.listDocuments()).toHaveLength(0);
+    expect(store.listDocuments({ kind: 'AgentMessage' })).toHaveLength(0);
   });
   it('deduplicates active retries, frees recurrence keys on resolve/delete and never revives historical records', () => {
     const store = memory();
@@ -99,7 +101,7 @@ describe('canonical AgentMessage store', () => {
     const old = store.createDocument({ kind: 'Alert', spec: { description: 'Review', status: 'informational' } });
     expect(old).toMatchObject({ kind: 'AgentMessage', spec: { category: 'completion', status: 'open', attention: false } });
     expect(store.listDocuments({ kind: 'Alert' })).toEqual(store.listDocuments({ kind: 'AgentMessage' }));
-    expect(store.listDocuments()).toHaveLength(1);
+    expect(store.listDocuments({ kind: 'AgentMessage' })).toHaveLength(1);
     expect(() => store.createDocument({ kind: 'Alert', spec: { description: 'x', status: 'approval' } })).toThrow(/Unsupported/);
   });
   it('reserves migration snapshots and enforces canonical validation for delete, restore and batch writes', () => {
@@ -171,7 +173,8 @@ describe('versioned automatic Alert migration', () => {
     expect(docs.map((doc) => [doc.spec.category, doc.spec.status, doc.spec.attention])).toEqual([
       ['request', 'open', true], ['completion', 'open', false], ['request', 'resolved', false],
     ]);
-    expect(docs[2].metadata).toMatchObject({ id: 'old-2', createdAt: 10, updatedAt: 20, deletedAt: 30, resourceVersion: 6 });
+    expect(docs[2].metadata).toMatchObject({ id: 'old-2', createdAt: 10, updatedAt: 20, deletedAt: 30, resourceVersion: 7 });
+    expect(docs.every((doc) => doc.spec.agent_id === SYSTEM_IMPORT_AGENT_ID && doc.spec.agent_name === 'System Import')).toBe(true);
     expect((docs[2].spec.legacy_source as { row: { resource_version: number } }).row.resource_version).toBe(3);
     expect(docs[0].spec.description).toBe('**Original**\r\n');
     expect(docs[0].status).toEqual({ history: ['raised', 'closed'] });
@@ -257,7 +260,7 @@ describe('versioned automatic Alert migration', () => {
     try {
       const next = create(upgraded, message({ dedupe_key: 'upgrade' }));
       expect(next.metadata.id).not.toBe('old-0');
-      expect(upgraded.db.prepare("SELECT version FROM resource_migrations WHERE name = 'agent-messages'").get()).toMatchObject({ version: 3 });
+      expect(upgraded.db.prepare("SELECT version FROM resource_migrations WHERE name = 'agent-messages'").get()).toMatchObject({ version: 4 });
     } finally { upgraded.close(); }
   });
   it('rejects unsupported future migration versions without changing legacy rows or the marker', () => {
@@ -277,7 +280,7 @@ describe('versioned automatic Alert migration', () => {
     if (revision === 'prior-v2') {
       const earlier = openStore(file);
       earlier.db.exec(`UPDATE resource_migrations SET version = 2 WHERE name = 'agent-messages';
-        UPDATE resources SET resource_version = json_extract(spec, '$.legacy_source.row.resource_version')`);
+        UPDATE resources SET resource_version = json_extract(spec, '$.legacy_source.row.resource_version') WHERE kind = 'AgentMessage'`);
       earlier.close();
     }
     const before = new DatabaseSync(file);
@@ -288,12 +291,13 @@ describe('versioned automatic Alert migration', () => {
     const server = await startServer({ port: 0, store });
     try {
       const notice = await (await fetch(`${server.url}/changes?since=10`)).json();
-      expect(notice).toEqual({ resourceVersion: 12, reset: true, changes: [] });
+      const firstVersion = revision === 'fresh' ? 12 : 11;
+      expect(notice).toEqual({ resourceVersion: firstVersion + 1, reset: true, changes: [] });
       expect(store.getDocument({ id: 'old-0' })).toMatchObject({
-        kind: 'AgentMessage', metadata: { createdAt: 10, updatedAt: 20, resourceVersion: 11 },
+        kind: 'AgentMessage', metadata: { createdAt: 10, updatedAt: 20, resourceVersion: firstVersion },
       });
       const deleted = store.getDocument({ id: 'old-1', includeDeleted: true })!;
-      expect(deleted.metadata).toMatchObject({ createdAt: 10, updatedAt: 20, deletedAt: 30, resourceVersion: 12 });
+      expect(deleted.metadata).toMatchObject({ createdAt: 10, updatedAt: 20, deletedAt: 30, resourceVersion: firstVersion + 1 });
       expect((deleted.spec.legacy_source as { row: { resource_version: number } }).row.resource_version).toBe(2);
     } finally { await server.close(); }
   });
@@ -353,7 +357,7 @@ describe('AgentMessage MCP over isolated HTTP', () => {
       });
       expect(response.isError).not.toBe(true);
       const updated = JSON.parse((response.content as Array<{ text: string }>)[0].text) as DocumentEnvelope;
-      expect(JSON.stringify(updated.spec)).toBe(JSON.stringify({ ...original.spec, title: 'Changed title only' }));
+      expect(updated.spec).toEqual({ ...original.spec, title: 'Changed title only' });
       expect(updated.metadata.resourceVersion).toBeGreaterThan(original.metadata.resourceVersion);
       expect(store.getDocument({ id: topic.metadata.id })?.spec.status).toBe('open');
     } finally { await client.close(); await server.close(); }

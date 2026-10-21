@@ -9,7 +9,7 @@ evaporating when a chat ends.
 It does two things at once:
 
 - **Context storage** — a portable SQLite database of durable **workstreams**,
-  **topics**, topic types, Agent Messages, and related control-plane documents.
+For   **topics**, topic types, Agent Messages, and related control-plane documents.
 - **Workflow engine** — agents drive the store through typed MCP tools
   (`ws-*` and `wm-document-*`). The standalone desktop app surfaces the live
   state so you can watch and steer.
@@ -294,6 +294,21 @@ Agent Messages replace alerts as regular `AgentMessage` documents. Use the
 `ws-agent-message-create/read/update/delete` tools or the validated generic
 `wm-document-*` API; `wm-list-kinds` exposes the authored schema.
 
+Every new message requires `agent_id`, identifying its registered caller:
+
+1. Look up your exact caller name with `ws-agent-read { "name": "Review Agent" }`.
+2. If absent, register with `ws-agent-create { "name": "Review Agent" }`.
+3. Remember the returned `metadata.id` and reuse it as `agent_id` on each message.
+
+Registered callers are ordinary `Agent` documents with a unique,
+case-insensitive name and optional description. Use `ws-agent-update` with
+`expectedResourceVersion` to rename/update a registration, or `ws-agent-delete`
+to delete an unreferenced registration (`restore: true` restores it). Message
+sender IDs cannot be reassigned; the server snapshots `agent_name` at send time,
+so renaming a registration never rewrites historical attribution. Referenced
+registrations cannot be deleted, even if their messages are soft-deleted.
+Registration is attribution only, not authentication or execution authority.
+
 - **request**: a specific human action or decision is needed.
 - **approval**: a request to review a decision, not an authorization grant.
 - **error**: an important failure; require attention only when a human can
@@ -305,10 +320,11 @@ Keep a meaningful title and the authored Markdown in `description`, link
 detailed journal/PR provenance, and specify topic/object relations. Do not post
 dispatch/running chatter, duplicate summaries, or long operational reports.
 `attention` defaults to false; use it only for a specific human decision/action.
-For example, after substituting an existing topic slug:
+For example, after substituting your registered agent ID and an existing topic slug:
 
 ```json
 {
+  "agent_id": "<registered-agent-uuid>",
   "title": "Choose the migration window",
   "description": "The upgrade is ready. Which maintenance window should we use?",
   "category": "request",
@@ -347,7 +363,7 @@ For the separate Agent Window only, retain the existing HTTP
 The control-plane resource store runs its Agent Message conversion automatically
 on opening an isolated or installed store (`resource_migrations`,
 `agent-messages`; new conversion provenance and current store migration
-version 3). It is versioned and transactional,
+version 4; original Alert conversion provenance remains version 3). It is versioned and transactional,
 includes closed and soft-deleted Alert documents, and preserves their IDs,
 Markdown, timestamps, lifecycle, and legacy provenance. It does not run against
 a separate user's service as part of tests. Deprecated `ws-alert-*` and generic
@@ -358,6 +374,13 @@ non-attention request. Unsupported canonical categories/lifecycle combinations
 return an explicit legacy-adapter error for by-ID reads; list reads return
 compatible entries with `incompatibleMessageIds` and warnings instead of
 coercing or silently omitting incompatible records.
+Pre-existing messages, including resolved and soft-deleted history, are
+attributed to the reserved **System Import** registration. Deprecated Alert
+creation adapters also use this identity for compatibility; new callers must
+register their own name and use canonical message tools. The registry upgrade
+advances the change feed without changing authored content, timestamps, or IDs.
+Recent messages and Log use the same exchange layout, with a pink caller
+initials box and registered name for agent messages.
 The original resource row, including legacy history and fields unknown to the
 new model, remains in immutable `legacy_source` migration provenance.
 Malformed records or incompatible migration versions fail explicitly and roll
@@ -531,7 +554,7 @@ The selected document's scoped conversation is also shown immediately above
 the composer. Sending a command automatically expands this inline surface to
 show all available exchanges for that document or Container App, including runs
 that reference it from another scope. Collapsing it shows the latest five rows:
-older rows use one line, while the newest response uses up to four lines.
+each row shows a one-line response preview with its status.
 Use **Expand for all messages and details** to view the full scoped conversation.
 History is paged independently of the global Log; loading older scoped messages
 does not advance the Log's **Load older** cursor. With no document selected, use
@@ -542,6 +565,20 @@ conversation. You can switch to another topic and submit a query while the
 first is still running; a background completion does not select its document.
 The Log is a live chronological timeline, with a timestamped command dot and
 nested tool activity, confirmation, and response for each query.
+The Log and Recent messages share the same message component and timeline
+styling. Expanded exchanges use boxed human initials and a boxed WM label beside
+the message text, with tool calls between the two rows and no separate dark
+background for the human message.
+Linked context sits above the initials rows, using the same topic-type icon as
+the matching open tab when available. Tool-call summaries align with that context
+row and use a matching pink tool icon.
+Click the pink-dot/date/status header (or focus it and press Enter/Space)
+to collapse a message to a one-line preview and status; click the preview to
+expand it again. Recent messages hides the redundant scope link and adds
+**Show in Log**. Attention requests appear once in chronological order, marked
+**Needs your attention**, rather than in a duplicate pinned section. Older
+attention requests and pending tool confirmations remain available even when
+Recent messages is limited to the latest five rows.
 Both surfaces summarize tool activity as a count (for example, **5 tool calls**).
 Click the summary, or focus it and press Enter/Space, to reveal tools and outcomes;
 individual tools still open the full inspector. Failed, cancelled, and pending

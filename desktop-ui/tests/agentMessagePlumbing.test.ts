@@ -10,6 +10,7 @@ import { desktopHttpLink, parseDesktopHttpPath } from '../src/main/linkBridge';
 import { renderDocumentByKind } from '../src/main/documentRenderers';
 
 const message: AgentMessage = {
+  agent_id: 'agent-1', agent_name: 'Review Agent',
   id: 'message-1', slug: null, title: 'Review', description: '**Review**', recommended_action: 'Review PR',
   category: 'approval', severity: 'warning', status: 'open', attention: true, topics: ['one', 'two'],
   relations: [{ kind: 'Topic', id: 'topic-1' }], dedupe_key: null, created_by: 'agent',

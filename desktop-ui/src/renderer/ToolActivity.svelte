@@ -17,10 +17,13 @@
 
 <details class="tool-activity">
   <summary>
+    <span aria-hidden="true" class="codicon codicon-tools"></span>
+    <span>
     {count} tool {count === 1 ? 'call' : 'calls'}
     {#if failed}<span class="tool-failures"> · {failed} failed</span>{/if}
     {#if cancelled}<span> · {cancelled} cancelled</span>{/if}
     {#if pending}<span> · {pending} pending</span>{/if}
+    </span>
   </summary>
   {#if run.tools.length}
     <ol class="tool-rows" aria-label="Tool activity">

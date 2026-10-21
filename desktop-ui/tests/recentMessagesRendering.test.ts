@@ -3,13 +3,14 @@ import { createServer, type ViteDevServer } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import type { Component } from 'svelte';
 import type { ChatRun } from '../src/renderer/chatHistory';
-import type { AgentMessageVM } from '../src/renderer/documents/types';
+import type { AgentMessageVM, TopicVM } from '../src/renderer/documents/types';
 
 let server: ViteDevServer;
 let render: typeof import('svelte/server').render;
 let RecentMessages: Component<any>;
 let ToolActivity: Component<any>;
 let AgentMessageCard: Component<any>;
+let MessageTimeline: Component<any>;
 const context = { kind: 'topic', routeKind: 'topic', identifier: 'selected', title: 'Selected' };
 const noop = vi.fn();
 
@@ -24,7 +25,7 @@ function run(index: number, overrides: Partial<ChatRun> = {}): ChatRun {
 
 function props(runs: ChatRun[], extra = {}) {
   return {
-    runs, context, humanName: 'Human', unreadResponses: [], onViewed: noop,
+    runs, context, humanName: 'Ada Lovelace', unreadResponses: [], onViewed: noop, onSetAgentMessageStatus: noop,
     onFocus: noop, onRetry: noop, runBlocked: () => false, onInspect: noop, onOpen: noop,
     attachmentUrl: (id: string) => `wm-attachment:${id}`, assistantFallback: (item: ChatRun) => item.status,
     onReload: noop, onResolve: noop, ...extra,
@@ -40,29 +41,45 @@ beforeAll(async () => {
   RecentMessages = (await server.ssrLoadModule('/src/renderer/RecentMessages.svelte')).default;
   ToolActivity = (await server.ssrLoadModule('/src/renderer/ToolActivity.svelte')).default;
   AgentMessageCard = (await server.ssrLoadModule('/src/renderer/documents/AgentMessageCard.svelte')).default;
+  MessageTimeline = (await server.ssrLoadModule('/src/renderer/MessageTimeline.svelte')).default;
 });
 
 afterAll(async () => { await server?.close(); });
 
 describe('rendered recent messages (Svelte server rendering, not browser layout)', () => {
   function message(index: number, extra: Partial<AgentMessageVM> = {}): AgentMessageVM {
-    return { id: `canonical-${index}`, title: `Canonical ${index}`, description: `Message body ${index}`,
+    return { id: `canonical-${index}`, agentId: 'agent-1', agentName: 'Review Agent', title: `Canonical ${index}`, description: `Message body ${index}`,
       recommendedAction: '', category: 'completion', severity: 'info', status: 'open', attention: false,
       topics: ['selected'], relations: [], createdAt: (index + .5) / 1000, updatedAt: (index + .5) / 1000, ...extra };
   }
 
-  it('collapses exactly five merged canonical/run rows and retains older attention outside that window', () => {
+  it('collapses five recent rows plus older attention requests, each appearing once in chronological order', () => {
     const messages = [message(0, { attention: true, category: 'approval' }), message(4), message(7)];
     const html = render(RecentMessages, { props: props(Array.from({ length: 8 }, (_, i) => run(i)),
       { agentMessages: messages }) }).body;
-    expect(html.match(/class="scope-preview-row(?: latest)?"/g)).toHaveLength(5);
+    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(6);
     expect(html).toContain('Canonical 7');
-    expect(html).toContain('Needs your attention (1)');
+    expect(html).toContain('Needs your attention');
     expect(html).toContain('Canonical 0');
-    expect(html).toContain('not authorization');
+    expect(html).not.toContain('class="agent-message"');
     const timeline = html.slice(html.indexOf('id="scoped-messages"'));
-    expect(timeline).not.toContain('Canonical 0');
+    expect(timeline.match(/Canonical 0/g)).toHaveLength(1);
     expect(timeline.indexOf('Response 7')).toBeLessThan(timeline.indexOf('Canonical 7'));
+  });
+
+  it.each([false, true])('keeps attention cards within the shared message scroller when expanded=%s', (expanded) => {
+    const html = render(RecentMessages, { props: props([run(2)], {
+      expanded, agentMessages: [message(1, { attention: true, category: 'approval' })],
+    }) }).body;
+    const scroller = html.indexOf('<div class="scope-preview-history">');
+    expect(scroller).toBeGreaterThan(-1);
+    expect(html.indexOf('needs-attention')).toBeGreaterThan(scroller);
+    expect(html).not.toContain('message-attention');
+    expect(html.match(/data-agent-message-id="canonical-1"/g)).toHaveLength(expanded ? 2 : 1);
+    expect(html.match(/class="agent-message(?:\s|")/g) ?? []).toHaveLength(expanded ? 1 : 0);
+    expect(html.indexOf('id="scoped-messages"')).toBeGreaterThan(scroller);
+    expect(html.match(/class="scope-preview-history"/g)).toHaveLength(1);
+    expect(html.indexOf('class="scope-preview-heading"')).toBeLessThan(scroller);
   });
 
   it('keeps old trusted pending confirmations discoverable outside five newer canonical rows', () => {
@@ -70,12 +87,11 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
       pendingConfirmation: { id: 'protected', tool: 'ws-topic-update', arguments: { status: 'closed' } } });
     const messages = Array.from({ length: 8 }, (_, index) => message(index + 1));
     const html = render(RecentMessages, { props: props([pending], { agentMessages: messages }) }).body;
-    expect(html.match(/class="scope-preview-row(?: latest)?"/g)).toHaveLength(5);
-    expect(html).toContain('aria-label="Tool action confirmation needed"');
+    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(6);
+    expect(html).toContain('awaiting confirmation');
     expect(html).toContain('Protected write');
-    expect(html).toContain('Expand confirmation');
-    expect(html).toContain('Review in Log');
-    expect(html.slice(html.indexOf('id="scoped-messages"'))).not.toContain('Protected write');
+    expect(html).toContain('aria-label="Expand message"');
+    expect(html.match(/Protected write/g)).toHaveLength(1);
     expect(html).not.toContain('class="confirm"');
     expect(html).not.toContain('class="cancel"');
     const expanded = render(RecentMessages, { props: props([pending], { agentMessages: messages, expanded: true }) }).body;
@@ -92,6 +108,10 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     expect(html).toContain('<strong>History</strong>');
     expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('Reopen');
+    expect(html).toContain('agent-message-entry');
+    expect(html.match(/class="message-from"/g)).toHaveLength(3);
+    expect(html.match(/>Review Agent</g)).toHaveLength(3);
+    expect(html.match(/class="message-avatar assistant-avatar"[^>]*>RA</g)).toHaveLength(3);
     expect(html).toContain('acknowledged');
     expect(html).toContain('Response 3');
     const approval = render(AgentMessageCard, { props: { message: messages[2], onSetStatus: noop } }).body;
@@ -104,6 +124,66 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
       message: message(3, { createdAt: 1_792_540_000 }), onSetStatus: noop,
     } }).body;
     expect(timestamp).toContain(`datetime="${new Date(1_792_540_000_000).toISOString()}"`);
+  });
+
+  it('uses identical exchange markup in both surfaces with explicit scope, focus and stable-id options', () => {
+    const runs = [run(1)];
+    const shared = { ...props(runs), agentMessages: [], expanded: true };
+    const log = render(MessageTimeline, { props: { ...shared, attachRunIds: true } }).body;
+    const scoped = render(MessageTimeline, { props: {
+      ...shared, scoped: true, showScope: false, showInLog: true,
+    } }).body;
+    for (const html of [log, scoped]) {
+      expect(html).toContain('class="timeline-command"');
+      expect(html).toContain('class="user-entry"');
+      expect(html).toContain('class="assistant-entry"');
+      expect(html).toContain('class="message-avatar human-avatar" title="Ada Lovelace" aria-hidden="true">AL</span>');
+      expect(html).toContain('class="message-avatar assistant-avatar" title="Working Memory" aria-hidden="true">WM</span>');
+      expect(html.indexOf('human-avatar')).toBeLessThan(html.indexOf('class="tool-activity"'));
+      expect(html.indexOf('class="tool-activity"')).toBeLessThan(html.indexOf('assistant-avatar'));
+      expect(html).toContain('aria-label="Collapse message"');
+      expect(html).toContain('class="timeline-dot"');
+    }
+    expect(log).toContain('id="chat-run-run-1"');
+    expect(scoped).not.toContain('id="chat-run-run-1"');
+    expect(log).toContain('class="user-scope"');
+    expect(scoped).not.toContain('class="user-scope"');
+    expect(scoped).toContain('Show in Log');
+    expect(log).not.toContain('Show in Log');
+  });
+
+  it('renders global attention messages once and collapses either kind to escaped text and status only', () => {
+    const messages = [message(1, { attention: true, description: '<script>unsafe()</script>' })];
+    const shared = { ...props([run(2)]), agentMessages: messages };
+    const expanded = render(MessageTimeline, { props: shared }).body;
+    expect(expanded.match(/class="agent-message(?:\s|")/g)).toHaveLength(1);
+    expect(expanded).not.toContain('global-attention');
+    const collapsed = render(MessageTimeline, { props: { ...shared, expanded: false } }).body;
+    expect(collapsed.match(/aria-label="Expand message"/g)).toHaveLength(2);
+    expect(collapsed).toContain('Response 2');
+    expect(collapsed).toContain('succeeded');
+    expect(collapsed).toContain('&lt;script>');
+    expect(collapsed).not.toContain('<script>');
+    expect(collapsed).not.toContain('class="timeline-details"');
+    expect(collapsed.match(/class="timeline-dot"/g)).toHaveLength(2);
+  });
+
+  it.each(['selected-id', 'selected-slug'])('puts the topic-type context icon above initials for scope %s', (identifier) => {
+    const document: TopicVM = {
+      kind: 'topic', id: 'selected-id', slug: 'selected-slug', title: 'Selected',
+      status: 'open', topicType: 'experiment', typeMeta: {
+        slug: 'experiment', label: 'Experiment', icon: 'beaker', description: '',
+      },
+      body: '', createdAt: 1, updatedAt: 1, resourceVersion: 1, editable: true,
+      parents: [], children: [], workstreams: [], focusedWorkstreams: [], agentMessages: [],
+    };
+    const html = render(MessageTimeline, { props: {
+      ...props([run(1, { scope: { kind: 'Topic', id: identifier } })]),
+      agentMessages: [], documents: [document],
+    } }).body;
+    expect(html).toContain('codicon codicon-beaker');
+    expect(html.indexOf('class="user-scope"')).toBeLessThan(html.indexOf('class="user-entry"'));
+    expect(html).not.toContain('codicon-link');
   });
 
   it('displays recorded approval decisions as escaped communication, never executable confirmation controls', () => {
@@ -155,12 +235,12 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     }
   });
 
-  it('renders exactly five scoped rows, only the newest marked multiline, and a clear expansion prompt', () => {
+  it('renders exactly five compact scoped rows and a clear expansion prompt', () => {
     const runs = Array.from({ length: 9 }, (_, i) => run(i));
     runs.push(run(100, { scope: { kind: 'Topic', id: 'unrelated' } }));
     const html = render(RecentMessages, { props: props(runs) }).body;
-    expect(html.match(/class="scope-preview-row(?: latest)?"/g)).toHaveLength(5);
-    expect(html.match(/class="scope-preview-row latest"/g)).toHaveLength(1);
+    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(5);
+    expect(html.match(/message-entry latest"/g)).toHaveLength(1);
     expect(html).toContain('Response 8');
     expect(html).not.toContain('Response 3');
     expect(html).not.toContain('Response 100');
@@ -174,7 +254,7 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     runs[0].attachments = [{ id: 'image', filename: 'image.png', mimeType: 'image/png' }];
     runs.push(run(100, { scope: { kind: 'Workstream', id: 'selected' } }));
     const html = render(RecentMessages, { props: props(runs, { expanded: true }) }).body;
-    expect(html.match(/class="scope-preview-response"/g)).toHaveLength(9);
+    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(9);
     expect(html).toContain('<strong>Old response</strong>');
     expect(html).toContain('&lt;script&gt;');
     expect(html).not.toContain('<script>');
@@ -185,7 +265,7 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
   });
 
   it('renders fewer rows and makes no-context, loading, errors and retry explicit', () => {
-    expect(render(RecentMessages, { props: props([run(1)]) }).body.match(/class="scope-preview-row latest"/g)).toHaveLength(1);
+    expect(render(RecentMessages, { props: props([run(1)]) }).body.match(/<details class="chat-run message-entry/g)).toHaveLength(1);
     const empty = render(RecentMessages, { props: props([run(1)], { context: undefined }) }).body;
     expect(empty).toContain('No document selected');
     expect(empty).not.toContain('Response 1');
@@ -226,6 +306,7 @@ describe('rendered shared tool disclosure', () => {
       journalId: 'run-1', sequence: 1, toolName: 'ws-topic-read', mode: 'read', status: 'pending',
     }] });
     expect(tools(live)).toContain('1 tool call');
+    expect(tools(live)).toContain('codicon codicon-tools');
     expect(tools(live)).toContain('1 pending');
     live.tools.push({ ...live.tools[0], sequence: 2, status: 'failure' });
     expect(tools(live)).toContain('2 tool calls');

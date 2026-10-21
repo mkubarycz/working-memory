@@ -192,6 +192,8 @@ describe('Alert kind loader', () => {
       );
       expect(created.kind).toBe('AgentMessage');
       expect(created.spec).toEqual({
+        agent_id: '00000000-0000-4000-8000-000000000001',
+        agent_name: 'System Import',
         title: 'Disk is nearly full.',
         description: 'Disk is nearly full.',
         recommended_action: 'Review the message "Disk is nearly full." and decide the next step.',

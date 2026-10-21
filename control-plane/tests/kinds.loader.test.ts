@@ -20,12 +20,13 @@ describe('kind loader', () => {
         'TopicType',
         'Alert',
         'AgentMessage',
+        'Agent',
         'Config',
         'CommandJournal',
         'ContainerClaim',
       ]),
     );
-    expect(registered).toHaveLength(8);
+    expect(registered).toHaveLength(9);
     expect(listKinds()).toContain('Topic');
     expect(getKind('Topic')).toBeTruthy();
   });

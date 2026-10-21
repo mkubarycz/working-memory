@@ -16,7 +16,9 @@ it('orders real persisted message seconds correctly after HTTP parsing and share
   const server = await startServer({ port: 0 });
   const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
   try {
+    const agent = await client.agentCreate({ name: 'Renderer Validation' });
     const created = await client.agentMessageCreate({
+      agent_id: agent.id,
       title: 'Published renderer validation', description: 'Canonical timestamp integration check.',
       category: 'completion', attention: false,
     });
@@ -64,8 +66,10 @@ it('persists communication-only decisions through the real desktop helper and pr
   const server = await startServer({ port: 0 });
   const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
   try {
+    const agent = await client.agentCreate({ name: 'Decision Validation' });
     const topic = await client.topicCreate({ title: 'Human-owned decision scope', slug: 'decision-scope' });
     const approval = await client.agentMessageCreate({
+      agent_id: agent.id,
       title: 'Request human review', description: 'This approval request cannot execute anything.',
       category: 'approval', topics: [topic.slug!], relations: [{ kind: 'Topic', id: topic.id }],
     });

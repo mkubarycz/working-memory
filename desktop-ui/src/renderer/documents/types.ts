@@ -101,6 +101,8 @@ export interface RelationVM {
 export interface AgentMessageVM {
   /** AgentMessage UUID used for links and message-only lifecycle transitions. */
   id: string;
+  agentId: string;
+  agentName: string;
   title: string;
   description: string;
   recommendedAction: string;

@@ -5,6 +5,7 @@ const envelope = {
   kind: 'AgentMessage',
   metadata: { id: 'message-1', slug: null, createdAt: 1, updatedAt: 2, resourceVersion: 3 },
   spec: {
+    agent_id: '00000000-0000-4000-8000-000000000001', agent_name: 'Test Agent',
     title: 'Review PR', description: 'Review **authored Markdown**', recommended_action: 'Review',
     category: 'approval', severity: 'warning', status: 'open', attention: true,
     topics: ['topic-one'], relations: [{ kind: 'Topic', id: 'topic-1' }], created_by: 'agent',
@@ -31,7 +32,7 @@ describe('canonical AgentMessage client', () => {
 
   it('creates canonical messages without translating categories or granting approval', async () => {
     const { client, call } = clientWith(envelope);
-    const input = { title: 'Review PR', description: '**review**', category: 'approval' as const, attention: true };
+    const input = { agent_id: envelope.spec.agent_id, title: 'Review PR', description: '**review**', category: 'approval' as const, attention: true };
     expect((await client.agentMessageCreate(input)).category).toBe('approval');
     expect(call).toHaveBeenCalledWith('ws-agent-message-create', input);
   });
@@ -91,8 +92,26 @@ describe('canonical AgentMessage client', () => {
     { ...envelope, metadata: { ...envelope.metadata, deletedAt: -1 } },
   ])('rejects malformed CRUD responses without defaulting required fields', async (value) => {
     const { client } = clientWith(value);
-    await expect(client.agentMessageCreate({ title: 'Test', description: 'test', category: 'completion' })).rejects.toThrow(/Malformed/);
+    await expect(client.agentMessageCreate({ agent_id: envelope.spec.agent_id, title: 'Test', description: 'test', category: 'completion' })).rejects.toThrow(/Malformed/);
     await expect(client.agentMessageUpdate({ id: 'message-1', expectedResourceVersion: 3, status: 'open' })).rejects.toThrow(/Malformed/);
     await expect(client.agentMessageDelete({ id: 'message-1' })).rejects.toThrow(/Malformed/);
+  });
+
+  describe('registered Agent client validation', () => {
+    it.each([null, {}, { count: 1, agents: [] }, { count: 1, agents: [{}] }])(
+      'rejects malformed registry lists: %j', async (value) => {
+        const { client } = clientWith(value);
+        await expect(client.agentRead()).rejects.toThrow(/Malformed control-plane Agent/);
+      },
+    );
+    it.each([
+      { kind: 'Topic', metadata: { id: 'agent-1', resourceVersion: 1 }, spec: { name: 'Caller', description: '' } },
+      { kind: 'Agent', metadata: { id: '', resourceVersion: 1 }, spec: { name: 'Caller', description: '' } },
+      { kind: 'Agent', metadata: { id: 'agent-1', resourceVersion: 0 }, spec: { name: 'Caller', description: '' } },
+      { kind: 'Agent', metadata: { id: 'agent-1', resourceVersion: 1 }, spec: { name: ' ', description: '' } },
+    ])('rejects malformed registry writes: %j', async (value) => {
+      const { client } = clientWith(value);
+      await expect(client.agentCreate({ name: 'Caller' })).rejects.toThrow(/Malformed control-plane Agent/);
+    });
   });
 });

@@ -62,6 +62,7 @@ describe('active topic backlog', () => {
 
 describe('canonical agent message panels', () => {
   const message: AgentMessage = {
+    agent_id: 'agent-1', agent_name: 'Review Agent',
     id: 'message-1', slug: null, title: 'Review', description: '**Review**', recommended_action: 'Review PR',
     category: 'approval', severity: 'warning', status: 'open', attention: true, topics: ['one', 'two'],
     relations: [], dedupe_key: null, created_by: 'agent', created_at: 1, updated_at: 2, resourceVersion: 1,

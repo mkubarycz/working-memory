@@ -15,6 +15,18 @@ export interface PersistedDocumentTabs {
 
 const MAX_PERSISTED_TABS = 50;
 
+export function documentTabIcon(document: DocumentVM): string {
+  switch (document.kind) {
+    case 'workstream': return 'briefcase';
+    case 'topic': return ('typeMeta' in document ? document.typeMeta?.icon : undefined) ?? 'symbol-misc';
+    case 'topic-create': return 'add';
+    case 'topic-backlog': return 'inbox';
+    case 'container-app': return 'server-environment';
+    case 'settings': return 'gear';
+    default: return 'file';
+  }
+}
+
 export function createDocumentOpenGuard() {
   let revision = 0;
   return {

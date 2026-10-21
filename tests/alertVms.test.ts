@@ -121,6 +121,7 @@ describe('alertBubbleForTopic', () => {
   describe('canonical message history is independent of legacy Alert display windows', () => {
     test('retains acknowledged and resolved history indefinitely and preserves epoch seconds', () => {
       const message: AgentMessage = {
+        agent_id: 'agent-1', agent_name: 'Review Agent',
         ...alert({ updated_at: 10, created_at: 1 }),
         status: 'resolved', category: 'approval', severity: 'info', attention: false, relations: [],
       };

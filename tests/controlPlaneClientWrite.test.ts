@@ -324,7 +324,7 @@ describe('ControlPlaneClient write methods', () => {
       expect(updated.description).toBe('disk almost full');
       expect(updated.topics).toEqual(['ops']);
       expect(updated.slug).toBeNull();
-      expect(updated.resourceVersion).toBe(3);
+      expect(updated.resourceVersion).toBe(created.document!.metadata.resourceVersion + 1);
     } finally {
       await client.dispose();
     }

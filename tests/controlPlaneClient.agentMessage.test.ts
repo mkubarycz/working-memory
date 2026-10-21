@@ -19,6 +19,7 @@ const envelope = {
   kind: 'AgentMessage',
   metadata: { id: 'message-1', slug: null, createdAt: 100, updatedAt: 200, resourceVersion: 3 },
   spec: {
+    agent_id: '00000000-0000-4000-8000-000000000001', agent_name: 'Test Agent',
     title: 'Review PR', description: '**Human review**', recommended_action: 'Review PR',
     category: 'approval', severity: 'warning', status: 'open', attention: true,
     created_by: 'agent', topics: ['topic-one'], relations: [{ kind: 'Topic', id: 'topic-one-id' }],
@@ -101,7 +102,7 @@ describe('canonical AgentMessage shared client', () => {
 
   it('creates through the primary canonical tool, preserving Markdown and explicit attention', async () => {
     callTool.mockResolvedValue(text(envelope));
-    const input = { title: 'Review PR', category: 'approval' as const, description: '**Human review**', attention: true };
+    const input = { agent_id: envelope.spec.agent_id, title: 'Review PR', category: 'approval' as const, description: '**Human review**', attention: true };
     await client().agentMessageCreate(input);
     expect(callTool).toHaveBeenCalledWith({ name: 'ws-agent-message-create', arguments: input });
   });
@@ -134,10 +135,10 @@ describe('canonical AgentMessage shared client', () => {
       await expect(client().agentMessageRead()).rejects.toBeInstanceOf(ControlPlaneClientError);
     });
 
-  it.each(['category', 'status', 'severity', 'attention', 'topics', 'relations', 'created_by'])(
+  it.each(['category', 'status', 'severity', 'attention', 'topics', 'relations', 'created_by', 'agent_id', 'agent_name'])(
     'does not silently default the required %s response field', async (field) => {
       callTool.mockResolvedValue(text({ ...envelope, spec: { ...envelope.spec, [field]: undefined } }));
-      await expect(client().agentMessageCreate({ title: 'Ready for review', category: 'completion', description: 'Ready' })).rejects.toThrow('Malformed');
+      await expect(client().agentMessageCreate({ agent_id: envelope.spec.agent_id, title: 'Ready for review', category: 'completion', description: 'Ready' })).rejects.toThrow('Malformed');
     });
 
   it('propagates authoritative tool errors instead of falling back to deprecated Alert tools', async () => {

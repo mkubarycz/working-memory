@@ -415,6 +415,8 @@ describe('desktop tree icon contract', () => {
   it('shows five recent current-scope rows or all expanded exchanges and targets stable history elements', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
     const recent = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/RecentMessages.svelte'), 'utf8');
+    const entry = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/MessageEntry.svelte'), 'utf8');
+    const timeline = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/MessageTimeline.svelte'), 'utf8');
     const focus = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/chatRunFocus.ts'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const previewIndex = app.indexOf('<RecentMessages');
@@ -422,15 +424,16 @@ describe('desktop tree icon contract', () => {
     const chatRailIndex = app.indexOf('<aside class="chat-rail">');
 
     expect(recent).toContain('scopedMessageRows(runs, agentMessages, context, document)');
-    expect(recent).toContain('allRows.slice(-5)');
+    expect(recent).toContain('limit={expanded ? undefined : 5}');
     expect(recent).toContain('aria-label="Recent messages"');
     expect(recent).toContain('<span>Recent messages</span>');
     expect(app).toContain('scopePreviewExpanded = true;');
-    expect(recent).toContain('{#each allRows as row (row.key)}');
+    expect(timeline).toContain('{#each visibleRows as row, index (row.key)}');
     expect(recent).toContain('Expand for all messages and details');
     expect(app).toContain('bind:expanded={scopePreviewExpanded}');
-    expect(recent).toContain('class="scope-preview-human"');
-    expect(recent).toContain('{humanInitials(humanName)}');
+    expect(recent).toContain('<MessageTimeline');
+    expect(entry).toContain('class="user-entry"');
+    expect(entry).toContain('humanInitials(humanName)');
     expect(app).not.toContain('<small>{run.assistantText ?? assistantFallback(run)}</small>');
     expect(app).not.toContain('Selected file:');
     expect(app).not.toContain('Current scope');
@@ -456,7 +459,7 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain("target.classList.add('preview-attention');");
     expect(app).toContain("target.addEventListener('animationend', finish, { once: true });");
     expect(app).toContain("target?.classList.remove('preview-attention');");
-    expect(app).toContain('id={chatRunDomId(run)}');
+    expect(entry).toContain('id={attachRunIds && run ? chatRunDomId(run) : undefined}');
     expect(app).toContain('tabindex="-1"');
     expect(styles).toMatch(/\.chat-run\.preview-attention::after[^}]*z-index:\s*2[^}]*border:\s*2px solid var\(--desktop-accent-strong\)[^}]*animation:\s*chat-run-attention \.55s ease-in-out 2/s);
     expect(styles).toContain('@keyframes chat-run-attention');

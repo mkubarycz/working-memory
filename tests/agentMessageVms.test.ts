@@ -6,6 +6,7 @@ import { buildAgentMessagesPanel, buildTopicsPanel, buildWorkstreamTree } from '
 function message(extra: Partial<AgentMessage> = {}): AgentMessage {
   return {
     id: 'message-1', slug: null, title: 'Review required', description: '# Original\n\n**Markdown**',
+    agent_id: 'agent-1', agent_name: 'Review Agent',
     recommended_action: 'Review the proposal', category: 'approval', severity: 'info',
     status: 'open', attention: false, topics: ['topic-one'], relations: [],
     dedupe_key: null, created_by: 'agent', created_at: 10, updated_at: 20,
@@ -23,6 +24,7 @@ describe('canonical AgentMessage view models', () => {
     expect(vm).toMatchObject({
       description: original.description, recommendedAction: original.recommended_action,
       category: 'approval', status: 'open', severity: 'info', attention: false,
+      agentId: 'agent-1', agentName: 'Review Agent',
       relations: [{ kind: 'Workstream', id: 'ws-id' }], provenance: { agent: 'reviewer' },
       decision: { outcome: 'approved', decided_by: 'human', reason: 'Reviewed the design', decided_at: 15 },
       createdAt: 10, updatedAt: 20,

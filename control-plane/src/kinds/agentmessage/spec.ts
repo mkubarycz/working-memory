@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SYSTEM_IMPORT_AGENT_ID } from '../agent/spec.js';
 
 export const AGENT_MESSAGE_KIND = 'AgentMessage';
 export const agentMessageProvenance = z.object({
@@ -17,6 +18,8 @@ export const agentMessageDecision = z.object({
   decided_at: z.number().int().nonnegative().optional().describe('Server-recorded Unix seconds. Omit when recording a decision; never authorization or proof of identity.'),
 }).strict();
 export const agentMessageSpec = z.object({
+  agent_id: z.string().uuid().describe('Required registered caller ID. Look up your agent name with ws-agent-read; if missing, register with ws-agent-create. Remember the returned metadata.id and reuse it here for every message. Do not impersonate another caller. Registration is attribution, not authentication or authorization.'),
+  agent_name: z.string().trim().min(1).optional().describe('Server-owned send-time registered caller name. Omit when creating a message; do not edit.'),
   title: z.string().refine((value) => value.trim().length > 0, 'A meaningful nonblank title is required.').describe('Required meaningful Markdown title; preserved as authored source.'),
   description: z.string().refine((value) => value.trim().length > 0, 'A meaningful nonblank body is required.').describe('Required Markdown body; never rewritten by rendering or migration.'),
   category: z.enum(['request', 'approval', 'error', 'completion']).describe('Purpose: request for a human decision; approval request for human review (NEVER execution authority); error explaining a failure; completion/PR information without attention.'),
@@ -71,7 +74,7 @@ export function legacyToMessage(input: Record<string, unknown>): AgentMessageSpe
   const recommended_action = mapped.attention && typeof action === 'string' && !action.trim()
     ? `Review the message "${title}" and decide the next step.`
     : action;
-  return agentMessageSpec.parse({ ...rest, title, recommended_action, ...mapped });
+  return agentMessageSpec.parse({ agent_id: SYSTEM_IMPORT_AGENT_ID, ...rest, title, recommended_action, ...mapped });
 }
 
 export function messageToLegacyStatus(spec: Record<string, unknown>): 'alert' | 'informational' | 'closed' {

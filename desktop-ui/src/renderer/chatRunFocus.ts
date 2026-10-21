@@ -19,6 +19,12 @@ export async function focusChatRunTarget(dependencies: ChatRunFocusDependencies)
 
   const target = dependencies.getTarget();
   if (!target) return;
+  if (target.tagName === 'DETAILS' && !target.hasAttribute('open')) {
+    const opened = new Promise<void>((resolve) => target.addEventListener('toggle', () => resolve(), { once: true }));
+    target.setAttribute('open', '');
+    await opened;
+    await dependencies.afterRender();
+  }
   const scroller = target.closest('.conversation');
   const targetBounds = target.getBoundingClientRect();
   const scrollerBounds = scroller?.getBoundingClientRect();

@@ -5,10 +5,11 @@ import { asError, asText } from '../toolResult.js';
 import { AGENT_MESSAGE_KIND, agentMessageSpec, agentMessagePatch } from './spec.js';
 
 const guidance = 'Agent Messages preserve Markdown source. Use attention=true only for a human decision or intervention. ' +
+  'Every message requires your registered agent_id: look up your name with ws-agent-read, register with ws-agent-create if needed, and remember/reuse metadata.id. ' +
   'Completion/PR notices are informational (attention=false); avoid progress chatter. Approval messages are requests for human review, ' +
   'NEVER authority or permission to execute. Message lifecycle never changes topic lifecycle.';
 
-const module: KindModule = {
+const agentMessage: KindModule = {
   name: AGENT_MESSAGE_KIND,
   descriptor: {
     extends: Base,
@@ -96,4 +97,4 @@ const module: KindModule = {
     }
   },
 };
-export default module;
+export default agentMessage;

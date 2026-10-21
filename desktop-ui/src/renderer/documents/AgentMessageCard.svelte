@@ -2,10 +2,11 @@
   import type { AgentMessageVM, RecordAgentMessageDecision } from './types';
   import { renderMarkdown } from './markdown';
   import { messageStatusActions } from '../agentMessages';
-  let { message, onSetStatus, onRecordDecision }: {
+  let { message, onSetStatus, onRecordDecision, embedded = false }: {
     message: AgentMessageVM;
     onSetStatus: (id: string, status: AgentMessageVM['status']) => void;
     onRecordDecision?: RecordAgentMessageDecision;
+    embedded?: boolean;
   } = $props();
   let recording = $state(false);
   let decidedBy = $state('');
@@ -18,11 +19,16 @@
   }
 </script>
 
-<article class="agent-message" class:muted={message.status !== 'open'} data-agent-message-id={message.id}>
+<article class="agent-message" class:embedded class:muted={message.status !== 'open'} data-agent-message-id={message.id}>
+  {#if !embedded}
+    <div class="message-from">{message.agentName}</div>
+  {/if}
   <header>
     <a href={`working-memory://open/agent-message/${encodeURIComponent(message.id)}`}>{message.title}</a>
-    <span>{message.category} · {message.severity} · {message.status}</span>
-    <time datetime={new Date(message.createdAt * 1000).toISOString()}>{new Date(message.createdAt * 1000).toLocaleString()}</time>
+    <span>{message.category} · {message.severity}{#if !embedded} · {message.status}{/if}</span>
+    {#if !embedded}
+      <time datetime={new Date(message.createdAt * 1000).toISOString()}>{new Date(message.createdAt * 1000).toLocaleString()}</time>
+    {/if}
   </header>
   <div class="markdown-body">{@html renderMarkdown(message.description)}</div>
   {#if message.recommendedAction}
@@ -62,8 +68,9 @@
 
 <style>
   .agent-message { border: 1px solid var(--vscode-widget-border, #555); border-left: 3px solid var(--vscode-textLink-foreground, #3794ff); border-radius: 5px; padding: 10px; margin: 6px 0; overflow-wrap: anywhere; }
+  .agent-message.embedded { border: 0; border-radius: 0; padding: 0; margin: 0; }
   header { display: flex; flex-wrap: wrap; gap: 8px; }
-  header a { font-weight: 600; }
+  header a { font-weight: 600; color: var(--desktop-chat-fg); text-decoration: none; }
   header span, time, .approval-notice { font-size: .85em; color: var(--vscode-descriptionForeground); }
   .muted { opacity: .75; }
   .message-actions { display: flex; gap: 6px; }

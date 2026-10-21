@@ -4,9 +4,8 @@
   import BrainMark from './BrainMark.svelte';
   import UnreadBadge from './UnreadBadge.svelte';
   import RecentMessages from './RecentMessages.svelte';
-  import AgentMessageCard from './documents/AgentMessageCard.svelte';
-  import { loadAllAgentMessages, mergeMessageRows, messageNeedsAttention } from './agentMessages';
-  import ToolActivity from './ToolActivity.svelte';
+  import MessageTimeline from './MessageTimeline.svelte';
+  import { loadAllAgentMessages, mergeMessageRows } from './agentMessages';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
   import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
   import type { TopicVM } from './documents/types';
@@ -69,7 +68,6 @@
     replaceMentionToken,
     type MentionToken,
   } from './mentionCompletion';
-  import { renderMarkdown } from './markdown';
   import { imageFilesFromTransfer } from './documents/imageFiles';
   import { validateChatImage } from './chatImages';
   import { createDocumentSaveQueue } from './documentSaveQueue';
@@ -79,6 +77,7 @@
     closeOtherDocumentTabs,
     createDocumentOpenGuard,
     documentTabKey,
+    documentTabIcon,
     keepSelectedTabVisible,
     openDocumentTab,
     parseDocumentTabs,
@@ -92,7 +91,7 @@
   import { collapseChatOnInteraction, chatRunDomId, loadScopedHistory, mergeScopedHistory, matchesChatContext, chatContextBusy, chatContextPending, chatContextKey } from './scopedChat';
   import { createDocumentChangeQueue, documentMatchesChange, documentRefreshTarget } from './documentChanges';
   import type { DocumentChanges } from '../../../shared/documentChanges';
-  import { collectUnreadResponses, observeResponse, parseUnreadResponses, responseKey, unreadResponseCount, type UnreadResponse } from './chatUnread';
+  import { collectUnreadResponses, parseUnreadResponses, responseKey, unreadResponseCount, type UnreadResponse } from './chatUnread';
   import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
@@ -113,7 +112,6 @@
     mergeHistoryRuns,
     reconcileLiveRun,
     refreshLatestRuns,
-    targetForRef,
     toolDetail,
     type ChatRun,
     type ChatToolRow,
@@ -143,7 +141,6 @@
   let agentMessagesError = $state('');
   let agentMessagesRequest = 0;
   const globalMessageRows = $derived(mergeMessageRows(chatRuns, agentMessages));
-  const globalAttention = $derived(agentMessages.filter(messageNeedsAttention));
   let historyLoading = $state(true);
   let historyError = $state('');
   let historyCursor = $state<string | undefined>();
@@ -2241,7 +2238,7 @@
                 onclick={() => selectDocument(key)}
                 ondblclick={() => promoteDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : 'file'}"></span>
+                <span aria-hidden="true" class="codicon codicon-{documentTabIcon(document)}"></span>
                 {#if tabApp}
                   <span
                     class="container-app-tab-health"
@@ -2367,11 +2364,11 @@
           <SettingsView
             profiles={modelProfiles}
             routing={modelRouting}
-            {humanName}
             {credentialStorage}
             {settingsStatus}
             {saving}
             {testingProfileId}
+            {humanName}
             onHumanName={(value) => (humanName = value)}
             onAddProfile={addModelProfile}
             onRemoveProfile={removeModelProfile}
@@ -2459,6 +2456,7 @@
 
       <RecentMessages
         runs={scopedConversationRuns}
+        {documents}
         {agentMessages}
         document={activeDocument}
         onSetAgentMessageStatus={setAgentMessageStatus}
@@ -2733,14 +2731,6 @@
         inert={activeHeaderTab !== 'log'}
       >
       <div class="conversation-shell">
-      {#if globalAttention.length}
-        <section class="global-attention" aria-label="Needs your attention">
-          <strong>Needs your attention ({globalAttention.length})</strong>
-          {#each globalAttention as message (message.id)}
-            <AgentMessageCard {message} onSetStatus={setAgentMessageStatus} onRecordDecision={recordAgentMessageDecision} />
-          {/each}
-        </section>
-      {/if}
       <div bind:this={conversationElement} class="conversation" aria-live="polite" onscroll={handleConversationScroll}>
       {#if agentMessagesLoading}<div role="status">Loading agent messages…</div>{/if}
       {#if agentMessagesError}
@@ -2761,91 +2751,21 @@
       {#if historyError && chatRuns.length > 0}
         <div class="history-state history-error" role="alert">{historyError}</div>
       {/if}
-      {#each globalMessageRows as row (row.key)}
-        {#if row.kind === 'agent-message'}
-          <AgentMessageCard message={row.message} onSetStatus={setAgentMessageStatus} onRecordDecision={recordAgentMessageDecision} />
-        {:else}
-        {@const run = row.run}
-        {@const scopeTarget = targetForRef(run.scope)}
-        <article id={chatRunDomId(run)} class="chat-run" data-journal-id={run.journalId} tabindex="-1">
-          <header class="timeline-command">
-            <span class="timeline-dot" aria-hidden="true"></span>
-            <time datetime={new Date(run.startedAt).toISOString()}>{new Date(run.startedAt).toLocaleString()}</time>
-            <span class="timeline-state">{run.status.replaceAll('_', ' ')}</span>
-            <UnreadBadge count={unreadResponses.some((record) => record.key === responseKey(run)) ? 1 : 0} />
-          </header>
-          <div class="timeline-details">
-          <section class="user-entry">
-            {#if scopeTarget}
-              <button class="user-scope" onclick={() => void openResource(scopeTarget.kind, scopeTarget.identifier)}>
-                <span aria-hidden="true" class="codicon codicon-link"></span>
-                {run.scope.title ?? run.scope.slug ?? run.scope.id}
-              </button>
-            {:else}
-              <span class="user-scope unsupported">{run.scope.title ?? run.scope.slug ?? run.scope.id}</span>
-            {/if}
-            {#if run.attachments.length}
-              <div class="user-attachments" aria-label="Attached images">
-                {#each run.attachments as attachment (attachment.id)}
-                  <img
-                    src={chatAttachmentUrl(attachment.id)}
-                    alt={attachment.filename}
-                    title={attachment.filename}
-                  />
-                {/each}
-              </div>
-            {/if}
-            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-            <div class="user-markdown">{@html renderMarkdown(run.userText)}</div>
-          </section>
-
-          <ToolActivity {run}
-            onInspect={(tool) => void openToolDetail(tool)}
-            onOpen={(target) => void openResource(target.kind, target.identifier)} />
-
-          <section class="assistant-entry" class:partial={!run.assistantText}
-            use:observeResponse={{ key: responseKey(run), enabled: unreadResponses.some((record) => record.key === responseKey(run)), onViewed: markResponseViewed }}>
-            <span>WM</span>
-            {#if run.assistantText}
-              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-              <div class="assistant-markdown">{@html renderMarkdown(run.assistantText)}</div>
-            {:else}
-              <p>{assistantFallback(run)}</p>
-            {/if}
-          </section>
-          {#if isRetryableRun(run)}
-            <div class="run-actions">
-              <button class="retry-button" disabled={runBlocked(run)} onclick={() => void retryRun(run)}>Retry</button>
-            </div>
-          {/if}
-      {#if run.status === 'awaiting_confirmation' && run.pendingConfirmation}
-        {@const pendingConfirmation = run.pendingConfirmation}
-        <section class="confirmation" aria-label="Tool action confirmation">
-          <strong>
-            {pendingConfirmation.batchCount
-              ? `Confirm ${pendingConfirmation.batchCount} changes?`
-              : `Confirm ${pendingConfirmation.tool}?`}
-          </strong>
-          {#if pendingConfirmation.batchCount}
-            <p>One approval covers this bounded batch. Calls and results will remain individually visible.</p>
-            <ul>
-              {#each pendingConfirmation.batchActions ?? [] as action}
-                <li><strong>{action.summary}</strong> <code>{action.tool}</code></li>
-              {/each}
-            </ul>
-          {:else}
-            <pre>{JSON.stringify(pendingConfirmation.arguments, null, 2)}</pre>
-          {/if}
-          <div>
-            <button class="confirm" onclick={() => void resolveConfirmation(true, run)}>Confirm</button>
-            <button class="cancel" onclick={() => void resolveConfirmation(false, run)}>Cancel</button>
-          </div>
-        </section>
-      {/if}
-          </div>
-        </article>
-        {/if}
-      {/each}
+      <MessageTimeline runs={chatRuns} {agentMessages} attachRunIds
+        {documents}
+        {humanName}
+        {unreadResponses}
+        onViewed={markResponseViewed}
+        onFocus={(run) => void focusChatRun(run)}
+        onRetry={(run) => void retryRun(run)}
+        {runBlocked}
+        onInspect={(tool) => void openToolDetail(tool)}
+        onOpen={(target) => void openResource(target.kind, target.identifier)}
+        attachmentUrl={chatAttachmentUrl}
+        {assistantFallback}
+        onResolve={(confirmed, run) => void resolveConfirmation(confirmed, run)}
+        onSetAgentMessageStatus={setAgentMessageStatus}
+        onRecordDecision={recordAgentMessageDecision} />
       {#if chatRuns.some((run) => run.status === 'running' || run.status === 'submitting')}
         <div class="thinking">Queries in progress…</div>
       {/if}

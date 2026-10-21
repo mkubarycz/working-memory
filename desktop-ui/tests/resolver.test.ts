@@ -44,6 +44,7 @@ describe('workstream resolver', () => {
       created_at: 1, updated_at: 1, resourceVersion: 1,
     };
     const alert: AgentMessage = {
+      agent_id: 'agent-1', agent_name: 'Review Agent',
       id: 'alert-1', slug: null, title: 'Verify desktop', description: 'Links must work',
       recommended_action: 'Click a topic', status: 'open', topics: [topic.slug!],
       category: 'request', severity: 'warning', attention: true, relations: [],
@@ -81,6 +82,7 @@ describe('workstream resolver', () => {
       focusedWorkstreams: [roadmap.slug!],
     };
     const alert: AgentMessage = {
+      agent_id: 'agent-1', agent_name: 'Review Agent',
       id: 'alert-1', slug: null, title: 'Verify desktop', description: 'Links must work',
       recommended_action: 'Click a topic', status: 'open', topics: [topic.slug!],
       category: 'request', severity: 'warning', attention: true, relations: [],
@@ -157,6 +159,7 @@ describe('workstream resolver', () => {
         created_at: 1, updated_at: 2, resourceVersion: 1,
       };
       const base: AgentMessage = {
+        agent_id: 'agent-1', agent_name: 'Review Agent',
         id: 'topic-message', slug: null, title: 'Review', description: 'Review', recommended_action: '',
         category: 'approval', severity: 'warning', attention: true, status: 'open', topics: [],
         relations: [{ kind: 'Topic', id: topic.id }], dedupe_key: null, created_by: 'agent',

@@ -28,7 +28,7 @@ describe('desktop tool coverage', () => {
   it('projects every registered tool in the supported high-level ws families', async () => {
     const canonical = (await client.listTools()).tools;
     const projected = desktopToolDescriptors(canonical).map((tool) => tool.name);
-    const requestedFamilies = ['workstream', 'topic', 'topictype', 'agent-message'];
+    const requestedFamilies = ['workstream', 'topic', 'topictype', 'agent-message', 'agent'];
     const expected = canonical
       .map((tool) => tool.name)
       .filter((name) => requestedFamilies.some((family) => name.startsWith(`ws-${family}-`)));
@@ -39,6 +39,7 @@ describe('desktop tool coverage', () => {
       'ws-topic',
       'ws-topictype',
       'ws-agent-message',
+      'ws-agent',
     ]));
     expect(projected.some((name) => name.startsWith('ws-config-'))).toBe(false);
     expect(projected.some((name) => name.startsWith('wm-document-'))).toBe(false);
@@ -49,7 +50,9 @@ describe('desktop tool coverage', () => {
     const typed = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
     try {
       const topic = await typed.topicCreate({ title: 'Review topic', slug: 'review-topic' });
+      const agent = await typed.agentCreate({ name: 'Desktop Integration Agent' });
       const created = await typed.agentMessageCreate({
+        agent_id: agent.id,
         title: 'Review this change', category: 'approval', description: '**Review** this change', attention: true,
         recommended_action: 'Review the pull request and explicitly approve or request changes.',
         topics: ['review-topic'], relations: [{ kind: 'Topic', id: topic.id }],

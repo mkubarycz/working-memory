@@ -7,7 +7,7 @@ import type { ChatRun } from '../src/renderer/chatHistory';
 import { targetForRef, toolMode } from '../src/renderer/chatHistory';
 
 function message(index: number, extra: Partial<AgentMessageVM> = {}): AgentMessageVM {
-  return { id: `message-${index}`, title: `Message ${index}`, description: 'Body', recommendedAction: '',
+  return { id: `message-${index}`, agentId: 'agent-1', agentName: 'Review Agent', title: `Message ${index}`, description: 'Body', recommendedAction: '',
     status: 'open', category: 'completion', severity: 'info', attention: false,
     topics: ['topic-slug'], relations: [], createdAt: index, updatedAt: index, ...extra };
 }
@@ -135,7 +135,7 @@ describe('canonical agent message timeline', () => {
     expect(decisionAction).toContain('generation !== environmentGeneration');
     expect(decisionAction).not.toMatch(/resolveConfirmation|saveTopic|invokeAction|pendingConfirmation|decided_at/);
     expect(app).toContain('entry.deleted && entry.id === message.id');
-    expect(app).toContain('{#each globalMessageRows as row (row.key)}');
+    expect(app).toContain('<MessageTimeline runs={chatRuns} {agentMessages} attachRunIds');
     expect(app).toContain('let scopePreviewExpanded = $state(false)');
   });
 });

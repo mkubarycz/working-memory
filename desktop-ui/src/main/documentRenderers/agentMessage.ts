@@ -8,6 +8,8 @@ export function renderAgentMessageDocument(env: DocumentEnvelope): string {
   return [
     `# Agent message: ${title}`, '',
     ...metadataSection(env, [
+      `- \`from\`: ${asStr(spec.agent_name) ?? '—'}`,
+      `- \`agentId\`: ${asStr(spec.agent_id) ?? '—'}`,
       `- \`status\`: ${asStr(spec.status) ?? '—'}`,
       `- \`category\`: ${asStr(spec.category) ?? '—'}`,
       `- \`severity\`: ${asStr(spec.severity) ?? '—'}`,
