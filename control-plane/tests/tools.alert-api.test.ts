@@ -112,8 +112,8 @@ async function connect(store: Store): Promise<{
       // Alerts have NO slug — identity is the uuid `id`.
       expect(created.slug).toBeNull();
       expect(created.description).toBe('Disk is nearly full.');
-      expect(created.title).toBe('');
-      expect(created.recommended_action).toBe('');
+      expect(created.title).toBe('Disk is nearly full.');
+      expect(created.recommended_action).toBe('Review the message "Disk is nearly full." and decide the next step.');
       expect(created.status).toBe('alert');
       expect(created.created_by).toBe('system');
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/);

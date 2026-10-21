@@ -1,5 +1,10 @@
 /**
- * The `Alert` kind — mirrors the extension's `alerts` table
+ * Compatibility descriptor for the historical `Alert` input vocabulary.
+ * Store writes always create AgentMessage records; Alert reads are aliases of
+ * those same records, never a second collection. New integrations must use the
+ * AgentMessage descriptor and ws-agent-message-* tools.
+ *
+ * Historical mapping: mirrors the extension's `alerts` table
  * (schema/016_alerts.sql + schema/017_alert_title.sql) as a control-plane
  * document. Alerts are structured "needs attention" items raised by agents or
  * background tasks.

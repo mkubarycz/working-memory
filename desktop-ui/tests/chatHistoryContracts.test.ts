@@ -35,7 +35,7 @@ describe('desktop chat history IPC contract', () => {
   it('refreshes changed journals without polling or clobbering the older-page cursor', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
 
-    expect(app).toContain('await Promise.all([refreshActive(), refreshLatestHistory(true), refreshBackendHealth(), loadContainerApps()]);');
+    expect(app).toContain('await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps()]);');
     expect(app).toContain('window.workingMemory.onDocumentChanges(handleDocumentChanges)');
     expect(app).toContain('stopListeningForChanges();');
     expect(app).not.toContain('setInterval(() => void refreshLatestHistory()');
@@ -48,7 +48,7 @@ describe('desktop chat history IPC contract', () => {
     expect(app).toContain('onclick={() => void loadOlderHistory()}');
     expect(app).toContain('conversationElement.scrollTop = previousTop + conversationElement.scrollHeight - previousHeight;');
     expect(app).toContain('Loading history…');
-    expect(app).toContain('No chat history.');
+    expect(app).toContain('No message history.');
   });
 
   it('renders a collapsible scoped conversation above the composer with independent Retry actions', () => {
@@ -83,7 +83,8 @@ describe('desktop chat history IPC contract', () => {
 
   it('keeps global pagination, unread, and focus separate from the complete scoped cache', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
-    expect(app).toContain('{#each chatRuns as run (run.key)}');
+    expect(app).toContain('{#each globalMessageRows as row (row.key)}');
+    expect(app).toContain('mergeMessageRows(chatRuns, agentMessages)');
     expect(app).toContain('loadedScopeKey === scopedHistoryKey ? scopedHistory : []');
     expect(app).toContain('const isCurrent = () => !cancelled && generation === environmentGeneration');
     expect(app).toContain('return () => { cancelled = true; }');

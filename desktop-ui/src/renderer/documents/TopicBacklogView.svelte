@@ -46,8 +46,8 @@
           <strong>{topic.label}</strong>
           <small>{topic.description || slug}</small>
         </span>
-        {#if topic.alertCount}
-          <span class="alert-count" class:severe={topic.alertSeverity === 'alert'}>{topic.alertCount}</span>
+        {#if topic.agentMessageCount}
+          <span class="alert-count" class:severe={topic.agentMessageSeverity === 'error'} title="Agent messages needing attention">{topic.agentMessageCount}</span>
         {/if}
         <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id, slug)} />
         <span aria-hidden="true" class="codicon codicon-chevron-right"></span>

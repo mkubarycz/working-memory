@@ -16,7 +16,8 @@ export type DeepLinkKind =
   | 'workstream'
   | 'topic'
   | 'topic-type'
-  | 'alert';
+  | 'alert'
+  | 'agent-message';
 
 /** Build a native Working Memory desktop link. */
 export function deepLink(kind: DeepLinkKind, slug: string): string {

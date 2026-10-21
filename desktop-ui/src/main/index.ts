@@ -4,6 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ControlPlaneClient } from '../../../shared/controlPlaneClient';
+import { listAgentMessages, recordAgentMessageDecision, updateAgentMessageStatus } from './agentMessageLifecycle';
 import { renderDocumentByKind } from './documentRenderers';
 import type {
   ChatContext,
@@ -471,7 +472,7 @@ async function loadResource(
     const document = await loadTopicViewModel(controlPlane(), identifier);
     if (document) return document;
   } else {
-    const controlPlaneKind = kind === 'alert' ? 'Alert' : kind === 'topic-type' ? 'TopicType' : undefined;
+    const controlPlaneKind = kind === 'alert' || kind === 'agent-message' ? 'AgentMessage' : kind === 'topic-type' ? 'TopicType' : undefined;
     let result = await controlPlane().getDocument({ id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) });
     if (result.available && !result.document && controlPlaneKind) {
       result = await controlPlane().getDocument({ slug: identifier, kind: controlPlaneKind });
@@ -483,7 +484,7 @@ async function loadResource(
 }
 
 const RESOURCE_URI_RE =
-  /^working-memory:\/(?:\/)?(workstream|topic|document|alert|topic-type)\/([^/]+)\.working-memory$/;
+  /^working-memory:\/(?:\/)?(workstream|topic|document|alert|agent-message|topic-type)\/([^/]+)\.working-memory$/;
 
 function createDragIcon(): Electron.NativeImage {
   const size = 16;
@@ -530,16 +531,16 @@ async function prepareResourceDrag(
         ? 'Topic'
         : kind === 'topic-type'
           ? 'TopicType'
-          : kind === 'alert'
-            ? 'Alert'
+          : kind === 'alert' || kind === 'agent-message'
+            ? 'AgentMessage'
             : undefined;
   let result = await controlPlane().getDocument(
-    kind === 'document' || kind === 'alert'
-      ? { id: identifier }
+    kind === 'document' || kind === 'alert' || kind === 'agent-message'
+      ? { id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) }
       : { slug: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) },
   );
-  if (result.available && !result.document && kind === 'alert') {
-    result = await controlPlane().getDocument({ slug: identifier, kind: 'Alert' });
+  if (result.available && !result.document && (kind === 'alert' || kind === 'agent-message')) {
+    result = await controlPlane().getDocument({ slug: identifier, kind: 'AgentMessage' });
   }
   if (!result.available) {
     throw new Error(result.error ?? 'Working Memory control plane is unavailable.');
@@ -987,7 +988,7 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle('resource:open', (_event, kind: DesktopResourceKind, identifier: string) => {
-    if (!['workstream', 'topic', 'document', 'alert', 'topic-type'].includes(kind)) {
+    if (!['workstream', 'topic', 'document', 'alert', 'agent-message', 'topic-type'].includes(kind)) {
       throw new Error(`Unsupported Working Memory resource kind: ${String(kind)}`);
     }
     return loadResource(kind, identifier);
@@ -1107,9 +1108,11 @@ function registerIpc(): void {
     }
     return loadResource('workstream', workstream);
   });
-  ipcMain.handle('alert:set-status', async (_event, context, id, status) => {
-    await controlPlane().alertUpdate({ id, status });
-    return loadResource(context.kind, context.identifier);
+  ipcMain.handle('agent-message:list', (_event, input) => listAgentMessages(controlPlane(), input));
+  ipcMain.handle('agent-message:record-decision', (_event, id, decision) =>
+    recordAgentMessageDecision(controlPlane(), id, decision));
+  ipcMain.handle('agent-message:set-status', async (_event, id, status) => {
+    await updateAgentMessageStatus(controlPlane(), id, status);
   });
   ipcMain.handle('action:invoke', (_event, workstream, command, args) => invokeAction(workstream, command, args));
   ipcMain.handle('container:list', () => readContainerAppDefinitions());

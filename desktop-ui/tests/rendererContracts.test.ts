@@ -421,11 +421,12 @@ describe('desktop tree icon contract', () => {
     const composerIndex = app.indexOf('<div class="composer-shell">');
     const chatRailIndex = app.indexOf('<aside class="chat-rail">');
 
-    expect(recent).toContain('recentRunsForContext(runs, context)');
+    expect(recent).toContain('scopedMessageRows(runs, agentMessages, context, document)');
+    expect(recent).toContain('allRows.slice(-5)');
     expect(recent).toContain('aria-label="Recent messages"');
     expect(recent).toContain('<span>Recent messages</span>');
     expect(app).toContain('scopePreviewExpanded = true;');
-    expect(recent).toContain('{#each allRuns as run (run.journalId ?? run.key)}');
+    expect(recent).toContain('{#each allRows as row (row.key)}');
     expect(recent).toContain('Expand for all messages and details');
     expect(app).toContain('bind:expanded={scopePreviewExpanded}');
     expect(recent).toContain('class="scope-preview-human"');

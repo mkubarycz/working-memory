@@ -1,6 +1,7 @@
 import type { ChatContext } from '../shared/contracts';
 import type { CommandJournalHistoryInput, CommandJournalHistoryPage, CommandJournalSummary } from '../../../shared/controlPlaneClient';
 import { mergeHistoryRuns, summaryToChatRun, type ChatRun } from './chatHistory';
+import { normalizeScopeKind } from './scopeIdentity';
 
 export type ScopedChatContext = ChatContext & { id?: string };
 
@@ -16,16 +17,16 @@ export function collapseChatOnInteraction(node: HTMLElement, collapse: () => voi
 }
 
 export function chatContextKey(context: ChatContext | undefined): string {
-  return context ? `${context.kind.toLowerCase().replaceAll('-', '')}:${context.identifier}` : 'desktopchat:desktop-chat';
+  return context ? `${normalizeScopeKind(context.kind)}:${context.identifier}` : 'desktopchat:desktop-chat';
 }
 
 export function matchesChatContext(
   ref: ChatRun['scope'],
   context: ScopedChatContext | undefined,
 ): boolean {
-  const kind = ref.kind.toLowerCase().replaceAll('-', '');
+  const kind = normalizeScopeKind(ref.kind);
   if (!context) return kind === 'desktopchat';
-  return kind === context.kind.toLowerCase().replaceAll('-', '')
+  return kind === normalizeScopeKind(context.kind)
     && (ref.slug === context.identifier || ref.id === context.identifier
       || (context.id !== undefined && ref.id === context.id));
 }

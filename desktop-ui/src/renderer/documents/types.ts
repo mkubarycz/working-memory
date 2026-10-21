@@ -14,6 +14,7 @@ import type { PanelTopicRow } from '../../../../shared/panelData';
 
 /** A single topic row rendered in the workstream's Topics section. */
 export interface WorkstreamTopicVM {
+  id?: string;
   title: string;
   /** Topic slug (or id) used to build the deep link / open request. */
   slug: string;
@@ -36,6 +37,7 @@ export interface TreeActionVM {
 export interface TreeTopicVM {
   kind: 'topic';
   id: string;
+  documentId?: string;
   label: string;
   /** Codicon id sourced from the topic type. */
   icon: string;
@@ -44,10 +46,10 @@ export interface TreeTopicVM {
   slug: string;
   /** True when this topic is pinned/focused in THIS workstream. */
   pinned: boolean;
-  /** Open-alert count for the bubble on this tree row; 0 hides it. */
-  alertCount: number;
-  /** Max open-alert severity, driving the badge color; null when count is 0. */
-  alertSeverity: 'alert' | 'informational' | null;
+  /** Open agent messages requiring attention; 0 hides the badge. */
+  agentMessageCount: number;
+  /** Highest severity among messages requiring attention. */
+  agentMessageSeverity: 'info' | 'warning' | 'error' | null;
   /** Nested child topics. */
   children: TreeTopicVM[];
   /** Right-click actions ported from the rail (currently topic updates). */
@@ -67,6 +69,7 @@ export interface TreeGroupVM {
 /** The workstream detail view-model (kind = workstream). */
 export interface WorkstreamVM {
   kind: 'workstream';
+  id?: string;
   title: string;
   slug: string | null;
   status: string;
@@ -79,8 +82,8 @@ export interface WorkstreamVM {
   topics: WorkstreamTopicVM[];
   /** Full nested topic tree, mirroring the left rail's card. */
   tree: TreeGroupVM[];
-  /** Alerts relevant to this workstream (union of its topics' alerts). */
-  alerts: AlertVM[];
+  /** Complete canonical agent message history relevant to this workstream. */
+  agentMessages: AgentMessageVM[];
 }
 
 /** A related document reference (parent topic, member workstream, …). */
@@ -88,30 +91,43 @@ export interface RelationVM {
   /** Slug or id used to build the open request. */
   slug: string;
   title: string;
-  /** Open-alert count for the related topic (0 for workstreams / no alerts). */
-  alertCount: number;
-  /** Max open-alert severity, driving the badge color; null when count is 0. */
-  alertSeverity: 'alert' | 'informational' | null;
+  /** Number of open agent messages requiring attention. */
+  agentMessageCount: number;
+  /** Highest severity among messages requiring attention. */
+  agentMessageSeverity: 'info' | 'warning' | 'error' | null;
 }
 
-/**
- * A single alert rendered as a callout on the workstream / topic views. Mirrors
- * the control-plane Alert kind (see `Alert` in the control-plane client) but
- * flattened + scoped for display: `dimmed` is true for a recently-closed alert
- * kept visible only so its Reopen actions remain reachable.
- */
-export interface AlertVM {
-  /** Alert document id (uuid) — the handle for status transitions. */
+/** Canonical persisted AgentMessage, not a chat run or a tool execution request. */
+export interface AgentMessageVM {
+  /** AgentMessage UUID used for links and message-only lifecycle transitions. */
   id: string;
   title: string;
   description: string;
   recommendedAction: string;
-  /** Authored lifecycle status driving the callout color + button set. */
-  status: 'alert' | 'informational' | 'closed';
+  /** Acknowledgement and resolution do not authorize a tool or topic change. */
+  status: 'open' | 'acknowledged' | 'resolved';
+  category: 'request' | 'approval' | 'error' | 'completion';
+  severity: 'info' | 'warning' | 'error';
+  attention: boolean;
+  topics: string[];
+  relations: { kind: string; id: string }[];
+  /** Recorded communication only; never an execution grant or action payload. */
+  decision?: {
+    outcome: 'approved' | 'rejected';
+    decided_by: string;
+    reason?: string;
+    decided_at?: number;
+  };
+  /** Canonical document timestamps are epoch seconds (chat run timestamps are milliseconds). */
+  createdAt: number;
   updatedAt: number;
-  /** True for a closed-but-recent alert (shown muted, still reopenable). */
-  dimmed: boolean;
+  slug?: string | null;
+  provenance?: unknown;
 }
+
+export type RecordAgentMessageDecision = (
+  id: string, outcome: 'approved' | 'rejected', decidedBy: string,
+) => void | Promise<void>;
 
 /**
  * Topic-type metadata sourced from the control-plane TopicType kind. Drives the
@@ -159,6 +175,7 @@ export interface SettingsVM {
 /** The topic detail view-model (kind = topic). */
 export interface TopicVM {
   kind: 'topic';
+  id?: string;
   title: string;
   slug: string | null;
   status: string;
@@ -179,8 +196,8 @@ export interface TopicVM {
   children: RelationVM[];
   workstreams: RelationVM[];
   focusedWorkstreams: RelationVM[];
-  /** Alerts whose `topics` include this topic's slug. */
-  alerts: AlertVM[];
+  /** Complete canonical agent message history relevant to this topic. */
+  agentMessages: AgentMessageVM[];
 }
 
 /** A flattened `spec` field rendered by the generic fallback view. */
@@ -266,10 +283,8 @@ export type WebviewToExt =
   | { type: 'invoke'; command: string; args: unknown[] }
   | { type: 'togglePinTopic'; slug: string }
   | { type: 'attachImages'; requestId: string; files: AttachmentUpload[] }
-  // Transition an alert's lifecycle status (resolve / escalate / close / reopen)
-  // from a callout button. Routed to `ws-alert-update` via the control-plane
-  // client; the live-refresh then re-pushes the updated callouts.
-  | { type: 'setAlertStatus'; id: string; status: 'alert' | 'informational' | 'closed' }
+  // Message lifecycle transitions never authorize tool execution.
+  | { type: 'setAgentMessageStatus'; id: string; status: AgentMessageVM['status'] }
   // Reports whether the webview currently holds un-flushed local edits so the
   // host's refresh decision won't stomp in-progress work (Bug A).
   | { type: 'editState'; hasPendingEdits: boolean }

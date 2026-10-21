@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CommandJournalHistoryPage, CommandJournalSummary } from '../../shared/controlPlaneClient';
 import type { ChatRun } from '../src/renderer/chatHistory';
 import { mergeHistoryRuns, reconcileLiveRun, summaryToChatRun } from '../src/renderer/chatHistory';
-import { allRunsForContext, chatRunDomId, loadScopedHistory, mergeScopedHistory, recentRunsForContext } from '../src/renderer/scopedChat';
+import { allRunsForContext, chatContextKey, chatRunDomId, loadScopedHistory, mergeScopedHistory, recentRunsForContext } from '../src/renderer/scopedChat';
 
 function run(
   key: string,
@@ -19,6 +19,26 @@ function run(
 
 describe('scoped chat previews', () => {
   const context = { kind: 'topic', routeKind: 'topic' as const, identifier: 'selected', title: 'Selected' };
+
+  it('loads real persisted historical Alert scope and entity refs under canonical AgentMessage identity', async () => {
+    const selected = { kind: 'AgentMessage', routeKind: 'agent-message' as const, identifier: 'message-id', title: 'Message' };
+    const summaries: CommandJournalSummary[] = ['Alert', 'agent-message'].map((kind, index) => ({
+      id: `journal-${index}`, resourceVersion: 1, createdAt: 1, startedAt: index + 1,
+      status: 'succeeded', request: { userText: `History ${index}` },
+      primaryScope: { kind, id: 'message-id' }, entityRefs: [], eventSummaries: [],
+    }));
+    summaries.push({
+      ...summaries[0], id: 'related', primaryScope: { kind: 'Topic', id: 'other' },
+      entityRefs: [{ kind: 'alert', id: 'message-id', relation: 'referenced' }],
+    });
+    const loaded: CommandJournalSummary[] = [];
+    await loadScopedHistory(selected, async () => ({ journals: summaries }), () => true,
+      (page) => loaded.push(...page));
+    expect(loaded.map((summary) => summary.id)).toEqual(['journal-0', 'journal-1', 'related']);
+    expect(chatContextKey(selected)).toBe(chatContextKey({ ...selected, kind: 'alert' }));
+    expect(allRunsForContext(loaded.map(summaryToChatRun), selected)).toHaveLength(3);
+    expect(allRunsForContext(loaded.map(summaryToChatRun), { ...selected, identifier: 'unrelated' })).toEqual([]);
+  });
 
   it('returns fewer than five matching runs when fewer are available', () => {
     const runs = [

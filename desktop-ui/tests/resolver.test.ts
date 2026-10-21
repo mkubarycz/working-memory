@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { Alert, Topic, TopicType, Workstream } from '../../shared/controlPlaneClient';
+import type { AgentMessage, Topic, TopicType, Workstream } from '../../shared/controlPlaneClient';
 import {
   chooseWorkstream,
   loadActivePanelData,
+  loadTopicViewModel,
   loadWorkstreamViewModel,
   localWorkstreamQuery,
   persistWorkstreamReorder,
@@ -42,25 +43,26 @@ describe('workstream resolver', () => {
       id: 'type-1', slug: 'feature', label: 'Feature', description: '', icon: 'rocket', body_template: '',
       created_at: 1, updated_at: 1, resourceVersion: 1,
     };
-    const alert: Alert = {
+    const alert: AgentMessage = {
       id: 'alert-1', slug: null, title: 'Verify desktop', description: 'Links must work',
-      recommended_action: 'Click a topic', status: 'alert', topics: [topic.slug!],
+      recommended_action: 'Click a topic', status: 'open', topics: [topic.slug!],
+      category: 'request', severity: 'warning', attention: true, relations: [],
       dedupe_key: null, created_by: 'test', created_at: 1, updated_at: 10, resourceVersion: 1,
     };
     const client = {
       wsRead: async () => [roadmap],
       topicRead: async () => [topic],
       topicTypeRead: async () => [topicType],
-      alertRead: async () => [alert],
+      agentMessageRead: async () => [alert],
     } as never;
 
     const vm = await loadWorkstreamViewModel(client, roadmap.slug!, 10_000);
 
     expect(vm?.editable).toBe(true);
-    expect(vm?.alerts).toMatchObject([{ id: 'alert-1', status: 'alert' }]);
+    expect(vm?.agentMessages).toMatchObject([{ id: 'alert-1', status: 'open' }]);
     expect(vm?.tree[0].children[0]).toMatchObject({
       kind: 'topic', slug: 'desktop-parity', icon: 'rocket', pinned: true,
-      alertCount: 1, alertSeverity: 'alert',
+      agentMessageCount: 1, agentMessageSeverity: 'warning',
     });
   });
 
@@ -78,13 +80,14 @@ describe('workstream resolver', () => {
       status: 'closed',
       focusedWorkstreams: [roadmap.slug!],
     };
-    const alert: Alert = {
+    const alert: AgentMessage = {
       id: 'alert-1', slug: null, title: 'Verify desktop', description: 'Links must work',
-      recommended_action: 'Click a topic', status: 'alert', topics: [topic.slug!],
+      recommended_action: 'Click a topic', status: 'open', topics: [topic.slug!],
+      category: 'request', severity: 'warning', attention: true, relations: [],
       dedupe_key: null, created_by: 'test', created_at: 1, updated_at: 10, resourceVersion: 1,
     };
     const client = {
-      wsRead: async () => [roadmap], topicRead: async () => [topic, closedTopic], alertRead: async () => [alert],
+      wsRead: async () => [roadmap], topicRead: async () => [topic, closedTopic], agentMessageRead: async () => [alert],
       topicTypeRead: async () => [],
     } as never;
 
@@ -99,10 +102,10 @@ describe('workstream resolver', () => {
       kind: 'workstream-section',
       workstreams: [{
         slug: roadmap.slug,
-        alertCount: 1,
+        agentMessageCount: 1,
         focused_topics: [{ label: 'Desktop parity', focused: true }],
         children: [{ children: [
-          { kind: 'topic', label: 'Desktop parity', alertCount: 1 },
+          { kind: 'topic', label: 'Desktop parity', agentMessageCount: 1 },
           { kind: 'topic', label: 'Completed desktop work', status: 'closed', focused: true },
         ] }],
       }],
@@ -115,7 +118,7 @@ describe('workstream resolver', () => {
         { ...roadmap, slug: 'later', title: 'Later', position: 20 },
         { ...roadmap, slug: 'first', title: 'First', position: 5 },
       ],
-      topicRead: async () => [], alertRead: async () => [], topicTypeRead: async () => [],
+      topicRead: async () => [], agentMessageRead: async () => [], topicTypeRead: async () => [],
     } as never;
 
     const active = await loadActivePanelData(client);
@@ -145,6 +148,38 @@ describe('workstream resolver', () => {
       kind: 'topic', identifier: 'desktop parity',
     });
     expect(resolveDesktopResourceUri('https://example.com/topic/desktop-parity')).toBeNull();
+  });
+
+  it('loads UUID-related messages into exact topic/workstream callouts and relation badges', async () => {
+      const topic: Topic = {
+        id: 'topic-uuid', slug: 'scoped-topic', title: 'Scoped topic', body: '', status: 'open',
+        topicType: 'feature', parents: [], workstreams: [roadmap.slug!], focusedWorkstreams: [],
+        created_at: 1, updated_at: 2, resourceVersion: 1,
+      };
+      const base: AgentMessage = {
+        id: 'topic-message', slug: null, title: 'Review', description: 'Review', recommended_action: '',
+        category: 'approval', severity: 'warning', attention: true, status: 'open', topics: [],
+        relations: [{ kind: 'Topic', id: topic.id }], dedupe_key: null, created_by: 'agent',
+        created_at: 1, updated_at: 2, resourceVersion: 1,
+      };
+      const client = {
+        wsRead: async () => [roadmap], topicRead: async () => [topic], topicTypeRead: async () => [],
+        agentMessageRead: async () => [
+          base,
+          { ...base, id: 'ws-message', relations: [{ kind: 'Workstream', id: roadmap.id }] },
+          { ...base, id: 'other-message', relations: [{ kind: 'Topic', id: 'other-uuid' }] },
+        ],
+      } as never;
+      const topicVm = await loadTopicViewModel(client, topic.slug!);
+      expect(topicVm?.id).toBe(topic.id);
+      expect(topicVm?.agentMessages.map((item) => item.id)).toEqual(['topic-message']);
+      expect(topicVm?.workstreams).toMatchObject([{ agentMessageCount: 2, agentMessageSeverity: 'warning' }]);
+      const workstreamVm = await loadWorkstreamViewModel(client, roadmap.slug!);
+      expect(workstreamVm?.id).toBe(roadmap.id);
+      expect(workstreamVm?.topics[0].id).toBe(topic.id);
+      expect(workstreamVm?.tree[0].children[0].documentId).toBe(topic.id);
+      expect(workstreamVm?.agentMessages.map((item) => item.id)).toEqual(['topic-message', 'ws-message']);
+      expect(workstreamVm?.tree[0].children[0]).toMatchObject({ agentMessageCount: 1, agentMessageSeverity: 'warning' });
   });
 
   it('routes visible workstream actions and rejects unsupported commands', () => {

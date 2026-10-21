@@ -23,7 +23,7 @@ function mockApi() {
     kind: 'topic', slug: 'installer-testing', title: 'Improve installer testing', body: 'Saved',
     status: 'open', topicType: 'feature', typeMeta: null, createdAt: 1, updatedAt: 1,
     resourceVersion: 1, editable: true, parents: [], children: [], workstreams: [],
-    focusedWorkstreams: [], alerts: [],
+    focusedWorkstreams: [], agentMessages: [],
   };
   return {
     createWorkstream: vi.fn<DesktopApi['createWorkstream']>()

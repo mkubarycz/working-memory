@@ -45,7 +45,7 @@ const DESKTOP_TOOL_FAMILIES = [
   'workstream',
   'topic',
   'topictype',
-  'alert',
+  'agent-message',
 ];
 
 export function desktopToolDescriptors(tools: CanonicalToolDef[]): CanonicalToolDef[] {

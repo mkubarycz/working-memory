@@ -528,9 +528,9 @@
   }}
 />
 
-{#snippet alertBubble(count?: number, severity?: 'alert' | 'informational' | null)}
+{#snippet attentionBubble(count?: number, severity?: 'info' | 'warning' | 'error' | null)}
   {#if count && count > 0}
-    <span class="active-alert" class:severe={severity === 'alert'} title="{count} open alert{count === 1 ? '' : 's'}">{count}</span>
+    <span class="active-alert" class:severe={severity === 'error'} title="{count} agent message{count === 1 ? '' : 's'} needing attention">{count}</span>
   {/if}
 {/snippet}
 
@@ -579,7 +579,7 @@
         <span aria-hidden="true" class="codicon codicon-{node.icon}"></span>
         <span class="active-label">{node.label}</span>
       </button>
-      {@render alertBubble(node.alertCount, node.alertSeverity)}
+      {@render attentionBubble(node.agentMessageCount, node.agentMessageSeverity)}
       <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', node.id, topicSlug)} />
     </div>
     {#if children.length > 0 && open}
@@ -685,7 +685,7 @@
         <span aria-hidden="true" class="codicon codicon-briefcase"></span>
         <span class="active-label">{workstream.label}</span>
       </button>
-      {@render alertBubble(workstream.alertCount, workstream.alertSeverity)}
+      {@render attentionBubble(workstream.agentMessageCount, workstream.agentMessageSeverity)}
       <UnreadBadge count={unreadResponseCount(unreadResponses, 'workstream', workstream.id, workstream.slug)} />
     </div>
     {#if expandable && open}
@@ -724,7 +724,7 @@
                 >
                   <span aria-hidden="true" class="codicon codicon-{topic.icon}"></span>
                   <span class="active-label">{topic.label}</span>
-                  {@render alertBubble(topic.alertCount, topic.alertSeverity)}
+                  {@render attentionBubble(topic.agentMessageCount, topic.agentMessageSeverity)}
                   <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id, topicSlug)} />
                 </button>
               </div>
