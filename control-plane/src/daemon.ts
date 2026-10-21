@@ -20,6 +20,7 @@ import { acquireLock, type Lock } from './lockfile.js';
 import { removePortFile, writePortFile } from './portfile.js';
 import { openStore, type Store } from './store.js';
 import { startServer, type RunningServer } from './server.js';
+import { loadHostTaskAdminCredential } from './hostTasks.js';
 import { loadKinds } from './kinds/loader.js';
 import {
   DEFAULT_PORT,
@@ -53,12 +54,14 @@ function resolvePreferredPort(): number {
 
 async function startWithFallback(preferred: number, store: Store): Promise<RunningServer> {
   const host = resolveHost();
+  // No implicit bootstrap: only an explicitly configured, externally provisioned file.
+  const hostTaskAdminCredential = loadHostTaskAdminCredential();
   try {
-    return await startServer({ host, port: preferred, version: SERVICE_VERSION, store });
+    return await startServer({ host, port: preferred, version: SERVICE_VERSION, store, hostTaskAdminCredential });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE' && preferred !== 0) {
       log(`port ${preferred} in use — falling back to an ephemeral port`);
-      return startServer({ host, port: 0, version: SERVICE_VERSION, store });
+      return startServer({ host, port: 0, version: SERVICE_VERSION, store, hostTaskAdminCredential });
     }
     throw err;
   }

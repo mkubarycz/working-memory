@@ -33,6 +33,7 @@ import {
 } from './config.js';
 import { openStore, type Store, ConflictError, NotFoundError } from './store.js';
 import { createDocumentChangeFeed } from './documentChangeFeed.js';
+import { HostTaskBroker, HOST_TASK_CLEANUP_INTERVAL_MS, type HostTaskOptions } from './hostTasks.js';
 import {
   getKind,
   validateMetadata,
@@ -43,7 +44,7 @@ import {
   listKindApis,
 } from './kinds/registry.js';
 
-export interface StartServerOptions {
+export interface StartServerOptions extends HostTaskOptions {
   host?: string;
   /** TCP port; `0` binds an ephemeral port (used by tests). */
   port?: number;
@@ -474,6 +475,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // store and own its lifecycle; when absent (tests) we own an ephemeral one.
   const providedStore = opts.store;
   const store = providedStore ?? openStore(':memory:');
+  const hostTasks = new HostTaskBroker(store.db, opts);
   const ownsStore = providedStore === undefined;
   const changeFeed = createDocumentChangeFeed(store);
 
@@ -548,6 +550,14 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? `${host}:${port}`}`);
 
+    if (url.pathname === '/host-tasks/v1' || url.pathname.startsWith('/host-tasks/v1/')) {
+      await hostTasks.handle(req, res, url);
+      return;
+    }
+    if (hostTasks.isProtectedCredential(req.headers.authorization)) {
+      endJson(res, 403, { error: 'host_task_credential_wrong_surface' });
+      return;
+    }
     if (req.method === 'GET' && url.pathname === HEALTH_PATH) {
       endJson(res, 200, { ok: true, version, uptime: (Date.now() - startedAt) / 1000 });
       return;
@@ -639,12 +649,18 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
 
   const address = httpServer.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+  const hostTaskCleanupTimer = setInterval(() => {
+    try { hostTasks.cleanup(); }
+    catch { console.error('[host-tasks] Retention cleanup failed.'); }
+  }, HOST_TASK_CLEANUP_INTERVAL_MS);
+  hostTaskCleanupTimer.unref();
 
   return {
     host,
     port: boundPort,
     url: `http://${host}:${boundPort}`,
     close(): Promise<void> {
+      clearInterval(hostTaskCleanupTimer);
       changeFeed.close();
       for (const transport of transports.values()) {
         void Promise.resolve(transport.close()).catch(() => undefined);

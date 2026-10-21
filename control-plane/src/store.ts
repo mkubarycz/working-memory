@@ -22,6 +22,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { ensureSystemImportAgent, migrateAgentMessages } from './agentMessageMigration.js';
 import { agentMessageSpec, persistedAgentMessageSpec, legacyToMessage, AGENT_MESSAGE_KIND } from './kinds/agentmessage/spec.js';
 import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec, normalizeAgentName } from './kinds/agent/spec.js';
+import { ensureHostTaskSchema } from './hostTasks.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -354,7 +355,10 @@ export function openStore(dbFilePath: string): Store {
   // No `.pragma()` helper on DatabaseSync — use exec (repo convention).
   db.exec('PRAGMA journal_mode = WAL');
   ensureSchema(db);
-  try { migrateAgentMessages(db); }
+  try {
+    migrateAgentMessages(db);
+    ensureHostTaskSchema(db);
+  }
   catch (error) { db.close(); throw error; }
 
   const canonicalKind = (kind: string | undefined) => kind === 'Alert' ? AGENT_MESSAGE_KIND : kind;
