@@ -354,7 +354,7 @@ describe('desktop tree icon contract', () => {
     expect(documentHost).toContain('ContainerAppDetail');
     expect(documentHost).toContain("activeDocument?.kind === 'container-app'");
     expect(app).toContain('onclick={() => closeDocument(key)}');
-    expect(app).toContain('openDocumentTab({ tabs: documents, selectedKey: selectedDocumentKey }, document)');
+    expect(app).toContain('openDocumentTab(documentTabsState(), document)');
     expect(app).toContain('oncontextmenu={(event) => void openDocumentTabMenu(event, key)}');
     expect(app).toContain('<span>Close Others</span>');
     expect(app).toContain('<span>Close to the Right</span>');
@@ -362,6 +362,54 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain("closeDocumentTabsToRight(state, key)");
     expect(styles).toMatch(/\.document-tabs[^}]*height:\s*38px[^}]*overflow-x:\s*auto/s);
     expect(styles).toMatch(/\.document-tab-menu[^}]*position:\s*fixed[^}]*z-index:\s*30/s);
+  });
+
+  it('wires preview promotion before authored state, without promoting ordinary navigation', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+    const functionBody = (name: string) => {
+      const start = app.indexOf(`function ${name}(`);
+      expect(start).toBeGreaterThan(-1);
+      return app.slice(start, app.indexOf('\n  }', start));
+    };
+    expect(app).toContain('class:preview={key === previewDocumentKey}');
+    expect(styles).toContain('.document-tab.preview .document-tab-label { font-style: italic; }');
+    expect(app).toContain('Preview (double-click to keep open)');
+    expect(app).toContain('ondblclick={() => promoteDocument(key)}');
+    expect(app).toContain('use:promoteOnDocumentInput={() => promoteDocument()}');
+    for (const name of ['saveTopic', 'saveWorkstream', 'mutate', 'updateComposerDraft', 'attachImages',
+      'addComposerImages', 'attachContainerAppResource', 'selectMention', 'captureCameraImage',
+      'addModelProfile', 'removeModelProfile']) {
+      expect(functionBody(name)).toContain('promoteDocument(');
+    }
+    expect(functionBody('addComposerImages').indexOf('promoteDocument()'))
+      .toBeLessThan(functionBody('addComposerImages').indexOf('await attachImages(files)'));
+    expect(functionBody('attachImages').indexOf('promoteDocument()'))
+      .toBeLessThan(functionBody('attachImages').indexOf('await file.arrayBuffer()'));
+    expect(functionBody('createTopic')).toContain('await createTopicFromDraft(draft, window.workingMemory)');
+    expect(functionBody('createTopic').indexOf('promoteDocument(draftKey)'))
+      .toBeLessThan(functionBody('createTopic').indexOf('await createTopicFromDraft'));
+    for (const name of ['selectDocument', 'openResource', 'refreshOpenDocument', 'handleConversationScroll']) {
+      expect(functionBody(name)).not.toContain('promoteDocument(');
+    }
+    expect(functionBody('openResource')).toContain('if (!isCurrent() || generation !== environmentGeneration) return;');
+    expect(functionBody('openResource').indexOf('if (!isCurrent()'))
+      .toBeLessThan(functionBody('openResource').indexOf('const next = openDocumentTab'));
+    expect(functionBody('selectDocument')).toContain('documentOpens.invalidate()');
+    expect(functionBody('closeDocument')).toContain('documentOpens.invalidate()');
+    expect(functionBody('resetEnvironmentState')).toContain('documentOpens.invalidate()');
+    expect(app).toContain('{#key selectedDocumentKey}');
+    expect(app).toContain('onSaveTopic={saveTopic.bind(null, activeDocument)}');
+    expect(app).toContain('onCreate={createTopic.bind(null, activeDocument as TopicCreateDraftVM)}');
+    const editor = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/HybridMarkdownEditor.svelte'), 'utf8');
+    expect(editor).toContain('const sourceView = view;');
+    expect(editor).toContain('if (view !== sourceView) {');
+    expect(editor).toContain('const applyInput = onInput;');
+    expect(editor).toContain('applyInput(`${before}${inserted}${after}`);');
+    const topic = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/TopicView.svelte'), 'utf8');
+    expect(topic).toContain('onInput={updateBody.bind(null, topic, onSaveTopic)}');
+    expect(topic).toContain('const target = topic;');
+    expect(topic).toContain('const save = onSaveTopic;');
   });
 
   it('shows at most two current-scope messages and targets stable history elements', () => {

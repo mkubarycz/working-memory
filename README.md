@@ -290,6 +290,26 @@ one-liner above.
 
 ## Document stage
 
+Opening a document creates an italic **preview tab**. There is at most one:
+opening another document replaces that preview in place, while existing
+permanent tabs are selected without duplication. Selecting tabs, following
+document navigation, scrolling, and switching Markdown viewing modes do not
+make a preview permanent.
+
+Double-click a tab header to keep it open. Authoring text, changing values,
+starting a chat draft, or adding attachments also makes the affected tab
+permanent before its work can be replaced. New-topic drafts and documents
+returned by an authored chat request open as permanent tabs. Container-app
+tabs also stay permanent because edits inside their embedded UI cannot be
+observed reliably by the desktop renderer.
+
+Tab identities and order are saved per environment, but previews are
+session-only: they are omitted on restart or environment switch. When the
+selected tab was a preview, the leftmost saved permanent tab is selected on
+restore. Previously saved tabs all restore as permanent. This does not change
+content storage: document bodies are not stored in tab preferences, and
+unsaved new-topic drafts and attachment/composer state are not newly persisted.
+
 New document tabs open on the left. Selecting a tab reveals it in the navigation
 strip, including after resizing the stage or closing neighboring tabs. Empty
 new-topic forms use the same available document width as populated topics;
