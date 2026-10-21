@@ -350,7 +350,7 @@
   </aside>
 </div>
 
-<AgentMessageCallouts agentMessages={topic.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} />
+<AgentMessageCallouts agentMessages={topic.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {attachmentBaseUrl} />
 
 <section class="body-section" aria-label="Topic body">
   <div class="tab-panel">

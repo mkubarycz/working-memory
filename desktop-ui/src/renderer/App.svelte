@@ -334,6 +334,10 @@
     return `${new URL(selectedEnvironment.mcpUrl).origin}/attachments/${encodeURIComponent(id)}`;
   }
 
+  function selectedAttachmentBaseUrl(): string {
+    return selectedEnvironment?.mcpUrl ? new URL(selectedEnvironment.mcpUrl).origin : '';
+  }
+
   function clearComposerImages(): void {
     for (const image of composerImages) URL.revokeObjectURL(image.previewUrl);
     composerImages = [];
@@ -2402,13 +2406,12 @@
             onTogglePin={togglePin}
             onSetAgentMessageStatus={setAgentMessageStatus}
             onRecordDecision={recordAgentMessageDecision}
+            attachmentBaseUrl={selectedAttachmentBaseUrl()}
           />
         {:else if activeDocument?.kind === 'topic-create'}
           <TopicCreateView
             draft={activeDocument as TopicCreateDraftVM}
-            attachmentBaseUrl={selectedEnvironment?.mcpUrl
-              ? new URL(selectedEnvironment.mcpUrl).origin
-              : ''}
+            attachmentBaseUrl={selectedAttachmentBaseUrl()}
             onAttachImages={attachImages}
             onCreate={createTopic.bind(null, activeDocument as TopicCreateDraftVM)}
           />
@@ -2459,6 +2462,7 @@
         {documents}
         {agentMessages}
         document={activeDocument}
+        attachmentBaseUrl={selectedAttachmentBaseUrl()}
         onSetAgentMessageStatus={setAgentMessageStatus}
         onRecordDecision={recordAgentMessageDecision}
         context={scopedContext}
@@ -2753,6 +2757,7 @@
       {/if}
       <MessageTimeline runs={chatRuns} {agentMessages} attachRunIds
         {documents}
+        attachmentBaseUrl={selectedAttachmentBaseUrl()}
         {humanName}
         {unreadResponses}
         onViewed={markResponseViewed}
