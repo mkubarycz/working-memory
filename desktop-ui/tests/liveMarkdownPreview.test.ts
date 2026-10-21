@@ -206,6 +206,45 @@ describe('live Markdown link clicks', () => {
     return targets;
   }
 
+  function visibleFirstLine(state: EditorState): string {
+    const line = state.doc.line(1);
+    const hidden = new Set<number>();
+    state.field(liveMarkdownPreview).between(line.from, line.to, (from, to, value) => {
+      if (value.spec.atomic !== true || value.spec.widget) return;
+      for (let pos = from; pos < to; pos += 1) hidden.add(pos);
+    });
+    return [...line.text].filter((_char, index) => !hidden.has(line.from + index)).join('');
+  }
+
+  it.each([
+    ['[External link: Working Memory PR](https://github.com/mkubarycz/working-memory/pull/78)', 'External link: Working Memory PR'],
+    ['[Internal link: this workstream](working-memory://open/workstream/working-memory-1-1-2)', 'Internal link: this workstream'],
+    ['[file](wm-attachment:0f0e-1)', 'file'],
+    ['[label](<https://example.com/a(1)> "Link title")', 'label'],
+    ['[**bold** and *italic*](https://example.com)', 'bold and italic'],
+    ['[label][docs]\n\n[docs]: https://example.com', 'label'],
+    ['[docs][]\n\n[docs]: https://example.com', 'docs'],
+    ['[docs]\n\n[docs]: https://example.com', 'docs'],
+    ['<https://example.com>', 'https://example.com'],
+  ])('renders only the link label without changing source: %s', (doc, label) => {
+    const state = createState(doc);
+    expect(visibleFirstLine(state)).toBe(label);
+    expect(state.doc.toString()).toBe(doc);
+  });
+
+  it('reveals the full link source only while its line is being edited', () => {
+    const doc = '[label](https://example.com "Title")\nTail';
+    const initial = createState(doc, 2);
+    const editing = initial.update({ effects: activateLivePreview.of() }).state;
+    expect(visibleFirstLine(editing)).toBe(doc.split('\n')[0]);
+    expect(renderedMarkdownLinkAt(editing, 2)).toBeNull();
+
+    const rendered = editing.update({ selection: { anchor: doc.length } }).state;
+    expect(visibleFirstLine(rendered)).toBe('label');
+    expect(renderedMarkdownLinkAt(rendered, 2)?.href).toBe('https://example.com');
+    expect(rendered.doc.toString()).toBe(doc);
+  });
+
   it('resolves inline, reference, collapsed, shortcut, and autolinks when rendered', () => {
     const state = createState();
     const href = (needle: string) => renderedMarkdownLinkAt(state, at(LINKS, needle))?.href ?? null;

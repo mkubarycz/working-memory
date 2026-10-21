@@ -316,11 +316,21 @@ function buildDecorations(state: EditorState): DecorationSet {
         decoratedHeadingLines.add(line.from);
       }
       if (LINK_NODES.has(node.name) && linkIsRendered(state, activeLines, node.from, node.to)) {
+        if (node.name === 'Link') {
+          const [opening, closing] = node.node.getChildren('LinkMark');
+          if (opening && closing) {
+            decorations.push(
+              Decoration.replace({ atomic: true }).range(node.from, opening.to),
+              Decoration.replace({ atomic: true }).range(closing.from, node.to),
+            );
+          }
+        }
         const href = linkHref(state, node.node, lookupDefinitions);
         if (href && isOpenableMarkdownHref(href)) {
           decorations.push(linkTargetDecoration.range(node.from, node.to));
         }
       }
+      if (node.name === 'LinkMark' && node.node.parent?.name === 'Link') return;
       if (HIDDEN_MARKS.has(node.name) && !activeLines.has(line.from)) {
         let hiddenTo = node.to;
         if (node.name === 'HeaderMark') {

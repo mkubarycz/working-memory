@@ -436,6 +436,12 @@ strip, including after resizing the stage or closing neighboring tabs. Empty
 new-topic forms use the same available document width as populated topics;
 typing does not change the form's width.
 
+In topic **Live** view, labeled Markdown links display only their label, not
+their destination, optional title, or reference suffix. A plain click on a
+rendered link opens it without entering editing. Editing its line reveals the
+original Markdown; rendering never rewrites the stored source. URI autolinks
+continue to display their URL.
+
 ## Desktop container apps
 
 The desktop **Container Apps** right-rail tab lists live ContainerClaims with a
