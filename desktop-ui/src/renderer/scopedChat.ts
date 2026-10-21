@@ -1,6 +1,17 @@
 import type { ChatContext } from '../shared/contracts';
 import type { ChatRun } from './chatHistory';
 
+export function collapseChatOnInteraction(node: HTMLElement, collapse: () => void): { destroy(): void } {
+  node.addEventListener('pointerdown', collapse, { capture: true });
+  node.addEventListener('keydown', collapse, { capture: true });
+  return {
+    destroy() {
+      node.removeEventListener('pointerdown', collapse, { capture: true });
+      node.removeEventListener('keydown', collapse, { capture: true });
+    },
+  };
+}
+
 export function chatContextKey(context: ChatContext | undefined): string {
   return context ? `${context.kind.toLowerCase().replaceAll('-', '')}:${context.identifier}` : 'desktopchat:desktop-chat';
 }
