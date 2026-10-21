@@ -21,6 +21,7 @@
     onInspect: (tool: ChatToolRow) => void;
     onOpen: (target: ChatTarget) => void;
     attachmentUrl: (id: string) => string;
+    attachmentBaseUrl?: string;
     assistantFallback: (run: ChatRun) => string;
     onResolve: (confirmed: boolean, run: ChatRun) => void;
     onSetAgentMessageStatus: (id: string, status: AgentMessageVM['status']) => void;
@@ -44,7 +45,7 @@
   let {
     row, expanded = $bindable(true), latest = false, showScope = true, showInLog = false,
     attachRunIds = false, humanName, documents = [], unreadResponses, onViewed, onFocus, onRetry, runBlocked,
-    onInspect, onOpen, attachmentUrl, assistantFallback, onResolve,
+    onInspect, onOpen, attachmentUrl, attachmentBaseUrl = '', assistantFallback, onResolve,
     onSetAgentMessageStatus, onRecordDecision,
   }: MessageEntryProps = $props();
 
@@ -94,7 +95,7 @@
           <span class="message-avatar assistant-avatar" title={message.agentName} aria-hidden="true">{humanInitials(message.agentName)}</span>
           <div class="message-content">
             <div class="message-from">{message.agentName}</div>
-            <AgentMessageCard {message} embedded onSetStatus={onSetAgentMessageStatus} {onRecordDecision} />
+            <AgentMessageCard {message} embedded onSetStatus={onSetAgentMessageStatus} {onRecordDecision} {attachmentBaseUrl} />
           </div>
         </section>
       {:else if run}

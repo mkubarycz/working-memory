@@ -2,10 +2,11 @@
   import type { AgentMessageVM, RecordAgentMessageDecision } from './types';
   import { renderMarkdown } from './markdown';
   import { messageStatusActions } from '../agentMessages';
-  let { message, onSetStatus, onRecordDecision, embedded = false }: {
+  let { message, onSetStatus, onRecordDecision, attachmentBaseUrl = '', embedded = false }: {
     message: AgentMessageVM;
     onSetStatus: (id: string, status: AgentMessageVM['status']) => void;
     onRecordDecision?: RecordAgentMessageDecision;
+    attachmentBaseUrl?: string;
     embedded?: boolean;
   } = $props();
   let recording = $state(false);
@@ -32,14 +33,14 @@
   </header>
   <div class="markdown-body">
     {#if message.description.trim()}
-      {@html renderMarkdown(message.description)}
+      {@html renderMarkdown(message.description, attachmentBaseUrl)}
     {:else}
       <p>No message content</p>
     {/if}
   </div>
   {#if message.recommendedAction}
     <strong>Recommended action</strong>
-    <div class="markdown-body">{@html renderMarkdown(message.recommendedAction)}</div>
+    <div class="markdown-body">{@html renderMarkdown(message.recommendedAction, attachmentBaseUrl)}</div>
   {/if}
   {#if message.category === 'approval'}
     <p class="approval-notice">This message is not authorization to execute an action. Review any tool action confirmation separately.</p>

@@ -21,6 +21,7 @@
     onTogglePin: (slug: string) => void;
     onSetAgentMessageStatus: (id: string, status: AgentMessageVM['status']) => void;
     onRecordDecision?: import('./types').RecordAgentMessageDecision;
+    attachmentBaseUrl?: string;
   }
 
   let {
@@ -34,6 +35,7 @@
     onTogglePin,
     onSetAgentMessageStatus,
     onRecordDecision,
+    attachmentBaseUrl = '',
   }: Props = $props();
 
   const STATUSES = ['queue', 'progress', 'backlog', 'closed'];
@@ -229,7 +231,7 @@
   </div>
 </section>
 
-<AgentMessageCallouts agentMessages={ws.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} />
+<AgentMessageCallouts agentMessages={ws.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {attachmentBaseUrl} />
 
 {#snippet treeNode(node: TreeTopicVM)}
     {@const hasChildren = node.children.length > 0}
