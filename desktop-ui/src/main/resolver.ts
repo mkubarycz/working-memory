@@ -1,23 +1,23 @@
 import type { ControlPlaneClient, DocumentEnvelope, Topic, Workstream } from '../../../shared/controlPlaneClient';
 import { buildWorkstreamPanels, type PanelData, type WorkstreamSection } from '../../../shared/panelData';
-import { alertBubbleForTopic, buildAlertVMs } from '../../../shared/viewModels/alertVms';
+import { agentMessageBubbleForTopic, agentMessageBubbleForTopics, buildAgentMessageVMs } from '../../../shared/viewModels/agentMessageVms';
 import type { GenericDocVM, RelationVM, TopicVM } from '../renderer/documents/types';
 import type { DesktopWorkstreamReorderUpdate } from '../shared/contracts';
 export { loadWorkstreamViewModel } from '../../../shared/viewModels/workstreamViewModel';
 
 export async function loadActivePanelData(client: ControlPlaneClient): Promise<PanelData> {
   try {
-    const [workstreams, topics, alerts, topicTypes] = await Promise.all([
+    const [workstreams, topics, agentMessages, topicTypes] = await Promise.all([
       client.wsRead({}),
       client.topicRead({}),
-      client.alertRead({}),
+      client.agentMessageRead({}),
       client.topicTypeRead({}),
     ]);
     return buildWorkstreamPanels({
       available: true,
       workstreams,
       topics,
-      alerts,
+      agentMessages,
       topicTypes,
     }).active;
   } catch (error) {
@@ -50,14 +50,14 @@ export async function persistWorkstreamReorder(
 }
 
 export function resolveDesktopResourceUri(uri: string): {
-  kind: 'workstream' | 'topic' | 'document' | 'alert' | 'topic-type';
+  kind: 'workstream' | 'topic' | 'document' | 'agent-message' | 'topic-type';
   identifier: string;
 } | null {
-  const match = /^working-memory:\/(workstream|topic|document|alert|topic-type)\/(.+)\.working-memory$/.exec(uri);
+  const match = /^working-memory:\/(workstream|topic|document|alert|agent-message|topic-type)\/(.+)\.working-memory$/.exec(uri);
   if (!match) return null;
   try {
     return {
-      kind: match[1] as 'workstream' | 'topic' | 'document' | 'alert' | 'topic-type',
+      kind: (match[1] === 'alert' ? 'agent-message' : match[1]) as 'workstream' | 'topic' | 'document' | 'agent-message' | 'topic-type',
       identifier: decodeURIComponent(match[2]),
     };
   } catch {
@@ -107,20 +107,28 @@ export async function loadTopicViewModel(
 ): Promise<TopicVM | null> {
   const topic = await readTopic(client, identifier);
   if (!topic) return null;
-  const [allTopics, workstreams, alerts, topicTypes] = await Promise.all([
+  const [allTopics, workstreams, agentMessages, topicTypes] = await Promise.all([
     client.topicRead().catch(() => []),
     client.wsRead().catch(() => []),
-    client.alertRead().catch(() => []),
+    client.agentMessageRead(),
     client.topicTypeRead().catch(() => []),
   ]);
   const topicTitles = new Map(allTopics.flatMap((item) => item.slug ? [[item.slug, item.title]] : []));
   const workstreamTitles = new Map(workstreams.flatMap((item) => item.slug ? [[item.slug, item.title]] : []));
-  const relation = (slug: string, titles: Map<string, string>): RelationVM => ({
-    slug, title: titles.get(slug) ?? slug, alertCount: 0, alertSeverity: null,
-  });
+  const relation = (slug: string, titles: Map<string, string>): RelationVM => {
+    const workstream = workstreams.find((item) => item.slug === slug);
+    const members = allTopics.filter((item) => item.workstreams.includes(slug));
+    const bubble = agentMessageBubbleForTopics(agentMessages, {
+      topicSlugs: members.flatMap((item) => item.slug ? [item.slug] : []),
+      topicIds: members.map((item) => item.id),
+      workstreamIds: workstream ? [workstream.id] : [],
+    });
+    return { slug, title: titles.get(slug) ?? slug, agentMessageCount: bubble.count, agentMessageSeverity: bubble.severity };
+  };
   const topicRelation = (slug: string, title: string): RelationVM => {
-    const bubble = alertBubbleForTopic(alerts, slug);
-    return { slug, title, alertCount: bubble.count, alertSeverity: bubble.severity };
+    const relatedTopic = allTopics.find((item) => item.slug === slug);
+    const bubble = agentMessageBubbleForTopic(agentMessages, slug, relatedTopic?.id);
+    return { slug, title, agentMessageCount: bubble.count, agentMessageSeverity: bubble.severity };
   };
   const type = topicTypes.find((item) => item.slug === topic.topicType || item.id === topic.topicType);
   const topicTypeOptions = topicTypes.map((item) => ({
@@ -131,6 +139,7 @@ export async function loadTopicViewModel(
   }));
   return {
     kind: 'topic',
+    id: topic.id,
     title: topic.title,
     slug: topic.slug,
     status: topic.status,
@@ -149,7 +158,10 @@ export async function loadTopicViewModel(
       : [],
     workstreams: topic.workstreams.map((slug) => relation(slug, workstreamTitles)),
     focusedWorkstreams: topic.focusedWorkstreams.map((slug) => relation(slug, workstreamTitles)),
-    alerts: buildAlertVMs(alerts, topic.slug ? [topic.slug] : [], now),
+    agentMessages: buildAgentMessageVMs(agentMessages, {
+      topicSlugs: topic.slug ? [topic.slug] : [],
+      topicIds: [topic.id],
+    }, now),
   };
 }
 

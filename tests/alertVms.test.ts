@@ -10,7 +10,8 @@ import {
   alertBubbleForTopic,
   RECENT_CLOSED_ALERT_MS,
 } from '../shared/viewModels/alertVms';
-import type { Alert } from '../shared/controlPlaneClient';
+import type { AgentMessage, Alert } from '../shared/controlPlaneClient';
+import { buildAgentMessageVMs } from '../shared/viewModels/agentMessageVms';
 
 const NOW = 1_000_000_000_000;
 
@@ -115,6 +116,21 @@ describe('alertBubbleForTopic', () => {
       alert({ id: 'other', status: 'alert', topics: ['t2'] }),
     ];
     expect(alertBubbleForTopic(alerts, 't1').count).toBe(2);
+  });
+
+  describe('canonical message history is independent of legacy Alert display windows', () => {
+    test('retains acknowledged and resolved history indefinitely and preserves epoch seconds', () => {
+      const message: AgentMessage = {
+        agent_id: 'agent-1', agent_name: 'Review Agent',
+        ...alert({ updated_at: 10, created_at: 1 }),
+        status: 'resolved', category: 'approval', severity: 'info', attention: false, relations: [],
+      };
+      const history = buildAgentMessageVMs([
+        message, { ...message, id: 'acknowledged', status: 'acknowledged' },
+      ], ['t1'], NOW);
+      expect(history.map((item) => item.id)).toEqual(['acknowledged', 'a1']);
+      expect(history[1]).toMatchObject({ createdAt: 1, updatedAt: 10, status: 'resolved', dimmed: true });
+    });
   });
 
   test("severity is 'alert' when any open alert is actionable", () => {

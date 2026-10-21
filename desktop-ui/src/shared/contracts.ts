@@ -1,5 +1,4 @@
 import type {
-  AlertVM,
   AttachmentRef,
   AttachmentUpload,
   DocumentVM,
@@ -12,11 +11,13 @@ import type { DocumentChanges } from '../../../shared/documentChanges';
 import type { WorkstreamSection } from '../../../shared/panelData';
 import type {
   ApplicationContractMetadata,
+  AgentMessageDecisionInput,
   CommandJournal,
   CommandJournalHistoryInput,
   CommandJournalHistoryPage,
   CommandJournalStatus,
 } from '../../../shared/controlPlaneClient';
+import type { AgentMessageVM } from '../../../shared/viewModels/agentMessageVms';
 
 export type ContainerAppId = string;
 
@@ -238,9 +239,11 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
   ) return undefined;
   const identifier = (document.slug ?? document.id).trim();
   if (!identifier) return undefined;
-  const routeKind = ['workstream', 'topic', 'alert', 'topic-type'].includes(document.kind)
-    ? document.kind as DesktopResourceKind
-    : 'document';
+  const routeKind = document.kind === 'AgentMessage' || document.kind === 'alert'
+    ? 'agent-message'
+    : ['workstream', 'topic', 'agent-message', 'topic-type'].includes(document.kind)
+      ? document.kind as DesktopResourceKind
+      : 'document';
   return {
     kind: document.kind,
     routeKind,
@@ -280,7 +283,7 @@ export interface ChatResult {
   pendingConfirmation?: PendingConfirmation;
 }
 
-export type DesktopResourceKind = 'workstream' | 'topic' | 'document' | 'alert' | 'topic-type';
+export type DesktopResourceKind = 'workstream' | 'topic' | 'document' | 'agent-message' | 'alert' | 'topic-type';
 
 export interface TopicCreateInput {
   title: string;
@@ -442,11 +445,12 @@ export interface DesktopApi {
   reparentTopic(slug: string, parent: string | null): Promise<void>;
   uploadAttachment(file: AttachmentUpload): Promise<AttachmentRef>;
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;
-  setAlertStatus(
-    context: { kind: 'workstream' | 'topic'; identifier: string },
+  getAgentMessages(input?: { limit?: number; offset?: number }): Promise<AgentMessageVM[]>;
+  recordAgentMessageDecision(id: string, decision: AgentMessageDecisionInput): Promise<void>;
+  setAgentMessageStatus(
     id: string,
-    status: AlertVM['status'],
-  ): Promise<DocumentVM>;
+    status: AgentMessageVM['status'],
+  ): Promise<void>;
   invokeAction(workstream: string, command: string, args: unknown[]): Promise<DocumentVM>;
   runContainerApp(id: ContainerAppId): Promise<ContainerLaunchResult>;
   inspectContainerApp(id: ContainerAppId): Promise<ContainerAppStatus>;

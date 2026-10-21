@@ -1,7 +1,7 @@
 {
   "name": "working-memory",
   "description": "Standalone Working Memory desktop app and control plane.",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
   "repository": {
     "type": "git",

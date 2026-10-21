@@ -1,18 +1,34 @@
 import type { ChatContext } from '../shared/contracts';
-import type { ChatRun } from './chatHistory';
+import type { CommandJournalHistoryInput, CommandJournalHistoryPage, CommandJournalSummary } from '../../../shared/controlPlaneClient';
+import { mergeHistoryRuns, summaryToChatRun, type ChatRun } from './chatHistory';
+import { normalizeScopeKind } from './scopeIdentity';
+
+export type ScopedChatContext = ChatContext & { id?: string };
+
+export function collapseChatOnInteraction(node: HTMLElement, collapse: () => void): { destroy(): void } {
+  node.addEventListener('pointerdown', collapse, { capture: true });
+  node.addEventListener('keydown', collapse, { capture: true });
+  return {
+    destroy() {
+      node.removeEventListener('pointerdown', collapse, { capture: true });
+      node.removeEventListener('keydown', collapse, { capture: true });
+    },
+  };
+}
 
 export function chatContextKey(context: ChatContext | undefined): string {
-  return context ? `${context.kind.toLowerCase().replaceAll('-', '')}:${context.identifier}` : 'desktopchat:desktop-chat';
+  return context ? `${normalizeScopeKind(context.kind)}:${context.identifier}` : 'desktopchat:desktop-chat';
 }
 
 export function matchesChatContext(
   ref: ChatRun['scope'],
-  context: ChatContext | undefined,
+  context: ScopedChatContext | undefined,
 ): boolean {
-  const kind = ref.kind.toLowerCase().replaceAll('-', '');
+  const kind = normalizeScopeKind(ref.kind);
   if (!context) return kind === 'desktopchat';
-  return kind === context.kind.toLowerCase().replaceAll('-', '')
-    && (ref.slug === context.identifier || ref.id === context.identifier);
+  return kind === normalizeScopeKind(context.kind)
+    && (ref.slug === context.identifier || ref.id === context.identifier
+      || (context.id !== undefined && ref.id === context.id));
 }
 
 export function chatContextBusy(runs: ChatRun[], context: ChatContext | undefined): boolean {
@@ -31,15 +47,45 @@ export function chatRunDomId(run: ChatRun): string {
 
 export function recentRunsForContext(
   runs: ChatRun[],
-  context: ChatContext | undefined,
-  limit = 2,
+  context: ScopedChatContext | undefined,
+  limit = 5,
 ): ChatRun[] {
   if (!context || limit <= 0) return [];
+  return allRunsForContext(runs, context).slice(-limit);
+}
+
+export function allRunsForContext(runs: ChatRun[], context: ScopedChatContext | undefined): ChatRun[] {
+  if (!context) return [];
   return runs
     .filter((run) => matchesChatContext(run.scope, context)
       || run.entityRefs.some((ref) => matchesChatContext(ref, context)))
-    .sort((left, right) => right.startedAt - left.startedAt
-      || (right.journalId ?? right.key).localeCompare(left.journalId ?? left.key))
-    .slice(0, limit)
-    .reverse();
+    .sort((left, right) => left.startedAt - right.startedAt
+      || (left.journalId ?? left.key).localeCompare(right.journalId ?? right.key));
+}
+
+export function mergeScopedHistory(runs: ChatRun[], summaries: CommandJournalSummary[]): ChatRun[] {
+  // Live results may be newer than a cached page but still carry the previous journal version.
+  return mergeHistoryRuns(runs, summaries.filter((summary) => !runs.some((run) =>
+    run.journalId === summary.id && (run.unpersistedResult
+      || (run.resourceVersion ?? 0) >= summary.resourceVersion))));
+}
+
+export async function loadScopedHistory(
+  context: ScopedChatContext,
+  readPage: (input: CommandJournalHistoryInput) => Promise<CommandJournalHistoryPage>,
+  isCurrent: () => boolean,
+  onPage: (summaries: CommandJournalSummary[]) => void,
+): Promise<void> {
+  let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+  do {
+    if (!isCurrent()) return;
+    // Server filters use exact kind/id only; scan pages to also match aliases and entity relationships.
+    const page = await readPage({ limit: 100, ...(cursor ? { cursor } : {}) });
+    if (!isCurrent()) return;
+    onPage(page.journals.filter((summary) => allRunsForContext([summaryToChatRun(summary)], context).length > 0));
+    cursor = page.nextCursor;
+    if (cursor && seenCursors.has(cursor)) throw new Error('Scoped history pagination did not advance. Retry loading messages.');
+    if (cursor) seenCursors.add(cursor);
+  } while (cursor);
 }

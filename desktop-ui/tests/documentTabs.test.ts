@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { DocumentVM } from '../src/renderer/documents/types';
+import type { DocumentVM, TopicVM } from '../src/renderer/documents/types';
 import {
   closeDocumentTab,
   closeDocumentTabsToRight,
   closeOtherDocumentTabs,
   createDocumentOpenGuard,
   documentTabKey,
+  documentTabIcon,
   keepSelectedTabVisible,
   openDocumentTab,
   parseDocumentTabs,
@@ -18,15 +19,25 @@ import {
 } from '../src/renderer/documentTabs';
 import { containerAppDocument } from '../src/renderer/containerApps';
 
-function topic(slug: string, title = slug): DocumentVM {
+function topic(slug: string, title = slug): TopicVM {
   return {
     kind: 'topic', title, slug, status: 'open', topicType: 'feature', typeMeta: null,
     body: '', createdAt: 1, updatedAt: 1, resourceVersion: 1, editable: true,
-    parents: [], children: [], workstreams: [], focusedWorkstreams: [], alerts: [],
+    parents: [], children: [], workstreams: [], focusedWorkstreams: [], agentMessages: [],
   };
 }
 
 describe('document tabs', () => {
+  it('shares topic type icons with message context links without changing tab fallbacks', () => {
+    const document = topic('selected');
+    expect(documentTabIcon(document)).toBe('symbol-misc');
+    expect(documentTabIcon({ ...document, typeMeta: {
+      slug: 'feature', label: 'Feature', icon: 'rocket', description: '',
+    } })).toBe('rocket');
+    expect(documentTabIcon(containerAppDocument({ id: 'app', displayName: 'App', icon: 'server-environment' })))
+      .toBe('server-environment');
+  });
+
   it('inserts new documents on the left and selects an existing tab without duplication', () => {
     let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'), false);
     state = openDocumentTab(state, topic('second'));

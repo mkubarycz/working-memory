@@ -499,6 +499,7 @@ export interface TopicClearFocusInput {
  * space the Topic membership uses — so a card's bubble can be computed by
  * matching an alert's `topics` against a topic (or workstream member) slug.
  */
+/** @deprecated External compatibility only; use AgentMessage. */
 export interface Alert {
   /** Document id (uuid). Alerts have no slug (always null). */
   id: string;
@@ -558,6 +559,106 @@ export interface AlertCreateInput {
 /** Fields for `ws-alert-delete` (identified by `id`; `restore` undeletes). */
 export interface AlertDeleteInput {
   id: string;
+  restore?: boolean;
+}
+
+export type AgentMessageCategory = 'request' | 'approval' | 'error' | 'completion';
+export interface RegisteredAgent {
+  id: string;
+  name: string;
+  description: string;
+  resourceVersion: number;
+}
+export type AgentMessageSeverity = 'info' | 'warning' | 'error';
+export type AgentMessageStatus = 'open' | 'acknowledged' | 'resolved';
+export interface AgentMessageRelation { kind: string; id: string }
+export interface AgentMessageProvenance {
+  agent?: string;
+  journal_id?: string;
+  run_id?: string;
+  session_id?: string;
+  url?: string;
+  pr?: string;
+  source?: string;
+}
+export interface AgentMessageDecisionInput {
+  outcome: 'approved' | 'rejected';
+  decided_by: string;
+  reason?: string;
+}
+export interface AgentMessageDecision extends AgentMessageDecisionInput {
+  /** Server-recorded Unix epoch seconds; communication, never execution authority. */
+  decided_at: number;
+}
+
+export interface AgentMessage {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  slug: null;
+  title: string;
+  description: string;
+  recommended_action: string;
+  category: AgentMessageCategory;
+  severity: AgentMessageSeverity;
+  status: AgentMessageStatus;
+  attention: boolean;
+  topics: string[];
+  relations: AgentMessageRelation[];
+  provenance?: AgentMessageProvenance;
+  decision?: AgentMessageDecision;
+  legacy_source?: Record<string, unknown>;
+  dedupe_key: string | null;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  /** Deletion metadata when supplied by the envelope; distinct from message status. */
+  deleted_at?: number | null;
+  resourceVersion: number;
+}
+
+export interface AgentMessageCreateInput {
+  /** Look up/register with agentRead/agentCreate, remember the id, and reuse it. */
+  agent_id: string;
+  title: string;
+  description: string;
+  category: AgentMessageCategory;
+  recommended_action?: string;
+  severity?: AgentMessageSeverity;
+  status?: AgentMessageStatus;
+  attention?: boolean;
+  topics?: string[];
+  relations?: AgentMessageRelation[];
+  provenance?: AgentMessageProvenance;
+  decision?: AgentMessageDecisionInput;
+  dedupe_key?: string;
+  created_by?: string;
+}
+export interface AgentMessageUpdateInput extends Partial<AgentMessageCreateInput> {
+  id: string;
+  expectedResourceVersion?: number;
+}
+export interface AgentMessageReadInput {
+  id?: string;
+  query?: string;
+  limit?: number;
+  offset?: number;
+  expectedSnapshotVersion?: number;
+  includeDeleted?: boolean;
+  category?: AgentMessageCategory;
+  status?: AgentMessageStatus;
+  attention?: boolean;
+}
+export interface AgentMessagePage {
+  count: number;
+  messages: AgentMessage[];
+  totalCount: number;
+  nextOffset: number | null;
+  snapshotVersion: number;
+}
+export interface AgentMessageDeleteInput {
+  id: string;
+  expectedResourceVersion?: number;
   restore?: boolean;
 }
 
@@ -1659,7 +1760,163 @@ export class ControlPlaneClient {
     return this.topicUpdate({ slug: input.slug, focusedWorkstreams });
   }
 
-  // ----- Alert domain API (`ws-alert-read`) ---------------------------------
+  private parseAgentEnvelope(value: unknown): RegisteredAgent {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new ControlPlaneClientError('Malformed control-plane Agent response');
+    }
+    const envelope = value as Partial<DocumentEnvelope>;
+    if (envelope.kind !== 'Agent' || !envelope.metadata || !envelope.spec
+      || typeof envelope.metadata.id !== 'string' || !envelope.metadata.id
+      || !Number.isSafeInteger(envelope.metadata.resourceVersion) || envelope.metadata.resourceVersion < 1
+      || typeof envelope.spec.name !== 'string' || !envelope.spec.name.trim()
+      || typeof envelope.spec.description !== 'string') {
+      throw new ControlPlaneClientError('Malformed control-plane Agent response');
+    }
+    return { id: envelope.metadata.id, name: envelope.spec.name, description: envelope.spec.description,
+      resourceVersion: envelope.metadata.resourceVersion };
+  }
+
+  async agentRead(input: { id?: string; name?: string; includeDeleted?: boolean } = {}): Promise<RegisteredAgent[]> {
+    const parsed = parseToolText(await this.callDomainTool('ws-agent-read', { ...input })) as
+      { count?: unknown; agents?: unknown } | null;
+    if (!parsed || !Array.isArray(parsed.agents) || parsed.count !== parsed.agents.length) {
+      throw new ControlPlaneClientError('Malformed control-plane Agent list response');
+    }
+    return parsed.agents.map((agent) => this.parseAgentEnvelope(agent));
+  }
+
+  async agentCreate(input: { name: string; description?: string }): Promise<RegisteredAgent> {
+    return this.parseAgentEnvelope(parseToolText(await this.callDomainTool('ws-agent-create', { ...input })));
+  }
+
+  async agentUpdate(input: { id: string; expectedResourceVersion: number; name?: string; description?: string }): Promise<RegisteredAgent> {
+    const { id, expectedResourceVersion, ...spec } = input;
+    return this.parseAgentEnvelope(parseToolText(await this.callDomainTool('ws-agent-update', { id, expectedResourceVersion, spec })));
+  }
+
+  async agentDelete(input: { id: string; expectedResourceVersion?: number; restore?: boolean }): Promise<RegisteredAgent> {
+    return this.parseAgentEnvelope(parseToolText(await this.callDomainTool('ws-agent-delete', { ...input })));
+  }
+
+  private parseAgentMessageEnvelope(value: unknown): AgentMessage {
+    const fail = (): never => { throw new ControlPlaneClientError('Malformed control-plane AgentMessage response'); };
+    const object = (candidate: unknown): candidate is Record<string, unknown> =>
+      candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate);
+    if (!object(value) || value.kind !== 'AgentMessage' || !object(value.metadata) || !object(value.spec)) return fail();
+    const metadata = value.metadata;
+    const spec = value.spec;
+    const source = object(spec.legacy_source) ? spec.legacy_source : undefined;
+    const preservedLegacyBody = typeof spec.description === 'string' && spec.description.length > 0
+      && source?.migration_version === 3 && object(source.row)
+      && source.row.kind === 'Alert' && typeof source.row.spec === 'string';
+    if (typeof metadata.id !== 'string' || !metadata.id || metadata.slug !== null
+      || !Number.isSafeInteger(metadata.createdAt) || (metadata.createdAt as number) < 0
+      || !Number.isSafeInteger(metadata.updatedAt) || (metadata.updatedAt as number) < 0
+      || (metadata.deletedAt !== undefined && metadata.deletedAt !== null
+        && (!Number.isSafeInteger(metadata.deletedAt) || (metadata.deletedAt as number) < 0))
+      || !Number.isSafeInteger(metadata.resourceVersion) || (metadata.resourceVersion as number) < 1
+      || !['title', 'description', 'recommended_action', 'created_by', 'agent_id', 'agent_name'].every((key) => typeof spec[key] === 'string')
+      || !(spec.agent_id as string).trim() || !(spec.agent_name as string).trim()
+      || !(spec.title as string).trim() || (!(spec.description as string).trim() && !preservedLegacyBody)
+      || !['request', 'approval', 'error', 'completion'].includes(spec.category as string)
+      || !['info', 'warning', 'error'].includes(spec.severity as string)
+      || !['open', 'acknowledged', 'resolved'].includes(spec.status as string)
+      || typeof spec.attention !== 'boolean'
+      || (spec.attention && (spec.status !== 'open' || spec.category === 'completion'
+        || !(spec.recommended_action as string).trim()))
+      || !Array.isArray(spec.topics) || !spec.topics.every((topic) => typeof topic === 'string' && topic.length > 0)
+      || !Array.isArray(spec.relations) || !spec.relations.every((relation) => object(relation)
+        && typeof relation.kind === 'string' && relation.kind.length > 0
+        && typeof relation.id === 'string' && relation.id.length > 0)
+      || (spec.dedupe_key !== undefined && (typeof spec.dedupe_key !== 'string' || !spec.dedupe_key))
+      || (spec.provenance !== undefined && (!object(spec.provenance)
+        || !Object.entries(spec.provenance).every(([key, value]) =>
+          ['agent', 'journal_id', 'run_id', 'session_id', 'url', 'pr', 'source'].includes(key) && typeof value === 'string')))
+      || (spec.legacy_source !== undefined && !object(spec.legacy_source))) return fail();
+    if (spec.decision !== undefined && (!object(spec.decision) || spec.category !== 'approval'
+      || !['approved', 'rejected'].includes(spec.decision.outcome as string)
+      || typeof spec.decision.decided_by !== 'string' || !spec.decision.decided_by.trim()
+      || (spec.decision.reason !== undefined && typeof spec.decision.reason !== 'string')
+      || !Number.isSafeInteger(spec.decision.decided_at) || (spec.decision.decided_at as number) < 0
+      || Object.keys(spec.decision).some((key) => !['outcome', 'decided_by', 'reason', 'decided_at'].includes(key)))) return fail();
+    return {
+      id: metadata.id,
+      agent_id: spec.agent_id as string,
+      agent_name: spec.agent_name as string,
+      slug: null,
+      title: spec.title as string,
+      description: spec.description as string,
+      recommended_action: spec.recommended_action as string,
+      category: spec.category as AgentMessageCategory,
+      severity: spec.severity as AgentMessageSeverity,
+      status: spec.status as AgentMessageStatus,
+      attention: spec.attention,
+      topics: [...spec.topics] as string[],
+      relations: spec.relations.map((relation) => ({ kind: relation.kind, id: relation.id })) as AgentMessageRelation[],
+      ...(spec.provenance !== undefined ? { provenance: { ...spec.provenance as AgentMessageProvenance } } : {}),
+      ...(spec.decision !== undefined ? { decision: { ...spec.decision as unknown as AgentMessageDecision } } : {}),
+      ...(spec.legacy_source !== undefined ? { legacy_source: { ...spec.legacy_source as Record<string, unknown> } } : {}),
+      dedupe_key: spec.dedupe_key === undefined ? null : spec.dedupe_key as string,
+      created_by: spec.created_by as string,
+      created_at: metadata.createdAt as number,
+      updated_at: metadata.updatedAt as number,
+      ...(metadata.deletedAt !== undefined ? { deleted_at: metadata.deletedAt as number | null } : {}),
+      resourceVersion: metadata.resourceVersion as number,
+    };
+  }
+
+  async agentMessageRead(input: AgentMessageReadInput = {}): Promise<AgentMessage[]> {
+    const parsed = parseToolText(await this.callDomainTool('ws-agent-message-read', { ...input })) as
+      { count?: unknown; messages?: unknown } | null;
+    if (!parsed || !Array.isArray(parsed.messages) || !Number.isInteger(parsed.count)
+      || parsed.count !== parsed.messages.length) {
+      throw new ControlPlaneClientError('Malformed control-plane AgentMessage list response');
+    }
+    return parsed.messages.map((message) => this.parseAgentMessageEnvelope(message));
+  }
+
+  /** Snapshot-aware paging; callers must restart at offset zero after a conflict. */
+  async agentMessageReadPage(input: AgentMessageReadInput = {}): Promise<AgentMessagePage> {
+    const parsed = parseToolText(await this.callDomainTool('ws-agent-message-read', { ...input })) as
+      Partial<AgentMessagePage> | null;
+    if (!parsed || !Array.isArray(parsed.messages) || !Number.isInteger(parsed.count)
+      || parsed.count !== parsed.messages.length || !Number.isInteger(parsed.totalCount)
+      || parsed.totalCount! < parsed.count! || !Number.isInteger(parsed.snapshotVersion)
+      || parsed.snapshotVersion! < 0 || (parsed.nextOffset !== null
+        && (!Number.isInteger(parsed.nextOffset) || parsed.nextOffset! < 1 || parsed.nextOffset! >= parsed.totalCount!))) {
+      throw new ControlPlaneClientError('Malformed control-plane AgentMessage page response');
+    }
+    return {
+      count: parsed.count!,
+      messages: parsed.messages.map((message) => this.parseAgentMessageEnvelope(message)),
+      totalCount: parsed.totalCount!,
+      nextOffset: parsed.nextOffset!,
+      snapshotVersion: parsed.snapshotVersion!,
+    };
+  }
+
+  async agentMessageCreate(input: AgentMessageCreateInput): Promise<AgentMessage> {
+    return this.parseAgentMessageEnvelope(parseToolText(await this.callDomainTool('ws-agent-message-create', { ...input })));
+  }
+
+  async agentMessageUpdate(input: AgentMessageUpdateInput): Promise<AgentMessage> {
+    const { id, expectedResourceVersion, ...spec } = input;
+    const version = expectedResourceVersion ?? (await this.agentMessageRead({ id }))[0]?.resourceVersion;
+    if (version === undefined) throw new ControlPlaneClientError(`Unknown AgentMessage: ${id}`);
+    return this.parseAgentMessageEnvelope(parseToolText(await this.callDomainTool('ws-agent-message-update', {
+      id, expectedResourceVersion: version, spec,
+    })));
+  }
+
+  async agentMessageDelete(input: AgentMessageDeleteInput): Promise<AgentMessage> {
+    return this.parseAgentMessageEnvelope(parseToolText(await this.callDomainTool('ws-agent-message-delete', { ...input })));
+  }
+
+  async agentMessageRestore(input: AgentMessageDeleteInput): Promise<AgentMessage> {
+    return this.parseAgentMessageEnvelope(parseToolText(await this.callDomainTool('ws-agent-message-restore', { ...input })));
+  }
+
+  // ----- Deprecated Alert compatibility API --------------------------------
   //
   // Read-only wrapper over the control-plane's Alert kind read tool (WM 13.0
   // panel-alert-bubbles): the panel aggregates open-alert counts for its
@@ -1671,6 +1928,7 @@ export class ControlPlaneClient {
   // `isError` result, mirroring {@link topicRead}.
 
   /**
+   * @deprecated External compatibility only. Use agentMessageRead.
    * Read alerts via `ws-alert-read`. A by-id read yields a 0-or-1 element array;
    * list mode (no id) returns all live alerts, optionally filtered by `query`
    * (substring) and capped by `limit`.
@@ -1730,6 +1988,7 @@ export class ControlPlaneClient {
   }
 
   /**
+   * @deprecated External compatibility only. Use agentMessageUpdate.
    * Update an alert via `ws-alert-update` (identified by `id`; only the provided
    * fields are sent). The control-plane reads the current doc for its CAS guard,
    * merges + re-validates the patch, then writes. Returns the updated alert.
@@ -1761,6 +2020,7 @@ export class ControlPlaneClient {
   }
 
   /**
+   * @deprecated External compatibility only. Use agentMessageCreate.
    * Create an alert via `ws-alert-create` (WM 14.2.1 "poc-command-widget" — the
    * right-rail agentic loop needs to raise alerts, and the read-only alert
    * wrapper predates that). Only `description` is required; the rest default
@@ -1790,6 +2050,7 @@ export class ControlPlaneClient {
   }
 
   /**
+   * @deprecated External compatibility only. Use agentMessageDelete or agentMessageRestore.
    * Soft-delete (or, with `restore: true`, undelete) an alert via
    * `ws-alert-delete` (identified by `id`). Returns `{ ok, id }`.
    */

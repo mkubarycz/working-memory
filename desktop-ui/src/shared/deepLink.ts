@@ -7,6 +7,7 @@ const RESOURCE_KINDS = new Set<DesktopResourceKind>([
   'topic',
   'document',
   'alert',
+  'agent-message',
   'topic-type',
 ]);
 
@@ -43,7 +44,7 @@ export function parseDesktopDeepLink(raw: string): DesktopDeepLinkTarget | null 
   try {
     const identifier = decodeURIComponent(match[2]);
     return identifier
-      ? { kind: match[1] as DesktopResourceKind, identifier }
+      ? { kind: match[1] === 'alert' ? 'agent-message' : match[1] as DesktopResourceKind, identifier }
       : null;
   } catch {
     return null;

@@ -190,14 +190,24 @@ describe('Alert kind loader', () => {
           },
         }),
       );
-      expect(created.kind).toBe('Alert');
+      expect(created.kind).toBe('AgentMessage');
       expect(created.spec).toEqual({
-        title: '',
+        agent_id: '00000000-0000-4000-8000-000000000001',
+        agent_name: 'System Import',
+        title: 'Disk is nearly full.',
         description: 'Disk is nearly full.',
-        recommended_action: '',
-        status: 'alert',
+        recommended_action: 'Review the message "Disk is nearly full." and decide the next step.',
+        status: 'open',
+        category: 'request',
+        attention: true,
+        severity: 'info',
+        relations: [],
         created_by: 'system',
         topics: [],
+        legacy_source: {
+          adapter: 'Alert',
+          spec: { title: '', description: 'Disk is nearly full.', recommended_action: '', status: 'alert', created_by: 'system', topics: [] },
+        },
       });
       expect(created.status).toEqual({});
 

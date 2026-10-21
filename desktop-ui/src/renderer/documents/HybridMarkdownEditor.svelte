@@ -15,11 +15,13 @@
   import type { AttachmentRef } from './types';
   import { imageFilesFromTransfer } from './imageFiles';
   import { attachmentImagePreview } from './attachmentImages';
+  import { resolveMarkdownImageSource } from './markdown';
   import {
     activateLivePreview,
     liveMarkdownPreview,
     liveMarkdownTheme,
     livePreviewActivated,
+    markdownLinkClicks,
     resetLivePreview,
   } from './liveMarkdownPreview';
 
@@ -28,6 +30,7 @@
     attachmentBaseUrl?: string;
     onInput: (value: string) => void;
     onAttachImages?: (files: File[]) => Promise<AttachmentRef[]>;
+    onOpenLink?: (href: string) => void;
   }
 
   let {
@@ -35,6 +38,7 @@
     attachmentBaseUrl = '',
     onInput,
     onAttachImages = async () => [],
+    onOpenLink,
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
@@ -116,6 +120,9 @@
           liveMarkdownPreview,
           liveMarkdownTheme,
           attachmentImagePreview(attachmentBaseUrl),
+          onOpenLink
+            ? markdownLinkClicks((href) => onOpenLink(resolveMarkdownImageSource(href, attachmentBaseUrl)))
+            : [],
           EditorView.theme({
             '&': {
               minHeight: '240px',

@@ -112,12 +112,12 @@ async function connect(store: Store): Promise<{
       // Alerts have NO slug — identity is the uuid `id`.
       expect(created.slug).toBeNull();
       expect(created.description).toBe('Disk is nearly full.');
-      expect(created.title).toBe('');
-      expect(created.recommended_action).toBe('');
+      expect(created.title).toBe('Disk is nearly full.');
+      expect(created.recommended_action).toBe('Review the message "Disk is nearly full." and decide the next step.');
       expect(created.status).toBe('alert');
       expect(created.created_by).toBe('system');
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
-      expect(created.resourceVersion).toBe(1);
+      expect(created.resourceVersion).toBe(2);
       const id = created.id;
 
       // read by id → mapped 0-or-1 list.
@@ -160,7 +160,7 @@ async function connect(store: Store): Promise<{
       expect(updated.title).toBe('Low disk');
       expect(updated.status).toBe('closed');
       expect(updated.description).toBe('Disk is nearly full.');
-      expect(updated.resourceVersion).toBe(2);
+      expect(updated.resourceVersion).toBe(created.resourceVersion + 1);
 
       // delete — drops out of ws-alert-read.
       const del = jsonOf<{ ok: boolean; id: string }>(

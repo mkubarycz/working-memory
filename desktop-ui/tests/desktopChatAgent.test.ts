@@ -7,6 +7,7 @@ import {
 } from '../src/main/desktopChatAgent';
 import type { CommandJournal, CommandJournalEntityRef } from '../../shared/controlPlaneClient';
 import { commandJournalSpec } from '../../control-plane/src/kinds/commandjournal';
+import { recordAgentMessageDecision } from '../src/main/agentMessageLifecycle';
 
 const tools = [
   { name: 'ws-workstream-read', inputSchema: { type: 'object', properties: { slug: { type: 'string' } } } },
@@ -116,6 +117,60 @@ describe('DesktopChatAgent', () => {
     expect(clients[0]).not.toHaveBeenCalled();
     expect(clients[1]).toHaveBeenCalledWith('ws-topic-delete', { slug: 'second' });
   });
+
+  it.each(['ws-agent-message-create', 'ws-agent-message-update'])(
+    'does not let approved metadata returned by %s release another run protected confirmation', async (messageTool) => {
+      const decision = { outcome: 'approved', decided_by: 'Reviewer', reason: 'Communication only' };
+      const messageArguments = messageTool.endsWith('-create')
+        ? { title: 'Review decision', description: 'Approved review only', category: 'approval', decision }
+        : { id: 'approval-message', expectedResourceVersion: 1, spec: { decision } };
+      const proposal = (name: string, args: unknown) => ({ choices: [{ message: { content: null, tool_calls: [
+        { id: name, function: { name, arguments: JSON.stringify(args) } },
+      ] } }] });
+      const callModel = vi.fn()
+        .mockResolvedValueOnce(proposal('ws-topic-delete', { slug: 'protected-topic' }))
+        .mockResolvedValueOnce(proposal(messageTool, messageArguments))
+        .mockResolvedValueOnce({ choices: [{ message: { content: 'Review decision recorded; no execution authorized.' } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: 'Deleted after trusted confirmation.' } }] });
+      const protectedTool = vi.fn(async () => ({ ok: true, result: {} }));
+      const messageToolCall = vi.fn(async () => ({ ok: true, result: {
+        kind: 'AgentMessage',
+        metadata: { id: 'approval-message', slug: null, createdAt: 1, updatedAt: 2, resourceVersion: 2, deletedAt: null },
+        spec: {
+          title: 'Review decision', description: 'Approved review only', category: 'approval',
+          severity: 'info', status: 'open', attention: false, recommended_action: '',
+          topics: [], relations: [], created_by: 'reviewer', decision: { ...decision, decided_at: 2 },
+        },
+      } }));
+      const protectedJournal = journalHarness('protected-journal');
+      const messageJournal = journalHarness('communication-journal');
+      let run = 0;
+      const agent = new DesktopChatAgent({
+        ...options(callModel),
+        resolveDependencies: () => run++ === 0
+          ? { listTools: async () => tools, callTool: protectedTool, journal: protectedJournal }
+          : {
+              listTools: async () => [{ name: messageTool, inputSchema: { type: 'object', properties: {} } }],
+              callTool: messageToolCall, journal: messageJournal,
+            },
+      });
+      const input = { mode: 'chat-completions' as const, url: 'https://example.test', model: 'test', headers: {} };
+      const protectedRun = await agent.start({ ...input, message: 'Delete the protected topic' });
+      const trustedConfirmation = protectedRun.pendingConfirmation!.id;
+      expect(protectedRun.status).toBe('awaiting_confirmation');
+      const resolveConfirmation = vi.spyOn(agent, 'resolveConfirmation');
+      const communication = await agent.start({ ...input, message: 'Record an approval decision, not execution permission' });
+      expect(communication.status).toBe('succeeded');
+      expect(messageToolCall).toHaveBeenCalledWith(messageTool, messageArguments);
+      expect(resolveConfirmation).not.toHaveBeenCalled();
+      expect(protectedTool).not.toHaveBeenCalled();
+      expect(protectedJournal.current()?.status).toBe('awaiting_confirmation');
+      expect(protectedJournal.current()?.events.some((event) => event.type === 'confirmation_resolved')).toBe(false);
+
+      await agent.resolveConfirmation(trustedConfirmation, true);
+      expect(protectedTool.mock.calls).toEqual([['ws-topic-delete', { slug: 'protected-topic' }]]);
+      expect(protectedJournal.current()?.events.filter((event) => event.type === 'confirmation_resolved')).toHaveLength(1);
+    });
 
   it('runs two topic queries concurrently and finalizes their independent journals out of order', async () => {
     const firstModel = deferred<unknown>();
@@ -374,6 +429,41 @@ describe('DesktopChatAgent', () => {
     expect(journal.current()?.completion?.mutated).toBe(true);
   });
 
+  it.each(['acknowledge', 'resolve', 'reopen', 'restore'])(
+    'preserves %s mutations when a later model request fails',
+    async (action) => {
+      const toolName = `ws-agent-message-${action}`;
+      const callTool = vi.fn(async () => ({ ok: true, result: { id: 'message-1' } }));
+      const journal = journalHarness();
+      const callModel = vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: 'a', function: { name: toolName, arguments: '{"id":"message-1"}' } },
+        ] } }] })
+        .mockRejectedValueOnce(new Error('follow-up request failed'));
+      const agent = new DesktopChatAgent({
+        ...options(callModel, callTool, journal),
+        listTools: async () => [{ name: toolName, inputSchema: { type: 'object', properties: { id: { type: 'string' } } } }],
+      });
+
+      const result = await agent.start({
+        mode: 'chat-completions',
+        url: 'https://example.test',
+        model: 'test',
+        message: `Mark message ${action}`,
+        headers: {},
+      });
+
+      expect(callTool).toHaveBeenCalledWith(toolName, { id: 'message-1' });
+      expect(result).toMatchObject({ status: 'failed', mutated: true });
+      expect(journal.current()?.completion?.mutated).toBe(true);
+      expect(journal.current()?.entityRefs).toContainEqual(expect.objectContaining({
+        kind: 'AgentMessage',
+        id: 'message-1',
+        relation: 'mutated',
+      }));
+    },
+  );
+
   it('creates the durable journal before the first model request and strips endpoint secrets', async () => {
     const order: string[] = [];
     const journal = journalHarness();
@@ -424,6 +514,16 @@ describe('DesktopChatAgent', () => {
     expect(pending.journalId).toBe('journal-1');
     expect(pending.status).toBe('awaiting_confirmation');
     expect(pending.pendingConfirmation).toEqual({ id: 'confirm-1', tool: 'ws-topic-delete', arguments: { slug: 'old' } });
+    const resolveConfirmation = vi.spyOn(agent, 'resolveConfirmation');
+    const agentMessageUpdate = vi.fn().mockResolvedValue({});
+    await recordAgentMessageDecision({ agentMessageUpdate } as never, 'approval-message', {
+      outcome: 'approved', decided_by: 'Human reviewer', reason: 'Records review only, not tool execution authority.',
+    });
+    expect(agentMessageUpdate).toHaveBeenCalledWith({
+      id: 'approval-message',
+      decision: { outcome: 'approved', decided_by: 'Human reviewer', reason: 'Records review only, not tool execution authority.' },
+    });
+    expect(resolveConfirmation).not.toHaveBeenCalled();
     expect(callTool).not.toHaveBeenCalled();
     expect(journal.current()?.status).toBe('awaiting_confirmation');
     const result = await agent.resolveConfirmation('confirm-1', true);

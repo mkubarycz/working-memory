@@ -19,6 +19,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { ensureSystemImportAgent, migrateAgentMessages } from './agentMessageMigration.js';
+import { agentMessageSpec, persistedAgentMessageSpec, legacyToMessage, AGENT_MESSAGE_KIND } from './kinds/agentmessage/spec.js';
+import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec, normalizeAgentName } from './kinds/agent/spec.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -54,6 +57,7 @@ export interface CreateDocumentInput {
 
 export interface ListDocumentsInput {
   kind?: string;
+  includeDeleted?: boolean;
 }
 
 export interface CreationOrderedDocument {
@@ -265,6 +269,7 @@ function ensureSchema(db: DatabaseSync): void {
       labels           TEXT NOT NULL DEFAULT '{}',
       spec             TEXT NOT NULL DEFAULT '{}',
       status           TEXT NOT NULL DEFAULT '{}',
+      agent_name_key   TEXT,
       created_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL,
       deleted_at       INTEGER,
@@ -349,6 +354,101 @@ export function openStore(dbFilePath: string): Store {
   // No `.pragma()` helper on DatabaseSync — use exec (repo convention).
   db.exec('PRAGMA journal_mode = WAL');
   ensureSchema(db);
+  try { migrateAgentMessages(db); }
+  catch (error) { db.close(); throw error; }
+
+  const canonicalKind = (kind: string | undefined) => kind === 'Alert' ? AGENT_MESSAGE_KIND : kind;
+
+  function validateAgent(spec: Record<string, unknown>, excludeId?: string): Record<string, unknown> {
+    const parsed = agentSpec.parse(spec);
+    if (normalizeAgentName(parsed.name) === 'system import' && excludeId !== SYSTEM_IMPORT_AGENT_ID) {
+      throw new Error('System Import is reserved for historical and compatibility messages.');
+    }
+    if (excludeId === SYSTEM_IMPORT_AGENT_ID && parsed.name !== 'System Import') {
+      throw new Error('The System Import agent cannot be renamed.');
+    }
+    const existing = db.prepare(`SELECT id FROM resources WHERE kind = 'Agent' AND deleted_at IS NULL
+      AND agent_name_key = ? AND id != ?`)
+      .get(normalizeAgentName(parsed.name), excludeId ?? '') as { id: string } | undefined;
+    if (existing) throw new Error(`Agent name "${parsed.name}" is already registered as ${existing.id}. Look it up with ws-agent-read and reuse its ID.`);
+    return parsed;
+  }
+
+  function validateMessage(spec: Record<string, unknown>, excludeId?: string, allowLegacySource = false): Record<string, unknown> {
+    const previous = excludeId ? getDocument({ id: excludeId, includeDeleted: true }) : null;
+    const source = previous?.spec.legacy_source as Record<string, unknown> | undefined;
+    // Only an unchanged migrated body may retain historical whitespace.
+    const preserveBody = source?.migration_version === 3 && spec.description === previous?.spec.description;
+    const parsed = (preserveBody ? persistedAgentMessageSpec : agentMessageSpec).parse(spec);
+    const agent = getDocument({ id: parsed.agent_id });
+    if (agent?.kind !== AGENT_KIND) throw new Error(`Unknown live registered Agent: ${parsed.agent_id}. Register with ws-agent-create first.`);
+    if (previous && parsed.agent_id !== previous.spec.agent_id) throw new Error('AgentMessage sender agent_id is immutable.');
+    const senderName = previous?.spec.agent_name ?? agentSpec.parse(agent.spec).name;
+    if (parsed.agent_name !== undefined && parsed.agent_name !== senderName) {
+      throw new Error('AgentMessage agent_name is server-owned and immutable; provide only your registered agent_id.');
+    }
+    parsed.agent_name = String(senderName);
+    // Only migrated rows grandfather old topic slugs, not newly created adapter records.
+    const historical = !!source && source.row !== null && typeof source.row === 'object' && !Array.isArray(source.row);
+    if (parsed.status !== 'open' && parsed.attention) {
+      throw new Error('Only open AgentMessages may require attention.');
+    }
+    if (parsed.attention && (parsed.category === 'completion' || !parsed.recommended_action.trim())) {
+      throw new Error('Attention requires a specific recommended_action and cannot be used for completion messages.');
+    }
+    if (parsed.decision) {
+      if (parsed.category !== 'approval') throw new Error('Only approval AgentMessages may record an informational decision.');
+      const old = previous?.spec.decision as typeof parsed.decision | undefined;
+      if (parsed.decision.decided_at !== undefined && parsed.decision.decided_at !== old?.decided_at) {
+        throw new Error('decision.decided_at is server-owned; omit it when recording a decision.');
+      }
+      const unchanged = old && old.outcome === parsed.decision.outcome &&
+        old.decided_by === parsed.decision.decided_by && old.reason === parsed.decision.reason;
+      parsed.decision.decided_at = unchanged && old.decided_at !== undefined ? old.decided_at : nowSeconds();
+    }
+    if (new Set(parsed.topics).size !== parsed.topics.length ||
+        new Set(parsed.relations.map((ref) => `${ref.kind}:${ref.id}`)).size !== parsed.relations.length) {
+      throw new Error('Duplicate AgentMessage topic or object relation.');
+    }
+    for (const slug of parsed.topics) {
+      const target = db.prepare("SELECT id FROM resources WHERE kind = 'Topic' AND slug = ? AND deleted_at IS NULL").all(slug);
+      const preservedHistoricalReference = historical && (previous!.spec.topics as string[]).includes(slug);
+      if (target.length !== 1 && !preservedHistoricalReference) throw new Error(`AgentMessage topic relation "${slug}" must identify one live Topic.`);
+    }
+    for (const ref of parsed.relations) {
+      const target = getDocument({ id: ref.id });
+      if (!target || target.kind !== canonicalKind(ref.kind) || ref.id === excludeId) {
+        throw new Error(`Invalid AgentMessage relation ${ref.kind}/${ref.id}: expected a live, non-self document of that kind.`);
+      }
+    }
+    if (excludeId) {
+      if (JSON.stringify(previous?.spec.legacy_source) !== JSON.stringify(parsed.legacy_source)) {
+        throw new Error('AgentMessage legacy_source is immutable.');
+      }
+      if (parsed.dedupe_key !== undefined && parsed.status !== 'resolved') {
+        const owner = db.prepare(`SELECT id FROM resources
+          WHERE kind = 'AgentMessage' AND deleted_at IS NULL
+            AND json_extract(spec, '$.status') != 'resolved'
+            AND json_extract(spec, '$.dedupe_key') = ? AND id != ?`)
+          .get(parsed.dedupe_key, excludeId) as { id: string } | undefined;
+        if (owner) throw new Error(`AgentMessage dedupe_key "${parsed.dedupe_key}" is already active on ${owner.id}; resolve or delete that message first.`);
+      }
+    } else if (parsed.legacy_source !== undefined && !allowLegacySource) {
+      throw new Error('legacy_source is reserved for the automatic Alert migration.');
+    }
+    return parsed;
+  }
+
+  function guardMessageReferences(id: string): void {
+    const target = getDocument({ id });
+    if (!target) return;
+    for (const doc of listDocuments({ kind: AGENT_MESSAGE_KIND, includeDeleted: target.kind === AGENT_KIND })) {
+      if (doc.spec.agent_id === id || (doc.spec.relations as Array<{ id: string }>).some((ref) => ref.id === id) ||
+          (target.kind === 'Topic' && (doc.spec.topics as string[]).includes(target.metadata.slug ?? ''))) {
+        throw new Error(`Cannot delete document ${id}: referenced by AgentMessage ${doc.metadata.id}. Unlink it first.`);
+      }
+    }
+  }
 
   const changeListeners = new Set<(changes: DocumentChange[]) => void>();
   function notifyDocumentsChanged(documents: DocumentEnvelope[]): void {
@@ -396,6 +496,52 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function createDocument(input: CreateDocumentInput): DocumentEnvelope {
+    const legacyInput = input.kind === 'Alert';
+    if (legacyInput) {
+      const source = input.spec ?? {};
+      if (source.agent_id === undefined) {
+        db.exec('BEGIN IMMEDIATE');
+        let created: boolean;
+        try { created = ensureSystemImportAgent(db); db.exec('COMMIT'); }
+        catch (error) { db.exec('ROLLBACK'); throw error; }
+        if (created) notifyDocumentsChanged([getDocument({ id: SYSTEM_IMPORT_AGENT_ID })!]);
+      }
+      input = {
+        ...input, kind: AGENT_MESSAGE_KIND,
+        spec: { ...legacyToMessage(source), legacy_source: { adapter: 'Alert', spec: source } },
+      };
+    }
+    if (input.kind === AGENT_KIND) input = { ...input, spec: validateAgent(input.spec ?? {}) };
+    if (input.kind === AGENT_MESSAGE_KIND) {
+      if (input.status !== undefined && Object.keys(input.status).length) throw new Error('AgentMessage envelope status must be empty.');
+      input = { ...input, spec: validateMessage(input.spec ?? {}, undefined, legacyInput) };
+      if (input.spec!.dedupe_key !== undefined && input.spec!.status !== 'resolved') {
+        const row = db.prepare(`SELECT * FROM resources WHERE kind = 'AgentMessage'
+          AND deleted_at IS NULL AND json_extract(spec, '$.status') != 'resolved'
+          AND json_extract(spec, '$.dedupe_key') = ?`)
+          .get(input.spec!.dedupe_key as string) as unknown as ResourceRow | undefined;
+        if (row) {
+          const previous = rowToEnvelope(row);
+          const stable = (value: unknown): string => {
+            if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
+            if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => `${JSON.stringify(key)}:${stable(val)}`).join(',')}}`;
+            return JSON.stringify(value);
+          };
+          const { legacy_source: _legacy, status: _status, attention: _attention, agent_name: _senderName, ...previousSpec } = previous.spec;
+          const { legacy_source: _requestedLegacy, status: _requestedStatus, attention: _requestedAttention, agent_name: _requestedSenderName, ...requestedSpec } = input.spec!;
+          const authored = (value: Record<string, unknown>) => {
+            if (!value.decision || typeof value.decision !== 'object') return value;
+            const { decided_at: _time, ...decision } = value.decision as Record<string, unknown>;
+            return { ...value, decision };
+          };
+          if (stable(authored(previousSpec)) !== stable(authored(requestedSpec)) || (input.slug ?? null) !== previous.metadata.slug ||
+              stable(input.labels ?? {}) !== stable(previous.metadata.labels)) {
+            throw new Error(`AgentMessage dedupe_key "${input.spec!.dedupe_key}" conflicts with existing message ${row.id}.`);
+          }
+          return previous;
+        }
+      }
+    }
     const now = nowSeconds();
     const id = randomUUID();
     const slug = input.slug ?? null;
@@ -421,9 +567,10 @@ export function openStore(dbFilePath: string): Store {
 
       db.prepare(
         `INSERT INTO resources
-           (id, kind, slug, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-      ).run(id, input.kind, slug, labelsJson, specJson, statusJson, now, now, resourceVersion);
+           (id, kind, slug, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      ).run(id, input.kind, slug, labelsJson, specJson, statusJson,
+        input.kind === AGENT_KIND ? normalizeAgentName(String(spec.name)) : null, now, now, resourceVersion);
 
       db.exec('COMMIT');
     } catch (err) {
@@ -450,19 +597,20 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function listDocuments(input: ListDocumentsInput = {}): DocumentEnvelope[] {
+    input = { ...input, kind: canonicalKind(input.kind) };
     const rows = (
       input.kind
         ? db
             .prepare(
               `SELECT * FROM resources
-               WHERE deleted_at IS NULL AND kind = ?
+               WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'} AND kind = ?
                ORDER BY updated_at DESC, rowid DESC`,
             )
             .all(input.kind)
         : db
             .prepare(
               `SELECT * FROM resources
-               WHERE deleted_at IS NULL
+               WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'}
                ORDER BY updated_at DESC, rowid DESC`,
             )
             .all()
@@ -473,19 +621,20 @@ export function openStore(dbFilePath: string): Store {
   function listDocumentsByCreation(
     input: ListDocumentsInput = {},
   ): CreationOrderedDocument[] {
+    input = { ...input, kind: canonicalKind(input.kind) };
     const rows = (
       input.kind
         ? db
             .prepare(
               `SELECT *, rowid AS creation_sequence FROM resources
-               WHERE deleted_at IS NULL AND kind = ?
+               WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'} AND kind = ?
                ORDER BY created_at DESC, rowid DESC`,
             )
             .all(input.kind)
         : db
             .prepare(
               `SELECT *, rowid AS creation_sequence FROM resources
-               WHERE deleted_at IS NULL
+               WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'}
                ORDER BY created_at DESC, rowid DESC`,
             )
             .all()
@@ -497,6 +646,7 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function getDocument(input: GetDocumentInput): DocumentEnvelope | null {
+    input = { ...input, kind: canonicalKind(input.kind) };
     // `includeDeleted` drops the live-only filter so a soft-deleted row can be
     // located (e.g. to undelete it by slug). Defaults to live-only.
     const deletedClause = input.includeDeleted === true ? '' : ' AND deleted_at IS NULL';
@@ -524,6 +674,15 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function updateDocument(input: UpdateDocumentInput): DocumentEnvelope {
+    const existing = getDocument({ id: input.id });
+    if (existing?.kind === AGENT_KIND) input = { ...input, spec: validateAgent(input.spec, input.id) };
+    if (existing?.kind === 'Topic' && input.slug !== undefined && input.slug !== existing.metadata.slug) {
+      guardMessageReferences(input.id);
+    }
+    if (existing?.kind === AGENT_MESSAGE_KIND) {
+      input = { ...input, spec: validateMessage(input.spec, input.id) };
+      if (input.status !== undefined && Object.keys(input.status).length) throw new Error('AgentMessage envelope status must be empty.');
+    }
     const now = nowSeconds();
     const specJson = JSON.stringify(input.spec);
     const hasStatus = input.status !== undefined;
@@ -548,6 +707,10 @@ export function openStore(dbFilePath: string): Store {
       // params. `changes === 0` means either a version mismatch or no live row.
       const setCols = ['spec = ?', 'updated_at = ?', 'resource_version = ?'];
       const params: unknown[] = [specJson, now, next];
+      if (existing?.kind === AGENT_KIND) {
+        setCols.push('agent_name_key = ?');
+        params.push(normalizeAgentName(String(input.spec.name)));
+      }
       if (hasSlug) {
         setCols.push('slug = ?');
         params.push(input.slug ?? null);
@@ -604,6 +767,15 @@ export function openStore(dbFilePath: string): Store {
     try {
       const updated: DocumentEnvelope[] = [];
       for (const input of inputs) {
+        const document = getDocument({ id: input.id });
+        if (document?.kind === AGENT_KIND) input.spec = validateAgent(input.spec, input.id);
+        if (document?.kind === 'Topic' && input.slug !== undefined && input.slug !== document.metadata.slug) {
+          guardMessageReferences(input.id);
+        }
+        if (document?.kind === AGENT_MESSAGE_KIND) {
+          input.spec = validateMessage(input.spec, input.id);
+          if (input.status !== undefined && Object.keys(input.status).length) throw new Error('AgentMessage envelope status must be empty.');
+        }
         const live = db
           .prepare('SELECT resource_version FROM resources WHERE id = ? AND deleted_at IS NULL')
           .get(input.id) as unknown as { resource_version: number } | undefined;
@@ -619,6 +791,10 @@ export function openStore(dbFilePath: string): Store {
         const next = counter?.value ?? 0;
         const setCols = ['spec = ?', 'updated_at = ?', 'resource_version = ?'];
         const params: unknown[] = [JSON.stringify(input.spec), now, next];
+        if (document?.kind === AGENT_KIND) {
+          setCols.push('agent_name_key = ?');
+          params.push(normalizeAgentName(String(input.spec.name)));
+        }
         if (input.slug !== undefined) {
           setCols.push('slug = ?');
           params.push(input.slug);
@@ -652,6 +828,10 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function deleteDocument(input: DeleteDocumentInput): DocumentEnvelope {
+    if (input.id === SYSTEM_IMPORT_AGENT_ID) throw new Error('The System Import agent cannot be deleted.');
+    const target = getDocument({ id: input.id });
+    if (target?.kind === AGENT_MESSAGE_KIND) validateMessage(target.spec, input.id);
+    guardMessageReferences(input.id);
     const now = nowSeconds();
     const hasExpected = input.expectedResourceVersion !== undefined;
 
@@ -718,6 +898,9 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function restoreDocument(input: RestoreDocumentInput): DocumentEnvelope {
+    const deleted = getDocument({ id: input.id, includeDeleted: true });
+    if (deleted?.kind === AGENT_KIND) validateAgent(deleted.spec, input.id);
+    if (deleted?.kind === AGENT_MESSAGE_KIND) validateMessage(deleted.spec, input.id, true);
     const now = nowSeconds();
 
     // BEGIN IMMEDIATE so the version bump + conditional restore are one atomic
@@ -736,10 +919,13 @@ export function openStore(dbFilePath: string): Store {
       const result = db
         .prepare(
           `UPDATE resources
-             SET deleted_at = NULL, updated_at = ?, resource_version = ?
+             SET deleted_at = NULL, updated_at = ?, resource_version = ?,
+                 agent_name_key = CASE WHEN kind = 'Agent' THEN ? ELSE agent_name_key END
            WHERE id = ? AND deleted_at IS NOT NULL`,
         )
-        .run(now, next, input.id);
+        .run(now, next,
+          deleted?.kind === AGENT_KIND ? normalizeAgentName(String(deleted.spec.name)) : null,
+          input.id);
 
       if (Number(result.changes) === 0) {
         // No soft-deleted row for this id: unknown id or it's already live.

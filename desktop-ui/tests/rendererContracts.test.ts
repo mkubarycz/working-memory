@@ -412,24 +412,28 @@ describe('desktop tree icon contract', () => {
     expect(topic).toContain('const save = onSaveTopic;');
   });
 
-  it('shows at most two current-scope messages and targets stable history elements', () => {
+  it('shows five recent current-scope rows or all expanded exchanges and targets stable history elements', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const recent = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/RecentMessages.svelte'), 'utf8');
+    const entry = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/MessageEntry.svelte'), 'utf8');
+    const timeline = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/MessageTimeline.svelte'), 'utf8');
     const focus = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/chatRunFocus.ts'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
-    const previewIndex = app.indexOf('<section class="scope-preview"');
+    const previewIndex = app.indexOf('<RecentMessages');
     const composerIndex = app.indexOf('<div class="composer-shell">');
     const chatRailIndex = app.indexOf('<aside class="chat-rail">');
 
-    expect(app).toContain('recentRunsForContext(chatRuns, currentChatContext)');
-    expect(app).toContain('aria-label="Recent messages"');
-    expect(app).toContain('<span>Recent messages</span>');
+    expect(recent).toContain('scopedMessageRows(runs, agentMessages, context, document)');
+    expect(recent).toContain('limit={expanded ? undefined : 5}');
+    expect(recent).toContain('aria-label="Recent messages"');
+    expect(recent).toContain('<span>Recent messages</span>');
     expect(app).toContain('scopePreviewExpanded = true;');
-    expect(app).toContain('scopedRecentRuns.at(-1) ?? null');
-    expect(app).toContain('aria-label="Latest response"');
-    expect(app).toContain('aria-label="Latest tool activity"');
-    expect(app).toContain("scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'");
-    expect(app).toContain('class="scope-preview-human"');
-    expect(app).toContain('{humanInitials(humanName)}');
+    expect(timeline).toContain('{#each visibleRows as row, index (row.key)}');
+    expect(recent).toContain('Expand for all messages and details');
+    expect(app).toContain('bind:expanded={scopePreviewExpanded}');
+    expect(recent).toContain('<MessageTimeline');
+    expect(entry).toContain('class="user-entry"');
+    expect(entry).toContain('humanInitials(humanName)');
     expect(app).not.toContain('<small>{run.assistantText ?? assistantFallback(run)}</small>');
     expect(app).not.toContain('Selected file:');
     expect(app).not.toContain('Current scope');
@@ -437,7 +441,7 @@ describe('desktop tree icon contract', () => {
     expect(previewIndex).toBeLessThan(composerIndex);
     expect(composerIndex).toBeLessThan(chatRailIndex);
     expect(app.slice(chatRailIndex)).not.toContain('class="scope-preview"');
-    expect(app).toContain('No messages for this scope.');
+    expect(recent).toContain('No messages for this scope.');
     expect(app).toContain("activateLog: () => activateHeaderTab('log')");
     expect(app).toContain('expandChatRail: () => (chatRailCollapsed = false)');
     expect(app).toContain('getTarget: () => document.getElementById(chatRunDomId(run))');
@@ -455,7 +459,7 @@ describe('desktop tree icon contract', () => {
     expect(app).toContain("target.classList.add('preview-attention');");
     expect(app).toContain("target.addEventListener('animationend', finish, { once: true });");
     expect(app).toContain("target?.classList.remove('preview-attention');");
-    expect(app).toContain('id={chatRunDomId(run)}');
+    expect(entry).toContain('id={attachRunIds && run ? chatRunDomId(run) : undefined}');
     expect(app).toContain('tabindex="-1"');
     expect(styles).toMatch(/\.chat-run\.preview-attention::after[^}]*z-index:\s*2[^}]*border:\s*2px solid var\(--desktop-accent-strong\)[^}]*animation:\s*chat-run-attention \.55s ease-in-out 2/s);
     expect(styles).toContain('@keyframes chat-run-attention');

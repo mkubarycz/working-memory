@@ -365,7 +365,7 @@ export function createMcpServer(
           .boolean()
           .optional()
           .describe(
-            'When true, a by-id/slug read also returns a soft-deleted document (used to locate a document for undelete). List mode is unaffected.',
+            'When true, reads and lists also return soft-deleted documents, including historical Alert aliases of canonical AgentMessages.',
           ),
         query: z
           .string()
@@ -377,9 +377,10 @@ export function createMcpServer(
           .positive()
           .optional()
           .describe('Max number of documents to return (list mode only).'),
+        offset: z.number().int().nonnegative().optional().describe('Number of matching documents to skip (list mode only). Restart paging after document changes.'),
       },
     },
-    async ({ id, slug, kind, includeDeleted, query, limit }) => {
+    async ({ id, slug, kind, includeDeleted, query, limit, offset = 0 }) => {
       // Single-document read: by id, or by slug (optionally kind-scoped). Return
       // a 0-or-1 element list so the shape matches the list case exactly.
       if (id !== undefined || slug !== undefined) {
@@ -388,7 +389,9 @@ export function createMcpServer(
         return asText({ count: documents.length, documents });
       }
       // List mode: non-deleted docs, newest-first, optional kind + query + limit.
-      let documents = store.listDocuments({ kind });
+      let documents = kind === 'Alert' || kind === 'AgentMessage'
+        ? store.listDocumentsByCreation({ kind, includeDeleted }).map(({ document }) => document)
+        : store.listDocuments({ kind, includeDeleted });
       if (query !== undefined && query.trim() !== '') {
         // Basic placeholder search: case-insensitive substring over the whole
         // envelope's JSON (covers slug, spec title/body, labels). Real FTS is a
@@ -396,9 +399,7 @@ export function createMcpServer(
         const needle = query.toLowerCase();
         documents = documents.filter((doc) => JSON.stringify(doc).toLowerCase().includes(needle));
       }
-      if (limit !== undefined) {
-        documents = documents.slice(0, limit);
-      }
+      documents = documents.slice(offset, limit === undefined ? undefined : offset + limit);
       return asText({ count: documents.length, documents });
     },
   );

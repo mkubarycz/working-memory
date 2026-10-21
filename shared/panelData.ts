@@ -10,13 +10,14 @@
  */
 
 import type {
-  Alert as ControlPlaneAlert,
+  AgentMessage as ControlPlaneAlert,
   DocumentEnvelope,
   ListDocumentsResult,
   Topic as ControlPlaneTopic,
   TopicType,
   Workstream,
 } from './controlPlaneClient';
+import { agentMessageBubbleForTopic, agentMessageBubbleForTopics } from './viewModels/agentMessageVms';
 
 /** The three Active-tab lifecycle sections a workstream can live in. */
 export type WorkstreamSection = 'queue' | 'progress' | 'backlog';
@@ -27,6 +28,7 @@ export type PanelTab =
   | 'topics'
   | 'topic-types'
   | 'alerts'
+  | 'agent-messages'
   | 'blackboard';
 
 export interface PanelAction {
@@ -47,6 +49,8 @@ export interface PanelAction {
 export interface PanelTopic {
   kind: 'topic';
   id: string;
+  /** Canonical Topic UUID; id above remains the stable UI row identity. */
+  documentId?: string;
   label: string;
   description: string;
   tooltip: string;
@@ -59,9 +63,9 @@ export interface PanelTopic {
   /** Whether this topic is focused/pinned in the parent workstream. */
   focused: boolean;
   /** Open-alert count for the bubble (A); 0 hides it. */
-  alertCount?: number;
+  agentMessageCount?: number;
   /** Max severity among open alerts: 'alert' reddish, 'informational' default. */
-  alertSeverity?: 'alert' | 'informational' | null;
+  agentMessageSeverity?: 'info' | 'warning' | 'error' | null;
   /** Nested child topics — only set when non-empty. */
   children?: PanelTopic[];
 }
@@ -90,9 +94,9 @@ export interface PanelWorkstream {
   /** Active-tab section this workstream currently lives in. */
   section?: WorkstreamSection;
   /** Open-alert count aggregated across the workstream's linked topics; 0 hides the bubble. */
-  alertCount?: number;
+  agentMessageCount?: number;
   /** Max severity among open alerts: 'alert' reddish, 'informational' default. */
-  alertSeverity?: 'alert' | 'informational' | null;
+  agentMessageSeverity?: 'info' | 'warning' | 'error' | null;
   actions: PanelAction[];
   /** Focused topics for this workstream, in membership order. */
   focused_topics: PanelTopic[];
@@ -127,8 +131,8 @@ export interface PanelTopicRow {
   status: 'open' | 'closed';
   recentEntryCount: number;
   actions?: PanelAction[];
-  alertCount?: number;
-  alertSeverity?: 'alert' | 'informational' | null;
+  agentMessageCount?: number;
+  agentMessageSeverity?: 'info' | 'warning' | 'error' | null;
   children?: PanelTopicRow[];
 }
 
@@ -154,7 +158,7 @@ export type PanelItem =
   | PanelWorkstreamSection
   | PanelTopicRow
   | PanelDocumentRow
-  | PanelAlert
+  | PanelAgentMessage
   | PanelTopicType;
 
 /** A Topic-Types-tab row: one control-plane topic type as a flat, clickable row. */
@@ -170,20 +174,26 @@ export interface PanelTopicType {
   openUri: string;
 }
 
-/** An Alerts-tab row: one control-plane alert rendered as a flat, clickable row. */
-export interface PanelAlert {
-  kind: 'alert';
+/** A canonical agent-message history row. */
+export interface PanelAgentMessage {
+  kind: 'agent-message';
   id: string;
   label: string;
   description: string;
-  /** Authored lifecycle status; drives the row's severity styling. */
-  status: 'alert' | 'informational' | 'closed';
+  /** Lifecycle and severity are independent. */
+  status: ControlPlaneAlert['status'];
+  category: ControlPlaneAlert['category'];
+  severity: ControlPlaneAlert['severity'];
+  attention: boolean;
   /** Codicon id. */
   icon: string;
   tooltip: string;
-  /** `working-memory:/alert/<id>.working-memory` unified-editor URI. */
+  /** Canonical internal document URI; historical alert routes remain readable. */
   openUri: string;
 }
+
+/** @deprecated Use PanelAgentMessage. */
+export type PanelAlert = PanelAgentMessage;
 
 export interface PanelData {
   tab: PanelTab;
@@ -294,7 +304,7 @@ function sectionMoveActions(ws: { slug: string; status: string }): PanelAction[]
 /** An open-alert bubble (count + max severity) sourced from control-plane alerts. */
 type ControlPlaneAlertBubble = {
   count: number;
-  severity: 'alert' | 'informational' | null;
+  severity: 'info' | 'warning' | 'error' | null;
 };
 
 /**
@@ -305,25 +315,9 @@ type ControlPlaneAlertBubble = {
 function controlPlaneTopicAlertBubble(
   alerts: ControlPlaneAlert[],
   topicSlug: string,
+  topicId?: string,
 ): ControlPlaneAlertBubble {
-  let count = 0;
-  let hasAlert = false;
-  let hasInformational = false;
-  for (const a of alerts) {
-    if (a.status === 'closed' || !a.topics.includes(topicSlug)) {
-      continue;
-    }
-    count += 1;
-    if (a.status === 'alert') {
-      hasAlert = true;
-    } else if (a.status === 'informational') {
-      hasInformational = true;
-    }
-  }
-  return {
-    count,
-    severity: hasAlert ? 'alert' : hasInformational ? 'informational' : null,
-  };
+  return agentMessageBubbleForTopic(alerts, topicSlug, topicId);
 }
 
 /**
@@ -334,31 +328,14 @@ function controlPlaneTopicAlertBubble(
 function controlPlaneWorkstreamAlertBubble(
   alerts: ControlPlaneAlert[],
   memberTopicSlugs: string[],
+  memberTopicIds: string[],
+  workstreamId: string,
 ): ControlPlaneAlertBubble {
-  const members = new Set(memberTopicSlugs);
-  const seen = new Set<string>();
-  let count = 0;
-  let hasAlert = false;
-  let hasInformational = false;
-  for (const a of alerts) {
-    if (a.status === 'closed' || seen.has(a.id)) {
-      continue;
-    }
-    if (!a.topics.some((t) => members.has(t))) {
-      continue;
-    }
-    seen.add(a.id);
-    count += 1;
-    if (a.status === 'alert') {
-      hasAlert = true;
-    } else if (a.status === 'informational') {
-      hasInformational = true;
-    }
-  }
-  return {
-    count,
-    severity: hasAlert ? 'alert' : hasInformational ? 'informational' : null,
-  };
+  return agentMessageBubbleForTopics(alerts, {
+    topicSlugs: memberTopicSlugs,
+    topicIds: memberTopicIds,
+    workstreamIds: [workstreamId],
+  });
 }
 
 /**
@@ -387,7 +364,7 @@ function buildControlPlaneTopicRow(
   alerts: ControlPlaneAlert[],
 ): PanelTopicRow {
   const slug = t.slug ?? '';
-  const bubble = controlPlaneTopicAlertBubble(alerts, slug);
+  const bubble = controlPlaneTopicAlertBubble(alerts, slug, t.id);
   return {
     kind: 'topic-row',
     id: `topics:topic:${parentSlug ?? 'root'}:${slug}`,
@@ -399,8 +376,8 @@ function buildControlPlaneTopicRow(
     status: t.status,
     recentEntryCount: 0,
     actions: topicActions(slug),
-    alertCount: bubble.count,
-    alertSeverity: bubble.severity,
+    agentMessageCount: bubble.count,
+    agentMessageSeverity: bubble.severity,
   };
 }
 
@@ -454,14 +431,14 @@ function attachControlPlaneChildren(
 export function buildTopicsPanel(input: {
   available: boolean;
   topics: ControlPlaneTopic[];
-  alerts?: ControlPlaneAlert[];
+  agentMessages?: ControlPlaneAlert[];
   topicTypes?: TopicType[];
   error?: string;
 }): PanelData {
   if (!input.available) {
     return { tab: 'topics', items: [], emptyMessage: 'Control plane not running.' };
   }
-  const alerts = input.alerts ?? [];
+  const alerts = input.agentMessages ?? [];
   const typeMap = input.topicTypes
     ? new Map(input.topicTypes.map((t) => [t.slug ?? t.id, t]))
     : EMPTY_TYPE_MAP;
@@ -517,10 +494,11 @@ function buildControlPlaneCardTopics(
     if (slug === '') {
       continue;
     }
-    const bubble = controlPlaneTopicAlertBubble(alerts, slug);
+    const bubble = controlPlaneTopicAlertBubble(alerts, slug, t.id);
     panelBySlug.set(slug, {
       kind: 'topic',
       id: `${tab}:topic:${wsId}:${slug}`,
+      documentId: t.id,
       label: t.title,
       description: describeControlPlaneTopic(t),
       tooltip: `${t.title} (${slug}) — ${t.status}`,
@@ -530,8 +508,8 @@ function buildControlPlaneCardTopics(
       focused: (t.focusedWorkstreams ?? []).includes(wsSlug),
       recentEntryCount: 0,
       actions: topicActions(slug, wsSlug),
-      alertCount: bubble.count,
-      alertSeverity: bubble.severity,
+      agentMessageCount: bubble.count,
+      agentMessageSeverity: bubble.severity,
     });
     orderedSlugs.push(slug);
   }
@@ -688,7 +666,7 @@ function buildDomainWorkstreamCard(
   const memberSlugs = members
     .map((t) => t.slug ?? '')
     .filter((s) => s !== '');
-  const wsBubble = controlPlaneWorkstreamAlertBubble(alerts, memberSlugs);
+  const wsBubble = controlPlaneWorkstreamAlertBubble(alerts, memberSlugs, members.map((topic) => topic.id), ws.id);
   return {
     kind: 'workstream',
     id: `${tab}:workstream:${ws.id}`,
@@ -699,8 +677,8 @@ function buildDomainWorkstreamCard(
     openUri: `working-memory:/workstream/${encodeURIComponent(ws.slug ?? ws.id)}.working-memory`,
     recentEntryCount: 0,
     ...(tab === 'active' ? { section: sectionForStatus(status) } : {}),
-    alertCount: wsBubble.count,
-    alertSeverity: wsBubble.severity,
+    agentMessageCount: wsBubble.count,
+    agentMessageSeverity: wsBubble.severity,
     actions,
     focused_topics: focusedTopics,
     children,
@@ -727,7 +705,7 @@ export function buildWorkstreamPanels(input: {
   available: boolean;
   workstreams: Workstream[];
   topics?: ControlPlaneTopic[];
-  alerts?: ControlPlaneAlert[];
+  agentMessages?: ControlPlaneAlert[];
   topicTypes?: TopicType[];
   error?: string;
 }): WorkstreamPanels {
@@ -737,7 +715,7 @@ export function buildWorkstreamPanels(input: {
       archive: { tab: 'archive', items: [], emptyMessage: 'Control plane not running.' },
     };
   }
-  const alerts = input.alerts ?? [];
+  const alerts = input.agentMessages ?? [];
   const typeMap = input.topicTypes
     ? new Map(input.topicTypes.map((t) => [t.slug ?? t.id, t]))
     : EMPTY_TYPE_MAP;
@@ -816,58 +794,60 @@ function buildDocumentRow(doc: DocumentEnvelope): PanelDocumentRow {
   };
 }
 
-/** Status ordering for the Alerts tab: active first, closed last. */
+/** History ordering: open, acknowledged, then resolved. */
 function alertStatusRank(status: ControlPlaneAlert['status']): number {
-  return status === 'alert' ? 0 : status === 'informational' ? 1 : 2;
+  return status === 'open' ? 0 : status === 'acknowledged' ? 1 : 2;
 }
 
-/** Build one Alerts-tab row from a control-plane alert. */
+/** Build one canonical agent-message row. */
 function buildAlertRow(alert: ControlPlaneAlert): PanelAlert {
   const icon =
-    alert.status === 'alert'
+    alert.status === 'open' && alert.attention
       ? 'bell'
-      : alert.status === 'informational'
+      : alert.status === 'open'
         ? 'info'
         : 'pass';
   const title =
     alert.title.trim() ||
     alert.description.split('\n')[0].trim() ||
-    `Alert ${alert.id.slice(0, 8)}`;
+    `Agent message ${alert.id.slice(0, 8)}`;
   const next = alert.recommended_action.trim();
   const tooltip =
     [alert.description.trim(), next ? `Next: ${next}` : '']
       .filter(Boolean)
       .join('\n') || title;
   return {
-    kind: 'alert',
-    id: `alert:${alert.id}`,
+    kind: 'agent-message',
+    id: `agent-message:${alert.id}`,
     label: title,
     description: '',
     status: alert.status,
+    category: alert.category,
+    severity: alert.severity,
+    attention: alert.attention,
     icon,
     tooltip,
-    openUri: `working-memory:/alert/${encodeURIComponent(alert.id)}.working-memory`,
+    openUri: `working-memory:/agent-message/${encodeURIComponent(alert.id)}.working-memory`,
   };
 }
 
 /**
- * Build the Alerts tab from the control-plane alert list. Rows are ordered
- * active-first (`alert` -> `informational` -> `closed`), then newest-first. The
+ * Build message history, ordered open → acknowledged → resolved, newest-first. The
  * empty state reflects the daemon's reachability.
  */
-export function buildAlertsPanel(input: {
+export function buildAgentMessagesPanel(input: {
   available: boolean;
-  alerts?: ControlPlaneAlert[];
+  agentMessages?: ControlPlaneAlert[];
   error?: string;
 }): PanelData {
   if (!input.available) {
     return {
-      tab: 'alerts',
+      tab: 'agent-messages',
       items: [],
       emptyMessage: input.error ?? 'Control plane not running.',
     };
   }
-  const alerts = (input.alerts ?? [])
+  const alerts = (input.agentMessages ?? [])
     .slice()
     .sort(
       (a, b) =>
@@ -875,9 +855,9 @@ export function buildAlertsPanel(input: {
         b.updated_at - a.updated_at,
     );
   return {
-    tab: 'alerts',
+    tab: 'agent-messages',
     items: alerts.map(buildAlertRow),
-    emptyMessage: 'No alerts.',
+    emptyMessage: 'No agent messages.',
   };
 }
 

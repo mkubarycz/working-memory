@@ -1,16 +1,20 @@
 import {
+  Prec,
   StateEffect,
   StateField,
   type EditorState,
+  type Extension,
   type Range,
 } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import {
   Decoration,
   EditorView,
+  ViewPlugin,
   WidgetType,
   type DecorationSet,
 } from '@codemirror/view';
+import { unescapeMarkdown } from './markdown';
 
 const HIDDEN_MARKS = new Set([
   'CodeMark',
@@ -79,6 +83,172 @@ export function parseListMarker(line: string): ListMarker | null {
   };
 }
 
+export interface MarkdownLink {
+  from: number;
+  to: number;
+  href: string;
+}
+
+type SyntaxNode = ReturnType<ReturnType<typeof syntaxTree>['resolveInner']>;
+
+const LINK_NODES = new Set(['Link', 'Autolink']);
+const LINK_TARGET_CLASS = 'cm-live-link-target';
+const OPENABLE_SCHEME = /^(?:https?|working-memory|vscode|wm-attachment):/i;
+
+function normalizeLinkLabel(label: string): string {
+  return label.replace(/^\[|\]$/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function linkDestination(raw: string): string {
+  const trimmed = raw.trim();
+  const unwrapped = trimmed.startsWith('<') && trimmed.endsWith('>') ? trimmed.slice(1, -1) : trimmed;
+  return unescapeMarkdown(unwrapped);
+}
+
+/** Only links the desktop app can route are opened on click; anything else stays editable. */
+export function isOpenableMarkdownHref(href: string): boolean {
+  return OPENABLE_SCHEME.test(href) || /^\/[^/]/.test(href);
+}
+
+export function markdownLinkDefinitions(state: EditorState): Map<string, string> {
+  const definitions = new Map<string, string>();
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (node.name !== 'LinkReference') return;
+      const label = node.node.getChild('LinkLabel');
+      const url = node.node.getChild('URL');
+      if (label && url) {
+        const key = normalizeLinkLabel(state.doc.sliceString(label.from, label.to));
+        if (key && !definitions.has(key)) {
+          definitions.set(key, linkDestination(state.doc.sliceString(url.from, url.to)));
+        }
+      }
+      return false;
+    },
+  });
+  return definitions;
+}
+
+function linkHref(
+  state: EditorState,
+  node: SyntaxNode,
+  definitions: () => Map<string, string>,
+): string | null {
+  const url = node.getChild('URL');
+  if (node.name === 'Autolink') {
+    const destination = url ? state.doc.sliceString(url.from, url.to) : '';
+    return /^[a-z][a-z0-9+.-]*:/i.test(destination) ? destination : null;
+  }
+  if (url) return linkDestination(state.doc.sliceString(url.from, url.to));
+  const marks = node.getChildren('LinkMark');
+  if (marks.length < 2) return null;
+  const text = state.doc.sliceString(marks[0].to, marks[1].from);
+  const label = node.getChild('LinkLabel');
+  const labelText = label ? state.doc.sliceString(label.from, label.to) : '';
+  const key = normalizeLinkLabel(labelText && labelText !== '[]' ? labelText : text);
+  return key ? definitions().get(key) ?? null : null;
+}
+
+function linkIsRendered(state: EditorState, activeLines: Set<number>, from: number, to: number): boolean {
+  return !activeLines.has(state.doc.lineAt(from).from) && !activeLines.has(state.doc.lineAt(to).from);
+}
+
+/**
+ * Returns the openable Markdown link (inline, reference, or autolink) at a
+ * document position when that link is rendered rather than expanded for
+ * editing. Links on the active editing line return null so clicks edit them.
+ */
+export function renderedMarkdownLinkAt(state: EditorState, pos: number): MarkdownLink | null {
+  const tree = syntaxTree(state);
+  const activeLines = activeLineStarts(state);
+  let definitions: Map<string, string> | null = null;
+  const lookup = () => (definitions ??= markdownLinkDefinitions(state));
+  for (const side of [1, -1] as const) {
+    for (let node: SyntaxNode | null = tree.resolveInner(pos, side); node; node = node.parent) {
+      if (!LINK_NODES.has(node.name)) continue;
+      if (!linkIsRendered(state, activeLines, node.from, node.to)) return null;
+      const href = linkHref(state, node, lookup);
+      return href && isOpenableMarkdownHref(href) ? { from: node.from, to: node.to, href } : null;
+    }
+  }
+  return null;
+}
+
+export interface LinkPointerEvent {
+  button: number;
+  detail: number;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  target: EventTarget | null;
+}
+
+export interface LinkPointerView {
+  state: EditorState;
+  posAtDOM(node: Node, offset?: number): number;
+}
+
+function isPlainPrimaryClick(event: LinkPointerEvent): boolean {
+  return event.button === 0
+    && !event.shiftKey
+    && !event.altKey
+    && !event.metaKey
+    && !event.ctrlKey;
+}
+
+function renderedLinkForEvent(view: LinkPointerView, event: LinkPointerEvent): MarkdownLink | null {
+  const target = event.target as Partial<Element> | null;
+  const element = typeof target?.closest === 'function'
+    ? target.closest(`.${LINK_TARGET_CLASS}`)
+    : null;
+  if (!element) return null;
+  return renderedMarkdownLinkAt(view.state, view.posAtDOM(element, 0));
+}
+
+/**
+ * Gives rendered Markdown links precedence over CodeMirror's pointer
+ * selection. An unmodified primary press on a rendered link is consumed at
+ * mousedown (so the editor neither moves the cursor, focuses, nor expands the
+ * line), its mouseup is consumed (so live-preview activation does not run),
+ * and the matching single click opens the link exactly once. Modified clicks,
+ * other buttons, and links on the expanded editing line keep editor defaults.
+ */
+export class MarkdownLinkClickController {
+  private pending: MarkdownLink | null = null;
+
+  constructor(private readonly openLink: (href: string) => void) {}
+
+  mousedown(view: LinkPointerView, event: LinkPointerEvent): boolean {
+    this.pending = isPlainPrimaryClick(event) ? renderedLinkForEvent(view, event) : null;
+    return this.pending !== null;
+  }
+
+  mouseup(): boolean {
+    return this.pending !== null;
+  }
+
+  click(view: LinkPointerView, event: LinkPointerEvent): boolean {
+    const pending = this.pending;
+    this.pending = null;
+    if (!pending) return false;
+    if (event.detail > 1 || !isPlainPrimaryClick(event)) return true;
+    const link = renderedLinkForEvent(view, event);
+    if (link && link.from === pending.from && link.href === pending.href) this.openLink(link.href);
+    return true;
+  }
+}
+
+export function markdownLinkClicks(openLink: (href: string) => void): Extension {
+  return Prec.high(ViewPlugin.define(() => new MarkdownLinkClickController(openLink), {
+    eventHandlers: {
+      mousedown(event, view) { return this.mousedown(view, event); },
+      mouseup() { return this.mouseup(); },
+      click(event, view) { return this.click(view, event); },
+    },
+  }));
+}
+
 class ListMarkerWidget extends WidgetType {
   constructor(private readonly marker: ListMarker) {
     super();
@@ -104,10 +274,14 @@ class ListMarkerWidget extends WidgetType {
   }
 }
 
+const linkTargetDecoration = Decoration.mark({ class: `cm-live-link ${LINK_TARGET_CLASS}` });
+
 function buildDecorations(state: EditorState): DecorationSet {
   const decorations: Range<Decoration>[] = [];
   const activeLines = activeLineStarts(state);
   const decoratedHeadingLines = new Set<number>();
+  let definitions: Map<string, string> | null = null;
+  const lookupDefinitions = () => (definitions ??= markdownLinkDefinitions(state));
 
   for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
     const line = state.doc.line(lineNumber);
@@ -142,6 +316,22 @@ function buildDecorations(state: EditorState): DecorationSet {
         decorations.push(Decoration.line({ class: headingClass }).range(line.from));
         decoratedHeadingLines.add(line.from);
       }
+      if (LINK_NODES.has(node.name) && linkIsRendered(state, activeLines, node.from, node.to)) {
+        if (node.name === 'Link') {
+          const [opening, closing] = node.node.getChildren('LinkMark');
+          if (opening && closing) {
+            decorations.push(
+              Decoration.replace({ atomic: true }).range(node.from, opening.to),
+              Decoration.replace({ atomic: true }).range(closing.from, node.to),
+            );
+          }
+        }
+        const href = linkHref(state, node.node, lookupDefinitions);
+        if (href && isOpenableMarkdownHref(href)) {
+          decorations.push(linkTargetDecoration.range(node.from, node.to));
+        }
+      }
+      if (node.name === 'LinkMark' && node.node.parent?.name === 'Link') return;
       if (HIDDEN_MARKS.has(node.name) && !activeLines.has(line.from)) {
         let hiddenTo = node.to;
         if (node.name === 'HeaderMark') {
@@ -207,6 +397,9 @@ export const liveMarkdownTheme = EditorView.baseTheme({
     color: 'var(--vscode-textLink-foreground)',
     textDecoration: 'underline',
     textUnderlineOffset: '2px',
+  },
+  '.cm-live-link-target': {
+    cursor: 'pointer',
   },
   '.cm-live-monospace': {
     borderRadius: '3px',

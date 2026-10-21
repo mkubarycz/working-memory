@@ -12,6 +12,7 @@ const tools = [
   { name: 'ws-workstream-read', description: 'Read workstreams', inputSchema: { type: 'object', properties: {} } },
   { name: 'ws-topic-create', description: 'Create topic', inputSchema: { type: 'object', required: ['title'] } },
   { name: 'ws-topictype-read' },
+  { name: 'ws-agent-message-update' },
   { name: 'ws-alert-update' },
   { name: 'ws-config-read' },
   { name: 'wm-document-read' },
@@ -23,7 +24,7 @@ describe('desktop model tools', () => {
       'ws-workstream-read',
       'ws-topic-create',
       'ws-topictype-read',
-      'ws-alert-update',
+      'ws-agent-message-update',
     ]);
     expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('ws-config-read');
   });
