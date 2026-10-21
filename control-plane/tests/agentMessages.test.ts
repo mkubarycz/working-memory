@@ -56,6 +56,24 @@ describe('canonical AgentMessage store', () => {
     }
     expect(store.listDocuments({ kind: 'AgentMessage' })).toHaveLength(0);
   });
+  it('rejects slugs on generic canonical and Alert creates and metadata updates', () => {
+    const store = memory();
+    expect(() => store.createDocument({ kind: 'AgentMessage', slug: 'message-slug', spec: message() }))
+      .toThrow(/cannot have a slug/);
+    expect(() => store.createDocument({ kind: 'Alert', slug: 'alert-slug', spec: { description: 'Review' } }))
+      .toThrow(/cannot have a slug/);
+
+    const doc = create(store);
+    expect(() => store.updateDocument({
+      id: doc.metadata.id, expectedResourceVersion: doc.metadata.resourceVersion,
+      spec: doc.spec, slug: 'message-slug',
+    })).toThrow(/cannot have a slug/);
+    expect(() => store.updateDocuments([{
+      id: doc.metadata.id, expectedResourceVersion: doc.metadata.resourceVersion,
+      spec: doc.spec, slug: 'message-slug',
+    }])).toThrow(/cannot have a slug/);
+    expect(store.getDocument({ id: doc.metadata.id })).toEqual(doc);
+  });
   it('deduplicates active retries, frees recurrence keys on resolve/delete and never revives historical records', () => {
     const store = memory();
     const spec = message({ dedupe_key: 'human-review' });

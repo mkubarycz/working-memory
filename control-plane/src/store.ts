@@ -373,7 +373,17 @@ export function openStore(dbFilePath: string): Store {
     return parsed;
   }
 
-  function validateMessage(spec: Record<string, unknown>, excludeId?: string, allowLegacySource = false): Record<string, unknown> {
+  function validateMessageSlug(slug?: string | null): void {
+    if (slug !== undefined && slug !== null) throw new Error('AgentMessage documents cannot have a slug.');
+  }
+
+  function validateMessage(
+    spec: Record<string, unknown>,
+    excludeId?: string,
+    allowLegacySource = false,
+    slug?: string | null,
+  ): Record<string, unknown> {
+    validateMessageSlug(slug);
     const parsed = agentMessageSpec.parse(spec);
     const previous = excludeId ? getDocument({ id: excludeId, includeDeleted: true }) : null;
     const agent = getDocument({ id: parsed.agent_id });
@@ -494,6 +504,7 @@ export function openStore(dbFilePath: string): Store {
 
   function createDocument(input: CreateDocumentInput): DocumentEnvelope {
     const legacyInput = input.kind === 'Alert';
+    if (legacyInput) validateMessageSlug(input.slug);
     if (legacyInput) {
       const source = input.spec ?? {};
       if (source.agent_id === undefined) {
@@ -511,7 +522,7 @@ export function openStore(dbFilePath: string): Store {
     if (input.kind === AGENT_KIND) input = { ...input, spec: validateAgent(input.spec ?? {}) };
     if (input.kind === AGENT_MESSAGE_KIND) {
       if (input.status !== undefined && Object.keys(input.status).length) throw new Error('AgentMessage envelope status must be empty.');
-      input = { ...input, spec: validateMessage(input.spec ?? {}, undefined, legacyInput) };
+      input = { ...input, spec: validateMessage(input.spec ?? {}, undefined, legacyInput, input.slug) };
       if (input.spec!.dedupe_key !== undefined && input.spec!.status !== 'resolved') {
         const row = db.prepare(`SELECT * FROM resources WHERE kind = 'AgentMessage'
           AND deleted_at IS NULL AND json_extract(spec, '$.status') != 'resolved'
@@ -676,7 +687,15 @@ export function openStore(dbFilePath: string): Store {
       guardMessageReferences(input.id);
     }
     if (existing?.kind === AGENT_MESSAGE_KIND) {
-      input = { ...input, spec: validateMessage(input.spec, input.id) };
+      input = {
+        ...input,
+        spec: validateMessage(
+          input.spec,
+          input.id,
+          false,
+          input.slug !== undefined ? input.slug : existing.metadata.slug,
+        ),
+      };
       if (input.status !== undefined && Object.keys(input.status).length) throw new Error('AgentMessage envelope status must be empty.');
     }
     const now = nowSeconds();
@@ -765,7 +784,12 @@ export function openStore(dbFilePath: string): Store {
           guardMessageReferences(input.id);
         }
         if (document?.kind === AGENT_MESSAGE_KIND) {
-          input.spec = validateMessage(input.spec, input.id);
+          input.spec = validateMessage(
+            input.spec,
+            input.id,
+            false,
+            input.slug !== undefined ? input.slug : document.metadata.slug,
+          );
           if (input.status !== undefined && Object.keys(input.status).length) throw new Error('AgentMessage envelope status must be empty.');
         }
         const live = db
