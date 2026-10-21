@@ -260,7 +260,7 @@ describe('versioned automatic Alert migration', () => {
     try {
       const next = create(upgraded, message({ dedupe_key: 'upgrade' }));
       expect(next.metadata.id).not.toBe('old-0');
-      expect(upgraded.db.prepare("SELECT version FROM resource_migrations WHERE name = 'agent-messages'").get()).toMatchObject({ version: 4 });
+      expect(upgraded.db.prepare("SELECT version FROM resource_migrations WHERE name = 'agent-messages'").get()).toMatchObject({ version: 5 });
     } finally { upgraded.close(); }
   });
   it('rejects unsupported future migration versions without changing legacy rows or the marker', () => {

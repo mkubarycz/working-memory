@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { Base, type KindModule } from '../base.js';
 import { asError, asText } from '../toolResult.js';
-import { AGENT_KIND, agentSpec } from './spec.js';
+import { AGENT_KIND, agentSpec, normalizeAgentName } from './spec.js';
 
 const guidance = 'Register a named caller for AgentMessages. First use ws-agent-read with your exact name; ' +
   'if absent, use ws-agent-create. Remember the returned metadata.id and reuse it as agent_id on every message. ' +
@@ -27,8 +27,10 @@ const agent: KindModule = {
       const document = id ? store.getDocument({ id, includeDeleted }) : null;
       let agents = id ? (document?.kind === AGENT_KIND ? [document] : [])
         : store.listDocuments({ kind: AGENT_KIND, includeDeleted });
-      if (name !== undefined) agents = agents.filter((item) =>
-        String(item.spec.name).toLowerCase() === name.toLowerCase());
+      if (name !== undefined) {
+        const nameKey = normalizeAgentName(name);
+        agents = agents.filter((item) => normalizeAgentName(String(item.spec.name)) === nameKey);
+      }
       return asText({ count: agents.length, agents });
     });
     server.registerTool('ws-agent-update', {

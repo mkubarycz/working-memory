@@ -86,6 +86,57 @@ describe('registered Agent senders', () => {
     expect(() => store.createDocument({ kind: 'AgentMessage', spec: { ...body, agent_id: topic.metadata.id } })).toThrow(/registered Agent/);
   });
 
+  it('uses Unicode-aware name normalization for lookup and every uniqueness check', async () => {
+    const store = memory();
+    const first = store.createDocument({ kind: 'Agent', spec: { name: 'Équipe' } });
+    expect(() => store.db.prepare(`INSERT INTO resources
+      (id, kind, slug, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
+      VALUES (?, 'Agent', NULL, '{}', ?, '{}', ?, 1, 1, NULL, 1)`)
+      .run('00000000-0000-4000-8000-000000000099',
+        JSON.stringify({ name: 'équipe', description: '' }), 'équipe'))
+      .toThrow(/UNIQUE constraint failed/);
+    expect(() => store.createDocument({ kind: 'Agent', spec: { name: 'équipe' } })).toThrow(/already registered/);
+
+    const other = store.createDocument({ kind: 'Agent', spec: { name: 'Other Agent' } });
+    expect(() => store.updateDocument({
+      id: other.metadata.id, expectedResourceVersion: other.metadata.resourceVersion, spec: { name: 'équipe' },
+    })).toThrow(/already registered/);
+
+    store.deleteDocument({ id: first.metadata.id });
+    const replacement = store.createDocument({ kind: 'Agent', spec: { name: 'équipe' } });
+    expect(() => store.restoreDocument({ id: first.metadata.id })).toThrow(/already registered/);
+
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      expect(await client.agentRead({ name: 'ÉQUIPE' })).toEqual([
+        expect.objectContaining({ id: replacement.metadata.id, name: 'équipe' }),
+      ]);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
+  it('reports legacy Unicode name collisions during the normalization migration', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'wm-agent-name-collision-'));
+    directories.push(directory);
+    const file = join(directory, 'store.db');
+    const store = openStore(file);
+    stores.push(store);
+    store.createDocument({ kind: 'Agent', spec: { name: 'Équipe' } });
+    store.db.exec('DROP INDEX idx_agent_name');
+    store.db.prepare(`INSERT INTO resources
+      (id, kind, slug, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
+      VALUES (?, 'Agent', NULL, '{}', ?, '{}', 1, 1, NULL, 1)`)
+      .run('00000000-0000-4000-8000-000000000099', JSON.stringify({ name: 'équipe', description: '' }));
+    store.db.exec(`CREATE UNIQUE INDEX idx_agent_name
+      ON resources(lower(trim(json_extract(spec, '$.name'))))
+      WHERE kind = 'Agent' AND deleted_at IS NULL;
+      UPDATE resource_migrations SET version = 4 WHERE name = 'agent-messages'`);
+    store.close();
+    stores.splice(stores.indexOf(store), 1);
+
+    expect(() => openStore(file)).toThrow(/collide after Unicode case normalization/);
+  });
+
   it('migrates v3 live and deleted messages to one System Import agent without altering authored content or timestamps', () => {
     const directory = mkdtempSync(join(tmpdir(), 'wm-registered-agents-'));
     directories.push(directory);

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { agentMessageSpec, legacyToMessage } from './kinds/agentmessage/spec.js';
-import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID } from './kinds/agent/spec.js';
+import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, normalizeAgentName } from './kinds/agent/spec.js';
 
 export function ensureSystemImportAgent(db: DatabaseSync): boolean {
   const existing = db.prepare('SELECT kind, spec, deleted_at FROM resources WHERE id = ?')
@@ -14,11 +14,12 @@ export function ensureSystemImportAgent(db: DatabaseSync): boolean {
   db.prepare("UPDATE store_meta SET value = value + 1 WHERE key = 'resource_version'").run();
   const version = (db.prepare("SELECT value FROM store_meta WHERE key = 'resource_version'").get() as { value: number }).value;
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(`INSERT INTO resources (id, kind, slug, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
-    VALUES (?, 'Agent', NULL, '{}', ?, '{}', ?, ?, NULL, ?)`)
+  db.prepare(`INSERT INTO resources
+    (id, kind, slug, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
+    VALUES (?, 'Agent', NULL, '{}', ?, '{}', ?, ?, ?, NULL, ?)`)
     .run(SYSTEM_IMPORT_AGENT_ID, JSON.stringify({
       name: 'System Import', description: 'Imported historical messages and deprecated Alert compatibility callers.',
-    }), now, now, version);
+    }), normalizeAgentName('System Import'), now, now, version);
   return true;
 }
 
@@ -30,10 +31,13 @@ export function migrateAgentMessages(db: DatabaseSync): void {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec('CREATE TABLE IF NOT EXISTS resource_migrations (name TEXT PRIMARY KEY, version INTEGER NOT NULL)');
+    const resourceColumns = db.prepare('PRAGMA table_info(resources)').all() as Array<{ name: string }>;
+    const addedAgentNameKey = !resourceColumns.some((column) => column.name === 'agent_name_key');
+    if (addedAgentNameKey) db.exec('ALTER TABLE resources ADD COLUMN agent_name_key TEXT');
     const done = db.prepare("SELECT version FROM resource_migrations WHERE name = 'agent-messages'").get() as { version: number } | undefined;
     if (done) {
-      if (![1, 2, 3, 4].includes(done.version)) throw new Error(`Unsupported agent-messages migration version: ${done.version}`);
-      if (done.version === 4) {
+      if (![1, 2, 3, 4, 5].includes(done.version)) throw new Error(`Unsupported agent-messages migration version: ${done.version}`);
+      if (done.version === 5 && !addedAgentNameKey) {
         db.exec('COMMIT');
         return;
       }
@@ -106,10 +110,31 @@ export function migrateAgentMessages(db: DatabaseSync): void {
       WHERE kind = 'AgentMessage' AND deleted_at IS NULL
         AND json_extract(spec, '$.status') != 'resolved'
         AND json_extract(spec, '$.dedupe_key') IS NOT NULL`);
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_name
-      ON resources(lower(trim(json_extract(spec, '$.name'))))
+    const agents = db.prepare("SELECT id, spec FROM resources WHERE kind = 'Agent'").all() as Array<{ id: string; spec: string }>;
+    const updateAgentNameKey = db.prepare('UPDATE resources SET agent_name_key = ? WHERE id = ?');
+    for (const agent of agents) {
+      const spec = JSON.parse(agent.spec) as { name?: unknown };
+      updateAgentNameKey.run(typeof spec.name === 'string' ? normalizeAgentName(spec.name) : null, agent.id);
+    }
+    const duplicateAgentName = db.prepare(`SELECT agent_name_key AS name_key
+      FROM resources
+      WHERE kind = 'Agent' AND deleted_at IS NULL AND agent_name_key IS NOT NULL
+      GROUP BY agent_name_key
+      HAVING COUNT(*) > 1
+      LIMIT 1`).get() as { name_key: string } | undefined;
+    if (duplicateAgentName) {
+      const colliding = db.prepare(`SELECT id, json_extract(spec, '$.name') AS name
+        FROM resources WHERE kind = 'Agent' AND deleted_at IS NULL
+          AND agent_name_key = ?
+        LIMIT 2`).all(duplicateAgentName.name_key) as Array<{ id: string; name: string }>;
+      throw new Error(`Agent names collide after Unicode case normalization: ${colliding.map((agent) =>
+        `"${agent.name}" (${agent.id})`).join(' and ')}. Rename one before reopening the store.`);
+    }
+    db.exec(`DROP INDEX IF EXISTS idx_agent_name;
+      CREATE UNIQUE INDEX idx_agent_name
+      ON resources(agent_name_key)
       WHERE kind = 'Agent' AND deleted_at IS NULL`);
-    db.prepare(`INSERT INTO resource_migrations (name, version) VALUES ('agent-messages', 4)
+    db.prepare(`INSERT INTO resource_migrations (name, version) VALUES ('agent-messages', 5)
       ON CONFLICT(name) DO UPDATE SET version = excluded.version`).run();
     db.exec('COMMIT');
   } catch (error) {
