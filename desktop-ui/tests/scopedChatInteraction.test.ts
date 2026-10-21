@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { collapseChatOnInteraction } from '../src/renderer/scopedChat';
 
 const source = readFileSync(resolve(import.meta.dirname, '../src/renderer/App.svelte'), 'utf8');
+const recentMessages = readFileSync(resolve(import.meta.dirname, '../src/renderer/RecentMessages.svelte'), 'utf8');
 const ast = parse(source);
 
 // Exercise the callbacks actually wired in App, without requiring Electron or a live control plane.
@@ -33,8 +34,9 @@ function interactionRegions() {
 describe('detailed chat outside interaction wiring', () => {
   it('limits interaction regions to the document stage and Active rail, excluding both chats and composer', () => {
     expect(interactionRegions().map((region) => region.className)).toEqual(['active-rail', 'stage-content']);
-    expect(source).toContain('onclick={() => (scopePreviewExpanded = !scopePreviewExpanded)}');
-    expect(source).toContain('class="scope-preview" class:expanded={scopePreviewExpanded}');
+    expect(source).toContain('bind:expanded={scopePreviewExpanded}');
+    expect(recentMessages).toContain('onclick={() => (expanded = !expanded)}');
+    expect(recentMessages).toContain('class="scope-preview" class:expanded');
   });
 
   it.each(['pointerdown', 'keydown'])('collapses only details on %s and leaves the destination interaction intact', (type) => {

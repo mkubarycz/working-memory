@@ -39,7 +39,7 @@ it('orders real persisted message seconds correctly after HTTP parsing and share
     const envelope = (await client.getDocument({ id: created.id })).document!;
     const view = toGenericDocumentViewModel(envelope);
     expect(view.kind).toBe('AgentMessage');
-    const state = openDocumentTab({ tabs: [], selectedKey: null }, view);
+    const state = openDocumentTab({ tabs: [], selectedKey: null }, view, false);
     const persistedTabs = parseDocumentTabs(serializeDocumentTabs(state))!;
     expect(persistedTabs.tabs).toEqual([{ kind: 'agent-message', identifier: created.id }]);
     expect(persistedTabs.selectedKey).toBe(`agent-message:${created.id}`);
