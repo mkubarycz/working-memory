@@ -34,9 +34,9 @@ import {
 import { openStore, type Store, ConflictError, NotFoundError } from './store.js';
 import { createDocumentChangeFeed } from './documentChangeFeed.js';
 import { HostTaskBroker, HOST_TASK_CLEANUP_INTERVAL_MS, type HostTaskOptions } from './hostTasks.js';
+import { topicSpecWithDefaults, validateTopicReferences } from './kinds/topic/references.js';
 import {
   getKind,
-  validateMetadata,
   validateSpec,
   defaultStatus,
   listKinds,
@@ -107,20 +107,15 @@ export function createMcpServer(
       title: 'Working Memory: Create Document',
       description:
         'Create a new document (resource) in the Working Memory store. Provide a `kind`, ' +
-        'an optional `slug`, optional `labels`, and an optional `spec` object holding the ' +
+        'optional `labels`, and an optional `spec` object holding the ' +
         "document body/fields. The `kind` MUST be a registered kind (see `wm-list-kinds`); " +
         'unknown kinds are rejected. The `spec` MUST match the kind\'s schema exactly — ' +
         'required fields must be present and unknown fields are rejected (e.g. "Topic" ' +
-        'requires a `title`, ≤120 chars; Topic and Workstream also require unique slugs using lowercase words ' +
-        'separated with dashes, with 3-5 short, precise words as the best practice for Topic). The parsed spec ' +
+        'requires a `title`, ≤120 chars). Resources are identified only by their immutable object IDs. The parsed spec ' +
         '(defaults applied) is what gets ' +
         'persisted. Returns the created document envelope.',
-      inputSchema: {
+      inputSchema: z.object({
         kind: z.string().describe('The document kind. Must be registered (see wm-list-kinds), e.g. "Topic".'),
-        slug: z
-          .string()
-          .optional()
-          .describe('Optional for kinds that permit omission. Topic and Workstream require a unique lowercase dash-separated slug; Topic best practice is 3-5 short, precise words.'),
         labels: z
           .record(z.string(), z.string())
           .optional()
@@ -129,9 +124,9 @@ export function createMcpServer(
           .record(z.string(), z.unknown())
           .optional()
           .describe("Optional desired-state object; must match the kind's spec schema (unknown fields rejected)."),
-      },
+      }).strict(),
     },
-    async ({ kind, slug, labels, spec }) => {
+    async ({ kind, labels, spec }) => {
       // The kind MUST be registered — no freeform escape hatch. Rejection lives
       // here (tool/registry layer); the store stays kind-agnostic.
       if (!getKind(kind)) {
@@ -146,13 +141,13 @@ export function createMcpServer(
         // validateSpec parses (defaults applied, unknown fields rejected via
         // the kind's strict spec). We persist the PARSED value, never the raw
         // input, so a stored document always conforms to its kind.
-        validateMetadata(kind, { slug, store });
-        validatedSpec = validateSpec(kind, spec);
+        validatedSpec = validateSpec(kind, kind === 'Topic' ? topicSpecWithDefaults(store, spec ?? {}) : spec);
+        if (kind === 'Topic') validateTopicReferences(store, validatedSpec);
         status = defaultStatus(kind);
       } catch (err) {
         return asError((err as Error).message);
       }
-      return asText(store.createDocument({ kind, slug, labels, spec: validatedSpec, status }));
+      return asText(store.createDocument({ kind, labels, spec: validatedSpec, status }));
     },
   );
 
@@ -163,17 +158,17 @@ export function createMcpServer(
       description:
         'Patch an existing document (a versioned compare-and-swap write). You MUST pass ' +
         '`expectedResourceVersion` — the `resourceVersion` you just read via `wm-document-read`. ' +
-        'Provide at least one of `spec`, `slug`, or `labels`. `spec` is a PARTIAL: the fields you ' +
+        'Provide at least one of `spec` or `labels`. `spec` is a PARTIAL: the fields you ' +
         'pass are shallow-merged onto the current spec, then the MERGED spec is validated against ' +
         "the document's kind schema (unknown fields rejected); the parsed merged spec is what gets " +
-        'persisted. `slug` and `labels` are replace-if-provided — passing `labels` replaces the ' +
+        'persisted. `labels` are replace-if-provided — passing `labels` replaces the ' +
         'whole labels object; omitting a field leaves it unchanged. To clear/reset a field send it ' +
         'explicitly (e.g. `spec: { parents: [] }`). If the document changed since you read it ' +
         '(version mismatch), the update is rejected as a conflict and the current version is ' +
         'returned — re-fetch with `wm-document-read`, re-apply, and retry. The controller-owned ' +
         'envelope `status` is not editable here. Returns the updated document envelope (with a ' +
         'bumped `updatedAt` and `resourceVersion`).',
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().describe('The id (uuid) of the document to update.'),
         expectedResourceVersion: z
           .number()
@@ -186,17 +181,16 @@ export function createMcpServer(
             'Partial spec fields to merge onto the current spec; the merged spec must match the ' +
               "kind's schema (unknown fields rejected). Send a field explicitly to clear it (e.g. parents: []).",
           ),
-        slug: z.string().optional().describe('Optional new slug (replaces if provided).'),
         labels: z
           .record(z.string(), z.string())
           .optional()
           .describe('Optional new labels; replaces the whole labels object if provided.'),
-      },
+      }).strict(),
     },
-    async ({ id, expectedResourceVersion, spec, slug, labels }) => {
+    async ({ id, expectedResourceVersion, spec, labels }) => {
       // Require at least one editable field so a no-op patch is an explicit error.
-      if (spec === undefined && slug === undefined && labels === undefined) {
-        return asError('Nothing to update: provide at least one of `spec`, `slug`, or `labels`.');
+      if (spec === undefined && labels === undefined) {
+        return asError('Nothing to update: provide at least one of `spec` or `labels`.');
       }
       // Fetch the live doc first: we need its kind + current spec to merge and
       // validate, and to give a clear "unknown id" error before any write work.
@@ -212,8 +206,6 @@ export function createMcpServer(
             'cannot be validated. Register the kind (see wm-list-kinds) first.',
         );
       }
-      // slug / labels are replace-if-provided: fall back to current when omitted.
-      const newSlug = slug ?? existing.metadata.slug;
       const newLabels = labels ?? existing.metadata.labels;
       let validatedSpec: Record<string, unknown>;
       try {
@@ -221,8 +213,8 @@ export function createMcpServer(
         // the MERGED spec (strict → an unknown field in the patch is rejected).
         // Persist the PARSED merged spec. On validation failure nothing is written.
         const mergedSpec = { ...existing.spec, ...(spec ?? {}) };
-        validateMetadata(existing.kind, { slug: newSlug, store, excludeId: id });
         validatedSpec = validateSpec(existing.kind, mergedSpec);
+        if (existing.kind === 'Topic') validateTopicReferences(store, validatedSpec);
       } catch (err) {
         return asError((err as Error).message);
       }
@@ -232,7 +224,6 @@ export function createMcpServer(
             id,
             expectedResourceVersion,
             spec: validatedSpec,
-            slug: newSlug,
             labels: newLabels,
           }),
         );
@@ -263,8 +254,6 @@ export function createMcpServer(
         'lowercase `topic` docs). After deletion the document drops out of `wm-document-read` ' +
         '(both list and single-read modes). To **undelete** a previously soft-deleted document, call this ' +
         'same tool with `restore: true` (clears `deleted_at`, bumps its version). ' +
-        'Restoring a Workstream or ContainerClaim is rejected if another live document of the ' +
-        'same kind already owns its slug. ' +
         '`expectedResourceVersion` is OPTIONAL and only applies to deletes: when provided it ' +
         'acts as a compare-and-swap guard (the delete is rejected as a conflict if the document ' +
         'changed since you read it); when omitted the current live row is deleted ' +
@@ -285,22 +274,8 @@ export function createMcpServer(
     },
     async ({ id, restore, expectedResourceVersion }) => {
       // No spec validation here, so unregistered-kind documents remain manageable.
-      // Kinds with durable slug identity enforce that invariant on restore.
       try {
         if (restore === true) {
-          const deleted = store.getDocument({ id, includeDeleted: true });
-          if (
-            deleted &&
-            (deleted.kind === 'Workstream' || deleted.kind === 'ContainerClaim') &&
-            deleted.metadata.slug
-          ) {
-            const live = store.getDocument({ kind: deleted.kind, slug: deleted.metadata.slug });
-            if (live && live.metadata.id !== id) {
-              return asError(
-                `Cannot restore ${deleted.kind} ${id}: slug "${deleted.metadata.slug}" is already in use.`,
-              );
-            }
-          }
           return asText(store.restoreDocument({ id }));
         }
         return asText(store.deleteDocument({ id, expectedResourceVersion }));
@@ -348,20 +323,16 @@ export function createMcpServer(
     {
       title: 'Working Memory: Read Documents',
       description:
-        'Read one document or many. Read ONE by passing `id`, or by `slug` (optionally scoped by ' +
+        'Read one document or many. Read ONE by passing `id` (optionally scoped by ' +
         '`kind`). Otherwise LIST non-deleted documents newest-first: `kind` filters by kind, and ' +
         '`query` does a BASIC case-insensitive substring match over each document\'s text ' +
-        '(slug + spec JSON, i.e. title/body/etc.); `limit` caps how many are returned. This ' +
+        '(ID, labels and spec JSON, i.e. title/body/etc.); `limit` caps how many are returned. This ' +
         '`query` is a simple placeholder text filter, NOT full-text or agentic search. ALWAYS ' +
-        'returns { count, documents } \u2014 a by-id/slug read yields a 0-or-1 element list, so ' +
+        'returns { count, documents } \u2014 a by-id read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().optional().describe('Read a single document by id (uuid).'),
-        slug: z
-          .string()
-          .optional()
-          .describe('Read a single document by slug (optionally scoped by kind).'),
-        kind: z.string().optional().describe('Kind filter for a slug lookup or a list, e.g. "Topic".'),
+        kind: z.string().optional().describe('Kind filter for an ID lookup or a list, e.g. "Topic".'),
         includeDeleted: z
           .boolean()
           .optional()
@@ -379,13 +350,13 @@ export function createMcpServer(
           .optional()
           .describe('Max number of documents to return (list mode only).'),
         offset: z.number().int().nonnegative().optional().describe('Number of matching documents to skip (list mode only). Restart paging after document changes.'),
-      },
+      }).strict(),
     },
-    async ({ id, slug, kind, includeDeleted, query, limit, offset = 0 }) => {
-      // Single-document read: by id, or by slug (optionally kind-scoped). Return
+    async ({ id, kind, includeDeleted, query, limit, offset = 0 }) => {
+      // Single-document read by ID (optionally kind-scoped). Return
       // a 0-or-1 element list so the shape matches the list case exactly.
-      if (id !== undefined || slug !== undefined) {
-        const doc = store.getDocument({ id, slug, kind, includeDeleted });
+      if (id !== undefined) {
+        const doc = store.getDocument({ id, kind, includeDeleted });
         const documents = doc ? [doc] : [];
         return asText({ count: documents.length, documents });
       }
@@ -395,7 +366,7 @@ export function createMcpServer(
         : store.listDocuments({ kind, includeDeleted });
       if (query !== undefined && query.trim() !== '') {
         // Basic placeholder search: case-insensitive substring over the whole
-        // envelope's JSON (covers slug, spec title/body, labels). Real FTS is a
+        // envelope's JSON (covers ID, spec title/body, labels). Real FTS is a
         // separate story and deliberately not built here.
         const needle = query.toLowerCase();
         documents = documents.filter((doc) => JSON.stringify(doc).toLowerCase().includes(needle));

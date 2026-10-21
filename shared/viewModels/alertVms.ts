@@ -39,8 +39,8 @@ function alertStatusRank(status: string): number {
  * Shape the scoped, ordered alert callouts for a workstream / topic view. Pure
  * (no client, no VS Code APIs) so it is unit-tested directly.
  *
- * Scope: an alert is relevant when its `topics` intersect `scopeSlugs` (a single
- * topic slug for the topic view; the member-topic slugs for the workstream
+ * Scope: an alert is relevant when its `topics` intersect `scopeIds` (a single
+ * topic id for the topic view; the member-topic ids for the workstream
  * view). A CLOSED alert is kept only when it was updated within
  * {@link RECENT_CLOSED_ALERT_MS} of `now` (surfaced dimmed, still reopenable);
  * older closed alerts drop out. Ordered active → informational → recent-closed,
@@ -48,10 +48,10 @@ function alertStatusRank(status: string): number {
  */
 export function buildAlertVMs(
   alerts: Alert[],
-  scopeSlugs: readonly string[],
+  scopeIds: readonly string[],
   now: number,
 ): AlertVM[] {
-  const scope = new Set(scopeSlugs);
+  const scope = new Set(scopeIds);
   return alerts
     .filter((a) => a.topics.some((t) => scope.has(t)))
     .filter(
@@ -78,17 +78,17 @@ export interface AlertBubble {
 }
 
 /**
- * Open-alert bubble for a single topic slug: counts the OPEN alerts
- * (`status !== 'closed'`) whose `topics` include `slug`; severity is the max
+ * Open-alert bubble for a single topic id: counts the OPEN alerts
+ * (`status !== 'closed'`) whose `topics` include `id`; severity is the max
  * (`alert` > `informational`, else null). Same semantics as the rail's per-topic
  * badge, reused for the workstream tree + family-tree alert counts.
  */
-export function alertBubbleForTopic(alerts: Alert[], slug: string): AlertBubble {
+export function alertBubbleForTopic(alerts: Alert[], id: string): AlertBubble {
   let count = 0;
   let hasAlert = false;
   let hasInfo = false;
   for (const a of alerts) {
-    if (a.status === 'closed' || !a.topics.includes(slug)) {
+    if (a.status === 'closed' || !a.topics.includes(id)) {
       continue;
     }
     count += 1;

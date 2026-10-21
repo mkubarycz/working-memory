@@ -15,9 +15,7 @@ import { TOPIC_TYPE_KIND } from './topictype.js';
 
 /**
  * Register the `ws-topictype-delete` tool on an MCP session's server.
- * Soft-deletes a TopicType by slug, or — with `restore: true` — undeletes a
- * previously soft-deleted one. Unknown/already-deleted slug (or an already-live
- * slug on restore) is rejected.
+ * Soft-deletes a TopicType by ID, or restores a previously deleted one.
  */
 export function registerWsTopicTypeDelete(server: McpServer, store: Store): void {
   server.registerTool(
@@ -25,30 +23,30 @@ export function registerWsTopicTypeDelete(server: McpServer, store: Store): void
     {
       title: 'TopicType: Delete',
       description:
-        'Soft-delete a TopicType by `slug` (it drops out of ws-topictype-read). To undelete, call ' +
-        'with `restore: true`. Unknown/already-deleted slug (or an already-live slug on restore) ' +
-        'is rejected. Returns { ok, slug }.',
-      inputSchema: {
-        slug: z.string().describe('Slug of the topic type to delete (or restore).'),
+        'Soft-delete a TopicType by `id` (it drops out of ws-topictype-read). To undelete, call ' +
+        'with `restore: true`. Unknown/already-deleted IDs (or already-live IDs on restore) ' +
+        'are rejected. Returns { ok, id }.',
+      inputSchema: z.object({
+        id: z.string().min(1).describe('ID of the topic type to delete (or restore).'),
         restore: z
           .boolean()
           .optional()
           .describe('When true, undelete a previously soft-deleted topic type instead of deleting.'),
-      },
+      }).strict(),
     },
-    async ({ slug, restore }) => {
+    async ({ id, restore }) => {
       // For restore, the target row is soft-deleted, so it must be located with
       // includeDeleted; for a normal delete we want the live row only.
       const doc = store.getDocument({
-        slug,
+        id,
         kind: TOPIC_TYPE_KIND,
         includeDeleted: restore === true,
       });
       if (!doc || doc.kind !== TOPIC_TYPE_KIND) {
         return asError(
           restore === true
-            ? `No soft-deleted topic type with slug "${slug}" to restore.`
-            : `Unknown topic type slug: "${slug}". No live topic type with that slug.`,
+            ? `No soft-deleted topic type with ID "${id}" to restore.`
+            : `Unknown topic type ID: "${id}". No live topic type with that ID.`,
         );
       }
       try {
@@ -57,13 +55,13 @@ export function registerWsTopicTypeDelete(server: McpServer, store: Store): void
         } else {
           store.deleteDocument({ id: doc.metadata.id });
         }
-        return asText({ ok: true, slug });
+        return asText({ ok: true, id });
       } catch (err) {
         if (err instanceof NotFoundError) {
           return asError(
             restore === true
-              ? `No soft-deleted topic type with slug "${slug}" to restore.`
-              : `Unknown or already-deleted topic type slug: "${slug}".`,
+              ? `No soft-deleted topic type with ID "${id}" to restore.`
+              : `Unknown or already-deleted topic type ID: "${id}".`,
           );
         }
         throw err;

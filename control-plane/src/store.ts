@@ -23,10 +23,10 @@ import { ensureSystemImportAgent, migrateAgentMessages } from './agentMessageMig
 import { agentMessageSpec, persistedAgentMessageSpec, legacyToMessage, AGENT_MESSAGE_KIND } from './kinds/agentmessage/spec.js';
 import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec, normalizeAgentName } from './kinds/agent/spec.js';
 import { ensureHostTaskSchema } from './hostTasks.js';
+import { migrateResourceIds } from './resourceIdMigration.js';
 export interface DocumentChange {
   id: string;
   kind: string;
-  slug: string | null;
   resourceVersion: number;
   deleted: boolean;
 }
@@ -36,7 +36,6 @@ export interface DocumentEnvelope {
   kind: string;
   metadata: {
     id: string;
-    slug: string | null;
     labels: Record<string, string>;
     createdAt: number;
     updatedAt: number;
@@ -49,7 +48,6 @@ export interface DocumentEnvelope {
 
 export interface CreateDocumentInput {
   kind: string;
-  slug?: string | null;
   labels?: Record<string, string>;
   spec?: Record<string, unknown>;
   /** Optional initial status (controller-owned). Defaults to `{}`. */
@@ -69,12 +67,9 @@ export interface CreationOrderedDocument {
 
 export interface GetDocumentInput {
   id?: string;
-  slug?: string;
   kind?: string;
   /**
-   * When true, a by-id / by-slug read also matches a soft-deleted row. Used to
-   * locate a document by slug in order to undelete it (restore is by id, but
-   * the caller only knows the slug). Defaults to false (live rows only).
+   * When true, a by-id read also matches a soft-deleted row.
    */
   includeDeleted?: boolean;
 }
@@ -90,11 +85,6 @@ export interface UpdateDocumentInput {
    * always writes the full spec it's handed.
    */
   spec: Record<string, unknown>;
-  /**
-   * Optional new slug (replace-if-provided). When omitted the `slug` column is
-   * left unchanged; when provided (including `null`) it overwrites.
-   */
-  slug?: string | null;
   /**
    * Optional new labels (replace-if-provided). When omitted the `labels` column
    * is left unchanged; when provided it replaces the whole labels object.
@@ -198,13 +188,13 @@ export interface Store {
   listDocuments(input?: ListDocumentsInput): DocumentEnvelope[];
   /** List live documents by immutable creation time and insertion sequence, newest first. */
   listDocumentsByCreation(input?: ListDocumentsInput): CreationOrderedDocument[];
-  /** Fetch one document by id, or by slug (optionally scoped by kind). Live rows
+  /** Fetch one document by id (optionally scoped by kind). Live rows
    * only unless `includeDeleted` is set (used to locate a doc for undelete). */
   getDocument(input: GetDocumentInput): DocumentEnvelope | null;
   /**
-   * Compare-and-swap update of a document's spec (and optionally slug, labels,
+   * Compare-and-swap update of a document's spec (and optionally labels,
    * status). Bumps the global `resource_version` and conditionally writes only
-   * when the row's current version matches `expectedResourceVersion`. `slug` and
+   * when the row's current version matches `expectedResourceVersion`.
    * `labels` are replace-if-provided (omitted → column unchanged). Throws
    * `ConflictError` on a version mismatch and `NotFoundError` when no live row
    * exists.
@@ -219,7 +209,6 @@ export interface Store {
 interface ResourceRow {
   id: string;
   kind: string;
-  slug: string | null;
   labels: string;
   spec: string;
   status: string;
@@ -266,7 +255,6 @@ function ensureSchema(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS resources (
       id               TEXT PRIMARY KEY,
       kind             TEXT NOT NULL,
-      slug             TEXT,
       labels           TEXT NOT NULL DEFAULT '{}',
       spec             TEXT NOT NULL DEFAULT '{}',
       status           TEXT NOT NULL DEFAULT '{}',
@@ -317,7 +305,6 @@ function rowToEnvelope(row: ResourceRow): DocumentEnvelope {
     kind: row.kind,
     metadata: {
       id: row.id,
-      slug: row.slug ?? null,
       labels: parseObject(row.labels) as Record<string, string>,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -357,6 +344,7 @@ export function openStore(dbFilePath: string): Store {
   ensureSchema(db);
   try {
     migrateAgentMessages(db);
+    migrateResourceIds(db);
     ensureHostTaskSchema(db);
   }
   catch (error) { db.close(); throw error; }
@@ -392,7 +380,7 @@ export function openStore(dbFilePath: string): Store {
       throw new Error('AgentMessage agent_name is server-owned and immutable; provide only your registered agent_id.');
     }
     parsed.agent_name = String(senderName);
-    // Only migrated rows grandfather old topic slugs, not newly created adapter records.
+    // Historical messages may retain references to deleted topics.
     const historical = !!source && source.row !== null && typeof source.row === 'object' && !Array.isArray(source.row);
     if (parsed.status !== 'open' && parsed.attention) {
       throw new Error('Only open AgentMessages may require attention.');
@@ -414,10 +402,10 @@ export function openStore(dbFilePath: string): Store {
         new Set(parsed.relations.map((ref) => `${ref.kind}:${ref.id}`)).size !== parsed.relations.length) {
       throw new Error('Duplicate AgentMessage topic or object relation.');
     }
-    for (const slug of parsed.topics) {
-      const target = db.prepare("SELECT id FROM resources WHERE kind = 'Topic' AND slug = ? AND deleted_at IS NULL").all(slug);
-      const preservedHistoricalReference = historical && (previous!.spec.topics as string[]).includes(slug);
-      if (target.length !== 1 && !preservedHistoricalReference) throw new Error(`AgentMessage topic relation "${slug}" must identify one live Topic.`);
+    for (const id of parsed.topics) {
+      const target = getDocument({ id, kind: 'Topic' });
+      const preservedHistoricalReference = historical && (previous!.spec.topics as string[]).includes(id);
+      if (!target && !preservedHistoricalReference) throw new Error(`AgentMessage topic relation "${id}" must identify one live Topic.`);
     }
     for (const ref of parsed.relations) {
       const target = getDocument({ id: ref.id });
@@ -448,7 +436,7 @@ export function openStore(dbFilePath: string): Store {
     if (!target) return;
     for (const doc of listDocuments({ kind: AGENT_MESSAGE_KIND, includeDeleted: target.kind === AGENT_KIND })) {
       if (doc.spec.agent_id === id || (doc.spec.relations as Array<{ id: string }>).some((ref) => ref.id === id) ||
-          (target.kind === 'Topic' && (doc.spec.topics as string[]).includes(target.metadata.slug ?? ''))) {
+          (target.kind === 'Topic' && (doc.spec.topics as string[]).includes(id))) {
         throw new Error(`Cannot delete document ${id}: referenced by AgentMessage ${doc.metadata.id}. Unlink it first.`);
       }
     }
@@ -460,7 +448,6 @@ export function openStore(dbFilePath: string): Store {
     const changes = documents.map(({ kind, metadata }): DocumentChange => ({
       id: metadata.id,
       kind,
-      slug: metadata.slug,
       resourceVersion: metadata.resourceVersion,
       deleted: metadata.deletedAt !== null,
     }));
@@ -538,7 +525,7 @@ export function openStore(dbFilePath: string): Store {
             const { decided_at: _time, ...decision } = value.decision as Record<string, unknown>;
             return { ...value, decision };
           };
-          if (stable(authored(previousSpec)) !== stable(authored(requestedSpec)) || (input.slug ?? null) !== previous.metadata.slug ||
+          if (stable(authored(previousSpec)) !== stable(authored(requestedSpec)) ||
               stable(input.labels ?? {}) !== stable(previous.metadata.labels)) {
             throw new Error(`AgentMessage dedupe_key "${input.spec!.dedupe_key}" conflicts with existing message ${row.id}.`);
           }
@@ -548,7 +535,6 @@ export function openStore(dbFilePath: string): Store {
     }
     const now = nowSeconds();
     const id = randomUUID();
-    const slug = input.slug ?? null;
     const labels = input.labels ?? {};
     const spec = input.spec ?? {};
     const status = input.status ?? {};
@@ -571,9 +557,9 @@ export function openStore(dbFilePath: string): Store {
 
       db.prepare(
         `INSERT INTO resources
-           (id, kind, slug, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-      ).run(id, input.kind, slug, labelsJson, specJson, statusJson,
+           (id, kind, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      ).run(id, input.kind, labelsJson, specJson, statusJson,
         input.kind === AGENT_KIND ? normalizeAgentName(String(spec.name)) : null, now, now, resourceVersion);
 
       db.exec('COMMIT');
@@ -586,7 +572,6 @@ export function openStore(dbFilePath: string): Store {
       kind: input.kind,
       metadata: {
         id,
-        slug,
         labels: labels as Record<string, string>,
         createdAt: now,
         updatedAt: now,
@@ -652,27 +637,12 @@ export function openStore(dbFilePath: string): Store {
   function getDocument(input: GetDocumentInput): DocumentEnvelope | null {
     input = { ...input, kind: canonicalKind(input.kind) };
     // `includeDeleted` drops the live-only filter so a soft-deleted row can be
-    // located (e.g. to undelete it by slug). Defaults to live-only.
+    // located for restoration. Defaults to live-only.
     const deletedClause = input.includeDeleted === true ? '' : ' AND deleted_at IS NULL';
     let row: ResourceRow | undefined;
     if (input.id) {
-      row = db
-        .prepare(`SELECT * FROM resources WHERE id = ?${deletedClause}`)
-        .get(input.id) as unknown as ResourceRow | undefined;
-    } else if (input.slug !== undefined) {
-      row = (
-        input.kind
-          ? db
-              .prepare(
-                `SELECT * FROM resources WHERE slug = ? AND kind = ?${deletedClause} ORDER BY updated_at DESC LIMIT 1`,
-              )
-              .get(input.slug, input.kind)
-          : db
-              .prepare(
-                `SELECT * FROM resources WHERE slug = ?${deletedClause} ORDER BY updated_at DESC LIMIT 1`,
-              )
-              .get(input.slug)
-      ) as unknown as ResourceRow | undefined;
+      row = db.prepare(`SELECT * FROM resources WHERE id = ?${deletedClause}${input.kind ? ' AND kind = ?' : ''}`)
+        .get(...(input.kind ? [input.id, input.kind] : [input.id])) as ResourceRow | undefined;
     }
     return row ? rowToEnvelope(row) : null;
   }
@@ -680,9 +650,6 @@ export function openStore(dbFilePath: string): Store {
   function updateDocument(input: UpdateDocumentInput): DocumentEnvelope {
     const existing = getDocument({ id: input.id });
     if (existing?.kind === AGENT_KIND) input = { ...input, spec: validateAgent(input.spec, input.id) };
-    if (existing?.kind === 'Topic' && input.slug !== undefined && input.slug !== existing.metadata.slug) {
-      guardMessageReferences(input.id);
-    }
     if (existing?.kind === AGENT_MESSAGE_KIND) {
       input = { ...input, spec: validateMessage(input.spec, input.id) };
       if (input.status !== undefined && Object.keys(input.status).length) throw new Error('AgentMessage envelope status must be empty.');
@@ -690,7 +657,6 @@ export function openStore(dbFilePath: string): Store {
     const now = nowSeconds();
     const specJson = JSON.stringify(input.spec);
     const hasStatus = input.status !== undefined;
-    const hasSlug = input.slug !== undefined;
     const hasLabels = input.labels !== undefined;
 
     // BEGIN IMMEDIATE so the version bump + conditional update are one atomic
@@ -706,7 +672,7 @@ export function openStore(dbFilePath: string): Store {
       const next = counter?.value ?? 0;
 
       // Build the SET clause from the always-written columns plus any optional
-      // replace-if-provided columns (slug / labels / status). Params are pushed
+      // replace-if-provided columns (labels / status). Params are pushed
       // in the same order as the `?` placeholders, followed by the CAS WHERE
       // params. `changes === 0` means either a version mismatch or no live row.
       const setCols = ['spec = ?', 'updated_at = ?', 'resource_version = ?'];
@@ -714,10 +680,6 @@ export function openStore(dbFilePath: string): Store {
       if (existing?.kind === AGENT_KIND) {
         setCols.push('agent_name_key = ?');
         params.push(normalizeAgentName(String(input.spec.name)));
-      }
-      if (hasSlug) {
-        setCols.push('slug = ?');
-        params.push(input.slug ?? null);
       }
       if (hasLabels) {
         setCols.push('labels = ?');
@@ -773,9 +735,6 @@ export function openStore(dbFilePath: string): Store {
       for (const input of inputs) {
         const document = getDocument({ id: input.id });
         if (document?.kind === AGENT_KIND) input.spec = validateAgent(input.spec, input.id);
-        if (document?.kind === 'Topic' && input.slug !== undefined && input.slug !== document.metadata.slug) {
-          guardMessageReferences(input.id);
-        }
         if (document?.kind === AGENT_MESSAGE_KIND) {
           input.spec = validateMessage(input.spec, input.id);
           if (input.status !== undefined && Object.keys(input.status).length) throw new Error('AgentMessage envelope status must be empty.');
@@ -798,10 +757,6 @@ export function openStore(dbFilePath: string): Store {
         if (document?.kind === AGENT_KIND) {
           setCols.push('agent_name_key = ?');
           params.push(normalizeAgentName(String(input.spec.name)));
-        }
-        if (input.slug !== undefined) {
-          setCols.push('slug = ?');
-          params.push(input.slug);
         }
         if (input.labels !== undefined) {
           setCols.push('labels = ?');

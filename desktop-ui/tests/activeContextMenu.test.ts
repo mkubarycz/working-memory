@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   activeContextMenuItems,
   invokeActiveAction,
-  topicSlugFromOpenUri,
+  topicIdFromOpenUri,
 } from '../src/renderer/activeContextMenu';
 import type { WorkstreamVM } from '../src/renderer/documents/types';
 
@@ -42,8 +42,8 @@ describe('Active rail context-menu projection', () => {
       focused: false,
       sourceWorkstream: 'source',
       moveTargets: [
-        { slug: 'source', title: 'Source' },
-        { slug: 'target', title: 'Target' },
+        { id: 'source', title: 'Source' },
+        { id: 'target', title: 'Target' },
       ],
     })).toEqual([
       { kind: 'create-child', title: 'Add Child...', icon: 'add', enabled: true, topic: 'topic-one' },
@@ -54,7 +54,7 @@ describe('Active rail context-menu projection', () => {
         icon: 'arrow-swap',
         enabled: true,
         topic: 'topic-one',
-        targets: [{ slug: 'target', title: 'Target' }],
+        targets: [{ id: 'target', title: 'Target' }],
       },
     ]);
     expect(activeContextMenuItems([], {
@@ -73,7 +73,7 @@ describe('Active rail context-menu projection', () => {
       topic: 'topic-one',
       focused: false,
       sourceWorkstream: 'source',
-      moveTargets: [{ slug: 'source', title: 'Source' }],
+      moveTargets: [{ id: 'source', title: 'Source' }],
     })[2]).toMatchObject({
       kind: 'move',
       enabled: true,
@@ -91,9 +91,9 @@ describe('Active rail context-menu projection', () => {
     }
   });
 
-  it('extracts and decodes the topic slug from a panel URI', () => {
-    expect(topicSlugFromOpenUri('working-memory:/topic/design%20notes.working-memory')).toBe('design notes');
-    expect(topicSlugFromOpenUri('not a uri')).toBe('');
+  it('extracts and decodes the topic id from a panel URI', () => {
+    expect(topicIdFromOpenUri('working-memory:/topic/design%20notes.working-memory')).toBe('design notes');
+    expect(topicIdFromOpenUri('not a uri')).toBe('');
   });
 
   it('omits the redundant Add to workstream action while retaining move and removal', () => {
@@ -110,12 +110,12 @@ describe('Active rail context-menu projection', () => {
     const action = reactiveProxy({
       command: 'working-memory.setWorkstreamSection',
       title: 'Send to In Progress',
-      args: [{ slug: 'queued-item', section: 'progress' }],
+      args: [{ id: 'queued-item', section: 'progress' }],
     });
     const returned: WorkstreamVM = {
       kind: 'workstream',
       title: 'Queued item',
-      slug: 'queued-item',
+      id: 'queued-item',
       status: 'progress',
       createdAt: 0,
       updatedAt: 1,
@@ -144,7 +144,7 @@ describe('Active rail context-menu projection', () => {
       args: [
         'queued-item',
         'working-memory.setWorkstreamSection',
-        [{ slug: 'queued-item', section: 'progress' }],
+        [{ id: 'queued-item', section: 'progress' }],
       ],
     });
     expect(() => structuredClone(invocation)).not.toThrow();

@@ -34,7 +34,7 @@ export async function persistWorkstreamReorder(
   updates: DesktopWorkstreamReorderUpdate[],
 ): Promise<void> {
   for (const update of updates) {
-    if (!update.slug.trim() || !Number.isFinite(update.position) ||
+    if (!update.id.trim() || !Number.isFinite(update.position) ||
       !['queue', 'progress', 'backlog'].includes(update.section)) {
       throw new Error('Invalid workstream reorder request.');
     }
@@ -42,7 +42,7 @@ export async function persistWorkstreamReorder(
   if (updates.length === 0) return;
   await client.wsReorder({
     updates: updates.map((update) => ({
-      slug: update.slug,
+      id: update.id,
       status: update.section,
       position: update.position,
     })),
@@ -76,7 +76,7 @@ export function chooseWorkstream(query: string, candidates: Workstream[]): Works
   const needle = query.trim().toLowerCase();
   if (!needle) return null;
   const exact = candidates.find(
-    (item) => item.slug?.toLowerCase() === needle || item.title.toLowerCase() === needle,
+    (item) => item.id?.toLowerCase() === needle || item.title.toLowerCase() === needle,
   );
   if (exact) return exact;
   const tokens = needle
@@ -84,7 +84,7 @@ export function chooseWorkstream(query: string, candidates: Workstream[]): Works
     .filter((token) => token && token !== 'the' && token !== 'workstream');
   const ranked = candidates
     .map((item, index) => {
-      const haystack = `${item.slug ?? ''} ${item.title}`.toLowerCase();
+      const haystack = `${item.id ?? ''} ${item.title}`.toLowerCase();
       const score = tokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
       return { item, index, score };
     })
@@ -94,8 +94,6 @@ export function chooseWorkstream(query: string, candidates: Workstream[]): Works
 }
 
 async function readTopic(client: ControlPlaneClient, identifier: string): Promise<Topic | null> {
-  const bySlug = await client.topicRead({ slug: identifier });
-  if (bySlug[0]) return bySlug[0];
   const byId = await client.topicRead({ id: identifier });
   return byId[0] ?? null;
 }
@@ -113,26 +111,26 @@ export async function loadTopicViewModel(
     client.agentMessageRead(),
     client.topicTypeRead().catch(() => []),
   ]);
-  const topicTitles = new Map(allTopics.flatMap((item) => item.slug ? [[item.slug, item.title]] : []));
-  const workstreamTitles = new Map(workstreams.flatMap((item) => item.slug ? [[item.slug, item.title]] : []));
-  const relation = (slug: string, titles: Map<string, string>): RelationVM => {
-    const workstream = workstreams.find((item) => item.slug === slug);
-    const members = allTopics.filter((item) => item.workstreams.includes(slug));
+  const topicTitles = new Map(allTopics.flatMap((item) => item.id ? [[item.id, item.title]] : []));
+  const workstreamTitles = new Map(workstreams.flatMap((item) => item.id ? [[item.id, item.title]] : []));
+  const relation = (id: string, titles: Map<string, string>): RelationVM => {
+    const workstream = workstreams.find((item) => item.id === id);
+    const members = allTopics.filter((item) => item.workstreams.includes(id));
     const bubble = agentMessageBubbleForTopics(agentMessages, {
-      topicSlugs: members.flatMap((item) => item.slug ? [item.slug] : []),
+
       topicIds: members.map((item) => item.id),
       workstreamIds: workstream ? [workstream.id] : [],
     });
-    return { slug, title: titles.get(slug) ?? slug, agentMessageCount: bubble.count, agentMessageSeverity: bubble.severity };
+    return { id, title: titles.get(id) ?? id, agentMessageCount: bubble.count, agentMessageSeverity: bubble.severity };
   };
-  const topicRelation = (slug: string, title: string): RelationVM => {
-    const relatedTopic = allTopics.find((item) => item.slug === slug);
-    const bubble = agentMessageBubbleForTopic(agentMessages, slug, relatedTopic?.id);
-    return { slug, title, agentMessageCount: bubble.count, agentMessageSeverity: bubble.severity };
+  const topicRelation = (id: string, title: string): RelationVM => {
+    const relatedTopic = allTopics.find((item) => item.id === id);
+    const bubble = agentMessageBubbleForTopic(agentMessages, id);
+    return { id, title, agentMessageCount: bubble.count, agentMessageSeverity: bubble.severity };
   };
-  const type = topicTypes.find((item) => item.slug === topic.topicType || item.id === topic.topicType);
+  const type = topicTypes.find((item) => item.id === topic.topicType || item.id === topic.topicType);
   const topicTypeOptions = topicTypes.map((item) => ({
-    slug: item.slug,
+    id: item.id,
     label: item.label,
     icon: item.icon,
     description: item.description,
@@ -141,25 +139,25 @@ export async function loadTopicViewModel(
     kind: 'topic',
     id: topic.id,
     title: topic.title,
-    slug: topic.slug,
+
     status: topic.status,
     topicType: topic.topicType,
-    typeMeta: type ? { slug: type.slug, label: type.label, icon: type.icon, description: type.description } : null,
+    typeMeta: type ? { id: type.id, label: type.label, icon: type.icon, description: type.description } : null,
     topicTypes: topicTypeOptions,
     body: topic.body,
     createdAt: topic.created_at,
     updatedAt: topic.updated_at,
     resourceVersion: topic.resourceVersion,
-    editable: Boolean(topic.slug),
-    parents: topic.parents.map((slug) => topicRelation(slug, topicTitles.get(slug) ?? slug)),
-    children: topic.slug
-      ? allTopics.filter((item) => item.slug && item.parents.includes(topic.slug!))
-          .map((item) => topicRelation(item.slug!, item.title)).sort((a, b) => a.title.localeCompare(b.title))
+    editable: Boolean(topic.id),
+    parents: topic.parents.map((id) => topicRelation(id, topicTitles.get(id) ?? id)),
+    children: topic.id
+      ? allTopics.filter((item) => item.id && item.parents.includes(topic.id!))
+          .map((item) => topicRelation(item.id!, item.title)).sort((a, b) => a.title.localeCompare(b.title))
       : [],
-    workstreams: topic.workstreams.map((slug) => relation(slug, workstreamTitles)),
-    focusedWorkstreams: topic.focusedWorkstreams.map((slug) => relation(slug, workstreamTitles)),
+    workstreams: topic.workstreams.map((id) => relation(id, workstreamTitles)),
+    focusedWorkstreams: topic.focusedWorkstreams.map((id) => relation(id, workstreamTitles)),
     agentMessages: buildAgentMessageVMs(agentMessages, {
-      topicSlugs: topic.slug ? [topic.slug] : [],
+
       topicIds: [topic.id],
     }, now),
   };
@@ -172,11 +170,11 @@ function displayValue(value: unknown): string {
 }
 
 export function toGenericDocumentViewModel(document: DocumentEnvelope): GenericDocVM {
-  const titleValue = document.spec.title ?? document.spec.name ?? document.metadata.slug ?? document.kind;
+  const titleValue = document.spec.title ?? document.spec.name ?? document.metadata.id ?? document.kind;
   return {
     kind: document.kind,
     id: document.metadata.id,
-    slug: document.metadata.slug,
+
     title: displayValue(titleValue),
     createdAt: document.metadata.createdAt,
     updatedAt: document.metadata.updatedAt,
@@ -186,9 +184,9 @@ export function toGenericDocumentViewModel(document: DocumentEnvelope): GenericD
 }
 
 export type DesktopAction =
-  | { kind: 'topic'; operation: 'attach' | 'detach'; slug: string; workstream: string }
-  | { kind: 'topic'; operation: 'transfer'; slug: string; sourceWorkstream: string; targetWorkstream: string; move: boolean }
-  | { kind: 'workstream'; operation: 'move'; slug: string; section: WorkstreamSection };
+  | { kind: 'topic'; operation: 'attach' | 'detach'; id: string; workstream: string }
+  | { kind: 'topic'; operation: 'transfer'; id: string; sourceWorkstream: string; targetWorkstream: string; move: boolean }
+  | { kind: 'workstream'; operation: 'move'; id: string; section: WorkstreamSection };
 
 export function resolveDesktopAction(
   command: string,
@@ -200,28 +198,28 @@ export function resolveDesktopAction(
     if (!value || typeof value !== 'object') {
       throw new Error('This action is missing its workstream details.');
     }
-    const slug = 'slug' in value && typeof value.slug === 'string' ? value.slug : '';
+    const id = 'id' in value && typeof value.id === 'string' ? value.id : '';
     const section = 'section' in value &&
       (value.section === 'queue' || value.section === 'progress' || value.section === 'backlog')
       ? value.section
       : null;
-    if (slug && section) return { kind: 'workstream', operation: 'move', slug, section };
+    if (id && section) return { kind: 'workstream', operation: 'move', id, section };
   }
-  const topicSlug = value && typeof value === 'object' && 'topicSlug' in value && typeof value.topicSlug === 'string'
-    ? value.topicSlug : '';
-  if (topicSlug && command === 'workingMemory.topic.addToWorkstream') {
-    return { kind: 'topic', operation: 'attach', slug: topicSlug, workstream };
+  const topicId = value && typeof value === 'object' && 'topicId' in value && typeof value.topicId === 'string'
+    ? value.topicId : '';
+  if (topicId && command === 'workingMemory.topic.addToWorkstream') {
+    return { kind: 'topic', operation: 'attach', id: topicId, workstream };
   }
-  if (topicSlug && command === 'workingMemory.topic.removeFromWorkstream') {
-    return { kind: 'topic', operation: 'detach', slug: topicSlug, workstream };
+  if (topicId && command === 'workingMemory.topic.removeFromWorkstream') {
+    return { kind: 'topic', operation: 'detach', id: topicId, workstream };
   }
-  if (topicSlug && command === 'workingMemory.topic.transfer') {
+  if (topicId && command === 'workingMemory.topic.transfer') {
     const sourceWorkstream = value && typeof value === 'object' && 'sourceWorkstream' in value &&
       typeof value.sourceWorkstream === 'string' ? value.sourceWorkstream : '';
     const move = Boolean(value && typeof value === 'object' && 'move' in value && value.move === true);
     if (sourceWorkstream && workstream && sourceWorkstream !== workstream) {
       return {
-        kind: 'topic', operation: 'transfer', slug: topicSlug,
+        kind: 'topic', operation: 'transfer', id: topicId,
         sourceWorkstream, targetWorkstream: workstream, move,
       };
     }

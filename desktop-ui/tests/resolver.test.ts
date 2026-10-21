@@ -13,7 +13,7 @@ import {
 
 const roadmap: Workstream = {
   id: '1',
-  slug: 'working-memory-0-15-0',
+
   title: 'Working Memory 0.15.0',
   status: 'queue',
   closure: null,
@@ -29,24 +29,24 @@ describe('workstream resolver', () => {
   });
 
   it('matches a workstream when all meaningful query tokens are present', () => {
-    const genericRoadmap = { ...roadmap, id: '2', slug: 'product-roadmap', title: 'Product Roadmap' };
+    const genericRoadmap = { ...roadmap, id: '2',  title: 'Product Roadmap' };
     expect(chooseWorkstream('0.15.0 roadmap', [genericRoadmap, roadmap])).toBe(roadmap);
   });
 
   it('loads the shared workstream tree, alerts, icons, and focus state', async () => {
     const topic: Topic = {
-      id: 'topic-1', slug: 'desktop-parity', title: 'Desktop parity', body: '', status: 'open',
-      topicType: 'feature', parents: [], workstreams: [roadmap.slug!],
-      focusedWorkstreams: [roadmap.slug!], created_at: 1, updated_at: 2, resourceVersion: 3,
+      id: 'topic-1',  title: 'Desktop parity', body: '', status: 'open',
+      topicType: 'type-1', parents: [], workstreams: [roadmap.id!],
+      focusedWorkstreams: [roadmap.id!], created_at: 1, updated_at: 2, resourceVersion: 3,
     };
     const topicType: TopicType = {
-      id: 'type-1', slug: 'feature', label: 'Feature', description: '', icon: 'rocket', body_template: '',
+      id: 'type-1',  label: 'Feature', description: '', icon: 'rocket', body_template: '',
       created_at: 1, updated_at: 1, resourceVersion: 1,
     };
     const alert: AgentMessage = {
       agent_id: 'agent-1', agent_name: 'Review Agent',
-      id: 'alert-1', slug: null, title: 'Verify desktop', description: 'Links must work',
-      recommended_action: 'Click a topic', status: 'open', topics: [topic.slug!],
+      id: 'alert-1',  title: 'Verify desktop', description: 'Links must work',
+      recommended_action: 'Click a topic', status: 'open', topics: [topic.id!],
       category: 'request', severity: 'warning', attention: true, relations: [],
       dedupe_key: null, created_by: 'test', created_at: 1, updated_at: 10, resourceVersion: 1,
     };
@@ -57,34 +57,34 @@ describe('workstream resolver', () => {
       agentMessageRead: async () => [alert],
     } as never;
 
-    const vm = await loadWorkstreamViewModel(client, roadmap.slug!, 10_000);
+    const vm = await loadWorkstreamViewModel(client, roadmap.id!, 10_000);
 
     expect(vm?.editable).toBe(true);
     expect(vm?.agentMessages).toMatchObject([{ id: 'alert-1', status: 'open' }]);
     expect(vm?.tree[0].children[0]).toMatchObject({
-      kind: 'topic', slug: 'desktop-parity', icon: 'rocket', pinned: true,
+      kind: 'topic', id: 'topic-1', icon: 'rocket', pinned: true,
       agentMessageCount: 1, agentMessageSeverity: 'warning',
     });
   });
 
   it('maps the shared Active panel sections, nested topics, focus, and alerts', async () => {
     const topic: Topic = {
-      id: 'topic-1', slug: 'desktop-parity', title: 'Desktop parity', body: '', status: 'open',
-      topicType: 'feature', parents: [], workstreams: [roadmap.slug!],
-      focusedWorkstreams: [roadmap.slug!], created_at: 1, updated_at: 2, resourceVersion: 3,
+      id: 'topic-1',  title: 'Desktop parity', body: '', status: 'open',
+      topicType: 'type-1', parents: [], workstreams: [roadmap.id!],
+      focusedWorkstreams: [roadmap.id!], created_at: 1, updated_at: 2, resourceVersion: 3,
     };
     const closedTopic: Topic = {
       ...topic,
       id: 'topic-closed',
-      slug: 'completed-desktop-work',
+
       title: 'Completed desktop work',
       status: 'closed',
-      focusedWorkstreams: [roadmap.slug!],
+      focusedWorkstreams: [roadmap.id!],
     };
     const alert: AgentMessage = {
       agent_id: 'agent-1', agent_name: 'Review Agent',
-      id: 'alert-1', slug: null, title: 'Verify desktop', description: 'Links must work',
-      recommended_action: 'Click a topic', status: 'open', topics: [topic.slug!],
+      id: 'alert-1',  title: 'Verify desktop', description: 'Links must work',
+      recommended_action: 'Click a topic', status: 'open', topics: [topic.id!],
       category: 'request', severity: 'warning', attention: true, relations: [],
       dedupe_key: null, created_by: 'test', created_at: 1, updated_at: 10, resourceVersion: 1,
     };
@@ -103,7 +103,7 @@ describe('workstream resolver', () => {
     expect(queue).toMatchObject({
       kind: 'workstream-section',
       workstreams: [{
-        slug: roadmap.slug,
+        id: roadmap.id,
         agentMessageCount: 1,
         focused_topics: [{ label: 'Desktop parity', focused: true }],
         children: [{ children: [
@@ -117,15 +117,15 @@ describe('workstream resolver', () => {
   it('orders Active workstreams by their persisted section position', async () => {
     const client = {
       wsRead: async () => [
-        { ...roadmap, slug: 'later', title: 'Later', position: 20 },
-        { ...roadmap, slug: 'first', title: 'First', position: 5 },
+        { ...roadmap, id: 'later', title: 'Later', position: 20 },
+        { ...roadmap, id: 'first', title: 'First', position: 5 },
       ],
       topicRead: async () => [], agentMessageRead: async () => [], topicTypeRead: async () => [],
     } as never;
 
     const active = await loadActivePanelData(client);
     const queue = active.items[0];
-    expect(queue.kind === 'workstream-section' && queue.workstreams.map((item) => item.slug))
+    expect(queue.kind === 'workstream-section' && queue.workstreams.map((item) => item.id))
       .toEqual(['first', 'later']);
   });
 
@@ -133,15 +133,15 @@ describe('workstream resolver', () => {
     const writes: unknown[] = [];
     const client = { wsReorder: async (input: unknown) => { writes.push(input); } } as never;
     await persistWorkstreamReorder(client, [
-      { slug: 'one', section: 'queue', position: 0 },
-      { slug: 'two', section: 'queue', position: 1 },
+      { id: 'one', section: 'queue', position: 0 },
+      { id: 'two', section: 'queue', position: 1 },
     ]);
     expect(writes).toEqual([{ updates: [
-      { slug: 'one', status: 'queue', position: 0 },
-      { slug: 'two', status: 'queue', position: 1 },
+      { id: 'one', status: 'queue', position: 0 },
+      { id: 'two', status: 'queue', position: 1 },
     ] }]);
     await expect(persistWorkstreamReorder(client, [
-      { slug: '', section: 'queue', position: 0 },
+      { id: '', section: 'queue', position: 0 },
     ])).rejects.toThrow('Invalid workstream reorder request');
   });
 
@@ -154,13 +154,13 @@ describe('workstream resolver', () => {
 
   it('loads UUID-related messages into exact topic/workstream callouts and relation badges', async () => {
       const topic: Topic = {
-        id: 'topic-uuid', slug: 'scoped-topic', title: 'Scoped topic', body: '', status: 'open',
-        topicType: 'feature', parents: [], workstreams: [roadmap.slug!], focusedWorkstreams: [],
+        id: 'topic-uuid',  title: 'Scoped topic', body: '', status: 'open',
+        topicType: 'type-1', parents: [], workstreams: [roadmap.id!], focusedWorkstreams: [],
         created_at: 1, updated_at: 2, resourceVersion: 1,
       };
       const base: AgentMessage = {
         agent_id: 'agent-1', agent_name: 'Review Agent',
-        id: 'topic-message', slug: null, title: 'Review', description: 'Review', recommended_action: '',
+        id: 'topic-message',  title: 'Review', description: 'Review', recommended_action: '',
         category: 'approval', severity: 'warning', attention: true, status: 'open', topics: [],
         relations: [{ kind: 'Topic', id: topic.id }], dedupe_key: null, created_by: 'agent',
         created_at: 1, updated_at: 2, resourceVersion: 1,
@@ -173,11 +173,11 @@ describe('workstream resolver', () => {
           { ...base, id: 'other-message', relations: [{ kind: 'Topic', id: 'other-uuid' }] },
         ],
       } as never;
-      const topicVm = await loadTopicViewModel(client, topic.slug!);
+      const topicVm = await loadTopicViewModel(client, topic.id!);
       expect(topicVm?.id).toBe(topic.id);
       expect(topicVm?.agentMessages.map((item) => item.id)).toEqual(['topic-message']);
       expect(topicVm?.workstreams).toMatchObject([{ agentMessageCount: 2, agentMessageSeverity: 'warning' }]);
-      const workstreamVm = await loadWorkstreamViewModel(client, roadmap.slug!);
+      const workstreamVm = await loadWorkstreamViewModel(client, roadmap.id!);
       expect(workstreamVm?.id).toBe(roadmap.id);
       expect(workstreamVm?.topics[0].id).toBe(topic.id);
       expect(workstreamVm?.tree[0].children[0].documentId).toBe(topic.id);
@@ -188,25 +188,25 @@ describe('workstream resolver', () => {
   it('routes visible workstream actions and rejects unsupported commands', () => {
     expect(resolveDesktopAction(
       'working-memory.setWorkstreamSection',
-      [{ slug: roadmap.slug, section: 'progress' }],
-      roadmap.slug!,
-    )).toEqual({ kind: 'workstream', operation: 'move', slug: roadmap.slug, section: 'progress' });
+      [{ id: roadmap.id, section: 'progress' }],
+      roadmap.id!,
+    )).toEqual({ kind: 'workstream', operation: 'move', id: roadmap.id, section: 'progress' });
     expect(resolveDesktopAction(
       'workingMemory.topic.removeFromWorkstream',
-      [{ topicSlug: 'desktop-parity' }],
-      roadmap.slug!,
+      [{ topicId: 'topic-1' }],
+      roadmap.id!,
     )).toEqual({
-      kind: 'topic', operation: 'detach', slug: 'desktop-parity', workstream: roadmap.slug,
+      kind: 'topic', operation: 'detach', id: 'topic-1', workstream: roadmap.id,
     });
     expect(resolveDesktopAction(
       'workingMemory.topic.transfer',
-      [{ topicSlug: 'desktop-parity', sourceWorkstream: 'source', move: true }],
-      roadmap.slug!,
+      [{ topicId: 'topic-1', sourceWorkstream: 'source', move: true }],
+      roadmap.id!,
     )).toEqual({
-      kind: 'topic', operation: 'transfer', slug: 'desktop-parity',
-      sourceWorkstream: 'source', targetWorkstream: roadmap.slug, move: true,
+      kind: 'topic', operation: 'transfer', id: 'topic-1',
+      sourceWorkstream: 'source', targetWorkstream: roadmap.id, move: true,
     });
-    expect(() => resolveDesktopAction('workingMemory.unknown', [], roadmap.slug!))
+    expect(() => resolveDesktopAction('workingMemory.unknown', [], roadmap.id!))
       .toThrow('Unsupported desktop action');
   });
 });

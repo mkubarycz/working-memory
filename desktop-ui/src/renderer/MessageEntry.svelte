@@ -54,7 +54,7 @@
   const scopeTarget = $derived(run ? targetForRef(run.scope) : undefined);
   const scopeDocument = $derived(run ? documents.find((document) =>
     normalizeScopeKind(document.kind) === normalizeScopeKind(run.scope.kind)
-    && (document.slug != null && (document.slug === run.scope.slug || document.slug === run.scope.id)
+    && (document.id != null && (document.id === run.scope.id || document.id === run.scope.id)
       || 'id' in document && document.id === run.scope.id)) : undefined);
   const scopeIcon = $derived(scopeDocument ? documentTabIcon(scopeDocument)
     : scopeTarget?.kind === 'topic' ? 'symbol-misc' : scopeTarget?.kind === 'workstream' ? 'briefcase' : 'link');
@@ -106,10 +106,10 @@
           {#if scopeTarget}
             <button class="user-scope" onclick={() => onOpen(scopeTarget)}>
               <span aria-hidden="true" class="codicon codicon-{scopeIcon}"></span>
-              <span>{run.scope.title ?? run.scope.slug ?? run.scope.id}</span>
+              <span>{run.scope.title ?? run.scope.id}</span>
             </button>
           {:else}
-            <span class="user-scope unsupported">{run.scope.title ?? run.scope.slug ?? run.scope.id}</span>
+            <span class="user-scope unsupported">{run.scope.title ?? run.scope.id}</span>
           {/if}
         {/if}
         <section class="user-entry">

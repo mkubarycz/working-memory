@@ -34,7 +34,6 @@ function isErrorResult(res: unknown): boolean {
 /** The configmap shape the ws-config-* API maps documents to. */
 interface IConfig {
   id: string;
-  slug: string | null;
   name: string;
   data: Record<string, string>;
   status: string;
@@ -105,38 +104,37 @@ async function connect(store: Store): Promise<{
         await client.callTool({
           name: 'ws-config-create',
           arguments: {
-            slug: 'banking-app-developer',
             name: 'Banking App Developer',
             data: { GH_TOKEN: 'ghp_abc', REGION: 'us-east-1' },
           },
         }),
       );
-      expect(created.slug).toBe('banking-app-developer');
+      expect(created).not.toHaveProperty('slug');
       expect(created.name).toBe('Banking App Developer');
       expect(created.data).toEqual({ GH_TOKEN: 'ghp_abc', REGION: 'us-east-1' });
       expect(created.status).toBe('');
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
       expect(created.resourceVersion).toBe(1);
 
-      // read by slug → mapped 0-or-1 list.
+      // Read by immutable ID → mapped 0-or-1 list.
       const read = jsonOf<ConfigList>(
-        await client.callTool({ name: 'ws-config-read', arguments: { slug: 'banking-app-developer' } }),
+        await client.callTool({ name: 'ws-config-read', arguments: { id: created.id } }),
       );
       expect(read.count).toBe(1);
       expect(read.configs[0]?.name).toBe('Banking App Developer');
 
-      // read by slug miss → 0.
+      // Unknown ID → 0.
       const miss = jsonOf<ConfigList>(
-        await client.callTool({ name: 'ws-config-read', arguments: { slug: 'ghost' } }),
+        await client.callTool({ name: 'ws-config-read', arguments: { id: 'missing-config-42' } }),
       );
       expect(miss.count).toBe(0);
 
-      // list mode (no slug/id) → contains it.
+      // List mode → contains it.
       const list = jsonOf<ConfigList>(
         await client.callTool({ name: 'ws-config-read', arguments: {} }),
       );
       expect(list.count).toBe(1);
-      expect(list.configs[0]?.slug).toBe('banking-app-developer');
+      expect(list.configs[0]?.id).toBe(created.id);
 
       // query filter over KEYS (case-insensitive substring): matches a key, excludes a miss.
       const queried = jsonOf<ConfigList>(
@@ -153,7 +151,7 @@ async function connect(store: Store): Promise<{
         await client.callTool({
           name: 'ws-config-update',
           arguments: {
-            slug: 'banking-app-developer',
+            id: created.id,
             name: 'Banking App Dev v2',
             data: { REGION: 'eu-west-1', EXTRA: 'yes' },
           },
@@ -165,31 +163,31 @@ async function connect(store: Store): Promise<{
       expect(updated.resourceVersion).toBe(2);
 
       const afterUpdate = jsonOf<ConfigList>(
-        await client.callTool({ name: 'ws-config-read', arguments: { slug: 'banking-app-developer' } }),
+        await client.callTool({ name: 'ws-config-read', arguments: { id: created.id } }),
       );
       expect(afterUpdate.configs[0]?.data.GH_TOKEN).toBe('ghp_abc');
 
       // delete — drops out of ws-config-read.
-      const del = jsonOf<{ ok: boolean; slug: string }>(
-        await client.callTool({ name: 'ws-config-delete', arguments: { slug: 'banking-app-developer' } }),
+      const del = jsonOf<{ ok: boolean; id: string }>(
+        await client.callTool({ name: 'ws-config-delete', arguments: { id: created.id } }),
       );
-      expect(del).toEqual({ ok: true, slug: 'banking-app-developer' });
+      expect(del).toEqual({ ok: true, id: created.id });
       expect(
         jsonOf<ConfigList>(
-          await client.callTool({ name: 'ws-config-read', arguments: { slug: 'banking-app-developer' } }),
+          await client.callTool({ name: 'ws-config-read', arguments: { id: created.id } }),
         ).count,
       ).toBe(0);
 
       // restore: true → back in ws-config-read, spec intact.
-      const restored = jsonOf<{ ok: boolean; slug: string }>(
+      const restored = jsonOf<{ ok: boolean; id: string }>(
         await client.callTool({
           name: 'ws-config-delete',
-          arguments: { slug: 'banking-app-developer', restore: true },
+          arguments: { id: created.id, restore: true },
         }),
       );
-      expect(restored).toEqual({ ok: true, slug: 'banking-app-developer' });
+      expect(restored).toEqual({ ok: true, id: created.id });
       const afterRestore = jsonOf<ConfigList>(
-        await client.callTool({ name: 'ws-config-read', arguments: { slug: 'banking-app-developer' } }),
+        await client.callTool({ name: 'ws-config-read', arguments: { id: created.id } }),
       );
       expect(afterRestore.count).toBe(1);
       expect(afterRestore.configs[0]?.data).toEqual({
@@ -220,18 +218,18 @@ async function connect(store: Store): Promise<{
     };
     const { client, close } = await connect(store);
     try {
-      await client.callTool({
+      const created = jsonOf<IConfig>(await client.callTool({
         name: 'ws-config-create',
-        arguments: { slug: 'race', data: { A: '1' } },
-      });
+        arguments: { data: { A: '1' } },
+      }));
       await client.callTool({
         name: 'ws-config-update',
-        arguments: { slug: 'race', data: { A: '2' } },
+        arguments: { id: created.id, data: { A: '2' } },
       });
       staleVersion = 1;
       const conflict = await client.callTool({
         name: 'ws-config-update',
-        arguments: { slug: 'race', data: { A: '3' } },
+        arguments: { id: created.id, data: { A: '3' } },
       });
       expect(isErrorResult(conflict)).toBe(true);
       expect(textOf(conflict)).toMatch(/conflict/i);
@@ -247,7 +245,7 @@ async function connect(store: Store): Promise<{
       // kind schema (z.record(string, string)) → kind-validation rejection.
       const badCreate = await client.callTool({
         name: 'ws-config-create',
-        arguments: { slug: 'bad', data: { PORT: 8080 } },
+        arguments: { data: { PORT: 8080 } },
       });
       expect(isErrorResult(badCreate)).toBe(true);
       expect(textOf(badCreate)).toMatch(/data/i);
@@ -256,19 +254,19 @@ async function connect(store: Store): Promise<{
       ).toBe(0);
 
       // A valid create, then an invalid-data update, is also rejected …
-      await client.callTool({
+      const created = jsonOf<IConfig>(await client.callTool({
         name: 'ws-config-create',
-        arguments: { slug: 'ok', data: { A: '1' } },
-      });
+        arguments: { data: { A: '1' } },
+      }));
       const badUpdate = await client.callTool({
         name: 'ws-config-update',
-        arguments: { slug: 'ok', data: { B: 2 } },
+        arguments: { id: created.id, data: { B: 2 } },
       });
       expect(isErrorResult(badUpdate)).toBe(true);
       expect(textOf(badUpdate)).toMatch(/data/i);
       // … and leaves the config unchanged.
       const still = jsonOf<ConfigList>(
-        await client.callTool({ name: 'ws-config-read', arguments: { slug: 'ok' } }),
+        await client.callTool({ name: 'ws-config-read', arguments: { id: created.id } }),
       );
       expect(still.configs[0]?.data).toEqual({ A: '1' });
     } finally {
@@ -276,26 +274,26 @@ async function connect(store: Store): Promise<{
     }
   });
 
-  it('errors clearly on unknown-slug update, delete, and restore', async () => {
+  it('errors clearly on unknown-ID update, delete, and restore', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       const badUpdate = await client.callTool({
         name: 'ws-config-update',
-        arguments: { slug: 'ghost', name: 'X' },
+        arguments: { id: 'ghost', name: 'X' },
       });
       expect(isErrorResult(badUpdate)).toBe(true);
       expect(textOf(badUpdate)).toMatch(/ghost/);
 
       const badDelete = await client.callTool({
         name: 'ws-config-delete',
-        arguments: { slug: 'ghost' },
+        arguments: { id: 'ghost' },
       });
       expect(isErrorResult(badDelete)).toBe(true);
       expect(textOf(badDelete)).toMatch(/ghost/);
 
       const badRestore = await client.callTool({
         name: 'ws-config-delete',
-        arguments: { slug: 'ghost', restore: true },
+        arguments: { id: 'ghost', restore: true },
       });
       expect(isErrorResult(badRestore)).toBe(true);
       expect(textOf(badRestore)).toMatch(/ghost/);

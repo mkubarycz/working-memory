@@ -30,8 +30,8 @@ describe('desktop model tools', () => {
   });
 
   it('classifies deletes as destructive', () => {
-    expect(isDestructiveTool('ws-topic-delete', { slug: 'x' })).toBe(true);
-    expect(isDestructiveTool('ws-topic-delete', { slug: 'x', restore: true })).toBe(false);
+    expect(isDestructiveTool('ws-topic-delete', { id: 'x' })).toBe(true);
+    expect(isDestructiveTool('ws-topic-delete', { id: 'x', restore: true })).toBe(false);
   });
 
   it('continues Chat Completions with the assistant call and every tool result', () => {

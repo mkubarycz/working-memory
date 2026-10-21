@@ -3,7 +3,7 @@ import { ControlPlaneClient } from '../../shared/controlPlaneClient';
 
 const envelope = {
   kind: 'AgentMessage',
-  metadata: { id: 'message-1', slug: null, createdAt: 1, updatedAt: 2, resourceVersion: 3 },
+  metadata: { id: 'message-1',  createdAt: 1, updatedAt: 2, resourceVersion: 3 },
   spec: {
     agent_id: '00000000-0000-4000-8000-000000000001', agent_name: 'Test Agent',
     title: 'Review PR', description: 'Review **authored Markdown**', recommended_action: 'Review',

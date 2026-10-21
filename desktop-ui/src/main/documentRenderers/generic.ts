@@ -36,9 +36,9 @@ function renderKeyValues(obj: Record<string, unknown>): string {
 /** Render a control-plane document envelope as an exported Markdown document. */
 export function renderDocumentEnvelopeDoc(env: DocumentEnvelope): string {
   const { kind, metadata, spec, status } = env;
-  const slug = metadata.slug ?? '_(none)_';
+  const id = metadata.id ?? '_(none)_';
   const lines: string[] = [
-    `# ${kind}: ${metadata.slug ?? metadata.id}`,
+    `# ${kind}: ${metadata.id}`,
     '',
     '## Kind',
     '',
@@ -47,7 +47,7 @@ export function renderDocumentEnvelopeDoc(env: DocumentEnvelope): string {
     '## Metadata',
     '',
     `- \`id\`: \`${metadata.id}\``,
-    `- \`slug\`: ${slug}`,
+    `- \`id\`: ${id}`,
     `- \`resourceVersion\`: ${metadata.resourceVersion}`,
     `- \`createdAt\`: ${formatTimestamp(metadata.createdAt)}`,
     `- \`updatedAt\`: ${formatTimestamp(metadata.updatedAt)}`,

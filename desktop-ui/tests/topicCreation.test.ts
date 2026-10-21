@@ -11,7 +11,7 @@ import { moveTopicToNewWorkstream } from '../src/renderer/topicTransfer';
 
 function draft(): TopicCreateDraftVM {
   return {
-    kind: 'topic-create', id: 'draft-id', slug: null,
+    kind: 'topic-create', id: 'draft-id',
     title: 'Improve installer testing', body: 'Keep this authored description.', topicType: 'feature',
     topicTypes: [], workstream: '', workstreamTitle: '', newWorkstreamTitle: 'Release improvements',
     parent: null, parentTitle: null,
@@ -20,14 +20,14 @@ function draft(): TopicCreateDraftVM {
 
 function mockApi() {
   const document: DocumentVM = {
-    kind: 'topic', slug: 'installer-testing', title: 'Improve installer testing', body: 'Saved',
+    kind: 'topic', id: 'installer-testing', title: 'Improve installer testing', body: 'Saved',
     status: 'open', topicType: 'feature', typeMeta: null, createdAt: 1, updatedAt: 1,
     resourceVersion: 1, editable: true, parents: [], children: [], workstreams: [],
     focusedWorkstreams: [], agentMessages: [],
   };
   return {
     createWorkstream: vi.fn<DesktopApi['createWorkstream']>()
-      .mockResolvedValue({ slug: 'release-improvements', title: 'Release improvements' }),
+      .mockResolvedValue({ id: 'release-improvements', title: 'Release improvements' }),
     createTopic: vi.fn<DesktopApi['createTopic']>().mockResolvedValue(document),
   };
 }
@@ -92,22 +92,22 @@ describe('creating a workstream with its first topic', () => {
     const server = await startServer({ port: 0, store });
     const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
     try {
-      await client.topicTypeCreate({
-        slug: 'feature', label: 'Feature', icon: 'lightbulb', description: 'New functionality',
+      const type = await client.topicTypeCreate({ label: 'Feature', icon: 'lightbulb', description: 'New functionality',
       });
       const value = draft();
+      value.topicType = type.id;
       const api: Pick<DesktopApi, 'createWorkstream' | 'createTopic'> = {
         createWorkstream: async (title) => {
           const workstream = await client.wsCreate({ title, status: 'progress' });
-          if (!workstream.slug) throw new Error('Missing workstream slug');
-          return { slug: workstream.slug, title: workstream.title };
+          if (!workstream.id) throw new Error('Missing workstream id');
+          return { id: workstream.id, title: workstream.title };
         },
         createTopic: async (input) => {
           const topic = await client.topicCreate({
             title: input.title, body: input.body, topicType: input.topicType,
             workstreams: [input.workstream], parents: input.parent ? [input.parent] : [],
           });
-          const document = await loadTopicViewModel(client, topic.slug ?? topic.id);
+          const document = await loadTopicViewModel(client, topic.id ?? topic.id);
           if (!document) throw new Error('Missing saved topic');
           return document;
         },
@@ -116,24 +116,24 @@ describe('creating a workstream with its first topic', () => {
       expect(created.kind).toBe('topic');
       if (created.kind !== 'topic') throw new Error('Expected saved topic');
       expect(created.body).toBe(value.body);
-      expect(created.workstreams.map(({ slug }) => slug)).toEqual(['release-improvements']);
+      expect(created.workstreams.map(({ id }) => id)).toEqual([value.workstream]);
       const panel = await loadActivePanelData(client);
       const progress = panel.items.find((item) => item.kind === 'workstream-section' && item.section === 'progress');
-      expect(progress?.kind === 'workstream-section' && progress.workstreams.map(({ slug }) => slug))
-        .toEqual(['release-improvements']);
-      const topics = await client.topicRead({ workstream: 'release-improvements' });
+      expect(progress?.kind === 'workstream-section' && progress.workstreams.map(({ id }) => id))
+        .toEqual([value.workstream]);
+      const topics = await client.topicRead({ workstream: value.workstream });
       expect(topics).toHaveLength(1);
       expect(topics[0]?.title).toBe(value.title);
       expect(topics[0]?.status).toBe('open');
-      if (!created.slug) throw new Error('Missing topic slug');
+      if (!created.id) throw new Error('Missing topic id');
       const other = await api.createWorkstream('Shared');
-      await client.topicUpdate({ slug: created.slug, workstreams: [value.workstream, other.slug] });
+      await client.topicUpdate({ id: created.id, workstreams: [value.workstream, other.id] });
       await client.topicCreate({
-        title: 'Child topic', body: 'Keep the child content', topicType: 'feature',
-        workstreams: [value.workstream], parents: [created.slug],
+        title: 'Child topic', body: 'Keep the child content', topicType: type.id,
+        workstreams: [value.workstream], parents: [created.id],
       });
       const move = {
-        slug: created.slug, sourceWorkstream: value.workstream,
+        id: created.id, sourceWorkstream: value.workstream,
         title: 'Release followup', targetWorkstream: '',
       };
       await moveTopicToNewWorkstream(move, api, async (request) => { await client.topicTransfer(request); });
@@ -141,8 +141,8 @@ describe('creating a workstream with its first topic', () => {
       expect(moved.map(({ title }) => title).sort()).toEqual(['Child topic', value.title].sort());
       expect(moved.every(({ status }) => status === 'open')).toBe(true);
       expect(await client.topicRead({ workstream: value.workstream })).toHaveLength(0);
-      expect(await client.topicRead({ workstream: other.slug })).toHaveLength(1);
-      expect((await client.topicRead({ slug: created.slug }))[0]?.body).toBe(value.body);
+      expect(await client.topicRead({ workstream: other.id })).toHaveLength(1);
+      expect((await client.topicRead({ id: created.id }))[0]?.body).toBe(value.body);
     } finally {
       await client.dispose();
       await server.close();

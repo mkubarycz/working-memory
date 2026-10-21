@@ -33,7 +33,7 @@ const runtime = {
 };
 const claim: ContainerClaim = {
   id: 'claim-id',
-  slug: 'clarinet-hero',
+
   title: 'Clarinet Hero',
   repository: '/repo',
   runtime,
@@ -54,15 +54,15 @@ describe('ControlPlaneClient ContainerClaim API', () => {
   it('reads, creates, and updates typed Docker claims', async () => {
     const client = new ControlPlaneClient({ resolveUrl: () => 'http://127.0.0.1:9/mcp' });
     callToolMock.mockResolvedValueOnce(okText({ count: 1, claims: [claim] }));
-    await expect(client.containerClaimRead({ slug: claim.slug })).resolves.toEqual([claim]);
+    await expect(client.containerClaimRead({ id: claim.id })).resolves.toEqual([claim]);
     expect(callToolMock).toHaveBeenLastCalledWith({
       name: 'ws-containerclaim-read',
-      arguments: { slug: claim.slug },
+      arguments: { id: claim.id },
     });
 
     callToolMock.mockResolvedValueOnce(okText(claim));
     await expect(client.containerClaimCreate({
-      slug: claim.slug,
+      id: claim.id,
       title: claim.title,
       repository: claim.repository,
       runtime,
@@ -70,7 +70,7 @@ describe('ControlPlaneClient ContainerClaim API', () => {
     expect(callToolMock).toHaveBeenLastCalledWith({
       name: 'ws-containerclaim-create',
       arguments: {
-        slug: claim.slug,
+        id: claim.id,
         title: claim.title,
         repository: claim.repository,
         runtime,
@@ -78,7 +78,7 @@ describe('ControlPlaneClient ContainerClaim API', () => {
     });
 
     callToolMock.mockResolvedValueOnce(okText({ ...claim, resourceVersion: 2 }));
-    await expect(client.containerClaimUpdate({ slug: claim.slug, runtime }))
+    await expect(client.containerClaimUpdate({ id: claim.id, runtime }))
       .resolves.toMatchObject({ resourceVersion: 2 });
 
   });

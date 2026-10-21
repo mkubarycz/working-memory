@@ -98,7 +98,7 @@ export function keepSelectedTabVisible(node: HTMLElement, selected: boolean) {
 }
 
 export function documentTabKey(document: DocumentVM): string {
-  const identifier = document.slug ?? ('id' in document ? document.id : undefined) ?? document.title;
+  const identifier = document.id ?? ('id' in document ? document.id : undefined) ?? document.title;
   return `${documentRouteKind(document.kind)}:${identifier}`;
 }
 
@@ -109,7 +109,7 @@ export function serializeDocumentTabs(state: DocumentTabsState): string {
     version: 1,
     tabs: tabs.map((document) => ({
       kind: documentRouteKind(document.kind),
-      identifier: document.slug ?? ('id' in document ? document.id : undefined) ?? document.title,
+      identifier: document.id ?? ('id' in document ? document.id : undefined) ?? document.title,
     })),
     selectedKey: tabs.some((document) => documentTabKey(document) === canonicalSelectedKey(state.selectedKey))
       ? canonicalSelectedKey(state.selectedKey) : tabs[0] ? documentTabKey(tabs[0]) : null,

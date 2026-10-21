@@ -157,13 +157,13 @@ export function registerWsCommandJournalRead(server: McpServer, store: Store): v
       title: 'Command Journal: Read History',
       description:
         'Read one full CommandJournal by id, or page global history newest-first. List cursors are opaque and ordered by immutable createdAt then id; renderers may reverse loaded results for chronological display.',
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().min(1).optional().describe('Read one full journal for inspection.'),
         limit: z.number().int().min(1).max(MAX_LIMIT).optional(),
         cursor: z.string().min(1).optional(),
         primaryScope: refFilter.optional(),
         entityRef: entityRefFilter.optional(),
-      },
+      }).strict(),
     },
     async ({ id, limit, cursor, primaryScope, entityRef }) => {
       if (id !== undefined) {

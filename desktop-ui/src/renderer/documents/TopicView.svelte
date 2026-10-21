@@ -16,8 +16,8 @@
     topic: TopicVM;
     saveState: SaveState;
     onSaveTopic: (patch: TopicPatch) => void;
-    onOpenTopic: (slug: string) => void;
-    onOpenWorkstream: (slug: string) => void;
+    onOpenTopic: (id: string) => void;
+    onOpenWorkstream: (id: string) => void;
     onSetAgentMessageStatus: (id: string, status: AgentMessageVM['status']) => void;
     onRecordDecision?: import('./types').RecordAgentMessageDecision;
     attachmentBaseUrl?: string;
@@ -62,7 +62,7 @@
 
   function onTopicTypeChange(event: Event): void {
     const topicType = (event.currentTarget as HTMLSelectElement).value;
-    const typeMeta = topic.topicTypes?.find((candidate) => candidate.slug === topicType) ?? null;
+    const typeMeta = topic.topicTypes?.find((candidate) => candidate.id === topicType) ?? null;
     topic.topicType = topicType;
     topic.typeMeta = typeMeta;
     onSaveTopic({ topicType });
@@ -150,10 +150,10 @@
     getTopicTypeConfig(topic.topicType).extraSettings ?? [],
   );
 
-  // Slugs of workstreams this topic is focused/pinned in — drives the glow-up
+  // Ids of workstreams this topic is focused/pinned in — drives the glow-up
   // treatment on the merged Workstreams list.
-  const focusedSlugs = $derived(
-    new Set(topic.focusedWorkstreams.map((w) => w.slug)),
+  const focusedIds = $derived(
+    new Set(topic.focusedWorkstreams.map((w) => w.id)),
   );
 
   let bodyMode = $state<'hybrid' | 'source' | 'preview'>('hybrid');
@@ -204,8 +204,8 @@
           <span aria-hidden="true" class="type-icon codicon codicon-{icon}"></span>
           <span aria-hidden="true" class="type-picker-chevron codicon codicon-chevron-down"></span>
           <select value={topic.topicType} onchange={onTopicTypeChange} aria-label="Topic type">
-            {#each topic.topicTypes ?? [] as topicType (topicType.slug)}
-              <option value={topicType.slug ?? ''}>{topicType.label}</option>
+            {#each topic.topicTypes ?? [] as topicType (topicType.id)}
+              <option value={topicType.id ?? ''}>{topicType.label}</option>
             {/each}
           </select>
         </label>
@@ -225,10 +225,10 @@
     <h1 class="title" title={topic.title}>{topic.title}</h1>
   {/if}
   {#if !draft}
-    <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.slug)} />
+    <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id)} />
     <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
     <SaveStatus state={saveState} />
-    {#if onShare && topic.slug}
+    {#if onShare && topic.id}
       <button class="feedback-button" type="button" onclick={() => onShare(topic)} title="Send Feedback" aria-label="Send Feedback">
         <span class="codicon codicon-feedback" aria-hidden="true"></span>
       </button>
@@ -238,7 +238,7 @@
 
 {#if !draft}
   <div class="head-meta">
-    <span class="mono">{topic.slug ?? '—'}</span>
+    <span class="mono">{topic.id ?? '—'}</span>
     <span class="hm-dot">·</span>
     <span>Created {fmtTs(topic.createdAt)}</span>
     <span class="hm-dot">·</span>
@@ -275,15 +275,15 @@
           maxlength="120"
         />
       {/if}
-      {#each topic.workstreams as w (w.slug)}
+      {#each topic.workstreams as w (w.id)}
         <button
           class="ws-chip"
-          class:pinned={focusedSlugs.has(w.slug)}
-          onclick={() => onOpenWorkstream(w.slug)}
-          title={w.slug}
+          class:pinned={focusedIds.has(w.id)}
+          onclick={() => onOpenWorkstream(w.id)}
+          title={w.id}
         >
           <span class="ws-chip-title">{w.title}</span>
-          {#if focusedSlugs.has(w.slug)}
+          {#if focusedIds.has(w.id)}
             <span class="codicon codicon-pinned pin-badge" title="Focused here"></span>
           {/if}
         </button>
@@ -308,8 +308,8 @@
       {#if topic.parents.length > 0}
         <div class="fam-group">
           <span class="fam-label">Parents</span>
-          {#each topic.parents as p (p.slug)}
-            <button class="fam-row" onclick={() => onOpenTopic(p.slug)} title={p.slug}>
+          {#each topic.parents as p (p.id)}
+            <button class="fam-row" onclick={() => onOpenTopic(p.id)} title={p.id}>
               <span class="fam-row-title">{p.title}</span>
               {#if p.agentMessageCount > 0}
                 <span
@@ -326,8 +326,8 @@
       {#if topic.children.length > 0}
         <div class="fam-group">
           <span class="fam-label">Children</span>
-          {#each topic.children as c (c.slug)}
-            <button class="fam-row" onclick={() => onOpenTopic(c.slug)} title={c.slug}>
+          {#each topic.children as c (c.id)}
+            <button class="fam-row" onclick={() => onOpenTopic(c.id)} title={c.id}>
               <span class="fam-row-title">{c.title}</span>
               {#if c.agentMessageCount > 0}
                 <span
@@ -432,7 +432,7 @@
     gap: 12px;
   }
 
-  /* Slug + timestamps as a compact plain-text subline under the title bar,
+  /* Id + timestamps as a compact plain-text subline under the title bar,
      freeing those cells out of the attributes grid. */
   .head-meta {
     display: flex;

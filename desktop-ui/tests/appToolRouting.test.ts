@@ -129,7 +129,7 @@ describe('Container App chat routing', () => {
   it('routes an implicit selected app exactly like an explicit mention without rewriting text', async () => {
     const dependencies = () => ({
       readClaim: async (appId: string) => ({
-        slug: appId,
+        id: appId,
         title: apps.find((app) => app.id === appId)?.displayName ?? appId,
         repository: `/source/${appId}`,
         mcp: appId === 'sunset-chess' ? sunsetEndpoint : bankingEndpoint,
@@ -179,7 +179,7 @@ describe('Container App chat routing', () => {
       apps,
       {
         readClaim: async (appId) => ({
-          slug: appId,
+          id: appId,
           title: 'Banking',
           repository: '/banking',
           mcp: bankingEndpoint,
@@ -208,7 +208,7 @@ describe('Container App chat routing', () => {
       apps,
       {
         readClaim: async (appId) => ({
-          slug: appId,
+          id: appId,
           title: 'Banking',
           repository: '/banking',
           mcp: bankingEndpoint,
@@ -243,7 +243,7 @@ describe('Container App chat routing', () => {
       apps,
       {
         readClaim: async (appId) => ({
-          slug: appId,
+          id: appId,
           title: 'Banking',
           repository: '/banking',
           mcp: bankingEndpoint,
@@ -272,7 +272,7 @@ describe('Container App chat routing', () => {
       apps,
       {
         readClaim: async (appId) => ({
-          slug: appId,
+          id: appId,
           title: 'Banking',
           repository: '/banking',
           mcp: bankingEndpoint,
@@ -304,7 +304,7 @@ describe('Container App chat routing', () => {
     const connect = vi.fn();
     const result = await resolveMentionedAppTools('@sunset-chess list players', apps, {
       readClaim: async (appId) => appId === 'sunset-chess' ? ({
-        slug: appId, title: 'Sunset', repository: '/source',
+        id: appId, title: 'Sunset', repository: '/source',
         mcp: { transport: 'streamable-http', url: 'http://localhost:4999/current' },
         application: {
           id: 'sunset-chess',
@@ -313,7 +313,7 @@ describe('Container App chat routing', () => {
           capabilities: ['generic-crud'],
           dataOwnership: 'application',
         },
-      }) : ({ slug: appId, title: 'Banking', repository: '/banking' }),
+      }) : ({ id: appId, title: 'Banking', repository: '/banking' }),
       inspect: async () => ({ ready: true, state: 'healthy', error: null }),
       connect,
       listTools: async (_appId, endpoint) => listed([
@@ -336,7 +336,7 @@ describe('Container App chat routing', () => {
     });
     expect(result.contexts[0]).toMatchObject({
       appId: 'sunset-chess',
-      claimSlug: 'sunset-chess',
+      claimId: 'sunset-chess',
       contractVersion: '1.2.0',
       discoveryModelTool: 'app__sunset-chess__app-contract-get',
       dataOwnership: 'application',
@@ -350,10 +350,10 @@ describe('Container App chat routing', () => {
     const result = await resolveMentionedAppTools('@Evening Knights list players', apps, {
       readClaim: async (appId) => appId === 'sunset-chess'
         ? {
-          slug: appId, title: 'Evening Knights', repository: '/source',
+          id: appId, title: 'Evening Knights', repository: '/source',
           mcp: { transport: 'streamable-http', url: 'http://localhost:4175/mcp' },
         }
-        : { slug: appId, title: 'Banking', repository: '/banking' },
+        : { id: appId, title: 'Banking', repository: '/banking' },
       inspect: async () => ({ ready: true, state: 'healthy', error: null }),
       connect: async () => undefined,
       listTools: async (_appId, endpoint) => listed([readTool], 1, endpoint),
@@ -365,7 +365,7 @@ describe('Container App chat routing', () => {
     const result = await resolveMentionedAppTools('@sunset-chess list players', apps, {
       readClaim: async (appId) => appId === 'sunset-chess'
         ? {
-          slug: appId,
+          id: appId,
           title: 'Sunset',
           repository: '/source',
           mcp: sunsetEndpoint,
@@ -387,13 +387,13 @@ describe('Container App chat routing', () => {
     await expect(resolveMentionedAppTools('@banking-app add a transaction', apps, {
       ...common,
       readClaim: async (appId) => appId === 'banking-app'
-        ? { slug: appId, title: 'Banking', repository: '/source' }
+        ? { id: appId, title: 'Banking', repository: '/source' }
         : undefined,
     })).rejects.toThrow(/does not advertise MCP/);
     await expect(resolveMentionedAppTools('@sunset-chess list', apps, {
       ...common,
       readClaim: async (appId) => appId === 'sunset-chess' ? ({
-        slug: appId, title: 'Sunset', repository: '/source',
+        id: appId, title: 'Sunset', repository: '/source',
         mcp: { transport: 'streamable-http', url: 'http://localhost:4175/mcp' },
       }) : undefined,
       inspect: async () => ({ ready: false, state: 'stopped', error: null }),

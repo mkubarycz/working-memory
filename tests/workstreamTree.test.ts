@@ -9,12 +9,12 @@ import { describe, test, expect } from 'vitest';
 import { buildWorkstreamTree } from '../shared/panelData';
 import type { Topic, TopicType } from '../shared/controlPlaneClient';
 
-function topic(partial: Partial<Topic> & { slug: string; title: string }): Topic {
+function topic(partial: Partial<Topic> & { id: string; title: string }): Topic {
   return {
-    id: `id-${partial.slug}`,
+    id: `id-${partial.id}`,
     body: '',
     status: 'open',
-    topicType: 'feature',
+    topicType: 'type-feature',
     parents: [],
     workstreams: [],
     focusedWorkstreams: [],
@@ -27,15 +27,14 @@ function topic(partial: Partial<Topic> & { slug: string; title: string }): Topic
 
 describe('buildWorkstreamTree', () => {
   const topics: Topic[] = [
-    topic({ slug: 'parent', title: 'Parent', workstreams: ['ws'] }),
-    topic({ slug: 'child', title: 'Child', parents: ['parent'], workstreams: ['ws'] }),
+    topic({ id: 'parent', title: 'Parent', workstreams: ['ws'] }),
+    topic({ id: 'child', title: 'Child', parents: ['parent'], workstreams: ['ws'] }),
     // Not a member of this workstream — must be excluded.
-    topic({ slug: 'other', title: 'Other', workstreams: ['ws-2'] }),
+    topic({ id: 'other', title: 'Other', workstreams: ['ws-2'] }),
   ];
 
 
   const tree = buildWorkstreamTree(
-    'ws-id',
     'ws',
     'active',
     topics,
@@ -64,9 +63,9 @@ describe('buildWorkstreamTree', () => {
 
   test('retains closed members but includes only open focused topics in the pinned strip', () => {
     const typeMap = new Map<string, TopicType>([
-      ['feature', {
+      ['type-feature', {
         id: 'type-feature',
-        slug: 'feature',
+
         label: 'Feature',
         icon: 'lightbulb',
         description: '',
@@ -77,12 +76,11 @@ describe('buildWorkstreamTree', () => {
       }],
     ]);
     const activeTree = buildWorkstreamTree(
-      'ws-id',
       'ws',
       'active',
       [
-        topic({ slug: 'closed-focused', title: 'Closed focused', status: 'closed', workstreams: ['ws'], focusedWorkstreams: ['ws'] }),
-        topic({ slug: 'open-focused', title: 'Open focused', workstreams: ['ws'], focusedWorkstreams: ['ws'] }),
+        topic({ id: 'closed-focused', title: 'Closed focused', status: 'closed', workstreams: ['ws'], focusedWorkstreams: ['ws'] }),
+        topic({ id: 'open-focused', title: 'Open focused', workstreams: ['ws'], focusedWorkstreams: ['ws'] }),
       ],
       typeMap,
       [],

@@ -255,11 +255,11 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     }
   });
 
-  it.each(['selected-id', 'selected-slug'])('puts the topic-type context icon above initials for scope %s', (identifier) => {
+  it.each(['selected-id', 'selected-id'])('puts the topic-type context icon above initials for scope %s', (identifier) => {
     const document: TopicVM = {
-      kind: 'topic', id: 'selected-id', slug: 'selected-slug', title: 'Selected',
+      kind: 'topic', id: 'selected-id',  title: 'Selected',
       status: 'open', topicType: 'experiment', typeMeta: {
-        slug: 'experiment', label: 'Experiment', icon: 'beaker', description: '',
+        id: 'experiment', label: 'Experiment', icon: 'beaker', description: '',
       },
       body: '', createdAt: 1, updatedAt: 1, resourceVersion: 1, editable: true,
       parents: [], children: [], workstreams: [], focusedWorkstreams: [], agentMessages: [],

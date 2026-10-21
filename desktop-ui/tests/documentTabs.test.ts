@@ -19,9 +19,9 @@ import {
 } from '../src/renderer/documentTabs';
 import { containerAppDocument } from '../src/renderer/containerApps';
 
-function topic(slug: string, title = slug): TopicVM {
+function topic(id: string, title = id): TopicVM {
   return {
-    kind: 'topic', title, slug, status: 'open', topicType: 'feature', typeMeta: null,
+    kind: 'topic', title, id, status: 'open', topicType: 'feature', typeMeta: null,
     body: '', createdAt: 1, updatedAt: 1, resourceVersion: 1, editable: true,
     parents: [], children: [], workstreams: [], focusedWorkstreams: [], agentMessages: [],
   };
@@ -32,7 +32,7 @@ describe('document tabs', () => {
     const document = topic('selected');
     expect(documentTabIcon(document)).toBe('symbol-misc');
     expect(documentTabIcon({ ...document, typeMeta: {
-      slug: 'feature', label: 'Feature', icon: 'rocket', description: '',
+      id: 'feature', label: 'Feature', icon: 'rocket', description: '',
     } })).toBe('rocket');
     expect(documentTabIcon(containerAppDocument({ id: 'app', displayName: 'App', icon: 'server-environment' })))
       .toBe('server-environment');
@@ -60,7 +60,7 @@ describe('document tabs', () => {
     const backlog: DocumentVM = {
       kind: 'topic-backlog',
       id: 'open-topic-backlog',
-      slug: null,
+
       title: 'Open topic backlog',
       topics: [],
     };
@@ -84,7 +84,7 @@ describe('document tabs', () => {
     const settings: DocumentVM = {
       kind: 'settings',
       id: 'desktop-settings',
-      slug: null,
+
       title: 'Settings',
     };
     let state = openDocumentTab({ tabs: [], selectedKey: null }, settings, false);

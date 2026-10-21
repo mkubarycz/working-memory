@@ -45,8 +45,8 @@ describe('committed document changes', () => {
     store = openStore(':memory:');
     const changed = vi.fn();
     const stop = store.onDocumentsChanged(changed);
-    const first = store.createDocument({ kind: 'Topic', slug: 'first', spec: { title: 'First' } });
-    const second = store.createDocument({ kind: 'Topic', slug: 'second', spec: { title: 'Second' } });
+    const first = store.createDocument({ kind: 'Topic', spec: { title: 'First' } });
+    const second = store.createDocument({ kind: 'Topic', spec: { title: 'Second' } });
     changed.mockClear();
     expect(() => store.updateDocuments([
       { id: first.metadata.id, expectedResourceVersion: first.metadata.resourceVersion, spec: { title: 'Changed' } },
@@ -85,12 +85,12 @@ describe('committed document changes', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(settled).toBe(false);
     expect(read).not.toHaveBeenCalled();
-    const doc = store.createDocument({ kind: 'Topic', slug: 'changed', spec: { title: 'Private body' } });
+    const doc = store.createDocument({ kind: 'Topic', spec: { title: 'Private body' } });
     expect(await waiting).toEqual({
       resourceVersion: doc.metadata.resourceVersion,
       reset: false,
       changes: [{
-        id: doc.metadata.id, kind: 'Topic', slug: 'changed',
+        id: doc.metadata.id, kind: 'Topic',
         resourceVersion: doc.metadata.resourceVersion, deleted: false,
       }],
     });
@@ -100,7 +100,7 @@ describe('committed document changes', () => {
   it('replays missed changes and resets cursors outside bounded history', async () => {
     store = openStore(':memory:');
     server = await startServer({ port: 0, store });
-    for (let index = 0; index < 260; index += 1) store.createDocument({ kind: 'Topic', slug: `topic-${index}` });
+    for (let index = 0; index < 260; index += 1) store.createDocument({ kind: 'Topic' });
     const missed = parseDocumentChanges(await (await fetch(`${server.url}/changes?since=258`)).json());
     expect(missed.reset).toBe(false);
     expect(missed.changes.map((change) => change.resourceVersion)).toEqual([259, 260]);
@@ -113,6 +113,7 @@ describe('committed document changes', () => {
 
   it('delivers external MCP writes to a watching client and aborts on disposal', async () => {
     store = openStore(':memory:');
+    store.createDocument({ kind: 'TopicType', spec: { label: 'Topic' } });
     server = await startServer({ port: 0, store });
     const writer = new ControlPlaneClient({ resolveUrl: () => `${server!.url}/mcp` });
     const reader = new ControlPlaneClient({ resolveUrl: () => `${server!.url}/mcp` });
@@ -122,7 +123,7 @@ describe('committed document changes', () => {
     const watching = reader.watchDocumentChanges((change) => changes.push(change), controller.signal);
     const stopped = watching.catch((error) => { if (error.name !== 'AbortError') throw error; });
     await vi.waitFor(() => expect(changes).toHaveLength(1));
-    const created = await writer.topicCreate({ slug: 'external-change', title: 'External change' });
+    const created = await writer.topicCreate({ title: 'External change' });
     await vi.waitFor(() => expect(changes.some((notice) =>
       notice.changes.some((change) => change.id === created.id && change.kind === 'Topic'))).toBe(true));
     await reader.dispose();

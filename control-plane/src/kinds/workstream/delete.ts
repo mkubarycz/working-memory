@@ -13,9 +13,7 @@ import { WORKSTREAM_KIND, asText, asError } from './shared.js';
 
 /**
  * Register the `ws-workstream-delete` tool on an MCP session's server.
- * Soft-deletes a Workstream by slug, or — with `restore: true` — undeletes a
- * previously soft-deleted one. Unknown/already-deleted slug (or an already-live
- * slug on restore) is rejected.
+ * Soft-deletes a Workstream by ID, or restores a previously deleted one.
  */
 export function registerWsWorkstreamDelete(server: McpServer, store: Store): void {
   server.registerTool(
@@ -23,49 +21,45 @@ export function registerWsWorkstreamDelete(server: McpServer, store: Store): voi
     {
       title: 'Workstream: Delete',
       description:
-        'Soft-delete a Workstream by `slug` (it drops out of ws-workstream-read). To undelete, ' +
-        'call with `restore: true`. Unknown/already-deleted slug (or an already-live slug on ' +
-        'restore) is rejected. Returns { ok, slug }.',
-      inputSchema: {
-        slug: z.string().describe('Slug of the workstream to delete (or restore).'),
+        'Soft-delete a Workstream by `id` (it drops out of ws-workstream-read). To undelete, ' +
+        'call with `restore: true`. Unknown/already-deleted IDs (or already-live IDs on ' +
+        'restore) are rejected. Returns { ok, id }.',
+      inputSchema: z.object({
+        id: z.string().min(1).describe('ID of the workstream to delete (or restore).'),
         restore: z
           .boolean()
           .optional()
           .describe('When true, undelete a previously soft-deleted workstream instead of deleting.'),
-      },
+      }).strict(),
     },
-    async ({ slug, restore }) => {
+    async ({ id, restore }) => {
       // For restore, the target row is soft-deleted, so it must be located with
       // includeDeleted; for a normal delete we want the live row only.
       const doc = store.getDocument({
-        slug,
+        id,
         kind: WORKSTREAM_KIND,
         includeDeleted: restore === true,
       });
       if (!doc || doc.kind !== WORKSTREAM_KIND) {
         return asError(
           restore === true
-            ? `No soft-deleted workstream with slug "${slug}" to restore.`
-            : `Unknown workstream slug: "${slug}". No live workstream with that slug.`,
+            ? `No soft-deleted workstream with ID "${id}" to restore.`
+            : `Unknown workstream ID: "${id}". No live workstream with that ID.`,
         );
       }
       try {
         if (restore === true) {
-          const live = store.getDocument({ slug, kind: WORKSTREAM_KIND });
-          if (live && live.metadata.id !== doc.metadata.id) {
-            return asError(`Cannot restore workstream "${slug}": its slug is already in use.`);
-          }
           store.restoreDocument({ id: doc.metadata.id });
         } else {
           store.deleteDocument({ id: doc.metadata.id });
         }
-        return asText({ ok: true, slug });
+        return asText({ ok: true, id });
       } catch (err) {
         if (err instanceof NotFoundError) {
           return asError(
             restore === true
-              ? `No soft-deleted workstream with slug "${slug}" to restore.`
-              : `Unknown or already-deleted workstream slug: "${slug}".`,
+              ? `No soft-deleted workstream with ID "${id}" to restore.`
+              : `Unknown or already-deleted workstream ID: "${id}".`,
           );
         }
         throw err;

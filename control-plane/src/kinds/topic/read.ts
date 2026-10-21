@@ -15,7 +15,7 @@ import { Topic, TOPIC_KIND, stringArray } from './topic.js';
 
 /**
  * Register the `ws-topic-read` tool on an MCP session's server. Reads ONE topic
- * by slug/id, or LISTs all live Topics (optionally filtered by substring or
+ * by ID, or LISTs all live Topics (optionally filtered by substring or
  * workstream membership), always returning the uniform `{ count, topics }` shape.
  */
 export function registerWsTopicRead(server: McpServer, store: Store): void {
@@ -24,14 +24,13 @@ export function registerWsTopicRead(server: McpServer, store: Store): void {
     {
       title: 'Topic: Read',
       description:
-        'Read one Topic or many. Read ONE by `slug` or `id`; otherwise LIST all Topics ' +
+        'Read one Topic or many. Read ONE by `id`; otherwise LIST all Topics ' +
         '(newest-first), with an optional `query` case-insensitive substring filter, a ' +
-        '`workstream` membership filter (topics whose `workstreams` include that slug), and a ' +
-        '`limit`. ALWAYS returns { count, topics } — a by-slug/id read yields a 0-or-1 element ' +
+        '`workstream` membership filter (topics whose `workstreams` include that ID), and a ' +
+        '`limit`. ALWAYS returns { count, topics } — a by-ID read yields a 0-or-1 element ' +
         'list, so callers get one uniform shape.',
-      inputSchema: {
-        slug: z.string().optional().describe('Read ONE topic by slug.'),
-        id: z.string().optional().describe('Read ONE topic by document id (uuid).'),
+      inputSchema: z.object({
+        id: z.string().min(1).optional().describe('Read ONE topic by document ID.'),
         query: z
           .string()
           .optional()
@@ -39,20 +38,20 @@ export function registerWsTopicRead(server: McpServer, store: Store): void {
         workstream: z
           .string()
           .optional()
-          .describe('Filter to topics whose `workstreams` include this slug (list mode only).'),
+          .describe('Filter to topics whose `workstreams` include this ID (list mode only).'),
         limit: z
           .number()
           .int()
           .positive()
           .optional()
           .describe('Max topics to return (list mode only).'),
-      },
+      }).strict(),
     },
-    async ({ slug, id, query, workstream, limit }) => {
-      // Single read: by id or slug. A foreign-kind id maps to nothing (the
+    async ({ id, query, workstream, limit }) => {
+      // Single read: by ID. A foreign-kind ID maps to nothing (the
       // `ws-topic-*` API only speaks Topics).
-      if (id !== undefined || slug !== undefined) {
-        const doc = store.getDocument({ id, slug, kind: TOPIC_KIND });
+      if (id !== undefined) {
+        const doc = store.getDocument({ id, kind: TOPIC_KIND });
         const topics = doc && doc.kind === TOPIC_KIND ? [new Topic(doc)] : [];
         return asText({ count: topics.length, topics });
       }

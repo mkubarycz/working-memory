@@ -16,7 +16,7 @@ import {
 
 const claims: ContainerClaim[] = CONTAINER_APP_FIXTURES.map((app) => ({
   id: app.id,
-  slug: app.id,
+
   title: app.displayName,
   repository: `/source/${app.id}`,
   runtime: { ...app.runtime, buildContext: `/source/${app.id}`, dockerfile: `/source/${app.id}/Dockerfile` },
@@ -36,7 +36,7 @@ describe('container app registry', () => {
     const custom: ContainerClaim = {
       ...claims[0],
       id: 'new-id',
-      slug: 'brand-new-app',
+
       title: 'My New App',
       sourceRevision: 'feature/new-app',
       desktop: { icon: 'beaker', embeddable: true },
@@ -44,17 +44,17 @@ describe('container app registry', () => {
     };
     const definitions = definitionsFromClaims([custom]);
     expect(definitions).toEqual([expect.objectContaining({
-      id: 'brand-new-app', displayName: 'My New App', icon: 'beaker', embeddable: true,
+      id: 'new-id', displayName: 'My New App', icon: 'beaker', embeddable: true,
     })]);
-    expect(claimRegistration(custom.slug, [custom])).toBe(custom);
-    expect(claimRegistration(custom.slug, [custom]).sourceRevision).toBe('feature/new-app');
-    expect(resolveContainerAppMentions('@brand-new-app help', definitions).appIds).toEqual([custom.slug]);
+    expect(claimRegistration(custom.id, [custom])).toBe(custom);
+    expect(claimRegistration(custom.id, [custom]).sourceRevision).toBe('feature/new-app');
+    expect(resolveContainerAppMentions('@new-id help', definitions).appIds).toEqual([custom.id]);
     expect(registeredUiUrl('http://127.0.0.1:4999/app/resource', definitions)).toBe(true);
     expect(registeredUiUrl('http://127.0.0.1:4999/application', definitions)).toBe(false);
     expect(registeredUiUrl('http://127.0.0.1:4998/app', definitions)).toBe(false);
     expect(definitionsFromClaims([])).toEqual([]);
     expect(definitionsFromClaims([{ ...custom, runtime: undefined }])).toEqual([]);
-    expect(() => claimRegistration(custom.slug, [])).toThrow('No live Docker ContainerClaim');
+    expect(() => claimRegistration(custom.id, [])).toThrow('No live Docker ContainerClaim');
   });
 
   it('uses authored metadata instead of overwriting claims with defaults', () => {
@@ -67,15 +67,15 @@ describe('container app registry', () => {
   });
 
   it('uses the same generic presentation defaults for every app ID', () => {
-    for (const slug of ['clarinet-hero', 'banking-app', 'sunset-chess', 'brand-new-app']) {
-      expect(definitionsFromClaims([{ ...claims[0], slug, desktop: undefined }])).toEqual([{
-        id: slug, displayName: claims[0].title, icon: 'server-environment',
+    for (const id of ['clarinet-hero', 'banking-app', 'sunset-chess', 'new-id']) {
+      expect(definitionsFromClaims([{ ...claims[0], id, desktop: undefined }])).toEqual([{
+        id: id, displayName: claims[0].title, icon: 'server-environment',
       }]);
     }
   });
 
   it('permits runtime UI navigation without requiring an MCP application contract', () => {
-    const claim = { ...claims[0], slug: 'simple-web-app', application: undefined };
+    const claim = { ...claims[0], id: 'simple-web-app', application: undefined };
     expect(registeredUiUrl('http://localhost:4173/', [claim])).toBe(true);
     expect(registeredUiUrl('http://localhost:4174/', [claim])).toBe(false);
   });
@@ -238,7 +238,7 @@ describe('container app registry', () => {
           id,
           displayName: id,
           claimTitle: id,
-          claimSlug: id,
+          claimId: id,
           repository: '',
           buildContext: '',
           dockerfile: '',
@@ -275,7 +275,7 @@ describe('container app registry', () => {
     await refreshRegisteredContainerApps(
       apps,
       async (id) => ({
-        id, displayName: id, claimTitle: id, claimSlug: id, repository: '', buildContext: '',
+        id, displayName: id, claimTitle: id, claimId: id, repository: '', buildContext: '',
         dockerfile: '', image: '', containerName: id, dockerContext: null, state: 'stopped',
         hostPort: 0, containerPort: 80, url: '', ready: false, lastAction: 'Inspected', error: null,
       }),
@@ -297,7 +297,7 @@ describe('container app registry', () => {
     const loading = loadRegisteredContainerApps(
       () => list,
       async (id) => ({
-        id, displayName: id, claimTitle: id, claimSlug: id, repository: '', buildContext: '',
+        id, displayName: id, claimTitle: id, claimId: id, repository: '', buildContext: '',
         dockerfile: '', image: '', containerName: id, dockerContext: null, state: 'healthy',
         hostPort: 0, containerPort: 80, url: '', ready: true, lastAction: 'Status refreshed', error: null,
       }),

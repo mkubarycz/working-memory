@@ -35,7 +35,6 @@ function isErrorResult(res: unknown): boolean {
 /** The legacy alert shape the ws-alert-* API maps documents to. */
 interface IAlert {
   id: string;
-  slug: string | null;
   title: string;
   description: string;
   recommended_action: string;
@@ -109,8 +108,7 @@ async function connect(store: Store): Promise<{
           arguments: { description: 'Disk is nearly full.' },
         }),
       );
-      // Alerts have NO slug — identity is the uuid `id`.
-      expect(created.slug).toBeNull();
+      expect(created).not.toHaveProperty('slug');
       expect(created.description).toBe('Disk is nearly full.');
       expect(created.title).toBe('Disk is nearly full.');
       expect(created.recommended_action).toBe('Review the message "Disk is nearly full." and decide the next step.');
@@ -284,7 +282,6 @@ async function connect(store: Store): Promise<{
       kind: 'Alert',
       metadata: {
         id: '22222222-2222-2222-2222-222222222222',
-        slug: null,
         labels: {},
         createdAt: 1000,
         updatedAt: 2000,
@@ -303,7 +300,6 @@ async function connect(store: Store): Promise<{
     };
     expect(JSON.parse(JSON.stringify(new Alert(env)))).toEqual({
       id: '22222222-2222-2222-2222-222222222222',
-      slug: null,
       title: 'Low disk',
       description: 'Disk is nearly full.',
       recommended_action: 'Free up space.',

@@ -37,8 +37,8 @@
   let autocompleteGeneration = 0;
   const creatingWorkstream = $derived(draft.newWorkstreamTitle !== undefined && !draft.workstream);
 
-  const relation = (slug: string, title: string): RelationVM => ({
-    slug,
+  const relation = (id: string, title: string): RelationVM => ({
+    id,
     title,
     agentMessageCount: 0,
     agentMessageSeverity: null,
@@ -47,10 +47,10 @@
   const topic = $derived<TopicVM>({
     kind: 'topic',
     title: draft.title,
-    slug: null,
+    id: null,
     status: 'open',
     topicType: draft.topicType,
-    typeMeta: draft.topicTypes.find((candidate) => candidate.slug === draft.topicType) ?? null,
+    typeMeta: draft.topicTypes.find((candidate) => candidate.id === draft.topicType) ?? null,
     topicTypes: draft.topicTypes,
     body: draft.body,
     createdAt: 0,
@@ -107,8 +107,8 @@
         body,
         currentTitle: draft.title,
         currentTopicType: draft.topicType,
-        topicTypes: draft.topicTypes.map(({ slug, label, description }) => ({
-          slug: slug ?? '',
+        topicTypes: draft.topicTypes.map(({ id, label, description }) => ({
+          id: id ?? '',
           label,
           description,
         })),

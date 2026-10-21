@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
-import { defaultStatus, validateMetadata, validateSpec } from '../registry.js';
+import { defaultStatus, validateSpec } from '../registry.js';
 import { asError, asText } from '../toolResult.js';
 import { ContainerClaim, CONTAINER_CLAIM_KIND } from './containerClaim.js';
 
@@ -11,11 +11,10 @@ export function registerWsContainerClaimCreate(server: McpServer, store: Store):
     {
       title: 'Container Claim: Create',
       description:
-        'Declare the desire to have a container running. Persists intent only. Provide a unique ' +
-        '`slug`, human `title`, repository/codebase reference, and optional source revision. ' +
+        'Declare the desire to have a container running. Persists intent only. Provide a human ' +
+        '`title`, repository/codebase reference, and optional source revision. Returns a document ID. ' +
         'Omitting `sourceRevision` means the repository default.',
-      inputSchema: {
-        slug: z.string().describe('Stable claim slug: lowercase words separated with dashes.'),
+      inputSchema: z.object({
         title: z.string().describe('Human-readable claim title (1-200 chars).'),
         repository: z.string().describe('Repository or codebase reference (1-500 chars).'),
         sourceRevision: z
@@ -30,9 +29,9 @@ export function registerWsContainerClaimCreate(server: McpServer, store: Store):
         desktop: z.record(z.string(), z.unknown()).optional().describe(
           'Optional desktop presentation: codicon icon name and embeddable boolean. Docker claims appear automatically in the desktop app catalog.',
         ),
-      },
+      }).strict(),
     },
-    async ({ slug, title, repository, sourceRevision, runtime, mcp, application, desktop }) => {
+    async ({ title, repository, sourceRevision, runtime, mcp, application, desktop }) => {
       const specInput: Record<string, unknown> = { title, repository };
       if (sourceRevision !== undefined) {
         specInput.sourceRevision = sourceRevision;
@@ -42,11 +41,9 @@ export function registerWsContainerClaimCreate(server: McpServer, store: Store):
       if (application !== undefined) specInput.application = application;
       if (desktop !== undefined) specInput.desktop = desktop;
       try {
-        validateMetadata(CONTAINER_CLAIM_KIND, { slug, store });
         const spec = validateSpec(CONTAINER_CLAIM_KIND, specInput);
         const doc = store.createDocument({
           kind: CONTAINER_CLAIM_KIND,
-          slug,
           spec,
           status: defaultStatus(CONTAINER_CLAIM_KIND),
         });

@@ -2,8 +2,8 @@ import type { TopicAutocompleteInput, TopicAutocompleteResult } from '../shared/
 
 export function topicAutocompletePrompt(input: TopicAutocompleteInput): string {
   const allowedTypes = input.topicTypes
-    .filter((type) => type.slug.trim())
-    .map((type) => `${type.slug}: ${type.label}${type.description ? ` - ${type.description}` : ''}`)
+    .filter((type) => type.id.trim())
+    .map((type) => `${type.id}: ${type.label}${type.description ? ` - ${type.description}` : ''}`)
     .join('\n');
   const workstream = input.currentWorkstreamTitle !== undefined;
   return 'Suggest a concise title and the best topic type for this draft. ' +
@@ -35,7 +35,7 @@ export function parseTopicAutocomplete(text: string, input: TopicAutocompleteInp
   const requestedType = 'topicType' in suggestion && typeof suggestion.topicType === 'string'
     ? suggestion.topicType.trim()
     : '';
-  const topicType = input.topicTypes.some((type) => type.slug === requestedType)
+  const topicType = input.topicTypes.some((type) => type.id === requestedType)
     ? requestedType
     : input.currentTopicType;
   if (!title) throw new Error('Autocomplete model did not suggest a title.');

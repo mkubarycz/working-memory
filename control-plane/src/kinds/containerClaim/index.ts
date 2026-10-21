@@ -69,25 +69,6 @@ const containerClaim: KindModule = {
         }).strict().optional(),
       })
       .strict(),
-    validateMetadata: ({ slug, store, excludeId }) => {
-      const convention =
-        'A ContainerClaim requires a unique slug: lowercase words separated with dashes.';
-      if (
-        typeof slug !== 'string' ||
-        slug.trim() === '' ||
-        !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(slug)
-      ) {
-        throw new Error(convention);
-      }
-      const existing = store.getDocument({
-        slug,
-        kind: CONTAINER_CLAIM_KIND,
-        includeDeleted: true,
-      });
-      if (existing && existing.metadata.id !== excludeId) {
-        throw new Error(`${convention} "${slug}" is already in use.`);
-      }
-    },
     fts: (row) =>
       `${row.spec.title}\n${row.spec.repository}\n${row.spec.sourceRevision ?? ''}\n` +
       `${(row.spec.application as { id?: string } | undefined)?.id ?? ''}`,

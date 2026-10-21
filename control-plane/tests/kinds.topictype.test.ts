@@ -38,7 +38,7 @@ function jsonOf<T>(res: unknown): T {
 
 interface Envelope {
   kind: string;
-  metadata: { id: string; slug: string | null; resourceVersion: number };
+  metadata: { id: string; resourceVersion: number };
   spec: Record<string, unknown>;
   status: Record<string, unknown>;
 }
@@ -175,7 +175,6 @@ describe('TopicType kind loader', () => {
           name: 'wm-document-create',
           arguments: {
             kind: 'TopicType',
-            slug: 'feature',
             spec: { label: 'Feature', icon: 'rocket', description: 'Ships things.' },
           },
         }),
@@ -193,7 +192,8 @@ describe('TopicType kind loader', () => {
         await client.callTool({ name: 'wm-document-read', arguments: { kind: 'TopicType' } }),
       );
       expect(list.count).toBe(1);
-      expect(list.documents[0]?.metadata.slug).toBe('feature');
+      expect(list.documents[0]?.metadata.id).toBe(created.metadata.id);
+      expect(list.documents[0]?.metadata).not.toHaveProperty('slug');
     } finally {
       await client.close();
       await server.close();
@@ -210,7 +210,7 @@ describe('TopicType kind loader', () => {
       await client.connect(transport);
       const res = await client.callTool({
         name: 'wm-document-create',
-        arguments: { kind: 'TopicType', slug: 'bad', spec: { label: 'L', description: 'x' } },
+        arguments: { kind: 'TopicType', spec: { label: 'L', description: 'x' } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);
       expect(store.listDocuments({ kind: 'TopicType' })).toEqual([]);

@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { AgentMessage, Topic, Workstream } from '../shared/controlPlaneClient';
 import { buildAgentMessagesPanel, buildWorkstreamPanels } from '../shared/panelData';
 
-function workstream(slug: string, status: Workstream['status']): Workstream {
+function workstream(id: string, status: Workstream['status']): Workstream {
   return {
-    id: `id-${slug}`,
-    slug,
-    title: slug,
+    id: `id-${id}`,
+
+    title: id,
     status,
     closure: null,
     position: 0,
@@ -17,16 +17,16 @@ function workstream(slug: string, status: Workstream['status']): Workstream {
   };
 }
 
-function topic(slug: string, workstreams: string[], status: Topic['status'] = 'open'): Topic {
+function topic(id: string, workstreams: string[], status: Topic['status'] = 'open'): Topic {
   return {
-    id: `id-${slug}`,
-    slug,
-    title: slug,
+    id: `id-${id}`,
+
+    title: id,
     body: '',
     status,
     topicType: 'topic',
     parents: [],
-    workstreams,
+    workstreams: workstreams.map((id) => `id-${id}`),
     focusedWorkstreams: [],
     created_at: 1,
     updated_at: 1,
@@ -63,8 +63,8 @@ describe('active topic backlog', () => {
 describe('canonical agent message panels', () => {
   const message: AgentMessage = {
     agent_id: 'agent-1', agent_name: 'Review Agent',
-    id: 'message-1', slug: null, title: 'Review', description: '**Review**', recommended_action: 'Review PR',
-    category: 'approval', severity: 'warning', status: 'open', attention: true, topics: ['one', 'two'],
+    id: 'message-1',  title: 'Review', description: '**Review**', recommended_action: 'Review PR',
+    category: 'approval', severity: 'warning', status: 'open', attention: true, topics: ['id-one', 'id-two'],
     relations: [], dedupe_key: null, created_by: 'agent', created_at: 1, updated_at: 2, resourceVersion: 1,
   };
 
@@ -115,10 +115,10 @@ describe('canonical agent message panels', () => {
       });
       const progress = panels.active.items.find((item) => item.kind === 'workstream-section' && item.section === 'progress');
       expect(progress).toMatchObject({ workstreams: [
-        { slug: 'active', agentMessageCount: 2, children: [{ children: [
+        { id: 'id-active', agentMessageCount: 2, children: [{ children: [
           { label: 'one', agentMessageCount: 1 }, { label: 'two', agentMessageCount: 0 },
         ] }] },
-        { slug: 'other', agentMessageCount: 0 },
+        { id: 'id-other', agentMessageCount: 0 },
       ] });
   });
 });

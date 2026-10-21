@@ -77,7 +77,7 @@ export interface ContainerAppStatus {
   id: ContainerAppId;
   displayName: string;
   claimTitle: string;
-  claimSlug: string;
+  claimId: string;
   repository: string;
   buildContext: string;
   dockerfile: string;
@@ -185,7 +185,7 @@ export interface TopicAutocompleteInput {
   body: string;
   currentTitle: string;
   currentTopicType: string;
-  topicTypes: Array<{ slug: string; label: string; description: string }>;
+  topicTypes: Array<{ id: string; label: string; description: string }>;
   currentWorkstreamTitle?: string;
 }
 
@@ -227,7 +227,7 @@ export interface ChatContext {
 interface ChatContextDocument {
   kind: string;
   id: string;
-  slug: string | null;
+
   title: string;
 }
 
@@ -238,7 +238,7 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
     || document.kind === 'topic-backlog'
     || document.kind === 'settings'
   ) return undefined;
-  const identifier = (document.slug ?? document.id).trim();
+  const identifier = (document.id).trim();
   if (!identifier) return undefined;
   const routeKind = document.kind === 'AgentMessage' || document.kind === 'alert'
     ? 'agent-message'
@@ -295,7 +295,7 @@ export interface TopicCreateInput {
 }
 
 export interface DesktopWorkstreamReorderUpdate {
-  slug: string;
+  id: string;
   section: WorkstreamSection;
   position: number;
 }
@@ -382,7 +382,7 @@ export type DocumentChangeEvent = { mcpUrl: string } & (
 );
 
 export interface SharedTopicReceipt {
-  id: string; slug: string; title: string; duplicate: boolean; statusUrl: string; submittedAt: string;
+  id: string;  title: string; duplicate: boolean; statusUrl: string; submittedAt: string;
 }
 export interface FeedbackServer { id: string; name: string; address: string }
 export interface FeedbackContext {
@@ -393,8 +393,8 @@ export interface FeedbackPreparation { servers: FeedbackServer[]; context: Feedb
 export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt } | { status: 'choose'; servers: FeedbackServer[] };
 
 export interface DesktopApi extends HostTaskDesktopApi {
-  prepareFeedback(slug: string, requestId: string): Promise<FeedbackPreparation>;
-  sendFeedback(slug: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
+  prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
+  sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
   startDocumentChanges(): Promise<void>;
   onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;
@@ -441,9 +441,9 @@ export interface DesktopApi extends HostTaskDesktopApi {
   saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;
   saveTopic(identifier: string, patch: TopicPatch): Promise<DocumentVM>;
   listTopicTypes(): Promise<TopicTypeMetaVM[]>;
-  createWorkstream(title: string): Promise<{ slug: string; title: string }>;
+  createWorkstream(title: string): Promise<{ id: string; title: string }>;
   createTopic(input: TopicCreateInput): Promise<DocumentVM>;
-  reparentTopic(slug: string, parent: string | null): Promise<void>;
+  reparentTopic(id: string, parent: string | null): Promise<void>;
   uploadAttachment(file: AttachmentUpload): Promise<AttachmentRef>;
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;
   getAgentMessages(input?: { limit?: number; offset?: number }): Promise<AgentMessageVM[]>;

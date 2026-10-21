@@ -18,7 +18,7 @@ const NOW = 1_000_000_000_000;
 function alert(over: Partial<Alert>): Alert {
   return {
     id: 'a1',
-    slug: null,
+
     title: 'Title',
     description: 'Desc',
     recommended_action: '',
@@ -43,7 +43,7 @@ describe('buildAlertVMs', () => {
     expect(vms.map((v) => v.id)).toEqual(['in']);
   });
 
-  test('intersects against multiple member slugs (workstream scope)', () => {
+  test('intersects against multiple member ids (workstream scope)', () => {
     const alerts = [
       alert({ id: 'a', topics: ['t2'] }),
       alert({ id: 'b', topics: ['t9'] }),
@@ -108,7 +108,7 @@ describe('buildAlertVMs', () => {
 });
 
 describe('alertBubbleForTopic', () => {
-  test('counts only OPEN alerts referencing the slug', () => {
+  test('counts only OPEN alerts referencing the id', () => {
     const alerts = [
       alert({ id: 'a', status: 'alert', topics: ['t1'] }),
       alert({ id: 'i', status: 'informational', topics: ['t1'] }),
@@ -146,7 +146,7 @@ describe('alertBubbleForTopic', () => {
     expect(alertBubbleForTopic(alerts, 't1').severity).toBe('informational');
   });
 
-  test('empty bubble when nothing open references the slug', () => {
+  test('empty bubble when nothing open references the id', () => {
     const b = alertBubbleForTopic([alert({ topics: ['x'] })], 't1');
     expect(b).toEqual({ count: 0, severity: null });
   });

@@ -458,7 +458,7 @@ async function openWorkstream(query: string): Promise<ChatResult> {
   return {
     message: `Opened ${workstream.title}.`,
     status: 'succeeded',
-    workstream: (await loadWorkstreamViewModel(controlPlane(), workstream.slug ?? workstream.id)) ?? undefined,
+    workstream: (await loadWorkstreamViewModel(controlPlane(), workstream.id)) ?? undefined,
   };
 }
 
@@ -477,7 +477,7 @@ async function loadResource(
     const controlPlaneKind = kind === 'alert' || kind === 'agent-message' ? 'AgentMessage' : kind === 'topic-type' ? 'TopicType' : undefined;
     let result = await controlPlane().getDocument({ id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) });
     if (result.available && !result.document && controlPlaneKind) {
-      result = await controlPlane().getDocument({ slug: identifier, kind: controlPlaneKind });
+      result = await controlPlane().getDocument({ id: identifier, kind: controlPlaneKind });
     }
     if (!result.available) throw new Error(result.error ?? 'Control plane is unavailable.');
     if (result.document) return toGenericDocumentViewModel(result.document);
@@ -539,10 +539,10 @@ async function prepareResourceDrag(
   let result = await controlPlane().getDocument(
     kind === 'document' || kind === 'alert' || kind === 'agent-message'
       ? { id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) }
-      : { slug: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) },
+      : { id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) },
   );
   if (result.available && !result.document && (kind === 'alert' || kind === 'agent-message')) {
-    result = await controlPlane().getDocument({ slug: identifier, kind: 'AgentMessage' });
+    result = await controlPlane().getDocument({ id: identifier, kind: 'AgentMessage' });
   }
   if (!result.available) {
     throw new Error(result.error ?? 'Working Memory control plane is unavailable.');
@@ -564,7 +564,7 @@ async function prepareResourceDrag(
 async function invokeAction(workstream: string, command: string, args: unknown[]): Promise<DocumentVM> {
   const action = resolveDesktopAction(command, args, workstream);
   if (action.kind === 'workstream') {
-    await controlPlane().wsUpdate({ slug: action.slug, status: action.section });
+    await controlPlane().wsUpdate({ id: action.id, status: action.section });
   } else if (action.kind === 'topic') {
     if (action.operation === 'attach') await controlPlane().topicAttachWorkstream(action);
     else if (action.operation === 'detach') await controlPlane().topicDetachWorkstream(action);
@@ -721,7 +721,7 @@ async function autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAu
 }
 
 async function requireContainerAppId(rawId: string): Promise<string> {
-  return (await liveClaim(rawId)).slug;
+  return (await liveClaim(rawId)).id;
 }
 
 async function readContainerAppDefinitions(): Promise<ReturnType<typeof containerAppDefinitions>> {
@@ -751,11 +751,11 @@ async function containerAppClaim(
   client: ControlPlaneClient,
   id: string,
 ): Promise<ContainerClaim> {
-  return containerAppRegistration(id, await client.containerClaimRead({ slug: id }));
+  return containerAppRegistration(id, await client.containerClaimRead({ id: id }));
 }
 
 async function currentClaim(id: string): Promise<ContainerClaim | undefined> {
-  const [claim] = await controlPlane().containerClaimRead({ slug: id });
+  const [claim] = await controlPlane().containerClaimRead({ id: id });
   return claim?.runtime ? claim : undefined;
 }
 
@@ -814,13 +814,13 @@ function registerIpc(): void {
     vault: new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets')),
     platform: process.platform,
   });
-  ipcMain.handle('feedback:prepare', (_event, slug: string, requestId: string) => {
+  ipcMain.handle('feedback:prepare', (_event, id: string, requestId: string) => {
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
-    return feedbackSender.prepare(slug, requestId);
+    return feedbackSender.prepare(id, requestId);
   });
-  ipcMain.handle('feedback:send', (_event, slug: string, requestId: string, serverId?: string) => {
+  ipcMain.handle('feedback:send', (_event, id: string, requestId: string, serverId?: string) => {
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
-    return feedbackSender.send(slug, requestId, serverId);
+    return feedbackSender.send(id, requestId, serverId);
   });
   ipcMain.handle('documents:watch', () => startDocumentChanges());
   ipcMain.on('app:restart', () => {
@@ -1034,25 +1034,25 @@ function registerIpc(): void {
     const title = rawTitle.trim();
     if (!title || title.length > 120) throw new Error('Enter a workstream title of 1 to 120 characters.');
     const created = await controlPlane().wsCreate({ title, status: 'progress' });
-    if (!created.slug) throw new Error('The created workstream did not return a slug.');
-    return { slug: created.slug, title: created.title };
+    if (!created.id) throw new Error('The created workstream did not return a id.');
+    return { id: created.id, title: created.title };
   });
   ipcMain.handle('workstream:save', async (_event, identifier: string, patch: { title?: string; status?: string }) => {
     const current = await loadWorkstreamViewModel(controlPlane(), identifier);
-    if (!current?.slug) throw new Error('This workstream cannot be edited.');
-    await controlPlane().wsUpdate({ slug: current.slug, ...patch });
-    return loadResource('workstream', current.slug);
+    if (!current?.id) throw new Error('This workstream cannot be edited.');
+    await controlPlane().wsUpdate({ id: current.id, ...patch });
+    return loadResource('workstream', current.id);
   });
   ipcMain.handle('topic:save', async (_event, identifier: string, patch: TopicPatch) => {
     const current = await loadTopicViewModel(controlPlane(), identifier);
-    if (!current?.slug) throw new Error('This topic cannot be edited.');
-    await controlPlane().topicUpdate({ slug: current.slug, ...patch });
-    return loadResource('topic', current.slug);
+    if (!current?.id) throw new Error('This topic cannot be edited.');
+    await controlPlane().topicUpdate({ id: current.id, ...patch });
+    return loadResource('topic', current.id);
   });
   ipcMain.handle('topic:list-types', async () => (await controlPlane().topicTypeRead())
-    .filter((topicType) => topicType.slug)
+    .filter((topicType) => topicType.id)
     .map((topicType) => ({
-      slug: topicType.slug,
+      id: topicType.id,
       label: topicType.label,
       icon: topicType.icon,
       description: topicType.description,
@@ -1077,10 +1077,10 @@ function registerIpc(): void {
       parents: input.parent ? [input.parent] : [],
       workstreams: [workstream],
     });
-    return loadResource('topic', created.slug ?? created.id);
+    return loadResource('topic', created.id);
   });
-  ipcMain.handle('topic:reparent', async (_event, slug: string, parent: string | null) => {
-    await controlPlane().topicUpdate({ slug, parents: parent ? [parent] : [] });
+  ipcMain.handle('topic:reparent', async (_event, id: string, parent: string | null) => {
+    await controlPlane().topicUpdate({ id, parents: parent ? [parent] : [] });
   });
   ipcMain.handle('attachment:upload', async (_event, file: {
     name: string;
@@ -1110,12 +1110,12 @@ function registerIpc(): void {
     return { id: payload.id, filename: payload.filename, mimeType: payload.mimeType };
   });
   ipcMain.handle('topic:toggle-pin', async (_event, workstream: string, topic: string) => {
-    const [current] = await controlPlane().topicRead({ slug: topic });
-    if (!current?.slug) throw new Error(`Topic "${topic}" was not found.`);
+    const [current] = await controlPlane().topicRead({ id: topic });
+    if (!current?.id) throw new Error(`Topic "${topic}" was not found.`);
     if (current.focusedWorkstreams.includes(workstream)) {
-      await controlPlane().topicClearFocus({ slug: current.slug, workstream });
+      await controlPlane().topicClearFocus({ id: current.id, workstream });
     } else {
-      await controlPlane().topicSetFocus({ slug: current.slug, workstream });
+      await controlPlane().topicSetFocus({ id: current.id, workstream });
     }
     return loadResource('workstream', workstream);
   });
@@ -1446,12 +1446,12 @@ if (!ownsSingleInstanceLock) {
       process.platform,
       join(app.getPath('userData'), 'credential-vault.key'),
     );
-    feedbackSender = new FeedbackSender(async (slug) => {
+    feedbackSender = new FeedbackSender(async (id) => {
       const client = controlPlane();
       const environment = environmentManager.currentEnvironment;
       if (!environment) throw new Error('No Working Memory environment is selected.');
       const sourceUrl = environment.mcpUrl;
-      const [[topic], ping] = await Promise.all([client.topicRead({ slug }), client.callTool('wm-ping', {})]);
+      const [[topic], ping] = await Promise.all([client.topicRead({ id }), client.callTool('wm-ping', {})]);
       if (!topic) throw new Error('The feedback topic was not found.');
       if (!ping.ok) throw new Error(`Unable to read the selected backend version: ${ping.error ?? 'Backend unavailable.'}`);
       const result = ping.result;

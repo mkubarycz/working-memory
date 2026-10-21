@@ -15,7 +15,7 @@ import { Workstream } from './workstream.js';
 
 /**
  * Register the `ws-workstream-read` tool on an MCP session's server. Reads ONE
- * workstream by slug/id, or LISTs all live Workstreams (optionally filtered),
+ * workstream by ID, or LISTs all live Workstreams (optionally filtered),
  * always returning the uniform `{ count, workstreams }` shape.
  */
 export function registerWsWorkstreamRead(server: McpServer, store: Store): void {
@@ -24,13 +24,12 @@ export function registerWsWorkstreamRead(server: McpServer, store: Store): void 
     {
       title: 'Workstream: Read',
       description:
-        'Read one Workstream or many. Read ONE by `slug` or `id`; otherwise LIST all Workstreams ' +
+        'Read one Workstream or many. Read ONE by `id`; otherwise LIST all Workstreams ' +
         '(newest-first), with an optional `query` case-insensitive substring filter and a `limit`. ' +
-        'ALWAYS returns { count, workstreams } — a by-slug/id read yields a 0-or-1 element list, so ' +
+        'ALWAYS returns { count, workstreams } — a by-ID read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
-      inputSchema: {
-        slug: z.string().optional().describe('Read ONE workstream by slug.'),
-        id: z.string().optional().describe('Read ONE workstream by document id (uuid).'),
+      inputSchema: z.object({
+        id: z.string().min(1).optional().describe('Read ONE workstream by document ID.'),
         query: z
           .string()
           .optional()
@@ -41,13 +40,13 @@ export function registerWsWorkstreamRead(server: McpServer, store: Store): void 
           .positive()
           .optional()
           .describe('Max workstreams to return (list mode only).'),
-      },
+      }).strict(),
     },
-    async ({ slug, id, query, limit }) => {
-      // Single read: by id or slug. A foreign-kind id maps to nothing (the
+    async ({ id, query, limit }) => {
+      // Single read: by ID. A foreign-kind ID maps to nothing (the
       // `ws-workstream-*` API only speaks Workstreams).
-      if (id !== undefined || slug !== undefined) {
-        const doc = store.getDocument({ id, slug, kind: WORKSTREAM_KIND });
+      if (id !== undefined) {
+        const doc = store.getDocument({ id, kind: WORKSTREAM_KIND });
         const workstreams = doc && doc.kind === WORKSTREAM_KIND ? [new Workstream(doc)] : [];
         return asText({ count: workstreams.length, workstreams });
       }

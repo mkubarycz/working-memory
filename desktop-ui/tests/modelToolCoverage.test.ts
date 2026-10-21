@@ -49,17 +49,18 @@ describe('desktop tool coverage', () => {
   it('round-trips the canonical typed client against the registered message tools', async () => {
     const typed = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
     try {
-      const topic = await typed.topicCreate({ title: 'Review topic', slug: 'review-topic' });
+      await typed.topicTypeCreate({ label: 'Topic', icon: 'notebook', description: 'Default' });
+      const topic = await typed.topicCreate({ title: 'Review topic' });
       const agent = await typed.agentCreate({ name: 'Desktop Integration Agent' });
       const created = await typed.agentMessageCreate({
         agent_id: agent.id,
         title: 'Review this change', category: 'approval', description: '**Review** this change', attention: true,
         recommended_action: 'Review the pull request and explicitly approve or request changes.',
-        topics: ['review-topic'], relations: [{ kind: 'Topic', id: topic.id }],
+        topics: [topic.id], relations: [{ kind: 'Topic', id: topic.id }],
         provenance: { source: 'desktop-integration' },
       });
       expect(created).toMatchObject({
-        slug: null, category: 'approval', status: 'open', attention: true,
+        id: created.id, category: 'approval', status: 'open', attention: true,
         description: '**Review** this change',
       });
       expect(await typed.agentMessageRead({ id: created.id })).toEqual([created]);

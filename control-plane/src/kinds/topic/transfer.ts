@@ -14,52 +14,51 @@ export function registerWsTopicTransfer(server: McpServer, store: Store): void {
       description:
         'Atomically copy or move a topic and all of its descendants between workstreams. ' +
         'Copy keeps source membership; move removes it and clears source focus.',
-      inputSchema: {
-        slug: z.string().min(1),
+      inputSchema: z.object({
+        id: z.string().min(1),
         sourceWorkstream: z.string().min(1),
         targetWorkstream: z.string().min(1),
         move: z.boolean().default(false),
-      },
+      }).strict(),
     },
-    async ({ slug, sourceWorkstream, targetWorkstream, move }) => {
+    async ({ id, sourceWorkstream, targetWorkstream, move }) => {
       if (sourceWorkstream === targetWorkstream) return asError('Source and target workstreams must differ.');
       for (const workstream of [sourceWorkstream, targetWorkstream]) {
-        if (!store.getDocument({ slug: workstream, kind: WORKSTREAM_KIND })) {
-          return asError(`Unknown workstream slug: "${workstream}". No live workstream with that slug.`);
+        if (!store.getDocument({ id: workstream, kind: WORKSTREAM_KIND })) {
+          return asError(`Unknown workstream ID: "${workstream}". No live workstream with that ID.`);
         }
       }
 
       const documents = store.listDocuments({ kind: TOPIC_KIND });
-      const bySlug = new Map(documents.flatMap((document) =>
-        document.metadata.slug ? [[document.metadata.slug, document] as const] : []));
-      const root = bySlug.get(slug);
-      if (!root) return asError(`Unknown topic slug: "${slug}". No live topic with that slug.`);
+      const byId = new Map(documents.map((document) => [document.metadata.id, document]));
+      const root = byId.get(id);
+      if (!root) return asError(`Unknown topic ID: "${id}". No live topic with that ID.`);
       if (!stringArray(root.spec.workstreams).includes(sourceWorkstream)) {
-        return asError(`Topic "${slug}" does not belong to source workstream "${sourceWorkstream}".`);
+        return asError(`Topic "${id}" does not belong to source workstream "${sourceWorkstream}".`);
       }
 
       const children = new Map<string, string[]>();
       for (const document of documents) {
-        const childSlug = document.metadata.slug;
-        if (!childSlug || !stringArray(document.spec.workstreams).includes(sourceWorkstream)) continue;
+        const childId = document.metadata.id;
+        if (!stringArray(document.spec.workstreams).includes(sourceWorkstream)) continue;
         for (const parent of stringArray(document.spec.parents)) {
-          children.set(parent, [...(children.get(parent) ?? []), childSlug]);
+          children.set(parent, [...(children.get(parent) ?? []), childId]);
         }
       }
-      const transferSlugs: string[] = [];
-      const pending = [slug];
+      const transferIds: string[] = [];
+      const pending = [id];
       const visited = new Set<string>();
       while (pending.length > 0) {
         const current = pending.shift()!;
         if (visited.has(current)) continue;
         visited.add(current);
-        if (bySlug.has(current)) transferSlugs.push(current);
+        if (byId.has(current)) transferIds.push(current);
         pending.push(...(children.get(current) ?? []));
       }
 
       const batch: UpdateDocumentInput[] = [];
-      for (const transferSlug of transferSlugs) {
-        const existing = bySlug.get(transferSlug)!;
+      for (const transferId of transferIds) {
+        const existing = byId.get(transferId)!;
         const currentWorkstreams = stringArray(existing.spec.workstreams);
         const workstreams = currentWorkstreams.filter((workstream) => !move || workstream !== sourceWorkstream);
         if (!workstreams.includes(targetWorkstream)) workstreams.push(targetWorkstream);
@@ -82,8 +81,8 @@ export function registerWsTopicTransfer(server: McpServer, store: Store): void {
       try {
         const updated = batch.length > 0 ? store.updateDocuments(batch) : [];
         const updatedById = new Map(updated.map((document) => [document.metadata.id, document]));
-        return asText(transferSlugs.map((transferSlug) => {
-          const existing = bySlug.get(transferSlug)!;
+        return asText(transferIds.map((transferId) => {
+          const existing = byId.get(transferId)!;
           return new Topic(updatedById.get(existing.metadata.id) ?? existing);
         }));
       } catch (error) {

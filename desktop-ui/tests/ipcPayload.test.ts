@@ -26,7 +26,7 @@ describe('toIpcPayload', () => {
       action: {
         command: 'working-memory.setWorkstreamSection',
         title: 'Send to In Progress',
-        args: [{ slug: 'queued-item', section: 'progress' }],
+        args: [{ id: 'queued-item', section: 'progress' }],
       },
     });
     const args = menuItem.action.args;
@@ -34,7 +34,7 @@ describe('toIpcPayload', () => {
     expect(() => structuredClone(args)).toThrow();
 
     const payload = toIpcPayload(args);
-    expect(payload).toEqual([{ slug: 'queued-item', section: 'progress' }]);
+    expect(payload).toEqual([{ id: 'queued-item', section: 'progress' }]);
     expect(() => structuredClone(payload)).not.toThrow();
   });
 
@@ -51,14 +51,14 @@ describe('toIpcPayload', () => {
 
   it('normalizes null-prototype records to ordinary cloneable objects', () => {
     const input = Object.assign(Object.create(null) as Record<string, unknown>, {
-      slug: 'queued-item',
+      id: 'queued-item',
       section: 'progress',
     });
 
     const payload = toIpcPayload(input);
 
     expect(Object.getPrototypeOf(payload)).toBe(Object.prototype);
-    expect(payload).toEqual({ slug: 'queued-item', section: 'progress' });
+    expect(payload).toEqual({ id: 'queued-item', section: 'progress' });
     expect(() => structuredClone(payload)).not.toThrow();
   });
 

@@ -31,12 +31,11 @@ describe('ControlPlaneClient write methods', () => {
     try {
       const created = await client.createDocument({
         kind: 'Workstream',
-        slug: 'ws-write',
         spec: { title: 'Write Path' },
       });
       expect(created.available).toBe(true);
       expect(created.document?.kind).toBe('Workstream');
-      expect(created.document?.metadata.slug).toBe('ws-write');
+      expect(created.document?.metadata.id).toBeTruthy();
       // Kind default applied server-side.
       expect(created.document?.spec.status).toBe('progress');
       expect(created.document?.metadata.resourceVersion).toBe(1);
@@ -78,7 +77,6 @@ describe('ControlPlaneClient write methods', () => {
     try {
       const created = await client.createDocument({
         kind: 'Workstream',
-        slug: 'ws-conflict',
         spec: { title: 'Conflict' },
       });
       const id = created.document!.metadata.id;
@@ -121,7 +119,7 @@ describe('ControlPlaneClient write methods', () => {
         startedAt: 1_000,
         provider: { endpoint: 'http://127.0.0.1:11434', mode: 'local', model: 'qwen3:14b' },
         request: { userText: 'Read the selected topic.' },
-        primaryScope: { kind: 'Topic', id: 'topic-1', slug: 'selected-topic' },
+        primaryScope: { kind: 'Topic', id: 'topic-1',  },
       });
       const appended = await client.commandJournalAppend({
         id: created.id,
@@ -159,37 +157,32 @@ describe('ControlPlaneClient write methods', () => {
     const mcpUrl = `${server.url}/mcp`;
     const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
     try {
-      await client.createDocument({
-        kind: 'Workstream',
-        slug: 'ws-membership',
-        spec: { title: 'Membership' },
-      });
-      await client.topicCreate({
-        slug: 'topic-membership',
+      const workstream = await client.wsCreate({ title: 'Membership' });
+      await client.topicTypeCreate({ label: 'Topic', icon: 'notebook', description: 'Default' });
+      const topic = await client.topicCreate({
         title: 'Membership Topic',
-        workstreams: ['ws-seed'],
       });
 
       // Attach adds the workstream to the topic's membership.
       const attached = await client.topicAttachWorkstream({
-        slug: 'topic-membership',
-        workstream: 'ws-membership',
+        id: topic.id,
+        workstream: workstream.id,
       });
-      expect(attached.workstreams).toContain('ws-membership');
+      expect(attached.workstreams).toContain(workstream.id);
 
       // Attaching again is idempotent — no duplicate.
       const again = await client.topicAttachWorkstream({
-        slug: 'topic-membership',
-        workstream: 'ws-membership',
+        id: topic.id,
+        workstream: workstream.id,
       });
-      expect(again.workstreams.filter((w) => w === 'ws-membership')).toHaveLength(1);
+      expect(again.workstreams.filter((w) => w === workstream.id)).toHaveLength(1);
 
       // Detach removes it.
       const detached = await client.topicDetachWorkstream({
-        slug: 'topic-membership',
-        workstream: 'ws-membership',
+        id: topic.id,
+        workstream: workstream.id,
       });
-      expect(detached.workstreams).not.toContain('ws-membership');
+      expect(detached.workstreams).not.toContain(workstream.id);
     } finally {
       await client.dispose();
     }
@@ -199,34 +192,31 @@ describe('ControlPlaneClient write methods', () => {
     server = await startServer({ port: 0 });
     const client = new ControlPlaneClient({ resolveUrl: () => `${server!.url}/mcp` });
     try {
-      await Promise.all(['source', 'target', 'moved'].map((slug) => client.createDocument({
-        kind: 'Workstream', slug, spec: { title: slug },
-      })));
-      await client.topicCreate({ slug: 'parent', title: 'Parent', workstreams: ['source'] });
-      await client.topicCreate({
-        slug: 'child', title: 'Child', parents: ['parent'], workstreams: ['source'],
-      });
+      const [source, target, destination] = await Promise.all(['Source', 'Target', 'Moved'].map((title) => client.wsCreate({ title })));
+      await client.topicTypeCreate({ label: 'Topic', icon: 'notebook', description: 'Default' });
+      const parent = await client.topicCreate({ title: 'Parent', workstreams: [source.id] });
+      const child = await client.topicCreate({ title: 'Child', parents: [parent.id], workstreams: [source.id] });
 
       const copied = await client.topicTransfer({
-        slug: 'parent', sourceWorkstream: 'source', targetWorkstream: 'target',
+        id: parent.id, sourceWorkstream: source.id, targetWorkstream: target.id,
       });
-      expect(copied.map((topic) => topic.slug).sort()).toEqual(['child', 'parent']);
-      expect(copied.every((topic) => topic.workstreams.includes('source') && topic.workstreams.includes('target')))
+      expect(copied.map((topic) => topic.id).sort()).toEqual([child.id, parent.id].sort());
+      expect(copied.every((topic) => topic.workstreams.includes(source.id) && topic.workstreams.includes(target.id)))
         .toBe(true);
 
       const moved = await client.topicTransfer({
-        slug: 'parent', sourceWorkstream: 'source', targetWorkstream: 'moved', move: true,
+        id: parent.id, sourceWorkstream: source.id, targetWorkstream: destination.id, move: true,
       });
-      expect(moved.every((topic) => !topic.workstreams.includes('source') && topic.workstreams.includes('moved')))
+      expect(moved.every((topic) => !topic.workstreams.includes(source.id) && topic.workstreams.includes(destination.id)))
         .toBe(true);
 
-      const preview = await client.topicCloseTree({ slug: 'parent', dryRun: true });
+      const preview = await client.topicCloseTree({ id: parent.id, dryRun: true });
       expect(preview).toMatchObject({
         dryRun: true,
-        matchedSlugs: ['parent', 'child'],
+        matchedIds: [parent.id, child.id],
         closedCount: 2,
       });
-      const closed = await client.topicCloseTree({ slug: 'parent' });
+      const closed = await client.topicCloseTree({ id: parent.id });
       expect(closed).toMatchObject({ matchedCount: 2, closedCount: 2 });
     } finally {
       await client.dispose();
@@ -238,56 +228,52 @@ describe('ControlPlaneClient write methods', () => {
     const mcpUrl = `${server.url}/mcp`;
     const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
     try {
-      await client.createDocument({
-        kind: 'Workstream',
-        slug: 'ws-focus',
-        spec: { title: 'Focus WS' },
-      });
-      // Topic starts with a seed membership (the invariant needs ≥1) and no focus.
-      await client.topicCreate({ slug: 'topic-focus', title: 'Focus Topic', workstreams: ['ws-seed'] });
+      const workstream = await client.wsCreate({ title: 'Focus WS' });
+      await client.topicTypeCreate({ label: 'Topic', icon: 'notebook', description: 'Default' });
+      const topic = await client.topicCreate({ title: 'Focus Topic' });
 
       // Set focus adds BOTH membership and the focus pin (idempotent).
       const focused = await client.topicSetFocus({
-        slug: 'topic-focus',
-        workstream: 'ws-focus',
+        id: topic.id,
+        workstream: workstream.id,
       });
-      expect(focused.workstreams).toContain('ws-focus');
-      expect(focused.focusedWorkstreams).toContain('ws-focus');
+      expect(focused.workstreams).toContain(workstream.id);
+      expect(focused.focusedWorkstreams).toContain(workstream.id);
 
       const again = await client.topicSetFocus({
-        slug: 'topic-focus',
-        workstream: 'ws-focus',
+        id: topic.id,
+        workstream: workstream.id,
       });
-      expect(again.workstreams.filter((w) => w === 'ws-focus')).toHaveLength(1);
-      expect(again.focusedWorkstreams.filter((w) => w === 'ws-focus')).toHaveLength(1);
+      expect(again.workstreams.filter((w) => w === workstream.id)).toHaveLength(1);
+      expect(again.focusedWorkstreams.filter((w) => w === workstream.id)).toHaveLength(1);
 
       // Clear focus drops the pin but KEEPS membership (idempotent).
       const cleared = await client.topicClearFocus({
-        slug: 'topic-focus',
-        workstream: 'ws-focus',
+        id: topic.id,
+        workstream: workstream.id,
       });
-      expect(cleared.focusedWorkstreams).not.toContain('ws-focus');
-      expect(cleared.workstreams).toContain('ws-focus');
+      expect(cleared.focusedWorkstreams).not.toContain(workstream.id);
+      expect(cleared.workstreams).toContain(workstream.id);
 
       const clearedAgain = await client.topicClearFocus({
-        slug: 'topic-focus',
-        workstream: 'ws-focus',
+        id: topic.id,
+        workstream: workstream.id,
       });
-      expect(clearedAgain.focusedWorkstreams).not.toContain('ws-focus');
-      expect(clearedAgain.workstreams).toContain('ws-focus');
+      expect(clearedAgain.focusedWorkstreams).not.toContain(workstream.id);
+      expect(clearedAgain.workstreams).toContain(workstream.id);
     } finally {
       await client.dispose();
     }
   });
 
-  it('throws on attach/detach for an unknown topic slug', async () => {
+  it('throws on attach/detach for an unknown topic id', async () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;
     const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
     try {
       await expect(
-        client.topicAttachWorkstream({ slug: 'no-such-topic', workstream: 'ws-x' }),
-      ).rejects.toThrow(/[Uu]nknown topic slug/);
+        client.topicAttachWorkstream({ id: 'no-such-topic', workstream: 'ws-x' }),
+      ).rejects.toThrow(/[Uu]nknown topic id/);
     } finally {
       await client.dispose();
     }
@@ -309,12 +295,10 @@ describe('ControlPlaneClient write methods', () => {
     try {
       // Seed an alert document (status defaults to 'alert') via the generic
       // create tool, then flip it to 'closed' through the typed alertUpdate.
-      await client.createDocument({ kind: 'Topic', slug: 'ops', spec: { title: 'Operations' } });
-      const created = await client.createDocument({
-        kind: 'Alert',
-        spec: { description: 'disk almost full', topics: ['ops'] },
-      });
-      const id = created.document!.metadata.id;
+      await client.topicTypeCreate({ label: 'Topic', icon: 'notebook', description: 'Default' });
+      const topic = await client.topicCreate({ title: 'Operations' });
+      const created = await client.alertCreate({ description: 'disk almost full', topics: [topic.id] });
+      const id = created.id;
 
       const updated = await client.alertUpdate({ id, status: 'closed' });
       expect(updated.id).toBe(id);
@@ -322,9 +306,8 @@ describe('ControlPlaneClient write methods', () => {
       // Untouched fields are preserved (partial-patch merge server-side) and the
       // returned shape is well-formed.
       expect(updated.description).toBe('disk almost full');
-      expect(updated.topics).toEqual(['ops']);
-      expect(updated.slug).toBeNull();
-      expect(updated.resourceVersion).toBe(created.document!.metadata.resourceVersion + 1);
+      expect(updated.topics).toEqual([topic.id]);
+      expect(updated.resourceVersion).toBe(created.resourceVersion + 1);
     } finally {
       await client.dispose();
     }

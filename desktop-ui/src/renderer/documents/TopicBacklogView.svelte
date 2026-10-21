@@ -6,12 +6,12 @@
   interface Props {
     unreadResponses?: UnreadResponse[];
     backlog: TopicBacklogVM;
-    onOpenTopic: (slug: string) => void;
+    onOpenTopic: (id: string) => void;
   }
 
   let { backlog, onOpenTopic, unreadResponses = [] }: Props = $props();
 
-  function slugFromUri(openUri: string): string {
+  function idFromUri(openUri: string): string {
     try {
       const segment = new URL(openUri).pathname.split('/').at(-1) ?? '';
       return decodeURIComponent(segment.replace(/\.working-memory$/, ''));
@@ -35,21 +35,21 @@
 {:else}
   <div class="backlog-list">
     {#each backlog.topics as topic (topic.id)}
-      {@const slug = slugFromUri(topic.openUri)}
+      {@const id = idFromUri(topic.openUri)}
       <button
         class="backlog-row"
-        disabled={!slug}
-        onclick={() => slug && onOpenTopic(slug)}
+        disabled={!id}
+        onclick={() => id && onOpenTopic(id)}
       >
         <span aria-hidden="true" class="topic-icon codicon codicon-{topic.icon}"></span>
         <span class="topic-copy">
           <strong>{topic.label}</strong>
-          <small>{topic.description || slug}</small>
+          <small>{topic.description || id}</small>
         </span>
         {#if topic.agentMessageCount}
           <span class="alert-count" class:severe={topic.agentMessageSeverity === 'error'} title="Agent messages needing attention">{topic.agentMessageCount}</span>
         {/if}
-        <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id, slug)} />
+        <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id, id)} />
         <span aria-hidden="true" class="codicon codicon-chevron-right"></span>
       </button>
     {/each}

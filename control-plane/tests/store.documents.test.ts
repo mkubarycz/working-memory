@@ -28,11 +28,11 @@ try {
     }
   });
 
-  it('defaults slug to null and labels/spec/status to empty objects', () => {
+  it('has ID-only metadata and defaults labels/spec/status to empty objects', () => {
     const store = openStore(':memory:');
     try {
       const d = store.createDocument({ kind: 'topic' });
-      expect(d.metadata.slug).toBeNull();
+      expect(d.metadata).not.toHaveProperty('slug');
       expect(d.metadata.deletedAt).toBeNull();
       expect(d.metadata.labels).toEqual({});
       expect(d.spec).toEqual({});
@@ -51,15 +51,15 @@ try {
   it('listDocuments returns non-deleted docs newest-first, with a kind filter', () => {
     const store = openStore(':memory:');
     try {
-      store.createDocument({ kind: 'topic', slug: 't1' });
-      store.createDocument({ kind: 'note', slug: 'n1' });
-      store.createDocument({ kind: 'topic', slug: 't2' });
+      const t1 = store.createDocument({ kind: 'topic' });
+      const n1 = store.createDocument({ kind: 'note' });
+      const t2 = store.createDocument({ kind: 'topic' });
 
       const all = store.listDocuments();
-      expect(all.map((d) => d.metadata.slug)).toEqual(['t2', 'n1', 't1']);
+      expect(all.map((d) => d.metadata.id)).toEqual([t2.metadata.id, n1.metadata.id, t1.metadata.id]);
 
       const topics = store.listDocuments({ kind: 'topic' });
-      expect(topics.map((d) => d.metadata.slug)).toEqual(['t2', 't1']);
+      expect(topics.map((d) => d.metadata.id)).toEqual([t2.metadata.id, t1.metadata.id]);
       expect(topics.every((d) => d.kind === 'topic')).toBe(true);
 
       expect(store.listDocuments({ kind: 'nonexistent' })).toEqual([]);
@@ -68,29 +68,26 @@ try {
     }
   });
 
-  it('getDocument by id, by slug, and by slug scoped to a kind', () => {
+  it('getDocument resolves only IDs and honors the kind filter', () => {
     const store = openStore(':memory:');
     try {
       const created = store.createDocument({
         kind: 'topic',
-        slug: 'alpha',
         labels: { area: 'core' },
         spec: { title: 'Alpha' },
       });
 
       const byId = store.getDocument({ id: created.metadata.id });
-      expect(byId?.metadata.slug).toBe('alpha');
+      expect(byId?.metadata.id).toBe(created.metadata.id);
       expect(byId?.spec).toEqual({ title: 'Alpha' });
       expect(byId?.metadata.labels).toEqual({ area: 'core' });
 
-      const bySlug = store.getDocument({ slug: 'alpha' });
-      expect(bySlug?.metadata.id).toBe(created.metadata.id);
-
-      const bySlugKind = store.getDocument({ slug: 'alpha', kind: 'topic' });
-      expect(bySlugKind?.metadata.id).toBe(created.metadata.id);
+      const scoped = store.getDocument({ id: created.metadata.id, kind: 'topic' });
+      expect(scoped?.metadata.id).toBe(created.metadata.id);
 
       // Misses → null.
-      expect(store.getDocument({ slug: 'alpha', kind: 'note' })).toBeNull();
+      expect(store.getDocument({ id: created.metadata.id, kind: 'note' })).toBeNull();
+      expect(store.getDocument({ id: 'alpha' })).toBeNull();
       expect(store.getDocument({ id: 'does-not-exist' })).toBeNull();
       expect(store.getDocument({})).toBeNull();
     } finally {

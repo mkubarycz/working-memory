@@ -1567,7 +1567,7 @@
     if (tab) settingsTab = tab;
     const next = openDocumentTab(
       documentTabsState(),
-      { kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' },
+      { kind: 'settings', id: 'desktop-settings',  title: 'Settings' },
     );
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
@@ -1629,7 +1629,7 @@
   async function startTopicCreation(
     workstream: string,
     workstreamTitle: string,
-    parent?: { slug: string; title: string },
+    parent?: { id: string; title: string },
     newWorkstream = false,
   ): Promise<void> {
     documentOpens.invalidate();
@@ -1642,17 +1642,17 @@
       const draft: TopicCreateDraftVM = {
         kind: 'topic-create',
         id: crypto.randomUUID(),
-        slug: null,
+
         title: '',
         body: '',
-        topicType: topicTypes.find((topicType) => topicType.slug === 'topic')?.slug
-          ?? topicTypes[0]?.slug
+        topicType: topicTypes.find((topicType) => topicType.label === 'Topic')?.id
+          ?? topicTypes[0]?.id
           ?? '',
         topicTypes,
         workstream,
         workstreamTitle,
         ...(newWorkstream ? { newWorkstreamTitle: '' } : {}),
-        parent: parent?.slug ?? null,
+        parent: parent?.id ?? null,
         parentTitle: parent?.title ?? null,
       };
       const next = openDocumentTab(documentTabsState(), draft, false);
@@ -1671,7 +1671,7 @@
     const backlog: TopicBacklogVM = {
       kind: 'topic-backlog',
       id: 'open-topic-backlog',
-      slug: null,
+
       title: 'Open topic backlog',
       topics: activePanel?.topicBacklog ?? [],
     };
@@ -1758,7 +1758,7 @@
         request.targetWorkstream,
         'workingMemory.topic.transfer',
         [{
-          topicSlug: request.slug,
+          topicId: request.id,
           sourceWorkstream: request.sourceWorkstream,
           move: request.move,
         }],
@@ -1798,7 +1798,7 @@
   }
 
   async function reorderActiveWorkstream(
-    slug: string,
+    id: string,
     targetSection: WorkstreamSection,
     targetIndex: number,
   ): Promise<void> {
@@ -1807,10 +1807,10 @@
     for (const item of activePanel.items) {
       if (item.kind !== 'workstream-section') continue;
       order[item.section] = item.workstreams
-        .map((workstream) => workstream.slug ?? '')
+        .map((workstream) => workstream.id ?? '')
         .filter(Boolean);
     }
-    const updates = planWorkstreamReorder(order, slug, targetSection, targetIndex);
+    const updates = planWorkstreamReorder(order, id, targetSection, targetIndex);
     if (updates.length === 0) return;
     activeLoading = true;
     activeError = '';
@@ -1829,19 +1829,19 @@
     void mutateFromRail(workstream, () => window.workingMemory.togglePin(workstream, topic));
   }
 
-  async function reparentActiveTopic(slug: string, parent: string | null): Promise<void> {
+  async function reparentActiveTopic(id: string, parent: string | null): Promise<void> {
     activeError = '';
     try {
-      await window.workingMemory.reparentTopic(slug, parent);
+      await window.workingMemory.reparentTopic(id, parent);
     } catch (error) {
       activeError = error instanceof Error ? error.message : String(error);
     } finally {
       await refreshActive();
       const refreshed = await Promise.allSettled(documents
-        .filter((document) => document.kind === 'topic' && document.slug)
+        .filter((document) => document.kind === 'topic' && document.id)
         .map(async (document) => ({
           key: documentTabKey(document),
-          document: await window.workingMemory.openResource('topic', document.slug!),
+          document: await window.workingMemory.openResource('topic', document.id!),
         })));
       let state = documentTabsState();
       for (const result of refreshed) {
@@ -1857,13 +1857,13 @@
   }
 
   function saveWorkstream(document: DocumentVM | null, patch: { title?: string; status?: string }): void {
-    if (document?.kind !== 'workstream' || !document.slug) return;
+    if (document?.kind !== 'workstream' || !document.id) return;
     promoteDocument(documentTabKey(document));
     documentSaves.schedule(documentTabKey(document), patch);
   }
 
   function saveTopic(document: DocumentVM | null, patch: TopicPatch): void {
-    if (document?.kind !== 'topic' || !document.slug) return;
+    if (document?.kind !== 'topic' || !document.id) return;
     promoteDocument(documentTabKey(document));
     documentSaves.schedule(documentTabKey(document), patch);
   }
@@ -1912,14 +1912,14 @@
 
   function togglePin(topic: string): void {
     const document = activeDocument;
-    if (document?.kind !== 'workstream' || !document.slug) return;
-    void mutate(() => window.workingMemory.togglePin(document.slug!, topic));
+    if (document?.kind !== 'workstream' || !document.id) return;
+    void mutate(() => window.workingMemory.togglePin(document.id!, topic));
   }
 
   function invokeAction(command: string, args: unknown[]): void {
     const document = activeDocument;
-    if (document?.kind !== 'workstream' || !document.slug) return;
-    void mutate(() => window.workingMemory.invokeAction(document.slug!, command, args));
+    if (document?.kind !== 'workstream' || !document.id) return;
+    void mutate(() => window.workingMemory.invokeAction(document.id!, command, args));
   }
 
   function openRoute(route: string): void {
@@ -2176,12 +2176,12 @@
           onAction={runActiveAction}
           onReorder={reorderActiveWorkstream}
           onTransferTopic={transferActiveTopic}
-          onReparentTopic={(slug, parent) => void reparentActiveTopic(slug, parent)}
+          onReparentTopic={(id, parent) => void reparentActiveTopic(id, parent)}
           onAddTopic={(workstream, parent) => {
             const card = activePanel?.items
               .filter((item) => item.kind === 'workstream-section')
               .flatMap((section) => section.workstreams)
-              .find((candidate) => candidate.slug === workstream);
+              .find((candidate) => candidate.id === workstream);
             void startTopicCreation(workstream, card?.label ?? workstream, parent);
           }}
           onAddWorkstream={() => void startTopicCreation('', '', undefined, true)}
@@ -2225,7 +2225,7 @@
           {#each documents as document (documentTabKey(document))}
             {@const key = documentTabKey(document)}
             {@const tabApp = document.kind === 'container-app'
-              ? containerApps.find((app) => app.id === (document.slug ?? document.id))
+              ? containerApps.find((app) => app.id === (document.id))
               : undefined}
             {@const tabAppStatus = tabApp ? containerAppStatuses[tabApp.id] : undefined}
             <div
@@ -2255,7 +2255,7 @@
                   ></span>
                 {/if}
                 <span class="document-tab-label">{document.kind === 'topic-create' && !document.title ? (document.newWorkstreamTitle !== undefined ? 'New Workstream' : 'New Topic') : document.title}</span>
-                {#if unreadResponseCount(unreadResponses, document.kind, document.slug, 'id' in document ? document.id : undefined) > 0}
+                {#if unreadResponseCount(unreadResponses, document.kind, document.id, 'id' in document ? document.id : undefined) > 0}
                   <span class="tab-unread-dot" title="Unread response" aria-label="Unread response"></span>
                 {/if}
               </button>
@@ -2399,10 +2399,10 @@
             ws={activeDocument}
             {saveState}
             onSave={saveWorkstream.bind(null, activeDocument)}
-            onOpenTopic={(slug) => void openResource('topic', slug)}
+            onOpenTopic={(id) => void openResource('topic', id)}
             onAddTopic={(parent) => {
               const workstream = activeDocument as WorkstreamVM;
-              if (workstream.slug) void startTopicCreation(workstream.slug, workstream.title, parent);
+              if (workstream.id) void startTopicCreation(workstream.id, workstream.title, parent);
             }}
             onInvoke={invokeAction}
             onTogglePin={togglePin}
@@ -2421,7 +2421,7 @@
           <TopicBacklogView
             {unreadResponses}
             backlog={activeDocument}
-            onOpenTopic={(slug) => void openResource('topic', slug)}
+            onOpenTopic={(id) => void openResource('topic', id)}
           />
         {:else if activeDocument?.kind === 'topic'}
           <TopicView
@@ -2430,8 +2430,8 @@
             onShare={(topic) => { sharingTopic = topic; }}
             {saveState}
             onSaveTopic={saveTopic.bind(null, activeDocument)}
-            onOpenTopic={(slug) => void openResource('topic', slug)}
-            onOpenWorkstream={(slug) => void openResource('workstream', slug)}
+            onOpenTopic={(id) => void openResource('topic', id)}
+            onOpenWorkstream={(id) => void openResource('workstream', id)}
             onSetAgentMessageStatus={setAgentMessageStatus}
             onRecordDecision={recordAgentMessageDecision}
             attachmentBaseUrl={selectedEnvironment?.mcpUrl

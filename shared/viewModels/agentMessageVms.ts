@@ -45,25 +45,25 @@ export function toAgentMessageVM(message: AgentMessage): AgentMessageVM {
 }
 
 export interface AgentMessageScope {
-  topicSlugs: readonly string[];
+
   topicIds?: readonly string[];
   workstreamIds?: readonly string[];
 }
 
 function scopedMessagePredicate(scope: readonly string[] | AgentMessageScope): (message: AgentMessage) => boolean {
   const selected = Array.isArray(scope)
-    ? { topicSlugs: scope } as AgentMessageScope
+    ? { topicIds: scope } as AgentMessageScope
     : scope as AgentMessageScope;
-  const slugs = new Set(selected.topicSlugs.filter(Boolean));
+  const ids = new Set((selected.topicIds ?? []).filter(Boolean));
   const topicIds = new Set((selected.topicIds ?? []).filter(Boolean));
   const workstreamIds = new Set((selected.workstreamIds ?? []).filter(Boolean));
-  return (message) => message.topics.some((slug) => slugs.has(slug))
+  return (message) => message.topics.some((id) => ids.has(id))
     || message.relations.some((relation) =>
       relation.kind === 'Topic' && topicIds.has(relation.id)
       || relation.kind === 'Workstream' && workstreamIds.has(relation.id));
 }
 
-/** Preserve complete history, scoped by authored topic slugs and explicit document IDs. */
+/** Preserve complete history, scoped by authored topic ids and explicit document IDs. */
 export function buildAgentMessageVMs(
   messages: AgentMessage[],
   scope: readonly string[] | AgentMessageScope,
@@ -99,6 +99,6 @@ export function agentMessageBubbleForTopics(
   return { count: seen.size, severity };
 }
 
-export function agentMessageBubbleForTopic(messages: AgentMessage[], slug: string, id?: string): AgentMessageBubble {
-  return agentMessageBubbleForTopics(messages, { topicSlugs: [slug], topicIds: id ? [id] : [] });
+export function agentMessageBubbleForTopic(messages: AgentMessage[], id: string): AgentMessageBubble {
+  return agentMessageBubbleForTopics(messages, {  topicIds: id ? [id] : [] });
 }

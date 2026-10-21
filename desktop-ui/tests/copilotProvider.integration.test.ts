@@ -15,17 +15,17 @@ describe.runIf(process.env.WM_COPILOT_SMOKE === '1')('local Copilot live smoke',
         mode: 'chat-completions',
         model,
         systemPrompt: 'You are testing the host tool protocol. Use the requested tool before answering.',
-        userMessage: 'Use ws-topic-read with slug smoke-topic, then tell me its title.',
+        userMessage: 'Use ws-topic-read with id smoke-topic, then tell me its title.',
         tools: [{
           name: 'ws-topic-read',
-          description: 'Read a topic by its slug.',
-          inputSchema: { type: 'object', properties: { slug: { type: 'string' } }, required: ['slug'] },
+          description: 'Read a topic by its id.',
+          inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
         }],
       });
       const signal = new AbortController().signal;
       const first = await provider.turn(conversation, 60_000, signal);
       expect(first.calls).toHaveLength(1);
-      expect(first.calls[0]).toMatchObject({ name: 'ws-topic-read', arguments: { slug: 'smoke-topic' } });
+      expect(first.calls[0]).toMatchObject({ name: 'ws-topic-read', arguments: { id: 'smoke-topic' } });
       appendToolResults(conversation, first, [{
         call: first.calls[0],
         output: { ok: true, result: { title: 'Synthetic Copilot Smoke Topic' } },

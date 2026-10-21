@@ -941,7 +941,7 @@ function navigationScopeRef(navigation: NavigationHint): CommandJournalScopeRef 
   return {
     kind: navigation.kind === 'workstream' ? 'Workstream' : 'Topic',
     id: identifier,
-    slug: identifier,
+
   };
 }
 
@@ -1017,13 +1017,13 @@ function entityRefsForTool(call: ModelToolCall, value: unknown, relation: Comman
     if (Array.isArray(candidate)) return candidate.forEach(visit);
     if (!candidate || typeof candidate !== 'object') return;
     const record = candidate as Record<string, unknown>;
-    const id = typeof record.id === 'string' && record.id ? record.id : typeof record.slug === 'string' ? record.slug : undefined;
+    const id = typeof record.id === 'string' && record.id ? record.id : typeof record.id === 'string' ? record.id : undefined;
     if (id) {
       const ref: CommandJournalEntityRef = {
         kind,
         id: id.slice(0, 256),
         relation,
-        ...(typeof record.slug === 'string' && record.slug ? { slug: record.slug.slice(0, 256) } : {}),
+        ...(typeof record.id === 'string' && record.id ? { id: record.id.slice(0, 256) } : {}),
         ...(typeof record.title === 'string' && record.title ? { title: record.title.slice(0, 32_768) } : {}),
       };
       refs.set(`${ref.kind}:${ref.id}:${ref.relation}`, ref);
@@ -1069,10 +1069,10 @@ function navigationHint(name: string, args: Record<string, unknown>, result: unk
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== 'object') continue;
     const record = candidate as Record<string, unknown>;
-    const identifier = record.slug ?? record.id;
+    const identifier = record.id;
     if (typeof identifier === 'string' && identifier) return { kind, identifier };
   }
-  const identifier = args.slug ?? args.id;
+  const identifier = args.id;
   return typeof identifier === 'string' && identifier ? { kind, identifier } : undefined;
 }
 

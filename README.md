@@ -320,7 +320,7 @@ Keep a meaningful title and the authored Markdown in `description`, link
 detailed journal/PR provenance, and specify topic/object relations. Do not post
 dispatch/running chatter, duplicate summaries, or long operational reports.
 `attention` defaults to false; use it only for a specific human decision/action.
-For example, after substituting your registered agent ID and an existing topic slug:
+For example, after substituting your registered agent ID and an existing topic ID:
 
 ```json
 {
@@ -330,7 +330,7 @@ For example, after substituting your registered agent ID and an existing topic s
   "category": "request",
   "attention": true,
   "recommended_action": "Choose Friday evening or Saturday morning.",
-  "topics": ["existing-topic-slug"]
+  "topics": ["existing-topic-id"]
 }
 ```
 
@@ -464,7 +464,7 @@ copy to relaunch after the newly signed bundle is in place. Set
 without refreshing it.
 
 Register an app with `ws-containerclaim-create` (or a generic `ContainerClaim`
-document), providing a unique `slug`, `title`, `repository`, and complete
+document), providing a `title`, `repository`, and complete
 Docker `runtime` (`buildContext`, `dockerfile`, image/container names, ports,
 health/entry paths, and optional named volumes). Add `mcp` and `application`
 metadata for chat tools and live contracts. Optional `desktop` metadata accepts
@@ -473,12 +473,12 @@ icon and App Info rather than embedding. There are no app-name-specific
 presentation defaults: icons and embedding preferences belong in each claim's
 `desktop` configuration, including for previously bundled app registrations.
 
-For example, Sunset Chess 1.4 can be registered with slug `sunset-chess-1-4`,
-its dedicated source worktree, image `sunset-chess:1.4`, container
+For example, Sunset Chess 1.4 can be registered with its dedicated source
+worktree, image `sunset-chess:1.4`, container
 `working-memory-sunset-chess-1-4`, host port 4176/container port 4175, and
 named volume `working-memory-sunset-chess-1-4-data` mounted at `/data`.
 It can advertise application identity `sunset-chess` independently of its
-registration slug. Neither the original app nor its volume needs to change.
+registration's generated object ID. Neither the original app nor its volume needs to change.
 
 The catalog loads at startup and on environment switches, then refreshes when a
 ContainerClaim changes. The desktop listens to a commit-driven, metadata-only
@@ -500,7 +500,7 @@ deleting a claim removes it from the catalog without stopping or deleting its
 container or data. A claim without a Docker runtime is intent-only and is not
 listed. Registration itself never launches a container.
 
-Each action is routed by claim slug through one generic orchestration path.
+Each action is routed by claim object ID through one generic orchestration path.
 The launcher reads the authored claim without replacing its runtime, endpoints,
 or source revision with compiled defaults, builds its Dockerfile, and
 reconciles only the exactly labeled managed container. The browser opens an app
@@ -765,12 +765,12 @@ the desktop loopback bridge
 `http://127.0.0.1:7718/open/<kind>/<id>`, where:
 
 - `<kind>` is `topic`, `workstream`, `topic-type`, `alert`, or `document`
-- `<id>` is the resource slug or id
+- `<id>` is the existing immutable resource object ID; names are not aliases
 
 | Kind | Markdown shape | Example |
 |---|---|---|
-| Topic | `[label](http://127.0.0.1:7718/open/topic/<slug>)` | `[chat-clickable-links](http://127.0.0.1:7718/open/topic/chat-clickable-links)` |
-| Workstream | `[label](http://127.0.0.1:7718/open/workstream/<slug>)` | `[topic-types](http://127.0.0.1:7718/open/workstream/topic-types)` |
+| Topic | `[label](http://127.0.0.1:7718/open/topic/<id>)` | `[chat-clickable-links](http://127.0.0.1:7718/open/topic/00000000-0000-4000-8000-000000000001)` |
+| Workstream | `[label](http://127.0.0.1:7718/open/workstream/<id>)` | `[topic-types](http://127.0.0.1:7718/open/workstream/00000000-0000-4000-8000-000000000002)` |
 | Agent Message (compatibility route) | `[label](http://127.0.0.1:7718/open/alert/<id>)` | `[release blocker](http://127.0.0.1:7718/open/alert/1234)` |
 
 The loopback server accepts validated GET routes only, focuses the desktop app,
@@ -787,7 +787,7 @@ with `isTrusted = true` (e.g. a hover, a chat participant), you can
 still use:
 
 ```
-[label]\(command:working-memory.openTopic?%5B%22<slug>%22%5D\)
+[label]\(command:working-memory.openTopic?%5B%22<id>%22%5D\)
 ```
 
 The `?...` payload is `encodeURIComponent(JSON.stringify([id]))`. The
@@ -795,6 +795,49 @@ deep-link form above is preferred for chat because it does not require
 trust.
 
 ## Schema migrations
+
+### Upgrading to ID-only resources (1.3.0)
+
+Resource slugs are removed from storage, metadata, UI, clients, and MCP inputs.
+Use returned object IDs for reads, updates, deletes, deep links, parent/type
+references, workstream membership, and container registration references.
+Creating a resource no longer requires or generates a slug. Duplicate titles
+are allowed. Unsupported input fields are rejected rather than treated as
+aliases or silently ignored.
+
+The append-only `resource-ids` migration preserves existing IDs, timestamps,
+soft-deletion, row order, attachments, and child rows. It converts structured
+references and drops the old column without rebuilding the parent table.
+Startup does **not** rewrite authored Markdown. A missing or ambiguous target
+blocks the transaction rather than guessing or silently discarding a reference.
+Old slug-based URLs have no compatibility resolver; clicking one reports that
+the resource was not found. Old `vscode://` links are obsolete as well.
+
+Before the first launch of an upgraded backend, stop the desktop and backend,
+then run this explicit maintenance operation against the existing database:
+
+```bash
+npm run compile
+node scripts/upgrade-resource-ids.mjs --database "/path/to/journal.sqlite"
+# Review the dry-run output, then apply:
+node scripts/upgrade-resource-ids.mjs --database "/path/to/journal.sqlite" --apply
+```
+
+`--apply` creates a consistent sibling SQLite backup before changing data.
+It rewrites resolvable legacy native, loopback, and VS Code resource URLs to
+ID-based native URLs, excluding immutable `legacy_source` archives. It detaches
+unresolvable relationships, substitutes the existing general Topic type for
+a missing type, and creates one open report topic in an **Upgrade to 1.3.0**
+workstream, grouping repairs and unresolved links by risk with links to affected
+documents. No existing topic lifecycle status is changed. A dry run rolls back
+the entire transaction, including the proposed report. Once the migration is
+recorded, subsequent runs are no-ops.
+
+Saved desktop tabs and chat scope keys containing old names are not aliases;
+reopen affected resources by ID. Existing managed Docker containers and images
+retain old ownership labels. Recreate them through a reviewed, volume-preserving
+upgrade before managing them from the ID-only desktop; unrelated containers
+and volumes are never rewritten by the database migration.
 
 The active control plane owns a unified `resources` store, initialized by
 `control-plane/src/store.ts`. Agent Message conversion runs there using the
@@ -879,7 +922,7 @@ that turns fixture execution into a production runner.
   `mkubarycz@microsoft.com`, **OR** under `Customers\Comcast`.
   A grant covers routine five-minute reads, with bounded manual refresh, an
   explicit expiry, and revocation; it does not approve ADO writes.
-- ContainerClaim slugs, labels, source IPs, MCP session IDs, and editable
+- ContainerClaim IDs, labels, source IPs, MCP session IDs, and editable
   Topic/Config documents are not credentials or grants. The dedicated broker
   API uses separate app, trusted-administrator, and runner authentication.
   An app can request, inspect, cancel, retrieve and acknowledge only its own

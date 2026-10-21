@@ -10,9 +10,9 @@ import { commandJournalSpec } from '../../control-plane/src/kinds/commandjournal
 import { recordAgentMessageDecision } from '../src/main/agentMessageLifecycle';
 
 const tools = [
-  { name: 'ws-workstream-read', inputSchema: { type: 'object', properties: { slug: { type: 'string' } } } },
+  { name: 'ws-workstream-read', inputSchema: { type: 'object', properties: { id: { type: 'string' } } } },
   { name: 'ws-topic-create', inputSchema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] } },
-  { name: 'ws-topic-delete', inputSchema: { type: 'object', properties: { slug: { type: 'string' } }, required: ['slug'] } },
+  { name: 'ws-topic-delete', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
 ];
 
 function journalHarness(id = 'journal-1') {
@@ -88,8 +88,8 @@ function deferred<T>() {
 
 describe('DesktopChatAgent', () => {
   it('routes two pending topic confirmations to their original journals and tool clients', async () => {
-    const proposal = (slug: string) => ({ choices: [{ message: { content: null, tool_calls: [
-      { id: slug, function: { name: 'ws-topic-delete', arguments: JSON.stringify({ slug }) } },
+    const proposal = (id: string) => ({ choices: [{ message: { content: null, tool_calls: [
+      { id: id, function: { name: 'ws-topic-delete', arguments: JSON.stringify({ id }) } },
     ] } }] });
     const callModel = vi.fn().mockResolvedValueOnce(proposal('first')).mockResolvedValueOnce(proposal('second'))
       .mockResolvedValueOnce({ choices: [{ message: { content: 'Second deleted.' } }] })
@@ -115,7 +115,7 @@ describe('DesktopChatAgent', () => {
     expect(journals[0].current()?.status).toBe('awaiting_confirmation');
     expect(await agent.resolveConfirmation(first.pendingConfirmation!.id, false)).toMatchObject({ journalId: 'first-journal', message: 'First cancelled.' });
     expect(clients[0]).not.toHaveBeenCalled();
-    expect(clients[1]).toHaveBeenCalledWith('ws-topic-delete', { slug: 'second' });
+    expect(clients[1]).toHaveBeenCalledWith('ws-topic-delete', { id: 'second' });
   });
 
   it.each(['ws-agent-message-create', 'ws-agent-message-update'])(
@@ -128,14 +128,14 @@ describe('DesktopChatAgent', () => {
         { id: name, function: { name, arguments: JSON.stringify(args) } },
       ] } }] });
       const callModel = vi.fn()
-        .mockResolvedValueOnce(proposal('ws-topic-delete', { slug: 'protected-topic' }))
+        .mockResolvedValueOnce(proposal('ws-topic-delete', { id: 'protected-topic' }))
         .mockResolvedValueOnce(proposal(messageTool, messageArguments))
         .mockResolvedValueOnce({ choices: [{ message: { content: 'Review decision recorded; no execution authorized.' } }] })
         .mockResolvedValueOnce({ choices: [{ message: { content: 'Deleted after trusted confirmation.' } }] });
       const protectedTool = vi.fn(async () => ({ ok: true, result: {} }));
       const messageToolCall = vi.fn(async () => ({ ok: true, result: {
         kind: 'AgentMessage',
-        metadata: { id: 'approval-message', slug: null, createdAt: 1, updatedAt: 2, resourceVersion: 2, deletedAt: null },
+        metadata: { id: 'approval-message',  createdAt: 1, updatedAt: 2, resourceVersion: 2, deletedAt: null },
         spec: {
           title: 'Review decision', description: 'Approved review only', category: 'approval',
           severity: 'info', status: 'open', attention: false, recommended_action: '',
@@ -168,7 +168,7 @@ describe('DesktopChatAgent', () => {
       expect(protectedJournal.current()?.events.some((event) => event.type === 'confirmation_resolved')).toBe(false);
 
       await agent.resolveConfirmation(trustedConfirmation, true);
-      expect(protectedTool.mock.calls).toEqual([['ws-topic-delete', { slug: 'protected-topic' }]]);
+      expect(protectedTool.mock.calls).toEqual([['ws-topic-delete', { id: 'protected-topic' }]]);
       expect(protectedJournal.current()?.events.filter((event) => event.type === 'confirmation_resolved')).toHaveLength(1);
     });
 
@@ -204,7 +204,7 @@ describe('DesktopChatAgent', () => {
     const journal = schemaValidatingJournalHarness();
     const modelTurn = vi.fn()
       .mockResolvedValueOnce({
-        text: '', calls: [{ id: 'copilot-read', name: 'ws-workstream-read', arguments: { slug: 'roadmap' } }],
+        text: '', calls: [{ id: 'copilot-read', name: 'ws-workstream-read', arguments: { id: 'roadmap' } }],
         assistantMessage: { role: 'assistant', content: '' },
       })
       .mockResolvedValueOnce({ text: 'Roadmap found.', calls: [] });
@@ -213,7 +213,7 @@ describe('DesktopChatAgent', () => {
       message: 'Read roadmap', headers: {}, modelTurn,
     });
     expect(result).toMatchObject({ status: 'succeeded', message: 'Roadmap found.' });
-    expect(callTool).toHaveBeenCalledWith('ws-workstream-read', { slug: 'roadmap' });
+    expect(callTool).toHaveBeenCalledWith('ws-workstream-read', { id: 'roadmap' });
     expect(callModel).not.toHaveBeenCalled();
     expect(journal.current()?.provider).toEqual({ endpoint: 'copilot://local', mode: 'copilot', model: 'auto' });
     expect(modelTurn.mock.calls[1][0].chatMessages).toContainEqual(expect.objectContaining({ role: 'tool' }));
@@ -224,7 +224,7 @@ describe('DesktopChatAgent', () => {
     const callTool = vi.fn(async () => ({ ok: true, result: {} }));
     const modelTurn = vi.fn()
       .mockResolvedValueOnce({
-        text: '', calls: [{ id: 'delete-call', name: 'ws-topic-delete', arguments: { slug: 'old-topic' } }],
+        text: '', calls: [{ id: 'delete-call', name: 'ws-topic-delete', arguments: { id: 'old-topic' } }],
       })
       .mockResolvedValueOnce({ text: 'Cancelled.', calls: [] });
     const agent = new DesktopChatAgent(options(callModel, callTool));
@@ -342,13 +342,13 @@ describe('DesktopChatAgent', () => {
   it('dispatches multiple read/create calls and continues to a final response', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ id: 'chatcmpl_1', usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 }, choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [
-        { id: 'a', function: { name: 'ws-workstream-read', arguments: '{"slug":"roadmap"}' } },
+        { id: 'a', function: { name: 'ws-workstream-read', arguments: '{"id":"roadmap"}' } },
         { id: 'b', function: { name: 'ws-topic-create', arguments: '{"title":"Ship it"}' } },
       ] } }] })
       .mockResolvedValueOnce({ id: 'chatcmpl_2', usage: { prompt_tokens: 20, completion_tokens: 2, total_tokens: 22 }, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'Done.' } }] });
     const callTool = vi.fn()
-      .mockResolvedValueOnce({ ok: true, result: { slug: 'roadmap' } })
-      .mockResolvedValueOnce({ ok: true, result: { slug: 'ship-it' } });
+      .mockResolvedValueOnce({ ok: true, result: { id: 'roadmap' } })
+      .mockResolvedValueOnce({ ok: true, result: { id: 'ship-it' } });
     const journal = journalHarness();
     const agent = new DesktopChatAgent(options(callModel, callTool, journal));
     const result = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'do it', headers: {} });
@@ -367,13 +367,13 @@ describe('DesktopChatAgent', () => {
     expect(journal.current()?.entityRefs).toContainEqual(expect.objectContaining({ kind: 'Topic', id: 'ship-it', relation: 'mutated' }));
   });
 
-  it('dispatches a title-only workstream create without inventing a slug', async () => {
+  it('dispatches a title-only workstream create without inventing a id', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
         { id: 'a', function: { name: 'ws-workstream-create', arguments: '{"title":"SunsetChess"}' } },
       ] } }] })
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Created.' } }] });
-    const callTool = vi.fn(async () => ({ ok: true, result: { slug: 'sunset-chess' } }));
+    const callTool = vi.fn(async () => ({ ok: true, result: { id: 'sunset-chess' } }));
     const agent = new DesktopChatAgent({
       ...options(callModel, callTool),
       listTools: async () => [{
@@ -412,14 +412,14 @@ describe('DesktopChatAgent', () => {
   it('classifies topic transfer calls as mutations', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
-        { id: 'a', function: { name: 'ws-topic-transfer', arguments: '{"slug":"parent","sourceWorkstream":"one","targetWorkstream":"two"}' } },
+        { id: 'a', function: { name: 'ws-topic-transfer', arguments: '{"id":"parent","sourceWorkstream":"one","targetWorkstream":"two"}' } },
       ] } }] })
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Done.' } }] });
     const journal = journalHarness();
     const agent = new DesktopChatAgent({
       ...options(callModel, undefined, journal),
       listTools: async () => [
-        { name: 'ws-topic-transfer', inputSchema: { type: 'object', properties: { slug: { type: 'string' } } } },
+        { name: 'ws-topic-transfer', inputSchema: { type: 'object', properties: { id: { type: 'string' } } } },
       ],
     });
 
@@ -504,7 +504,7 @@ describe('DesktopChatAgent', () => {
   it('cannot execute a destructive call before explicit confirmation', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
-        { id: 'a', function: { name: 'ws-topic-delete', arguments: '{"slug":"old"}' } },
+        { id: 'a', function: { name: 'ws-topic-delete', arguments: '{"id":"old"}' } },
       ] } }] })
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Deleted.' } }] });
     const callTool = vi.fn(async () => ({ ok: true, result: {} }));
@@ -513,7 +513,7 @@ describe('DesktopChatAgent', () => {
     const pending = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'delete old', headers: {} });
     expect(pending.journalId).toBe('journal-1');
     expect(pending.status).toBe('awaiting_confirmation');
-    expect(pending.pendingConfirmation).toEqual({ id: 'confirm-1', tool: 'ws-topic-delete', arguments: { slug: 'old' } });
+    expect(pending.pendingConfirmation).toEqual({ id: 'confirm-1', tool: 'ws-topic-delete', arguments: { id: 'old' } });
     const resolveConfirmation = vi.spyOn(agent, 'resolveConfirmation');
     const agentMessageUpdate = vi.fn().mockResolvedValue({});
     await recordAgentMessageDecision({ agentMessageUpdate } as never, 'approval-message', {
@@ -528,7 +528,7 @@ describe('DesktopChatAgent', () => {
     expect(journal.current()?.status).toBe('awaiting_confirmation');
     const result = await agent.resolveConfirmation('confirm-1', true);
     expect(result.journalId).toBe('journal-1');
-    expect(callTool).toHaveBeenCalledWith('ws-topic-delete', { slug: 'old' });
+    expect(callTool).toHaveBeenCalledWith('ws-topic-delete', { id: 'old' });
     expect(result.message).toBe('Deleted.');
     expect(journal.current()?.events.map((event) => event.type)).toEqual([
       'model_turn', 'tool_call', 'confirmation_requested', 'confirmation_resolved', 'tool_result', 'model_turn',
@@ -702,9 +702,9 @@ describe('DesktopChatAgent', () => {
       ] } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: 'Done.' } }] });
     const callTool = vi.fn()
-      .mockResolvedValueOnce({ ok: true, result: { slug: 'a' } })
+      .mockResolvedValueOnce({ ok: true, result: { id: 'a' } })
       .mockResolvedValueOnce({ ok: false, error: 'temporary failure' })
-      .mockResolvedValueOnce({ ok: true, result: { slug: 'b' } });
+      .mockResolvedValueOnce({ ok: true, result: { id: 'b' } });
     const journal = journalHarness();
 
     const result = await new DesktopChatAgent(options(callModel, callTool, journal)).start({
@@ -725,7 +725,7 @@ describe('DesktopChatAgent', () => {
 
   it('rejects and clears pending confirmations when the environment resets', async () => {
     const callModel = vi.fn().mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
-      { id: 'a', function: { name: 'ws-topic-delete', arguments: '{"slug":"old"}' } },
+      { id: 'a', function: { name: 'ws-topic-delete', arguments: '{"id":"old"}' } },
     ] } }] });
     const journal = journalHarness();
     const agent = new DesktopChatAgent(options(callModel, undefined, journal));
@@ -779,7 +779,7 @@ describe('DesktopChatAgent', () => {
   });
 
   it('reset during callTool waits, persists only to the old journal, and finalizes once', async () => {
-    const tool = deferred<{ ok: true; result: { slug: string } }>();
+    const tool = deferred<{ ok: true; result: { id: string } }>();
     const oldJournal = journalHarness();
     const replacementJournal = journalHarness();
     const oldCallTool = vi.fn(() => tool.promise);
@@ -787,7 +787,7 @@ describe('DesktopChatAgent', () => {
     let replacementSelected = false;
     const agent = new DesktopChatAgent({
       ...options(vi.fn(async () => ({ choices: [{ message: { tool_calls: [
-        { id: 'a', function: { name: 'ws-workstream-read', arguments: '{"slug":"roadmap"}' } },
+        { id: 'a', function: { name: 'ws-workstream-read', arguments: '{"id":"roadmap"}' } },
       ] } }] })), oldCallTool, oldJournal),
       resolveDependencies: () => replacementSelected
         ? { listTools: async () => tools, callTool: replacementCallTool, journal: replacementJournal }
@@ -796,7 +796,7 @@ describe('DesktopChatAgent', () => {
     const running = agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'read', headers: {} });
     await vi.waitFor(() => expect(oldCallTool).toHaveBeenCalledOnce());
     const resetting = agent.reset();
-    tool.resolve({ ok: true, result: { slug: 'roadmap' } });
+    tool.resolve({ ok: true, result: { id: 'roadmap' } });
     await resetting;
     replacementSelected = true;
     const result = await running;
@@ -813,7 +813,7 @@ describe('DesktopChatAgent', () => {
   });
 
   it('preserves a successful mutation when reset interrupts its in-flight tool call', async () => {
-    const tool = deferred<{ ok: true; result: { slug: string } }>();
+    const tool = deferred<{ ok: true; result: { id: string } }>();
     const journal = journalHarness();
     const callTool = vi.fn(() => tool.promise);
     const agent = new DesktopChatAgent(options(vi.fn(async () => ({ choices: [{ message: { tool_calls: [
@@ -823,7 +823,7 @@ describe('DesktopChatAgent', () => {
     await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
 
     const resetting = agent.reset();
-    tool.resolve({ ok: true, result: { slug: 'created' } });
+    tool.resolve({ ok: true, result: { id: 'created' } });
     await resetting;
     const result = await running;
 
@@ -835,7 +835,7 @@ describe('DesktopChatAgent', () => {
 
   it('cancellation is fed back without executing the destructive call', async () => {
     const callModel = vi.fn()
-      .mockResolvedValueOnce({ id: 'resp_1', output: [{ type: 'function_call', call_id: 'a', name: 'ws-topic-delete', arguments: '{"slug":"old"}' }] })
+      .mockResolvedValueOnce({ id: 'resp_1', output: [{ type: 'function_call', call_id: 'a', name: 'ws-topic-delete', arguments: '{"id":"old"}' }] })
       .mockResolvedValueOnce({ id: 'resp_2', output_text: 'Cancelled.' });
     const callTool = vi.fn();
     const journal = journalHarness();
@@ -872,7 +872,7 @@ describe('DesktopChatAgent', () => {
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Done.' } }] });
     const callTool = vi.fn()
       .mockResolvedValueOnce({ ok: false, error: 'title is required' })
-      .mockResolvedValueOnce({ ok: true, result: { slug: 'fixed' } });
+      .mockResolvedValueOnce({ ok: true, result: { id: 'fixed' } });
     const journal = journalHarness();
     await new DesktopChatAgent(options(callModel, callTool, journal)).start({
       mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'create', headers: {},
@@ -893,7 +893,7 @@ describe('DesktopChatAgent', () => {
     const callTool = vi.fn()
       .mockResolvedValueOnce({ ok: false, error: 'title is required' })
       .mockResolvedValueOnce({ ok: false, error: 'title already exists' })
-      .mockResolvedValueOnce({ ok: true, result: { slug: 'second' } });
+      .mockResolvedValueOnce({ ok: true, result: { id: 'second' } });
     const journal = journalHarness();
     await new DesktopChatAgent(options(callModel, callTool, journal)).start({
       mode: 'responses', url: 'https://example.test', model: 'test', message: 'create', headers: {},
@@ -934,7 +934,7 @@ describe('DesktopChatAgent', () => {
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', tool_calls: [repeated] } }] })
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', tool_calls: [{ ...repeated, id: 'b' }] } }] })
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Done.' } }] });
-    const callTool = vi.fn(async () => ({ ok: true, result: { slug: 'one' } }));
+    const callTool = vi.fn(async () => ({ ok: true, result: { id: 'one' } }));
     const journal = journalHarness();
     const agent = new DesktopChatAgent(options(callModel, callTool, journal));
     const result = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'create', headers: {} });
@@ -1008,10 +1008,10 @@ describe('DesktopChatAgent', () => {
   it('redacts credential keys and embedded secret values from persisted text and payloads', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { content: 'Using top-secret', tool_calls: [
-        { id: 'a', function: { name: 'ws-workstream-read', arguments: '{"slug":"roadmap","authorization":"Bearer hidden-value"}' } },
+        { id: 'a', function: { name: 'ws-workstream-read', arguments: '{"id":"roadmap","authorization":"Bearer hidden-value"}' } },
       ] } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: 'Done with top-secret' } }] });
-    const callTool = vi.fn(async () => ({ ok: true, result: { slug: 'roadmap', note: 'token?api_key=hidden-value and top-secret' } }));
+    const callTool = vi.fn(async () => ({ ok: true, result: { id: 'roadmap', note: 'token?api_key=hidden-value and top-secret' } }));
     const journal = journalHarness();
     await new DesktopChatAgent(options(callModel, callTool, journal)).start({
       mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'Use top-secret', headers: { authorization: 'top-secret' },
@@ -1078,17 +1078,17 @@ describe('DesktopChatAgent', () => {
   it('navigates a specific read from the canonical collection envelope', async () => {
     const callModel = vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', tool_calls: [
-        { id: 'a', function: { name: 'ws-workstream-read', arguments: '{"slug":"roadmap","authorization":"Bearer hidden-value"}' } },
+        { id: 'a', function: { name: 'ws-workstream-read', arguments: '{"id":"roadmap","authorization":"Bearer hidden-value"}' } },
       ] } }] })
       .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: 'Opened.' } }] });
-    const callTool = vi.fn(async () => ({ ok: true, result: { count: 1, workstreams: [{ slug: 'roadmap' }] } }));
+    const callTool = vi.fn(async () => ({ ok: true, result: { count: 1, workstreams: [{ id: 'roadmap' }] } }));
     const journal = schemaValidatingJournalHarness();
     const agent = new DesktopChatAgent(options(callModel, callTool, journal));
     const result = await agent.start({ mode: 'chat-completions', url: 'https://example.test', model: 'test', message: 'open roadmap', headers: {} });
     expect(result.navigation).toEqual({ kind: 'workstream', identifier: 'roadmap' });
-    expect(journal.current()?.completion?.navigationTarget).toEqual({ kind: 'Workstream', id: 'roadmap', slug: 'roadmap' });
+    expect(journal.current()?.completion?.navigationTarget).toEqual({ kind: 'Workstream', id: 'roadmap',  });
     expect(journal.current()?.events.find((event) => event.type === 'tool_call')).toMatchObject({
-      arguments: { slug: 'roadmap', sensitiveField1: '[redacted]' },
+      arguments: { id: 'roadmap', sensitiveField1: '[redacted]' },
     });
   });
 });

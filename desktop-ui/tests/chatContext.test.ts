@@ -6,12 +6,12 @@ describe('chatContextForDocument', () => {
     expect(chatContextForDocument({
       kind: 'topic',
       id: 'topic-id',
-      slug: 'selected-topic',
+
       title: 'Selected topic',
     })).toEqual({
       kind: 'topic',
       routeKind: 'topic',
-      identifier: 'selected-topic',
+      identifier: 'topic-id',
       title: 'Selected topic',
     });
   });
@@ -20,7 +20,7 @@ describe('chatContextForDocument', () => {
     expect(chatContextForDocument({
       kind: 'Config',
       id: 'config-id',
-      slug: null,
+
       title: 'Daily review',
     })).toEqual({
       kind: 'Config',
@@ -28,14 +28,14 @@ describe('chatContextForDocument', () => {
       identifier: 'config-id',
       title: 'Daily review',
     });
-    expect(chatContextForDocument({ kind: 'topic', id: '', slug: null, title: 'Untitled' })).toBeUndefined();
+    expect(chatContextForDocument({ kind: 'topic', id: '',  title: 'Untitled' })).toBeUndefined();
   });
 
   it('marks a container-app virtual document as an implicit app target', () => {
     expect(chatContextForDocument({
       kind: 'container-app',
       id: 'sunset-chess',
-      slug: 'sunset-chess',
+
       title: 'Sunset Chess',
     })).toEqual({
       kind: 'container-app',
@@ -50,7 +50,7 @@ describe('chatContextForDocument', () => {
     expect(chatContextForDocument({
       kind: 'topic-create',
       id: 'draft-id',
-      slug: null,
+
       title: 'New Topic',
     })).toBeUndefined();
   });

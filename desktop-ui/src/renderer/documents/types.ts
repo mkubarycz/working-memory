@@ -14,10 +14,9 @@ import type { PanelTopicRow } from '../../../../shared/panelData';
 
 /** A single topic row rendered in the workstream's Topics section. */
 export interface WorkstreamTopicVM {
-  id?: string;
+  id: string;
   title: string;
-  /** Topic slug (or id) used to build the deep link / open request. */
-  slug: string;
+
   status: string;
   /** True when this topic is pinned to THIS workstream (focusedWorkstreams). */
   pinned: boolean;
@@ -42,8 +41,8 @@ export interface TreeTopicVM {
   /** Codicon id sourced from the topic type. */
   icon: string;
   status: string;
-  /** Topic slug used to open it. */
-  slug: string;
+  /** Topic id used to open it. */
+
   /** True when this topic is pinned/focused in THIS workstream. */
   pinned: boolean;
   /** Open agent messages requiring attention; 0 hides the badge. */
@@ -69,15 +68,15 @@ export interface TreeGroupVM {
 /** The workstream detail view-model (kind = workstream). */
 export interface WorkstreamVM {
   kind: 'workstream';
-  id?: string;
+  id: string;
   title: string;
-  slug: string | null;
+
   status: string;
   createdAt: number;
   updatedAt: number;
   closure: string | null;
   resourceVersion: number;
-  /** False for slugless workstreams (can't be edited via the ws-* API yet). */
+  /** Whether this workstream permits authored edits. */
   editable: boolean;
   topics: WorkstreamTopicVM[];
   /** Full nested topic tree, mirroring the left rail's card. */
@@ -88,8 +87,8 @@ export interface WorkstreamVM {
 
 /** A related document reference (parent topic, member workstream, …). */
 export interface RelationVM {
-  /** Slug or id used to build the open request. */
-  slug: string;
+  /** Related resource document ID. */
+  id: string;
   title: string;
   /** Number of open agent messages requiring attention. */
   agentMessageCount: number;
@@ -99,7 +98,7 @@ export interface RelationVM {
 
 /** Canonical persisted AgentMessage, not a chat run or a tool execution request. */
 export interface AgentMessageVM {
-  /** AgentMessage UUID used for links and message-only lifecycle transitions. */
+  /** AgentMessage document ID used for links and message-only lifecycle transitions. */
   id: string;
   agentId: string;
   agentName: string;
@@ -123,7 +122,7 @@ export interface AgentMessageVM {
   /** Canonical document timestamps are epoch seconds (chat run timestamps are milliseconds). */
   createdAt: number;
   updatedAt: number;
-  slug?: string | null;
+
   provenance?: unknown;
 }
 
@@ -136,7 +135,7 @@ export type RecordAgentMessageDecision = (
  * type-aware header icon + label. Null when the type couldn't be resolved.
  */
 export interface TopicTypeMetaVM {
-  slug: string | null;
+  id: string;
   label: string;
   /** Codicon id (e.g. 'rocket', 'checklist'). */
   icon: string;
@@ -147,7 +146,7 @@ export interface TopicTypeMetaVM {
 export interface TopicCreateDraftVM {
   kind: 'topic-create';
   id: string;
-  slug: null;
+
   title: string;
   body: string;
   topicType: string;
@@ -162,7 +161,7 @@ export interface TopicCreateDraftVM {
 export interface TopicBacklogVM {
   kind: 'topic-backlog';
   id: 'open-topic-backlog';
-  slug: null;
+
   title: 'Open topic backlog';
   topics: PanelTopicRow[];
 }
@@ -170,18 +169,19 @@ export interface TopicBacklogVM {
 export interface SettingsVM {
   kind: 'settings';
   id: 'desktop-settings';
-  slug: null;
+
   title: 'Settings';
 }
 
 /** The topic detail view-model (kind = topic). */
 export interface TopicVM {
   kind: 'topic';
-  id?: string;
+  /** Null only for the unsaved topic creation preview. */
+  id: string | null;
   title: string;
-  slug: string | null;
+
   status: string;
-  /** The topic-type slug (e.g. 'feature', 'bug'). */
+  /** The TopicType document ID. */
   topicType: string;
   /** Resolved topic-type metadata (icon + label), or null when unresolved. */
   typeMeta: TopicTypeMetaVM | null;
@@ -191,7 +191,7 @@ export interface TopicVM {
   createdAt: number;
   updatedAt: number;
   resourceVersion: number;
-  /** False for slugless topics (can't be edited via ws-topic-update yet). */
+  /** Whether this topic permits authored edits. */
   editable: boolean;
   parents: RelationVM[];
   /** Child topics — topics whose `parents` include this topic (the DAG below). */
@@ -217,7 +217,7 @@ export interface GenericDocVM {
   /** The document's real kind (arbitrary; NOT 'workstream' | 'topic'). */
   kind: string;
   id: string;
-  slug: string | null;
+
   title: string;
   createdAt: number;
   updatedAt: number;
@@ -280,10 +280,10 @@ export type WebviewToExt =
   | { type: 'ready' }
   | { type: 'save'; patch: { title?: string; status?: string } }
   | { type: 'saveTopic'; patch: TopicPatch }
-  | { type: 'openTopic'; slug: string }
-  | { type: 'openWorkstream'; slug: string }
+  | { type: 'openTopic'; id: string }
+  | { type: 'openWorkstream'; id: string }
   | { type: 'invoke'; command: string; args: unknown[] }
-  | { type: 'togglePinTopic'; slug: string }
+  | { type: 'togglePinTopic'; id: string }
   | { type: 'attachImages'; requestId: string; files: AttachmentUpload[] }
   // Message lifecycle transitions never authorize tool execution.
   | { type: 'setAgentMessageStatus'; id: string; status: AgentMessageVM['status'] }

@@ -26,7 +26,7 @@ export interface CommandRunOptions {
 }
 
 export interface ClaimClient {
-  containerClaimRead(input: { slug: string }): Promise<ContainerClaim[]>;
+  containerClaimRead(input?: { id?: string }): Promise<ContainerClaim[]>;
   containerClaimCreate(input: ContainerClaimCreateInput): Promise<ContainerClaim>;
   containerClaimUpdate(input: ContainerClaimUpdateInput): Promise<ContainerClaim>;
 }
@@ -150,15 +150,22 @@ export class DockerContainerService {
 
   async ensure(
     claimClient: ClaimClient,
-    desired: ContainerClaimCreateInput,
+    desired: ContainerClaimCreateInput & { id?: string },
     signal?: AbortSignal,
   ): Promise<ContainerLaunchResult> {
     let claim: ContainerClaim;
     try {
-      const [existing] = await claimClient.containerClaimRead({ slug: desired.slug });
+      const existing = desired.id
+        ? (await claimClient.containerClaimRead({ id: desired.id }))[0]
+        : desired.application
+          ? (await claimClient.containerClaimRead()).find(
+            (candidate) => candidate.application?.id === desired.application?.id,
+          )
+          : undefined;
+      const { id: _id, ...createInput } = desired;
       claim = existing
         ? await this.updateClaimIfNeeded(claimClient, existing, desired)
-        : await claimClient.containerClaimCreate(desired);
+        : await claimClient.containerClaimCreate(createInput);
     } catch (error) {
       return failure('claim_error', `Unable to ensure the ${desired.title} ContainerClaim.`, error);
     }
@@ -191,7 +198,7 @@ export class DockerContainerService {
 
     try {
       await this.docker(context, [
-        'build', '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=${claim.slug}`,
+        'build', '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=${claim.id}`,
         '-t', runtime.imageName, '-f', runtime.dockerfile, runtime.buildContext,
       ], this.timeouts.build, signal);
     } catch (error) {
@@ -225,10 +232,10 @@ export class DockerContainerService {
     }
 
     let action: 'created' | 'started' | 'recreated' | 'reused';
-    const matches = current ? containerMatches(current, claim.slug, runtime, imageId) : false;
+    const matches = current ? containerMatches(current, claim.id, runtime, imageId) : false;
     if (current && !matches) {
       if (current.Config?.Labels?.[MANAGED_LABEL] !== 'true'
-        || current.Config?.Labels?.[CLAIM_LABEL] !== claim.slug) {
+        || current.Config?.Labels?.[CLAIM_LABEL] !== claim.id) {
         return {
           status: 'error',
           code: 'container_conflict',
@@ -242,14 +249,14 @@ export class DockerContainerService {
           this.timeouts.remove,
           signal,
         );
-        await this.runContainer(context, runtime, claim.slug, signal);
+        await this.runContainer(context, runtime, claim.id, signal);
         action = 'recreated';
       } catch (error) {
         return failure('start_failed', 'Managed Docker container could not be recreated.', error);
       }
     } else if (!current) {
       try {
-        await this.runContainer(context, runtime, claim.slug, signal);
+        await this.runContainer(context, runtime, claim.id, signal);
         action = 'created';
       } catch (error) {
         return failure('start_failed', 'Docker container could not be started.', error);
@@ -287,7 +294,7 @@ export class DockerContainerService {
     };
   }
 
-  async inspect(desired: ContainerClaimCreateInput, signal?: AbortSignal): Promise<ContainerAppStatus> {
+  async inspect(desired: ContainerClaimCreateInput & { id: string }, signal?: AbortSignal): Promise<ContainerAppStatus> {
     const runtime = desired.runtime;
     if (!runtime || runtime.type !== 'docker') return appStatus(desired, null, 'error', false, 'Status failed', 'ContainerClaim has no Docker runtime specification.');
     try {
@@ -309,7 +316,7 @@ export class DockerContainerService {
       if (isMissingContainer(error)) return appStatus(desired, context, 'missing', false, 'Status refreshed', null);
       return appStatus(desired, context, 'error', false, 'Status failed', errorDetail(error));
     }
-    if (!containerOwnedByClaim(current, desired.slug, runtime)) {
+    if (!containerOwnedByClaim(current, desired.id, runtime)) {
       return appStatus(desired, context, 'error', false, 'Status refused', `Container "${runtime.containerName}" is not the exact managed container for this claim.`);
     }
     if (!current.State?.Running) return appStatus(desired, context, 'stopped', false, 'Status refreshed', null);
@@ -323,7 +330,7 @@ export class DockerContainerService {
     return appStatus(desired, context, ready ? 'healthy' : 'unhealthy', ready, 'Status refreshed', ready ? null : 'The managed container is running but its health endpoint is not ready.');
   }
 
-  async stop(desired: ContainerClaimCreateInput, signal?: AbortSignal): Promise<ContainerStopResult> {
+  async stop(desired: ContainerClaimCreateInput & { id: string }, signal?: AbortSignal): Promise<ContainerStopResult> {
     const status = await this.inspect(desired, signal);
     if (status.state === 'missing') return { status: 'missing', message: 'Managed container is missing.', detail: status };
     if (status.state === 'stopped') return { status: 'already_stopped', message: 'Managed container is already stopped.', detail: status };
@@ -359,7 +366,7 @@ export class DockerContainerService {
       && JSON.stringify(existing.application) === JSON.stringify(desired.application)
     ) return existing;
     return client.containerClaimUpdate({
-      slug: desired.slug,
+      id: existing.id,
       title: desired.title,
       repository: desired.repository,
       runtime: desired.runtime,
@@ -371,7 +378,7 @@ export class DockerContainerService {
   private async runContainer(
     context: string,
     runtime: DockerRuntimeSpec,
-    slug: string,
+    id: string,
     signal?: AbortSignal,
   ): Promise<void> {
     validateVolumes(runtime.volumes);
@@ -380,7 +387,7 @@ export class DockerContainerService {
     ]);
     await this.docker(context, [
       'container', 'run', '--detach', '--name', runtime.containerName,
-      '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=${slug}`,
+      '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=${id}`,
       ...runtimePorts(runtime).flatMap((port) => [
         '--publish', `${port.hostIp}:${port.hostPort}:${port.containerPort}${port.protocol === 'udp' ? '/udp' : ''}`,
       ]),
@@ -445,22 +452,22 @@ export class DockerContainerService {
 
 function containerMatches(
   inspect: DockerInspect,
-  slug: string,
+  id: string,
   runtime: DockerRuntimeSpec,
   imageId: string,
 ): boolean {
   return inspect.Image === imageId
     && inspect.Config?.Image === runtime.imageName
     && inspect.Config?.Labels?.[MANAGED_LABEL] === 'true'
-    && inspect.Config?.Labels?.[CLAIM_LABEL] === slug
+    && inspect.Config?.Labels?.[CLAIM_LABEL] === id
     && portsMatch(inspect, runtime)
     && volumesMatch(inspect, runtime);
 }
 
-function containerOwnedByClaim(inspect: DockerInspect, slug: string, runtime: DockerRuntimeSpec): boolean {
+function containerOwnedByClaim(inspect: DockerInspect, id: string, runtime: DockerRuntimeSpec): boolean {
   return inspect.Config?.Image === runtime.imageName
     && inspect.Config?.Labels?.[MANAGED_LABEL] === 'true'
-    && inspect.Config?.Labels?.[CLAIM_LABEL] === slug
+    && inspect.Config?.Labels?.[CLAIM_LABEL] === id
     && portsMatch(inspect, runtime)
     && volumesMatch(inspect, runtime);
 }
@@ -496,7 +503,7 @@ function portsMatch(inspect: DockerInspect, runtime: DockerRuntimeSpec): boolean
 }
 
 function appStatus(
-  desired: ContainerClaimCreateInput,
+  desired: ContainerClaimCreateInput & { id: string },
   dockerContext: string | null,
   state: ContainerAppStatus['state'],
   ready: boolean,
@@ -505,10 +512,10 @@ function appStatus(
 ): ContainerAppStatus {
   const runtime = desired.runtime!;
   return {
-    id: desired.slug,
+    id: desired.id,
     displayName: desired.title,
     claimTitle: desired.title,
-    claimSlug: desired.slug,
+    claimId: desired.id,
     repository: desired.repository,
     buildContext: runtime.buildContext,
     dockerfile: runtime.dockerfile,

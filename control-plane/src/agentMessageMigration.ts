@@ -15,8 +15,8 @@ export function ensureSystemImportAgent(db: DatabaseSync): boolean {
   const version = (db.prepare("SELECT value FROM store_meta WHERE key = 'resource_version'").get() as { value: number }).value;
   const now = Math.floor(Date.now() / 1000);
   db.prepare(`INSERT INTO resources
-    (id, kind, slug, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
-    VALUES (?, 'Agent', NULL, '{}', ?, '{}', ?, ?, ?, NULL, ?)`)
+    (id, kind, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
+    VALUES (?, 'Agent', '{}', ?, '{}', ?, ?, ?, NULL, ?)`)
     .run(SYSTEM_IMPORT_AGENT_ID, JSON.stringify({
       name: 'System Import', description: 'Imported historical messages and deprecated Alert compatibility callers.',
     }), normalizeAgentName('System Import'), now, now, version);

@@ -21,7 +21,7 @@
   });
 
   async function prepare(): Promise<void> {
-    if (!topic.slug || busy || sent) return;
+    if (!topic.id || busy || sent) return;
     const previousServerId = selectedServerId;
     selectedServerId = '';
     servers = [];
@@ -29,7 +29,7 @@
     error = '';
     try {
       await beforeShare();
-      const result = await window.workingMemory.prepareFeedback(topic.slug, requestId);
+      const result = await window.workingMemory.prepareFeedback(topic.id, requestId);
       servers = result.servers;
       context = result.context;
       selectedServerId = servers.length === 1 ? servers[0].id
@@ -40,12 +40,12 @@
   }
 
   async function send(): Promise<void> {
-    if (!topic.slug || busy || sent || !selectedServerId) return;
+    if (!topic.id || busy || sent || !selectedServerId) return;
     phase = 'sending';
     error = '';
     message = '';
     try {
-      const result = await window.workingMemory.sendFeedback(topic.slug, requestId, selectedServerId);
+      const result = await window.workingMemory.sendFeedback(topic.id, requestId, selectedServerId);
       if (result.status === 'choose') { servers = result.servers; selectedServerId = ''; return; }
       sent = true;
       message = `${result.receipt.duplicate ? 'Already received' : 'Feedback sent'} to Inbox: ${result.receipt.title}`;

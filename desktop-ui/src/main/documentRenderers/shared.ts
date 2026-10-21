@@ -20,8 +20,8 @@ export type DeepLinkKind =
   | 'agent-message';
 
 /** Build a native Working Memory desktop link. */
-export function deepLink(kind: DeepLinkKind, slug: string): string {
-  return `working-memory://open/${kind}/${encodeURIComponent(slug)}`;
+export function deepLink(kind: DeepLinkKind, id: string): string {
+  return `working-memory://open/${kind}/${encodeURIComponent(id)}`;
 }
 
 /** Format a unix-seconds timestamp as `<seconds> (<ISO>)`, or `—` when absent. */
@@ -44,16 +44,16 @@ export function asStrArray(v: unknown): string[] {
     : [];
 }
 
-/** Render a list of slugs as bulleted deep links, or `_none_` when empty. */
-export function linkList(kind: DeepLinkKind, slugs: string[]): string {
-  if (slugs.length === 0) {
+/** Render a list of ids as bulleted deep links, or `_none_` when empty. */
+export function linkList(kind: DeepLinkKind, ids: string[]): string {
+  if (ids.length === 0) {
     return '_none_';
   }
-  return slugs.map((s) => `- [${s}](${deepLink(kind, s)})`).join('\n');
+  return ids.map((s) => `- [${s}](${deepLink(kind, s)})`).join('\n');
 }
 
 /**
- * The shared metadata list (id / slug / resourceVersion / timestamps).
+ * The shared metadata list (id / id / resourceVersion / timestamps).
  * `extra` rows (e.g. an authored `status`) are appended after the standard set.
  *
  * Emits the bullet list only — no `## Metadata` heading. The per-kind virtual
@@ -67,7 +67,7 @@ export function metadataSection(
   const { metadata } = env;
   return [
     `- \`id\`: \`${metadata.id}\``,
-    `- \`slug\`: ${metadata.slug ?? '_none_'}`,
+    `- \`id\`: ${metadata.id ?? '_none_'}`,
     `- \`resourceVersion\`: ${metadata.resourceVersion}`,
     `- \`createdAt\`: ${fmtTs(metadata.createdAt)}`,
     `- \`updatedAt\`: ${fmtTs(metadata.updatedAt)}`,

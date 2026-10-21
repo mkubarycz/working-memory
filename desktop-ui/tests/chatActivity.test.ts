@@ -23,11 +23,11 @@ describe('concurrent scoped chats', () => {
 
   it('marks interleaved responses once and preserves unread aliases across a reload', () => {
     const complete = { ...second, status: 'succeeded' as const, assistantText: 'Second response',
-      entityRefs: [{ kind: 'Topic', id: 'uuid', slug: 'related', relation: 'referenced' as const }] };
+      entityRefs: [{ kind: 'Topic', id: 'uuid',  relation: 'referenced' as const }] };
     const unread = collectUnreadResponses([], [first, second], [first, complete], true);
     expect(unreadResponseCount(unread, 'topic', 'second')).toBe(1);
     expect(unreadResponseCount(unread, 'topic', 'first')).toBe(0);
-    expect(unreadResponseCount(unread, 'topic', 'related', 'uuid')).toBe(1);
+    expect(unreadResponseCount(unread, 'topic', 'uuid', 'uuid')).toBe(1);
     expect(parseUnreadResponses(JSON.stringify(unread))).toEqual(unread);
     expect(collectUnreadResponses([], [complete], [complete], true)).toEqual([]);
     expect(collectUnreadResponses([], [], [complete], false)).toEqual([]);
@@ -85,11 +85,11 @@ describe('viewed-response delay', () => {
 });
 
 describe('change-driven renderer refresh', () => {
-  it('does not treat another document kind with the same slug as a deleted tab', () => {
-    const change = { kind: 'Topic', id: 'topic-id', slug: 'shared-slug', resourceVersion: 2, deleted: true };
-    expect(documentMatchesChange({ kind: 'topic', slug: 'shared-slug' }, change)).toBe(true);
-    expect(documentMatchesChange({ kind: 'workstream', slug: 'shared-slug' }, change)).toBe(false);
-    expect(documentMatchesChange({ kind: 'topic', id: 'topic-id', slug: null }, change)).toBe(true);
+  it('does not treat another document kind with the same id as a deleted tab', () => {
+    const change = { kind: 'Topic', id: 'topic-id',  resourceVersion: 2, deleted: true };
+    expect(documentMatchesChange({ kind: 'topic', id: 'shared-id' }, change)).toBe(false);
+    expect(documentMatchesChange({ kind: 'workstream', id: 'shared-id' }, change)).toBe(false);
+    expect(documentMatchesChange({ kind: 'topic', id: 'topic-id',  }, change)).toBe(true);
   });
 
   it('coalesces changes for 100ms and serializes updates arriving during a refresh', async () => {
@@ -98,7 +98,7 @@ describe('change-driven renderer refresh', () => {
     const refresh = vi.fn().mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }))
       .mockResolvedValue(undefined);
     const queue = createDocumentChangeQueue(refresh, (error) => { throw error; });
-    const change = { id: 'one', kind: 'Topic', slug: 'one', resourceVersion: 1, deleted: false };
+    const change = { id: 'one', kind: 'Topic',  resourceVersion: 1, deleted: false };
     queue.enqueue({ resourceVersion: 1, reset: false, changes: [change] });
     queue.enqueue({ resourceVersion: 2, reset: false, changes: [{ ...change, resourceVersion: 2 }] });
     await vi.advanceTimersByTimeAsync(99);
@@ -123,7 +123,7 @@ describe('change-driven renderer refresh', () => {
     queue.clear();
     await vi.advanceTimersByTimeAsync(100);
     expect(refresh).not.toHaveBeenCalled();
-    expect(documentRefreshTarget({ kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' })).toBeUndefined();
-    expect(documentRefreshTarget({ kind: 'topic-create', id: 'draft', slug: null, title: '', body: 'Draft', topicType: 'topic', topicTypes: [], workstream: 'work', workstreamTitle: 'Work', parent: null, parentTitle: null })).toBeUndefined();
+    expect(documentRefreshTarget({ kind: 'settings', id: 'desktop-settings',  title: 'Settings' })).toBeUndefined();
+    expect(documentRefreshTarget({ kind: 'topic-create', id: 'draft',  title: '', body: 'Draft', topicType: 'topic', topicTypes: [], workstream: 'work', workstreamTitle: 'Work', parent: null, parentTitle: null })).toBeUndefined();
   });
 });

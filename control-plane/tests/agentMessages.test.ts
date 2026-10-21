@@ -33,8 +33,8 @@ function legacyDatabase(rows: Array<Record<string, unknown>>) {
   const db = new DatabaseSync(file);
   db.exec("DELETE FROM resource_migrations; DROP INDEX idx_agent_message_dedupe");
   const insert = db.prepare(`INSERT INTO resources
-    (id, kind, slug, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
-    VALUES (?, 'Alert', NULL, '{"legacy":"yes"}', ?, '{"history":["raised","closed"]}', 10, 20, ?, ?)`);
+    (id, kind, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
+    VALUES (?, 'Alert', '{"legacy":"yes"}', ?, '{"history":["raised","closed"]}', 10, 20, ?, ?)`);
   rows.forEach((row, index) => insert.run(
     String(row.id ?? `old-${index}`),
     typeof row.raw === 'string' ? row.raw : JSON.stringify({ description: '**Original**\r\n', ...row.spec as object }),
@@ -82,14 +82,15 @@ describe('canonical AgentMessage store', () => {
   });
   it('validates topic/object links, duplicate links, target deletion and restore integrity', () => {
     const store = memory();
-    const topic = store.createDocument({ kind: 'Topic', slug: 'human-decision', spec: { title: 'Decision', status: 'open' } });
+    const type = store.createDocument({ kind: 'TopicType', spec: { label: 'Topic', icon: 'circle', description: 'Topic' } });
+    const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Decision', status: 'open', topicType: type.metadata.id } });
     const ref = { kind: 'Topic', id: topic.metadata.id };
     for (const extra of [{ topics: ['missing'] }, { relations: [{ ...ref, kind: 'Workstream' }] }, { relations: [ref, ref] }]) {
       expect(() => create(store, message(extra))).toThrow(/relation|Topic/);
     }
-    const doc = create(store, message({ topics: ['human-decision'], relations: [ref] }));
+    const doc = create(store, message({ topics: [topic.metadata.id], relations: [ref] }));
     expect(() => store.deleteDocument({ id: topic.metadata.id })).toThrow(/referenced/);
-    const legacyNew = store.createDocument({ kind: 'Alert', spec: { description: 'New legacy adapter input', topics: ['human-decision'] } });
+    const legacyNew = store.createDocument({ kind: 'Alert', spec: { description: 'New legacy adapter input', topics: [topic.metadata.id] } });
     store.deleteDocument({ id: legacyNew.metadata.id });
     store.deleteDocument({ id: doc.metadata.id });
     store.deleteDocument({ id: topic.metadata.id });
@@ -376,10 +377,10 @@ describe('versioned automatic Alert migration', () => {
     } finally { await server.close(); }
   });
   it('allows migrated actionable orphan references through actual MCP acknowledge/resolve/title edits but rejects new dangling references', async () => {
-    const file = legacyDatabase([{ spec: { status: 'alert', topics: ['missing-topic', 'deleted-topic'] } }]);
+    const file = legacyDatabase([{ spec: { status: 'alert', topics: ['missing-topic', 'deleted-topic-id'] } }]);
     const db = new DatabaseSync(file);
-    db.prepare(`INSERT INTO resources(id,kind,slug,labels,spec,status,created_at,updated_at,deleted_at,resource_version)
-      VALUES('deleted-topic-id','Topic','deleted-topic','{}','{"title":"Deleted topic","status":"open"}','{}',10,20,30,2)`).run();
+    db.prepare(`INSERT INTO resources(id,kind,labels,spec,status,created_at,updated_at,deleted_at,resource_version)
+      VALUES('deleted-topic-id','Topic','{}','{"title":"Deleted topic","status":"open"}','{}',10,20,30,2)`).run();
     db.close();
     const store = openStore(file);
     stores.push(store);
@@ -393,18 +394,18 @@ describe('versioned automatic Alert migration', () => {
       let current = original;
       for (const lifecycle of ['acknowledge', 'resolve']) {
         current = json(await call(`ws-agent-message-${lifecycle}`, { id: current.metadata.id, expectedResourceVersion: current.metadata.resourceVersion }));
-        expect(current.spec.topics).toEqual(['missing-topic', 'deleted-topic']);
+        expect(current.spec.topics).toEqual(['missing-topic', 'deleted-topic-id']);
         expect(current.spec.legacy_source).toEqual(original.spec.legacy_source);
       }
       expect(current.spec.status).toBe('resolved');
       current = json(await call('ws-agent-message-update', {
         id: current.metadata.id, expectedResourceVersion: current.metadata.resourceVersion, spec: { title: 'Historical references remain intact' },
       }));
-      expect(current.spec.topics).toEqual(['missing-topic', 'deleted-topic']);
+      expect(current.spec.topics).toEqual(['missing-topic', 'deleted-topic-id']);
       expect(await call('ws-agent-message-update', {
         id: current.metadata.id, expectedResourceVersion: current.metadata.resourceVersion, spec: { topics: ['missing-topic', 'new-missing-topic'] },
       })).toMatchObject({ isError: true });
-      expect(store.getDocument({ id: current.metadata.id })?.spec.topics).toEqual(['missing-topic', 'deleted-topic']);
+      expect(store.getDocument({ id: current.metadata.id })?.spec.topics).toEqual(['missing-topic', 'deleted-topic-id']);
       expect(store.getDocument({ id: current.metadata.id })?.spec.description).toBe('**Original**\r\n');
     } finally { await client.close(); await server.close(); }
   });
@@ -413,11 +414,12 @@ describe('versioned automatic Alert migration', () => {
 describe('AgentMessage MCP over isolated HTTP', () => {
   it.each(['open', 'acknowledged', 'resolved'])('a real title-only MCP patch preserves %s lifecycle and all unrelated source fields byte-identically', async (status) => {
     const store = memory();
-    const topic = store.createDocument({ kind: 'Topic', slug: 'source-topic', spec: { title: 'Source topic', status: 'open' } });
+    const type = store.createDocument({ kind: 'TopicType', spec: { label: 'Topic', icon: 'circle', description: 'Topic' } });
+    const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Source topic', status: 'open', topicType: type.metadata.id } });
     const original = create(store, message({
       category: 'approval', status, attention: status === 'open', severity: 'warning', created_by: 'review-agent',
       description: '# Source\r\n\n**Keep this exact Markdown**\n',
-      topics: ['source-topic'], relations: [{ kind: 'Topic', id: topic.metadata.id }],
+      topics: [topic.metadata.id], relations: [{ kind: 'Topic', id: topic.metadata.id }],
       provenance: { agent: 'reviewer', run_id: 'run-123', source: 'test' },
       decision: { outcome: 'approved', decided_by: 'human', reason: 'Communication, not authority' },
     }));
@@ -496,7 +498,8 @@ describe('AgentMessage MCP over isolated HTTP', () => {
   });
   it('uses one canonical record across CRUD, legacy aliases, lifecycle, generic validation and delete/restore', async () => {
     const store = memory();
-    const topic = store.createDocument({ kind: 'Topic', slug: 'approval-topic', spec: { title: 'Approval topic', status: 'open' } });
+    const type = store.createDocument({ kind: 'TopicType', spec: { label: 'Topic', icon: 'circle', description: 'Topic' } });
+    const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Approval topic', status: 'open', topicType: type.metadata.id } });
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'agent-message-test', version: '1' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`)));
@@ -517,7 +520,7 @@ describe('AgentMessage MCP over isolated HTTP', () => {
       expect(await call('ws-alert-create', { description: 'Do not coerce', category: 'approval' })).toMatchObject({ isError: true });
       const created = json(await call('ws-agent-message-create', message({
         category: 'approval', attention: true, severity: 'warning', created_by: 'review-agent',
-        topics: ['approval-topic'], relations: [{ kind: 'Topic', id: topic.metadata.id }],
+        topics: [topic.metadata.id], relations: [{ kind: 'Topic', id: topic.metadata.id }],
       }))) as DocumentEnvelope;
       expect(json(await call('wm-document-read', { kind: 'Alert' })).documents[0].metadata.id).toBe(created.metadata.id);
       expect(await call('ws-alert-read', { id: created.metadata.id })).toMatchObject({ isError: true });
@@ -538,7 +541,7 @@ describe('AgentMessage MCP over isolated HTTP', () => {
       expect(current.spec).toMatchObject({
         category: 'approval', status: 'resolved', attention: false, severity: 'warning', created_by: 'review-agent',
         recommended_action: created.spec.recommended_action,
-        topics: ['approval-topic'], relations: [{ kind: 'Topic', id: topic.metadata.id }],
+        topics: [topic.metadata.id], relations: [{ kind: 'Topic', id: topic.metadata.id }],
         decision: { outcome: 'approved', decided_by: 'reviewer', reason: 'Reviewed the design' },
       });
       expect(current.spec.decision.decided_at).toEqual(expect.any(Number));

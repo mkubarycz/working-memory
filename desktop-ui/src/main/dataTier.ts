@@ -318,7 +318,7 @@ function backupTimestamp(date: Date): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function fileSlug(name: string): string {
+function fileId(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'instance';
 }
 
@@ -483,7 +483,7 @@ export class DataTierManager {
       const container = dataTierInstanceNames(port).container;
       const running = (await this.containers(docker, env)).get(container)?.state === 'running';
       if (!running) throw new DataTierError('Start the instance before backing it up.', 'not-running');
-      const fileName = `working-memory-${fileSlug(instance.name)}-${backupTimestamp(this.now())}.sqlite`;
+      const fileName = `working-memory-${fileId(instance.name)}-${backupTimestamp(this.now())}.sqlite`;
       const snapshot = `/tmp/${fileName}`;
       const vacuum = `const { DatabaseSync } = require('node:sqlite');`
         + `const db = new DatabaseSync(${JSON.stringify(CONTAINER_DATABASE)});`
