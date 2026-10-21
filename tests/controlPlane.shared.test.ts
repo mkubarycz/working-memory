@@ -22,7 +22,7 @@ describe('controlPlaneShared', () => {
       expect(md.startsWith('---\n')).toBe(true);
       expect(md).toContain('description:');
       const frontmatter = md.split('---')[1];
-      for (const tool of ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'ws-agent-message-create', 'ws-agent-message-read', 'ws-agent-message-update', 'ws-agent-message-delete']) {
+      for (const tool of ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'ws-agent-create', 'ws-agent-read', 'ws-agent-message-create', 'ws-agent-message-read', 'ws-agent-message-update', 'ws-agent-message-delete']) {
         expect(frontmatter).toContain(`'${tool}'`);
       }
     });
@@ -49,6 +49,9 @@ describe('controlPlaneShared', () => {
       expect(md).toContain('ws-agent-message-read');
       expect(md).toContain('ws-agent-message-update');
       expect(md).toContain('ws-agent-message-delete');
+      expect(md).toContain('look up your caller name with `ws-agent-read`');
+      expect(md).toContain('register it with `ws-agent-create`');
+      expect(md).toContain('Remember the returned `metadata.id` and reuse it as `agent_id`');
     });
   });
 
