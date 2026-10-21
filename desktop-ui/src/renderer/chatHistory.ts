@@ -40,6 +40,7 @@ export interface ChatRun {
   tools: ChatToolRow[];
   progress?: ToolProgress[];
   pendingConfirmation?: PendingConfirmation;
+  unpersistedResult?: boolean;
 }
 
 export interface ToolDetail {
@@ -98,6 +99,7 @@ export function summaryToChatRun(summary: CommandJournalSummary): ChatRun {
     startedAt: summary.startedAt,
     completedAt: summary.completedAt,
     status: summary.status,
+    unpersistedResult: false,
     userText: summary.request.userText,
     attachments: summary.request.attachments ?? [],
     scope: summary.primaryScope,
@@ -248,6 +250,7 @@ export function reconcileLiveRun(runs: ChatRun[], key: string, result: ChatResul
     mutated: result.mutated ?? current.mutated,
     progress: result.progress,
     pendingConfirmation: result.pendingConfirmation,
+    unpersistedResult: true,
   };
   const withoutDuplicates = runs.filter((run, candidate) => candidate === index || (
     run.key !== key && (!replacement.journalId || run.journalId !== replacement.journalId)

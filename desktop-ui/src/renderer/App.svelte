@@ -1,8 +1,10 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
   import BrainMark from './BrainMark.svelte';
   import UnreadBadge from './UnreadBadge.svelte';
+  import RecentMessages from './RecentMessages.svelte';
+  import ToolActivity from './ToolActivity.svelte';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
   import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
   import type { TopicVM } from './documents/types';
@@ -52,7 +54,7 @@
     loadRegisteredContainerApps,
     type ContainerAppItem,
   } from './containerApps';
-  import type { CommandJournalScopeRef } from '../../../shared/controlPlaneClient';
+  import type { CommandJournalScopeRef, CommandJournalSummary } from '../../../shared/controlPlaneClient';
   import type { PanelAction, PanelData } from '../../../shared/panelData';
   import { invokeActiveAction } from './activeContextMenu';
   import { DESKTOP_BUILD_TIMESTAMP, formatDesktopBuildTimestamp } from './buildInfo';
@@ -85,11 +87,10 @@
     updateDocumentTab,
     type DocumentTabsState,
   } from './documentTabs';
-  import { collapseChatOnInteraction, chatRunDomId, recentRunsForContext, matchesChatContext, chatContextBusy, chatContextPending, chatContextKey } from './scopedChat';
+  import { collapseChatOnInteraction, chatRunDomId, loadScopedHistory, mergeScopedHistory, matchesChatContext, chatContextBusy, chatContextPending, chatContextKey } from './scopedChat';
   import { createDocumentChangeQueue, documentMatchesChange, documentRefreshTarget } from './documentChanges';
   import type { DocumentChanges } from '../../../shared/documentChanges';
   import { collectUnreadResponses, observeResponse, parseUnreadResponses, responseKey, unreadResponseCount, type UnreadResponse } from './chatUnread';
-  import { humanInitials } from './humanIdentity';
   import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
@@ -138,7 +139,12 @@
   let historyLoading = $state(true);
   let historyError = $state('');
   let historyCursor = $state<string | undefined>();
+  let scopedHistory = $state<CommandJournalSummary[]>([]);
+  let scopedHistoryLoading = $state(false);
+  let scopedHistoryError = $state('');
+  let scopedHistoryRevision = $state(0);
   let selectedTool = $state<SelectedTool | null>(null);
+  let toolDetailRequest = 0;
   let toolInspectorElement = $state<HTMLElement | null>(null);
   let unreadResponses = $state<UnreadResponse[]>([]);
   let sharingTopic = $state<TopicVM | null>(null);
@@ -741,13 +747,18 @@
     const generation = environmentGeneration;
     const journals = change.changes.filter((entry) => entry.kind.toLowerCase() === 'commandjournal');
     if (change.reset) {
+      scopedHistoryRevision += 1;
       const activeJournals = chatRuns.filter((run) => run.journalId
         && ['running', 'submitting', 'awaiting_confirmation'].includes(run.status));
       await refreshLatestHistory();
       await Promise.all(activeJournals.map((run) => refreshJournal(run.journalId!)));
     }
     else await Promise.all(journals.map(async (entry) => {
-      if (entry.deleted) setChatRuns(chatRuns.filter((run) => run.journalId !== entry.id));
+      if (entry.deleted) {
+        setChatRuns(chatRuns.filter((run) => run.journalId !== entry.id));
+        scopedHistory = scopedHistory.filter((summary) => summary.id !== entry.id);
+        scopedHistoryRevision += 1;
+      }
       else await refreshJournal(entry.id);
     }));
     if (generation !== environmentGeneration) return;
@@ -805,8 +816,36 @@
   function statusTime(timestamp: number): string {
     return timestamp ? new Date(timestamp).toLocaleTimeString() : 'never';
   }
-  const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
-  const scopedLatestRun = $derived(scopedRecentRuns.at(-1) ?? null);
+  const scopedContext = $derived(currentChatContext
+    ? { ...currentChatContext, id: activeDocument?.id } : undefined);
+  const scopedHistoryKey = $derived(`${selectedEnvironment?.id ?? ''}:${chatContextKey(scopedContext)}:${scopedContext?.id ?? ''}`);
+  let loadedScopeKey = $state('');
+  const scopedConversationRuns = $derived(mergeScopedHistory(chatRuns,
+    loadedScopeKey === scopedHistoryKey ? scopedHistory : []));
+
+  $effect(() => {
+    const key = scopedHistoryKey;
+    const revision = scopedHistoryRevision;
+    const context = untrack(() => scopedContext);
+    const generation = environmentGeneration;
+    let cancelled = false;
+    untrack(() => {
+      loadedScopeKey = key;
+      scopedHistory = [];
+      scopedHistoryError = '';
+      scopedHistoryLoading = !!context;
+    });
+    if (!context) return;
+    const isCurrent = () => !cancelled && generation === environmentGeneration
+      && key === scopedHistoryKey && revision === scopedHistoryRevision;
+    void loadScopedHistory(context, (input) => window.workingMemory.getChatHistory(input), isCurrent,
+      (summaries) => { scopedHistory = [...scopedHistory, ...summaries]; })
+      .catch((error) => {
+        if (isCurrent()) scopedHistoryError = error instanceof Error ? error.message : String(error);
+      })
+      .finally(() => { if (isCurrent()) scopedHistoryLoading = false; });
+    return () => { cancelled = true; };
+  });
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
     viewportWidth,
@@ -933,16 +972,24 @@
   }
 
   async function openToolDetail(row: ChatToolRow): Promise<void> {
+    const generation = environmentGeneration;
+    const request = ++toolDetailRequest;
+    const isCurrent = () => generation === environmentGeneration && request === toolDetailRequest && selectedTool !== null;
+    activateHeaderTab('log');
+    chatRailCollapsed = false;
     selectedTool = { row, loading: true, error: '' };
     await tick();
+    if (!isCurrent()) return;
     toolInspectorElement?.focus();
     try {
       const journal = await window.workingMemory.getChatJournal(row.journalId);
+      if (!isCurrent()) return;
       const detail = journal ? toolDetail(journal, row.sequence) : undefined;
       selectedTool = detail
         ? { row, detail, loading: false, error: '' }
         : { row, loading: false, error: 'This tool event is no longer available.' };
     } catch (error) {
+      if (!isCurrent()) return;
       selectedTool = { row, loading: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
@@ -1197,6 +1244,9 @@
     historyLoading = reset.historyLoading;
     historyError = reset.historyError;
     historyCursor = reset.historyCursor;
+    scopedHistory = [];
+    scopedHistoryError = '';
+    scopedHistoryLoading = false;
     selectedTool = reset.selectedTool;
     activePanel = reset.activePanel;
     activeLoading = reset.activeLoading;
@@ -1303,7 +1353,7 @@
       const message = `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}`;
       if (generation === environmentGeneration) {
         setChatRuns(chatRuns.map((run) => run.key === runKey
-          ? { ...run, status: 'failed', assistantText: message }
+          ? { ...run, status: 'failed', assistantText: message, unpersistedResult: true }
           : run));
       }
       return message;
@@ -1376,7 +1426,7 @@
     const contextKey = chatContextKey(context);
     activeChatContexts = [...activeChatContexts, contextKey];
     setChatRuns(chatRuns.map((candidate) => candidate.key === runKey
-      ? { ...candidate, status: 'running', pendingConfirmation: undefined } : candidate));
+      ? { ...candidate, status: 'running', pendingConfirmation: undefined, unpersistedResult: true } : candidate));
     const generation = environmentGeneration;
     try {
       const result = await window.workingMemory.resolveChatConfirmation(pending.id, confirmed, context);
@@ -1387,7 +1437,7 @@
     } catch (error) {
       if (generation !== environmentGeneration) return;
       setChatRuns(chatRuns.map((run) => run.key === runKey || run.journalId === runKey
-        ? { ...run, status: 'failed', assistantText: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}` }
+        ? { ...run, status: 'failed', assistantText: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}`, unpersistedResult: true }
         : run));
     } finally {
       if (generation === environmentGeneration) {
@@ -1979,6 +2029,10 @@
   }
 
   async function focusChatRun(run: ChatRun): Promise<void> {
+    if (!chatRuns.some((candidate) => (candidate.journalId ?? candidate.key) === (run.journalId ?? run.key))) {
+      setChatRuns([...chatRuns, run].sort((left, right) => left.startedAt - right.startedAt
+        || (left.journalId ?? left.key).localeCompare(right.journalId ?? right.key)), false);
+    }
     await focusChatRunTarget({
       activateLog: () => activateHeaderTab('log'),
       expandChatRail: () => (chatRailCollapsed = false),
@@ -2319,73 +2373,25 @@
     {/if}
     </div>
 
-      <section class="scope-preview" class:expanded={scopePreviewExpanded} aria-label="Recent messages">
-        <div class="scope-preview-heading">
-          <span>Recent messages</span>
-          <button
-            aria-expanded={scopePreviewExpanded}
-            aria-label={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
-            title={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
-            onclick={() => (scopePreviewExpanded = !scopePreviewExpanded)}
-          >
-            <span
-              aria-hidden="true"
-              class="codicon codicon-chevron-{scopePreviewExpanded ? 'down' : 'up'}"
-            ></span>
-          </button>
-        </div>
-        {#if scopedRecentRuns.length === 0}
-          <p>No messages for this scope.</p>
-        {:else if !scopePreviewExpanded}
-          {#each scopedRecentRuns as run (run.journalId ?? run.key)}
-            <div class="scope-preview-row">
-              <button class="scope-preview-main" onclick={() => void focusChatRun(run)} title="Show in history">
-                <span>{run.userText}</span>
-              </button>
-              {#if isRetryableRun(run)}
-                <button class="retry-button" disabled={runBlocked(run)} onclick={() => void retryRun(run)}>Retry</button>
-              {/if}
-            </div>
-          {/each}
-        {/if}
-        {#if scopePreviewExpanded && scopedLatestRun}
-          <article class="scope-preview-response" aria-label="Latest response" aria-live="polite">
-            <section class="scope-preview-human">
-              <span aria-hidden="true">{humanInitials(humanName)}</span>
-              <p>{scopedLatestRun.userText}</p>
-            </section>
-            {#if scopedLatestRun.tools.length}
-              <ol class="scope-preview-tools" aria-label="Latest tool activity">
-                {#each scopedLatestRun.tools as tool (`preview:${tool.journalId}:${tool.sequence}`)}
-                  <li class:failed={tool.status === 'failure'} class:cancelled={tool.status === 'cancelled'}>
-                    <button onclick={() => void openToolDetail(tool)} aria-label={`Inspect ${tool.toolName}`}>
-                      <span aria-hidden="true" class={`codicon codicon-${tool.mode === 'write' ? 'edit' : 'book'}`}></span>
-                      <span>{tool.toolName}</span>
-                      <small>{tool.status}</small>
-                    </button>
-                  </li>
-                {/each}
-              </ol>
-            {:else if scopedLatestRun.progress?.length}
-              <ul class="scope-preview-tools">
-                {#each scopedLatestRun.progress as item}
-                  <li class:failed={item.status === 'failed'}>{item.name}: {item.summary}</li>
-                {/each}
-              </ul>
-            {/if}
-            <section class="scope-preview-assistant" class:partial={!scopedLatestRun.assistantText}
-              use:observeResponse={{ key: responseKey(scopedLatestRun), enabled: unreadResponses.some((record) => record.key === responseKey(scopedLatestRun)), onViewed: markResponseViewed }}>
-              <span>WM</span>
-              {#if scopedLatestRun.assistantText}
-                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                <div>{@html renderMarkdown(scopedLatestRun.assistantText)}</div>
-              {:else}
-                <p>{assistantFallback(scopedLatestRun)}</p>
-              {/if}
-            </section>
-          </article>
-        {/if}
-      </section>
+      <RecentMessages
+        runs={scopedConversationRuns}
+        context={scopedContext}
+        bind:expanded={scopePreviewExpanded}
+        loading={scopedHistoryLoading}
+        error={scopedHistoryError}
+        {humanName}
+        {unreadResponses}
+        onViewed={markResponseViewed}
+        onFocus={(run) => void focusChatRun(run)}
+        onRetry={(run) => void retryRun(run)}
+        {runBlocked}
+        onInspect={(tool) => void openToolDetail(tool)}
+        onOpen={(target) => void openResource(target.kind, target.identifier)}
+        attachmentUrl={chatAttachmentUrl}
+        {assistantFallback}
+        onReload={() => { scopedHistoryRevision += 1; }}
+        onResolve={(confirmed, run) => void resolveConfirmation(confirmed, run)}
+      />
       <div class="composer-shell">
         {#if currentChatContext}
           <div class="composer-context" title={`${currentChatContext.kind}: ${currentChatContext.title}`}>
@@ -2689,34 +2695,9 @@
             <div class="user-markdown">{@html renderMarkdown(run.userText)}</div>
           </section>
 
-          {#if run.tools.length}
-            <ol class="tool-rows" aria-label="Tool activity">
-              {#each run.tools as tool (`${tool.journalId}:${tool.sequence}`)}
-                <li class:failed={tool.status === 'failure'} class:cancelled={tool.status === 'cancelled'}>
-                  <button class="tool-row-main" onclick={() => void openToolDetail(tool)} aria-label={`Inspect ${tool.toolName}`}>
-                    <span aria-hidden="true" class={`codicon codicon-${tool.mode === 'write' ? 'edit' : 'book'}`}></span>
-                    <span>{tool.toolName}</span>
-                    <span class="tool-status">{tool.status}</span>
-                  </button>
-                  {#if tool.entity?.target}
-                    <button
-                      class="tool-entity"
-                      title={`Open ${tool.entity.label}`}
-                      onclick={() => void openResource(tool.entity!.target!.kind, tool.entity!.target!.identifier)}
-                    >{tool.entity.label}</button>
-                  {:else if tool.entity}
-                    <span class="tool-entity unsupported">{tool.entity.label}</span>
-                  {/if}
-                </li>
-              {/each}
-            </ol>
-          {:else if run.progress?.length}
-            <ul class="tool-progress">
-              {#each run.progress as item}
-                <li class:failed={item.status === 'failed'}>{item.name}: {item.summary}</li>
-              {/each}
-            </ul>
-          {/if}
+          <ToolActivity {run}
+            onInspect={(tool) => void openToolDetail(tool)}
+            onOpen={(target) => void openResource(target.kind, target.identifier)} />
 
           <section class="assistant-entry" class:partial={!run.assistantText}
             use:observeResponse={{ key: responseKey(run), enabled: unreadResponses.some((record) => record.key === responseKey(run)), onViewed: markResponseViewed }}>
