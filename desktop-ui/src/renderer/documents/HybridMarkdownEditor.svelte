@@ -62,16 +62,22 @@
 
   async function attachImages(files: File[]): Promise<void> {
     if (!view || files.length === 0 || attachingImages) return;
-    const selection = view.state.selection.main;
+    const sourceView = view;
+    const applyInput = onInput;
+    const selection = sourceView.state.selection.main;
     attachingImages = true;
     attachmentError = '';
     try {
       const markdownSource = attachmentMarkdown(await onAttachImages(files));
-      const before = view.state.doc.sliceString(0, selection.from);
-      const after = view.state.doc.sliceString(selection.to);
+      const before = sourceView.state.doc.sliceString(0, selection.from);
+      const after = sourceView.state.doc.sliceString(selection.to);
       const prefix = before && !before.endsWith('\n') ? '\n\n' : '';
       const suffix = after && !after.startsWith('\n') ? '\n\n' : '';
       const inserted = `${prefix}${markdownSource}${suffix}`;
+      if (view !== sourceView) {
+        applyInput(`${before}${inserted}${after}`);
+        return;
+      }
       view.dispatch({
         changes: { from: selection.from, to: selection.to, insert: inserted },
         selection: { anchor: selection.from + inserted.length },

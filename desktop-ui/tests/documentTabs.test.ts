@@ -4,10 +4,13 @@ import {
   closeDocumentTab,
   closeDocumentTabsToRight,
   closeOtherDocumentTabs,
+  createDocumentOpenGuard,
   documentTabKey,
   keepSelectedTabVisible,
   openDocumentTab,
   parseDocumentTabs,
+  promoteDocumentTab,
+  promoteOnDocumentInput,
   replaceSelectedTab,
   serializeDocumentTabs,
   selectedTabScrollLeft,
@@ -25,7 +28,7 @@ function topic(slug: string, title = slug): DocumentVM {
 
 describe('document tabs', () => {
   it('inserts new documents on the left and selects an existing tab without duplication', () => {
-    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'), false);
     state = openDocumentTab(state, topic('second'));
     state = openDocumentTab(state, topic('first', 'First refreshed'));
     expect(state.tabs.map(documentTabKey)).toEqual(['topic:second', 'topic:first']);
@@ -73,8 +76,8 @@ describe('document tabs', () => {
       slug: null,
       title: 'Settings',
     };
-    let state = openDocumentTab({ tabs: [], selectedKey: null }, settings);
-    state = openDocumentTab(state, topic('first'));
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, settings, false);
+    state = openDocumentTab(state, topic('first'), false);
     state = openDocumentTab(state, settings);
 
     expect(state.tabs.map(documentTabKey)).toEqual(['topic:first', 'settings:desktop-settings']);
@@ -85,7 +88,7 @@ describe('document tabs', () => {
   });
 
   it('replaces the selected document in place and closes to the nearest remaining tab', () => {
-    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'), false);
     state = openDocumentTab(state, topic('second'));
     state = replaceSelectedTab(state, topic('second', 'Second saved'));
     expect(state.tabs.map((tab) => tab.title)).toEqual(['Second saved', 'first']);
@@ -95,7 +98,7 @@ describe('document tabs', () => {
   });
 
   it('updates a background tab without changing the current selection', () => {
-    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'), false);
     state = openDocumentTab(state, topic('second'));
     state = updateDocumentTab(state, 'topic:first', topic('first', 'First saved'));
     expect(state.tabs[1]?.title).toBe('First saved');
@@ -110,6 +113,7 @@ describe('document tabs', () => {
     expect(closeOtherDocumentTabs(state, 'topic:second')).toEqual({
       tabs: [state.tabs[1]],
       selectedKey: 'topic:second',
+      previewKey: null,
     });
     expect(closeOtherDocumentTabs(state, 'topic:missing')).toBe(state);
   });
@@ -129,10 +133,12 @@ describe('document tabs', () => {
     expect(closeDocumentTabsToRight(state, 'topic:second')).toEqual({
       tabs: state.tabs.slice(0, 2),
       selectedKey: 'topic:second',
+      previewKey: null,
     });
     expect(closeDocumentTabsToRight({ ...state, selectedKey: 'topic:first' }, 'topic:second')).toEqual({
       tabs: state.tabs.slice(0, 2),
       selectedKey: 'topic:first',
+      previewKey: null,
     });
     expect(closeDocumentTabsToRight(state, 'topic:third')).toBe(state);
   });
@@ -202,5 +208,136 @@ describe('document tabs', () => {
       tabs: [{ kind: '', identifier: 'missing-kind' }],
       selectedKey: null,
     }))).toBeNull();
+  });
+
+  it('replaces only the preview in place, even when a permanent tab is selected', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('kept'), false);
+    state = openDocumentTab(state, topic('preview'));
+    state = openDocumentTab(state, topic('other-kept'), false);
+    state = openDocumentTab(state, topic('next'));
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic:other-kept', 'topic:next', 'topic:kept']);
+    expect(state.previewKey).toBe('topic:next');
+    expect(state.selectedKey).toBe('topic:next');
+  });
+
+  it('selects permanent tabs without demotion or consuming an existing preview', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('kept'), false);
+    state = openDocumentTab(state, topic('preview'));
+    state = openDocumentTab(state, topic('kept'));
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic:preview', 'topic:kept']);
+    expect(state.previewKey).toBe('topic:preview');
+    expect(state.selectedKey).toBe('topic:kept');
+  });
+
+  it('promotes idempotently and preserves content, order and selection', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
+    const tabs = state.tabs;
+    expect(promoteDocumentTab(state, 'missing')).toBe(state);
+    state = promoteDocumentTab(state, 'topic:first');
+    expect(state.tabs).toBe(tabs);
+    expect(state.selectedKey).toBe('topic:first');
+    expect(state.previewKey).toBeNull();
+    expect(promoteDocumentTab(state, 'topic:first')).toBe(state);
+    state = openDocumentTab(state, topic('second'));
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic:second', 'topic:first']);
+  });
+
+  it('refreshes previews without promoting and follows identity changes', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'));
+    state = updateDocumentTab(state, 'topic:first', topic('first', 'Refreshed'));
+    expect(state.previewKey).toBe('topic:first');
+    state = replaceSelectedTab(state, topic('renamed'));
+    expect(state.previewKey).toBe('topic:renamed');
+    expect(state.selectedKey).toBe('topic:renamed');
+    state = promoteDocumentTab(state, state.selectedKey);
+    state = updateDocumentTab(state, 'topic:renamed', topic('saved'));
+    expect(state.previewKey).toBeNull();
+    expect(state.selectedKey).toBe('topic:saved');
+    expect(updateDocumentTab(state, 'topic:closed', topic('late'))).toBe(state);
+  });
+
+  it('deduplicates changed identities without demoting an existing permanent tab', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('existing'), false);
+    state = openDocumentTab(state, topic('draft'));
+    state = updateDocumentTab(state, 'topic:draft', topic('existing'));
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic:existing']);
+    expect(state.previewKey).toBeNull();
+    expect(state.selectedKey).toBe('topic:existing');
+  });
+
+  it('cleans preview identity on close, close others and close to right', () => {
+    const state = {
+      tabs: [topic('left'), topic('preview'), topic('right')],
+      selectedKey: 'topic:preview',
+      previewKey: 'topic:preview',
+    };
+    expect(closeDocumentTab(state, 'topic:preview')).toMatchObject({
+      selectedKey: 'topic:right', previewKey: null,
+    });
+    expect(closeDocumentTab(state, 'topic:left').previewKey).toBe('topic:preview');
+    expect(closeOtherDocumentTabs(state, 'topic:left').previewKey).toBeNull();
+    expect(closeOtherDocumentTabs(state, 'topic:preview').previewKey).toBe('topic:preview');
+    expect(closeDocumentTabsToRight(state, 'topic:left').previewKey).toBeNull();
+    expect(closeDocumentTabsToRight(state, 'topic:preview').previewKey).toBe('topic:preview');
+  });
+
+  it('persists only permanent tabs and restores legacy identities as permanent', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('kept'), false);
+    state = openDocumentTab(state, topic('temporary'));
+    const persisted = parseDocumentTabs(serializeDocumentTabs(state))!;
+    expect(persisted).toEqual({
+      version: 1, tabs: [{ kind: 'topic', identifier: 'kept' }], selectedKey: 'topic:kept',
+    });
+    const restored = { tabs: persisted.tabs.map((tab) => topic(tab.identifier)), selectedKey: persisted.selectedKey };
+    expect(openDocumentTab(restored, topic('new')).tabs.map(documentTabKey))
+      .toEqual(['topic:new', 'topic:kept']);
+    expect(parseDocumentTabs(serializeDocumentTabs(openDocumentTab(
+      { tabs: [], selectedKey: null }, topic('only-preview'),
+    )))).toEqual({ version: 1, tabs: [], selectedKey: null });
+    expect(parseDocumentTabs(serializeDocumentTabs(promoteDocumentTab(state, state.previewKey!)))?.tabs)
+      .toHaveLength(2);
+  });
+
+  it('promotes at capture phase for authored input, not navigation, focus or scrolling', () => {
+    const handlers = new Map<string, EventListener>();
+    const node = {
+      addEventListener: vi.fn((event: string, handler: EventListener) => handlers.set(event, handler)),
+      removeEventListener: vi.fn(),
+    };
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('draft'));
+    const action = promoteOnDocumentInput(node as unknown as HTMLElement, () => {
+      state = promoteDocumentTab(state, state.selectedKey);
+    });
+    expect([...handlers.keys()]).toEqual(['beforeinput', 'input', 'change']);
+    expect(node.addEventListener).toHaveBeenCalledWith('beforeinput', expect.any(Function), true);
+    expect(state.previewKey).toBe('topic:draft');
+    handlers.get('beforeinput')!(new Event('beforeinput'));
+    expect(state.previewKey).toBeNull();
+    state = openDocumentTab(state, topic('next'));
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic:next', 'topic:draft']);
+    action.destroy();
+    expect(node.removeEventListener).toHaveBeenCalledTimes(3);
+  });
+
+  it('ignores out-of-order loads and loads invalidated by selection, close or environment change', async () => {
+    const guard = createDocumentOpenGuard();
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('initial'));
+    let finishFirst!: (document: DocumentVM) => void;
+    const firstResult = new Promise<DocumentVM>((resolve) => { finishFirst = resolve; });
+    const firstIsCurrent = guard.capture();
+    const firstLoad = firstResult.then((document) => {
+      if (firstIsCurrent()) state = openDocumentTab(state, document);
+    });
+    guard.invalidate();
+    const secondIsCurrent = guard.capture();
+    if (secondIsCurrent()) state = openDocumentTab(state, topic('latest'));
+    finishFirst(topic('stale'));
+    await firstLoad;
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic:latest']);
+    for (const _action of ['selection', 'close', 'environment']) {
+      const isCurrent = guard.capture();
+      guard.invalidate();
+      expect(isCurrent()).toBe(false);
+    }
   });
 });

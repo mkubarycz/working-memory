@@ -24,6 +24,8 @@
     onOpenLink?: (href: string) => void;
     titlePlaceholder?: string;
     draft?: boolean;
+    newWorkstreamTitle?: string;
+    onNewWorkstreamTitleChange?: (title: string) => void;
   }
 
   let {
@@ -40,6 +42,8 @@
     onOpenLink,
     titlePlaceholder = '',
     draft = false,
+    newWorkstreamTitle,
+    onNewWorkstreamTitleChange,
   }: Props = $props();
 
   const STATUSES = ['open', 'closed'];
@@ -67,6 +71,11 @@
     onSaveTopic({ body: topic.body });
   }
 
+  function updateBody(target: TopicVM, save: (patch: TopicPatch) => void, body: string): void {
+    target.body = body;
+    save({ body });
+  }
+
   let bodyInput = $state<HTMLTextAreaElement | null>(null);
   let attachmentError = $state('');
   let attachingImages = $state(false);
@@ -75,6 +84,8 @@
     if (files.length === 0 || attachingImages) {
       return;
     }
+    const target = topic;
+    const save = onSaveTopic;
     const selectionStart = bodyInput?.selectionStart ?? topic.body.length;
     const selectionEnd = bodyInput?.selectionEnd ?? selectionStart;
     attachingImages = true;
@@ -84,12 +95,11 @@
       const markdown = attachments
         .map((attachment) => `![${attachment.filename.replace(/[\[\]]/g, '')}](wm-attachment:${attachment.id})`)
         .join('\n\n');
-      const before = topic.body.slice(0, selectionStart);
-      const after = topic.body.slice(selectionEnd);
+      const before = target.body.slice(0, selectionStart);
+      const after = target.body.slice(selectionEnd);
       const prefix = before && !before.endsWith('\n') ? '\n\n' : '';
       const suffix = after && !after.startsWith('\n') ? '\n\n' : '';
-      topic.body = `${before}${prefix}${markdown}${suffix}${after}`;
-      onSaveTopic({ body: topic.body });
+      updateBody(target, save, `${before}${prefix}${markdown}${suffix}${after}`);
       requestAnimationFrame(() => {
         const cursor = before.length + prefix.length + markdown.length;
         bodyInput?.focus();
@@ -253,6 +263,16 @@
   <div class="attr">
     <span class="k">Workstreams</span>
     <span class="v ws-cell">
+      {#if draft && newWorkstreamTitle !== undefined}
+        <input
+          class="new-workstream-input"
+          value={newWorkstreamTitle}
+          oninput={(event) => onNewWorkstreamTitleChange?.(event.currentTarget.value)}
+          placeholder="New workstream"
+          aria-label="New workstream"
+          maxlength="120"
+        />
+      {/if}
       {#each topic.workstreams as w (w.slug)}
         <button
           class="ws-chip"
@@ -266,7 +286,7 @@
           {/if}
         </button>
       {/each}
-      {#if topic.workstreams.length === 0}—{/if}
+      {#if topic.workstreams.length === 0 && newWorkstreamTitle === undefined}—{/if}
     </span>
   </div>
   {#each extraSettings as setting (setting.label)}
@@ -374,10 +394,7 @@
         <HybridMarkdownEditor
           value={topic.body}
           {attachmentBaseUrl}
-          onInput={(body) => {
-            topic.body = body;
-            onSaveTopic({ body });
-          }}
+          onInput={updateBody.bind(null, topic, onSaveTopic)}
           {onAttachImages}
           {onOpenLink}
         />
@@ -921,6 +938,18 @@
     color: var(--vscode-textLink-foreground);
     cursor: pointer;
     font-size: 0.95em;
+  }
+
+  .new-workstream-input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 4px 6px;
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 4px;
+    color: var(--vscode-input-foreground);
+    background: var(--vscode-input-background);
+    font: inherit;
   }
 
   .ws-chip:hover {

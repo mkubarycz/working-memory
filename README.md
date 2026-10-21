@@ -25,6 +25,25 @@ It does two things at once:
   rail, document editor, Markdown preview, chat, and settings UI. VS Code
   connects directly to the external MCP endpoint; no Working Memory extension
   is required.
+- **Create workstreams:** use **NEW WORKSTREAM** beside **In Progress**
+  in the Active rail. The topic creation editor includes a **New workstream**
+  field under Workstreams. Describe the first topic to suggest its title, type,
+  and the broader workstream name using the existing Simple / fast model.
+  Manually edited fields are preserved. **Create Workstream & Topic** creates
+  an In Progress workstream and saves the description as its first topic;
+  nothing is created until you confirm. If the topic save fails after workstream
+  creation, the draft keeps that workstream for retry rather than creating another.
+- **Move to a new workstream:** right-click a topic in the Active rail, then
+  **Move to... > New Workstream...**. Its saved title and body are used to suggest
+  an editable workstream name. **Move** creates the In Progress workstream and
+  moves the existing topic tree into it without changing topic statuses or other
+  workstream memberships. Cancel makes no changes; a failed move can be retried
+  without creating another workstream. The Active topic menu omits the redundant
+  **Add to workstream** action; **Remove from workstream** remains available.
+- **Draft autocomplete:** suggestions start after an idle pause once the body
+  contains at least 24 characters; punctuation is not required. Changes during
+  the ten-second request cooldown are queued, and stale responses are ignored.
+  Model errors are shown with **Retry suggestions**; manual edits are preserved.
 - **Built for recovery:** resources use explicit status and relationship
   fields, while the SQLite store remains portable and independently backed up.
 
@@ -270,6 +289,26 @@ To install a build instead of debugging, use the prebuilt GitHub Release
 one-liner above.
 
 ## Document stage
+
+Opening a document creates an italic **preview tab**. There is at most one:
+opening another document replaces that preview in place, while existing
+permanent tabs are selected without duplication. Selecting tabs, following
+document navigation, scrolling, and switching Markdown viewing modes do not
+make a preview permanent.
+
+Double-click a tab header to keep it open. Authoring text, changing values,
+starting a chat draft, or adding attachments also makes the affected tab
+permanent before its work can be replaced. New-topic drafts and documents
+returned by an authored chat request open as permanent tabs. Container-app
+tabs also stay permanent because edits inside their embedded UI cannot be
+observed reliably by the desktop renderer.
+
+Tab identities and order are saved per environment, but previews are
+session-only: they are omitted on restart or environment switch. When the
+selected tab was a preview, the leftmost saved permanent tab is selected on
+restore. Previously saved tabs all restore as permanent. This does not change
+content storage: document bodies are not stored in tab preferences, and
+unsaved new-topic drafts and attachment/composer state are not newly persisted.
 
 New document tabs open on the left. Selecting a tab reveals it in the navigation
 strip, including after resizing the stage or closing neighboring tabs. Empty

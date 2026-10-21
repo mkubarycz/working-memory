@@ -77,12 +77,12 @@ export function activeContextMenuItems(
       kind: 'move',
       title: 'Move to...',
       icon: 'arrow-swap',
-      enabled: Boolean(topic.topic) && targets.length > 0,
+      enabled: Boolean(topic.topic) && Boolean(topic.sourceWorkstream),
       topic: topic.topic,
       targets,
     });
   }
-  return items.concat(actions.map((action) => ({
+  return items.concat(actions.filter((action) => action.command !== 'workingMemory.topic.addToWorkstream').map((action) => ({
     kind: 'action' as const,
     title: action.title,
     icon: action.icon || 'arrow-swap',
