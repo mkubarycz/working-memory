@@ -11,6 +11,7 @@
   } = $props();
   let recording = $state(false);
   let decidedBy = $state('');
+  const messageUrl = $derived(`working-memory://open/agent-message/${encodeURIComponent(message.id)}`);
 
   async function recordDecision(outcome: 'approved' | 'rejected'): Promise<void> {
     if (!onRecordDecision || recording || !decidedBy.trim()) return;
@@ -25,7 +26,7 @@
     <div class="message-from">{message.agentName}</div>
   {/if}
   <header>
-    <a href={`working-memory://open/agent-message/${encodeURIComponent(message.id)}`}>{message.title}</a>
+    <a href={messageUrl} title={messageUrl}>{message.title}</a>
     <span>{message.category} · {message.severity}{#if !embedded} · {message.status}{/if}</span>
     {#if !embedded}
       <time datetime={new Date(message.createdAt * 1000).toISOString()}>{new Date(message.createdAt * 1000).toLocaleString()}</time>

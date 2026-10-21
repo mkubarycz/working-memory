@@ -91,6 +91,26 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     expect(timeline).toContain(expectedAction);
   });
 
+  it('shows target URLs on message headers and links in message content and chat', () => {
+    const internal = 'working-memory://open/topic/selected';
+    const external = 'https://example.com/docs';
+    const value = message(1, {
+      description: `[Topic](${internal})`,
+      recommendedAction: `[Docs](${external})`,
+    });
+    const card = render(AgentMessageCard, { props: { message: value, onSetStatus: noop } }).body;
+    expect(card).toContain(`href="working-memory://open/agent-message/${value.id}" title="working-memory://open/agent-message/${value.id}"`);
+    expect(card).toContain(`href="${internal}" title="${internal}"`);
+    expect(card).toContain(`href="${external}" title="${external}"`);
+    const timeline = render(MessageTimeline, { props: {
+      ...props([run(1, { userText: `[Topic](${internal})`, assistantText: `[Docs](${external})` })]),
+      agentMessages: [],
+      expanded: true,
+    } }).body;
+    expect(timeline).toContain(`href="${internal}" title="${internal}"`);
+    expect(timeline).toContain(`href="${external}" title="${external}"`);
+  });
+
   it('collapses five recent rows plus older attention requests, each appearing once in chronological order', () => {
     const messages = [message(0, { attention: true, category: 'approval' }), message(4), message(7)];
     const html = render(RecentMessages, { props: props(Array.from({ length: 8 }, (_, i) => run(i)),

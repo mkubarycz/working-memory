@@ -258,6 +258,46 @@ describe('live Markdown link clicks', () => {
     expect(href('file]')).toBe('wm-attachment:0f0e-1');
   });
 
+  it('decorates rendered links with their resolved target as the native hover tooltip', () => {
+    const state = createState();
+    const titles: Array<{ text: string; title: string }> = [];
+    state.field(liveMarkdownPreview).between(0, state.doc.length, (from, to, value) => {
+      const title = value.spec.attributes?.title;
+      if (title) titles.push({ text: state.doc.sliceString(from, to), title });
+    });
+    expect(titles).toEqual(expect.arrayContaining([
+      { text: '[inline](https://example.com/a "Title")', title: 'https://example.com/a' },
+      { text: '[ref][Docs]', title: 'https://docs.example.com/x(1)' },
+      { text: '[Docs]', title: 'https://docs.example.com/x(1)' },
+      { text: '[docs][]', title: 'https://docs.example.com/x(1)' },
+      { text: '<https://example.com/auto>', title: 'https://example.com/auto' },
+      { text: '[topic](working-memory://open/topic/next-step)', title: 'working-memory://open/topic/next-step' },
+      { text: '[file](wm-attachment:0f0e-1)', title: 'wm-attachment:0f0e-1' },
+      { text: '[mail](mailto:a@b.c)', title: 'mailto:a@b.c' },
+    ]));
+    expect(state.doc.toString()).toBe(LINKS);
+  });
+
+  it('refreshes tooltips when a link changes and removes them on its editing line', () => {
+    const doc = '[link](https://example.com/before)\nTail';
+    const initial = createState(doc);
+    const changed = initial.update({
+      changes: { from: doc.indexOf('before'), to: doc.indexOf('before') + 6, insert: 'after' },
+    }).state;
+    const titles = (state: EditorState) => {
+      const values: string[] = [];
+      state.field(liveMarkdownPreview).between(0, state.doc.length, (_from, _to, value) => {
+        if (value.spec.attributes?.title) values.push(value.spec.attributes.title);
+      });
+      return values;
+    };
+    expect(titles(initial)).toEqual(['https://example.com/before']);
+    expect(titles(changed)).toEqual(['https://example.com/after']);
+    const editing = changed.update({ selection: { anchor: 2 }, effects: activateLivePreview.of() }).state;
+    expect(titles(editing)).toEqual([]);
+    expect(editing.doc.toString()).toBe('[link](https://example.com/after)\nTail');
+  });
+
   it('leaves unsafe, unroutable, and undefined references to normal editing', () => {
     const state = createState();
 

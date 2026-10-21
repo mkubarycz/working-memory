@@ -2537,7 +2537,7 @@
               {#each composerResources as resource, index (`${resource.appId}:${resource.resourceKind}:${resource.resourceId}`)}
                 <article class="composer-resource">
                   <span class="codicon codicon-link" aria-hidden="true"></span>
-                  <a href={resource.deepLink} title={containerAppResourceLabel(resource)}>
+                  <a href={resource.deepLink} title={resource.deepLink}>
                     {containerAppResourceLabel(resource)}
                   </a>
                   <small>@{resource.appId} · {resource.resourceKind}</small>

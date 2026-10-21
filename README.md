@@ -44,6 +44,9 @@ For   **topics**, topic types, Agent Messages, and related control-plane documen
   workstream memberships. Cancel makes no changes; a failed move can be retried
   without creating another workstream. The Active topic menu omits the redundant
   **Add to workstream** action; **Remove from workstream** remains available.
+- **Link targets:** hover over an internal or external link to see its target
+  URL in a tooltip, including links in live Markdown, document previews, and chat.
+  Authored Markdown is not changed.
 - **Draft autocomplete:** suggestions start after an idle pause once the body
   contains at least 24 characters; punctuation is not required. Changes during
   the ten-second request cooldown are queued, and stale responses are ignored.

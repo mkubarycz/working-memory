@@ -1,4 +1,5 @@
 import MarkdownIt from 'markdown-it';
+import { linkTargetTooltips } from '../linkTargetTooltips';
 
 /**
  * Shared markdown-it instance for the webview. `html: false` is the security
@@ -16,7 +17,7 @@ const md = new MarkdownIt({
   html: false,
   linkify: true,
   breaks: false,
-});
+}).use(linkTargetTooltips);
 
 export const unescapeMarkdown = md.utils.unescapeAll;
 
