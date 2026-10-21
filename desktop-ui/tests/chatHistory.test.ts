@@ -180,9 +180,31 @@ describe('chat history presentation', () => {
     expect(targetForRef({ kind: 'DesktopChat', id: 'desktop-chat' })).toBeUndefined();
     expect(toolMode('ws-topic-read')).toBe('read');
     expect(toolMode('ws-topic-update')).toBe('write');
+    for (const action of ['acknowledge', 'resolve', 'reopen', 'restore']) {
+      expect(toolMode(`ws-agent-message-${action}`)).toBe('write');
+    }
     expect(summaryToChatRun(summary()).tools[0]).toMatchObject({
       mode: 'read', entity: { label: 'Ship it', target: { kind: 'topic', identifier: 'ship-it' } },
     });
+  });
+
+  it('does not offer retry for failed runs that completed agent-message lifecycle writes', () => {
+    for (const action of ['acknowledge', 'resolve', 'reopen', 'restore']) {
+      const run = summaryToChatRun(summary({
+        status: 'failed',
+        completion: { finalAssistantText: 'The update succeeded, but the follow-up failed.', stopReason: 'error', mutated: true },
+        eventSummaries: [{
+          sequence: 2,
+          timestamp: 12,
+          toolName: `ws-agent-message-${action}`,
+          callId: `call-${action}`,
+          status: 'success',
+        }],
+      }));
+
+      expect(run.tools[0].mode).toBe('write');
+      expect(isRetryableRun(run)).toBe(false);
+    }
   });
 
   it('extracts complete and interrupted tool detail explicitly', () => {
