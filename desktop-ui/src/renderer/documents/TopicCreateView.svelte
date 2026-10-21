@@ -40,8 +40,8 @@
   const relation = (slug: string, title: string): RelationVM => ({
     slug,
     title,
-    alertCount: 0,
-    alertSeverity: null,
+    agentMessageCount: 0,
+    agentMessageSeverity: null,
   });
 
   const topic = $derived<TopicVM>({
@@ -61,7 +61,7 @@
     children: [],
     workstreams: draft.workstream ? [relation(draft.workstream, draft.workstreamTitle)] : [],
     focusedWorkstreams: [],
-    alerts: [],
+    agentMessages: [],
   });
 
   function updateDraft(patch: TopicPatch): void {
@@ -163,7 +163,7 @@
     onSaveTopic={updateDraft}
     onOpenTopic={() => {}}
     onOpenWorkstream={() => {}}
-    onSetAlertStatus={() => {}}
+    onSetAgentMessageStatus={() => {}}
     {attachmentBaseUrl}
     {onAttachImages}
     titlePlaceholder="New Topic"

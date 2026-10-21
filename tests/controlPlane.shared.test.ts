@@ -21,9 +21,10 @@ describe('controlPlaneShared', () => {
     it('opens with frontmatter granting the control-plane document tools', () => {
       expect(md.startsWith('---\n')).toBe(true);
       expect(md).toContain('description:');
-      expect(md).toContain(
-        "tools: ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'wm-list-kinds', 'ws-workstream-create', 'ws-workstream-read', 'ws-workstream-update', 'ws-workstream-delete', 'ws-topic-create', 'ws-topic-read', 'ws-topic-update', 'ws-topic-delete', 'ws-topic-close-tree', 'ws-topictype-create', 'ws-topictype-read', 'ws-topictype-update', 'ws-topictype-delete', 'ws-alert-create', 'ws-alert-read', 'ws-alert-update', 'ws-alert-delete']",
-      );
+      const frontmatter = md.split('---')[1];
+      for (const tool of ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'ws-agent-create', 'ws-agent-read', 'ws-agent-message-create', 'ws-agent-message-read', 'ws-agent-message-update', 'ws-agent-message-delete']) {
+        expect(frontmatter).toContain(`'${tool}'`);
+      }
     });
 
     it('describes the wm2 persona and names the tools in the body', () => {
@@ -44,10 +45,13 @@ describe('controlPlaneShared', () => {
       expect(md).toContain('ws-topictype-read');
       expect(md).toContain('ws-topictype-update');
       expect(md).toContain('ws-topictype-delete');
-      expect(md).toContain('ws-alert-create');
-      expect(md).toContain('ws-alert-read');
-      expect(md).toContain('ws-alert-update');
-      expect(md).toContain('ws-alert-delete');
+      expect(md).toContain('ws-agent-message-create');
+      expect(md).toContain('ws-agent-message-read');
+      expect(md).toContain('ws-agent-message-update');
+      expect(md).toContain('ws-agent-message-delete');
+      expect(md).toContain('look up your caller name with `ws-agent-read`');
+      expect(md).toContain('register it with `ws-agent-create`');
+      expect(md).toContain('Remember the returned `metadata.id` and reuse it as `agent_id`');
     });
   });
 

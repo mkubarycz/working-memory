@@ -3,12 +3,12 @@
   import { formatDocumentTimestamp as fmtTs } from '../documentDates';
   import UnreadBadge from '../UnreadBadge.svelte';
   import { unreadResponseCount, type UnreadResponse } from '../chatUnread';
-  import type { WorkstreamVM, TreeTopicVM, AlertVM } from './types';
+  import type { WorkstreamVM, TreeTopicVM, AgentMessageVM } from './types';
   import type { SaveState } from './types';
   import { defaultExpandedIds, cascadeExpandIds, type ExpandableNode } from './treeExpansion';
   import { sortTreeChildren } from './treeSort';
   import SaveStatus from './SaveStatus.svelte';
-  import AlertCallouts from './AlertCallouts.svelte';
+  import AgentMessageCallouts from './AgentMessageCallouts.svelte';
 
   interface Props {
     unreadResponses?: UnreadResponse[];
@@ -19,7 +19,8 @@
     onAddTopic: (parent?: { slug: string; title: string }) => void;
     onInvoke: (command: string, args: unknown[]) => void;
     onTogglePin: (slug: string) => void;
-    onSetAlertStatus: (id: string, status: AlertVM['status']) => void;
+    onSetAgentMessageStatus: (id: string, status: AgentMessageVM['status']) => void;
+    onRecordDecision?: import('./types').RecordAgentMessageDecision;
   }
 
   let {
@@ -31,7 +32,8 @@
     onAddTopic,
     onInvoke,
     onTogglePin,
-    onSetAlertStatus,
+    onSetAgentMessageStatus,
+    onRecordDecision,
   }: Props = $props();
 
   const STATUSES = ['queue', 'progress', 'backlog', 'closed'];
@@ -227,7 +229,7 @@
   </div>
 </section>
 
-<AlertCallouts alerts={ws.alerts} {onSetAlertStatus} />
+<AgentMessageCallouts agentMessages={ws.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} />
 
 {#snippet treeNode(node: TreeTopicVM)}
     {@const hasChildren = node.children.length > 0}
@@ -258,12 +260,12 @@
           {#if node.status !== 'open'}
             <span class="tree-meta">{node.status}</span>
           {/if}
-          {#if node.alertCount > 0}
+          {#if node.agentMessageCount > 0}
             <span
               class="alert-count"
-              class:sev-alert={node.alertSeverity === 'alert'}
-              title="{node.alertCount} open alert{node.alertCount === 1 ? '' : 's'}"
-            >{node.alertCount}</span>
+              class:sev-alert={node.agentMessageSeverity === 'error'}
+              title="{node.agentMessageCount} agent messages needing attention"
+            >{node.agentMessageCount}</span>
           {/if}
           <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', node.id, node.slug)} />
         </button>

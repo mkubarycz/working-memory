@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
-import { asText } from '../toolResult.js';
+import { asText, asError } from '../toolResult.js';
 import { Alert, ALERT_KIND } from './alert.js';
 
 /**
@@ -27,8 +27,10 @@ export function registerWsAlertRead(server: McpServer, store: Store): void {
         'Read one Alert or many. Read ONE by `id`; otherwise LIST all Alerts (newest-first), with ' +
         'an optional `query` case-insensitive substring filter and a `limit`. ALWAYS returns ' +
         '{ count, alerts } — a by-id read yields a 0-or-1 element list, so callers get one uniform ' +
-        'shape.',
-      inputSchema: {
+        'shape. Deprecated adapter: list responses additionally report incompatibleMessageIds and warnings ' +
+        'for canonical categories/lifecycles that cannot be represented, without hiding the incompatibility or failing compatible entries. ' +
+        'An incompatible by-id read is an explicit error. Resolved request/completion history projects to closed without changing canonical category.',
+      inputSchema: z.object({
         id: z.string().optional().describe('Read ONE alert by document id (uuid).'),
         query: z
           .string()
@@ -40,15 +42,17 @@ export function registerWsAlertRead(server: McpServer, store: Store): void {
           .positive()
           .optional()
           .describe('Max alerts to return (list mode only).'),
-      },
+      }).strict(),
     },
     async ({ id, query, limit }) => {
       // Single read: by id (foreign-kind id maps to nothing — the id lookup is
       // kind-agnostic in the store, so guard the kind here).
       if (id !== undefined) {
         const doc = store.getDocument({ id, kind: ALERT_KIND });
-        const alerts = doc && doc.kind === ALERT_KIND ? [new Alert(doc)] : [];
-        return asText({ count: alerts.length, alerts });
+        try {
+          const alerts = doc && doc.kind === 'AgentMessage' ? [new Alert(doc)] : [];
+          return asText({ count: alerts.length, alerts });
+        } catch (error) { return asError((error as Error).message); }
       }
       // List mode: all live Alerts, optional substring query + limit.
       let docs = store.listDocuments({ kind: ALERT_KIND });
@@ -56,10 +60,17 @@ export function registerWsAlertRead(server: McpServer, store: Store): void {
         const needle = query.toLowerCase();
         docs = docs.filter((d) => JSON.stringify(d).toLowerCase().includes(needle));
       }
-      if (limit !== undefined) {
-        docs = docs.slice(0, limit);
+      let alerts: Alert[] = [];
+      const warnings: Array<{ id: string; message: string }> = [];
+      for (const doc of docs) {
+        try { alerts.push(new Alert(doc)); }
+        catch (error) { warnings.push({ id: doc.metadata.id, message: (error as Error).message }); }
       }
-      return asText({ count: docs.length, alerts: docs.map((d) => new Alert(d)) });
+      if (limit !== undefined) alerts = alerts.slice(0, limit);
+      return asText({
+        count: alerts.length, alerts,
+        incompatibleMessageIds: warnings.map(({ id }) => id), warnings,
+      });
     },
   );
 }

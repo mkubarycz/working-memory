@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AlertVM, AttachmentRef, SaveState, TopicPatch, TopicVM } from './types';
+  import type { AgentMessageVM, AttachmentRef, SaveState, TopicPatch, TopicVM } from './types';
   import { formatDocumentTimestamp as fmtTs } from '../documentDates';
   import UnreadBadge from '../UnreadBadge.svelte';
   import { unreadResponseCount, type UnreadResponse } from '../chatUnread';
@@ -7,7 +7,7 @@
   import { renderMarkdown } from './markdown';
   import { imageFilesFromTransfer } from './imageFiles';
   import SaveStatus from './SaveStatus.svelte';
-  import AlertCallouts from './AlertCallouts.svelte';
+  import AgentMessageCallouts from './AgentMessageCallouts.svelte';
   import HybridMarkdownEditor from './HybridMarkdownEditor.svelte';
 
   interface Props {
@@ -18,7 +18,8 @@
     onSaveTopic: (patch: TopicPatch) => void;
     onOpenTopic: (slug: string) => void;
     onOpenWorkstream: (slug: string) => void;
-    onSetAlertStatus: (id: string, status: AlertVM['status']) => void;
+    onSetAgentMessageStatus: (id: string, status: AgentMessageVM['status']) => void;
+    onRecordDecision?: import('./types').RecordAgentMessageDecision;
     attachmentBaseUrl?: string;
     onAttachImages?: (files: File[]) => Promise<AttachmentRef[]>;
     onOpenLink?: (href: string) => void;
@@ -36,7 +37,8 @@
     onSaveTopic,
     onOpenTopic,
     onOpenWorkstream,
-    onSetAlertStatus,
+    onSetAgentMessageStatus,
+    onRecordDecision,
     attachmentBaseUrl = '',
     onAttachImages = async () => [],
     onOpenLink,
@@ -309,12 +311,12 @@
           {#each topic.parents as p (p.slug)}
             <button class="fam-row" onclick={() => onOpenTopic(p.slug)} title={p.slug}>
               <span class="fam-row-title">{p.title}</span>
-              {#if p.alertCount > 0}
+              {#if p.agentMessageCount > 0}
                 <span
                   class="alert-count"
-                  class:sev-alert={p.alertSeverity === 'alert'}
-                  title="{p.alertCount} open alert{p.alertCount === 1 ? '' : 's'}"
-                >{p.alertCount}</span>
+                  class:sev-alert={p.agentMessageSeverity === 'error'}
+                  title="{p.agentMessageCount} agent messages needing attention"
+                >{p.agentMessageCount}</span>
               {/if}
             </button>
           {/each}
@@ -327,12 +329,12 @@
           {#each topic.children as c (c.slug)}
             <button class="fam-row" onclick={() => onOpenTopic(c.slug)} title={c.slug}>
               <span class="fam-row-title">{c.title}</span>
-              {#if c.alertCount > 0}
+              {#if c.agentMessageCount > 0}
                 <span
                   class="alert-count"
-                  class:sev-alert={c.alertSeverity === 'alert'}
-                  title="{c.alertCount} open alert{c.alertCount === 1 ? '' : 's'}"
-                >{c.alertCount}</span>
+                  class:sev-alert={c.agentMessageSeverity === 'error'}
+                  title="{c.agentMessageCount} agent messages needing attention"
+                >{c.agentMessageCount}</span>
               {/if}
             </button>
           {/each}
@@ -350,7 +352,7 @@
   </aside>
 </div>
 
-<AlertCallouts alerts={topic.alerts} {onSetAlertStatus} />
+<AgentMessageCallouts agentMessages={topic.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} />
 
 <section class="body-section" aria-label="Topic body">
   <div class="tab-panel">

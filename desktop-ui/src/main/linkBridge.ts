@@ -19,7 +19,10 @@ export function desktopHttpLink(
   kind: DesktopResourceKind,
   identifier: string,
 ): string {
-  return `http://${DESKTOP_LINK_HOST}:${DESKTOP_LINK_PORT}/open/${kind}/${encodeURIComponent(identifier)}`;
+  // Restricted Agent Window surfaces keep the historical bridge route; the
+  // canonical agent-message route is native-only, not a new loopback capability.
+  const routeKind = kind === 'agent-message' ? 'alert' : kind;
+  return `http://${DESKTOP_LINK_HOST}:${DESKTOP_LINK_PORT}/open/${routeKind}/${encodeURIComponent(identifier)}`;
 }
 
 export function parseDesktopHttpPath(rawUrl: string): DesktopDeepLinkTarget | null {
@@ -35,7 +38,7 @@ export function parseDesktopHttpPath(rawUrl: string): DesktopDeepLinkTarget | nu
   try {
     const identifier = decodeURIComponent(match[2]);
     return identifier
-      ? { kind: match[1] as DesktopResourceKind, identifier }
+      ? { kind: match[1] === 'alert' ? 'agent-message' : match[1] as DesktopResourceKind, identifier }
       : null;
   } catch {
     return null;

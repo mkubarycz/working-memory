@@ -4,7 +4,7 @@ import type {
 } from '../shared/contracts';
 
 const RESOURCE_URI_RE =
-  /^working-memory:\/(?:\/)?(workstream|topic|document|alert|topic-type)\/([^/]+)\.working-memory$/;
+  /^working-memory:\/(?:\/)?(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)\.working-memory$/;
 
 export interface ResourceDragLink {
   href: string;

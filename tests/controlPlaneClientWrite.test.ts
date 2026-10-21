@@ -309,6 +309,7 @@ describe('ControlPlaneClient write methods', () => {
     try {
       // Seed an alert document (status defaults to 'alert') via the generic
       // create tool, then flip it to 'closed' through the typed alertUpdate.
+      await client.createDocument({ kind: 'Topic', slug: 'ops', spec: { title: 'Operations' } });
       const created = await client.createDocument({
         kind: 'Alert',
         spec: { description: 'disk almost full', topics: ['ops'] },
@@ -323,7 +324,7 @@ describe('ControlPlaneClient write methods', () => {
       expect(updated.description).toBe('disk almost full');
       expect(updated.topics).toEqual(['ops']);
       expect(updated.slug).toBeNull();
-      expect(updated.resourceVersion).toBe(2);
+      expect(updated.resourceVersion).toBe(created.document!.metadata.resourceVersion + 1);
     } finally {
       await client.dispose();
     }

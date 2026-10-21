@@ -1,4 +1,5 @@
 import type { DocumentVM } from './documents/types';
+import { normalizeScopeKind } from './scopeIdentity';
 
 export interface DocumentTabsState {
   tabs: DocumentVM[];
@@ -14,6 +15,18 @@ export interface PersistedDocumentTabs {
 
 const MAX_PERSISTED_TABS = 50;
 
+export function documentTabIcon(document: DocumentVM): string {
+  switch (document.kind) {
+    case 'workstream': return 'briefcase';
+    case 'topic': return ('typeMeta' in document ? document.typeMeta?.icon : undefined) ?? 'symbol-misc';
+    case 'topic-create': return 'add';
+    case 'topic-backlog': return 'inbox';
+    case 'container-app': return 'server-environment';
+    case 'settings': return 'gear';
+    default: return 'file';
+  }
+}
+
 export function createDocumentOpenGuard() {
   let revision = 0;
   return {
@@ -23,6 +36,16 @@ export function createDocumentOpenGuard() {
       return () => current === revision;
     },
   };
+}
+
+function documentRouteKind(kind: string): string {
+  return normalizeScopeKind(kind) === 'agentmessage' ? 'agent-message' : kind;
+}
+
+function canonicalSelectedKey(key: string | null): string | null {
+  if (!key) return key;
+  const separator = key.indexOf(':');
+  return separator < 0 ? key : `${documentRouteKind(key.slice(0, separator))}${key.slice(separator)}`;
 }
 
 export function selectedTabScrollLeft(
@@ -75,8 +98,8 @@ export function keepSelectedTabVisible(node: HTMLElement, selected: boolean) {
 }
 
 export function documentTabKey(document: DocumentVM): string {
-  const identifier = document.slug ?? ('id' in document ? document.id : document.title);
-  return `${document.kind}:${identifier}`;
+  const identifier = document.slug ?? ('id' in document ? document.id : undefined) ?? document.title;
+  return `${documentRouteKind(document.kind)}:${identifier}`;
 }
 
 export function serializeDocumentTabs(state: DocumentTabsState): string {
@@ -85,11 +108,11 @@ export function serializeDocumentTabs(state: DocumentTabsState): string {
   return JSON.stringify({
     version: 1,
     tabs: tabs.map((document) => ({
-      kind: document.kind,
-      identifier: document.slug ?? ('id' in document ? document.id : document.title),
+      kind: documentRouteKind(document.kind),
+      identifier: document.slug ?? ('id' in document ? document.id : undefined) ?? document.title,
     })),
-    selectedKey: tabs.some((document) => documentTabKey(document) === state.selectedKey)
-      ? state.selectedKey : tabs[0] ? documentTabKey(tabs[0]) : null,
+    selectedKey: tabs.some((document) => documentTabKey(document) === canonicalSelectedKey(state.selectedKey))
+      ? canonicalSelectedKey(state.selectedKey) : tabs[0] ? documentTabKey(tabs[0]) : null,
   } satisfies PersistedDocumentTabs);
 }
 
@@ -113,9 +136,9 @@ export function parseDocumentTabs(value: string | null): PersistedDocumentTabs |
         || typeof tab.identifier !== 'string'
         || !tab.identifier.trim()
       ) return null;
-      tabs.push({ kind: tab.kind, identifier: tab.identifier });
+      tabs.push({ kind: documentRouteKind(tab.kind), identifier: tab.identifier });
     }
-    return { version: 1, tabs, selectedKey: candidate.selectedKey };
+    return { version: 1, tabs, selectedKey: canonicalSelectedKey(candidate.selectedKey) };
   } catch {
     return null;
   }

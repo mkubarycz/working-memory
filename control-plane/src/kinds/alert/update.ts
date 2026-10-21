@@ -16,6 +16,7 @@ import { type Store, ConflictError, NotFoundError } from '../../store.js';
 import { validateSpec } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Alert, ALERT_KIND } from './alert.js';
+import { legacyToMessage } from '../agentmessage/spec.js';
 
 /**
  * Register the `ws-alert-update` tool on an MCP session's server. Reads the
@@ -29,28 +30,29 @@ export function registerWsAlertUpdate(server: McpServer, store: Store): void {
     {
       title: 'Alert: Update',
       description:
-        'Update an Alert identified by `id`. Pass only the fields you are changing (`title`, ' +
+        'Deprecated adapter updating the SAME canonical AgentMessage identified by `id`; ' +
+        'unsupported category/lifecycle projections are rejected, never coerced. Pass only the fields you are changing (`title`, ' +
         '`description`, `recommended_action`, `status`, `dedupe_key`, `created_by`, `topics`). ' +
         'Reads the current document for its resourceVersion, then does a compare-and-swap write of ' +
         'the merged, re-validated spec. Unknown id and version conflicts are surfaced clearly. ' +
         'Returns the updated alert.',
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().describe('Document id of the alert to update (required).'),
         title: z.string().optional().describe('New title.'),
         description: z.string().optional().describe('New description.'),
         recommended_action: z.string().optional().describe('New recommended action.'),
         status: z
-          .string()
+          .enum(['alert', 'informational', 'closed'])
           .optional()
           .describe("New status: 'alert' | 'informational' | 'closed'."),
         dedupe_key: z.string().optional().describe('New dedupe key.'),
         created_by: z.string().optional().describe('New author.'),
         topics: z.array(z.string()).optional().describe('Replacement topic slugs.'),
-      },
+      }).strict(),
     },
     async ({ id, title, description, recommended_action, status, dedupe_key, created_by, topics }) => {
       const existing = store.getDocument({ id, kind: ALERT_KIND });
-      if (!existing || existing.kind !== ALERT_KIND) {
+      if (!existing || existing.kind !== 'AgentMessage') {
         return asError(`Unknown alert id: "${id}". No live alert with that id.`);
       }
       const patch: Record<string, unknown> = {};
@@ -83,7 +85,19 @@ export function registerWsAlertUpdate(server: McpServer, store: Store): void {
       let validatedSpec: Record<string, unknown>;
       try {
         // Merge the patch onto the current spec, then re-validate the whole spec.
-        validatedSpec = validateSpec(ALERT_KIND, { ...existing.spec, ...patch });
+        const legacy = new Alert(existing);
+        const { id: _id, slug: _slug, created_at: _created, updated_at: _updated, resourceVersion: _version, ...base } = legacy;
+        if (base.dedupe_key === null) delete (base as Partial<typeof base>).dedupe_key;
+        const parsed = validateSpec(ALERT_KIND, { ...base, ...patch });
+        const mapping = legacyToMessage(parsed);
+        const lifecycle = status === undefined
+          ? { category: existing.spec.category, status: existing.spec.status, attention: existing.spec.attention }
+          : { category: status === 'closed' ? existing.spec.category : mapping.category, status: mapping.status, attention: mapping.attention };
+        validatedSpec = {
+          ...existing.spec, ...parsed,
+          title: mapping.title, recommended_action: mapping.recommended_action,
+          ...lifecycle,
+        };
       } catch (err) {
         return asError((err as Error).message);
       }

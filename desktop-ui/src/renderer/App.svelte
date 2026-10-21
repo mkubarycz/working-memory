@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import ActiveRail from './ActiveRail.svelte';
   import BrainMark from './BrainMark.svelte';
   import UnreadBadge from './UnreadBadge.svelte';
+  import RecentMessages from './RecentMessages.svelte';
+  import MessageTimeline from './MessageTimeline.svelte';
+  import { loadAllAgentMessages, mergeMessageRows } from './agentMessages';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
   import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
   import type { TopicVM } from './documents/types';
@@ -16,7 +19,7 @@
   import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
-    AlertVM,
+    AgentMessageVM,
     AttachmentRef,
     DocumentVM,
     SaveState,
@@ -52,7 +55,7 @@
     loadRegisteredContainerApps,
     type ContainerAppItem,
   } from './containerApps';
-  import type { CommandJournalScopeRef } from '../../../shared/controlPlaneClient';
+  import type { CommandJournalScopeRef, CommandJournalSummary } from '../../../shared/controlPlaneClient';
   import type { PanelAction, PanelData } from '../../../shared/panelData';
   import { invokeActiveAction } from './activeContextMenu';
   import { DESKTOP_BUILD_TIMESTAMP, formatDesktopBuildTimestamp } from './buildInfo';
@@ -65,7 +68,6 @@
     replaceMentionToken,
     type MentionToken,
   } from './mentionCompletion';
-  import { renderMarkdown } from './markdown';
   import { imageFilesFromTransfer } from './documents/imageFiles';
   import { validateChatImage } from './chatImages';
   import { createDocumentSaveQueue } from './documentSaveQueue';
@@ -75,6 +77,7 @@
     closeOtherDocumentTabs,
     createDocumentOpenGuard,
     documentTabKey,
+    documentTabIcon,
     keepSelectedTabVisible,
     openDocumentTab,
     parseDocumentTabs,
@@ -85,11 +88,10 @@
     updateDocumentTab,
     type DocumentTabsState,
   } from './documentTabs';
-  import { chatRunDomId, recentRunsForContext, matchesChatContext, chatContextBusy, chatContextPending, chatContextKey } from './scopedChat';
+  import { collapseChatOnInteraction, chatRunDomId, loadScopedHistory, mergeScopedHistory, matchesChatContext, chatContextBusy, chatContextPending, chatContextKey } from './scopedChat';
   import { createDocumentChangeQueue, documentMatchesChange, documentRefreshTarget } from './documentChanges';
   import type { DocumentChanges } from '../../../shared/documentChanges';
-  import { collectUnreadResponses, observeResponse, parseUnreadResponses, responseKey, unreadResponseCount, type UnreadResponse } from './chatUnread';
-  import { humanInitials } from './humanIdentity';
+  import { collectUnreadResponses, parseUnreadResponses, responseKey, unreadResponseCount, type UnreadResponse } from './chatUnread';
   import { focusChatRunTarget } from './chatRunFocus';
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
@@ -110,7 +112,6 @@
     mergeHistoryRuns,
     reconcileLiveRun,
     refreshLatestRuns,
-    targetForRef,
     toolDetail,
     type ChatRun,
     type ChatToolRow,
@@ -135,10 +136,20 @@
 
   let input = $state('');
   let chatRuns = $state<ChatRun[]>([]);
+  let agentMessages = $state<AgentMessageVM[]>([]);
+  let agentMessagesLoading = $state(false);
+  let agentMessagesError = $state('');
+  let agentMessagesRequest = 0;
+  const globalMessageRows = $derived(mergeMessageRows(chatRuns, agentMessages));
   let historyLoading = $state(true);
   let historyError = $state('');
   let historyCursor = $state<string | undefined>();
+  let scopedHistory = $state<CommandJournalSummary[]>([]);
+  let scopedHistoryLoading = $state(false);
+  let scopedHistoryError = $state('');
+  let scopedHistoryRevision = $state(0);
   let selectedTool = $state<SelectedTool | null>(null);
+  let toolDetailRequest = 0;
   let toolInspectorElement = $state<HTMLElement | null>(null);
   let unreadResponses = $state<UnreadResponse[]>([]);
   let sharingTopic = $state<TopicVM | null>(null);
@@ -705,6 +716,13 @@
       return;
     }
     liveUpdateError = '';
+    const messageChanges = event.change.changes.filter((entry) =>
+      ['agentmessage', 'alert'].includes(entry.kind.toLowerCase().replaceAll('-', '')));
+    if (event.change.reset || messageChanges.length) {
+      agentMessagesRequest += 1;
+      agentMessages = agentMessages.filter((message) =>
+        !messageChanges.some((entry) => entry.deleted && entry.id === message.id));
+    }
     documentChanges.enqueue(event.change);
   }
 
@@ -739,15 +757,26 @@
 
   async function refreshChangedDocuments(change: DocumentChanges): Promise<void> {
     const generation = environmentGeneration;
+    const messageChanges = change.changes.filter((entry) => ['agentmessage', 'alert'].includes(entry.kind.toLowerCase().replaceAll('-', '')));
+    if (change.reset || messageChanges.length) {
+      agentMessages = agentMessages.filter((message) => !messageChanges.some((entry) => entry.deleted && entry.id === message.id));
+      await refreshAgentMessages();
+    }
+    if (generation !== environmentGeneration) return;
     const journals = change.changes.filter((entry) => entry.kind.toLowerCase() === 'commandjournal');
     if (change.reset) {
+      scopedHistoryRevision += 1;
       const activeJournals = chatRuns.filter((run) => run.journalId
         && ['running', 'submitting', 'awaiting_confirmation'].includes(run.status));
       await refreshLatestHistory();
       await Promise.all(activeJournals.map((run) => refreshJournal(run.journalId!)));
     }
     else await Promise.all(journals.map(async (entry) => {
-      if (entry.deleted) setChatRuns(chatRuns.filter((run) => run.journalId !== entry.id));
+      if (entry.deleted) {
+        setChatRuns(chatRuns.filter((run) => run.journalId !== entry.id));
+        scopedHistory = scopedHistory.filter((summary) => summary.id !== entry.id);
+        scopedHistoryRevision += 1;
+      }
       else await refreshJournal(entry.id);
     }));
     if (generation !== environmentGeneration) return;
@@ -805,8 +834,36 @@
   function statusTime(timestamp: number): string {
     return timestamp ? new Date(timestamp).toLocaleTimeString() : 'never';
   }
-  const scopedRecentRuns = $derived(recentRunsForContext(chatRuns, currentChatContext));
-  const scopedLatestRun = $derived(scopedRecentRuns.at(-1) ?? null);
+  const scopedContext = $derived(currentChatContext
+    ? { ...currentChatContext, id: activeDocument?.id } : undefined);
+  const scopedHistoryKey = $derived(`${selectedEnvironment?.id ?? ''}:${chatContextKey(scopedContext)}:${scopedContext?.id ?? ''}`);
+  let loadedScopeKey = $state('');
+  const scopedConversationRuns = $derived(mergeScopedHistory(chatRuns,
+    loadedScopeKey === scopedHistoryKey ? scopedHistory : []));
+
+  $effect(() => {
+    const key = scopedHistoryKey;
+    const revision = scopedHistoryRevision;
+    const context = untrack(() => scopedContext);
+    const generation = environmentGeneration;
+    let cancelled = false;
+    untrack(() => {
+      loadedScopeKey = key;
+      scopedHistory = [];
+      scopedHistoryError = '';
+      scopedHistoryLoading = !!context;
+    });
+    if (!context) return;
+    const isCurrent = () => !cancelled && generation === environmentGeneration
+      && key === scopedHistoryKey && revision === scopedHistoryRevision;
+    void loadScopedHistory(context, (input) => window.workingMemory.getChatHistory(input), isCurrent,
+      (summaries) => { scopedHistory = [...scopedHistory, ...summaries]; })
+      .catch((error) => {
+        if (isCurrent()) scopedHistoryError = error instanceof Error ? error.message : String(error);
+      })
+      .finally(() => { if (isCurrent()) scopedHistoryLoading = false; });
+    return () => { cancelled = true; };
+  });
   const resolvedRailWidths = $derived(resolveRailWidths(
     { active: activeRailWidth, chat: chatRailWidth },
     viewportWidth,
@@ -823,6 +880,7 @@
     'topic',
     'document',
     'alert',
+    'agent-message',
     'topic-type',
   ]);
 
@@ -900,6 +958,34 @@
     }
   }
 
+  async function refreshAgentMessages(): Promise<void> {
+    const generation = environmentGeneration;
+    const request = ++agentMessagesRequest;
+    const isCurrent = () => generation === environmentGeneration && request === agentMessagesRequest;
+    agentMessagesLoading = true;
+    agentMessagesError = '';
+    const loaded = new Map<string, AgentMessageVM>();
+    try {
+      await loadAllAgentMessages(
+        (input) => window.workingMemory.getAgentMessages(input),
+        isCurrent,
+        (page) => {
+          page.forEach((message) => loaded.set(message.id, message));
+          if (isCurrent()) {
+            const current = new Map(agentMessages.map((message) => [message.id, message]));
+            page.forEach((message) => current.set(message.id, message));
+            agentMessages = [...current.values()];
+          }
+        },
+      );
+      if (isCurrent()) agentMessages = [...loaded.values()];
+    } catch (error) {
+      if (isCurrent()) agentMessagesError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (isCurrent()) agentMessagesLoading = false;
+    }
+  }
+
   async function loadOlderHistory(): Promise<void> {
     const generation = environmentGeneration;
     if (!historyCursor || historyRequestGeneration === generation) return;
@@ -933,16 +1019,24 @@
   }
 
   async function openToolDetail(row: ChatToolRow): Promise<void> {
+    const generation = environmentGeneration;
+    const request = ++toolDetailRequest;
+    const isCurrent = () => generation === environmentGeneration && request === toolDetailRequest && selectedTool !== null;
+    activateHeaderTab('log');
+    chatRailCollapsed = false;
     selectedTool = { row, loading: true, error: '' };
     await tick();
+    if (!isCurrent()) return;
     toolInspectorElement?.focus();
     try {
       const journal = await window.workingMemory.getChatJournal(row.journalId);
+      if (!isCurrent()) return;
       const detail = journal ? toolDetail(journal, row.sequence) : undefined;
       selectedTool = detail
         ? { row, detail, loading: false, error: '' }
         : { row, loading: false, error: 'This tool event is no longer available.' };
     } catch (error) {
+      if (!isCurrent()) return;
       selectedTool = { row, loading: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
@@ -971,6 +1065,7 @@
 
   $effect(() => {
     void chatRuns;
+    void agentMessages;
     void busy;
     void pendingConfirmation;
     const shouldStick = conversationPinned;
@@ -1009,7 +1104,7 @@
     // Discovery waits for the launch-time data-tier start, which may change the selected environment.
     await discoverEnvironments(true);
     restoreUnreadResponses();
-    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshBackendHealth(), loadContainerApps()]);
+    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps()]);
     await restoreDocumentTabs();
     await startDocumentChanges();
   }
@@ -1194,9 +1289,16 @@
     saveState = reset.saveState;
     documentError = reset.documentError;
     chatRuns = reset.chatRuns;
+    agentMessagesRequest += 1;
+    agentMessages = [];
+    agentMessagesError = '';
+    agentMessagesLoading = false;
     historyLoading = reset.historyLoading;
     historyError = reset.historyError;
     historyCursor = reset.historyCursor;
+    scopedHistory = [];
+    scopedHistoryError = '';
+    scopedHistoryLoading = false;
     selectedTool = reset.selectedTool;
     activePanel = reset.activePanel;
     activeLoading = reset.activeLoading;
@@ -1226,6 +1328,7 @@
       restoreUnreadResponses();
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
+      await refreshAgentMessages();
       await loadContainerApps();
       await restoreDocumentTabs();
       await refreshBackendHealth();
@@ -1303,7 +1406,7 @@
       const message = `Unable to complete that request: ${error instanceof Error ? error.message : String(error)}`;
       if (generation === environmentGeneration) {
         setChatRuns(chatRuns.map((run) => run.key === runKey
-          ? { ...run, status: 'failed', assistantText: message }
+          ? { ...run, status: 'failed', assistantText: message, unpersistedResult: true }
           : run));
       }
       return message;
@@ -1376,7 +1479,7 @@
     const contextKey = chatContextKey(context);
     activeChatContexts = [...activeChatContexts, contextKey];
     setChatRuns(chatRuns.map((candidate) => candidate.key === runKey
-      ? { ...candidate, status: 'running', pendingConfirmation: undefined } : candidate));
+      ? { ...candidate, status: 'running', pendingConfirmation: undefined, unpersistedResult: true } : candidate));
     const generation = environmentGeneration;
     try {
       const result = await window.workingMemory.resolveChatConfirmation(pending.id, confirmed, context);
@@ -1387,7 +1490,7 @@
     } catch (error) {
       if (generation !== environmentGeneration) return;
       setChatRuns(chatRuns.map((run) => run.key === runKey || run.journalId === runKey
-        ? { ...run, status: 'failed', assistantText: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}` }
+        ? { ...run, status: 'failed', assistantText: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}`, unpersistedResult: true }
         : run));
     } finally {
       if (generation === environmentGeneration) {
@@ -1775,11 +1878,30 @@
     return attachments;
   }
 
-  function setAlertStatus(id: string, status: AlertVM['status']): void {
-    const document = activeDocument;
-    if (!document || (document.kind !== 'workstream' && document.kind !== 'topic')) return;
-    const identifier = document.slug ?? '';
-    void mutate(() => window.workingMemory.setAlertStatus({ kind: document.kind, identifier }, id, status));
+  async function setAgentMessageStatus(id: string, status: AgentMessageVM['status']): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      await window.workingMemory.setAgentMessageStatus(id, status);
+      if (generation !== environmentGeneration) return;
+      await refreshAgentMessages();
+      if (generation !== environmentGeneration) return;
+      await Promise.all([refreshActive(), ...documents.map((document) => refreshOpenDocument(documentTabKey(document)))]);
+    } catch (error) {
+      if (generation === environmentGeneration) agentMessagesError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function recordAgentMessageDecision(id: string, outcome: 'approved' | 'rejected', decidedBy: string): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      await window.workingMemory.recordAgentMessageDecision(id, { outcome, decided_by: decidedBy.trim() });
+      if (generation !== environmentGeneration) return;
+      await refreshAgentMessages();
+      if (generation !== environmentGeneration) return;
+      await Promise.all([refreshActive(), ...documents.map((document) => refreshOpenDocument(documentTabKey(document)))]);
+    } catch (error) {
+      if (generation === environmentGeneration) agentMessagesError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   function togglePin(topic: string): void {
@@ -1795,8 +1917,8 @@
   }
 
   function openRoute(route: string): void {
-    let match = route.match(/^\/(workstream|topic|document|alert|topic-type)\/([^/]+)\.working-memory$/);
-    if (!match) match = route.match(/^working-memory:\/(?:\/)?(workstream|topic|document|alert|topic-type)\/([^/]+)\.working-memory$/);
+    let match = route.match(/^\/(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)\.working-memory$/);
+    if (!match) match = route.match(/^working-memory:\/(?:\/)?(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)\.working-memory$/);
     if (match) void openResource(match[1] as DesktopResourceKind, decodeURIComponent(match[2]));
   }
 
@@ -1804,11 +1926,18 @@
     try {
       const url = new URL(rawUrl);
       if (url.protocol === 'vscode:' && url.hostname === 'kubarycz.working-memory') {
-        const match = url.pathname.match(/^\/open\/(workstream|topic|document|alert|topic-type)\/([^/]+)$/);
+        const match = url.pathname.match(/^\/open\/(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)$/);
         if (match) void openResource(match[1] as DesktopResourceKind, decodeURIComponent(match[2]));
         return;
       }
       if (url.protocol === 'working-memory:') {
+        const native = url.hostname === 'open'
+          ? url.pathname.match(/^\/(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)$/)
+          : null;
+        if (native) {
+          void openResource(native[1] as DesktopResourceKind, decodeURIComponent(native[2]));
+          return;
+        }
         openRoute(url.pathname);
         return;
       }
@@ -1979,6 +2108,10 @@
   }
 
   async function focusChatRun(run: ChatRun): Promise<void> {
+    if (!chatRuns.some((candidate) => (candidate.journalId ?? candidate.key) === (run.journalId ?? run.key))) {
+      setChatRuns([...chatRuns, run].sort((left, right) => left.startedAt - right.startedAt
+        || (left.journalId ?? left.key).localeCompare(right.journalId ?? right.key)), false);
+    }
     await focusChatRunTarget({
       activateLog: () => activateHeaderTab('log'),
       expandChatRail: () => (chatRailCollapsed = false),
@@ -2007,7 +2140,7 @@
   class:chat-collapsed={chatRailCollapsed}
   style={`--active-rail-width: ${resolvedRailWidths.active}px; --chat-rail-width: ${resolvedRailWidths.chat}px;`}
 >
-  <aside class="active-rail">
+  <aside class="active-rail" use:collapseChatOnInteraction={() => (scopePreviewExpanded = false)}>
     {#if activeRailCollapsed}
       <button
         class="rail-reveal active-rail-reveal"
@@ -2079,7 +2212,7 @@
         <button onclick={() => void startDocumentChanges()}>Retry</button>
       </div>
     {/if}
-    <div class="stage-content">
+    <div class="stage-content" use:collapseChatOnInteraction={() => (scopePreviewExpanded = false)}>
     {#if activeDocument}
       <div class="document-stage">
         <div class="document-tabs" role="tablist" aria-label="Open documents">
@@ -2105,7 +2238,7 @@
                 onclick={() => selectDocument(key)}
                 ondblclick={() => promoteDocument(key)}
               >
-                <span aria-hidden="true" class="codicon codicon-{document.kind === 'workstream' ? 'briefcase' : document.kind === 'topic' ? (document.typeMeta?.icon ?? 'symbol-misc') : document.kind === 'topic-create' ? 'add' : document.kind === 'topic-backlog' ? 'inbox' : document.kind === 'container-app' ? 'server-environment' : document.kind === 'settings' ? 'gear' : 'file'}"></span>
+                <span aria-hidden="true" class="codicon codicon-{documentTabIcon(document)}"></span>
                 {#if tabApp}
                   <span
                     class="container-app-tab-health"
@@ -2231,11 +2364,11 @@
           <SettingsView
             profiles={modelProfiles}
             routing={modelRouting}
-            {humanName}
             {credentialStorage}
             {settingsStatus}
             {saving}
             {testingProfileId}
+            {humanName}
             onHumanName={(value) => (humanName = value)}
             onAddProfile={addModelProfile}
             onRemoveProfile={removeModelProfile}
@@ -2267,7 +2400,8 @@
             }}
             onInvoke={invokeAction}
             onTogglePin={togglePin}
-            onSetAlertStatus={setAlertStatus}
+            onSetAgentMessageStatus={setAgentMessageStatus}
+            onRecordDecision={recordAgentMessageDecision}
           />
         {:else if activeDocument?.kind === 'topic-create'}
           <TopicCreateView
@@ -2293,7 +2427,8 @@
             onSaveTopic={saveTopic.bind(null, activeDocument)}
             onOpenTopic={(slug) => void openResource('topic', slug)}
             onOpenWorkstream={(slug) => void openResource('workstream', slug)}
-            onSetAlertStatus={setAlertStatus}
+            onSetAgentMessageStatus={setAgentMessageStatus}
+            onRecordDecision={recordAgentMessageDecision}
             attachmentBaseUrl={selectedEnvironment?.mcpUrl
               ? new URL(selectedEnvironment.mcpUrl).origin
               : ''}
@@ -2320,73 +2455,30 @@
     {/if}
     </div>
 
-      <section class="scope-preview" class:expanded={scopePreviewExpanded} aria-label="Recent messages">
-        <div class="scope-preview-heading">
-          <span>Recent messages</span>
-          <button
-            aria-expanded={scopePreviewExpanded}
-            aria-label={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
-            title={scopePreviewExpanded ? 'Collapse recent response' : 'Expand recent response'}
-            onclick={() => (scopePreviewExpanded = !scopePreviewExpanded)}
-          >
-            <span
-              aria-hidden="true"
-              class="codicon codicon-chevron-{scopePreviewExpanded ? 'down' : 'up'}"
-            ></span>
-          </button>
-        </div>
-        {#if scopedRecentRuns.length === 0}
-          <p>No messages for this scope.</p>
-        {:else if !scopePreviewExpanded}
-          {#each scopedRecentRuns as run (run.journalId ?? run.key)}
-            <div class="scope-preview-row">
-              <button class="scope-preview-main" onclick={() => void focusChatRun(run)} title="Show in history">
-                <span>{run.userText}</span>
-              </button>
-              {#if isRetryableRun(run)}
-                <button class="retry-button" disabled={runBlocked(run)} onclick={() => void retryRun(run)}>Retry</button>
-              {/if}
-            </div>
-          {/each}
-        {/if}
-        {#if scopePreviewExpanded && scopedLatestRun}
-          <article class="scope-preview-response" aria-label="Latest response" aria-live="polite">
-            <section class="scope-preview-human">
-              <span aria-hidden="true">{humanInitials(humanName)}</span>
-              <p>{scopedLatestRun.userText}</p>
-            </section>
-            {#if scopedLatestRun.tools.length}
-              <ol class="scope-preview-tools" aria-label="Latest tool activity">
-                {#each scopedLatestRun.tools as tool (`preview:${tool.journalId}:${tool.sequence}`)}
-                  <li class:failed={tool.status === 'failure'} class:cancelled={tool.status === 'cancelled'}>
-                    <button onclick={() => void openToolDetail(tool)} aria-label={`Inspect ${tool.toolName}`}>
-                      <span aria-hidden="true" class={`codicon codicon-${tool.mode === 'write' ? 'edit' : 'book'}`}></span>
-                      <span>{tool.toolName}</span>
-                      <small>{tool.status}</small>
-                    </button>
-                  </li>
-                {/each}
-              </ol>
-            {:else if scopedLatestRun.progress?.length}
-              <ul class="scope-preview-tools">
-                {#each scopedLatestRun.progress as item}
-                  <li class:failed={item.status === 'failed'}>{item.name}: {item.summary}</li>
-                {/each}
-              </ul>
-            {/if}
-            <section class="scope-preview-assistant" class:partial={!scopedLatestRun.assistantText}
-              use:observeResponse={{ key: responseKey(scopedLatestRun), enabled: unreadResponses.some((record) => record.key === responseKey(scopedLatestRun)), onViewed: markResponseViewed }}>
-              <span>WM</span>
-              {#if scopedLatestRun.assistantText}
-                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                <div>{@html renderMarkdown(scopedLatestRun.assistantText)}</div>
-              {:else}
-                <p>{assistantFallback(scopedLatestRun)}</p>
-              {/if}
-            </section>
-          </article>
-        {/if}
-      </section>
+      <RecentMessages
+        runs={scopedConversationRuns}
+        {documents}
+        {agentMessages}
+        document={activeDocument}
+        onSetAgentMessageStatus={setAgentMessageStatus}
+        onRecordDecision={recordAgentMessageDecision}
+        context={scopedContext}
+        bind:expanded={scopePreviewExpanded}
+        loading={scopedHistoryLoading || agentMessagesLoading}
+        error={[scopedHistoryError, agentMessagesError].filter(Boolean).join(' · ')}
+        {humanName}
+        {unreadResponses}
+        onViewed={markResponseViewed}
+        onFocus={(run) => void focusChatRun(run)}
+        onRetry={(run) => void retryRun(run)}
+        {runBlocked}
+        onInspect={(tool) => void openToolDetail(tool)}
+        onOpen={(target) => void openResource(target.kind, target.identifier)}
+        attachmentUrl={chatAttachmentUrl}
+        {assistantFallback}
+        onReload={() => { scopedHistoryRevision += 1; void refreshAgentMessages(); }}
+        onResolve={(confirmed, run) => void resolveConfirmation(confirmed, run)}
+      />
       <div class="composer-shell">
         {#if currentChatContext}
           <div class="composer-context" title={`${currentChatContext.kind}: ${currentChatContext.title}`}>
@@ -2641,6 +2733,10 @@
       >
       <div class="conversation-shell">
       <div bind:this={conversationElement} class="conversation" aria-live="polite" onscroll={handleConversationScroll}>
+      {#if agentMessagesLoading}<div role="status">Loading agent messages…</div>{/if}
+      {#if agentMessagesError}
+        <div role="alert">{agentMessagesError} <button onclick={() => void refreshAgentMessages()}>Retry agent messages</button></div>
+      {/if}
       {#if historyCursor}
         <button class="load-older" disabled={historyLoading} onclick={() => void loadOlderHistory()}>
           {historyLoading ? 'Loading…' : 'Load older'}
@@ -2650,117 +2746,27 @@
         <div class="history-state">Loading history…</div>
       {:else if historyError && chatRuns.length === 0}
         <div class="history-state history-error" role="alert">{historyError}</div>
-      {:else if chatRuns.length === 0}
-        <div class="history-state">No chat history.</div>
+      {:else if globalMessageRows.length === 0}
+        <div class="history-state">No message history.</div>
       {/if}
       {#if historyError && chatRuns.length > 0}
         <div class="history-state history-error" role="alert">{historyError}</div>
       {/if}
-      {#each chatRuns as run (run.key)}
-        {@const scopeTarget = targetForRef(run.scope)}
-        <article id={chatRunDomId(run)} class="chat-run" data-journal-id={run.journalId} tabindex="-1">
-          <header class="timeline-command">
-            <span class="timeline-dot" aria-hidden="true"></span>
-            <time datetime={new Date(run.startedAt).toISOString()}>{new Date(run.startedAt).toLocaleString()}</time>
-            <span class="timeline-state">{run.status.replaceAll('_', ' ')}</span>
-            <UnreadBadge count={unreadResponses.some((record) => record.key === responseKey(run)) ? 1 : 0} />
-          </header>
-          <div class="timeline-details">
-          <section class="user-entry">
-            {#if scopeTarget}
-              <button class="user-scope" onclick={() => void openResource(scopeTarget.kind, scopeTarget.identifier)}>
-                <span aria-hidden="true" class="codicon codicon-link"></span>
-                {run.scope.title ?? run.scope.slug ?? run.scope.id}
-              </button>
-            {:else}
-              <span class="user-scope unsupported">{run.scope.title ?? run.scope.slug ?? run.scope.id}</span>
-            {/if}
-            {#if run.attachments.length}
-              <div class="user-attachments" aria-label="Attached images">
-                {#each run.attachments as attachment (attachment.id)}
-                  <img
-                    src={chatAttachmentUrl(attachment.id)}
-                    alt={attachment.filename}
-                    title={attachment.filename}
-                  />
-                {/each}
-              </div>
-            {/if}
-            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-            <div class="user-markdown">{@html renderMarkdown(run.userText)}</div>
-          </section>
-
-          {#if run.tools.length}
-            <ol class="tool-rows" aria-label="Tool activity">
-              {#each run.tools as tool (`${tool.journalId}:${tool.sequence}`)}
-                <li class:failed={tool.status === 'failure'} class:cancelled={tool.status === 'cancelled'}>
-                  <button class="tool-row-main" onclick={() => void openToolDetail(tool)} aria-label={`Inspect ${tool.toolName}`}>
-                    <span aria-hidden="true" class={`codicon codicon-${tool.mode === 'write' ? 'edit' : 'book'}`}></span>
-                    <span>{tool.toolName}</span>
-                    <span class="tool-status">{tool.status}</span>
-                  </button>
-                  {#if tool.entity?.target}
-                    <button
-                      class="tool-entity"
-                      title={`Open ${tool.entity.label}`}
-                      onclick={() => void openResource(tool.entity!.target!.kind, tool.entity!.target!.identifier)}
-                    >{tool.entity.label}</button>
-                  {:else if tool.entity}
-                    <span class="tool-entity unsupported">{tool.entity.label}</span>
-                  {/if}
-                </li>
-              {/each}
-            </ol>
-          {:else if run.progress?.length}
-            <ul class="tool-progress">
-              {#each run.progress as item}
-                <li class:failed={item.status === 'failed'}>{item.name}: {item.summary}</li>
-              {/each}
-            </ul>
-          {/if}
-
-          <section class="assistant-entry" class:partial={!run.assistantText}
-            use:observeResponse={{ key: responseKey(run), enabled: unreadResponses.some((record) => record.key === responseKey(run)), onViewed: markResponseViewed }}>
-            <span>WM</span>
-            {#if run.assistantText}
-              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-              <div class="assistant-markdown">{@html renderMarkdown(run.assistantText)}</div>
-            {:else}
-              <p>{assistantFallback(run)}</p>
-            {/if}
-          </section>
-          {#if isRetryableRun(run)}
-            <div class="run-actions">
-              <button class="retry-button" disabled={runBlocked(run)} onclick={() => void retryRun(run)}>Retry</button>
-            </div>
-          {/if}
-      {#if run.status === 'awaiting_confirmation' && run.pendingConfirmation}
-        {@const pendingConfirmation = run.pendingConfirmation}
-        <section class="confirmation" aria-label="Tool action confirmation">
-          <strong>
-            {pendingConfirmation.batchCount
-              ? `Confirm ${pendingConfirmation.batchCount} changes?`
-              : `Confirm ${pendingConfirmation.tool}?`}
-          </strong>
-          {#if pendingConfirmation.batchCount}
-            <p>One approval covers this bounded batch. Calls and results will remain individually visible.</p>
-            <ul>
-              {#each pendingConfirmation.batchActions ?? [] as action}
-                <li><strong>{action.summary}</strong> <code>{action.tool}</code></li>
-              {/each}
-            </ul>
-          {:else}
-            <pre>{JSON.stringify(pendingConfirmation.arguments, null, 2)}</pre>
-          {/if}
-          <div>
-            <button class="confirm" onclick={() => void resolveConfirmation(true, run)}>Confirm</button>
-            <button class="cancel" onclick={() => void resolveConfirmation(false, run)}>Cancel</button>
-          </div>
-        </section>
-      {/if}
-          </div>
-        </article>
-      {/each}
+      <MessageTimeline runs={chatRuns} {agentMessages} attachRunIds
+        {documents}
+        {humanName}
+        {unreadResponses}
+        onViewed={markResponseViewed}
+        onFocus={(run) => void focusChatRun(run)}
+        onRetry={(run) => void retryRun(run)}
+        {runBlocked}
+        onInspect={(tool) => void openToolDetail(tool)}
+        onOpen={(target) => void openResource(target.kind, target.identifier)}
+        attachmentUrl={chatAttachmentUrl}
+        {assistantFallback}
+        onResolve={(confirmed, run) => void resolveConfirmation(confirmed, run)}
+        onSetAgentMessageStatus={setAgentMessageStatus}
+        onRecordDecision={recordAgentMessageDecision} />
       {#if chatRuns.some((run) => run.status === 'running' || run.status === 'submitting')}
         <div class="thinking">Queries in progress…</div>
       {/if}

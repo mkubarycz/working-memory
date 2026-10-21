@@ -27,19 +27,19 @@ export function registerWsAlertDelete(server: McpServer, store: Store): void {
         'Soft-delete an Alert by `id` (it drops out of ws-alert-read). To undelete, call with ' +
         '`restore: true`. Unknown/already-deleted id (or an already-live id on restore) is ' +
         'rejected. Returns { ok, id }.',
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().describe('Document id of the alert to delete (or restore).'),
         restore: z
           .boolean()
           .optional()
           .describe('When true, undelete a previously soft-deleted alert instead of deleting.'),
-      },
+      }).strict(),
     },
     async ({ id, restore }) => {
       // For restore, the target row is soft-deleted, so it must be located with
       // includeDeleted; for a normal delete we want the live row only.
       const doc = store.getDocument({ id, kind: ALERT_KIND, includeDeleted: restore === true });
-      if (!doc || doc.kind !== ALERT_KIND) {
+      if (!doc || doc.kind !== 'AgentMessage') {
         return asError(
           restore === true
             ? `No soft-deleted alert with id "${id}" to restore.`

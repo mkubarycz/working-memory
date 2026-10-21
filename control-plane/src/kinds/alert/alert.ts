@@ -27,6 +27,7 @@
  */
 
 import type { DocumentEnvelope } from '../../store.js';
+import { messageToLegacyStatus } from '../agentmessage/spec.js';
 
 /** The Alert kind name in the control-plane registry. */
 export const ALERT_KIND = 'Alert';
@@ -81,7 +82,7 @@ export class Alert implements IAlert {
     this.description = typeof spec.description === 'string' ? spec.description : '';
     this.recommended_action =
       typeof spec.recommended_action === 'string' ? spec.recommended_action : '';
-    this.status = (spec.status as AlertStatus | undefined) ?? 'alert';
+    this.status = env.kind === 'AgentMessage' ? messageToLegacyStatus(spec) : (spec.status as AlertStatus | undefined) ?? 'alert';
     this.dedupe_key = typeof spec.dedupe_key === 'string' ? spec.dedupe_key : null;
     this.created_by = typeof spec.created_by === 'string' ? spec.created_by : 'system';
     this.topics = stringArray(spec.topics);
