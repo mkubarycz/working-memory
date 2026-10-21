@@ -346,8 +346,8 @@ For the separate Agent Window only, retain the existing HTTP
 
 The control-plane resource store runs its Agent Message conversion automatically
 on opening an isolated or installed store (`resource_migrations`,
-`agent-messages`; conversion provenance version 1, current store migration
-version 2). It is versioned and transactional,
+`agent-messages`; new conversion provenance and current store migration
+version 3). It is versioned and transactional,
 includes closed and soft-deleted Alert documents, and preserves their IDs,
 Markdown, timestamps, lifecycle, and legacy provenance. It does not run against
 a separate user's service as part of tests. Deprecated `ws-alert-*` and generic
@@ -355,7 +355,9 @@ a separate user's service as part of tests. Deprecated `ws-alert-*` and generic
 notification system. Legacy `alert` maps to an open attention request,
 `informational` to open completion information, and `closed` to a resolved
 non-attention request. Unsupported canonical categories/lifecycle combinations
-return an explicit legacy-adapter error instead of coercing them.
+return an explicit legacy-adapter error for by-ID reads; list reads return
+compatible entries with `incompatibleMessageIds` and warnings instead of
+coercing or silently omitting incompatible records.
 The original resource row, including legacy history and fields unknown to the
 new model, remains in immutable `legacy_source` migration provenance.
 Malformed records or incompatible migration versions fail explicitly and roll
