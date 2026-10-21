@@ -374,7 +374,7 @@ describe('desktop tree icon contract', () => {
     };
     expect(app).toContain('class:preview={key === previewDocumentKey}');
     expect(styles).toContain('.document-tab.preview .document-tab-label { font-style: italic; }');
-    expect(app).toContain('Preview (double-click to keep open)');
+    expect(app).toContain('title={documentTabTooltip(document, key === previewDocumentKey)}');
     expect(app).toContain('ondblclick={() => promoteDocument(key)}');
     expect(app).toContain('use:promoteOnDocumentInput={() => promoteDocument()}');
     for (const name of ['saveTopic', 'saveWorkstream', 'mutate', 'updateComposerDraft', 'attachImages',

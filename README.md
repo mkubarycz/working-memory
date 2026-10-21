@@ -47,6 +47,8 @@ For   **topics**, topic types, Agent Messages, and related control-plane documen
 - **Link targets:** hover over an internal or external link to see its target
   URL in a tooltip, including links in live Markdown, document previews, and chat.
   Authored Markdown is not changed.
+- **Topic identifiers:** topic headers show creation and update times without
+  the resource ID. Hover over a topic tab to see its full resource locator.
 - **Draft autocomplete:** suggestions start after an idle pause once the body
   contains at least 24 characters; punctuation is not required. Changes during
   the ten-second request cooldown are queued, and stale responses are ignored.

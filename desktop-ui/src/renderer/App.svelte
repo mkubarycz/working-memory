@@ -79,6 +79,7 @@
     createDocumentOpenGuard,
     documentTabKey,
     documentTabIcon,
+    documentTabTooltip,
     keepSelectedTabVisible,
     openDocumentTab,
     parseDocumentTabs,
@@ -2240,7 +2241,7 @@
                 class="document-tab-select"
                 role="tab"
                 aria-selected={key === selectedDocumentKey}
-                title={key === previewDocumentKey ? `${document.title} — Preview (double-click to keep open)` : document.title}
+                title={documentTabTooltip(document, key === previewDocumentKey)}
                 onclick={() => selectDocument(key)}
                 ondblclick={() => promoteDocument(key)}
               >

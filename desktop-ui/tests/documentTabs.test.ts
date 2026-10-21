@@ -7,6 +7,7 @@ import {
   createDocumentOpenGuard,
   documentTabKey,
   documentTabIcon,
+  documentTabTooltip,
   keepSelectedTabVisible,
   openDocumentTab,
   parseDocumentTabs,
@@ -28,6 +29,28 @@ function topic(id: string, title = id): TopicVM {
 }
 
 describe('document tabs', () => {
+  it('shows topic locators in tab tooltips while retaining the title and preview hint', () => {
+    const document = topic('topic-id', 'A readable title');
+    expect(documentTabTooltip(document)).toBe('A readable title\nworking-memory://open/topic/topic-id');
+    expect(documentTabTooltip(document, true)).toBe(
+      'A readable title — Preview (double-click to keep open)\nworking-memory://open/topic/topic-id',
+    );
+    expect(documentTabTooltip(topic('old id/#'), false))
+      .toBe('old id/#\nworking-memory://open/topic/old%20id%2F%23');
+    expect(documentTabTooltip(topic('', 'No locator yet'))).toBe('No locator yet');
+  });
+
+  it('does not invent topic locators for other document kinds or unsaved drafts', () => {
+    const settings: DocumentVM = { kind: 'settings', id: 'desktop-settings', title: 'Settings' };
+    expect(documentTabTooltip(settings)).toBe('Settings');
+    expect(documentTabTooltip(settings, true)).toBe('Settings — Preview (double-click to keep open)');
+    const draft: DocumentVM = {
+      kind: 'topic-create', id: 'draft-id', title: 'New topic', body: '', topicType: '',
+      topicTypes: [], workstream: '', workstreamTitle: '', parent: null, parentTitle: null,
+    };
+    expect(documentTabTooltip(draft)).toBe('New topic');
+  });
+
   it('shares topic type icons with message context links without changing tab fallbacks', () => {
     const document = topic('selected');
     expect(documentTabIcon(document)).toBe('symbol-misc');

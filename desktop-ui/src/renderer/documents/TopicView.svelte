@@ -238,8 +238,6 @@
 
 {#if !draft}
   <div class="head-meta">
-    <span class="mono">{topic.id ?? '—'}</span>
-    <span class="hm-dot">·</span>
     <span>Created {fmtTs(topic.createdAt)}</span>
     <span class="hm-dot">·</span>
     <span>Updated {fmtTs(topic.updatedAt)}</span>

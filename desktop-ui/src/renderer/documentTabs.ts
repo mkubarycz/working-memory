@@ -1,5 +1,6 @@
 import type { DocumentVM } from './documents/types';
 import { normalizeScopeKind } from './scopeIdentity';
+import { desktopDeepLink } from '../shared/deepLink';
 
 export interface DocumentTabsState {
   tabs: DocumentVM[];
@@ -14,6 +15,15 @@ export interface PersistedDocumentTabs {
 }
 
 const MAX_PERSISTED_TABS = 50;
+
+export function documentTabTooltip(document: DocumentVM, preview = false): string {
+  const title = preview
+    ? `${document.title} — Preview (double-click to keep open)`
+    : document.title;
+  return document.kind === 'topic' && document.id
+    ? `${title}\n${desktopDeepLink('topic', document.id)}`
+    : title;
+}
 
 export function documentTabIcon(document: DocumentVM): string {
   switch (document.kind) {
