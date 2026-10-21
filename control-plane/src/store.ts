@@ -21,7 +21,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { ensureSystemImportAgent, migrateAgentMessages } from './agentMessageMigration.js';
 import { agentMessageSpec, legacyToMessage, AGENT_MESSAGE_KIND } from './kinds/agentmessage/spec.js';
-import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec } from './kinds/agent/spec.js';
+import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec, normalizeAgentName } from './kinds/agent/spec.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -269,6 +269,7 @@ function ensureSchema(db: DatabaseSync): void {
       labels           TEXT NOT NULL DEFAULT '{}',
       spec             TEXT NOT NULL DEFAULT '{}',
       status           TEXT NOT NULL DEFAULT '{}',
+      agent_name_key   TEXT,
       created_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL,
       deleted_at       INTEGER,
@@ -360,15 +361,15 @@ export function openStore(dbFilePath: string): Store {
 
   function validateAgent(spec: Record<string, unknown>, excludeId?: string): Record<string, unknown> {
     const parsed = agentSpec.parse(spec);
-    if (parsed.name.toLowerCase() === 'system import' && excludeId !== SYSTEM_IMPORT_AGENT_ID) {
+    if (normalizeAgentName(parsed.name) === 'system import' && excludeId !== SYSTEM_IMPORT_AGENT_ID) {
       throw new Error('System Import is reserved for historical and compatibility messages.');
     }
     if (excludeId === SYSTEM_IMPORT_AGENT_ID && parsed.name !== 'System Import') {
       throw new Error('The System Import agent cannot be renamed.');
     }
     const existing = db.prepare(`SELECT id FROM resources WHERE kind = 'Agent' AND deleted_at IS NULL
-      AND lower(trim(json_extract(spec, '$.name'))) = lower(?) AND id != ?`)
-      .get(parsed.name, excludeId ?? '') as { id: string } | undefined;
+      AND agent_name_key = ? AND id != ?`)
+      .get(normalizeAgentName(parsed.name), excludeId ?? '') as { id: string } | undefined;
     if (existing) throw new Error(`Agent name "${parsed.name}" is already registered as ${existing.id}. Look it up with ws-agent-read and reuse its ID.`);
     return parsed;
   }
@@ -564,9 +565,10 @@ export function openStore(dbFilePath: string): Store {
 
       db.prepare(
         `INSERT INTO resources
-           (id, kind, slug, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-      ).run(id, input.kind, slug, labelsJson, specJson, statusJson, now, now, resourceVersion);
+           (id, kind, slug, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      ).run(id, input.kind, slug, labelsJson, specJson, statusJson,
+        input.kind === AGENT_KIND ? normalizeAgentName(String(spec.name)) : null, now, now, resourceVersion);
 
       db.exec('COMMIT');
     } catch (err) {
@@ -703,6 +705,10 @@ export function openStore(dbFilePath: string): Store {
       // params. `changes === 0` means either a version mismatch or no live row.
       const setCols = ['spec = ?', 'updated_at = ?', 'resource_version = ?'];
       const params: unknown[] = [specJson, now, next];
+      if (existing?.kind === AGENT_KIND) {
+        setCols.push('agent_name_key = ?');
+        params.push(normalizeAgentName(String(input.spec.name)));
+      }
       if (hasSlug) {
         setCols.push('slug = ?');
         params.push(input.slug ?? null);
@@ -783,6 +789,10 @@ export function openStore(dbFilePath: string): Store {
         const next = counter?.value ?? 0;
         const setCols = ['spec = ?', 'updated_at = ?', 'resource_version = ?'];
         const params: unknown[] = [JSON.stringify(input.spec), now, next];
+        if (document?.kind === AGENT_KIND) {
+          setCols.push('agent_name_key = ?');
+          params.push(normalizeAgentName(String(input.spec.name)));
+        }
         if (input.slug !== undefined) {
           setCols.push('slug = ?');
           params.push(input.slug);
@@ -907,10 +917,13 @@ export function openStore(dbFilePath: string): Store {
       const result = db
         .prepare(
           `UPDATE resources
-             SET deleted_at = NULL, updated_at = ?, resource_version = ?
+             SET deleted_at = NULL, updated_at = ?, resource_version = ?,
+                 agent_name_key = CASE WHEN kind = 'Agent' THEN ? ELSE agent_name_key END
            WHERE id = ? AND deleted_at IS NOT NULL`,
         )
-        .run(now, next, input.id);
+        .run(now, next,
+          deleted?.kind === AGENT_KIND ? normalizeAgentName(String(deleted.spec.name)) : null,
+          input.id);
 
       if (Number(result.changes) === 0) {
         // No soft-deleted row for this id: unknown id or it's already live.
