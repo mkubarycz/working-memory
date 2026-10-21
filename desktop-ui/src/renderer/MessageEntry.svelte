@@ -74,7 +74,7 @@
   data-agent-message-id={message?.id}
   tabindex="-1"
 >
-  <summary class="timeline-command" aria-label={expanded ? 'Collapse message' : 'Expand message'}>
+  <summary class="timeline-command">
     <span class="timeline-dot" aria-hidden="true"></span>
     {#if expanded}
       <time datetime={new Date(row.timestamp).toISOString()}>{new Date(row.timestamp).toLocaleString()}</time>
