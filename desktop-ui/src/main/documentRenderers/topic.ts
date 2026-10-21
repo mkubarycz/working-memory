@@ -15,7 +15,7 @@
  * Family (just this topic) and slug-labeled workstream links from `spec`.
  */
 
-import type { Alert, DocumentEnvelope } from '../../../../shared/controlPlaneClient';
+import type { AgentMessage, DocumentEnvelope } from '../../../../shared/controlPlaneClient';
 import type { FamilyNode } from './family';
 import {
   asStr,
@@ -54,7 +54,7 @@ function familyLines(
 }
 export function renderTopicDocument(
   env: DocumentEnvelope,
-  alerts: Alert[] = [],
+  alerts: AgentMessage[] = [],
   relations: TopicRelations = {},
 ): string {
   const spec = env.spec ?? {};
@@ -112,25 +112,25 @@ export function renderTopicDocument(
 
   if (alerts.length > 0) {
     const thisSlug = env.metadata.slug;
-    lines.push('## Alerts', '');
+    lines.push('## Agent messages', '');
     const blocks = alerts.map((alert) => {
       // Alerts have no slug (always null), so deep-link by id.
-      const link = deepLink('alert', alert.slug ?? alert.id);
+      const link = deepLink('agent-message', alert.id);
       const iconName =
-        alert.status === 'alert'
+        alert.status === 'open' && alert.attention
           ? 'bell'
-          : alert.status === 'informational'
+          : alert.status === 'open'
             ? 'info'
             : 'pass';
       // Colored codicon via inline style only — the markdown preview keeps the
       // glyph + color but strips CSS class styling. Red bell for active alerts;
       // text-bottom keeps the glyph on the text baseline.
-      const color = alert.status === 'alert' ? 'color:#f14c4c;' : '';
+      const color = alert.severity === 'error' ? 'color:#f14c4c;' : '';
       const icon = `<span class="codicon codicon-${iconName}" style="${color}vertical-align:text-bottom"></span>`;
       const title =
         alert.title.trim() ||
         alert.description.split('\n')[0] ||
-        `Alert ${alert.id}`;
+        `Agent message ${alert.id}`;
       const desc = alert.description.trim();
       const next = alert.recommended_action.trim();
       const alertLines = [

@@ -17,8 +17,8 @@ function topic(id: string, status: string, pinned = false): TreeChild {
     status,
     slug: id,
     pinned,
-    alertCount: 0,
-    alertSeverity: null,
+    agentMessageCount: 0,
+    agentMessageSeverity: null,
     children: [],
     actions: [],
   };

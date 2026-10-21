@@ -19,7 +19,7 @@ function topic(slug: string, title = slug): DocumentVM {
   return {
     kind: 'topic', title, slug, status: 'open', topicType: 'feature', typeMeta: null,
     body: '', createdAt: 1, updatedAt: 1, resourceVersion: 1, editable: true,
-    parents: [], children: [], workstreams: [], focusedWorkstreams: [], alerts: [],
+    parents: [], children: [], workstreams: [], focusedWorkstreams: [], agentMessages: [],
   };
 }
 

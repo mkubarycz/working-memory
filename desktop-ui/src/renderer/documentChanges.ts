@@ -1,13 +1,14 @@
 import type { DocumentChange, DocumentChanges } from '../../../shared/documentChanges';
 import type { DocumentVM } from './documents/types';
 import type { DesktopResourceKind } from '../shared/contracts';
+import { normalizeScopeKind } from './scopeIdentity';
 
 export function documentMatchesChange(
   document: Pick<DocumentVM, 'kind' | 'slug'> & { id?: string },
   change: DocumentChange,
 ): boolean {
   return change.id === document.id || Boolean(change.slug && change.slug === document.slug
-    && change.kind.toLowerCase().replaceAll('-', '') === document.kind.toLowerCase().replaceAll('-', ''));
+    && normalizeScopeKind(change.kind) === normalizeScopeKind(document.kind));
 }
 
 export function documentRefreshTarget(document: DocumentVM): { kind: DesktopResourceKind; identifier: string } | undefined {
@@ -15,7 +16,7 @@ export function documentRefreshTarget(document: DocumentVM): { kind: DesktopReso
   if ((document.kind === 'topic' || document.kind === 'workstream') && document.slug) {
     return { kind: document.kind, identifier: document.slug };
   }
-  return 'id' in document ? { kind: 'document', identifier: document.id } : undefined;
+  return 'id' in document && document.id ? { kind: 'document', identifier: document.id } : undefined;
 }
 
 export function createDocumentChangeQueue(

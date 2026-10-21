@@ -1,4 +1,5 @@
 import type { DocumentVM } from './documents/types';
+import { normalizeScopeKind } from './scopeIdentity';
 
 export interface DocumentTabsState {
   tabs: DocumentVM[];
@@ -12,6 +13,16 @@ export interface PersistedDocumentTabs {
 }
 
 const MAX_PERSISTED_TABS = 50;
+
+function documentRouteKind(kind: string): string {
+  return normalizeScopeKind(kind) === 'agentmessage' ? 'agent-message' : kind;
+}
+
+function canonicalSelectedKey(key: string | null): string | null {
+  if (!key) return key;
+  const separator = key.indexOf(':');
+  return separator < 0 ? key : `${documentRouteKind(key.slice(0, separator))}${key.slice(separator)}`;
+}
 
 export function selectedTabScrollLeft(
   scrollLeft: number,
@@ -63,18 +74,18 @@ export function keepSelectedTabVisible(node: HTMLElement, selected: boolean) {
 }
 
 export function documentTabKey(document: DocumentVM): string {
-  const identifier = document.slug ?? ('id' in document ? document.id : document.title);
-  return `${document.kind}:${identifier}`;
+  const identifier = document.slug ?? ('id' in document ? document.id : undefined) ?? document.title;
+  return `${documentRouteKind(document.kind)}:${identifier}`;
 }
 
 export function serializeDocumentTabs(state: DocumentTabsState): string {
   return JSON.stringify({
     version: 1,
     tabs: state.tabs.slice(0, MAX_PERSISTED_TABS).map((document) => ({
-      kind: document.kind,
-      identifier: document.slug ?? ('id' in document ? document.id : document.title),
+      kind: documentRouteKind(document.kind),
+      identifier: document.slug ?? ('id' in document ? document.id : undefined) ?? document.title,
     })),
-    selectedKey: state.selectedKey,
+    selectedKey: canonicalSelectedKey(state.selectedKey),
   } satisfies PersistedDocumentTabs);
 }
 
@@ -98,9 +109,9 @@ export function parseDocumentTabs(value: string | null): PersistedDocumentTabs |
         || typeof tab.identifier !== 'string'
         || !tab.identifier.trim()
       ) return null;
-      tabs.push({ kind: tab.kind, identifier: tab.identifier });
+      tabs.push({ kind: documentRouteKind(tab.kind), identifier: tab.identifier });
     }
-    return { version: 1, tabs, selectedKey: candidate.selectedKey };
+    return { version: 1, tabs, selectedKey: canonicalSelectedKey(candidate.selectedKey) };
   } catch {
     return null;
   }

@@ -137,8 +137,11 @@ button { cursor: pointer; }
 .scope-preview-assistant p, .scope-preview-assistant div p { margin: 0 0 7px; }
 .scope-preview-assistant div p:last-child { margin-bottom: 0; }
 .scope-preview-assistant.partial { color: var(--desktop-chat-muted); }
-.conversation-shell { position: relative; min-height: 0; overflow: hidden; }
+.conversation-shell { position: relative; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .conversation { height: 100%; min-height: 0; overflow-y: auto; padding: 14px 0 20px; }
+.global-attention, .message-attention { flex: 0 0 auto; max-height: 24vh; overflow-y: auto; padding: 6px; }
+.pending-run-review { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pending-run-review > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .new-message-indicator { position: absolute; right: 14px; bottom: 12px; display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 4px 9px; border: 1px solid var(--desktop-accent-strong); border-radius: 4px; background: var(--desktop-accent); color: #24151c; font-size: 11px; font-weight: 700; box-shadow: 0 2px 8px rgba(36, 21, 28, .25); }
 .new-message-indicator:hover { background: #f2559d; }
 .new-message-indicator:focus-visible { outline: 2px solid var(--desktop-accent-strong); outline-offset: 2px; }

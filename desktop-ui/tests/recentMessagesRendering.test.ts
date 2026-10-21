@@ -3,11 +3,13 @@ import { createServer, type ViteDevServer } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import type { Component } from 'svelte';
 import type { ChatRun } from '../src/renderer/chatHistory';
+import type { AgentMessageVM } from '../src/renderer/documents/types';
 
 let server: ViteDevServer;
 let render: typeof import('svelte/server').render;
 let RecentMessages: Component<any>;
 let ToolActivity: Component<any>;
+let AgentMessageCard: Component<any>;
 const context = { kind: 'topic', routeKind: 'topic', identifier: 'selected', title: 'Selected' };
 const noop = vi.fn();
 
@@ -37,11 +39,122 @@ beforeAll(async () => {
   ({ render } = await server.ssrLoadModule('svelte/server'));
   RecentMessages = (await server.ssrLoadModule('/src/renderer/RecentMessages.svelte')).default;
   ToolActivity = (await server.ssrLoadModule('/src/renderer/ToolActivity.svelte')).default;
+  AgentMessageCard = (await server.ssrLoadModule('/src/renderer/documents/AgentMessageCard.svelte')).default;
 });
 
 afterAll(async () => { await server?.close(); });
 
 describe('rendered recent messages (Svelte server rendering, not browser layout)', () => {
+  function message(index: number, extra: Partial<AgentMessageVM> = {}): AgentMessageVM {
+    return { id: `canonical-${index}`, title: `Canonical ${index}`, description: `Message body ${index}`,
+      recommendedAction: '', category: 'completion', severity: 'info', status: 'open', attention: false,
+      topics: ['selected'], relations: [], createdAt: (index + .5) / 1000, updatedAt: (index + .5) / 1000, ...extra };
+  }
+
+  it('collapses exactly five merged canonical/run rows and retains older attention outside that window', () => {
+    const messages = [message(0, { attention: true, category: 'approval' }), message(4), message(7)];
+    const html = render(RecentMessages, { props: props(Array.from({ length: 8 }, (_, i) => run(i)),
+      { agentMessages: messages }) }).body;
+    expect(html.match(/class="scope-preview-row(?: latest)?"/g)).toHaveLength(5);
+    expect(html).toContain('Canonical 7');
+    expect(html).toContain('Needs your attention (1)');
+    expect(html).toContain('Canonical 0');
+    expect(html).toContain('not authorization');
+    const timeline = html.slice(html.indexOf('id="scoped-messages"'));
+    expect(timeline).not.toContain('Canonical 0');
+    expect(timeline.indexOf('Response 7')).toBeLessThan(timeline.indexOf('Canonical 7'));
+  });
+
+  it('keeps old trusted pending confirmations discoverable outside five newer canonical rows', () => {
+    const pending = run(0, { status: 'awaiting_confirmation', userText: 'Protected write',
+      pendingConfirmation: { id: 'protected', tool: 'ws-topic-update', arguments: { status: 'closed' } } });
+    const messages = Array.from({ length: 8 }, (_, index) => message(index + 1));
+    const html = render(RecentMessages, { props: props([pending], { agentMessages: messages }) }).body;
+    expect(html.match(/class="scope-preview-row(?: latest)?"/g)).toHaveLength(5);
+    expect(html).toContain('aria-label="Tool action confirmation needed"');
+    expect(html).toContain('Protected write');
+    expect(html).toContain('Expand confirmation');
+    expect(html).toContain('Review in Log');
+    expect(html.slice(html.indexOf('id="scoped-messages"'))).not.toContain('Protected write');
+    expect(html).not.toContain('class="confirm"');
+    expect(html).not.toContain('class="cancel"');
+    const expanded = render(RecentMessages, { props: props([pending], { agentMessages: messages, expanded: true }) }).body;
+    expect(expanded).toContain('class="confirm"');
+    expect(expanded).toContain('class="cancel"');
+  });
+
+  it('expands canonical history with resolved/acknowledged rows, safe Markdown and explicit reopen, never execution controls', () => {
+    const messages = [
+      message(0, { status: 'resolved', description: '**History** <script>execute()</script>' }),
+      message(1, { status: 'acknowledged' }), message(2, { category: 'approval', attention: true }),
+    ];
+    const html = render(RecentMessages, { props: props([run(3)], { agentMessages: messages, expanded: true }) }).body;
+    expect(html).toContain('<strong>History</strong>');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('Reopen');
+    expect(html).toContain('acknowledged');
+    expect(html).toContain('Response 3');
+    const approval = render(AgentMessageCard, { props: { message: messages[2], onSetStatus: noop } }).body;
+    expect(approval).toContain('Acknowledge');
+    expect(approval).toContain('Resolve');
+    expect(approval).not.toContain('class="confirm"');
+    expect(approval).not.toContain('class="cancel"');
+    expect(approval).toContain('working-memory://open/agent-message/canonical-2');
+    const timestamp = render(AgentMessageCard, { props: {
+      message: message(3, { createdAt: 1_792_540_000 }), onSetStatus: noop,
+    } }).body;
+    expect(timestamp).toContain(`datetime="${new Date(1_792_540_000_000).toISOString()}"`);
+  });
+
+  it('displays recorded approval decisions as escaped communication, never executable confirmation controls', () => {
+    for (const outcome of ['approved', 'rejected'] as const) {
+      const value = message(1, { category: 'approval', decision: {
+        outcome, decided_by: '<img src=x onerror=execute()>', reason: '<script>execute()</script>',
+        decided_at: 1_792_540_000,
+      } });
+      const html = render(AgentMessageCard, { props: { message: value, onSetStatus: noop } }).body;
+      expect(html).toContain(`Recorded decision: ${outcome}`);
+      expect(html).toContain('aria-label="Recorded approval decision"');
+      expect(html).toContain('&lt;img');
+      expect(html).toContain('&lt;script');
+      expect(html).not.toContain('<script>');
+      expect(html).not.toContain('<img');
+      expect(html).toContain(`datetime="${new Date(1_792_540_000_000).toISOString()}"`);
+      expect(html).toContain('not authorization');
+      expect(html).not.toContain('class="confirm"');
+      expect(html).not.toContain('class="cancel"');
+      const informational = render(AgentMessageCard, { props: {
+        message: { ...value, category: 'completion' }, onSetStatus: noop,
+      } }).body;
+      expect(informational).not.toContain('Recorded decision:');
+    }
+  });
+
+  it('offers explicit communication-only decision buttons solely for undecided nonresolved approval requests', () => {
+    const html = render(AgentMessageCard, { props: {
+      message: message(1, { category: 'approval' }), onSetStatus: noop, onRecordDecision: noop,
+    } }).body;
+    expect(html).toContain('Record approved');
+    expect(html).toContain('Record rejected');
+    expect(html).toContain('Recorded by');
+    expect(html).toContain('Display name, not proof of identity');
+    expect(html.match(/<button disabled/g)).toHaveLength(2);
+    expect(html).toContain('not execution authorization');
+    expect(html).not.toContain('class="confirm"');
+    expect(html).not.toContain('class="cancel"');
+    for (const value of [
+      message(1, { category: 'completion' }),
+      message(1, { category: 'approval', status: 'resolved' }),
+      message(1, { category: 'approval', decision: { outcome: 'approved', decided_by: 'Human' } }),
+    ]) {
+      const restricted = render(AgentMessageCard, { props: {
+        message: value, onSetStatus: noop, onRecordDecision: noop,
+      } }).body;
+      expect(restricted).not.toContain('Record approved');
+      expect(restricted).not.toContain('Record rejected');
+    }
+  });
+
   it('renders exactly five scoped rows, only the newest marked multiline, and a clear expansion prompt', () => {
     const runs = Array.from({ length: 9 }, (_, i) => run(i));
     runs.push(run(100, { scope: { kind: 'Topic', id: 'unrelated' } }));

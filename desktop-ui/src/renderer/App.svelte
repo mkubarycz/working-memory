@@ -4,6 +4,8 @@
   import BrainMark from './BrainMark.svelte';
   import UnreadBadge from './UnreadBadge.svelte';
   import RecentMessages from './RecentMessages.svelte';
+  import AgentMessageCard from './documents/AgentMessageCard.svelte';
+  import { loadAllAgentMessages, mergeMessageRows, messageNeedsAttention } from './agentMessages';
   import ToolActivity from './ToolActivity.svelte';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
   import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
@@ -18,7 +20,7 @@
   import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
-    AlertVM,
+    AgentMessageVM,
     AttachmentRef,
     DocumentVM,
     SaveState,
@@ -132,6 +134,12 @@
 
   let input = $state('');
   let chatRuns = $state<ChatRun[]>([]);
+  let agentMessages = $state<AgentMessageVM[]>([]);
+  let agentMessagesLoading = $state(false);
+  let agentMessagesError = $state('');
+  let agentMessagesRequest = 0;
+  const globalMessageRows = $derived(mergeMessageRows(chatRuns, agentMessages));
+  const globalAttention = $derived(agentMessages.filter(messageNeedsAttention));
   let historyLoading = $state(true);
   let historyError = $state('');
   let historyCursor = $state<string | undefined>();
@@ -689,6 +697,13 @@
       return;
     }
     liveUpdateError = '';
+    const messageChanges = event.change.changes.filter((entry) =>
+      ['agentmessage', 'alert'].includes(entry.kind.toLowerCase().replaceAll('-', '')));
+    if (event.change.reset || messageChanges.length) {
+      agentMessagesRequest += 1;
+      agentMessages = agentMessages.filter((message) =>
+        !messageChanges.some((entry) => entry.deleted && entry.id === message.id));
+    }
     documentChanges.enqueue(event.change);
   }
 
@@ -723,6 +738,12 @@
 
   async function refreshChangedDocuments(change: DocumentChanges): Promise<void> {
     const generation = environmentGeneration;
+    const messageChanges = change.changes.filter((entry) => ['agentmessage', 'alert'].includes(entry.kind.toLowerCase().replaceAll('-', '')));
+    if (change.reset || messageChanges.length) {
+      agentMessages = agentMessages.filter((message) => !messageChanges.some((entry) => entry.deleted && entry.id === message.id));
+      await refreshAgentMessages();
+    }
+    if (generation !== environmentGeneration) return;
     const journals = change.changes.filter((entry) => entry.kind.toLowerCase() === 'commandjournal');
     if (change.reset) {
       scopedHistoryRevision += 1;
@@ -842,6 +863,7 @@
     'topic',
     'document',
     'alert',
+    'agent-message',
     'topic-type',
   ]);
 
@@ -914,6 +936,34 @@
         historyRequestGeneration = null;
         if (initialize) historyLoading = false;
       }
+    }
+  }
+
+  async function refreshAgentMessages(): Promise<void> {
+    const generation = environmentGeneration;
+    const request = ++agentMessagesRequest;
+    const isCurrent = () => generation === environmentGeneration && request === agentMessagesRequest;
+    agentMessagesLoading = true;
+    agentMessagesError = '';
+    const loaded = new Map<string, AgentMessageVM>();
+    try {
+      await loadAllAgentMessages(
+        (input) => window.workingMemory.getAgentMessages(input),
+        isCurrent,
+        (page) => {
+          page.forEach((message) => loaded.set(message.id, message));
+          if (isCurrent()) {
+            const current = new Map(agentMessages.map((message) => [message.id, message]));
+            page.forEach((message) => current.set(message.id, message));
+            agentMessages = [...current.values()];
+          }
+        },
+      );
+      if (isCurrent()) agentMessages = [...loaded.values()];
+    } catch (error) {
+      if (isCurrent()) agentMessagesError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (isCurrent()) agentMessagesLoading = false;
     }
   }
 
@@ -996,6 +1046,7 @@
 
   $effect(() => {
     void chatRuns;
+    void agentMessages;
     void busy;
     void pendingConfirmation;
     const shouldStick = conversationPinned;
@@ -1034,7 +1085,7 @@
     // Discovery waits for the launch-time data-tier start, which may change the selected environment.
     await discoverEnvironments(true);
     restoreUnreadResponses();
-    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshBackendHealth(), loadContainerApps()]);
+    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps()]);
     await restoreDocumentTabs();
     await startDocumentChanges();
   }
@@ -1205,6 +1256,10 @@
     saveState = reset.saveState;
     documentError = reset.documentError;
     chatRuns = reset.chatRuns;
+    agentMessagesRequest += 1;
+    agentMessages = [];
+    agentMessagesError = '';
+    agentMessagesLoading = false;
     historyLoading = reset.historyLoading;
     historyError = reset.historyError;
     historyCursor = reset.historyCursor;
@@ -1240,6 +1295,7 @@
       restoreUnreadResponses();
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
+      await refreshAgentMessages();
       await loadContainerApps();
       await restoreDocumentTabs();
       await refreshBackendHealth();
@@ -1744,11 +1800,30 @@
     })));
   }
 
-  function setAlertStatus(id: string, status: AlertVM['status']): void {
-    const document = activeDocument;
-    if (!document || (document.kind !== 'workstream' && document.kind !== 'topic')) return;
-    const identifier = document.slug ?? '';
-    void mutate(() => window.workingMemory.setAlertStatus({ kind: document.kind, identifier }, id, status));
+  async function setAgentMessageStatus(id: string, status: AgentMessageVM['status']): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      await window.workingMemory.setAgentMessageStatus(id, status);
+      if (generation !== environmentGeneration) return;
+      await refreshAgentMessages();
+      if (generation !== environmentGeneration) return;
+      await Promise.all([refreshActive(), ...documents.map((document) => refreshOpenDocument(documentTabKey(document)))]);
+    } catch (error) {
+      if (generation === environmentGeneration) agentMessagesError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function recordAgentMessageDecision(id: string, outcome: 'approved' | 'rejected', decidedBy: string): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      await window.workingMemory.recordAgentMessageDecision(id, { outcome, decided_by: decidedBy.trim() });
+      if (generation !== environmentGeneration) return;
+      await refreshAgentMessages();
+      if (generation !== environmentGeneration) return;
+      await Promise.all([refreshActive(), ...documents.map((document) => refreshOpenDocument(documentTabKey(document)))]);
+    } catch (error) {
+      if (generation === environmentGeneration) agentMessagesError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   function togglePin(topic: string): void {
@@ -1764,8 +1839,8 @@
   }
 
   function openRoute(route: string): void {
-    let match = route.match(/^\/(workstream|topic|document|alert|topic-type)\/([^/]+)\.working-memory$/);
-    if (!match) match = route.match(/^working-memory:\/(?:\/)?(workstream|topic|document|alert|topic-type)\/([^/]+)\.working-memory$/);
+    let match = route.match(/^\/(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)\.working-memory$/);
+    if (!match) match = route.match(/^working-memory:\/(?:\/)?(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)\.working-memory$/);
     if (match) void openResource(match[1] as DesktopResourceKind, decodeURIComponent(match[2]));
   }
 
@@ -1773,11 +1848,18 @@
     try {
       const url = new URL(rawUrl);
       if (url.protocol === 'vscode:' && url.hostname === 'kubarycz.working-memory') {
-        const match = url.pathname.match(/^\/open\/(workstream|topic|document|alert|topic-type)\/([^/]+)$/);
+        const match = url.pathname.match(/^\/open\/(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)$/);
         if (match) void openResource(match[1] as DesktopResourceKind, decodeURIComponent(match[2]));
         return;
       }
       if (url.protocol === 'working-memory:') {
+        const native = url.hostname === 'open'
+          ? url.pathname.match(/^\/(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)$/)
+          : null;
+        if (native) {
+          void openResource(native[1] as DesktopResourceKind, decodeURIComponent(native[2]));
+          return;
+        }
         openRoute(url.pathname);
         return;
       }
@@ -2224,7 +2306,8 @@
             }}
             onInvoke={invokeAction}
             onTogglePin={togglePin}
-            onSetAlertStatus={setAlertStatus}
+            onSetAgentMessageStatus={setAgentMessageStatus}
+            onRecordDecision={recordAgentMessageDecision}
           />
         {:else if activeDocument?.kind === 'topic-create'}
           <TopicCreateView
@@ -2250,7 +2333,8 @@
             onSaveTopic={saveTopic}
             onOpenTopic={(slug) => void openResource('topic', slug)}
             onOpenWorkstream={(slug) => void openResource('workstream', slug)}
-            onSetAlertStatus={setAlertStatus}
+            onSetAgentMessageStatus={setAgentMessageStatus}
+            onRecordDecision={recordAgentMessageDecision}
             attachmentBaseUrl={selectedEnvironment?.mcpUrl
               ? new URL(selectedEnvironment.mcpUrl).origin
               : ''}
@@ -2277,10 +2361,14 @@
 
       <RecentMessages
         runs={scopedConversationRuns}
+        {agentMessages}
+        document={activeDocument}
+        onSetAgentMessageStatus={setAgentMessageStatus}
+        onRecordDecision={recordAgentMessageDecision}
         context={scopedContext}
         bind:expanded={scopePreviewExpanded}
-        loading={scopedHistoryLoading}
-        error={scopedHistoryError}
+        loading={scopedHistoryLoading || agentMessagesLoading}
+        error={[scopedHistoryError, agentMessagesError].filter(Boolean).join(' · ')}
         {humanName}
         {unreadResponses}
         onViewed={markResponseViewed}
@@ -2291,7 +2379,7 @@
         onOpen={(target) => void openResource(target.kind, target.identifier)}
         attachmentUrl={chatAttachmentUrl}
         {assistantFallback}
-        onReload={() => { scopedHistoryRevision += 1; }}
+        onReload={() => { scopedHistoryRevision += 1; void refreshAgentMessages(); }}
         onResolve={(confirmed, run) => void resolveConfirmation(confirmed, run)}
       />
       <div class="composer-shell">
@@ -2547,7 +2635,19 @@
         inert={activeHeaderTab !== 'log'}
       >
       <div class="conversation-shell">
+      {#if globalAttention.length}
+        <section class="global-attention" aria-label="Needs your attention">
+          <strong>Needs your attention ({globalAttention.length})</strong>
+          {#each globalAttention as message (message.id)}
+            <AgentMessageCard {message} onSetStatus={setAgentMessageStatus} onRecordDecision={recordAgentMessageDecision} />
+          {/each}
+        </section>
+      {/if}
       <div bind:this={conversationElement} class="conversation" aria-live="polite" onscroll={handleConversationScroll}>
+      {#if agentMessagesLoading}<div role="status">Loading agent messages…</div>{/if}
+      {#if agentMessagesError}
+        <div role="alert">{agentMessagesError} <button onclick={() => void refreshAgentMessages()}>Retry agent messages</button></div>
+      {/if}
       {#if historyCursor}
         <button class="load-older" disabled={historyLoading} onclick={() => void loadOlderHistory()}>
           {historyLoading ? 'Loading…' : 'Load older'}
@@ -2557,13 +2657,17 @@
         <div class="history-state">Loading history…</div>
       {:else if historyError && chatRuns.length === 0}
         <div class="history-state history-error" role="alert">{historyError}</div>
-      {:else if chatRuns.length === 0}
-        <div class="history-state">No chat history.</div>
+      {:else if globalMessageRows.length === 0}
+        <div class="history-state">No message history.</div>
       {/if}
       {#if historyError && chatRuns.length > 0}
         <div class="history-state history-error" role="alert">{historyError}</div>
       {/if}
-      {#each chatRuns as run (run.key)}
+      {#each globalMessageRows as row (row.key)}
+        {#if row.kind === 'agent-message'}
+          <AgentMessageCard message={row.message} onSetStatus={setAgentMessageStatus} onRecordDecision={recordAgentMessageDecision} />
+        {:else}
+        {@const run = row.run}
         {@const scopeTarget = targetForRef(run.scope)}
         <article id={chatRunDomId(run)} class="chat-run" data-journal-id={run.journalId} tabindex="-1">
           <header class="timeline-command">
@@ -2642,6 +2746,7 @@
       {/if}
           </div>
         </article>
+        {/if}
       {/each}
       {#if chatRuns.some((run) => run.status === 'running' || run.status === 'submitting')}
         <div class="thinking">Queries in progress…</div>

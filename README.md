@@ -9,7 +9,7 @@ evaporating when a chat ends.
 It does two things at once:
 
 - **Context storage** — a portable SQLite database of durable **workstreams**,
-  **topics**, topic types, alerts, and related control-plane documents.
+  **topics**, topic types, Agent Messages, and related control-plane documents.
 - **Workflow engine** — agents drive the store through typed MCP tools
   (`ws-*` and `wm-document-*`). The standalone desktop app surfaces the live
   state so you can watch and steer.
@@ -288,6 +288,102 @@ URL schemes.
 To install a build instead of debugging, use the prebuilt GitHub Release
 one-liner above.
 
+## Agent Messages
+
+Agent Messages replace alerts as regular `AgentMessage` documents. Use the
+`ws-agent-message-create/read/update/delete` tools or the validated generic
+`wm-document-*` API; `wm-list-kinds` exposes the authored schema.
+
+- **request**: a specific human action or decision is needed.
+- **approval**: a request to review a decision, not an authorization grant.
+- **error**: an important failure; require attention only when a human can
+  take a specific next step.
+- **completion**: completed work with a PR to review/merge, without an
+  attention notification.
+
+Keep a meaningful title and the authored Markdown in `description`, link
+detailed journal/PR provenance, and specify topic/object relations. Do not post
+dispatch/running chatter, duplicate summaries, or long operational reports.
+`attention` defaults to false; use it only for a specific human decision/action.
+For example, after substituting an existing topic slug:
+
+```json
+{
+  "title": "Choose the migration window",
+  "description": "The upgrade is ready. Which maintenance window should we use?",
+  "category": "request",
+  "attention": true,
+  "recommended_action": "Choose Friday evening or Saturday morning.",
+  "topics": ["existing-topic-slug"]
+}
+```
+
+A completion instead uses `category: "completion", attention: false`, with
+the review/merge PR linked in `description`. An approval request uses
+`category: "approval"` and describes the decision, not an executable payload.
+
+Lifecycle is `open → acknowledged → resolved`, with explicit reopening.
+Acknowledged/resolved entries remain history rather than disappearing.
+Acknowledgement, resolution, or message content never approves or executes a
+tool; existing trusted confirmation controls remain authoritative. Messages do
+not change topic/workstream lifecycle, and topic closure always requires the
+user's explicit approval for that particular change.
+An approval decision recorded on a message is authored communication, not proof
+of a trusted identity, a host-task grant, or permission to execute a command.
+For approval messages only, `decision` records `outcome` (`approved` or
+`rejected`), `decided_by`, and optional `reason`. The store records `decided_at`
+in Unix seconds; omit it when authoring a new decision. Recording a decision
+does not resolve the message or execute anything.
+
+The scoped Recent messages and global Log combine messages with conversation
+runs, without representing messages as chat runs or tool results. Native
+in-app links use `working-memory://open/agent-message/<id>`. Historical
+`working-memory://open/alert/<id>` links resolve the same canonical record.
+For the separate Agent Window only, retain the existing HTTP
+`http://127.0.0.1:7718/open/alert/<id>` alias; the bridge's allowlist is unchanged.
+
+### Upgrade and compatibility
+
+The control-plane resource store runs its Agent Message conversion automatically
+on opening an isolated or installed store (`resource_migrations`,
+`agent-messages`; conversion provenance version 1, current store migration
+version 2). It is versioned and transactional,
+includes closed and soft-deleted Alert documents, and preserves their IDs,
+Markdown, timestamps, lifecycle, and legacy provenance. It does not run against
+a separate user's service as part of tests. Deprecated `ws-alert-*` and generic
+`Alert` access are compatibility adapters to those same records, not a second
+notification system. Legacy `alert` maps to an open attention request,
+`informational` to open completion information, and `closed` to a resolved
+non-attention request. Unsupported canonical categories/lifecycle combinations
+return an explicit legacy-adapter error instead of coercing them.
+The original resource row, including legacy history and fields unknown to the
+new model, remains in immutable `legacy_source` migration provenance.
+Malformed records or incompatible migration versions fail explicitly and roll
+back conversion; reopening retries an unapplied conversion rather than
+continuing a partially converted store.
+`dedupe_key` identifies a live, unresolved message: identical retries reuse it,
+and changed content conflicts. Resolved or deleted history is never revived by
+create; a recurrence receives a new ID. Reopening an existing record is explicit
+and must not collide with another unresolved message using the same key.
+
+Keep the deprecated aliases until external agents have migrated; removal
+requires an explicitly announced breaking compatibility change. Do not remove
+the historical link route with the tool aliases: authored references must remain
+resolvable.
+
+### Stacked implementation and integration
+
+The Agent Message implementation depends on
+[#84](https://github.com/mkubarycz/working-memory/pull/84), head
+`2535ad5982c4d8155e999a0a6e058648ba253997`, and its child PR targets
+`copilot/improvement-recent-messages`. Merge #84 first, then retarget the child
+to `main`; do not merge the parent into this branch or import sibling work.
+The replacement supersedes #81's alert-history model: retain its history
+requirements in canonical message lifecycle, not in a divergent alerts store.
+Reconcile renderer overlap with #78/#79/#80, preserving App-owned
+`scopePreviewExpanded`, and review migration-version overlap with #83 before
+integration. Those sibling features are not included here.
+
 ## Document stage
 
 New document tabs open on the left. Selecting a tab reveals it in the navigation
@@ -448,7 +544,7 @@ loopback using UDP 7721; topic content travels only over HTTPS on TCP 7720.
 
 Pending edits must save successfully before sharing. The title, Markdown,
 topic type, and referenced screenshot images are copied, but relationships,
-alerts, history, and lifecycle status are not. The receiver creates an open
+Agent Messages, history, and lifecycle status are not. The receiver creates an open
 topic in its **Inbox** workstream and remaps image IDs into that environment.
 After delivery, the source topic receives an appended, dated **Sent as feedback
 to Working Memory platform** note with a **Click to check status** link. Its
@@ -605,7 +701,7 @@ the desktop loopback bridge
 |---|---|---|
 | Topic | `[label](http://127.0.0.1:7718/open/topic/<slug>)` | `[chat-clickable-links](http://127.0.0.1:7718/open/topic/chat-clickable-links)` |
 | Workstream | `[label](http://127.0.0.1:7718/open/workstream/<slug>)` | `[topic-types](http://127.0.0.1:7718/open/workstream/topic-types)` |
-| Alert | `[label](http://127.0.0.1:7718/open/alert/<id>)` | `[release blocker](http://127.0.0.1:7718/open/alert/1234)` |
+| Agent Message (compatibility route) | `[label](http://127.0.0.1:7718/open/alert/<id>)` | `[release blocker](http://127.0.0.1:7718/open/alert/1234)` |
 
 The loopback server accepts validated GET routes only, focuses the desktop app,
 opens the resource, and returns a small confirmation page. Identifiers
@@ -630,7 +726,15 @@ trust.
 
 ## Schema migrations
 
-New migrations go in `schema/NNN_<name>.sql` and are registered in the
+The active control plane owns a unified `resources` store, initialized by
+`control-plane/src/store.ts`. Agent Message conversion runs there using the
+named, versioned `resource_migrations` ledger, separately from the historical
+relational schema sequence below. It converts records in place, without
+rebuilding cascading tables or consuming a SQL migration number potentially
+used by sibling work.
+
+For the historical relational schema, migrations live in `schema/NNN_<name>.sql`
+and were registered in the
 `MIGRATIONS` array at the top of `src/db.ts`. On activation, the runner
 ensures the `schema_migrations(version, applied_at)` table exists, then
 applies any unapplied versions in order — each inside its own

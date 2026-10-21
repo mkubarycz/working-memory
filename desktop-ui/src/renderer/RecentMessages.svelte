@@ -1,7 +1,10 @@
 <script lang="ts">
   import type { ChatRun, ChatTarget, ChatToolRow } from './chatHistory';
   import { isRetryableRun } from './chatHistory';
-  import { allRunsForContext, recentRunsForContext, type ScopedChatContext } from './scopedChat';
+  import type { ScopedChatContext } from './scopedChat';
+  import { scopedMessageRows, messagesForContext, messageNeedsAttention } from './agentMessages';
+  import type { AgentMessageVM, DocumentVM, RecordAgentMessageDecision } from './documents/types';
+  import AgentMessageCard from './documents/AgentMessageCard.svelte';
   import { renderMarkdown } from './markdown';
   import { humanInitials } from './humanIdentity';
   import { observeResponse, responseKey, type UnreadResponse } from './chatUnread';
@@ -10,7 +13,7 @@
   let {
     runs, context, expanded = $bindable(false), loading = false, error = '', humanName,
     unreadResponses, onViewed, onFocus, onRetry, runBlocked, onInspect, onOpen, attachmentUrl,
-    assistantFallback, onReload, onResolve,
+    assistantFallback, onReload, onResolve, agentMessages = [], document, onSetAgentMessageStatus = () => {}, onRecordDecision,
   }: {
     runs: ChatRun[];
     context: ScopedChatContext | undefined;
@@ -29,10 +32,17 @@
     assistantFallback: (run: ChatRun) => string;
     onReload: () => void;
     onResolve: (confirmed: boolean, run: ChatRun) => void;
+    agentMessages?: AgentMessageVM[];
+    document?: DocumentVM | null;
+    onSetAgentMessageStatus?: (id: string, status: AgentMessageVM['status']) => void;
+    onRecordDecision?: RecordAgentMessageDecision;
   } = $props();
 
-  const allRuns = $derived(allRunsForContext(runs, context));
-  const recentRuns = $derived(recentRunsForContext(runs, context));
+  const allRows = $derived(scopedMessageRows(runs, agentMessages, context, document));
+  const recentRows = $derived(allRows.slice(-5));
+  const attention = $derived(messagesForContext(agentMessages, context, document).filter(messageNeedsAttention));
+  const pendingRuns = $derived(allRows.flatMap((row) =>
+    row.kind === 'run' && row.run.status === 'awaiting_confirmation' ? [row.run] : []));
 </script>
 
 <section class="scope-preview" class:expanded aria-label="Recent messages">
@@ -51,20 +61,44 @@
   {:else}
     {#if loading}<p role="status">Loading messages…</p>{/if}
     {#if error}<div class="history-error" role="alert">{error} <button onclick={onReload}>Retry loading messages</button></div>{/if}
+    {#if pendingRuns.length}
+      <section aria-label="Tool action confirmation needed">
+        <strong>Tool action confirmation needed</strong>
+        {#each pendingRuns as run (run.journalId ?? run.key)}
+          <div class="pending-run-review">
+            <span>{run.userText}</span>
+            <button onclick={() => (expanded = true)}>Expand confirmation</button>
+            <button onclick={() => onFocus(run)}>Review in Log</button>
+          </div>
+        {/each}
+      </section>
+    {/if}
+    {#if attention.length}
+      <section class="message-attention" aria-label="Needs your attention">
+        <strong>Needs your attention ({attention.length})</strong>
+        {#each attention as message (message.id)}
+          <AgentMessageCard {message} onSetStatus={onSetAgentMessageStatus} {onRecordDecision} />
+        {/each}
+      </section>
+    {/if}
     <div id="scoped-messages" class:scope-preview-history={expanded}>
-      {#if allRuns.length === 0 && !loading && !error}
+      {#if allRows.length === 0 && !loading && !error}
         <p>No messages for this scope.</p>
       {:else if !expanded}
-        {#each recentRuns as run, index (run.journalId ?? run.key)}
-          <div class="scope-preview-row" class:latest={index === recentRuns.length - 1} data-journal-id={run.journalId}>
+        {#each recentRows as row, index (row.key)}
+          <div class="scope-preview-row" class:latest={index === recentRows.length - 1} data-journal-id={row.kind === 'run' ? row.run.journalId : undefined} data-agent-message-id={row.kind === 'agent-message' ? row.message.id : undefined}>
             <button class="scope-preview-main" onclick={() => (expanded = true)} title="Expand for all messages and details">
-              <span class="scope-preview-text">{run.assistantText || run.userText}</span>
+              <span class="scope-preview-text">{row.kind === 'run' ? row.run.assistantText || row.run.userText : `${row.message.title}: ${row.message.description}`}</span>
             </button>
-            <span class="timeline-state">{run.status.replaceAll('_', ' ')}</span>
+            <span class="timeline-state">{(row.kind === 'run' ? row.run.status : row.message.status).replaceAll('_', ' ')}</span>
           </div>
         {/each}
       {:else}
-        {#each allRuns as run (run.journalId ?? run.key)}
+        {#each allRows as row (row.key)}
+          {#if row.kind === 'agent-message'}
+            <AgentMessageCard message={row.message} onSetStatus={onSetAgentMessageStatus} {onRecordDecision} />
+          {:else}
+          {@const run = row.run}
           <article class="scope-preview-response" data-journal-id={run.journalId}>
             <header class="timeline-command">
               <span class="timeline-dot" aria-hidden="true"></span>
@@ -121,6 +155,7 @@
               </section>
             {/if}
           </article>
+          {/if}
         {/each}
       {/if}
     </div>

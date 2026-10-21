@@ -9,6 +9,7 @@ import type {
   CommandJournalToolEventSummary,
 } from '../../../shared/controlPlaneClient';
 import type { ChatContext, ChatResult, DesktopResourceKind, PendingConfirmation, ToolProgress } from '../shared/contracts';
+import { normalizeScopeKind } from './scopeIdentity';
 
 export interface ChatTarget {
   kind: DesktopResourceKind;
@@ -57,6 +58,8 @@ const TARGET_KINDS: Record<string, DesktopResourceKind> = {
   workstream: 'workstream',
   topic: 'topic',
   alert: 'alert',
+  agentmessage: 'agent-message',
+  'agent-message': 'agent-message',
   topictype: 'topic-type',
   'topic-type': 'topic-type',
   nanite: 'document',
@@ -65,7 +68,7 @@ const TARGET_KINDS: Record<string, DesktopResourceKind> = {
   document: 'document',
 };
 
-const WRITE_ACTION = /-(?:create|update|delete|run)$/;
+const WRITE_ACTION = /-(?:create|update|delete|restore|run)$/;
 
 export function targetForRef(ref: CommandJournalScopeRef | CommandJournalEntityRef): ChatTarget | undefined {
   const kind = TARGET_KINDS[ref.kind.toLowerCase()];
@@ -81,7 +84,8 @@ function entityForTool(
   tool: CommandJournalToolEventSummary,
   refs: CommandJournalEntityRef[],
 ): ChatToolRow['entity'] {
-  const family = tool.toolName.match(/^ws-([a-z]+)-/)?.[1];
+  const family = tool.toolName.startsWith('ws-agent-message-')
+    ? 'agentmessage' : tool.toolName.match(/^ws-([a-z]+)-/)?.[1];
   if (!family) return undefined;
   const ref = refs.find((candidate) => candidate.kind.toLowerCase().replaceAll('-', '') === family);
   if (!ref) return undefined;
@@ -186,8 +190,8 @@ export function mergeHistoryRuns(current: ChatRun[], summaries: CommandJournalSu
 }
 
 function sameRequest(run: ChatRun, summary: CommandJournalSummary): boolean {
-  const runKind = run.scope.kind.toLowerCase().replaceAll('-', '');
-  const summaryKind = summary.primaryScope.kind.toLowerCase().replaceAll('-', '');
+  const runKind = normalizeScopeKind(run.scope.kind);
+  const summaryKind = normalizeScopeKind(summary.primaryScope.kind);
   const runIdentifier = run.scope.slug ?? run.scope.id;
   const summaryIdentifier = summary.primaryScope.slug ?? summary.primaryScope.id;
   return run.userText === summary.request.userText

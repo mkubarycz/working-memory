@@ -1,5 +1,5 @@
 import type {
-  Alert,
+  AgentMessage,
   ControlPlaneClient,
   Topic,
   TopicType,
@@ -11,10 +11,11 @@ import {
   type PanelTopic,
   type PanelTopicsGroup,
 } from '../panelData';
-import { buildAlertVMs, type AlertVM } from './alertVms';
+import { buildAgentMessageVMs, type AgentMessageVM } from './agentMessageVms';
 
 export interface WorkstreamViewModel {
   kind: 'workstream';
+  id: string;
   title: string;
   slug: string | null;
   status: string;
@@ -23,9 +24,9 @@ export interface WorkstreamViewModel {
   closure: string | null;
   resourceVersion: number;
   editable: boolean;
-  topics: Array<{ title: string; slug: string; status: string; pinned: boolean }>;
+  topics: Array<{ id: string; title: string; slug: string; status: string; pinned: boolean }>;
   tree: WorkstreamTreeGroupViewModel[];
-  alerts: AlertVM[];
+  agentMessages: AgentMessageVM[];
 }
 
 export interface WorkstreamTreeActionViewModel {
@@ -39,13 +40,14 @@ export interface WorkstreamTreeActionViewModel {
 export interface WorkstreamTreeTopicViewModel {
   kind: 'topic';
   id: string;
+  documentId?: string;
   label: string;
   icon: string;
   status: string;
   slug: string;
   pinned: boolean;
-  alertCount: number;
-  alertSeverity: 'alert' | 'informational' | null;
+  agentMessageCount: number;
+  agentMessageSeverity: 'info' | 'warning' | 'error' | null;
   children: WorkstreamTreeTopicViewModel[];
   actions: WorkstreamTreeActionViewModel[];
 }
@@ -77,13 +79,14 @@ function treeNode(row: PanelTopic): WorkstreamTreeTopicViewModel {
   return {
     kind: 'topic',
     id: row.id,
+    documentId: row.documentId,
     label: row.label,
     icon: row.icon,
     status: row.status,
     slug: topicSlugFromUri(row.openUri),
     pinned: row.focused,
-    alertCount: row.alertCount ?? 0,
-    alertSeverity: row.alertSeverity ?? null,
+    agentMessageCount: row.agentMessageCount ?? 0,
+    agentMessageSeverity: row.agentMessageSeverity ?? null,
     children: (row.children ?? []).map(treeNode),
     actions: treeActions(row.actions),
   };
@@ -120,17 +123,18 @@ export async function loadWorkstreamViewModel(
   const slug = workstream.slug;
   let topics: Topic[] = [];
   let topicTypes: TopicType[] = [];
-  let alerts: Alert[] = [];
+  let agentMessages: AgentMessage[] = [];
   if (slug) {
     [topics, topicTypes] = await Promise.all([
       client.topicRead({ workstream: slug }).catch(() => []),
       client.topicTypeRead().catch(() => []),
     ]);
   }
-  alerts = await client.alertRead().catch(() => []);
+  agentMessages = await client.agentMessageRead();
 
   const rows = topics
     .map((topic) => ({
+      id: topic.id,
       title: topic.title,
       slug: topic.slug ?? topic.id,
       status: topic.status,
@@ -145,7 +149,7 @@ export async function loadWorkstreamViewModel(
     'active',
     slug ? topics : undefined,
     typeMap,
-    alerts,
+    agentMessages,
   );
   const memberSlugs = topics
     .map((topic) => topic.slug)
@@ -153,6 +157,7 @@ export async function loadWorkstreamViewModel(
 
   return {
     kind: 'workstream',
+    id: workstream.id,
     title: workstream.title,
     slug,
     status: workstream.status,
@@ -163,6 +168,10 @@ export async function loadWorkstreamViewModel(
     editable: Boolean(slug),
     topics: ordered,
     tree: groups.map(treeGroup),
-    alerts: buildAlertVMs(alerts, memberSlugs, now),
+    agentMessages: buildAgentMessageVMs(agentMessages, {
+      topicSlugs: memberSlugs,
+      topicIds: topics.map((topic) => topic.id),
+      workstreamIds: [workstream.id],
+    }, now),
   };
 }

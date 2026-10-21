@@ -27,23 +27,25 @@ export function registerWsAlertCreate(server: McpServer, store: Store): void {
     {
       title: 'Alert: Create',
       description:
-        'Create an Alert (a structured "needs attention" item). Provide a `description` (required) ' +
+        'Deprecated compatibility adapter: create a canonical AgentMessage using legacy Alert fields. ' +
+        'Use ws-agent-message-create for new integrations. Attention is for human decisions/intervention, not progress chatter; ' +
+        'approval requests never authorize execution or topic lifecycle changes. Provide a `description` (required) ' +
         'plus optional `title`, `recommended_action`, `status` (\'alert\' | \'informational\' | ' +
         "'closed', default 'alert'), `dedupe_key` (recurrence key), `created_by` (default " +
         "'system'), and `topics` (topic-slug references). The spec is validated against the Alert " +
         'kind. Returns the created alert.',
-      inputSchema: {
+      inputSchema: z.object({
         title: z.string().optional().describe('Short friendly title (default empty).'),
         description: z.string().describe('The alert body/message (required).'),
         recommended_action: z.string().optional().describe('Suggested next step (default empty).'),
         status: z
-          .string()
+          .enum(['alert', 'informational', 'closed'])
           .optional()
           .describe("Lifecycle status: 'alert' | 'informational' | 'closed' (default 'alert')."),
         dedupe_key: z.string().optional().describe('Optional recurrence/dedupe key.'),
         created_by: z.string().optional().describe("Who raised it (default 'system')."),
         topics: z.array(z.string()).optional().describe('Topic slugs the alert references.'),
-      },
+      }).strict(),
     },
     async ({ title, description, recommended_action, status, dedupe_key, created_by, topics }) => {
       const specInput: Record<string, unknown> = { description };
