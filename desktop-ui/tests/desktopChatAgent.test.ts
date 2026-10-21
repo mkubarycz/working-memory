@@ -429,6 +429,41 @@ describe('DesktopChatAgent', () => {
     expect(journal.current()?.completion?.mutated).toBe(true);
   });
 
+  it.each(['acknowledge', 'resolve', 'reopen', 'restore'])(
+    'preserves %s mutations when a later model request fails',
+    async (action) => {
+      const toolName = `ws-agent-message-${action}`;
+      const callTool = vi.fn(async () => ({ ok: true, result: { id: 'message-1' } }));
+      const journal = journalHarness();
+      const callModel = vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: 'a', function: { name: toolName, arguments: '{"id":"message-1"}' } },
+        ] } }] })
+        .mockRejectedValueOnce(new Error('follow-up request failed'));
+      const agent = new DesktopChatAgent({
+        ...options(callModel, callTool, journal),
+        listTools: async () => [{ name: toolName, inputSchema: { type: 'object', properties: { id: { type: 'string' } } } }],
+      });
+
+      const result = await agent.start({
+        mode: 'chat-completions',
+        url: 'https://example.test',
+        model: 'test',
+        message: `Mark message ${action}`,
+        headers: {},
+      });
+
+      expect(callTool).toHaveBeenCalledWith(toolName, { id: 'message-1' });
+      expect(result).toMatchObject({ status: 'failed', mutated: true });
+      expect(journal.current()?.completion?.mutated).toBe(true);
+      expect(journal.current()?.entityRefs).toContainEqual(expect.objectContaining({
+        kind: 'AgentMessage',
+        id: 'message-1',
+        relation: 'mutated',
+      }));
+    },
+  );
+
   it('creates the durable journal before the first model request and strips endpoint secrets', async () => {
     const order: string[] = [];
     const journal = journalHarness();

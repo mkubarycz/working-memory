@@ -68,7 +68,7 @@ const TARGET_KINDS: Record<string, DesktopResourceKind> = {
   document: 'document',
 };
 
-const WRITE_ACTION = /-(?:create|update|delete|restore|run)$/;
+const WRITE_ACTION = /-(?:create|update|delete|restore|run|acknowledge|resolve|reopen)$/;
 
 export function targetForRef(ref: CommandJournalScopeRef | CommandJournalEntityRef): ChatTarget | undefined {
   const kind = TARGET_KINDS[ref.kind.toLowerCase()];

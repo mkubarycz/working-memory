@@ -194,7 +194,7 @@ function systemPromptForInput(input: StartChatInput): string {
     .join(' ');
 }
 
-const MUTATING_ACTION = /-(create|update|delete|run|reorder|transfer)$/;
+const MUTATING_ACTION = /-(create|update|delete|restore|run|reorder|transfer|acknowledge|resolve|reopen)$/;
 export const DESKTOP_MODEL_REQUEST_TIMEOUT_MS = 60_000;
 export const DESKTOP_DEFAULT_MAX_MODEL_TURNS = 24;
 export const DESKTOP_DEFAULT_TOTAL_TOOL_RUN_TIMEOUT_MS = 270_000;
