@@ -90,6 +90,8 @@ import { DesktopCredentialVault } from './credentialVault';
 import { HostTaskCredentialVault } from './hostTaskBroker';
 import { registerHostTaskIpc } from './hostTaskIpc';
 import { registerHostScriptIpc } from './hostScriptIpc';
+import { DesktopInstanceIdentity } from './instanceIdentity';
+import { loadHostTaskAdminCredential } from '../../../control-plane/src/hostTasks';
 import { LEGACY_USER_DATA_NAME, migrateLegacyUserData } from './userDataMigration';
 import { DesktopUpdater } from './desktopUpdater';
 import {
@@ -108,6 +110,7 @@ import {
   DataTierManager,
   DOCKER_DESKTOP_URL,
   readManagedInstances,
+  dataTierHostDirectory,
   type DataTierInstancesSnapshot,
 } from './dataTier';
 
@@ -806,11 +809,29 @@ function restartInstalledDesktop(): void {
 }
 
 function registerIpc(): void {
+  const hostTaskVault = new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets'));
+  const bootstrapFile = (mcpUrl: string): string | null => {
+    const url = new URL(mcpUrl);
+    const port = Number(url.port);
+    if (url.origin !== `http://127.0.0.1:${port}` || url.pathname !== '/mcp'
+      || (port !== 7717 && !readManagedInstances(dataTierStateDirectory()).some(instance => instance.port === port))) return null;
+    return join(dataTierHostDirectory({ platform: process.platform, env: process.env, homedir: app.getPath('home') }, port), 'host-task-admin.secret');
+  };
+  const identity = new DesktopInstanceIdentity(hostTaskVault, async (mcpUrl) => {
+    const file = bootstrapFile(mcpUrl);
+    if (!file) throw new Error('Initial password setup requires a locally managed instance.');
+    const credential = loadHostTaskAdminCredential({ WM_HOST_TASK_ADMIN_TOKEN_FILE: file });
+    if (!credential) throw new Error('Local instance owner setup is unavailable.');
+    return credential;
+  }, (mcpUrl) => {
+    const file = bootstrapFile(mcpUrl);
+    return process.platform !== 'win32' && !!file && existsSync(file);
+  });
   registerHostScriptIpc({
     ipc: ipcMain, dialog, getWindow: () => mainWindow,
     getEnvironment: () => environmentManager.currentEnvironment,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
-    vault: new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets')),
+    vault: hostTaskVault, identity,
     platform: process.platform, directory: join(app.getPath('userData'), 'host-scripts'),
   });
   registerHostTaskIpc({
@@ -819,7 +840,7 @@ function registerIpc(): void {
     getWindow: () => mainWindow,
     getEnvironment: () => environmentManager.currentEnvironment,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
-    vault: new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets')),
+    vault: hostTaskVault,
     platform: process.platform,
   });
   ipcMain.handle('feedback:prepare', (_event, id: string, requestId: string) => {

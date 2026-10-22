@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { HostScriptBroker, HostScriptError, ensureHostScriptSchema } from './hostScripts.js';
 import { serveHostScriptMcp } from './hostScriptMcp.js';
+import { IdentityError, InstanceIdentity } from './instanceIdentity.js';
 
 // Standalone control-plane compilation cannot import root shared runtime files.
 // Keep this boundary predicate parity-tested against shared/hostTasks.ts.
@@ -224,6 +225,7 @@ type Row = Record<string, string | number | null>;
 type Job = Row & { id: string; app_id: string; grant_id: string | null; state: string; attempt: number };
 
 export class HostTaskBroker {
+  readonly identity: InstanceIdentity;
   private readonly scripts: HostScriptBroker;
   private readonly clock: () => number;
   private readonly adminHash: string | undefined;
@@ -232,6 +234,7 @@ export class HostTaskBroker {
       throw new Error('Host-task operation does not match its reviewed digest.');
     }
     this.clock = options.hostTaskClock ?? Date.now;
+    this.identity = new InstanceIdentity(db, this.clock);
     this.scripts = new HostScriptBroker(db, this.clock);
     const credential = options.hostTaskAdminCredential;
     if (credential !== undefined && !isHostTaskCredential(credential)) {
@@ -341,11 +344,16 @@ export class HostTaskBroker {
   isProtectedCredential(header: string | undefined): boolean {
     if (!header?.startsWith('Bearer ')) return false;
     const hash = hostTaskHash(header.slice(7));
-    return hash === this.adminHash ||
+    return this.identity.recognizes(header.slice(7)) || hash === this.adminHash ||
       !!this.get('SELECT id FROM host_task_apps WHERE credential_hash=?', hash) ||
       !!this.get('SELECT id FROM host_task_runners WHERE credential_hash=?', hash);
   }
   private admin(token: string): void {
+    if (this.identity.authenticate(token)) return;
+    if (this.identity.configured()) fail(401, 'owner_sign_in_required');
+    this.bootstrapAdmin(token);
+  }
+  private bootstrapAdmin(token: string): void {
     if (!this.adminHash) fail(503, 'admin_disabled');
     const actual = Buffer.from(hostTaskHash(token));
     if (!timingSafeEqual(actual, Buffer.from(this.adminHash))) fail(401, 'invalid_credential');
@@ -724,6 +732,25 @@ export class HostTaskBroker {
       const token = typeof auth === 'string' && auth.startsWith('Bearer ') &&
         isHostTaskCredential(auth.slice(7)) ? auth.slice(7) : '';
       const path = url.pathname.slice('/host-tasks/v1'.length);
+      if (path === '/admin/identity/setup') {
+        if (req.method !== 'POST' || req.headers.origin || url.search) fail(400, 'invalid_setup_request');
+        this.bootstrapAdmin(token);
+        if (this.identity.configured()) fail(409, 'owner_already_configured');
+        if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') fail(415, 'json_required');
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        for await (const chunk of req) {
+          const buffer = Buffer.from(chunk);
+          bytes += buffer.length;
+          if (bytes > 8192) fail(413, 'body_too_large');
+          chunks.push(buffer);
+        }
+        let value: unknown;
+        try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { fail(400, 'invalid_json'); }
+        const input = z.object({ password: z.string().min(12).max(1024) }).strict().parse(value);
+        send(200, await this.identity.initialize(input.password));
+        return;
+      }
       if (path === '/admin' || path.startsWith('/admin/')) this.admin(token);
       else this.auth(token, path.startsWith('/runner/') ? 'runners' : 'apps');
       if (path === '/scripts/mcp') {
@@ -749,7 +776,8 @@ export class HostTaskBroker {
       const result = this.dispatch(req.method ?? '', path, token, body);
       send(result.status, result.body);
     } catch (error) {
-      if (error instanceof HostScriptError) send(error.status, { error: error.message });
+      if (error instanceof IdentityError) send(error.status, { error: error.message });
+      else if (error instanceof HostScriptError) send(error.status, { error: error.message });
       else if (error instanceof BrokerError) send(error.status, { error: error.code });
       else if (error instanceof z.ZodError) send(400, { error: 'invalid_request' });
       else send(500, { error: 'broker_unavailable' });

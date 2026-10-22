@@ -87,11 +87,28 @@ export function validateGrant(input: HostTaskGrantInput, now = Date.now()): Host
 }
 
 export class HostTaskCredentialVault {
+  private readonly sessions = new Map<string, { token: string; expiresAt: number }>();
   constructor(
     private readonly native: NativeCredentialStorage & { getSelectedStorageBackend?(): string },
     private readonly platform: NodeJS.Platform,
     private readonly directory: string,
   ) {}
+
+  session(origin: string): string | null {
+    const session = this.sessions.get(origin);
+    if (!session || session.expiresAt <= Date.now()) {
+      this.sessions.delete(origin);
+      return null;
+    }
+    return session.token;
+  }
+
+  setSession(origin: string, token: string, expiresAt: number): void {
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) throw new Error('Invalid desktop session expiry.');
+    this.sessions.set(origin, { token: validSecret(token), expiresAt });
+  }
+
+  clearSession(origin: string): void { this.sessions.delete(origin); }
 
   private requireSecureStorage(): void {
     if (!this.native.isEncryptionAvailable()
@@ -107,6 +124,8 @@ export class HostTaskCredentialVault {
   }
 
   async read(origin: string): Promise<string | null> {
+    const session = this.session(origin);
+    if (session) return session;
     this.requireSecureStorage();
     let encrypted: Buffer;
     try {

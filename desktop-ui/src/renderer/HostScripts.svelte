@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import type { HostScriptDesktopState, ScriptJob } from '../shared/hostTasks';
 
   let state = $state<HostScriptDesktopState | null>(null);
@@ -16,6 +16,19 @@
   let argumentsJson = $state('{"name":"Michael"}');
   let selectedJob = $state<ScriptJob | null>(null);
   let callerLabel = $state('My agent');
+  let password = $state('');
+  let repeatedPassword = $state('');
+  const creatingPassword = $derived(state?.authentication?.passwordConfigured === false);
+
+  async function signIn(): Promise<void> {
+    if (creatingPassword && password !== repeatedPassword) { error = 'The passwords do not match.'; return; }
+    const value = password;
+    password = '';
+    repeatedPassword = '';
+    await perform(() => window.workingMemory.signInHostScripts({ password: value, setup: creatingPassword }));
+  }
+
+  onMount(() => { void perform(async () => {}); });
 
   async function refresh(): Promise<void> { state = await window.workingMemory.getHostScripts(); }
   async function perform(action: () => Promise<unknown>): Promise<void> {
@@ -64,22 +77,53 @@
 </script>
 
 <section class="scripts" aria-label="Approved Node.js host scripts">
-  <p><strong>Your script. Your parameter contract. Your approval.</strong>
-    Register a self-contained CommonJS script, then test it or grant a caller access to that exact version.
+  <p><strong>Run scripts you control, with access you approve.</strong>
+    Add a script, define the inputs it accepts, then approve a test or give an app temporary permission to request it.
     Scripts run as your local account on this Mac/Linux host, <strong>not in a sandbox</strong>.</p>
-  <p>Only Node.js built-in modules are supported in this first version. Script changes require a new registration.
-    The unfinished Windows/Thrive runner is separate.</p>
-  <div class="actions">
-    <button disabled={busy} onclick={() => void perform(async () => {})}>Connect / refresh</button>
-    <button disabled={busy} onclick={() => void perform(() => window.workingMemory.provisionHostTaskAdmin())}>Import broker admin token…</button>
-  </div>
-  <p class="hint">Setup uses the existing protected broker credential. macOS may request Keychain access to unlock
-    local credential storage; that is not a task approval. If administration is disabled, configure
-    <code>WM_HOST_TASK_ADMIN_TOKEN_FILE</code> on the control plane, then import that private file here.</p>
+  <p class="hint">This preview protects host-task administration. Instance-wide API permissions and automatic container
+    credentials are separate roadmap work. The unfinished Windows/Thrive runner is separate.</p>
+  {#if !state?.credentialReady}
+    <h3>{creatingPassword ? 'Set this instance’s owner password' : 'Connect to your Working Memory instance'}</h3>
+    <p>The control plane stores your scripts and approvals. Sign in as its owner to manage them.
+      This connection does not approve a script or give an agent permission to run anything.</p>
+    {#if creatingPassword}
+      <p>Choose a password of at least 12 characters. Initial setup must be performed by the local instance owner.</p>
+      {#if !state?.authentication?.setupAvailable}
+        <p role="alert">Local owner setup is not available for this instance yet. It must be provisioned locally before a password can be set.</p>
+      {/if}
+    {/if}
+    <form onsubmit={(event) => { event.preventDefault(); void signIn(); }}>
+      <label>Instance password
+        <input type="password" bind:value={password} autocomplete={creatingPassword ? 'new-password' : 'current-password'}
+          minlength={creatingPassword ? 12 : 1} maxlength="1024" required />
+      </label>
+      {#if creatingPassword}
+        <label>Confirm password <input type="password" bind:value={repeatedPassword} autocomplete="new-password" maxlength="1024" required /></label>
+      {/if}
+      <button disabled={busy || !state?.authentication || !password || (creatingPassword && (!state.authentication.setupAvailable || password.length < 12))}>
+        {creatingPassword ? 'Set password and connect' : 'Sign in'}
+      </button>
+    </form>
+    <button disabled={busy} onclick={() => void perform(async () => {})}>Refresh connection</button>
+    <p class="hint">The password is exchanged for a private, expiring desktop session. It is not saved.
+      This preview keeps the session only in memory; no Keychain or token-file import is required.
+      Closing the app or signing out ends the local session.</p>
+  {:else}
+    <div class="actions">
+      <span>Connected as instance owner · session only</span>
+      <button disabled={busy} onclick={() => void perform(async () => {})}>Refresh</button>
+      <button disabled={busy} onclick={() => void perform(async () => {
+        runnerActive = false;
+        if (timer) clearInterval(timer);
+        await window.workingMemory.signOutHostScripts();
+        selectedJob = null;
+      })}>Sign out</button>
+    </div>
+    <p>Only Node.js built-in modules are supported. Script changes require a new registration.</p>
+  {/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if state}
-    <p>Environment: <code>{state.environment}</code> · Host: <code>{state.hostId}</code></p>
-    {#if !state.credentialReady}<p>No admin credential imported yet. Nothing can run.</p>{/if}
+    <p>Instance: <code>{state.environment}</code></p>
     {#if state.snapshot}
       <h3>1. Register a script</h3>
       <button disabled={busy} onclick={() => void register(true)}>Register harmless greeting example…</button>
@@ -148,7 +192,7 @@
         <code>parameters</code>, and a stable <code>idempotencyKey</code>. See the README for the complete example.</p>
       <p>For agents, connect a separate authenticated MCP server at
         <code>{state.environment}/host-tasks/v1/scripts/mcp</code> using the caller's bearer credential.
-        Only that caller's granted script versions are exposed as tools. Never use the admin credential for agents.</p>
+        Only that caller's granted script versions are exposed as tools. Never give an agent your owner session or password.</p>
       <h3>Registered versions</h3>
       {#each state.snapshot.tasks as task}
         <article>

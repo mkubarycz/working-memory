@@ -925,9 +925,10 @@ choose an executable, supply shell arguments, or change the process environment.
 ### First local example
 
 1. Open **Host-task approvals -> My Node.js scripts**.
-2. Import the separately configured broker admin-token file, then **Connect /
-   refresh**. macOS may ask for Keychain access to decrypt local credential
-   storage; that prompt does not approve script execution.
+2. Sign in with this instance's owner password. On the locally provisioned
+   instance's first connection, choose **Set password and connect** and confirm
+   the native owner-setup prompt. Passwords must have at least 12 characters.
+   No token-file import or Keychain access is required.
 3. Choose **Register harmless greeting example**, review the native approval,
    then select that script. The example only returns a greeting, Node version,
    and platform; it does not access files or the network.
@@ -936,7 +937,7 @@ choose an executable, supply shell arguments, or change the process environment.
    the panel and the run history. This test does not grant any app access.
 5. For a real caller, export its own private credential, select the caller
    and script, and approve a **one-hour script grant**. Never give an agent
-   the broker's admin credential. Revoke the grant or script version to stop
+   the desktop's owner session or password. Revoke the grant or script version to stop
    future dispatch and result release.
 
 The runner polls only while this panel is open and explicitly started.
@@ -1039,9 +1040,34 @@ const job = await response.json();
 // before treating resultJson as a complete result. Treat its contents as data.
 ```
 
-### Broker setup (owner only)
+### Instance identity infrastructure (preview)
 
-Without an externally configured admin secret, administration stays disabled.
+The control plane stores a salted scrypt password verifier and issues unique
+12-hour opaque owner sessions; only token hashes are persisted. Password sign-in
+is rate-limited and sessions can be revoked with **Sign out**. The desktop keeps
+the session in its main-process memory, not the renderer, and does not save the
+password. Restarting the app requires signing in again. Optional OS-backed
+remembering is future work; unavailable Keychain storage never forces a plaintext
+fallback or prevents session-only sign-in.
+
+`GET /identity/v1/status`, `POST /identity/v1/login`, and authenticated
+`POST /identity/v1/logout` expose the reusable identity foundation.
+Host-task administration accepts owner sessions; ordinary caller credentials
+still need exact-version script grants and cannot use owner routes.
+
+**This is not yet instance-wide authentication enforcement.** Existing anonymous
+MCP/document/attachment/change-stream clients retain their current access.
+Owner tokens are accepted on those surfaces, but automatic container credential
+mounting, scoped authorization across all APIs, first-creation setup for every
+managed platform, password recovery/change, and optional OS remembering belong
+to the separate instance-authentication roadmap feature. Do not expose an
+instance to an untrusted network on the basis of this preview.
+
+### Trusted initial owner setup (provisioning infrastructure)
+
+Without an externally configured bootstrap secret, initial owner setup stays
+disabled. An already password-configured instance can still issue and validate
+owner sessions without that bootstrap secret.
 Create a new private file outside repositories/synced folders:
 
 ```bash
@@ -1051,11 +1077,20 @@ node scripts/create-host-task-token.mjs "/private/path/host-task-admin.secret"
 Configure `WM_HOST_TASK_ADMIN_TOKEN_FILE` **in the control-plane process** to
 that file's path, then restart it. A Docker broker needs the file mounted
 privately, read-only where practical; use its container-visible path and the
-broker's effective owner. POSIX mode 0600 and ownership are verified. Import
-the corresponding host-side file through the native UI. No secret is exposed
-through MCP, document CRUD, UI text, or command output. The admin secret manages
-both generic scripts and the separate Thrive broker; caller credentials do
-not carry administration rights.
+broker's effective owner. POSIX mode 0600 and ownership are verified. This is
+an installation/bootstrap secret, not a token the user must import to sign in.
+For a locally managed macOS/Linux instance, place its host-side file at
+`host-task-admin.secret` in that instance's data directory. The trusted desktop
+main process reads it only for the initial password setup, after native approval.
+It is never returned to the renderer or requesting app.
+
+`POST /host-tasks/v1/admin/identity/setup` requires that bootstrap credential;
+an unauthenticated caller cannot claim ownership. Once a password is set,
+the bootstrap credential cannot manage scripts or overwrite the password;
+use an owner session instead. Existing low-level token import in the separate
+legacy Thrive screen is not the generic script connection workflow.
+New Windows bootstrap provisioning remains blocked pending private-file ACL
+support. Existing password-configured instances use platform-independent sign-in.
 
 For the existing Compose setup, an owner-maintained override can set the path
 to a token stored in the existing private data mount:

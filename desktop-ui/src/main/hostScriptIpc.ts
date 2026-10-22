@@ -10,10 +10,12 @@ import {
   scriptDefinitionSchema, scriptDefinitionHash, scriptParametersSchema, validateScriptArguments, type ScriptArguments,
 } from '../../../control-plane/src/hostScriptPolicy';
 import type { HostScriptDesktopState } from '../shared/hostTasks';
+import type { DesktopInstanceIdentity } from './instanceIdentity';
 
 export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   directory: string;
   execute?: typeof executeHostScript;
+  identity?: DesktopInstanceIdentity;
 }): void {
   let running: AbortController | null = null;
   const context = (event: Parameters<typeof assertHostTaskSender>[0]) => {
@@ -30,17 +32,19 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
       }
     };
     const client = async () => {
-      const token = await deps.vault.read(hostTaskOrigin(environment.mcpUrl));
+      const token = deps.identity ? deps.vault.session(hostTaskOrigin(environment.mcpUrl))
+        : await deps.vault.read(hostTaskOrigin(environment.mcpUrl));
       ensureCurrent();
-      if (!token) throw new Error('Import the broker admin token first. See the host-script setup instructions.');
+      if (!token) throw new Error('Sign in to this Working Memory instance first.');
       return new HostScriptAdminClient(environment.mcpUrl, token);
     };
-    const confirm = async (message: string, detail: string) => {
+    const confirm = async (message: string, detail: string, scriptWarning = true) => {
       const result = await deps.dialog.showMessageBox(window!, {
-        type: 'warning', title: 'Approved host script', message,
+        type: 'warning', title: scriptWarning ? 'Approved host script' : 'Working Memory instance setup', message,
         detail: `Environment: ${hostTaskOrigin(environment.mcpUrl)}\n${detail}\n\n`
-          + 'Trusted code runs as your local account, without elevation. This is NOT an OS sandbox. '
-          + 'Only register scripts you have reviewed. Caller parameters cannot choose the script, shell command, or environment.',
+          + (scriptWarning ? 'Trusted code runs as your local account, without elevation. This is NOT an OS sandbox. '
+            + 'Only register scripts you have reviewed. Caller parameters cannot choose the script, shell command, or environment.'
+            : 'The password is stored only as a salted verifier. Signing in does not approve any script run.'),
         buttons: ['Cancel', 'Approve'], defaultId: 0, cancelId: 0, noLink: true,
       });
       ensureCurrent();
@@ -51,10 +55,30 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   deps.ipc.handle('host-scripts:get', async (event): Promise<HostScriptDesktopState> => {
     const ctx = context(event);
     const hostId = await hostScriptHostId(deps.directory);
-    const token = await deps.vault.read(hostTaskOrigin(ctx.environment.mcpUrl));
+    const authentication = await deps.identity?.status(ctx.environment.mcpUrl);
+    const token = deps.identity ? deps.vault.session(hostTaskOrigin(ctx.environment.mcpUrl))
+      : await deps.vault.read(hostTaskOrigin(ctx.environment.mcpUrl));
     ctx.ensureCurrent();
-    return { environment: hostTaskOrigin(ctx.environment.mcpUrl), hostId, credentialReady: !!token,
+    return { environment: hostTaskOrigin(ctx.environment.mcpUrl), hostId, credentialReady: !!token, authentication,
       snapshot: token ? await new HostScriptAdminClient(ctx.environment.mcpUrl, token).scripts() : null };
+  });
+  deps.ipc.handle('host-scripts:sign-in', async (event, raw: unknown) => {
+    const ctx = context(event);
+    if (!deps.identity) throw new Error('Instance sign-in is unavailable.');
+    const input = z.object({ password: z.string().min(1).max(1024), setup: z.boolean() }).strict().parse(raw);
+    if (input.setup && !await ctx.confirm('Set the owner password for this Working Memory instance?',
+      'This creates the instance owner identity. The desktop session can manage all approved scripts and caller grants. '
+      + 'It does not approve script execution or give container apps owner access.', false)) return;
+    const session = await deps.identity.signIn(ctx.environment.mcpUrl, input.password, input.setup);
+    ctx.ensureCurrent();
+    deps.vault.setSession(hostTaskOrigin(ctx.environment.mcpUrl), session.token, session.expiresAt);
+  });
+  deps.ipc.handle('host-scripts:sign-out', async (event) => {
+    const ctx = context(event);
+    if (!deps.identity) throw new Error('Instance sign-in is unavailable.');
+    running?.abort();
+    await deps.identity.signOut(ctx.environment.mcpUrl);
+    ctx.ensureCurrent();
   });
   deps.ipc.handle('host-scripts:register', async (event, raw: unknown) => {
     const ctx = context(event);

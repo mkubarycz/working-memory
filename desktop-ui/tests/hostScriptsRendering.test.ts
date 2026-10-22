@@ -20,17 +20,19 @@ describe('generic host-task first screen', () => {
     const html = renderHostTasks();
     expect(html).toContain('Approved host tasks');
     expect(html).toContain('My Node.js scripts');
-    expect(html).toContain('Your script. Your parameter contract. Your approval.');
-    expect(html).toContain('Connect / refresh');
-    expect(html).toContain('Import broker admin token');
+    expect(html).toContain('Run scripts you control, with access you approve.');
+    expect(html).toContain('Connect to your Working Memory instance');
+    expect(html).toContain('Instance password');
+    expect(html).not.toContain('Import broker admin token');
     expect(html).not.toContain('Read Thrive items created by');
     expect(html).not.toContain('Approve an expiring grant');
   });
-  it('explains Keychain, the trust boundary, and why unconfigured scripts cannot execute', () => {
+  it('explains session-only authentication separately from script approval', () => {
     const html = renderHostTasks();
     expect(html).toContain('not in a sandbox');
-    expect(html).toContain('not a task approval');
-    expect(html).toContain('WM_HOST_TASK_ADMIN_TOKEN_FILE');
+    expect(html).toContain('does not approve a script');
+    expect(html).toContain('no Keychain or token-file import is required');
+    expect(html).toContain('Instance-wide API permissions');
     expect(html).toContain('Thrive / Windows (experimental)');
     expect(html).not.toContain('Start local runner');
   });

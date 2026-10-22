@@ -521,11 +521,16 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? `${host}:${port}`}`);
 
+    if (url.pathname.startsWith('/identity/v1/')) {
+      await hostTasks.identity.handle(req, res, url);
+      return;
+    }
     if (url.pathname === '/host-tasks/v1' || url.pathname.startsWith('/host-tasks/v1/')) {
       await hostTasks.handle(req, res, url);
       return;
     }
-    if (hostTasks.isProtectedCredential(req.headers.authorization)) {
+    const ownerToken = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+    if (hostTasks.isProtectedCredential(req.headers.authorization) && !hostTasks.identity.authenticate(ownerToken)) {
       endJson(res, 403, { error: 'host_task_credential_wrong_surface' });
       return;
     }

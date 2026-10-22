@@ -7,6 +7,8 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const api: DesktopApi = {
+  signInHostScripts: (input) => invoke('host-scripts:sign-in', input),
+  signOutHostScripts: () => invoke('host-scripts:sign-out'),
   getHostScripts: () => invoke('host-scripts:get'),
   registerHostScript: (input) => invoke('host-scripts:register', input),
   grantHostScript: (input) => invoke('host-scripts:grant', input),
