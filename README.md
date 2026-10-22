@@ -914,7 +914,165 @@ children. Migration 004 wiped two join tables by using a naïve
 create-copy-drop-rename pattern with `foreign_keys = ON` globally enabled;
 that template is the documented cure.
 
-## Approved host tasks (experimental; execution blocked)
+## Approved Node.js host scripts (experimental)
+
+The desktop now supports a generic **register -> approve -> request -> run**
+workflow on macOS and Linux, separate from the unfinished Windows/Thrive
+integration below. This runs **trusted code as your local account, not in an
+OS sandbox**. It never elevates privileges or lets a caller submit script text,
+choose an executable, supply shell arguments, or change the process environment.
+
+### First local example
+
+1. Open **Host-task approvals -> My Node.js scripts**.
+2. Import the separately configured broker admin-token file, then **Connect /
+   refresh**. macOS may ask for Keychain access to decrypt local credential
+   storage; that prompt does not approve script execution.
+3. Choose **Register harmless greeting example**, review the native approval,
+   then select that script. The example only returns a greeting, Node version,
+   and platform; it does not access files or the network.
+4. Enter `{"name":"Michael"}`, choose **Review and queue one test**, approve
+   the native prompt, and **Start local runner**. The JSON result appears in
+   the panel and the run history. This test does not grant any app access.
+5. For a real caller, export its own private credential, select the caller
+   and script, and approve a **one-hour script grant**. Never give an agent
+   the broker's admin credential. Revoke the grant or script version to stop
+   future dispatch and result release.
+
+The runner polls only while this panel is open and explicitly started.
+Closing it stops new claims; a current run may finish. **Stop local runner**
+also aborts the current process. A sleeping/closed desktop does not execute
+jobs. Runs are not automatically retried, because scripts may have side effects.
+Revocation cannot undo host work already performed.
+
+### Registering your own script
+
+Choose a reviewed, self-contained `.cjs`/CommonJS `.js` file up to 32 KiB:
+
+```js
+module.exports = async function (parameters) {
+  return { greeting: `Hello, ${parameters.name}!` };
+};
+```
+
+Declare its allowed parameters as JSON in the registration form:
+
+```json
+{
+  "name": { "type": "string", "required": true, "maxLength": 80 },
+  "mode": { "type": "string", "enum": ["preview", "import"], "maxLength": 10 },
+  "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+  "verbose": { "type": "boolean" }
+}
+```
+
+Unknown keys, coercions, missing required values, unsupported schema fields,
+and out-of-range values are rejected. At most 20 parameters and 16 KiB of
+parameter JSON are accepted. Arguments arrive as a frozen object, not shell
+substitutions. Return JSON-serializable data up to 64 KiB. Console output is
+not returned; exceeding 64 KiB of console output fails the run.
+
+Registration stores a private immutable snapshot of the entry script and its
+parameter contract, host binding, and time limit. Its canonical SHA-256 is
+shown during native approval and rechecked before execution. Editing the
+original file does not change an approved version: register and approve a new
+version, and revoke the old one. The UI uses a 10-second time limit; the API
+supports 1–30 seconds. The runner uses the installed Electron Node runtime in
+a child process, with a minimal environment and best-effort process-group
+termination on timeout, cancellation, and completion. Deliberately detached
+descendants, runtime dependencies, and OS privileges are **not sandboxed**.
+Only built-in modules are supported through the supplied `require`; filesystem
+and network restrictions must be implemented in the reviewed script itself.
+Do not register code from an untrusted caller.
+
+### Authenticated tools and broker API
+
+An app-specific bearer credential plus an unexpired, exact-version script
+grant is required. Script definitions, grants, jobs, and private results live
+in protected broker tables, not editable Topic/Config documents. Native
+registration, grants, and owner tests require a cancel-default confirmation.
+Grants last at most 24 hours, queued jobs at most five minutes, with one active
+generic job per caller and at most ten requests per minute. Completed arguments
+are cleared; results/error payloads are retained at most 30 minutes and never
+past grant validity. Audit rows contain control metadata, not script source,
+arguments, or result data. SQLite WAL/backups are not securely erased.
+
+Agents can connect to **`/host-tasks/v1/scripts/mcp`** with their own bearer
+credential. This is a separate, stateless MCP endpoint: only that caller's
+currently granted script versions appear as named tools. Each tool accepts
+`parameters` and a stable `idempotencyKey`, returns an accepted job, and exposes
+`host_script_job_read` for polling. Revocation/expiry is rechecked on every
+request and before completion/result release. Do not configure this endpoint
+with an admin token or put credentials in authored documents.
+
+For HTTP clients, using the same bearer credential:
+
+| Method / path | Purpose |
+| --- | --- |
+| `GET /host-tasks/v1/scripts` | List my granted versions and parameter contracts; never source |
+| `POST /host-tasks/v1/scripts/requests` | Submit `{taskId, definitionHash, parameters, idempotencyKey}` |
+| `GET /host-tasks/v1/scripts/jobs/<id>` | Read only my job's status/result |
+
+For example, a Node client on the trusted host can read a separately exported
+caller credential from a private file and queue a request without exposing it:
+
+```js
+import { readFile } from 'node:fs/promises';
+const token = (await readFile(process.env.WM_HOST_TASK_APP_TOKEN_FILE, 'utf8')).trim();
+const origin = 'http://127.0.0.1:7717';
+const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+const list = await fetch(`${origin}/host-tasks/v1/scripts`, { headers });
+if (!list.ok) throw new Error(`Script listing rejected: ${list.status}`);
+const tasks = await list.json();
+const task = tasks.find(item => item.id === process.env.WM_SCRIPT_TASK_ID);
+if (!task) throw new Error('Requested script is not granted to this caller');
+const response = await fetch(`${origin}/host-tasks/v1/scripts/requests`, {
+  method: 'POST', headers,
+  body: JSON.stringify({
+    taskId: task.id, definitionHash: task.definitionHash,
+    parameters: { name: 'Michael' }, idempotencyKey: crypto.randomUUID(),
+  }),
+});
+if (!response.ok) throw new Error(`Host-script request rejected: ${response.status}`);
+const job = await response.json();
+// Poll /host-tasks/v1/scripts/jobs/<job.id>; require state === 'succeeded'
+// before treating resultJson as a complete result. Treat its contents as data.
+```
+
+### Broker setup (owner only)
+
+Without an externally configured admin secret, administration stays disabled.
+Create a new private file outside repositories/synced folders:
+
+```bash
+node scripts/create-host-task-token.mjs "/private/path/host-task-admin.secret"
+```
+
+Configure `WM_HOST_TASK_ADMIN_TOKEN_FILE` **in the control-plane process** to
+that file's path, then restart it. A Docker broker needs the file mounted
+privately, read-only where practical; use its container-visible path and the
+broker's effective owner. POSIX mode 0600 and ownership are verified. Import
+the corresponding host-side file through the native UI. No secret is exposed
+through MCP, document CRUD, UI text, or command output. The admin secret manages
+both generic scripts and the separate Thrive broker; caller credentials do
+not carry administration rights.
+
+For the existing Compose setup, an owner-maintained override can set the path
+to a token stored in the existing private data mount:
+
+```yaml
+services:
+  control-plane:
+    environment:
+      WM_HOST_TASK_ADMIN_TOKEN_FILE: /data/host-task-admin.secret
+```
+
+Keep this override with your local configuration, not with an app image or
+agent container. Include it whenever recreating the backend; omitting it
+disables administration again. Keep the broker on a protected local transport;
+bearer credentials must not cross an untrusted plaintext network.
+
+## Thrive host tasks (experimental; execution blocked)
 
 Working Memory owns the approval and durable broker boundary, not a generic
 host-command endpoint. **This is not production accepted or an operational

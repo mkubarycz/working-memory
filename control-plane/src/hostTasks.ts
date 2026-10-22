@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
+import { HostScriptBroker, HostScriptError, ensureHostScriptSchema } from './hostScripts.js';
+import { serveHostScriptMcp } from './hostScriptMcp.js';
 
 // Standalone control-plane compilation cannot import root shared runtime files.
 // Keep this boundary predicate parity-tested against shared/hostTasks.ts.
@@ -135,6 +137,7 @@ export function ensureHostTaskSchema(db: DatabaseSync): void {
       id INTEGER PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL, subject_id TEXT NOT NULL
     );
   `);
+  ensureHostScriptSchema(db);
 }
 
 class BrokerError extends Error {
@@ -221,6 +224,7 @@ type Row = Record<string, string | number | null>;
 type Job = Row & { id: string; app_id: string; grant_id: string | null; state: string; attempt: number };
 
 export class HostTaskBroker {
+  private readonly scripts: HostScriptBroker;
   private readonly clock: () => number;
   private readonly adminHash: string | undefined;
   constructor(private readonly db: DatabaseSync, private readonly options: HostTaskOptions = {}) {
@@ -228,6 +232,7 @@ export class HostTaskBroker {
       throw new Error('Host-task operation does not match its reviewed digest.');
     }
     this.clock = options.hostTaskClock ?? Date.now;
+    this.scripts = new HostScriptBroker(db, this.clock);
     const credential = options.hostTaskAdminCredential;
     if (credential !== undefined && !isHostTaskCredential(credential)) {
       throw new Error('Host-task admin credential must be a 32–256 character externally provisioned secret.');
@@ -263,6 +268,7 @@ export class HostTaskBroker {
     return hostTaskHash(this.grant(grant));
   }
   private sweep(): void {
+    this.scripts.cleanup();
     const now = this.clock();
     for (const job of this.all("SELECT * FROM host_task_jobs WHERE state IN ('awaiting-approval','queued','running','succeeded')") as Job[]) {
       let request: unknown;
@@ -449,6 +455,14 @@ export class HostTaskBroker {
     }
   }
   private route(method: string, path: string, token: string, body?: unknown): { status: number; body: unknown } {
+    if (path === '/admin/scripts' || path.startsWith('/admin/scripts/')) {
+      this.admin(token);
+      return this.scripts.route(method, path, body, null);
+    }
+    if (path === '/scripts' || path.startsWith('/scripts/')) {
+      const app = this.auth(token, 'apps');
+      return this.scripts.route(method, path, body, String(app.id));
+    }
     const ok = (body: unknown, status = 200) => ({ status, body });
     const empty = () => z.object({}).strict().parse(body);
     if (path === '/admin' || path.startsWith('/admin/')) {
@@ -712,6 +726,11 @@ export class HostTaskBroker {
       const path = url.pathname.slice('/host-tasks/v1'.length);
       if (path === '/admin' || path.startsWith('/admin/')) this.admin(token);
       else this.auth(token, path.startsWith('/runner/') ? 'runners' : 'apps');
+      if (path === '/scripts/mcp') {
+        if (req.method !== 'POST') { send(405, { error: 'Stateless host-script MCP accepts POST only' }); return; }
+        await serveHostScriptMcp(req, res, (method, route, input) => this.dispatch(method, route, token, input));
+        return;
+      }
       let body: unknown;
       if (req.method === 'POST') {
         if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') fail(415, 'json_required');
@@ -730,7 +749,8 @@ export class HostTaskBroker {
       const result = this.dispatch(req.method ?? '', path, token, body);
       send(result.status, result.body);
     } catch (error) {
-      if (error instanceof BrokerError) send(error.status, { error: error.code });
+      if (error instanceof HostScriptError) send(error.status, { error: error.message });
+      else if (error instanceof BrokerError) send(error.status, { error: error.code });
       else if (error instanceof z.ZodError) send(400, { error: 'invalid_request' });
       else send(500, { error: 'broker_unavailable' });
     }

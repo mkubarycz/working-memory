@@ -89,6 +89,7 @@ import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
 import { HostTaskCredentialVault } from './hostTaskBroker';
 import { registerHostTaskIpc } from './hostTaskIpc';
+import { registerHostScriptIpc } from './hostScriptIpc';
 import { LEGACY_USER_DATA_NAME, migrateLegacyUserData } from './userDataMigration';
 import { DesktopUpdater } from './desktopUpdater';
 import {
@@ -805,6 +806,13 @@ function restartInstalledDesktop(): void {
 }
 
 function registerIpc(): void {
+  registerHostScriptIpc({
+    ipc: ipcMain, dialog, getWindow: () => mainWindow,
+    getEnvironment: () => environmentManager.currentEnvironment,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
+    vault: new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets')),
+    platform: process.platform, directory: join(app.getPath('userData'), 'host-scripts'),
+  });
   registerHostTaskIpc({
     ipc: ipcMain,
     dialog,

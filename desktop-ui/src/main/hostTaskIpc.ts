@@ -42,7 +42,7 @@ export function assertHostTaskSender(event: TrustedSender, window: TrustedWindow
   }
 }
 
-interface HostTaskIpcDependencies {
+export interface HostTaskIpcDependencies {
   ipc: { handle(channel: string, handler: (event: IpcMainInvokeEvent, ...args: any[]) => unknown): void };
   dialog: Pick<typeof import('electron').dialog, 'showMessageBox' | 'showOpenDialog' | 'showSaveDialog'>;
   getWindow(): BrowserWindow | null;
@@ -91,10 +91,10 @@ export function registerHostTaskIpc(deps: HostTaskIpcDependencies): void {
     if (!token) throw new Error('Provision the broker admin token using the native file picker first.');
     return deps.createClient?.(mcpUrl, token) ?? new HostTaskAdminClient(mcpUrl, token);
   };
-  const confirm = async (window: BrowserWindow, mcpUrl: string, message: string, detail: string) => {
+  const confirm = async (window: BrowserWindow, mcpUrl: string, message: string, detail: string, thriveScope = true) => {
     const result = await deps.dialog.showMessageBox(window, {
       type: 'warning', title: 'Host-task approval', message,
-      detail: `Environment: ${hostTaskOrigin(mcpUrl)}\n\n${detail}\n\n${HOST_TASK_SCOPE}`,
+      detail: `Environment: ${hostTaskOrigin(mcpUrl)}\n\n${detail}${thriveScope ? `\n\n${HOST_TASK_SCOPE}` : ''}`,
       buttons: ['Cancel', 'Approve'], defaultId: 0, cancelId: 0, noLink: true,
     });
     ensureCurrent(window, mcpUrl);
@@ -116,7 +116,7 @@ export function registerHostTaskIpc(deps: HostTaskIpcDependencies): void {
     if (adminProvisioningBlockedReason) throw new Error(adminProvisioningBlockedReason);
     if (!await confirm(window, mcpUrl, 'Import the separately configured broker admin token?',
       'Choose the private file configured externally through WM_HOST_TASK_ADMIN_TOKEN_FILE. '
-      + 'It is copied only into OS-encrypted safeStorage, bound to this environment; never into MCP, documents, or app configuration.')) return;
+      + 'It is copied only into OS-encrypted safeStorage, bound to this environment; never into MCP, documents, or app configuration.', false)) return;
     const selected = await deps.dialog.showOpenDialog(window, {
       title: 'Select private broker admin token file', properties: ['openFile'],
     });
@@ -131,7 +131,7 @@ export function registerHostTaskIpc(deps: HostTaskIpcDependencies): void {
     if (!await confirm(window, mcpUrl, 'Provision an app credential to a new private file?',
       `App: ${app.label}\nInstance: ${app.instanceId}\n`
       + 'The credential will never be shown in the renderer. Choose a NEW file outside repositories and synced folders. '
-      + 'Protect it as a Docker secret, mount it read-only into this app only, and never put it in editable claims, images, or environment configuration.')) return;
+      + 'Protect it as a Docker secret, mount it read-only into this app only, and never put it in editable claims, images, or environment configuration.', false)) return;
     const selected = await deps.dialog.showSaveDialog(window, {
       title: 'Export private app credential (new file only)', defaultPath: 'host-task-app.secret',
       buttonLabel: 'Create private secret file',

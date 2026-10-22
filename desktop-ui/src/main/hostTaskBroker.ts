@@ -165,7 +165,7 @@ export class HostTaskAdminClient {
     validSecret(credential);
   }
 
-  private async request(path: string, body?: object): Promise<unknown> {
+  protected async request(path: string, body?: object): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetcher(`${this.origin}/host-tasks/v1/admin${path}`, {

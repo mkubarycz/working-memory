@@ -7,6 +7,14 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const api: DesktopApi = {
+  getHostScripts: () => invoke('host-scripts:get'),
+  registerHostScript: (input) => invoke('host-scripts:register', input),
+  grantHostScript: (input) => invoke('host-scripts:grant', input),
+  revokeHostScript: (id, grant) => invoke('host-scripts:revoke', id, grant),
+  testHostScript: (id, parameters) => invoke('host-scripts:test', id, parameters),
+  getHostScriptJob: (id) => invoke('host-scripts:job', id),
+  processNextHostScript: () => invoke('host-scripts:next'),
+  stopHostScript: () => invoke('host-scripts:stop'),
   getHostTasks: () => invoke('host-tasks:get'),
   provisionHostTaskAdmin: () => invoke('host-tasks:provision-admin'),
   exportHostTaskApp: (input) => invoke('host-tasks:export-app', input),

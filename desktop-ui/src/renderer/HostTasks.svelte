@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import type { HostTaskDesktopState } from '../shared/hostTasks';
   import { HOST_TASK_SCOPE } from '../shared/hostTasks';
+  import HostScripts from './HostScripts.svelte';
 
   let { onClose }: { onClose: () => void } = $props();
   let dialog: HTMLDialogElement;
@@ -15,6 +16,7 @@
   let tenantId = $state('');
   let lifetime = $state('1');
   let now = $state(Date.now());
+  let section = $state<'scripts' | 'thrive'>('scripts');
 
   async function refresh(): Promise<void> {
     state = await window.workingMemory.getHostTasks();
@@ -37,7 +39,6 @@
 
   onMount(() => {
     dialog.showModal();
-    void perform(async () => {});
     const timer = setInterval(() => { now = Date.now(); }, 15_000);
     return () => clearInterval(timer);
   });
@@ -47,9 +48,16 @@
 <dialog bind:this={dialog} class="host-tasks" aria-labelledby="host-task-title"
   oncancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
   <header>
-    <h2 id="host-task-title">Host tasks — trusted desktop approval</h2>
+    <h2 id="host-task-title">Approved host tasks</h2>
     <button disabled={busy} onclick={onClose} aria-label="Close host-task approvals">Close</button>
   </header>
+  <nav aria-label="Host-task workflows">
+    <button aria-pressed={section === 'scripts'} onclick={() => { section = 'scripts'; }}>My Node.js scripts</button>
+    <button aria-pressed={section === 'thrive'} onclick={() => { section = 'thrive'; void perform(async () => {}); }}>Thrive / Windows (experimental)</button>
+  </nav>
+  {#if section === 'scripts'}
+    <HostScripts />
+  {:else}
   <p>
     Scope: read Thrive items created by or assigned to Michael <strong>OR</strong> under
     <strong>{HOST_TASK_SCOPE.areaPath}</strong> in {HOST_TASK_SCOPE.organization} / {HOST_TASK_SCOPE.project};
@@ -165,6 +173,7 @@
           Heartbeat unavailable; offline/stale status cannot be verified. Execution remains blocked.</p>
       {:else}<p>No registered runners; offline / unavailable.</p>{/each}
     {/if}
+  {/if}
   {/if}
 </dialog>
 
