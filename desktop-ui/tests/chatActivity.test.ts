@@ -125,6 +125,8 @@ describe('change-driven renderer refresh', () => {
     expect(refresh).not.toHaveBeenCalled();
     expect(documentRefreshTarget({ kind: 'settings', id: 'desktop-settings',  title: 'Settings' })).toBeUndefined();
     expect(documentRefreshTarget({ kind: 'host-tasks', id: 'approved-host-tasks', title: 'Host tasks' })).toBeUndefined();
+    expect(documentRefreshTarget({ kind: 'host-task', id: 'task-id', title: 'Import messages' })).toBeUndefined();
+    expect(documentRefreshTarget({ kind: 'host-task-create', id: 'new-host-task', title: 'Add host task' })).toBeUndefined();
     expect(documentRefreshTarget({ kind: 'topic-create', id: 'draft',  title: '', body: 'Draft', topicType: 'topic', topicTypes: [], workstream: 'work', workstreamTitle: 'Work', parent: null, parentTitle: null })).toBeUndefined();
   });
 });

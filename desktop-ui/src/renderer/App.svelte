@@ -11,6 +11,8 @@
   import type { TopicVM } from './documents/types';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
   import HostTasks from './HostTasks.svelte';
+  import HostScripts from './HostScripts.svelte';
+  import type { ScriptTask } from '../shared/hostTasks';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
   import TopicView from './documents/TopicView.svelte';
@@ -82,7 +84,8 @@
     documentTabKey,
     documentTabIcon,
     documentTabTooltip,
-    hostTasksDocument,
+    hostTaskDocument,
+    newHostTaskDocument,
     keepSelectedTabVisible,
     openDocumentTab,
     parseDocumentTabs,
@@ -123,9 +126,12 @@
     type ToolDetail,
   } from './chatHistory';
 
-  type HeaderTab = 'log' | 'container-apps';
+  type HeaderTab = 'log' | 'container-apps' | 'host-tasks';
   const HISTORY_PAGE_SIZE = 30;
-  const HEADER_TABS: HeaderTab[] = ['log', 'container-apps'];
+  const HEADER_TABS: HeaderTab[] = $derived(instanceFeatures.hostTasks
+    ? ['log', 'container-apps', 'host-tasks'] : ['log', 'container-apps']);
+  let hostTasksRevision = $state(0);
+  let hostTaskArguments = $state<Record<string, string>>({});
   const AI_SPEEDS = ['slow', 'medium', 'fast'] as const;
   const AI_DEPTHS = [
     { id: 'simple', label: 'Simple' },
@@ -1140,11 +1146,22 @@
     }
     const restored: DocumentVM[] = [];
     const restoreErrors: string[] = [];
+    const hostTaskNames = new Map<string, string>();
+    if (instanceFeatures.hostTasks && persisted.tabs.some(reference => reference.kind === 'host-task')) {
+      try {
+        const state = await window.workingMemory.getHostScripts();
+        for (const task of state.snapshot?.tasks ?? []) hostTaskNames.set(task.id, task.name);
+      } catch (error) {
+        restoreErrors.push(`Host task details: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     for (const reference of persisted.tabs) {
       try {
         let document: DocumentVM | null = null;
-        if (reference.kind === 'host-tasks' && reference.identifier === hostTasksDocument().id) {
-          if (instanceFeatures.hostTasks) document = hostTasksDocument();
+        if (reference.kind === 'host-task' && instanceFeatures.hostTasks) {
+          document = hostTaskDocument({ id: reference.identifier, name: hostTaskNames.get(reference.identifier) ?? 'Host task' });
+        } else if (reference.kind === 'host-task-create' && reference.identifier === newHostTaskDocument().id && instanceFeatures.hostTasks) {
+          document = newHostTaskDocument();
         } else if (reference.kind === 'container-app') {
           const app = containerApps.find((candidate) => candidate.id === reference.identifier);
           if (app) document = containerAppDocument(app);
@@ -1181,7 +1198,9 @@
     const selectedAppId = containerAppIdForDocument(
       documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null,
     );
-    activeHeaderTab = selectedAppId ? 'container-apps' : 'log';
+    const selectedKind = documents.find(document => documentTabKey(document) === selectedDocumentKey)?.kind;
+    activeHeaderTab = selectedAppId ? 'container-apps'
+      : selectedKind === 'host-task' || selectedKind === 'host-task-create' ? 'host-tasks' : 'log';
     focusedHeaderTab = activeHeaderTab;
     restoreDocumentSaveStatus(selectedDocumentKey);
     if (restoreErrors.length) {
@@ -1288,6 +1307,7 @@
   }
 
   function resetEnvironmentState(): void {
+    hostTaskArguments = {};
     instanceFeatures = { hostTasks: false };
     featuresError = '';
     const reset = emptyEnvironmentBoundRendererState();
@@ -1583,10 +1603,15 @@
     instanceFeatures = features;
     featuresError = '';
     if (!features.hostTasks) {
-      const next = closeDocumentTab(documentTabsState(), documentTabKey(hostTasksDocument()));
+      let next = documentTabsState();
+      for (const document of documents.filter(document => ['host-tasks', 'host-task', 'host-task-create'].includes(document.kind))) {
+        next = closeDocumentTab(next, documentTabKey(document));
+      }
       documents = next.tabs;
       selectedDocumentKey = next.selectedKey;
       previewDocumentKey = next.previewKey ?? null;
+      if (activeHeaderTab === 'host-tasks') activeHeaderTab = 'log';
+      if (focusedHeaderTab === 'host-tasks') focusedHeaderTab = activeHeaderTab;
     }
   }
 
@@ -1602,17 +1627,31 @@
     }
   }
 
-  function openHostTasks(): void {
+  function openHostTask(task?: ScriptTask): void {
     if (!instanceFeatures.hostTasks) {
       documentError = 'Host tasks is turned off. Enable it in Settings > Features.';
       return;
     }
     documentOpens.invalidate();
-    const next = openDocumentTab(documentTabsState(), hostTasksDocument(), false);
+    const next = openDocumentTab(documentTabsState(), task ? hostTaskDocument(task) : newHostTaskDocument(), false);
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
     previewDocumentKey = next.previewKey ?? null;
+    activateHeaderTab('host-tasks');
     restoreDocumentSaveStatus(next.selectedKey);
+  }
+
+  function hostTaskRegistered(task: ScriptTask): void {
+    const next = closeDocumentTab(documentTabsState(), documentTabKey(newHostTaskDocument()));
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
+    openHostTask(task);
+  }
+
+  function updateHostTaskTitle(task: ScriptTask): void {
+    const next = updateDocumentTab(documentTabsState(), documentTabKey(hostTaskDocument(task)), hostTaskDocument(task));
+    documents = next.tabs;
   }
 
   function openSettings(tab?: SettingsTab): void {
@@ -2021,7 +2060,8 @@
     if (documents.some((document) => documentTabKey(document) === key)) {
       documentOpens.invalidate();
       selectedDocumentKey = key;
-      activateHeaderTab('log');
+      const kind = documents.find(document => documentTabKey(document) === key)?.kind;
+      activateHeaderTab(kind === 'host-task' || kind === 'host-task-create' ? 'host-tasks' : 'log');
       restoreDocumentSaveStatus(key);
     }
   }
@@ -2419,8 +2459,16 @@
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
         {#key selectedDocumentKey}
-        {#if activeDocument?.kind === 'host-tasks' && instanceFeatures.hostTasks}
-          {#key selectedEnvironment?.mcpUrl}<HostTasks />{/key}
+        {#if (activeDocument?.kind === 'host-task' || activeDocument?.kind === 'host-task-create') && instanceFeatures.hostTasks}
+          {#key selectedEnvironment?.mcpUrl}
+            <HostScripts taskId={activeDocument.id ?? ''} creating={activeDocument.kind === 'host-task-create'}
+              initialArgumentsJson={hostTaskArguments[activeDocument.id ?? ''] ?? '{}'}
+              onArgumentsChanged={(value) => {
+                if (activeDocument?.kind === 'host-task' && activeDocument.id) hostTaskArguments[activeDocument.id] = value;
+              }}
+              onRegistered={hostTaskRegistered} onTaskRead={updateHostTaskTitle}
+              onTasksChanged={() => { hostTasksRevision++; }} />
+          {/key}
         {:else if activeDocument?.kind === 'settings'}
           <SettingsView
             profiles={modelProfiles}
@@ -2776,6 +2824,18 @@
             onfocus={() => (focusedHeaderTab = 'container-apps')}
             onkeydown={(event) => handleHeaderTabKeydown(event, 'container-apps')}
           >Container Apps</button>
+          {#if instanceFeatures.hostTasks}
+            <button
+              id="desktop-tab-host-tasks"
+              role="tab"
+              aria-selected={activeHeaderTab === 'host-tasks'}
+              aria-controls="desktop-panel-host-tasks"
+              tabindex={focusedHeaderTab === 'host-tasks' ? 0 : -1}
+              onclick={() => activateHeaderTab('host-tasks')}
+              onfocus={() => (focusedHeaderTab = 'host-tasks')}
+              onkeydown={(event) => handleHeaderTabKeydown(event, 'host-tasks')}
+            >Host Tasks</button>
+          {/if}
         </div>
         <button
           class="icon-button"
@@ -2926,12 +2986,20 @@
           <p class="container-panel-error" role="alert">{containerAppError}</p>
         {/if}
       </div>
+      {#if instanceFeatures.hostTasks}
+        <div id="desktop-panel-host-tasks" class="container-apps-panel"
+          role="tabpanel" aria-labelledby="desktop-tab-host-tasks"
+          hidden={activeHeaderTab !== 'host-tasks'} inert={activeHeaderTab !== 'host-tasks'}>
+          {#key selectedEnvironment?.mcpUrl}
+            <HostTasks selectedId={activeDocument?.kind === 'host-task' ? activeDocument.id ?? '' : ''}
+              revision={hostTasksRevision} onSelect={openHostTask} onAdd={() => openHostTask()} />
+          {/key}
+        </div>
+      {/if}
     {/if}
   </aside>
 
   <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
-    {#if instanceFeatures.hostTasks}<button style="font: inherit; padding: 0 6px; line-height: inherit;"
-      onclick={openHostTasks}>Host tasks</button>{/if}
     <span
       class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
       title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"

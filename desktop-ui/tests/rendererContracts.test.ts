@@ -298,9 +298,10 @@ describe('desktop tree icon contract', () => {
   it('gates the host-task entry, restore, and content and exposes instance feature settings', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
     const settings = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/SettingsView.svelte'), 'utf8');
-    expect(app).toContain('{#if instanceFeatures.hostTasks}<button');
-    expect(app).toContain('if (instanceFeatures.hostTasks) document = hostTasksDocument()');
-    expect(app).toContain("activeDocument?.kind === 'host-tasks' && instanceFeatures.hostTasks");
+    expect(app).toContain('id="desktop-tab-host-tasks"');
+    expect(app).toContain("reference.kind === 'host-task' && instanceFeatures.hostTasks");
+    expect(app).toContain("activeDocument?.kind === 'host-task-create') && instanceFeatures.hostTasks");
+    expect(app).toContain("['log', 'container-apps', 'host-tasks'] : ['log', 'container-apps']");
     expect(app).toContain('onFeaturesChanged={applyFeatures}');
     expect(settings).toContain("tab === 'features'");
     expect(settings).toContain('<FeaturesView');

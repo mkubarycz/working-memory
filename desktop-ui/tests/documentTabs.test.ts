@@ -8,7 +8,8 @@ import {
   documentTabKey,
   documentTabIcon,
   documentTabTooltip,
-  hostTasksDocument,
+  hostTaskDocument,
+  newHostTaskDocument,
   keepSelectedTabVisible,
   openDocumentTab,
   parseDocumentTabs,
@@ -30,20 +31,32 @@ function topic(id: string, title = id): TopicVM {
 }
 
 describe('document tabs', () => {
-  it('keeps one permanent host-task tab with a restorable local identity', () => {
-    let state = openDocumentTab({ tabs: [], selectedKey: null }, hostTasksDocument(), false);
+  it('keeps separate permanent task tabs and deduplicates each task and creation tab', () => {
+    const first = hostTaskDocument({ id: 'first-task', name: 'Import messages' });
+    const second = hostTaskDocument({ id: 'second-task', name: 'Back up notes' });
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, first, false);
+    state = openDocumentTab(state, second, false);
+    state = openDocumentTab(state, newHostTaskDocument(), false);
+    state = openDocumentTab(state, newHostTaskDocument(), false);
     state = openDocumentTab(state, topic('preview'));
-    state = openDocumentTab(state, hostTasksDocument(), false);
-    expect(state.tabs.map(documentTabKey)).toEqual(['topic:preview', 'host-tasks:approved-host-tasks']);
-    expect(state.selectedKey).toBe('host-tasks:approved-host-tasks');
-    expect(documentTabIcon(hostTasksDocument())).toBe('checklist');
-    expect(documentTabTooltip(hostTasksDocument())).toBe('Host tasks');
+    state = openDocumentTab(state, first, false);
+    expect(state.tabs.map(documentTabKey)).toEqual([
+      'topic:preview', 'host-task-create:new-host-task', 'host-task:second-task', 'host-task:first-task',
+    ]);
+    expect(state.selectedKey).toBe('host-task:first-task');
+    expect(documentTabIcon(first)).toBe('checklist');
+    expect(documentTabTooltip(first)).toBe('Import messages');
+    expect(documentTabIcon(newHostTaskDocument())).toBe('add');
     expect(parseDocumentTabs(serializeDocumentTabs(state))).toEqual({
       version: 1,
-      tabs: [{ kind: 'host-tasks', identifier: 'approved-host-tasks' }],
-      selectedKey: 'host-tasks:approved-host-tasks',
+      tabs: [
+        { kind: 'host-task-create', identifier: 'new-host-task' },
+        { kind: 'host-task', identifier: 'second-task' },
+        { kind: 'host-task', identifier: 'first-task' },
+      ],
+      selectedKey: 'host-task:first-task',
     });
-    expect(closeDocumentTab(state, 'host-tasks:approved-host-tasks').selectedKey).toBe('topic:preview');
+    expect(closeDocumentTab(state, 'host-task:first-task').selectedKey).toBe('host-task:second-task');
   });
 
   it('shows topic locators in tab tooltips while retaining the title and preview hint', () => {

@@ -238,6 +238,8 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
     || document.kind === 'topic-backlog'
     || document.kind === 'settings'
     || document.kind === 'host-tasks'
+    || document.kind === 'host-task'
+    || document.kind === 'host-task-create'
   ) return undefined;
   const identifier = (document.id).trim();
   if (!identifier) return undefined;

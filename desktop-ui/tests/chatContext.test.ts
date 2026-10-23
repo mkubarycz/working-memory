@@ -6,6 +6,8 @@ describe('chatContextForDocument', () => {
     expect(chatContextForDocument({
       kind: 'host-tasks', id: 'approved-host-tasks', title: 'Host tasks',
     })).toBeUndefined();
+    expect(chatContextForDocument({ kind: 'host-task', id: 'task-id', title: 'Import messages' })).toBeUndefined();
+    expect(chatContextForDocument({ kind: 'host-task-create', id: 'new-host-task', title: 'Add host task' })).toBeUndefined();
   });
 
   it('projects a selected document into stable model context', () => {

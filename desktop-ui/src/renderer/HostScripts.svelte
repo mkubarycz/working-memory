@@ -1,32 +1,35 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
-  import type { HostScriptDesktopState, ScriptJob } from '../shared/hostTasks';
+  import { onDestroy, onMount, untrack } from 'svelte';
+  import type { HostScriptDesktopState, ScriptJob, ScriptTask } from '../shared/hostTasks';
 
-  let { connectionOnly = false, onConnectionChanged }: {
+  let { connectionOnly = false, onConnectionChanged, taskId = '', creating = false, onRegistered, onTaskRead, onTasksChanged,
+    initialArgumentsJson = '{}', onArgumentsChanged }: {
     connectionOnly?: boolean; onConnectionChanged?: (connected: boolean) => void;
+    taskId?: string; creating?: boolean;
+    onRegistered?: (task: ScriptTask) => void;
+    onTaskRead?: (task: ScriptTask) => void;
+    onTasksChanged?: () => void;
+    initialArgumentsJson?: string; onArgumentsChanged?: (value: string) => void;
   } = $props();
   let state = $state<HostScriptDesktopState | null>(null);
   let error = $state('');
   let busy = $state(false);
+  let mounted = true;
   let runnerActive = $state(false);
   let processing = $state(false);
   let timer: ReturnType<typeof setInterval> | undefined;
   let name = $state('');
   let description = $state('');
   let parameters = $state('{\n  "name": { "type": "string", "required": true, "maxLength": 80 }\n}');
-  let taskId = $state('');
   let appId = $state('');
-  let argumentsJson = $state('{}');
+  let argumentsJson = $state(untrack(() => initialArgumentsJson));
   let selectedJob = $state<ScriptJob | null>(null);
   let callerLabel = $state('My agent');
   let password = $state('');
   let repeatedPassword = $state('');
   let passwordHint = $state('');
-  let addingScript = $state(false);
-  let showRevoked = $state(false);
   const creatingPassword = $derived(state?.authentication?.passwordConfigured === false);
-  const visibleTasks = $derived(state?.snapshot?.tasks.filter(task => showRevoked || !task.revokedAt) ?? []);
-  const selectedTask = $derived(visibleTasks.find(task => task.id === taskId) ?? null);
+  const selectedTask = $derived(state?.snapshot?.tasks.find(task => task.id === taskId) ?? null);
   const canRunSelectedTask = $derived(!!selectedTask && !selectedTask.revokedAt && selectedTask.hostId === state?.hostId);
 
   async function signIn(): Promise<void> {
@@ -42,8 +45,12 @@
   onMount(() => { void perform(async () => {}); });
 
   async function refresh(): Promise<void> {
-    state = await window.workingMemory.getHostScripts();
+    const result = await window.workingMemory.getHostScripts();
+    if (!mounted) return;
+    state = result;
     onConnectionChanged?.(state.credentialReady);
+    const task = state.snapshot?.tasks.find(task => task.id === taskId);
+    if (task) onTaskRead?.(task);
   }
   async function perform(action: () => Promise<unknown>): Promise<void> {
     busy = true;
@@ -57,11 +64,11 @@
       const task = await window.workingMemory.registerHostScript({
         name, description, parameters: example ? {} : JSON.parse(parameters), timeoutMs: 10000, example,
       });
-      if (task) {
-        taskId = task.id;
+      if (task && mounted) {
         argumentsJson = '{}';
         selectedJob = null;
-        addingScript = false;
+        onTasksChanged?.();
+        onRegistered?.(task);
       }
     });
   }
@@ -90,13 +97,13 @@
     await perform(() => window.workingMemory.stopHostScript());
   }
   onDestroy(() => {
+    mounted = false;
     runnerActive = false;
     if (timer) clearInterval(timer);
   });
 </script>
 
 <section class="scripts" aria-label="Approved host tasks">
-  {#if !connectionOnly}<p>Scripts you have approved. Select a task to run a test or manage who can request it.</p>{/if}
   {#if !state?.credentialReady}
     <h3>{creatingPassword ? 'Set this instance’s owner password' : 'Connect to your Working Memory instance'}</h3>
     <p>The control plane stores your scripts and approvals. Sign in as its owner to manage them.
@@ -141,7 +148,6 @@
         if (timer) clearInterval(timer);
         await window.workingMemory.signOutHostScripts();
         selectedJob = null;
-        addingScript = false;
       })}>Sign out</button>
       <details ontoggle={(event) => {
         if (event.currentTarget.open) passwordHint = state?.authentication?.passwordHint ?? '';
@@ -162,17 +168,16 @@
       <p role="status">Host tasks is turned off. Enable it in Settings &gt; Features.</p>
     {:else if !connectionOnly && state.snapshot}
       <div class="actions">
-        <button disabled={busy} onclick={() => { addingScript = !addingScript; }}>Add script</button>
         <button disabled={busy} onclick={() => void perform(async () => {})}>Refresh</button>
-        {#if runnerActive}
+        {#if !creating && runnerActive}
           <button onclick={() => void stopRunner()}>Stop runner</button>
-        {:else}
-          <button disabled={busy || !state.snapshot.tasks.some(task => !task.revokedAt && task.hostId === state?.hostId)}
+        {:else if !creating}
+          <button disabled={busy || !canRunSelectedTask}
             onclick={startRunner}>Start runner</button>
         {/if}
       </div>
-      <p role="status">Runner: {runnerActive ? (processing ? 'checking / running' : 'waiting for approved requests') : 'stopped'}.</p>
-      {#if addingScript}
+      {#if !creating}<p role="status">Runner: {runnerActive ? (processing ? 'checking / running' : 'waiting for approved requests') : 'stopped'}.</p>{/if}
+      {#if creating}
         <section class="task-detail" aria-label="Add script">
         <h2>Add script</h2>
         <label>Name <input bind:value={name} maxlength="100" /></label>
@@ -193,26 +198,7 @@
           <button disabled={busy} onclick={() => void register(true)}>Add greeting demo…</button>
         </details>
         </section>
-      {/if}
-      <label class="revoked-filter"><input type="checkbox" bind:checked={showRevoked} /> Show revoked tasks</label>
-      <ul class="task-list" aria-label="Registered host tasks">
-        {#each visibleTasks as task (task.id)}
-          <li>
-            <button disabled={busy} class:selected={task.id === taskId} aria-pressed={task.id === taskId} onclick={() => {
-              taskId = task.id;
-              argumentsJson = '{}';
-              selectedJob = null;
-            }}>
-              <strong>{task.name}</strong>
-              <span>{task.description}</span>
-              <small>Node.js · {task.hostId === state?.hostId ? 'this computer' : 'another computer'}{task.revokedAt ? ' · revoked' : ''}</small>
-            </button>
-          </li>
-        {:else}
-          <li class="empty-tasks">No tasks added. Choose Add script to register one. No demo tasks are installed automatically.</li>
-        {/each}
-      </ul>
-      {#if selectedTask}
+      {:else if selectedTask}
         <section class="task-detail" aria-label="Selected host task">
           <h2>{selectedTask.name}</h2>
           <p>{selectedTask.description}</p>
@@ -224,13 +210,14 @@
             <code>SHA-256: {selectedTask.definitionHash}</code>
           </details>
           <h3>Run a test</h3>
-          <label>Parameters (JSON)<textarea bind:value={argumentsJson} rows="3"></textarea></label>
+          <label>Parameters (JSON)<textarea bind:value={argumentsJson} rows="3"
+            oninput={(event) => onArgumentsChanged?.(event.currentTarget.value)}></textarea></label>
           <button disabled={busy || !canRunSelectedTask} onclick={() => void perform(async () => {
             const job = await window.workingMemory.testHostScript(taskId, JSON.parse(argumentsJson));
             if (job) selectedJob = job;
           })}>Review and queue one test…</button>
-          <p class="hint">Start the runner to execute approved requests. It checks for work only while this tab is active.
-            Switching tabs or closing this tab stops new claims; an in-progress run may finish.
+          <p class="hint">Start the runner to execute approved requests for this computer. It checks for work only while this task's document tab is active.
+            Switching document tabs or closing this tab stops new claims; an in-progress run may finish.
             This version has a {selectedTask.timeoutMs / 1000}-second limit and returns up to 64 KiB of JSON. Console logs are not returned.</p>
           {#if selectedJob?.taskId === selectedTask.id}
             <h4>Selected run: {selectedJob.state}</h4>
@@ -278,9 +265,14 @@
             <p>Authenticated MCP: <code>{state.environment}/host-tasks/v1/scripts/mcp</code>.
               Connect with the caller's bearer credential. Only granted script versions are exposed.
               Never give an agent your owner session or password. See the README for HTTP request examples.</p>
-            <button disabled={busy || !!selectedTask.revokedAt} onclick={() => void perform(() => window.workingMemory.revokeHostScript(taskId, false))}>Revoke task version…</button>
+            <button disabled={busy || !!selectedTask.revokedAt} onclick={() => void perform(async () => {
+              await window.workingMemory.revokeHostScript(taskId, false);
+              if (mounted) onTasksChanged?.();
+            })}>Revoke task version…</button>
           </details>
         </section>
+      {:else if taskId}
+        <p role="alert">This host task is no longer registered. Refresh the Host tasks list to select an available task.</p>
       {/if}
     {/if}
   {/if}
@@ -293,14 +285,7 @@
   input, select, textarea { width: 100%; box-sizing: border-box; }
   textarea, pre, code { font-family: var(--vscode-editor-font-family, monospace); }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
-  .task-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-  .task-list button { display: grid; gap: 4px; width: 100%; text-align: left; padding: 12px; white-space: normal; overflow-wrap: anywhere; }
-  .task-list button.selected { border-color: var(--vscode-focusBorder, #b33771); }
-  .task-list small { color: var(--vscode-descriptionForeground); }
   .task-detail { display: grid; gap: 10px; padding-block: 16px; border-top: 1px solid var(--vscode-widget-border, #bbb); }
-  .revoked-filter { display: flex; align-items: center; gap: 6px; }
-  .revoked-filter input { width: auto; }
-  .empty-tasks { padding: 16px; border: 1px dashed var(--vscode-widget-border, #bbb); }
   .error { color: var(--vscode-errorForeground, #e55); }
   .hint { color: var(--vscode-descriptionForeground); }
   .password-hint { white-space: pre-wrap; overflow-wrap: anywhere; }

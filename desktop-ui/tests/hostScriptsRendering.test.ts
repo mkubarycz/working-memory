@@ -10,16 +10,15 @@ beforeAll(async () => {
     plugins: [svelte()], server: { middlewareMode: true }, appType: 'custom',
   });
   const { render } = await server.ssrLoadModule('svelte/server');
-  const { default: HostTasks } = await server.ssrLoadModule('/src/renderer/HostTasks.svelte');
-  renderHostTasks = () => render(HostTasks).body;
+  const { default: HostScripts } = await server.ssrLoadModule('/src/renderer/HostScripts.svelte');
+  renderHostTasks = () => render(HostScripts).body;
 });
 afterAll(async () => { await server?.close(); });
 
 describe('generic host-task first screen', () => {
   it('leads with owner-controlled scripts rather than the blocked Thrive-specific form', () => {
     const html = renderHostTasks();
-    expect(html).toContain('Host tasks</h1>');
-    expect(html).toContain('Scripts you have approved.');
+    expect(html).toContain('Approved host tasks');
     expect(html).toContain('Connect to your Working Memory instance');
     expect(html).toContain('Instance password');
     expect(html).toContain('Password hint:');

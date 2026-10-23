@@ -934,9 +934,11 @@ choose an executable, supply shell arguments, or change the process environment.
    a secret: never enter the password itself. After connecting, expand
    **Connection · instance owner -> Edit password hint** to add, change, or
    clear it without changing the password.
-3. Enable **Host tasks**, then open **Host tasks** from the status bar.
-   It opens a normal, persistent application tab with one list of registered
-   scripts, not a popup or a platform/integration selector. No demo scripts
+3. Enable **Host tasks**, then select **Host Tasks** beside **Container Apps**
+   in the desktop rail. The rail lists registered scripts; selecting one opens
+   its editor and details in its own persistent document tab. Re-selecting a
+   script selects its existing tab, and multiple tasks can be open independently.
+   There is no footer launcher, popup, or platform/integration selector. No demo scripts
    are installed automatically. Choose **Add script** to register your own script. For an optional example,
    expand **Try a demo instead -> Add greeting demo**, review the native approval,
    then select that script. The example only returns a greeting, Node version,
@@ -950,8 +952,8 @@ choose an executable, supply shell arguments, or change the process environment.
    the desktop's owner session or password. Revoke the grant or script version to stop
    future dispatch and result release.
 
-The runner polls only while the **Host tasks** tab is active and explicitly started.
-Switching tabs or closing it stops new claims; a current run may finish. **Stop runner**
+The runner polls only while its task's document tab is active and explicitly started.
+Switching document tabs or closing it stops new claims; a current run may finish. **Stop runner**
 also aborts the current process. A sleeping/closed desktop does not execute
 jobs. Runs are not automatically retried, because scripts may have side effects.
 
@@ -960,7 +962,7 @@ jobs. Runs are not automatically retried, because scripts may have side effects.
 **Settings -> Features** saves flags on the selected control-plane instance,
 not just in one desktop profile. Changing a flag requires a signed-in instance
 owner. New and existing instances default to Host tasks disabled until enabled.
-Turning it off removes the desktop entry, closes its local tab, and rejects
+Turning it off removes the rail tab, closes its local task/detail tabs, and rejects
 host-task HTTP/MCP calls with HTTP 503 and
 `{"error":"feature_disabled","feature":"hostTasks","message":"Host tasks is turned off. Enable it in Settings > Features."}`.
 This covers both generic scripts and the legacy broker, including claims,
