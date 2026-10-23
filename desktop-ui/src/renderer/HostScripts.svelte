@@ -13,13 +13,18 @@
   let parameters = $state('{\n  "name": { "type": "string", "required": true, "maxLength": 80 }\n}');
   let taskId = $state('');
   let appId = $state('');
-  let argumentsJson = $state('{"name":"Michael"}');
+  let argumentsJson = $state('{}');
   let selectedJob = $state<ScriptJob | null>(null);
   let callerLabel = $state('My agent');
   let password = $state('');
   let repeatedPassword = $state('');
   let passwordHint = $state('');
+  let addingScript = $state(false);
+  let showRevoked = $state(false);
   const creatingPassword = $derived(state?.authentication?.passwordConfigured === false);
+  const visibleTasks = $derived(state?.snapshot?.tasks.filter(task => showRevoked || !task.revokedAt) ?? []);
+  const selectedTask = $derived(visibleTasks.find(task => task.id === taskId) ?? null);
+  const canRunSelectedTask = $derived(!!selectedTask && !selectedTask.revokedAt && selectedTask.hostId === state?.hostId);
 
   async function signIn(): Promise<void> {
     if (creatingPassword && password !== repeatedPassword) { error = 'The passwords do not match.'; return; }
@@ -46,7 +51,12 @@
       const task = await window.workingMemory.registerHostScript({
         name, description, parameters: example ? {} : JSON.parse(parameters), timeoutMs: 10000, example,
       });
-      if (task) taskId = task.id;
+      if (task) {
+        taskId = task.id;
+        argumentsJson = '{}';
+        selectedJob = null;
+        addingScript = false;
+      }
     });
   }
   async function tick(): Promise<void> {
@@ -79,12 +89,8 @@
   });
 </script>
 
-<section class="scripts" aria-label="Approved Node.js host scripts">
-  <p><strong>Run scripts you control, with access you approve.</strong>
-    Add a script, define the inputs it accepts, then approve a test or give an app temporary permission to request it.
-    Scripts run as your local account on this Mac/Linux host, <strong>not in a sandbox</strong>.</p>
-  <p class="hint">This preview protects host-task administration. Instance-wide API permissions and automatic container
-    credentials are separate roadmap work. The unfinished Windows/Thrive runner is separate.</p>
+<section class="scripts" aria-label="Approved host tasks">
+  <p>Scripts you have approved. Select a task to run a test or manage who can request it.</p>
   {#if !state?.credentialReady}
     <h3>{creatingPassword ? 'Set this instance’s owner password' : 'Connect to your Working Memory instance'}</h3>
     <p>The control plane stores your scripts and approvals. Sign in as its owner to manage them.
@@ -119,40 +125,53 @@
       This preview keeps the session only in memory; no Keychain or token-file import is required.
       Closing the app or signing out ends the local session.</p>
   {:else}
-    <div class="actions">
-      <span>Connected as instance owner · session only</span>
-      <button disabled={busy} onclick={() => void perform(async () => {})}>Refresh</button>
+    <details>
+      <summary>Connection · instance owner</summary>
+      <p>Connected to <code>{state.environment}</code>. This session is kept in memory until sign-out or app restart.</p>
+      <p class="hint">This preview protects host-task administration. Instance-wide API permissions and automatic
+        container credentials are separate roadmap work.</p>
       <button disabled={busy} onclick={() => void perform(async () => {
         runnerActive = false;
         if (timer) clearInterval(timer);
         await window.workingMemory.signOutHostScripts();
         selectedJob = null;
+        addingScript = false;
       })}>Sign out</button>
-    </div>
-    <details ontoggle={(event) => {
-      if (event.currentTarget.open) passwordHint = state?.authentication?.passwordHint ?? '';
-    }}>
-      <summary>Edit password hint</summary>
-      <form onsubmit={(event) => { event.preventDefault(); void perform(() => window.workingMemory.setInstancePasswordHint(passwordHint)); }}>
-        <label>Password hint (optional) <textarea bind:value={passwordHint} rows="2" maxlength="1000"></textarea></label>
-        <p class="hint">Visible before sign-in. Use a reminder, not your password or other secret information.</p>
-        <button disabled={busy}>Save password hint</button>
-      </form>
-      <p class="password-hint">Saved hint: {state?.authentication?.passwordHint || 'No hint has been set.'}</p>
+      <details ontoggle={(event) => {
+        if (event.currentTarget.open) passwordHint = state?.authentication?.passwordHint ?? '';
+      }}>
+        <summary>Edit password hint</summary>
+        <form onsubmit={(event) => { event.preventDefault(); void perform(() => window.workingMemory.setInstancePasswordHint(passwordHint)); }}>
+          <label>Password hint (optional) <textarea bind:value={passwordHint} rows="2" maxlength="1000"></textarea></label>
+          <p class="hint">Visible before sign-in. Use a reminder, not your password or other secret information.</p>
+          <button disabled={busy}>Save password hint</button>
+        </form>
+        <p class="password-hint">Saved hint: {state?.authentication?.passwordHint || 'No hint has been set.'}</p>
+      </details>
     </details>
-    <p>Only Node.js built-in modules are supported. Script changes require a new registration.</p>
   {/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if state}
-    <p>Instance: <code>{state.environment}</code></p>
     {#if state.snapshot}
-      <h3>1. Register a script</h3>
-      <button disabled={busy} onclick={() => void register(true)}>Register harmless greeting example…</button>
-      <details>
-        <summary>Register my own script</summary>
+      <div class="actions">
+        <button disabled={busy} onclick={() => { addingScript = !addingScript; }}>Add script</button>
+        <button disabled={busy} onclick={() => void perform(async () => {})}>Refresh</button>
+        {#if runnerActive}
+          <button onclick={() => void stopRunner()}>Stop runner</button>
+        {:else}
+          <button disabled={busy || !state.snapshot.tasks.some(task => !task.revokedAt && task.hostId === state?.hostId)}
+            onclick={startRunner}>Start runner</button>
+        {/if}
+      </div>
+      <p role="status">Runner: {runnerActive ? (processing ? 'checking / running' : 'waiting for approved requests') : 'stopped'}.</p>
+      {#if addingScript}
+        <section class="task-detail" aria-label="Add script">
+        <h2>Add script</h2>
         <label>Name <input bind:value={name} maxlength="100" /></label>
         <label>Description <input bind:value={description} maxlength="1000" /></label>
         <label>Allowed parameters (JSON)<textarea bind:value={parameters} rows="6"></textarea></label>
+        <p>Scripts currently use Node.js CommonJS with built-in modules only.
+          They run as your account, <strong>not in a sandbox</strong>. Changing a script requires a new approval.</p>
         <p>Types: <code>string</code> with <code>maxLength</code> and optional <code>enum</code>;
           <code>integer</code> with <code>minimum</code>/<code>maximum</code>; <code>boolean</code>.
           Add <code>"required": true</code> when needed. Unknown parameters are rejected.</p>
@@ -160,85 +179,101 @@
   return &#123; greeting: "Hello, " + parameters.name &#125;;
 &#125;;</pre>
         <button disabled={busy || !name.trim()} onclick={() => void register(false)}>Choose script and review approval…</button>
-      </details>
-      <h3>2. Test locally</h3>
-      <label>Script
-        <select bind:value={taskId}>
-          <option value="">Select a script</option>
-          {#each state.snapshot.tasks.filter(task => !task.revokedAt && task.hostId === state?.hostId) as task}
-            <option value={task.id}>{task.name}</option>
-          {/each}
-        </select>
-      </label>
-      <label>Parameters (JSON)<textarea bind:value={argumentsJson} rows="3"></textarea></label>
-      <div class="actions">
-        <button disabled={busy || !taskId} onclick={() => void perform(async () => {
-          const job = await window.workingMemory.testHostScript(taskId, JSON.parse(argumentsJson));
-          if (job) selectedJob = job;
-        })}>Review and queue one test…</button>
-        {#if runnerActive}
-          <button onclick={() => void stopRunner()}>Stop local runner</button>
-        {:else}
-          <button disabled={busy} onclick={startRunner}>Start local runner</button>
-        {/if}
-      </div>
-      <p role="status">Local runner: {runnerActive ? (processing ? 'checking / running' : 'waiting for approved jobs') : 'stopped'}.
-        It polls only while this panel is open. Closing the panel stops new claims; an in-progress run may finish.
-        Runs are limited to 10 seconds here, with 64 KiB JSON results. Console logs are not returned.</p>
-      {#if selectedJob}
-        <h4>Selected run: {selectedJob.state}</h4>
-        <pre>{selectedJob.error ?? selectedJob.resultJson ?? 'Queued — start the local runner to execute.'}</pre>
+        <details>
+          <summary>Try a demo instead</summary>
+          <p>The greeting demo returns a greeting and runtime information. It is only added if you approve it.</p>
+          <button disabled={busy} onclick={() => void register(true)}>Add greeting demo…</button>
+        </details>
+        </section>
       {/if}
-      <h3>3. Allow another caller</h3>
-      <p>Export a separate credential for the requesting app, then approve an expiring grant.
-        A credential alone cannot run any script.</p>
-      <label>Caller label <input bind:value={callerLabel} maxlength="100" /></label>
-      <button disabled={busy || !callerLabel.trim()} onclick={() => void perform(() => window.workingMemory.exportHostTaskApp({
-        label: callerLabel, instanceId: `host-script-${crypto.randomUUID()}`,
-      }))}>Export new caller credential…</button>
-      <label>Caller
-        <select bind:value={appId}>
-          <option value="">Select a caller</option>
-          {#each state.snapshot.apps.filter(app => !app.revokedAt) as app}
-            <option value={app.id}>{app.label} ({app.id})</option>
-          {/each}
-        </select>
-      </label>
-      <button disabled={busy || !taskId || !appId} onclick={() => void perform(() => window.workingMemory.grantHostScript({
-        taskId, appId, expiresAt: Date.now() + 3600000,
-      }))}>Review one-hour script grant…</button>
-      <p>Authenticated API: <code>GET /host-tasks/v1/scripts</code>, <code>POST /host-tasks/v1/scripts/requests</code>,
-        and <code>GET /host-tasks/v1/scripts/jobs/&lt;id&gt;</code>. Send the caller credential in the Authorization
-        bearer header, never in a URL or chat. Requests contain <code>taskId</code>, <code>definitionHash</code>,
-        <code>parameters</code>, and a stable <code>idempotencyKey</code>. See the README for the complete example.</p>
-      <p>For agents, connect a separate authenticated MCP server at
-        <code>{state.environment}/host-tasks/v1/scripts/mcp</code> using the caller's bearer credential.
-        Only that caller's granted script versions are exposed as tools. Never give an agent your owner session or password.</p>
-      <h3>Registered versions</h3>
-      {#each state.snapshot.tasks as task}
-        <article>
-          <strong>{task.name}</strong> · {task.revokedAt ? 'revoked' : task.hostId === state.hostId ? 'this host' : 'another host'}
-          <p>{task.description}</p>
-          <code>{task.id}</code><br /><code>SHA-256: {task.definitionHash}</code>
-          <pre>{JSON.stringify(task.parameters, null, 2)}</pre>
-          <button disabled={busy || !!task.revokedAt} onclick={() => void perform(() => window.workingMemory.revokeHostScript(task.id, false))}>Revoke version…</button>
-        </article>
-      {:else}<p>No scripts registered. Start with the greeting example.</p>{/each}
-      <h3>Caller grants</h3>
-      {#each state.snapshot.grants as grant}
-        <p>{state.snapshot.tasks.find(task => task.id === grant.taskId)?.name} · caller {grant.appId} ·
-          {grant.revokedAt ? 'revoked' : `expires ${new Date(grant.expiresAt).toLocaleString()}`}
-          <button disabled={busy || !!grant.revokedAt} onclick={() => void perform(() => window.workingMemory.revokeHostScript(grant.id, true))}>Revoke grant…</button>
-        </p>
-      {:else}<p>No callers have script access.</p>{/each}
-      <h3>Recent runs</h3>
-      {#each state.snapshot.jobs as job}
-        <p>{state.snapshot.tasks.find(task => task.id === job.taskId)?.name} · {job.appId ?? 'owner test'} · {job.state}
-          <button disabled={busy} onclick={() => void perform(async () => {
-            selectedJob = await window.workingMemory.getHostScriptJob(job.id);
-          })}>Inspect result</button>
-        </p>
-      {:else}<p>No runs yet.</p>{/each}
+      <label class="revoked-filter"><input type="checkbox" bind:checked={showRevoked} /> Show revoked tasks</label>
+      <ul class="task-list" aria-label="Registered host tasks">
+        {#each visibleTasks as task (task.id)}
+          <li>
+            <button disabled={busy} class:selected={task.id === taskId} aria-pressed={task.id === taskId} onclick={() => {
+              taskId = task.id;
+              argumentsJson = '{}';
+              selectedJob = null;
+            }}>
+              <strong>{task.name}</strong>
+              <span>{task.description}</span>
+              <small>Node.js · {task.hostId === state?.hostId ? 'this computer' : 'another computer'}{task.revokedAt ? ' · revoked' : ''}</small>
+            </button>
+          </li>
+        {:else}
+          <li class="empty-tasks">No tasks added. Choose Add script to register one. No demo tasks are installed automatically.</li>
+        {/each}
+      </ul>
+      {#if selectedTask}
+        <section class="task-detail" aria-label="Selected host task">
+          <h2>{selectedTask.name}</h2>
+          <p>{selectedTask.description}</p>
+          <p>Runtime: Node.js · {selectedTask.hostId === state.hostId ? 'this computer' : 'another computer'}
+            {selectedTask.revokedAt ? ' · revoked' : ''} · runs as your account, <strong>not in a sandbox</strong>.</p>
+          {#if !canRunSelectedTask}<p>This task cannot run here: it is revoked or registered to another computer.</p>{/if}
+          <details><summary>Parameters and approved version</summary>
+            <pre>{JSON.stringify(selectedTask.parameters, null, 2)}</pre>
+            <code>SHA-256: {selectedTask.definitionHash}</code>
+          </details>
+          <h3>Run a test</h3>
+          <label>Parameters (JSON)<textarea bind:value={argumentsJson} rows="3"></textarea></label>
+          <button disabled={busy || !canRunSelectedTask} onclick={() => void perform(async () => {
+            const job = await window.workingMemory.testHostScript(taskId, JSON.parse(argumentsJson));
+            if (job) selectedJob = job;
+          })}>Review and queue one test…</button>
+          <p class="hint">Start the runner to execute approved requests. It checks for work only while this tab is active.
+            Switching tabs or closing this tab stops new claims; an in-progress run may finish.
+            This version has a {selectedTask.timeoutMs / 1000}-second limit and returns up to 64 KiB of JSON. Console logs are not returned.</p>
+          {#if selectedJob?.taskId === selectedTask.id}
+            <h4>Selected run: {selectedJob.state}</h4>
+            <pre>{selectedJob.error ?? selectedJob.resultJson ?? 'Queued — start the runner to execute.'}</pre>
+          {/if}
+          <details>
+            <summary>App access</summary>
+            <p>Choose a caller and approve temporary access to this version. A caller credential alone cannot run scripts.</p>
+            <label>Caller
+              <select bind:value={appId}>
+                <option value="">Select a caller</option>
+                {#each state.snapshot.apps.filter(app => !app.revokedAt) as app}
+                  <option value={app.id}>{app.label} ({app.id})</option>
+                {/each}
+              </select>
+            </label>
+            <button disabled={busy || !canRunSelectedTask || !appId} onclick={() => void perform(() => window.workingMemory.grantHostScript({
+              taskId, appId, expiresAt: Date.now() + 3600000,
+            }))}>Review one-hour script grant…</button>
+            <details><summary>Add a caller</summary>
+              <label>Caller label <input bind:value={callerLabel} maxlength="100" /></label>
+              <button disabled={busy || !callerLabel.trim()} onclick={() => void perform(() => window.workingMemory.exportHostTaskApp({
+                label: callerLabel, instanceId: `host-script-${crypto.randomUUID()}`,
+              }))}>Export new caller credential…</button>
+            </details>
+            {#each state.snapshot.grants.filter(grant => grant.taskId === selectedTask?.id) as grant}
+              <p>Caller: {state.snapshot.apps.find(app => app.id === grant.appId)?.label ?? grant.appId} ·
+                {grant.revokedAt ? 'revoked' : `expires ${new Date(grant.expiresAt).toLocaleString()}`}
+                <button disabled={busy || !!grant.revokedAt} onclick={() => void perform(() => window.workingMemory.revokeHostScript(grant.id, true))}>Revoke grant…</button>
+              </p>
+            {:else}<p>No callers have access to this task.</p>{/each}
+          </details>
+          <details>
+            <summary>Recent runs</summary>
+            {#each state.snapshot.jobs.filter(job => job.taskId === selectedTask?.id) as job}
+              <p>{job.appId ?? 'owner test'} · {job.state}
+                <button disabled={busy} onclick={() => void perform(async () => {
+                  selectedJob = await window.workingMemory.getHostScriptJob(job.id);
+                })}>Inspect result</button>
+              </p>
+            {:else}<p>No runs yet.</p>{/each}
+          </details>
+          <details>
+            <summary>Integration details</summary>
+            <p>Authenticated MCP: <code>{state.environment}/host-tasks/v1/scripts/mcp</code>.
+              Connect with the caller's bearer credential. Only granted script versions are exposed.
+              Never give an agent your owner session or password. See the README for HTTP request examples.</p>
+            <button disabled={busy || !!selectedTask.revokedAt} onclick={() => void perform(() => window.workingMemory.revokeHostScript(taskId, false))}>Revoke task version…</button>
+          </details>
+        </section>
+      {/if}
     {/if}
   {/if}
 </section>
@@ -250,7 +285,14 @@
   input, select, textarea { width: 100%; box-sizing: border-box; }
   textarea, pre, code { font-family: var(--vscode-editor-font-family, monospace); }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
-  article { padding: 10px; border: 1px solid var(--vscode-widget-border, #555); border-radius: 5px; }
+  .task-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+  .task-list button { display: grid; gap: 4px; width: 100%; text-align: left; padding: 12px; white-space: normal; overflow-wrap: anywhere; }
+  .task-list button.selected { border-color: var(--vscode-focusBorder, #b33771); }
+  .task-list small { color: var(--vscode-descriptionForeground); }
+  .task-detail { display: grid; gap: 10px; padding-block: 16px; border-top: 1px solid var(--vscode-widget-border, #bbb); }
+  .revoked-filter { display: flex; align-items: center; gap: 6px; }
+  .revoked-filter input { width: auto; }
+  .empty-tasks { padding: 16px; border: 1px dashed var(--vscode-widget-border, #bbb); }
   .error { color: var(--vscode-errorForeground, #e55); }
   .hint { color: var(--vscode-descriptionForeground); }
   .password-hint { white-space: pre-wrap; overflow-wrap: anywhere; }

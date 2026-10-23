@@ -12,7 +12,7 @@ export function documentMatchesChange(
 }
 
 export function documentRefreshTarget(document: DocumentVM): { kind: DesktopResourceKind; identifier: string } | undefined {
-  if (['settings', 'topic-create', 'topic-backlog', 'container-app'].includes(document.kind)) return undefined;
+  if (['settings', 'host-tasks', 'topic-create', 'topic-backlog', 'container-app'].includes(document.kind)) return undefined;
   if ((document.kind === 'topic' || document.kind === 'workstream') && document.id) {
     return { kind: document.kind, identifier: document.id };
   }

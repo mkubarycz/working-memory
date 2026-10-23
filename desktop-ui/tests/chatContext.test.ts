@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { chatContextForDocument } from '../src/shared/contracts';
 
 describe('chatContextForDocument', () => {
+  it('does not invent a stored document context for the local host-task tab', () => {
+    expect(chatContextForDocument({
+      kind: 'host-tasks', id: 'approved-host-tasks', title: 'Host tasks',
+    })).toBeUndefined();
+  });
+
   it('projects a selected document into stable model context', () => {
     expect(chatContextForDocument({
       kind: 'topic',

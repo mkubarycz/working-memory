@@ -8,6 +8,7 @@ import {
   documentTabKey,
   documentTabIcon,
   documentTabTooltip,
+  hostTasksDocument,
   keepSelectedTabVisible,
   openDocumentTab,
   parseDocumentTabs,
@@ -29,6 +30,22 @@ function topic(id: string, title = id): TopicVM {
 }
 
 describe('document tabs', () => {
+  it('keeps one permanent host-task tab with a restorable local identity', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, hostTasksDocument(), false);
+    state = openDocumentTab(state, topic('preview'));
+    state = openDocumentTab(state, hostTasksDocument(), false);
+    expect(state.tabs.map(documentTabKey)).toEqual(['topic:preview', 'host-tasks:approved-host-tasks']);
+    expect(state.selectedKey).toBe('host-tasks:approved-host-tasks');
+    expect(documentTabIcon(hostTasksDocument())).toBe('checklist');
+    expect(documentTabTooltip(hostTasksDocument())).toBe('Host tasks');
+    expect(parseDocumentTabs(serializeDocumentTabs(state))).toEqual({
+      version: 1,
+      tabs: [{ kind: 'host-tasks', identifier: 'approved-host-tasks' }],
+      selectedKey: 'host-tasks:approved-host-tasks',
+    });
+    expect(closeDocumentTab(state, 'host-tasks:approved-host-tasks').selectedKey).toBe('topic:preview');
+  });
+
   it('shows topic locators in tab tooltips while retaining the title and preview hint', () => {
     const document = topic('topic-id', 'A readable title');
     expect(documentTabTooltip(document)).toBe('A readable title\nworking-memory://open/topic/topic-id');

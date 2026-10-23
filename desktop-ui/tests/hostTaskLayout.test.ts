@@ -21,7 +21,7 @@ function attribute(node: Node, name: string): string | undefined {
     ?.map((part: Node) => part.data ?? '').join('');
 }
 
-it('keeps host-task controls out of the main viewport grid and mounts them in the modal top layer', () => {
+it('opens host tasks inside the normal document tab without adding a main-grid row or modal', () => {
   const source = readFileSync(resolve(root, 'src/renderer/App.svelte'), 'utf8');
   const entries = nodes(parse(source, { modern: true }));
   const main = entries.find(({ node }) => node.type === 'RegularElement' && node.name === 'main'
@@ -30,22 +30,25 @@ it('keeps host-task controls out of the main viewport grid and mounts them in th
   expect(attribute(directElements[0], 'class')).toBe('stage-content');
   expect(entries.filter(({ node }) => node.type === 'Component' && node.name === 'HostTasks')).toHaveLength(1);
   for (const entry of entries.filter(({ node }) => node.type === 'Component' && node.name === 'HostTasks')) {
-    expect(entry.parents).not.toContain(main);
+    expect(entry.parents).toContain(main);
+    expect(entry.parents.some((parent) => attribute(parent, 'role') === 'tabpanel')).toBe(true);
+    expect(entry.parents.some((parent) => attribute(parent, 'class')?.includes('document-host'))).toBe(true);
   }
   const trigger = entries.find(({ node }) => node.type === 'RegularElement' && node.name === 'button'
-    && attribute(node, 'aria-haspopup') === 'dialog'
-    && source.slice(node.start, node.end).includes('Host-task approvals'))!;
+    && source.slice(node.start, node.end).includes('onclick={openHostTasks}'))!;
+  expect(attribute(trigger.node, 'aria-haspopup')).toBeUndefined();
   expect(trigger.parents.some((parent) => parent.name === 'footer'
     && attribute(parent, 'class') === 'desktop-status-bar')).toBe(true);
   expect(trigger.parents).not.toContain(main);
 
   const panel = readFileSync(resolve(root, 'src/renderer/HostTasks.svelte'), 'utf8');
-  expect(nodes(parse(panel, { modern: true })).some(({ node }) =>
-    node.type === 'RegularElement' && node.name === 'dialog' && attribute(node, 'class') === 'host-tasks')).toBe(true);
-  expect(panel).toContain('dialog.showModal()');
-  expect(panel).toContain('oncancel=');
-  expect(panel).toContain('Michael <strong>OR</strong> under');
-  expect(panel).toContain('not the count of all open task tickets');
+  const panelNodes = nodes(parse(panel, { modern: true }));
+  expect(panelNodes.some(({ node }) => node.name === 'dialog')).toBe(false);
+  expect(panelNodes.filter(({ node }) => node.type === 'Component' && node.name === 'HostScripts')).toHaveLength(1);
+  expect(panel).not.toMatch(/Thrive|Windows|workflow|showModal/);
+  expect(source).toContain('openDocumentTab(documentTabsState(), hostTasksDocument(), false)');
+  expect(source).toContain("reference.kind === 'host-tasks' && reference.identifier === hostTasksDocument().id");
+  expect(source).toContain("activeDocument?.kind === 'host-tasks'");
   const styles = readFileSync(resolve(root, 'src/renderer/style.css'), 'utf8');
   expect(styles).toMatch(/\.main\s*\{[^}]*display:\s*grid;[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto\s+auto/s);
 });

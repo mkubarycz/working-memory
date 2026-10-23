@@ -24,7 +24,7 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     const environment = deps.getEnvironment();
     if (!environment) throw new Error('Select a Working Memory environment first');
     hostTaskOrigin(environment.mcpUrl);
-    if (deps.platform === 'win32') throw new Error('Generic scripts currently run on macOS and Linux; Thrive remains separate');
+    if (deps.platform === 'win32') throw new Error('Local script execution currently requires macOS or Linux');
     const ensureCurrent = () => {
       assertHostTaskSender(event, deps.getWindow(), deps.rendererUrl);
       if (deps.getWindow() !== window || deps.getEnvironment()?.mcpUrl !== environment.mcpUrl) {

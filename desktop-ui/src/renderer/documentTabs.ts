@@ -1,4 +1,4 @@
-import type { DocumentVM } from './documents/types';
+import type { DocumentVM, HostTasksVM } from './documents/types';
 import { normalizeScopeKind } from './scopeIdentity';
 import { desktopDeepLink } from '../shared/deepLink';
 
@@ -15,6 +15,10 @@ export interface PersistedDocumentTabs {
 }
 
 const MAX_PERSISTED_TABS = 50;
+
+export function hostTasksDocument(): HostTasksVM {
+  return { kind: 'host-tasks', id: 'approved-host-tasks', title: 'Host tasks' };
+}
 
 export function documentTabTooltip(document: DocumentVM, preview = false): string {
   const title = preview
@@ -33,6 +37,7 @@ export function documentTabIcon(document: DocumentVM): string {
     case 'topic-backlog': return 'inbox';
     case 'container-app': return 'server-environment';
     case 'settings': return 'gear';
+    case 'host-tasks': return 'checklist';
     default: return 'file';
   }
 }

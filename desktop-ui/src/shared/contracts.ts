@@ -237,6 +237,7 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
     document.kind === 'topic-create'
     || document.kind === 'topic-backlog'
     || document.kind === 'settings'
+    || document.kind === 'host-tasks'
   ) return undefined;
   const identifier = (document.id).trim();
   if (!identifier) return undefined;

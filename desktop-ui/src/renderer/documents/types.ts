@@ -173,6 +173,12 @@ export interface SettingsVM {
   title: 'Settings';
 }
 
+export interface HostTasksVM {
+  kind: 'host-tasks';
+  id: 'approved-host-tasks';
+  title: 'Host tasks';
+}
+
 /** The topic detail view-model (kind = topic). */
 export interface TopicVM {
   kind: 'topic';
@@ -232,6 +238,7 @@ export type DocumentVM =
   | TopicCreateDraftVM
   | TopicBacklogVM
   | SettingsVM
+  | HostTasksVM
   | GenericDocVM;
 
 /**

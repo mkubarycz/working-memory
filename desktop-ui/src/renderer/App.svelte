@@ -80,6 +80,7 @@
     documentTabKey,
     documentTabIcon,
     documentTabTooltip,
+    hostTasksDocument,
     keepSelectedTabVisible,
     openDocumentTab,
     parseDocumentTabs,
@@ -190,7 +191,6 @@
   let modelRouting = $state<ModelRouting>({} as ModelRouting);
   let humanName = $state('Flesh Bag');
   let settingsStatus = $state('');
-  let hostTasksVisible = $state(false);
   let saving = $state(false);
   let testingProfileId = $state<string | null>(null);
   let environments = $state<DesktopEnvironment[]>([]);
@@ -1132,7 +1132,9 @@
     for (const reference of persisted.tabs) {
       try {
         let document: DocumentVM | null = null;
-        if (reference.kind === 'container-app') {
+        if (reference.kind === 'host-tasks' && reference.identifier === hostTasksDocument().id) {
+          document = hostTasksDocument();
+        } else if (reference.kind === 'container-app') {
           const app = containerApps.find((candidate) => candidate.id === reference.identifier);
           if (app) document = containerAppDocument(app);
         } else if (RESTORABLE_DOCUMENT_KINDS.has(reference.kind as DesktopResourceKind)) {
@@ -1562,6 +1564,15 @@
   }
 
   let settingsTab = $state<SettingsTab>('models');
+
+  function openHostTasks(): void {
+    documentOpens.invalidate();
+    const next = openDocumentTab(documentTabsState(), hostTasksDocument(), false);
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
+    restoreDocumentSaveStatus(next.selectedKey);
+  }
 
   function openSettings(tab?: SettingsTab): void {
     documentOpens.invalidate();
@@ -2367,7 +2378,9 @@
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
         {#key selectedDocumentKey}
-        {#if activeDocument?.kind === 'settings'}
+        {#if activeDocument?.kind === 'host-tasks'}
+          {#key selectedEnvironment?.mcpUrl}<HostTasks />{/key}
+        {:else if activeDocument?.kind === 'settings'}
           <SettingsView
             profiles={modelProfiles}
             routing={modelRouting}
@@ -2634,10 +2647,6 @@
     {/if}
   </main>
 
-  {#if hostTasksVisible}
-    {#key selectedEnvironment?.mcpUrl}<HostTasks onClose={() => { hostTasksVisible = false; }} />{/key}
-  {/if}
-
   {#if cameraOpen}
     <div class="camera-backdrop" role="presentation">
       <div class="camera-dialog" role="dialog" aria-modal="true" aria-labelledby="camera-title">
@@ -2879,8 +2888,8 @@
   </aside>
 
   <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
-    <button aria-haspopup="dialog" aria-expanded={hostTasksVisible} style="font: inherit; padding: 0 6px; line-height: inherit;"
-      onclick={() => { hostTasksVisible = true; }}>Host-task approvals</button>
+    <button style="font: inherit; padding: 0 6px; line-height: inherit;"
+      onclick={openHostTasks}>Host tasks</button>
     <span
       class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
       title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"

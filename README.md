@@ -924,28 +924,33 @@ choose an executable, supply shell arguments, or change the process environment.
 
 ### First local example
 
-1. Open **Host-task approvals -> My Node.js scripts**.
+1. Open **Host tasks** from the status bar. It opens a normal, persistent
+   application tab with one list of registered scripts, not a popup or a
+   platform/integration selector. No demo scripts are installed automatically.
 2. Sign in with this instance's owner password. On the locally provisioned
    instance's first connection, choose **Set password and connect** and confirm
    the native owner-setup prompt. Passwords must have at least 12 characters.
    No token-file import or Keychain access is required.
    An optional free-text **Password hint** (up to 1000 characters) is displayed
    beside the password prompt before sign-in. It is public reminder text, not
-   a secret: never enter the password itself. After connecting, use **Edit
-   password hint** to add, change, or clear it without changing the password.
-3. Choose **Register harmless greeting example**, review the native approval,
+   a secret: never enter the password itself. After connecting, expand
+   **Connection · instance owner -> Edit password hint** to add, change, or
+   clear it without changing the password.
+3. Choose **Add script** to register your own script. For an optional example,
+   expand **Try a demo instead -> Add greeting demo**, review the native approval,
    then select that script. The example only returns a greeting, Node version,
    and platform; it does not access files or the network.
 4. Enter `{"name":"Michael"}`, choose **Review and queue one test**, approve
-   the native prompt, and **Start local runner**. The JSON result appears in
-   the panel and the run history. This test does not grant any app access.
-5. For a real caller, export its own private credential, select the caller
-   and script, and approve a **one-hour script grant**. Never give an agent
+   the native prompt, and **Start runner**. The JSON result appears in
+   the selected task's details and run history. This test does not grant any app access.
+5. For a real caller, select a script and expand **App access**. Export its own
+   private credential under **Add a caller**, select the caller,
+   and approve a **one-hour script grant**. Never give an agent
    the desktop's owner session or password. Revoke the grant or script version to stop
    future dispatch and result release.
 
-The runner polls only while this panel is open and explicitly started.
-Closing it stops new claims; a current run may finish. **Stop local runner**
+The runner polls only while the **Host tasks** tab is active and explicitly started.
+Switching tabs or closing it stops new claims; a current run may finish. **Stop runner**
 also aborts the current process. A sleeping/closed desktop does not execute
 jobs. Runs are not automatically retried, because scripts may have side effects.
 Revocation cannot undo host work already performed.
@@ -1091,8 +1096,8 @@ It is never returned to the renderer or requesting app.
 `POST /host-tasks/v1/admin/identity/setup` requires that bootstrap credential;
 an unauthenticated caller cannot claim ownership. Once a password is set,
 the bootstrap credential cannot manage scripts or overwrite the password;
-use an owner session instead. Existing low-level token import in the separate
-legacy Thrive screen is not the generic script connection workflow.
+use an owner session instead. The legacy Thrive-specific backend protocol
+remains separate and disabled; it is not offered as a desktop workflow.
 New Windows bootstrap provisioning remains blocked pending private-file ACL
 support. Existing password-configured instances use platform-independent sign-in.
 
