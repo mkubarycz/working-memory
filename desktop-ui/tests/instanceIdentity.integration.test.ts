@@ -19,6 +19,9 @@ it('connects without Keychain or secret files, keeps the password transient, and
   expect(await identity.status(mcpUrl)).toEqual({ passwordConfigured: false, passwordHint: '', setupAvailable: true });
   const setup = await identity.signIn(mcpUrl, password, true, 'First owner reminder');
   vault.setSession(server.url, setup.token, setup.expiresAt);
+  expect(await identity.features(mcpUrl)).toEqual({ hostTasks: false });
+  await expect(new HostScriptAdminClient(mcpUrl, setup.token).scripts()).rejects.toThrow('turned off');
+  expect(await identity.setFeatures(mcpUrl, { hostTasks: true })).toEqual({ hostTasks: true });
   expect(await vault.read(server.url)).toBe(setup.token);
   expect(await new HostScriptAdminClient(mcpUrl, setup.token).scripts()).toMatchObject({ tasks: [] });
   expect(await identity.status(mcpUrl)).toEqual({ passwordConfigured: true, passwordHint: 'First owner reminder', setupAvailable: true });
@@ -26,6 +29,7 @@ it('connects without Keychain or secret files, keeps the password transient, and
   expect((await identity.status(mcpUrl)).passwordHint).toBe('An updated reminder\nwith free text');
   await identity.signOut(mcpUrl);
   expect(vault.session(server.url)).toBeNull();
+  await expect(identity.setFeatures(mcpUrl, { hostTasks: false })).rejects.toThrow('Sign in');
   expect((await identity.status(mcpUrl)).passwordHint).toBe('An updated reminder\nwith free text');
   await expect(identity.setPasswordHint(mcpUrl, 'not signed in')).rejects.toThrow('Sign in');
   await expect(new HostScriptAdminClient(mcpUrl, setup.token).scripts()).rejects.toThrow('401');

@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type SettingsTab = 'models' | 'routing' | 'human' | 'instances' | 'updates';
+  export type SettingsTab = 'models' | 'routing' | 'human' | 'instances' | 'updates' | 'features';
 </script>
 
 <script lang="ts">
@@ -13,6 +13,8 @@
   import { humanInitials } from '../humanIdentity';
   import InstancesView from './InstancesView.svelte';
   import UpdatesView from './UpdatesView.svelte';
+  import FeaturesView from './FeaturesView.svelte';
+  import type { InstanceFeatures } from '../../../../control-plane/src/instanceFeatures';
 
   interface Props {
     profiles: Array<EditableModelProfile & { apiKey: string }>;
@@ -31,6 +33,7 @@
     selectedMcpUrl: string | null;
     onMakeCurrent: (mcpUrl: string) => Promise<void>;
     onInstancesChanged: () => Promise<void>;
+    onFeaturesChanged: (features: InstanceFeatures) => void;
   }
 
   let {
@@ -50,6 +53,7 @@
     selectedMcpUrl,
     onMakeCurrent,
     onInstancesChanged,
+    onFeaturesChanged,
   }: Props = $props();
 
   const SPEEDS = ['slow', 'medium', 'fast'] as const;
@@ -99,6 +103,7 @@
     <button role="tab" aria-selected={tab === 'human'} onclick={() => (tab = 'human')}>Human</button>
     <button role="tab" aria-selected={tab === 'instances'} onclick={() => (tab = 'instances')}>Instances</button>
     <button role="tab" aria-selected={tab === 'updates'} onclick={() => (tab = 'updates')}>Updates</button>
+    <button role="tab" aria-selected={tab === 'features'} onclick={() => (tab = 'features')}>Features</button>
   </div>
   {#if tab === 'models'}
     <p class="settings-intro">
@@ -206,6 +211,8 @@
     </div>
   {:else if tab === 'instances'}
     <InstancesView {selectedMcpUrl} {onMakeCurrent} {onInstancesChanged} />
+  {:else if tab === 'features'}
+    {#key selectedMcpUrl}<FeaturesView onChanged={onFeaturesChanged} />{/key}
   {:else if tab === 'updates'}
     <UpdatesView />
   {:else}
@@ -222,7 +229,7 @@
       <p>Your initials appear beside your messages in the inline chat response.</p>
     </div>
   {/if}
-  {#if tab !== 'instances' && tab !== 'updates'}
+  {#if tab !== 'instances' && tab !== 'updates' && tab !== 'features'}
     <div class="settings-actions">
       <button class="primary" disabled={saving || testingProfileId !== null} onclick={() => void onSave()}>
         {saving ? 'Saving...' : 'Save'}

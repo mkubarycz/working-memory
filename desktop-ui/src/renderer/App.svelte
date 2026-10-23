@@ -59,7 +59,9 @@
   import type { CommandJournalScopeRef, CommandJournalSummary } from '../../../shared/controlPlaneClient';
   import type { PanelAction, PanelData } from '../../../shared/panelData';
   import { invokeActiveAction } from './activeContextMenu';
-  import { DESKTOP_BUILD_TIMESTAMP, formatDesktopBuildTimestamp } from './buildInfo';
+  import { DESKTOP_BUILD_TIMESTAMP, desktopBuildLabel as formatDesktopBuildLabel } from './buildInfo';
+  import type { DesktopBuildInfo } from '../shared/contracts';
+  import type { InstanceFeatures } from '../../../control-plane/src/instanceFeatures';
   import { isChatAtBottom } from './chatScroll';
   import { readComposerDraft, writeComposerDraft } from './composerDraft';
   import {
@@ -130,7 +132,11 @@
     { id: 'complex', label: 'Complex' },
     { id: 'deep', label: 'Deep Thought' },
   ] as const;
-  const desktopBuildLabel = formatDesktopBuildTimestamp(DESKTOP_BUILD_TIMESTAMP);
+  let desktopBuildInfo = $state<DesktopBuildInfo | null>(null);
+  let buildInfoError = $state('');
+  const desktopBuildLabel = $derived(formatDesktopBuildLabel(desktopBuildInfo, DESKTOP_BUILD_TIMESTAMP));
+  let instanceFeatures = $state<InstanceFeatures>({ hostTasks: false });
+  let featuresError = $state('');
 
   interface ComposerImage {
     attachment: AttachmentRef;
@@ -1083,6 +1089,8 @@
   });
 
   onMount(() => {
+    void window.workingMemory.getDesktopBuildInfo().then(info => { desktopBuildInfo = info; })
+      .catch(cause => { buildInfoError = cause instanceof Error ? cause.message : String(cause); });
     activeRailWidth = parseStoredRailWidth(localStorage.getItem(RAIL_STORAGE_KEYS.active), 'active');
     chatRailWidth = parseStoredRailWidth(localStorage.getItem(RAIL_STORAGE_KEYS.chat), 'chat');
     viewportWidth = window.innerWidth;
@@ -1095,7 +1103,10 @@
       (kind, identifier) => void openResource(kind, identifier),
     );
     const stopListeningForChanges = window.workingMemory.onDocumentChanges(handleDocumentChanges);
-    const backendHealthPoll = window.setInterval(() => void refreshBackendHealth(), 30_000);
+    const backendHealthPoll = window.setInterval(() => {
+      void refreshBackendHealth();
+      void refreshFeatures();
+    }, 30_000);
     return () => {
       stopListeningForDeepLinks();
       stopListeningForChanges();
@@ -1111,7 +1122,7 @@
     // Discovery waits for the launch-time data-tier start, which may change the selected environment.
     await discoverEnvironments(true);
     restoreUnreadResponses();
-    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps()]);
+    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps(), refreshFeatures()]);
     await restoreDocumentTabs();
     await startDocumentChanges();
   }
@@ -1133,7 +1144,7 @@
       try {
         let document: DocumentVM | null = null;
         if (reference.kind === 'host-tasks' && reference.identifier === hostTasksDocument().id) {
-          document = hostTasksDocument();
+          if (instanceFeatures.hostTasks) document = hostTasksDocument();
         } else if (reference.kind === 'container-app') {
           const app = containerApps.find((candidate) => candidate.id === reference.identifier);
           if (app) document = containerAppDocument(app);
@@ -1277,6 +1288,8 @@
   }
 
   function resetEnvironmentState(): void {
+    instanceFeatures = { hostTasks: false };
+    featuresError = '';
     const reset = emptyEnvironmentBoundRendererState();
     documentSaves.clear();
     documentChanges.clear();
@@ -1339,6 +1352,7 @@
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
       await refreshAgentMessages();
       await loadContainerApps();
+      await refreshFeatures();
       await restoreDocumentTabs();
       await refreshBackendHealth();
       await startDocumentChanges();
@@ -1565,7 +1579,34 @@
 
   let settingsTab = $state<SettingsTab>('models');
 
+  function applyFeatures(features: InstanceFeatures): void {
+    instanceFeatures = features;
+    featuresError = '';
+    if (!features.hostTasks) {
+      const next = closeDocumentTab(documentTabsState(), documentTabKey(hostTasksDocument()));
+      documents = next.tabs;
+      selectedDocumentKey = next.selectedKey;
+      previewDocumentKey = next.previewKey ?? null;
+    }
+  }
+
+  async function refreshFeatures(): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      const features = await window.workingMemory.getInstanceFeatures();
+      if (generation !== environmentGeneration) return;
+      applyFeatures(features);
+      featuresError = '';
+    } catch (cause) {
+      if (generation === environmentGeneration) featuresError = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
   function openHostTasks(): void {
+    if (!instanceFeatures.hostTasks) {
+      documentError = 'Host tasks is turned off. Enable it in Settings > Features.';
+      return;
+    }
     documentOpens.invalidate();
     const next = openDocumentTab(documentTabsState(), hostTasksDocument(), false);
     documents = next.tabs;
@@ -2378,7 +2419,7 @@
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
         {#key selectedDocumentKey}
-        {#if activeDocument?.kind === 'host-tasks'}
+        {#if activeDocument?.kind === 'host-tasks' && instanceFeatures.hostTasks}
           {#key selectedEnvironment?.mcpUrl}<HostTasks />{/key}
         {:else if activeDocument?.kind === 'settings'}
           <SettingsView
@@ -2398,6 +2439,7 @@
             selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
             onMakeCurrent={makeInstanceCurrent}
             onInstancesChanged={() => discoverEnvironments()}
+            onFeaturesChanged={applyFeatures}
           />
         {:else if activeDocument?.kind === 'container-app' && selectedContainerApp}
           <ContainerAppDetail
@@ -2888,8 +2930,8 @@
   </aside>
 
   <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
-    <button style="font: inherit; padding: 0 6px; line-height: inherit;"
-      onclick={openHostTasks}>Host tasks</button>
+    {#if instanceFeatures.hostTasks}<button style="font: inherit; padding: 0 6px; line-height: inherit;"
+      onclick={openHostTasks}>Host tasks</button>{/if}
     <span
       class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
       title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"
@@ -2904,6 +2946,8 @@
       <span class="status-dot"></span>
       AI: {openAiHealth.state}
     </span>
-    <span class="desktop-build-status">Built {desktopBuildLabel}</span>
+    {#if featuresError}<span role="alert">Features: {featuresError}</span>{/if}
+    {#if buildInfoError}<span role="alert">Build information: {buildInfoError}</span>{/if}
+    <span class="desktop-build-status">{desktopBuildLabel}</span>
   </footer>
 </div>

@@ -44,6 +44,7 @@ function fixture(enabled = true, durable = false) {
   const options = { hostTaskAdminCredential: admin, hostTaskClock: () => now,
     hostTaskExecutionFixture: enabled ? bridge : undefined };
   let broker = new HostTaskBroker(store.db, options);
+  broker.features.write({ hostTasks: true });
   const call = (p: string, body?: unknown, token = admin, method = 'POST') =>
     broker.dispatch(method, p, token, body).body as any;
   const app = call('/admin/apps', { label: 'Trusted desktop', instanceId: randomUUID() });
@@ -115,6 +116,7 @@ describe('host-task broker authorization and fixed capability', () => {
   it('starts disabled without an explicitly injected admin credential', () => {
     const store = openStore(':memory:'); stores.push(store);
     const broker = new HostTaskBroker(store.db);
+    broker.features.write({ hostTasks: true });
     rejects(() => broker.dispatch('GET', '/admin', admin), 'admin_disabled');
   });
   it('rejects weak admin credentials instead of silently enabling bootstrap', () => {

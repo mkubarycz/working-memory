@@ -16,6 +16,8 @@ export interface HostTaskDesktopState {
 }
 
 export interface HostTaskDesktopApi {
+  getInstanceFeatures(): Promise<import('../../../control-plane/src/instanceFeatures').InstanceFeatures>;
+  setInstanceFeatures(input: import('../../../control-plane/src/instanceFeatures').InstanceFeatures): Promise<import('../../../control-plane/src/instanceFeatures').InstanceFeatures>;
   signInHostScripts(input: { password: string; setup: boolean; passwordHint?: string }): Promise<void>;
   setInstancePasswordHint(hint: string): Promise<void>;
   signOutHostScripts(): Promise<void>;
@@ -37,6 +39,7 @@ export interface HostTaskDesktopApi {
 }
 
 export interface HostScriptDesktopState {
+  features?: import('../../../control-plane/src/instanceFeatures').InstanceFeatures;
   environment: string; hostId: string; credentialReady: boolean; snapshot: ScriptSnapshot | null;
   authentication?: { passwordConfigured: boolean; passwordHint: string; setupAvailable: boolean };
 }

@@ -11,19 +11,76 @@ import { executeHostScript, HOST_SCRIPT_EXAMPLE, hostScriptHostId } from '../src
 import { registerHostScriptIpc } from '../src/main/hostScriptIpc';
 import { scriptDefinitionSchema, scriptDefinitionHash, scriptJobSchema, type ScriptLease } from '../../control-plane/src/hostScriptPolicy';
 import type { IpcMainInvokeEvent } from 'electron';
+import { openStore, type Store } from '../../control-plane/src/store';
+import { InstanceFeatureStore } from '../../control-plane/src/instanceFeatures';
+import { DesktopInstanceIdentity } from '../src/main/instanceIdentity';
+import { HostTaskCredentialVault } from '../src/main/hostTaskBroker';
 
 const servers: RunningServer[] = [];
+const stores: Store[] = [];
 const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => server.close()));
+  stores.splice(0).forEach(store => store.close());
   for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true });
 });
 async function serverFixture() {
   const credential = randomBytes(32).toString('hex');
-  const server = await startServer({ port: 0, hostTaskAdminCredential: credential });
+  const store = openStore(':memory:');
+  stores.push(store);
+  new InstanceFeatureStore(store.db).write({ hostTasks: true });
+  const server = await startServer({ port: 0, store, hostTaskAdminCredential: credential });
   servers.push(server);
   return { server, credential, broker: new HostScriptAdminClient(`${server.url}/mcp`, credential) };
 }
+
+it('configures flags through trusted IPC while off and aborts an active runner when disabled', async () => {
+  const { server, credential } = await serverFixture();
+  const directory = await mkdtemp(join(tmpdir(), 'wm-host-feature-'));
+  directories.push(directory);
+  const vault = new HostTaskCredentialVault({
+    isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn(),
+  }, process.platform, directory);
+  const identity = new DesktopInstanceIdentity(vault, async () => credential, () => true);
+  const mcpUrl = `${server.url}/mcp`;
+  const session = await identity.signIn(mcpUrl, 'private flag owner password', true);
+  vault.setSession(server.url, session.token, session.expiresAt);
+  await identity.setFeatures(mcpUrl, { hostTasks: false });
+  const rendererUrl = 'file:///working-memory/renderer/index.html';
+  const frame = { url: rendererUrl };
+  const window = { webContents: { mainFrame: frame }, isDestroyed: () => false };
+  const event = { sender: window.webContents, senderFrame: frame } as unknown as IpcMainInvokeEvent;
+  const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
+  let executing!: () => void;
+  const started = new Promise<void>(resolve => { executing = resolve; });
+  let aborted = false;
+  const dialog = { showMessageBox: vi.fn().mockResolvedValue({ response: 1 }), showOpenDialog: vi.fn(), showSaveDialog: vi.fn() };
+  registerHostScriptIpc({
+    ipc: { handle: (channel, handler) => { handlers.set(channel, handler); } },
+    dialog, vault, identity, directory, getWindow: () => window,
+    getEnvironment: () => ({ mcpUrl, displayName: 'Test' }), rendererUrl, platform: process.platform,
+    execute: async (_lease: ScriptLease, signal?: AbortSignal) => new Promise<{ error: string }>(resolve => {
+      signal?.addEventListener('abort', () => { aborted = true; resolve({ error: 'Stopped by flag' }); }, { once: true });
+      executing();
+    }),
+  } as unknown as Parameters<typeof registerHostScriptIpc>[0]);
+  const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!(event, ...args);
+  expect(await call('instance:features')).toEqual({ hostTasks: false });
+  expect(await call('host-scripts:get')).toMatchObject({ credentialReady: true, features: { hostTasks: false }, snapshot: null });
+  const input = { name: '', description: '', parameters: {}, timeoutMs: 1000, example: true };
+  await expect(call('host-scripts:register', input)).rejects.toThrow('turned off');
+  expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  await call('instance:set-features', { hostTasks: true });
+  const task = await call('host-scripts:register', input) as { id: string };
+  await call('host-scripts:test', task.id, { name: 'Michael' });
+  const next = call('host-scripts:next');
+  const stopped = expect(next).rejects.toThrow('turned off');
+  await started;
+  await call('instance:set-features', { hostTasks: false });
+  await stopped;
+  expect(aborted).toBe(true);
+  await expect(call('host-scripts:next')).rejects.toThrow('turned off');
+}, 10000);
 function lease(source = HOST_SCRIPT_EXAMPLE): ScriptLease {
   const definition = scriptDefinitionSchema.parse({
     name: 'Test', description: '', source, hostId: randomUUID(),

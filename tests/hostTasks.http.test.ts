@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { startServer, type RunningServer } from '../control-plane/src/server';
 import { openStore, type Store } from '../control-plane/src/store';
 import { HostTaskBroker, HOST_TASK_CLEANUP_INTERVAL_MS, HOST_TASK_OPERATION, HOST_TASK_OPERATION_HASH } from '../control-plane/src/hostTasks';
+import { InstanceFeatureStore } from '../control-plane/src/instanceFeatures';
 
 const servers: RunningServer[] = [];
 const stores: Store[] = [];
@@ -19,6 +20,8 @@ afterEach(async () => {
 const admin = randomBytes(32).toString('hex');
 const approvalBinding = { policyHash: HOST_TASK_OPERATION_HASH, operationVersion: HOST_TASK_OPERATION.version };
 async function fixture(enabled = true, store?: Store) {
+  if (!store) { store = openStore(':memory:'); stores.push(store); }
+  new InstanceFeatureStore(store.db).write({ hostTasks: true });
   const server = await startServer({ port: 0, store, hostTaskAdminCredential: enabled ? admin : undefined });
   servers.push(server);
   const call = async (route: string, method = 'GET', body?: unknown, credential = admin) => {

@@ -24,7 +24,6 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     const environment = deps.getEnvironment();
     if (!environment) throw new Error('Select a Working Memory environment first');
     hostTaskOrigin(environment.mcpUrl);
-    if (deps.platform === 'win32') throw new Error('Local script execution currently requires macOS or Linux');
     const ensureCurrent = () => {
       assertHostTaskSender(event, deps.getWindow(), deps.rendererUrl);
       if (deps.getWindow() !== window || deps.getEnvironment()?.mcpUrl !== environment.mcpUrl) {
@@ -36,6 +35,10 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
         : await deps.vault.read(hostTaskOrigin(environment.mcpUrl));
       ensureCurrent();
       if (!token) throw new Error('Sign in to this Working Memory instance first.');
+      if (deps.identity && !(await deps.identity.features(environment.mcpUrl)).hostTasks) {
+        throw new Error('Host tasks is turned off. Enable it in Settings > Features.');
+      }
+      ensureCurrent();
       return new HostScriptAdminClient(environment.mcpUrl, token);
     };
     const confirm = async (message: string, detail: string, scriptWarning = true) => {
@@ -52,15 +55,32 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     };
     return { window: window!, environment, ensureCurrent, client, confirm };
   };
+  deps.ipc.handle('instance:features', async (event) => {
+    const ctx = context(event);
+    if (!deps.identity) throw new Error('Instance feature settings are unavailable.');
+    const features = await deps.identity.features(ctx.environment.mcpUrl);
+    ctx.ensureCurrent();
+    return features;
+  });
+  deps.ipc.handle('instance:set-features', async (event, raw: unknown) => {
+    const ctx = context(event);
+    if (!deps.identity) throw new Error('Instance feature settings are unavailable.');
+    const flags = z.object({ hostTasks: z.boolean() }).strict().parse(raw);
+    const result = await deps.identity.setFeatures(ctx.environment.mcpUrl, flags);
+    if (!result.hostTasks) running?.abort();
+    ctx.ensureCurrent();
+    return result;
+  });
   deps.ipc.handle('host-scripts:get', async (event): Promise<HostScriptDesktopState> => {
     const ctx = context(event);
     const hostId = await hostScriptHostId(deps.directory);
     const authentication = await deps.identity?.status(ctx.environment.mcpUrl);
+    const features = await deps.identity?.features(ctx.environment.mcpUrl);
     const token = deps.identity ? deps.vault.session(hostTaskOrigin(ctx.environment.mcpUrl))
       : await deps.vault.read(hostTaskOrigin(ctx.environment.mcpUrl));
     ctx.ensureCurrent();
-    return { environment: hostTaskOrigin(ctx.environment.mcpUrl), hostId, credentialReady: !!token, authentication,
-      snapshot: token ? await new HostScriptAdminClient(ctx.environment.mcpUrl, token).scripts() : null };
+    return { environment: hostTaskOrigin(ctx.environment.mcpUrl), hostId, credentialReady: !!token, authentication, features,
+      snapshot: token && features?.hostTasks !== false ? await new HostScriptAdminClient(ctx.environment.mcpUrl, token).scripts() : null };
   });
   deps.ipc.handle('host-scripts:sign-in', async (event, raw: unknown) => {
     const ctx = context(event);
@@ -88,10 +108,12 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   });
   deps.ipc.handle('host-scripts:register', async (event, raw: unknown) => {
     const ctx = context(event);
+    if (deps.platform === 'win32') throw new Error('Local script execution currently requires macOS or Linux');
     const input = z.object({
       name: z.string(), description: z.string(), parameters: scriptParametersSchema,
       timeoutMs: z.number().int(), example: z.boolean(),
     }).strict().parse(raw);
+    const broker = await ctx.client();
     let source = HOST_SCRIPT_EXAMPLE;
     if (!input.example) {
       const selected = await deps.dialog.showOpenDialog(ctx.window, {
@@ -114,7 +136,6 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
       parameters: input.example ? HOST_SCRIPT_EXAMPLE_PARAMETERS : input.parameters,
       timeoutMs: input.timeoutMs,
     });
-    const broker = await ctx.client();
     if (!await ctx.confirm('Register and approve this exact script version?',
       `Name: ${definition.name}\nSHA-256: ${scriptDefinitionHash(definition)}\n`
       + `Parameters: ${JSON.stringify(definition.parameters)}\nTime limit: ${definition.timeoutMs} ms\n`
@@ -142,9 +163,9 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     const ctx = context(event);
     const identifier = z.string().uuid().parse(id);
     const isGrant = z.boolean().parse(grant);
+    const broker = await ctx.client();
     if (!await ctx.confirm(isGrant ? 'Revoke this caller grant?' : 'Revoke this script version?',
       'Queued runs and result access will be cancelled. A running process is stopped at the next status check; already completed host side effects cannot be undone.')) return;
-    const broker = await ctx.client();
     if (isGrant) await broker.revokeScriptGrant(identifier);
     else await broker.revokeScript(identifier);
   });
@@ -166,6 +187,7 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   deps.ipc.handle('host-scripts:stop', async (event) => { context(event); running?.abort(); });
   deps.ipc.handle('host-scripts:next', async (event) => {
     const ctx = context(event);
+    if (deps.platform === 'win32') throw new Error('Local script execution currently requires macOS or Linux');
     if (running) throw new Error('A local host script is already running');
     const controller = new AbortController();
     running = controller;

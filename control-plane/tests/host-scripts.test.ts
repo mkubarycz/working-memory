@@ -24,6 +24,7 @@ describe('protected generic host scripts', () => {
     store = openStore(':memory:');
     now = Date.now();
     broker = new HostTaskBroker(store.db, { hostTaskAdminCredential: admin, hostTaskClock: () => now });
+    broker.features.write({ hostTasks: true });
   });
   afterEach(() => store.close());
   const call = (method: string, path: string, token = admin, body?: unknown) =>

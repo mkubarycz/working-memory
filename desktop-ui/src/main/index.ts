@@ -809,6 +809,9 @@ function restartInstalledDesktop(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('desktop:build-info', () => ({
+    version: app.getVersion(), development: isLocalBuild() || !app.isPackaged,
+  }));
   const hostTaskVault = new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets'));
   const bootstrapFile = (mcpUrl: string): string | null => {
     const url = new URL(mcpUrl);

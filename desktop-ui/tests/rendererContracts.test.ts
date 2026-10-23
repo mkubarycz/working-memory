@@ -278,7 +278,7 @@ describe('desktop tree icon contract', () => {
     expect(styles).toMatch(/\.active-drop-indicator::after[^}]*height:\s*3px/s);
   });
 
-  it('shows the immutable desktop build timestamp in a global status bar', () => {
+  it('shows runtime desktop build identity in a global status bar with timestamp diagnostics', () => {
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
@@ -289,9 +289,21 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).not.toContain('desktopBuildLabel');
     expect(activeRail).not.toContain('DESKTOP_BUILD_TIMESTAMP');
     expect(app).toContain('class="desktop-status-bar"');
-    expect(app).toContain('Built {desktopBuildLabel}');
+    expect(app).toContain('class="desktop-build-status">{desktopBuildLabel}');
+    expect(app).toContain('window.workingMemory.getDesktopBuildInfo()');
     expect(app).toContain('title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}');
     expect(styles).toMatch(/\.desktop-status-bar\s*{[^}]*grid-column:\s*1\s*\/\s*-1/s);
+  });
+
+  it('gates the host-task entry, restore, and content and exposes instance feature settings', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const settings = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/SettingsView.svelte'), 'utf8');
+    expect(app).toContain('{#if instanceFeatures.hostTasks}<button');
+    expect(app).toContain('if (instanceFeatures.hostTasks) document = hostTasksDocument()');
+    expect(app).toContain("activeDocument?.kind === 'host-tasks' && instanceFeatures.hostTasks");
+    expect(app).toContain('onFeaturesChanged={applyFeatures}');
+    expect(settings).toContain("tab === 'features'");
+    expect(settings).toContain('<FeaturesView');
   });
 
   it('subdues closed topics without rendering topic status text or muting alerts', () => {

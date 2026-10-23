@@ -2,6 +2,9 @@
   import { onDestroy, onMount } from 'svelte';
   import type { HostScriptDesktopState, ScriptJob } from '../shared/hostTasks';
 
+  let { connectionOnly = false, onConnectionChanged }: {
+    connectionOnly?: boolean; onConnectionChanged?: (connected: boolean) => void;
+  } = $props();
   let state = $state<HostScriptDesktopState | null>(null);
   let error = $state('');
   let busy = $state(false);
@@ -38,7 +41,10 @@
 
   onMount(() => { void perform(async () => {}); });
 
-  async function refresh(): Promise<void> { state = await window.workingMemory.getHostScripts(); }
+  async function refresh(): Promise<void> {
+    state = await window.workingMemory.getHostScripts();
+    onConnectionChanged?.(state.credentialReady);
+  }
   async function perform(action: () => Promise<unknown>): Promise<void> {
     busy = true;
     error = '';
@@ -90,7 +96,7 @@
 </script>
 
 <section class="scripts" aria-label="Approved host tasks">
-  <p>Scripts you have approved. Select a task to run a test or manage who can request it.</p>
+  {#if !connectionOnly}<p>Scripts you have approved. Select a task to run a test or manage who can request it.</p>{/if}
   {#if !state?.credentialReady}
     <h3>{creatingPassword ? 'Set this instance’s owner password' : 'Connect to your Working Memory instance'}</h3>
     <p>The control plane stores your scripts and approvals. Sign in as its owner to manage them.
@@ -152,7 +158,9 @@
   {/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if state}
-    {#if state.snapshot}
+    {#if !connectionOnly && state.features?.hostTasks === false}
+      <p role="status">Host tasks is turned off. Enable it in Settings &gt; Features.</p>
+    {:else if !connectionOnly && state.snapshot}
       <div class="actions">
         <button disabled={busy} onclick={() => { addingScript = !addingScript; }}>Add script</button>
         <button disabled={busy} onclick={() => void perform(async () => {})}>Refresh</button>

@@ -521,6 +521,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? `${host}:${port}`}`);
 
+    if (url.pathname === '/features/v1') {
+      await hostTasks.handleFeatures(req, res, url);
+      return;
+    }
     if (url.pathname.startsWith('/identity/v1/')) {
       await hostTasks.identity.handle(req, res, url);
       return;

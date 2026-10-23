@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { HostScriptBroker, HostScriptError, ensureHostScriptSchema } from './hostScripts.js';
 import { serveHostScriptMcp } from './hostScriptMcp.js';
 import { IdentityError, InstanceIdentity, passwordHintSchema } from './instanceIdentity.js';
+import { InstanceFeatureStore } from './instanceFeatures.js';
 
 // Standalone control-plane compilation cannot import root shared runtime files.
 // Keep this boundary predicate parity-tested against shared/hostTasks.ts.
@@ -225,6 +226,7 @@ type Row = Record<string, string | number | null>;
 type Job = Row & { id: string; app_id: string; grant_id: string | null; state: string; attempt: number };
 
 export class HostTaskBroker {
+  readonly features: InstanceFeatureStore;
   readonly identity: InstanceIdentity;
   private readonly scripts: HostScriptBroker;
   private readonly clock: () => number;
@@ -234,6 +236,7 @@ export class HostTaskBroker {
       throw new Error('Host-task operation does not match its reviewed digest.');
     }
     this.clock = options.hostTaskClock ?? Date.now;
+    this.features = new InstanceFeatureStore(db);
     this.identity = new InstanceIdentity(db, this.clock);
     this.scripts = new HostScriptBroker(db, this.clock);
     const credential = options.hostTaskAdminCredential;
@@ -436,6 +439,7 @@ export class HostTaskBroker {
   }
   /** Synchronous SQLite transaction covers every authorization-to-mutation race. */
   dispatch(method: string, path: string, token: string, body?: unknown): { status: number; body: unknown } {
+    if (!this.features.read().hostTasks) fail(503, 'host_tasks_feature_disabled');
     if (path === '/admin' || path.startsWith('/admin/')) this.admin(token);
     else this.auth(token, path.startsWith('/runner/') ? 'runners' : 'apps');
     this.cleanup();
@@ -721,6 +725,13 @@ export class HostTaskBroker {
     }
     this.audit('grant_revoked', id);
   }
+  async handleFeatures(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    await this.features.handle(req, res, url, () => {
+      const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+      if (!this.identity.authenticate(token)) throw new IdentityError(401, 'Sign in as the instance owner to change features.');
+    });
+  }
+
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const send = (status: number, body: unknown) => {
       res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -749,6 +760,11 @@ export class HostTaskBroker {
         try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { fail(400, 'invalid_json'); }
         const input = z.object({ password: z.string().min(12).max(1024), passwordHint: passwordHintSchema.default('') }).strict().parse(value);
         send(200, await this.identity.initialize(input.password, input.passwordHint));
+        return;
+      }
+      if (!this.features.read().hostTasks) {
+        send(503, { error: 'feature_disabled', feature: 'hostTasks',
+          message: 'Host tasks is turned off. Enable it in Settings > Features.' });
         return;
       }
       if (path === '/admin' || path.startsWith('/admin/')) this.admin(token);

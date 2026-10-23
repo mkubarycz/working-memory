@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openStore, type Store } from '../src/store';
 import { InstanceIdentity } from '../src/instanceIdentity';
+import { InstanceFeatureStore } from '../src/instanceFeatures';
 import { startServer, type RunningServer } from '../src/server';
 
 const stores: Store[] = [], servers: RunningServer[] = [];
@@ -126,6 +127,7 @@ it('requires trusted bootstrap, exchanges passwords for owner sessions, and cann
   const initial = await request(setup, { password, passwordHint: hint }, bootstrap);
   expect(initial.status).toBe(200);
   const owner = await initial.json() as { token: string };
+  expect((await request('/features/v1', { hostTasks: true }, owner.token)).status).toBe(200);
   expect(await (await request('/identity/v1/status')).json()).toMatchObject({ passwordHint: hint });
   expect((await request('/identity/v1/hint', { passwordHint: 'unauthorized' })).status).toBe(401);
   expect((await request('/identity/v1/hint', { passwordHint: 'updated hint' }, owner.token)).status).toBe(200);
@@ -153,6 +155,7 @@ it('retains owner verification and sessions across server restart without the ol
   const firstStore = openStore(filename);
   stores.push(firstStore);
   const session = await new InstanceIdentity(firstStore.db).initialize(password, 'Persistent hint');
+  new InstanceFeatureStore(firstStore.db).write({ hostTasks: true });
   const firstServer = await startServer({ port: 0, store: firstStore, hostTaskAdminCredential: randomBytes(32).toString('hex') });
   await firstServer.close();
   firstStore.close();

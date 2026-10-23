@@ -7,6 +7,9 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const api: DesktopApi = {
+  getDesktopBuildInfo: () => invoke('desktop:build-info'),
+  getInstanceFeatures: () => invoke('instance:features'),
+  setInstanceFeatures: (input) => invoke('instance:set-features', input),
   signInHostScripts: (input) => invoke('host-scripts:sign-in', input),
   setInstancePasswordHint: (hint) => invoke('host-scripts:password-hint', hint),
   signOutHostScripts: () => invoke('host-scripts:sign-out'),

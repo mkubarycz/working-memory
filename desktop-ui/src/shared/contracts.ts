@@ -393,7 +393,13 @@ export interface FeedbackContext {
 export interface FeedbackPreparation { servers: FeedbackServer[]; context: FeedbackContext }
 export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt } | { status: 'choose'; servers: FeedbackServer[] };
 
+export interface DesktopBuildInfo {
+  version: string;
+  development: boolean;
+}
+
 export interface DesktopApi extends HostTaskDesktopApi {
+  getDesktopBuildInfo(): Promise<DesktopBuildInfo>;
   prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
   sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
   startDocumentChanges(): Promise<void>;

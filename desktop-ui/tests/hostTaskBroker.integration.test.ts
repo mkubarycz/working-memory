@@ -3,15 +3,22 @@ import { afterEach, expect, it } from 'vitest';
 import { startServer, type RunningServer } from '../../control-plane/src/server';
 import { HOST_TASK_OPERATION_HASH, HOST_TASK_OPERATION_VERSION } from '../../shared/hostTasks';
 import { HostTaskAdminClient, reviewedHostTaskOperation } from '../src/main/hostTaskBroker';
+import { openStore, type Store } from '../../control-plane/src/store';
+import { InstanceFeatureStore } from '../../control-plane/src/instanceFeatures';
 
 const servers: RunningServer[] = [];
+const stores: Store[] = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
+  stores.splice(0).forEach(store => store.close());
 });
 
 it('uses the real protected broker contract for reviewed approval, denial, and app credential revocation', async () => {
   const adminCredential = randomBytes(32).toString('hex');
-  const server = await startServer({ port: 0, hostTaskAdminCredential: adminCredential });
+  const store = openStore(':memory:');
+  stores.push(store);
+  new InstanceFeatureStore(store.db).write({ hostTasks: true });
+  const server = await startServer({ port: 0, store, hostTaskAdminCredential: adminCredential });
   servers.push(server);
   const client = new HostTaskAdminClient(`${server.url}/mcp`, adminCredential);
   const initial = await client.snapshot();

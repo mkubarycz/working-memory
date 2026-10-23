@@ -924,9 +924,7 @@ choose an executable, supply shell arguments, or change the process environment.
 
 ### First local example
 
-1. Open **Host tasks** from the status bar. It opens a normal, persistent
-   application tab with one list of registered scripts, not a popup or a
-   platform/integration selector. No demo scripts are installed automatically.
+1. Open **Settings -> Features**. **Host tasks** is off by default.
 2. Sign in with this instance's owner password. On the locally provisioned
    instance's first connection, choose **Set password and connect** and confirm
    the native owner-setup prompt. Passwords must have at least 12 characters.
@@ -936,7 +934,10 @@ choose an executable, supply shell arguments, or change the process environment.
    a secret: never enter the password itself. After connecting, expand
    **Connection · instance owner -> Edit password hint** to add, change, or
    clear it without changing the password.
-3. Choose **Add script** to register your own script. For an optional example,
+3. Enable **Host tasks**, then open **Host tasks** from the status bar.
+   It opens a normal, persistent application tab with one list of registered
+   scripts, not a popup or a platform/integration selector. No demo scripts
+   are installed automatically. Choose **Add script** to register your own script. For an optional example,
    expand **Try a demo instead -> Add greeting demo**, review the native approval,
    then select that script. The example only returns a greeting, Node version,
    and platform; it does not access files or the network.
@@ -953,6 +954,31 @@ The runner polls only while the **Host tasks** tab is active and explicitly star
 Switching tabs or closing it stops new claims; a current run may finish. **Stop runner**
 also aborts the current process. A sleeping/closed desktop does not execute
 jobs. Runs are not automatically retried, because scripts may have side effects.
+
+### Instance feature flags
+
+**Settings -> Features** saves flags on the selected control-plane instance,
+not just in one desktop profile. Changing a flag requires a signed-in instance
+owner. New and existing instances default to Host tasks disabled until enabled.
+Turning it off removes the desktop entry, closes its local tab, and rejects
+host-task HTTP/MCP calls with HTTP 503 and
+`{"error":"feature_disabled","feature":"hostTasks","message":"Host tasks is turned off. Enable it in Settings > Features."}`.
+This covers both generic scripts and the legacy broker, including claims,
+completions, and result reads. Existing scripts, grants, jobs, and history are
+retained; disabling a feature is not revocation. Queued jobs remain subject to
+their original expiry if the feature is enabled again.
+
+The desktop aborts its current run when disabling the flag. Other active runners
+stop at their next status check; already completed host side effects cannot be
+undone. Other desktops refresh flag visibility with their regular health poll.
+`GET /features/v1` reports flag state; `POST /features/v1` accepts
+`{"hostTasks":true}` only with an active owner bearer session. Identity sign-in,
+initial local owner setup, and feature management stay available while Host tasks
+is off so an owner can re-enable it. These switches do not replace authorization.
+
+The footer displays the installed application's exact numbered version, such as
+**Version 1.2.0-build.80**, rather than the renderer's build time. Local development
+builds continue to display their immutable build timestamp.
 Revocation cannot undo host work already performed.
 
 ### Registering your own script

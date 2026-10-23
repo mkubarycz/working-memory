@@ -198,7 +198,15 @@ export class HostTaskAdminClient {
       throw new Error('Host-task broker unavailable. Check the selected environment and broker configuration.');
     }
     // Never propagate backend response bodies or transport errors containing secrets to IPC.
-    if (!response.ok) throw new Error(`Host-task broker request rejected (HTTP ${response.status}).`);
+    if (!response.ok) {
+      if (response.status === 503 && response.headers.get('content-type')?.includes('application/json')) {
+        const error: unknown = await response.json();
+        if (error && typeof error === 'object' && 'error' in error && error.error === 'feature_disabled') {
+          throw new Error('Host tasks is turned off. Enable it in Settings > Features.');
+        }
+      }
+      throw new Error(`Host-task broker request rejected (HTTP ${response.status}).`);
+    }
     try {
       return await response.json();
     } catch {

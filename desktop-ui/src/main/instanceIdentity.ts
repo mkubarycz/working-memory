@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { HostTaskCredentialVault, hostTaskOrigin } from './hostTaskBroker';
+import type { InstanceFeatures } from '../../../control-plane/src/instanceFeatures';
 
 const statusSchema = z.object({ passwordConfigured: z.boolean(), passwordHint: z.string().max(1000), scope: z.literal('host-tasks-preview') });
 const sessionSchema = z.object({
@@ -34,6 +35,16 @@ export class DesktopInstanceIdentity {
   async status(mcpUrl: string): Promise<{ passwordConfigured: boolean; passwordHint: string; setupAvailable: boolean }> {
     const status = statusSchema.parse(await this.request(mcpUrl, '/identity/v1/status'));
     return { passwordConfigured: status.passwordConfigured, passwordHint: status.passwordHint, setupAvailable: this.canBootstrap(mcpUrl) };
+  }
+
+  async features(mcpUrl: string): Promise<InstanceFeatures> {
+    return z.object({ hostTasks: z.boolean() }).strict().parse(await this.request(mcpUrl, '/features/v1'));
+  }
+
+  async setFeatures(mcpUrl: string, features: InstanceFeatures): Promise<InstanceFeatures> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to change features.');
+    return z.object({ hostTasks: z.boolean() }).strict().parse(await this.request(mcpUrl, '/features/v1', features, token));
   }
 
   async signIn(mcpUrl: string, password: unknown, setup: boolean, passwordHint = ''): Promise<{ token: string; expiresAt: number }> {
