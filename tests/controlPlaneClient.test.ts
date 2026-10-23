@@ -1,13 +1,13 @@
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
-import { startServer, type RunningServer } from '../control-plane/src/server';
+import { startServer, type RunningServer } from './authenticatedFixture';
 import { clearKinds } from '../control-plane/src/kinds/registry';
 import { loadKinds } from '../control-plane/src/kinds/loader';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from './authenticatedFixture';
 import {
   ControlPlaneClient,
   type DocumentEnvelope,
-} from '../shared/controlPlaneClient';
+} from './authenticatedFixture';
 
 /**
  * The Blackboard tab reads documents through the SAME MCP surface an agent
@@ -54,10 +54,13 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
   it('round-trips list + get through the real MCP client/transport', async () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;
+    const type = await seedDocument(mcpUrl, {
+      kind: 'TopicType', spec: { label: 'Topic', icon: 'notebook', description: 'Default topic' },
+    });
+    const workstream = await seedDocument(mcpUrl, { kind: 'Workstream', spec: { title: 'One' } });
     const created = await seedDocument(mcpUrl, {
       kind: 'Topic',
-      slug: 'hello-blackboard',
-      spec: { title: 'Hello Blackboard', workstreams: ['ws-one'] },
+      spec: { title: 'Hello Blackboard', topicType: type.metadata.id, workstreams: [workstream.metadata.id] },
     });
 
     const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
@@ -72,15 +75,15 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
       expect(one.available).toBe(true);
       expect(one.document?.metadata.id).toBe(created.metadata.id);
       expect(one.document?.kind).toBe('Topic');
-      expect(one.document?.metadata.slug).toBe('hello-blackboard');
+      expect(one.document?.metadata.id).toBeTruthy();
       // The persisted spec is the parsed Topic spec (defaults applied).
       expect(one.document?.spec).toEqual({
         title: 'Hello Blackboard',
         body: '',
         status: 'open',
-        topicType: 'topic',
+        topicType: type.metadata.id,
         parents: [],
-        workstreams: ['ws-one'],
+        workstreams: [workstream.metadata.id],
         focusedWorkstreams: [],
       });
     } finally {
@@ -91,8 +94,11 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
   it('filters list by kind', async () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;
-    await seedDocument(mcpUrl, { kind: 'Topic', slug: 't1', spec: { title: 'T1', workstreams: ['ws-one'] } });
-    await seedDocument(mcpUrl, { kind: 'Topic', slug: 't2', spec: { title: 'T2', workstreams: ['ws-one'] } });
+    const type = await seedDocument(mcpUrl, {
+      kind: 'TopicType', spec: { label: 'Topic', icon: 'notebook', description: 'Default topic' },
+    });
+    await seedDocument(mcpUrl, { kind: 'Topic', spec: { title: 'T1', topicType: type.metadata.id } });
+    await seedDocument(mcpUrl, { kind: 'Topic', spec: { title: 'T2', topicType: type.metadata.id } });
 
     const client = new ControlPlaneClient({ resolveUrl: () => mcpUrl });
     try {

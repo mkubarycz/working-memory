@@ -41,7 +41,7 @@
   const fields = $derived(status ? [
     ['Display', status.displayName],
     ['Claim title', status.claimTitle],
-    ['Claim', status.claimSlug],
+    ['Claim', status.claimId],
     ['Repository', status.repository],
     ['Build context', status.buildContext],
     ['Dockerfile', status.dockerfile],

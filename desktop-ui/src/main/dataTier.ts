@@ -3,6 +3,7 @@ import { accessSync, constants, mkdirSync, readFileSync, writeFileSync } from 'n
 import { createServer } from 'node:net';
 import { homedir as systemHomedir } from 'node:os';
 import { join, posix, win32 } from 'node:path';
+import { z } from 'zod';
 import {
   DEFAULT_CONTROL_PLANE_SERVICE_PORT,
   resolveControlPlaneHome,
@@ -318,7 +319,7 @@ function backupTimestamp(date: Date): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function fileSlug(name: string): string {
+function fileId(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'instance';
 }
 
@@ -366,6 +367,52 @@ export class DataTierManager {
   /** The image bundled with this installer build. */
   get bundledTarget(): BackendUpdateTarget {
     return { version: this.options.version, image: bundledImage(this.options.version) };
+  }
+
+  async bootstrapCredential(port: number): Promise<string> {
+    const instance = this.require(port), names = dataTierInstanceNames(port);
+    const { docker, env } = await this.docker();
+    const raw = await this.runner.run(docker, ['inspect', names.container], { timeoutMs: this.timeouts.command, env });
+    const parsed: unknown = JSON.parse(raw.stdout);
+    const schema = z.array(z.object({
+      Config: z.object({
+        Image: z.string(),
+        Labels: z.record(z.string(), z.string()),
+      }),
+      Mounts: z.array(z.object({
+        Destination: z.string(), Source: z.string(),
+        Type: z.string(), Name: z.string().optional(),
+      })),
+      NetworkSettings: z.object({
+        Ports: z.record(z.string(),
+          z.array(z.object({
+            HostIp: z.string(), HostPort: z.string(),
+          })).nullable()),
+      }),
+    })).length(1);
+    const [container] = schema.parse(parsed);
+    const mount = container.Mounts.filter(mount => mount.Destination === '/data');
+    const binding = container.NetworkSettings.Ports[`${port}/tcp`];
+    const expectedMount = this.host.platform === 'win32'
+      ? mount[0]?.Type === 'volume' && mount[0]?.Name === names.volume
+      : mount[0]?.Type === 'bind' && mount[0]?.Source === dataTierHostDirectory(this.host, port);
+    if (container.Config.Image !== (instance.image ?? this.bundledTarget.image)
+      || container.Config.Labels['com.docker.compose.project'] !== names.project
+      || container.Config.Labels['com.docker.compose.service'] !== DATA_TIER_SERVICE
+      || mount.length !== 1 || !expectedMount || binding?.length !== 1
+      || binding[0].HostIp !== '127.0.0.1' || binding[0].HostPort !== String(port)) {
+      throw new Error('Owner setup refused: this container does not match the managed instance image, labels, data mount, and loopback port. Repair its registration before retrying.');
+    }
+    const script = "const fs=require('node:fs'); const p=process.env.WM_HOST_TASK_ADMIN_TOKEN_FILE||'/data/run/instance-bootstrap.secret';"
+      + "const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);"
+      + "try{const s=fs.fstatSync(fd);if(!s.isFile()||s.uid!==process.getuid()||(s.mode&63)!==0||s.size<32||s.size>4096)throw Error('Unsafe owner setup file');"
+      + "process.stdout.write(fs.readFileSync(fd,'utf8').trim());}finally{fs.closeSync(fd);}";
+    const result = await this.runner.run(docker, ['exec', names.container, 'node', '-e', script], {
+      timeoutMs: this.timeouts.command, env,
+    });
+    const token = result.stdout.trim();
+    if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error('Owner setup is unavailable. Upgrade this managed instance and retry.');
+    return token;
   }
 
   /**
@@ -483,7 +530,7 @@ export class DataTierManager {
       const container = dataTierInstanceNames(port).container;
       const running = (await this.containers(docker, env)).get(container)?.state === 'running';
       if (!running) throw new DataTierError('Start the instance before backing it up.', 'not-running');
-      const fileName = `working-memory-${fileSlug(instance.name)}-${backupTimestamp(this.now())}.sqlite`;
+      const fileName = `working-memory-${fileId(instance.name)}-${backupTimestamp(this.now())}.sqlite`;
       const snapshot = `/tmp/${fileName}`;
       const vacuum = `const { DatabaseSync } = require('node:sqlite');`
         + `const db = new DatabaseSync(${JSON.stringify(CONTAINER_DATABASE)});`

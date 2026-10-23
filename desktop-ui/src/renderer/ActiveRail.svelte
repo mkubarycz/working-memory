@@ -15,7 +15,7 @@
   import type { DesktopEnvironment, PreparedResourceDrag } from '../shared/contracts';
   import {
     activeContextMenuItems,
-    topicSlugFromOpenUri,
+    topicIdFromOpenUri,
     type ActiveContextMenuItem,
     type ActiveMoveTarget,
   } from './activeContextMenu';
@@ -46,10 +46,10 @@
     onOpen: (uri: string) => void;
     onToggleFocus: (workstream: string, topic: string) => void;
     onAction: (workstream: string, action: PanelAction) => void;
-    onReorder: (slug: string, section: PanelWorkstreamSection['section'], index: number) => Promise<void>;
+    onReorder: (id: string, section: PanelWorkstreamSection['section'], index: number) => Promise<void>;
     onTransferTopic: (request: TopicTransferRequest) => void;
-    onReparentTopic: (slug: string, parent: string | null) => void;
-    onAddTopic: (workstream: string, parent?: { slug: string; title: string }) => void;
+    onReparentTopic: (id: string, parent: string | null) => void;
+    onAddTopic: (workstream: string, parent?: { id: string; title: string }) => void;
     onAddWorkstream: () => void;
     onMoveToNewWorkstream: (source: TopicDragSource) => void;
     onOpenTopicBacklog: () => void;
@@ -85,7 +85,7 @@
   let sectionDrag: { boundary: ActiveSectionBoundary; startY: number; initial: ActiveSectionHeights } | null = null;
   let activeDrag = $state<
     | ({ kind: 'topic' } & TopicDragSource)
-    | { kind: 'workstream'; slug: string; section: PanelWorkstreamSection['section'] }
+    | { kind: 'workstream'; id: string; section: PanelWorkstreamSection['section'] }
     | null
   >(null);
   const topicDrag = $derived(activeDrag?.kind === 'topic' ? activeDrag : null);
@@ -97,14 +97,14 @@
   const pendingResourceDrags = new Map<string, number>();
   let dragPreparationGeneration = 0;
   let nativeDragFilePath = $state<string | null>(null);
-  let draggingWorkstreamSlug = $state<string | null>(null);
+  let draggingWorkstreamId = $state<string | null>(null);
 
   const sections = $derived(
     (data?.items.filter((item): item is PanelWorkstreamSection => item.kind === 'workstream-section')) ?? [],
   );
   const moveTargets = $derived(sections.flatMap((section) =>
     section.workstreams.flatMap((workstream): ActiveMoveTarget[] =>
-      workstream.slug ? [{ slug: workstream.slug, title: workstream.label }] : [])));
+      workstream.id ? [{ id: workstream.id, title: workstream.label }] : [])));
 
   $effect(() => {
     if (seeded || sections.length === 0) return;
@@ -142,7 +142,7 @@
       activeDrag = null;
       topicDropTarget = null;
       dropTarget = null;
-      draggingWorkstreamSlug = null;
+      draggingWorkstreamId = null;
       console.error('Unable to drag Working Memory context:', result.error);
     }
   }));
@@ -214,22 +214,22 @@
     menu = null;
     if (item.kind === 'create-child') {
       const topic = findTopic(workstream, item.topic);
-      onAddTopic(workstream, { slug: item.topic, title: topic?.label ?? item.topic });
+      onAddTopic(workstream, { id: item.topic, title: topic?.label ?? item.topic });
     } else if (item.kind === 'focus') onToggleFocus(workstream, item.topic);
     else onAction(workstream, item.action);
   }
 
-  function findTopic(workstream: string, slug: string): PanelTopic | undefined {
+  function findTopic(workstream: string, id: string): PanelTopic | undefined {
     const visit = (topics: PanelTopic[]): PanelTopic | undefined => {
       for (const topic of topics) {
-        if (topicSlugFromOpenUri(topic.openUri) === slug) return topic;
+        if (topicIdFromOpenUri(topic.openUri) === id) return topic;
         const nested = visit(topic.children ?? []);
         if (nested) return nested;
       }
       return undefined;
     };
     for (const section of sections) {
-      const card = section.workstreams.find((candidate) => candidate.slug === workstream);
+      const card = section.workstreams.find((candidate) => candidate.id === workstream);
       if (!card) continue;
       return visit([
         ...card.focused_topics,
@@ -247,7 +247,7 @@
     event.stopPropagation();
     const sourceWorkstream = menu?.workstream ?? '';
     const request = planTopicTransfer(
-      { slug: item.topic, sourceWorkstream },
+      { id: item.topic, sourceWorkstream },
       targetWorkstream,
       true,
     );
@@ -261,7 +261,7 @@
     const sourceWorkstream = menu?.workstream;
     if (!sourceWorkstream || !topic) return;
     menu = null;
-    onMoveToNewWorkstream({ slug: topic, sourceWorkstream });
+    onMoveToNewWorkstream({ id: topic, sourceWorkstream });
   }
 
   function openMoveSubmenu(event: KeyboardEvent): void {
@@ -393,13 +393,13 @@
 
   function startTopicDrag(
     event: DragEvent,
-    slug: string,
+    id: string,
     workstream: string,
     openUri: string,
     label: string,
   ): void {
     event.stopPropagation();
-    activeDrag = { kind: 'topic', slug, sourceWorkstream: workstream };
+    activeDrag = { kind: 'topic', id, sourceWorkstream: workstream };
     dropTarget = null;
     startResourceDrag(event, openUri, label);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove';
@@ -413,7 +413,7 @@
   }
 
   function updateTopicReparentTarget(event: DragEvent, parent: string | null): void {
-    if (!topicDrag || topicDrag.slug === parent) return;
+    if (!topicDrag || topicDrag.id === parent) return;
     event.preventDefault();
     event.stopPropagation();
     topicReparentTarget = parent ?? 'root';
@@ -421,12 +421,12 @@
   }
 
   function dropTopicOnParent(event: DragEvent, parent: string | null): void {
-    if (!topicDrag || topicDrag.slug === parent) return;
+    if (!topicDrag || topicDrag.id === parent) return;
     event.preventDefault();
     event.stopPropagation();
-    const slug = topicDrag.slug;
+    const id = topicDrag.id;
     finishTopicDrag();
-    onReparentTopic(slug, parent);
+    onReparentTopic(id, parent);
   }
 
   function startWorkstreamDrag(
@@ -434,11 +434,11 @@
     workstream: PanelWorkstream,
     section: PanelWorkstreamSection['section'],
   ): void {
-    const slug = workstream.slug ?? '';
-    if (!slug) return;
+    const id = workstream.id ?? '';
+    if (!id) return;
     event.stopPropagation();
-    activeDrag = { kind: 'workstream', slug, section };
-    draggingWorkstreamSlug = slug;
+    activeDrag = { kind: 'workstream', id, section };
+    draggingWorkstreamId = id;
     topicDropTarget = null;
     startResourceDrag(event, workstream.openUri, workstream.label);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
@@ -447,13 +447,13 @@
   function finishWorkstreamDrag(): void {
     if (activeDrag?.kind === 'workstream') activeDrag = null;
     nativeDragFilePath = null;
-    draggingWorkstreamSlug = null;
+    draggingWorkstreamId = null;
     dropTarget = null;
   }
 
   function clearExternalDragVisual(event: DragEvent): void {
     if ((event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) return;
-    draggingWorkstreamSlug = null;
+    draggingWorkstreamId = null;
   }
 
   function clearCompletedNativeDrag(event: PointerEvent): void {
@@ -462,7 +462,7 @@
     activeDrag = null;
     topicDropTarget = null;
     dropTarget = null;
-    draggingWorkstreamSlug = null;
+    draggingWorkstreamId = null;
   }
 
   function updateTopicDropTarget(event: DragEvent, targetWorkstream: string): void {
@@ -501,10 +501,10 @@
   async function dropWorkstream(event: DragEvent, section: PanelWorkstreamSection['section']): Promise<void> {
     if (!workstreamDrag || dropTarget?.section !== section) return;
     event.preventDefault();
-    const { slug } = workstreamDrag;
+    const { id } = workstreamDrag;
     const { index } = dropTarget;
     finishWorkstreamDrag();
-    await onReorder(slug, section, index);
+    await onReorder(id, section, index);
   }
 
   function resizeSectionWithKeyboard(boundary: ActiveSectionBoundary, event: KeyboardEvent): void {
@@ -537,9 +537,9 @@
 {#snippet nodeRow(node: PanelTopic, workstream: string, depth: number)}
   {@const children = node.children ?? []}
   {@const open = expanded.has(node.id)}
-  {@const topicSlug = topicSlugFromOpenUri(node.openUri)}
+  {@const topicId = topicIdFromOpenUri(node.openUri)}
   {@const menuItems = activeContextMenuItems(node.actions, {
-    topic: topicSlug,
+    topic: topicId,
     focused: node.focused,
     sourceWorkstream: workstream,
     moveTargets,
@@ -548,12 +548,12 @@
     <div
       class="active-row"
       class:closed={node.status === 'closed'}
-      class:topic-reparent-target={topicReparentTarget === topicSlug}
+      class:topic-reparent-target={topicReparentTarget === topicId}
       data-kind={node.kind}
       role="group"
-      ondragenter={(event) => updateTopicReparentTarget(event, topicSlug)}
-      ondragover={(event) => updateTopicReparentTarget(event, topicSlug)}
-      ondrop={(event) => dropTopicOnParent(event, topicSlug)}
+      ondragenter={(event) => updateTopicReparentTarget(event, topicId)}
+      ondragover={(event) => updateTopicReparentTarget(event, topicId)}
+      ondrop={(event) => dropTopicOnParent(event, topicId)}
       oncontextmenu={(event) => void openMenu(event, workstream, menuItems)}
     >
       {#if children.length > 0}
@@ -572,7 +572,7 @@
         title={node.tooltip}
         draggable="true"
         onpointerdown={() => prepareResourceDrag(node.openUri, node.label)}
-        ondragstart={(event) => startTopicDrag(event, topicSlug, workstream, node.openUri, node.label)}
+        ondragstart={(event) => startTopicDrag(event, topicId, workstream, node.openUri, node.label)}
         ondragend={finishTopicDrag}
         onclick={() => onOpen(node.openUri)}
       >
@@ -580,7 +580,7 @@
         <span class="active-label">{node.label}</span>
       </button>
       {@render attentionBubble(node.agentMessageCount, node.agentMessageSeverity)}
-      <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', node.id, topicSlug)} />
+      <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', node.id, topicId)} />
     </div>
     {#if children.length > 0 && open}
       <ul class="active-tree branch-tree">
@@ -646,21 +646,21 @@
     class="active-card {workstreamColorClass(workstream.id)}"
     class:compact
     class:summary={sectionStatus !== 'progress'}
-    class:dragging={draggingWorkstreamSlug === workstream.slug}
-    class:topic-drop-target={topicDropTarget === workstream.slug}
+    class:dragging={draggingWorkstreamId === workstream.id}
+    class:topic-drop-target={topicDropTarget === workstream.id}
     data-section-status={sectionStatus}
-    data-workstream={workstream.slug ?? workstream.id}
-    ondragenter={(event) => updateTopicDropTarget(event, workstream.slug ?? '')}
-    ondragover={(event) => updateTopicDropTarget(event, workstream.slug ?? '')}
+    data-workstream={workstream.id}
+    ondragenter={(event) => updateTopicDropTarget(event, workstream.id ?? '')}
+    ondragover={(event) => updateTopicDropTarget(event, workstream.id ?? '')}
     ondragleave={(event) => {
       if (!(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) topicDropTarget = null;
     }}
-    ondrop={(event) => dropTopic(event, workstream.slug ?? '')}
+    ondrop={(event) => dropTopic(event, workstream.id ?? '')}
   >
     <div
       class="active-card-header"
       role="group"
-      oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', menuItems)}
+      oncontextmenu={(event) => void openMenu(event, workstream.id ?? '', menuItems)}
     >
       {#if expandable}
         <button
@@ -686,21 +686,21 @@
         <span class="active-label">{workstream.label}</span>
       </button>
       {@render attentionBubble(workstream.agentMessageCount, workstream.agentMessageSeverity)}
-      <UnreadBadge count={unreadResponseCount(unreadResponses, 'workstream', workstream.id, workstream.slug)} />
+      <UnreadBadge count={unreadResponseCount(unreadResponses, 'workstream', workstream.id, workstream.id)} />
     </div>
     {#if expandable && open}
       <div class="active-card-body">
         {#if workstream.focused_topics.length > 0}
           <section class="pinned-topics" aria-label={`Pinned topics in ${workstream.label}`}>
             {#each workstream.focused_topics as topic (topic.id)}
-              {@const topicSlug = topicSlugFromOpenUri(topic.openUri)}
+              {@const topicId = topicIdFromOpenUri(topic.openUri)}
               <div
                 class="focused-topic"
                 role="group"
-                oncontextmenu={(event) => void openMenu(event, workstream.slug ?? '', activeContextMenuItems(topic.actions, {
-                  topic: topicSlug,
+                oncontextmenu={(event) => void openMenu(event, workstream.id ?? '', activeContextMenuItems(topic.actions, {
+                  topic: topicId,
                   focused: topic.focused,
-                  sourceWorkstream: workstream.slug ?? '',
+                  sourceWorkstream: workstream.id ?? '',
                   moveTargets,
                 }))}
               >
@@ -710,7 +710,7 @@
                   aria-label="Unpin {topic.label} from {workstream.label}"
                   onclick={(event) => {
                     event.stopPropagation();
-                    onToggleFocus(workstream.slug ?? '', topicSlug);
+                    onToggleFocus(workstream.id ?? '', topicId);
                   }}
                 ><span aria-hidden="true" class="codicon codicon-pinned"></span></button>
                 <button
@@ -718,14 +718,14 @@
                   title={topic.tooltip}
                   draggable="true"
                   onpointerdown={() => prepareResourceDrag(topic.openUri, topic.label)}
-                  ondragstart={(event) => startTopicDrag(event, topicSlug, workstream.slug ?? '', topic.openUri, topic.label)}
+                  ondragstart={(event) => startTopicDrag(event, topicId, workstream.id ?? '', topic.openUri, topic.label)}
                   ondragend={finishTopicDrag}
                   onclick={() => onOpen(topic.openUri)}
                 >
                   <span aria-hidden="true" class="codicon codicon-{topic.icon}"></span>
                   <span class="active-label">{topic.label}</span>
                   {@render attentionBubble(topic.agentMessageCount, topic.agentMessageSeverity)}
-                  <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id, topicSlug)} />
+                  <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id, topicId)} />
                 </button>
               </div>
             {/each}
@@ -734,7 +734,7 @@
         {#if workstream.children.length > 0}
           <div class="topic-tree" use:attachTreeConnector>
             {#each workstream.children as group (group.id)}
-              {@render topicGroup(group, workstream.slug ?? '')}
+              {@render topicGroup(group, workstream.id ?? '')}
             {/each}
           </div>
         {/if}
@@ -934,10 +934,10 @@
               <span aria-hidden="true" class="codicon codicon-add"></span>
               <span>New Workstream...</span>
             </button>
-            {#each item.targets as target (target.slug)}
+            {#each item.targets as target (target.id)}
               <button
                 role="menuitem"
-                onclick={(event) => moveTopicFromMenu(event, item, target.slug)}
+                onclick={(event) => moveTopicFromMenu(event, item, target.id)}
               >
                 <span aria-hidden="true" class="codicon codicon-briefcase"></span>
                 <span>{target.title}</span>

@@ -30,7 +30,7 @@ vi.mock('@github/copilot-sdk', () => ({
 
 import { copilotConnection, copilotEnvironment, localCopilotPath, LocalCopilotProvider, parseCopilotTurn, unpackedCopilotPath } from '../src/main/copilotProvider';
 
-const tools = [{ name: 'ws-topic-read', inputSchema: { type: 'object', properties: { slug: { type: 'string' } } } }];
+const tools = [{ name: 'ws-topic-read', inputSchema: { type: 'object', properties: { id: { type: 'string' } } } }];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -211,7 +211,7 @@ describe('local Copilot provider', () => {
 
   it('keeps each model turn isolated and supplies previous tool results without executing Copilot tools', async () => {
     sdk.session.sendAndWait
-      .mockResolvedValueOnce({ data: { content: '{"text":"","calls":[{"name":"ws-topic-read","arguments":{"slug":"test"}}]}' } })
+      .mockResolvedValueOnce({ data: { content: '{"text":"","calls":[{"name":"ws-topic-read","arguments":{"id":"test"}}]}' } })
       .mockResolvedValueOnce({ data: { content: '{"text":"Read the topic.","calls":[]}' } });
     const provider = new LocalCopilotProvider();
     const conversation = createModelConversation({
@@ -219,7 +219,7 @@ describe('local Copilot provider', () => {
       userMessage: 'Read test', tools,
     });
     const turn = await provider.turn(conversation, 1000, new AbortController().signal);
-    expect(turn.calls[0]).toMatchObject({ name: 'ws-topic-read', arguments: { slug: 'test' } });
+    expect(turn.calls[0]).toMatchObject({ name: 'ws-topic-read', arguments: { id: 'test' } });
     appendToolResults(conversation, turn, [{ call: turn.calls[0], output: { title: 'Test' } }]);
     expect(await provider.turn(conversation, 1000, new AbortController().signal)).toMatchObject({
       text: 'Read the topic.', calls: [],

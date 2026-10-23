@@ -48,7 +48,7 @@ export interface DocumentEnvelope {
   kind: string;
   metadata: {
     id: string;
-    slug: string | null;
+
     labels: Record<string, string>;
     createdAt: number;
     updatedAt: number;
@@ -76,12 +76,12 @@ export interface GetDocumentResult {
 
 export interface GetDocumentInput {
   id?: string;
-  slug?: string;
+
   kind?: string;
   /**
-   * When true, a by-id/slug read also returns a soft-deleted document. Used to
-   * locate a workstream document by slug in order to undelete it (restore is by
-   * id, but callers only know the slug). Defaults to false (live rows only).
+   * When true, a by-id read also returns a soft-deleted document. Used to
+   * locate a workstream document by id in order to undelete it (restore is by
+   * id, but callers only know the id). Defaults to false (live rows only).
    */
   includeDeleted?: boolean;
 }
@@ -106,7 +106,7 @@ export interface WriteDocumentResult {
 
 export interface CreateDocumentInput {
   kind: string;
-  slug?: string;
+
   labels?: Record<string, string>;
   spec?: Record<string, unknown>;
 }
@@ -115,7 +115,7 @@ export interface UpdateDocumentInput {
   id: string;
   expectedResourceVersion: number;
   spec?: Record<string, unknown>;
-  slug?: string;
+
   labels?: Record<string, string>;
 }
 
@@ -141,9 +141,9 @@ export type WorkstreamLifecycleStatus = 'queue' | 'progress' | 'backlog' | 'clos
  * `control-plane/src/kinds/workstream/workstream.ts::IWorkstream`.
  */
 export interface Workstream {
-  /** Document id (uuid). Distinct from the legacy integer rowid. */
+  /** Document ID. Distinct from the legacy integer rowid. */
   id: string;
-  slug: string | null;
+
   title: string;
   status: WorkstreamLifecycleStatus;
   closure: string | null;
@@ -159,7 +159,7 @@ export interface Workstream {
 /**
  * Thrown by the typed `ws-*` domain methods (`wsRead`/`wsCreate`/`wsUpdate`/
  * `wsDelete`) when the daemon is unreachable or a tool result is flagged
- * `isError` (unknown slug, version conflict, spec validation, …). Unlike the
+ * `isError` (unknown id, version conflict, spec validation, …). Unlike the
  * generic `wm-document-*` helpers — which return an `{ available }` result
  * wrapper so the Blackboard can render an empty state — the domain methods
  * return the mapped value directly, so failures MUST throw. The control-plane's
@@ -174,21 +174,21 @@ export class ControlPlaneClientError extends Error {
 }
 
 export interface WsReadInput {
-  slug?: string;
+
   id?: string;
   query?: string;
   limit?: number;
 }
 
 export interface WsCreateInput {
-  slug?: string;
+
   title: string;
   status?: string;
   closure?: string;
 }
 
 export interface WsUpdateInput {
-  slug: string;
+  id: string;
   title?: string;
   status?: string;
   closure?: string;
@@ -197,14 +197,14 @@ export interface WsUpdateInput {
 
 export interface WsReorderInput {
   updates: Array<{
-    slug: string;
+    id: string;
     status: 'queue' | 'progress' | 'backlog';
     position: number;
   }>;
 }
 
 export interface WsDeleteInput {
-  slug: string;
+  id: string;
   restore?: boolean;
 }
 
@@ -240,7 +240,7 @@ export interface ApplicationContractMetadata {
 
 export interface ContainerClaim {
   id: string;
-  slug: string;
+
   title: string;
   repository: string;
   sourceRevision?: string;
@@ -259,14 +259,14 @@ export interface ContainerAppPresentation {
 }
 
 export interface ContainerClaimReadInput {
-  slug?: string;
+
   id?: string;
   query?: string;
   limit?: number;
 }
 
 export interface ContainerClaimCreateInput {
-  slug: string;
+
   title: string;
   repository: string;
   sourceRevision?: string;
@@ -277,7 +277,7 @@ export interface ContainerClaimCreateInput {
 }
 
 export interface ContainerClaimUpdateInput {
-  slug: string;
+  id: string;
   title?: string;
   repository?: string;
   sourceRevision?: string | null;
@@ -296,27 +296,27 @@ export interface ContainerClaimUpdateInput {
  * Kept structurally identical to
  * `control-plane/src/kinds/topic/topic.ts::ITopic`.
  *
- * Two relational fields are flat slug arrays (spec refs), NOT the journal's rich
+ * Two relational fields are flat id arrays (spec refs), NOT the journal's rich
  * join rows:
- *   - `workstreams` — the member workstream slugs. Per-workstream focus is a
+ *   - `workstreams` — the member workstream ids. Per-workstream focus is a
  *     separate `focusedWorkstreams` subset (there is no per-link `focused` flag
  *     the way the journal join row carried one).
  *   - `focusedWorkstreams` — the subset of `workstreams` for which this topic is
  *     focused/pinned. A workstream's focused topics = topics whose
- *     `focusedWorkstreams` includes that workstream's slug.
- *   - `parents` — the parent topic slugs (the topic DAG).
+ *     `focusedWorkstreams` includes that workstream's id.
+ *   - `parents` — the parent topic ids (the topic DAG).
  */
 export interface Topic {
-  /** Document id (uuid). */
+  /** Document ID. */
   id: string;
-  slug: string | null;
+
   title: string;
   body: string;
   status: 'open' | 'closed';
   topicType: string;
-  /** Parent topic slugs (the topic DAG). */
+  /** Parent topic ids (the topic DAG). */
   parents: string[];
-  /** Member workstream slugs (topic↔workstream membership). */
+  /** Member workstream ids (topic↔workstream membership). */
   workstreams: string[];
   /** Subset of `workstreams` this topic is focused/pinned in (per-workstream focus). */
   focusedWorkstreams: string[];
@@ -327,16 +327,16 @@ export interface Topic {
 }
 
 export interface TopicReadInput {
-  slug?: string;
+
   id?: string;
   query?: string;
-  /** Filter to topics whose `workstreams` membership includes this slug. */
+  /** Filter to topics whose `workstreams` membership includes this id. */
   workstream?: string;
   limit?: number;
 }
 
 export interface TopicCreateInput {
-  slug?: string;
+
   title: string;
   body?: string;
   status?: string;
@@ -347,7 +347,7 @@ export interface TopicCreateInput {
 }
 
 export interface TopicUpdateInput {
-  slug: string;
+  id: string;
   title?: string;
   body?: string;
   status?: string;
@@ -358,35 +358,35 @@ export interface TopicUpdateInput {
 }
 
 export interface TopicTransferInput {
-  slug: string;
+  id: string;
   sourceWorkstream: string;
   targetWorkstream: string;
   move?: boolean;
 }
 
 export interface TopicCloseTreeInput {
-  slug: string;
+  id: string;
   includeSharedDescendants?: boolean;
   dryRun?: boolean;
 }
 
 export interface TopicCloseTreeResult {
-  root: { id: string; slug: string; title: string; resourceVersion: number };
+  root: { id: string;  title: string; resourceVersion: number };
   dryRun: boolean;
   includeSharedDescendants: boolean;
   matchedCount: number;
-  matchedSlugs: string[];
+  matchedIds: string[];
   closedCount: number;
-  closedSlugs: string[];
+  closedIds: string[];
   alreadyClosedCount: number;
-  alreadyClosedSlugs: string[];
+  alreadyClosedIds: string[];
   skippedSharedCount: number;
-  skippedSharedSlugs: string[];
+  skippedSharedIds: string[];
 }
 
 export interface TopicType {
   id: string;
-  slug: string | null;
+
   label: string;
   icon: string;
   description: string;
@@ -398,14 +398,14 @@ export interface TopicType {
 }
 
 export interface TopicTypeReadInput {
-  slug?: string;
+
   id?: string;
   query?: string;
   limit?: number;
 }
 
 export interface TopicTypeUpdateInput {
-  slug: string;
+  id: string;
   label?: string;
   icon?: string;
   description?: string;
@@ -413,17 +413,17 @@ export interface TopicTypeUpdateInput {
 }
 
 export interface TopicTypeCreateInput {
-  slug?: string;
+
   label: string;
   icon: string;
   description: string;
   body_template?: string;
 }
 
-/** A named bag of string key-value pairs (`data`), identified by slug. */
+/** A named bag of string key-value pairs (`data`), identified by id. */
 export interface Config {
   id: string;
-  slug: string | null;
+
   name: string;
   /** The key-value pairs. Values are always strings. */
   data: Record<string, string>;
@@ -435,21 +435,21 @@ export interface Config {
 }
 
 export interface ConfigReadInput {
-  slug?: string;
+
   id?: string;
   query?: string;
   limit?: number;
 }
 
 export interface ConfigCreateInput {
-  slug?: string;
+
   name?: string;
   data: Record<string, string>;
   status?: string;
 }
 
 export interface ConfigUpdateInput {
-  slug: string;
+  id: string;
   name?: string;
   /** Key-value pairs to MERGE onto the existing map. */
   data?: Record<string, string>;
@@ -457,32 +457,32 @@ export interface ConfigUpdateInput {
 }
 
 export interface ConfigDeleteInput {
-  slug: string;
+  id: string;
   restore?: boolean;
 }
 
 export interface TopicDeleteInput {
-  slug: string;
+  id: string;
   restore?: boolean;
 }
 
 export interface TopicAttachWorkstreamInput {
-  slug: string;
+  id: string;
   workstream: string;
 }
 
 export interface TopicDetachWorkstreamInput {
-  slug: string;
+  id: string;
   workstream: string;
 }
 
 export interface TopicSetFocusInput {
-  slug: string;
+  id: string;
   workstream: string;
 }
 
 export interface TopicClearFocusInput {
-  slug: string;
+  id: string;
   workstream: string;
 }
 
@@ -495,15 +495,15 @@ export interface TopicClearFocusInput {
  * Kept structurally identical to
  * `control-plane/src/kinds/alert/alert.ts::IAlert`.
  *
- * `topics` is a flat topic-slug reference array (`spec.topics`) — the same slug
+ * `topics` is a flat topic-id reference array (`spec.topics`) — the same id
  * space the Topic membership uses — so a card's bubble can be computed by
- * matching an alert's `topics` against a topic (or workstream member) slug.
+ * matching an alert's `topics` against a topic (or workstream member) id.
  */
 /** @deprecated External compatibility only; use AgentMessage. */
 export interface Alert {
-  /** Document id (uuid). Alerts have no slug (always null). */
+  /** Document ID. Alerts use their document ID. */
   id: string;
-  slug: string | null;
+
   title: string;
   description: string;
   recommended_action: string;
@@ -511,7 +511,7 @@ export interface Alert {
   status: 'alert' | 'informational' | 'closed';
   dedupe_key: string | null;
   created_by: string;
-  /** Referenced topic slugs (the same slug space as Topic membership). */
+  /** Referenced topic ids (the same id space as Topic membership). */
   topics: string[];
   created_at: number;
   updated_at: number;
@@ -542,7 +542,7 @@ export interface AlertUpdateInput {
 }
 
 /**
- * Fields for `ws-alert-create`. Alerts have NO slug — the control-plane returns
+ * Fields for `ws-alert-create`. Alerts use document IDs — the control-plane returns
  * the created alert (whose `id` is the handle for later update/delete). Only
  * `description` is required by the kind; the rest default server-side.
  */
@@ -595,7 +595,7 @@ export interface AgentMessage {
   id: string;
   agent_id: string;
   agent_name: string;
-  slug: null;
+
   title: string;
   description: string;
   recommended_action: string;
@@ -673,7 +673,7 @@ export type CommandJournalStatus =
 export interface CommandJournalScopeRef {
   kind: string;
   id: string;
-  slug?: string;
+
   title?: string;
 }
 
@@ -790,6 +790,8 @@ export interface CommandJournalDetailInput {
 
 
 export interface ControlPlaneClientOptions {
+  getToken?: (mcpUrl: string) => string | null;
+  onUnauthorized?: (mcpUrl: string, rejectedToken: string | null) => void;
   /**
    * Resolve the `/mcp` URL to connect to, or `null` when the daemon is
    * unavailable. Defaults to reading the discovery port file. Tests inject a
@@ -812,6 +814,8 @@ export interface ControlPlaneClientOptions {
    */
   onError?: (err: unknown) => void;
 }
+
+export class InstanceAuthenticationError extends Error {}
 
 /**
  * One canonical tool as advertised by the control-plane's MCP `tools/list`. The
@@ -968,7 +972,7 @@ export class ControlPlaneClient {
     while (!stopped.aborted) {
       const url = new URL('/changes', mcpUrl);
       if (version !== undefined) url.searchParams.set('since', String(version));
-      const response = await fetch(url, { signal: AbortSignal.any([stopped, AbortSignal.timeout(35_000)]) });
+      const response = await this.fetch(url, { signal: AbortSignal.any([stopped, AbortSignal.timeout(35_000)]) });
       if (!response.ok) {
         throw new Error(response.status === 404
           ? 'Live updates require upgrading the selected Working Memory data-tier instance.'
@@ -981,6 +985,9 @@ export class ControlPlaneClient {
   }
   private readonly resolveUrl: () => string | null;
   private readonly onError: (err: unknown) => void;
+  private readonly getToken: (mcpUrl: string) => string | null;
+  private readonly onUnauthorized: (mcpUrl: string, rejectedToken: string | null) => void;
+  private authenticationError: string | null = null;
   private client: Client | null = null;
   private transport: StreamableHTTPClientTransport | null = null;
   /** In-flight connect, so concurrent calls share one handshake. */
@@ -991,13 +998,43 @@ export class ControlPlaneClient {
     this.resolveUrl =
       options.resolveUrl ?? (() => defaultResolveUrl(options.allowEnvOverride ?? false));
     this.onError = options.onError ?? (() => {});
+    this.getToken = options.getToken ?? (() => {
+      let token = process.env.WM_INSTANCE_TOKEN?.trim();
+      if (process.env.WM_INSTANCE_TOKEN_FILE) {
+        try { token = readFileSync(process.env.WM_INSTANCE_TOKEN_FILE, 'utf8').trim(); }
+        catch { throw new InstanceAuthenticationError('Cannot read the instance credential file. Request access through /identity/v1/mcp and store the issued token privately.'); }
+      }
+      if (token && !/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new InstanceAuthenticationError('Invalid instance credential. Request new access through /identity/v1/mcp.');
+      return token || null;
+    });
+    this.onUnauthorized = options.onUnauthorized ?? (() => {});
+  }
+
+  async fetch(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
+    const mcpUrl = this.resolveUrl();
+    if (!mcpUrl) throw new Error('Select a Working Memory instance first.');
+    const url = input instanceof Request ? new URL(input.url) : new URL(input), origin = new URL(mcpUrl).origin;
+    if (url.origin !== origin || url.username || url.password || url.hash) {
+      throw new Error('Refusing to send instance credentials outside the selected instance.');
+    }
+    const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+    const token = this.getToken(mcpUrl);
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const response = await fetch(input, { ...init, headers, redirect: 'error' });
+    if (response.status === 401) {
+      this.authenticationError = 'Working Memory sign-in is required. Desktop: sign in to the selected instance. '
+        + `Agents: request access or an owner-approved refresh at ${origin}/identity/v1/mcp, then initialize a new MCP session.`;
+      this.onUnauthorized(mcpUrl, token);
+      throw new InstanceAuthenticationError(this.authenticationError);
+    }
+    return response;
   }
 
   /** List documents via `wm-document-read` (list mode), optionally filtered by `kind`. */
   async listDocuments(kind?: string): Promise<ListDocumentsResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, documents: [], error: 'Control plane not running' };
+      return { available: false, documents: [], error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const result = await client.callTool({
@@ -1015,11 +1052,11 @@ export class ControlPlaneClient {
     }
   }
 
-  /** Fetch one document via `wm-document-read` (by id, or slug + optional kind). */
+  /** Fetch one document via `wm-document-read` (by id, or id + optional kind). */
   async getDocument(input: GetDocumentInput): Promise<GetDocumentResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, document: null, error: 'Control plane not running' };
+      return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const result = await client.callTool({
@@ -1045,13 +1082,10 @@ export class ControlPlaneClient {
   async createDocument(input: CreateDocumentInput): Promise<WriteDocumentResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, document: null, error: 'Control plane not running' };
+      return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const args: Record<string, unknown> = { kind: input.kind };
-      if (input.slug !== undefined) {
-        args.slug = input.slug;
-      }
       if (input.labels !== undefined) {
         args.labels = input.labels;
       }
@@ -1073,7 +1107,7 @@ export class ControlPlaneClient {
   async updateDocument(input: UpdateDocumentInput): Promise<WriteDocumentResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, document: null, error: 'Control plane not running' };
+      return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const args: Record<string, unknown> = {
@@ -1083,8 +1117,8 @@ export class ControlPlaneClient {
       if (input.spec !== undefined) {
         args.spec = input.spec;
       }
-      if (input.slug !== undefined) {
-        args.slug = input.slug;
+      if (input.id !== undefined) {
+        args.id = input.id;
       }
       if (input.labels !== undefined) {
         args.labels = input.labels;
@@ -1104,7 +1138,7 @@ export class ControlPlaneClient {
   async deleteDocument(input: DeleteDocumentInput): Promise<WriteDocumentResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, document: null, error: 'Control plane not running' };
+      return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const args: Record<string, unknown> = { id: input.id };
@@ -1139,7 +1173,7 @@ export class ControlPlaneClient {
   async listTools(): Promise<CanonicalToolDef[]> {
     const client = await this.ensureConnected();
     if (!client) {
-      throw new ControlPlaneClientError('Control plane not running');
+      throw new ControlPlaneClientError(this.authenticationError ?? 'Control plane not running');
     }
     let res: unknown;
     try {
@@ -1179,7 +1213,7 @@ export class ControlPlaneClient {
   ): Promise<ToolCallOutcome> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { ok: false, error: 'Control plane not running' };
+      return { ok: false, error: this.authenticationError ?? 'Control plane not running' };
     }
     let result: unknown;
     try {
@@ -1216,7 +1250,7 @@ export class ControlPlaneClient {
   ): Promise<unknown> {
     const client = await this.ensureConnected();
     if (!client) {
-      throw new ControlPlaneClientError('Control plane not running');
+      throw new ControlPlaneClientError(this.authenticationError ?? 'Control plane not running');
     }
     let result: unknown;
     try {
@@ -1241,15 +1275,12 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Read workstreams via `ws-workstream-read`. A by-slug/id read yields a 0-or-1
-   * element array; list mode (no slug/id) returns all live workstreams, optionally
+   * Read workstreams via `ws-workstream-read`. A by-id read yields a 0-or-1
+   * element array; list mode (no id) returns all live workstreams, optionally
    * filtered by `query` / capped by `limit`.
    */
   async wsRead(input: WsReadInput = {}): Promise<Workstream[]> {
     const args: Record<string, unknown> = {};
-    if (input.slug !== undefined) {
-      args.slug = input.slug;
-    }
     if (input.id !== undefined) {
       args.id = input.id;
     }
@@ -1268,9 +1299,6 @@ export class ControlPlaneClient {
   /** Create a workstream via `ws-workstream-create`. Returns the created workstream. */
   async wsCreate(input: WsCreateInput): Promise<Workstream> {
     const args: Record<string, unknown> = { title: input.title };
-    if (input.slug !== undefined) {
-      args.slug = input.slug;
-    }
     if (input.status !== undefined) {
       args.status = input.status;
     }
@@ -1281,11 +1309,11 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Update a workstream via `ws-workstream-update` (identified by `slug`; only the
+   * Update a workstream via `ws-workstream-update` (identified by `id`; only the
    * changed fields are sent). The control-plane reads the current doc for its CAS guard.
    */
   async wsUpdate(input: WsUpdateInput): Promise<Workstream> {
-    const args: Record<string, unknown> = { slug: input.slug };
+    const args: Record<string, unknown> = { id: input.id };
     if (input.title !== undefined) {
       args.title = input.title;
     }
@@ -1312,18 +1340,18 @@ export class ControlPlaneClient {
 
   /**
    * Soft-delete (or, with `restore: true`, undelete) a workstream via
-   * `ws-workstream-delete` (identified by `slug`). Returns `{ ok, slug }`.
+   * `ws-workstream-delete` (identified by `id`). Returns `{ ok, id }`.
    */
-  async wsDelete(input: WsDeleteInput): Promise<{ ok: boolean; slug: string }> {
-    const args: Record<string, unknown> = { slug: input.slug };
+  async wsDelete(input: WsDeleteInput): Promise<{ ok: boolean; id: string }> {
+    const args: Record<string, unknown> = { id: input.id };
     if (input.restore !== undefined) {
       args.restore = input.restore;
     }
     const result = await this.callDomainTool('ws-workstream-delete', args);
-    const parsed = parseToolText(result) as { ok?: unknown; slug?: unknown } | null;
+    const parsed = parseToolText(result) as { ok?: unknown; id?: unknown } | null;
     return {
       ok: parsed?.ok === true,
-      slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
+      id: typeof parsed?.id === 'string' ? parsed.id : input.id,
     };
   }
 
@@ -1331,7 +1359,7 @@ export class ControlPlaneClient {
 
   private parseContainerClaim(result: unknown): ContainerClaim {
     const parsed = parseToolText(result) as ContainerClaim | null;
-    if (!parsed || typeof parsed.id !== 'string' || typeof parsed.slug !== 'string') {
+    if (!parsed || typeof parsed.id !== 'string' || typeof parsed.id !== 'string') {
       throw new ControlPlaneClientError('Malformed control-plane container claim response');
     }
     return parsed;
@@ -1362,7 +1390,7 @@ export class ControlPlaneClient {
   // parses the tool's JSON text result into the owned {@link Topic} shape and
   // THROWS {@link ControlPlaneClientError} on a dead daemon, a dropped
   // connection, or an `isError` tool result. Workstream membership + parents are
-  // flat slug arrays on the returned Topic; attach/detach edit membership.
+  // flat id arrays on the returned Topic; attach/detach edit membership.
 
   /** Parse a `ws-topic-*` success result into the owned {@link Topic} shape. */
   private parseTopic(result: unknown): Topic {
@@ -1370,7 +1398,7 @@ export class ControlPlaneClient {
     if (!parsed || typeof parsed.id !== 'string') {
       throw new ControlPlaneClientError('Malformed control-plane topic response');
     }
-    // Defensive defaults for the flat slug-array spec refs (an older/partial
+    // Defensive defaults for the flat id-array spec refs (an older/partial
     // serialization may omit them).
     if (!Array.isArray(parsed.workstreams)) {
       parsed.workstreams = [];
@@ -1382,15 +1410,12 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Read topics via `ws-topic-read`. A by-slug/id read yields a 0-or-1 element
-   * array; list mode (no slug/id) returns all live topics, optionally filtered
+   * Read topics via `ws-topic-read`. A by-id read yields a 0-or-1 element
+   * array; list mode (no id) returns all live topics, optionally filtered
    * by `query` (substring), `workstream` (membership), and capped by `limit`.
    */
   async topicRead(input: TopicReadInput = {}): Promise<Topic[]> {
     const args: Record<string, unknown> = {};
-    if (input.slug !== undefined) {
-      args.slug = input.slug;
-    }
     if (input.id !== undefined) {
       args.id = input.id;
     }
@@ -1412,9 +1437,6 @@ export class ControlPlaneClient {
   /** Create a topic via `ws-topic-create`. Returns the created topic. */
   async topicCreate(input: TopicCreateInput): Promise<Topic> {
     const args: Record<string, unknown> = { title: input.title };
-    if (input.slug !== undefined) {
-      args.slug = input.slug;
-    }
     if (input.body !== undefined) {
       args.body = input.body;
     }
@@ -1437,12 +1459,12 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Update a topic via `ws-topic-update` (identified by `slug`; only the changed
+   * Update a topic via `ws-topic-update` (identified by `id`; only the changed
    * fields are sent). The control-plane reads the current doc for its CAS guard.
    * Note `parents` / `workstreams` are REPLACEMENT arrays when provided.
    */
   async topicUpdate(input: TopicUpdateInput): Promise<Topic> {
-    const args: Record<string, unknown> = { slug: input.slug };
+    const args: Record<string, unknown> = { id: input.id };
     if (input.title !== undefined) {
       args.title = input.title;
     }
@@ -1470,7 +1492,7 @@ export class ControlPlaneClient {
   /** Atomically copy or move a topic and its descendant closure between workstreams. */
   async topicTransfer(input: TopicTransferInput): Promise<Topic[]> {
     const result = await this.callDomainTool('ws-topic-transfer', {
-      slug: input.slug,
+      id: input.id,
       sourceWorkstream: input.sourceWorkstream,
       targetWorkstream: input.targetWorkstream,
       move: input.move ?? false,
@@ -1485,11 +1507,11 @@ export class ControlPlaneClient {
   /** Atomically close a topic and its eligible descendant closure. */
   async topicCloseTree(input: TopicCloseTreeInput): Promise<TopicCloseTreeResult> {
     const parsed = parseToolText(await this.callDomainTool('ws-topic-close-tree', {
-      slug: input.slug,
+      id: input.id,
       includeSharedDescendants: input.includeSharedDescendants ?? false,
       dryRun: input.dryRun ?? false,
     })) as TopicCloseTreeResult | null;
-    if (!parsed || typeof parsed.matchedCount !== 'number' || !Array.isArray(parsed.matchedSlugs)) {
+    if (!parsed || typeof parsed.matchedCount !== 'number' || !Array.isArray(parsed.matchedIds)) {
       throw new ControlPlaneClientError('Malformed control-plane topic close-tree response');
     }
     return parsed;
@@ -1497,18 +1519,18 @@ export class ControlPlaneClient {
 
   /**
    * Soft-delete (or, with `restore: true`, undelete) a topic via
-   * `ws-topic-delete` (identified by `slug`). Returns `{ ok, slug }`.
+   * `ws-topic-delete` (identified by `id`). Returns `{ ok, id }`.
    */
-  async topicDelete(input: TopicDeleteInput): Promise<{ ok: boolean; slug: string }> {
-    const args: Record<string, unknown> = { slug: input.slug };
+  async topicDelete(input: TopicDeleteInput): Promise<{ ok: boolean; id: string }> {
+    const args: Record<string, unknown> = { id: input.id };
     if (input.restore !== undefined) {
       args.restore = input.restore;
     }
     const result = await this.callDomainTool('ws-topic-delete', args);
-    const parsed = parseToolText(result) as { ok?: unknown; slug?: unknown } | null;
+    const parsed = parseToolText(result) as { ok?: unknown; id?: unknown } | null;
     return {
       ok: parsed?.ok === true,
-      slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
+      id: typeof parsed?.id === 'string' ? parsed.id : input.id,
     };
   }
 
@@ -1518,17 +1540,14 @@ export class ControlPlaneClient {
   // ws-topic-* methods: each parses the tool's JSON text result into the owned
   // {@link TopicType} shape and THROWS {@link ControlPlaneClientError} on a dead
   // daemon, a dropped connection, or an `isError` tool result. Used to render +
-  // SAVE `working-memory:/topic-type/<slug>.md` docs control-plane-only.
+  // SAVE `working-memory:/topic-type/<id>.md` docs control-plane-only.
 
   /**
-   * Read topic types via `ws-topictype-read`. A by-slug/id read yields a
-   * 0-or-1 element array; list mode (no slug/id) returns all live topic types.
+   * Read topic types via `ws-topictype-read`. A by-id read yields a
+   * 0-or-1 element array; list mode (no id) returns all live topic types.
    */
   async topicTypeRead(input: TopicTypeReadInput = {}): Promise<TopicType[]> {
     const args: Record<string, unknown> = {};
-    if (input.slug !== undefined) {
-      args.slug = input.slug;
-    }
     if (input.id !== undefined) {
       args.id = input.id;
     }
@@ -1551,9 +1570,6 @@ export class ControlPlaneClient {
       icon: input.icon,
       description: input.description,
     };
-    if (input.slug !== undefined) {
-      args.slug = input.slug;
-    }
     if (input.body_template !== undefined) {
       args.body_template = input.body_template;
     }
@@ -1563,12 +1579,12 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Update a topic type via `ws-topictype-update` (identified by `slug`; only
+   * Update a topic type via `ws-topictype-update` (identified by `id`; only
    * the changed fields are sent). The control-plane reads the current doc for
    * its CAS guard. Returns the updated topic type.
    */
   async topicTypeUpdate(input: TopicTypeUpdateInput): Promise<TopicType> {
-    const args: Record<string, unknown> = { slug: input.slug };
+    const args: Record<string, unknown> = { id: input.id };
     if (input.label !== undefined) {
       args.label = input.label;
     }
@@ -1605,14 +1621,11 @@ export class ControlPlaneClient {
   // dead daemon, a dropped connection, or an `isError` tool result.
 
   /**
-   * Read configs via `ws-config-read`. A by-slug/id read yields a 0-or-1 element
-   * array; list mode (no slug/id) returns all live configs.
+   * Read configs via `ws-config-read`. A by-id read yields a 0-or-1 element
+   * array; list mode (no id) returns all live configs.
    */
   async configRead(input: ConfigReadInput = {}): Promise<Config[]> {
     const args: Record<string, unknown> = {};
-    if (input.slug !== undefined) {
-      args.slug = input.slug;
-    }
     if (input.id !== undefined) {
       args.id = input.id;
     }
@@ -1631,9 +1644,6 @@ export class ControlPlaneClient {
   /** Create a config via `ws-config-create`. Returns the created config. */
   async configCreate(input: ConfigCreateInput): Promise<Config> {
     const args: Record<string, unknown> = { data: input.data };
-    if (input.slug !== undefined) {
-      args.slug = input.slug;
-    }
     if (input.name !== undefined) {
       args.name = input.name;
     }
@@ -1644,13 +1654,13 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Update a config via `ws-config-update` (identified by `slug`; `data` is
+   * Update a config via `ws-config-update` (identified by `id`; `data` is
    * merged onto the existing map, `name`/`status` replace when provided). The
    * control-plane reads the current doc for its CAS guard. Returns the updated
    * config.
    */
   async configUpdate(input: ConfigUpdateInput): Promise<Config> {
-    const args: Record<string, unknown> = { slug: input.slug };
+    const args: Record<string, unknown> = { id: input.id };
     if (input.name !== undefined) {
       args.name = input.name;
     }
@@ -1665,18 +1675,18 @@ export class ControlPlaneClient {
 
   /**
    * Soft-delete (or, with `restore: true`, undelete) a config via
-   * `ws-config-delete` (identified by `slug`). Returns `{ ok, slug }`.
+   * `ws-config-delete` (identified by `id`). Returns `{ ok, id }`.
    */
-  async configDelete(input: ConfigDeleteInput): Promise<{ ok: boolean; slug: string }> {
-    const args: Record<string, unknown> = { slug: input.slug };
+  async configDelete(input: ConfigDeleteInput): Promise<{ ok: boolean; id: string }> {
+    const args: Record<string, unknown> = { id: input.id };
     if (input.restore !== undefined) {
       args.restore = input.restore;
     }
     const result = await this.callDomainTool('ws-config-delete', args);
-    const parsed = parseToolText(result) as { ok?: unknown; slug?: unknown } | null;
+    const parsed = parseToolText(result) as { ok?: unknown; id?: unknown } | null;
     return {
       ok: parsed?.ok === true,
-      slug: typeof parsed?.slug === 'string' ? parsed.slug : input.slug,
+      id: typeof parsed?.id === 'string' ? parsed.id : input.id,
     };
   }
 
@@ -1696,14 +1706,14 @@ export class ControlPlaneClient {
    * topic, add the workstream if absent, then update. Returns the updated topic.
    */
   async topicAttachWorkstream(input: TopicAttachWorkstreamInput): Promise<Topic> {
-    const [topic] = await this.topicRead({ slug: input.slug });
+    const [topic] = await this.topicRead({ id: input.id });
     if (!topic) {
-      throw new ControlPlaneClientError(`Unknown topic slug: ${input.slug}`);
+      throw new ControlPlaneClientError(`Unknown topic id: ${input.id}`);
     }
     const next = topic.workstreams.includes(input.workstream)
       ? topic.workstreams
       : [...topic.workstreams, input.workstream];
-    return this.topicUpdate({ slug: input.slug, workstreams: next });
+    return this.topicUpdate({ id: input.id, workstreams: next });
   }
 
   /**
@@ -1714,12 +1724,12 @@ export class ControlPlaneClient {
    * no-op. Returns the updated topic.
    */
   async topicDetachWorkstream(input: TopicDetachWorkstreamInput): Promise<Topic> {
-    const [topic] = await this.topicRead({ slug: input.slug });
+    const [topic] = await this.topicRead({ id: input.id });
     if (!topic) {
-      throw new ControlPlaneClientError(`Unknown topic slug: ${input.slug}`);
+      throw new ControlPlaneClientError(`Unknown topic id: ${input.id}`);
     }
     const next = topic.workstreams.filter((w) => w !== input.workstream);
-    return this.topicUpdate({ slug: input.slug, workstreams: next });
+    return this.topicUpdate({ id: input.id, workstreams: next });
   }
 
   /**
@@ -1730,9 +1740,9 @@ export class ControlPlaneClient {
    * Returns the updated topic.
    */
   async topicSetFocus(input: TopicSetFocusInput): Promise<Topic> {
-    const [topic] = await this.topicRead({ slug: input.slug });
+    const [topic] = await this.topicRead({ id: input.id });
     if (!topic) {
-      throw new ControlPlaneClientError(`Unknown topic slug: ${input.slug}`);
+      throw new ControlPlaneClientError(`Unknown topic id: ${input.id}`);
     }
     const workstreams = topic.workstreams.includes(input.workstream)
       ? topic.workstreams
@@ -1740,7 +1750,7 @@ export class ControlPlaneClient {
     const focusedWorkstreams = topic.focusedWorkstreams.includes(input.workstream)
       ? topic.focusedWorkstreams
       : [...topic.focusedWorkstreams, input.workstream];
-    return this.topicUpdate({ slug: input.slug, workstreams, focusedWorkstreams });
+    return this.topicUpdate({ id: input.id, workstreams, focusedWorkstreams });
   }
 
   /**
@@ -1750,14 +1760,14 @@ export class ControlPlaneClient {
    * absent value is a no-op. Returns the updated topic.
    */
   async topicClearFocus(input: TopicClearFocusInput): Promise<Topic> {
-    const [topic] = await this.topicRead({ slug: input.slug });
+    const [topic] = await this.topicRead({ id: input.id });
     if (!topic) {
-      throw new ControlPlaneClientError(`Unknown topic slug: ${input.slug}`);
+      throw new ControlPlaneClientError(`Unknown topic id: ${input.id}`);
     }
     const focusedWorkstreams = topic.focusedWorkstreams.filter(
       (w) => w !== input.workstream,
     );
-    return this.topicUpdate({ slug: input.slug, focusedWorkstreams });
+    return this.topicUpdate({ id: input.id, focusedWorkstreams });
   }
 
   private parseAgentEnvelope(value: unknown): RegisteredAgent {
@@ -1809,7 +1819,7 @@ export class ControlPlaneClient {
     const preservedLegacyBody = typeof spec.description === 'string' && spec.description.length > 0
       && source?.migration_version === 3 && object(source.row)
       && source.row.kind === 'Alert' && typeof source.row.spec === 'string';
-    if (typeof metadata.id !== 'string' || !metadata.id || metadata.slug !== null
+    if (typeof metadata.id !== 'string' || !metadata.id
       || !Number.isSafeInteger(metadata.createdAt) || (metadata.createdAt as number) < 0
       || !Number.isSafeInteger(metadata.updatedAt) || (metadata.updatedAt as number) < 0
       || (metadata.deletedAt !== undefined && metadata.deletedAt !== null
@@ -1843,7 +1853,7 @@ export class ControlPlaneClient {
       id: metadata.id,
       agent_id: spec.agent_id as string,
       agent_name: spec.agent_name as string,
-      slug: null,
+
       title: spec.title as string,
       description: spec.description as string,
       recommended_action: spec.recommended_action as string,
@@ -1969,7 +1979,7 @@ export class ControlPlaneClient {
         : 'alert';
     return {
       id: parsed.id,
-      slug: typeof parsed.slug === 'string' ? parsed.slug : null,
+
       title: typeof parsed.title === 'string' ? parsed.title : '',
       description: typeof parsed.description === 'string' ? parsed.description : '',
       recommended_action:
@@ -2183,7 +2193,11 @@ export class ControlPlaneClient {
       // Pass a fetch that 405s the standalone GET SSE stream so it never opens —
       // eliminating the undici "TypeError: terminated" unhandled rejection on
       // daemon restart/shutdown. See {@link sseDecliningFetch}.
-      transport = new StreamableHTTPClientTransport(new URL(url), { fetch: sseDecliningFetch });
+      transport = new StreamableHTTPClientTransport(new URL(url), {
+        fetch: (input, init) => (init?.method ?? 'GET').toUpperCase() === 'GET'
+          ? sseDecliningFetch(input, init)
+          : this.fetch(input, init),
+      });
     } catch {
       return null;
     }
@@ -2196,8 +2210,11 @@ export class ControlPlaneClient {
     client.onerror = (err) => this.onError(err);
     try {
       // connect() performs the MCP initialize handshake.
+      this.authenticationError = null;
       await client.connect(transport);
-    } catch {
+    } catch (error) {
+      if (error instanceof InstanceAuthenticationError) this.authenticationError = error.message;
+      this.onError(error);
       await closeQuietly(client, transport);
       return null;
     }

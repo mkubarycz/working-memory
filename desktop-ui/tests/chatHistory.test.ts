@@ -22,8 +22,8 @@ function summary(overrides: Partial<CommandJournalSummary> = {}): CommandJournal
     startedAt: 10,
     status: 'succeeded',
     request: { userText: 'Show roadmap' },
-    primaryScope: { kind: 'Workstream', id: 'roadmap-id', slug: 'roadmap', title: 'Roadmap' },
-    entityRefs: [{ kind: 'Topic', id: 'topic-id', slug: 'ship-it', title: 'Ship it', relation: 'referenced' }],
+    primaryScope: { kind: 'Workstream', id: 'roadmap-id',  title: 'Roadmap' },
+    entityRefs: [{ kind: 'Topic', id: 'topic-id',  title: 'Ship it', relation: 'referenced' }],
     completion: { finalAssistantText: 'Here it is.', stopReason: 'completed', mutated: false },
     eventSummaries: [{ sequence: 2, timestamp: 12, toolName: 'ws-topic-read', callId: 'call-1', status: 'success' }],
     ...overrides,
@@ -120,7 +120,7 @@ describe('chat history presentation', () => {
       journalId: 'journal-1', message: 'Confirmation required.',
       status: 'awaiting_confirmation',
       progress: [{ name: 'ws-topic-read', status: 'completed', summary: 'Read Working Memory' }],
-      pendingConfirmation: { id: 'confirm-1', tool: 'ws-topic-delete', arguments: { slug: 'old' } },
+      pendingConfirmation: { id: 'confirm-1', tool: 'ws-topic-delete', arguments: { id: 'old' } },
     });
     expect(reconciled).toHaveLength(1);
     expect(reconciled[0]).toMatchObject({ journalId: 'journal-1', status: 'awaiting_confirmation' });
@@ -137,8 +137,8 @@ describe('chat history presentation', () => {
   });
 
   it('derives retry context from supported journal scopes and leaves global chat unscoped', () => {
-    expect(chatContextForScope({ kind: 'Topic', id: 'topic-id', slug: 'ship-it', title: 'Ship it' })).toEqual({
-      kind: 'Topic', routeKind: 'topic', identifier: 'ship-it', title: 'Ship it',
+    expect(chatContextForScope({ kind: 'Topic', id: 'topic-id',  title: 'Ship it' })).toEqual({
+      kind: 'Topic', routeKind: 'topic', identifier: 'topic-id', title: 'Ship it',
     });
     expect(chatContextForScope({ kind: 'DesktopChat', id: 'desktop-chat' })).toBeUndefined();
     expect(chatContextForScope({ kind: 'Unknown', id: 'unknown' })).toBeUndefined();
@@ -176,7 +176,7 @@ describe('chat history presentation', () => {
   });
 
   it('presents scope targets and read/write tool rows with stable entity names', () => {
-    expect(targetForRef({ kind: 'TopicType', id: 'type-1', slug: 'feature' })).toEqual({ kind: 'topic-type', identifier: 'feature' });
+    expect(targetForRef({ kind: 'TopicType', id: 'type-1',  })).toEqual({ kind: 'topic-type', identifier: 'type-1' });
     expect(targetForRef({ kind: 'DesktopChat', id: 'desktop-chat' })).toBeUndefined();
     expect(toolMode('ws-topic-read')).toBe('read');
     expect(toolMode('ws-topic-update')).toBe('write');
@@ -184,7 +184,7 @@ describe('chat history presentation', () => {
       expect(toolMode(`ws-agent-message-${action}`)).toBe('write');
     }
     expect(summaryToChatRun(summary()).tools[0]).toMatchObject({
-      mode: 'read', entity: { label: 'Ship it', target: { kind: 'topic', identifier: 'ship-it' } },
+      mode: 'read', entity: { label: 'Ship it', target: { kind: 'topic', identifier: 'topic-id' } },
     });
   });
 
@@ -216,7 +216,7 @@ describe('chat history presentation', () => {
       provider: { endpoint: 'https://example.test', mode: 'responses', model: 'test' },
       events: [
         { id: 'event-1', sequence: 1, timestamp: 11, type: 'model_turn', role: 'assistant', iteration: 1, durationMs: 1 },
-        { id: 'event-2', sequence: 2, timestamp: 12, type: 'tool_call', modelTurnId: 'event-1', callId: 'call-1', toolName: 'ws-topic-read', arguments: { slug: 'ship-it' } },
+        { id: 'event-2', sequence: 2, timestamp: 12, type: 'tool_call', modelTurnId: 'event-1', callId: 'call-1', toolName: 'ws-topic-read', arguments: { id: 'topic-id' } },
         { id: 'event-3', sequence: 3, timestamp: 13, type: 'tool_result', callId: 'call-1', status: 'success', result: { count: 1 }, durationMs: 4 },
       ],
     } as CommandJournal;

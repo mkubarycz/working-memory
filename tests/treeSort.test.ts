@@ -15,7 +15,7 @@ function topic(id: string, status: string, pinned = false): TreeChild {
     label: id,
     icon: 'circle',
     status,
-    slug: id,
+
     pinned,
     agentMessageCount: 0,
     agentMessageSeverity: null,

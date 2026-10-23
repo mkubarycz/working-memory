@@ -9,7 +9,7 @@ export function containerAppDocument(app: ContainerAppDefinition): DocumentVM {
   return {
     kind: CONTAINER_APP_DOCUMENT_KIND,
     id: app.id,
-    slug: app.id,
+
     title: app.displayName,
     createdAt: 0,
     updatedAt: 0,
@@ -20,7 +20,7 @@ export function containerAppDocument(app: ContainerAppDefinition): DocumentVM {
 
 export function containerAppIdForDocument(document: DocumentVM | null): string | null {
   return document?.kind === CONTAINER_APP_DOCUMENT_KIND
-    ? (document.slug ?? document.id)
+    ? document.id
     : null;
 }
 

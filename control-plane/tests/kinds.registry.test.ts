@@ -46,12 +46,12 @@ describe('kind registry', () => {
     });
   });
 
-  it('applies defaults (body "", topicType "topic", status "open")', () => {
-    const parsed = validateSpec('Topic', { title: 'Only a title', workstreams: ['ws-one'] });
+  it('applies defaults while preserving the existing TopicType document ID', () => {
+    const parsed = validateSpec('Topic', { title: 'Only a title', topicType: 'type-existing-42', workstreams: ['ws-one'] });
     expect(parsed).toEqual({
       title: 'Only a title',
       body: '',
-      topicType: 'topic',
+      topicType: 'type-existing-42',
       status: 'open',
       parents: [],
       workstreams: ['ws-one'],

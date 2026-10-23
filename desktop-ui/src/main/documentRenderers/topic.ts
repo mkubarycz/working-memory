@@ -3,7 +3,7 @@
  * markdown. Pure function of the envelope (no journal store, no VS Code).
  *
  * The `## Workstreams` section renders friendly clickable links (title label,
- * not slug). The `## Family` section renders the topic's hierarchical family —
+ * not id). The `## Family` section renders the topic's hierarchical family —
  * ancestors, the current topic (marked), and descendants — as an indented tree
  * of friendly links (WM 13.0.2 `feature-family-tree-display`).
  *
@@ -12,7 +12,7 @@
  * `alerts` — the caller resolves them and passes them in via `relations`; the
  * renderer stays a pure function of `env` + `alerts` + `relations` (no I/O).
  * When `relations` is omitted the renderer degrades gracefully: a single-node
- * Family (just this topic) and slug-labeled workstream links from `spec`.
+ * Family (just this topic) and id-labeled workstream links from `spec`.
  */
 
 import type { AgentMessage, DocumentEnvelope } from '../../../../shared/controlPlaneClient';
@@ -33,7 +33,7 @@ export interface TopicRelations {
   /** Unified family display tree roots (ancestors → current → descendants). */
   family?: FamilyNode[];
   /** Member workstreams with resolved friendly titles. */
-  workstreams?: { slug: string; title: string }[];
+  workstreams?: { id: string; title: string }[];
 }
 
 /** Render the unified family tree as indented (2 spaces / level) bullets. */
@@ -47,7 +47,7 @@ function familyLines(
     if (n.isCurrent) {
       out.push(`${pad}- **${n.title}**`);
     } else {
-      out.push(`${pad}- [${n.title}](${deepLink('topic', n.slug)})`);
+      out.push(`${pad}- [${n.title}](${deepLink('topic', n.id)})`);
     }
     familyLines(n.children, indent + 1, out);
   }
@@ -58,17 +58,17 @@ export function renderTopicDocument(
   relations: TopicRelations = {},
 ): string {
   const spec = env.spec ?? {};
-  const title = asStr(spec.title) ?? env.metadata.slug ?? env.metadata.id;
+  const title = asStr(spec.title) ?? env.metadata.id;
   const status = asStr(spec.status) ?? '—';
-  const topicType = asStr(spec.topicType) ?? 'topic';
+  const topicType = asStr(spec.topicType);
   const body = asStr(spec.body);
 
-  // Workstreams: prefer resolved friendly links; degrade to slug labels from
+  // Workstreams: prefer resolved friendly links; degrade to id labels from
   // `spec.workstreams` when the caller injected none.
   const workstreamLinks =
     relations.workstreams && relations.workstreams.length > 0
       ? relations.workstreams
-      : asStrArray(spec.workstreams).map((slug) => ({ slug, title: slug }));
+      : asStrArray(spec.workstreams).map((id) => ({ id, title: id }));
 
   // Family: prefer the injected tree; degrade to a single-node tree (this topic
   // only) so a direct render or an offline path still shows a sensible section.
@@ -77,7 +77,7 @@ export function renderTopicDocument(
       ? relations.family
       : [
           {
-            slug: env.metadata.slug ?? env.metadata.id,
+            id: env.metadata.id,
             title,
             isCurrent: true,
             children: [],
@@ -91,7 +91,7 @@ export function renderTopicDocument(
     '',
     ...metadataSection(env, [
       `- \`status\`: ${status}`,
-      `- \`topicType\`: [${topicType}](${deepLink('topic-type', topicType)})`,
+      topicType ? `- \`topicType\`: [${topicType}](${deepLink('topic-type', topicType)})` : '- `topicType`: _none_',
     ]),
     '',
     body ?? '_Empty body._',
@@ -100,7 +100,7 @@ export function renderTopicDocument(
     '',
     workstreamLinks.length > 0
       ? workstreamLinks
-          .map((w) => `- [${w.title}](${deepLink('workstream', w.slug)})`)
+          .map((w) => `- [${w.title}](${deepLink('workstream', w.id)})`)
           .join('\n')
       : '_none_',
     '',
@@ -111,10 +111,10 @@ export function renderTopicDocument(
   ];
 
   if (alerts.length > 0) {
-    const thisSlug = env.metadata.slug;
+    const thisId = env.metadata.id;
     lines.push('## Agent messages', '');
     const blocks = alerts.map((alert) => {
-      // Alerts have no slug (always null), so deep-link by id.
+      // Alerts have no id (always null), so deep-link by id.
       const link = deepLink('agent-message', alert.id);
       const iconName =
         alert.status === 'open' && alert.attention
@@ -142,7 +142,7 @@ export function renderTopicDocument(
       if (next) {
         alertLines.push(`Next: ${next}`);
       }
-      const others = asStrArray(alert.topics).filter((t) => t !== thisSlug);
+      const others = asStrArray(alert.topics).filter((t) => t !== thisId);
       if (others.length) {
         const shown = others
           .slice(0, 3)

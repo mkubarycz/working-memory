@@ -10,10 +10,10 @@ import {
 } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
 import workstreamModule from '../src/kinds/workstream';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { openStore } from '../src/store';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 let sqliteAvailable = true;
 try {
@@ -38,7 +38,7 @@ function jsonOf<T>(res: unknown): T {
 
 interface Envelope {
   kind: string;
-  metadata: { id: string; slug: string | null; resourceVersion: number };
+  metadata: { id: string; resourceVersion: number };
   spec: Record<string, unknown>;
   status: Record<string, unknown>;
 }
@@ -152,7 +152,7 @@ describe('Workstream kind loader', () => {
       const created = jsonOf<Envelope>(
         await client.callTool({
           name: 'wm-document-create',
-          arguments: { kind: 'Workstream', slug: 'cp', spec: { title: 'Control Plane' } },
+          arguments: { kind: 'Workstream', spec: { title: 'Control Plane' } },
         }),
       );
       expect(created.kind).toBe('Workstream');
@@ -163,7 +163,8 @@ describe('Workstream kind loader', () => {
         await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Workstream' } }),
       );
       expect(list.count).toBe(1);
-      expect(list.documents[0]?.metadata.slug).toBe('cp');
+      expect(list.documents[0]?.metadata.id).toBe(created.metadata.id);
+      expect(list.documents[0]?.metadata).not.toHaveProperty('slug');
     } finally {
       await client.close();
       await server.close();
@@ -180,7 +181,7 @@ describe('Workstream kind loader', () => {
       await client.connect(transport);
       const res = await client.callTool({
         name: 'wm-document-create',
-        arguments: { kind: 'Workstream', slug: 'bad', spec: { title: 'T', status: 'open' } },
+        arguments: { kind: 'Workstream', spec: { title: 'T', status: 'open' } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);
       expect(store.listDocuments({ kind: 'Workstream' })).toEqual([]);

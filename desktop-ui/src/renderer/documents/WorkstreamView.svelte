@@ -15,12 +15,13 @@
     ws: WorkstreamVM;
     saveState: SaveState;
     onSave: (patch: { title?: string; status?: string }) => void;
-    onOpenTopic: (slug: string) => void;
-    onAddTopic: (parent?: { slug: string; title: string }) => void;
+    onOpenTopic: (id: string) => void;
+    onAddTopic: (parent?: { id: string; title: string }) => void;
     onInvoke: (command: string, args: unknown[]) => void;
-    onTogglePin: (slug: string) => void;
+    onTogglePin: (id: string) => void;
     onSetAgentMessageStatus: (id: string, status: AgentMessageVM['status']) => void;
     onRecordDecision?: import('./types').RecordAgentMessageDecision;
+    attachmentBaseUrl?: string;
   }
 
   let {
@@ -34,6 +35,7 @@
     onTogglePin,
     onSetAgentMessageStatus,
     onRecordDecision,
+    attachmentBaseUrl = '',
   }: Props = $props();
 
   const STATUSES = ['queue', 'progress', 'backlog', 'closed'];
@@ -46,11 +48,11 @@
   // by default; deeper subtrees stay collapsed until expanded.
   const expanded = new SvelteSet<string>();
 
-  // Re-seed defaults only on a fresh document load (slug change), not on every
+  // Re-seed defaults only on a fresh document load (id change), not on every
   // data echo, so the user's manual expand/collapse survives re-renders.
   let seededFor = $state<string | null>(null);
   $effect(() => {
-    const key = ws.slug ?? ws.title;
+    const key = ws.id ?? ws.title;
     if (key === seededFor) {
       return;
     }
@@ -94,13 +96,13 @@
         label: 'Add Child...',
         icon: 'add',
         disabled: false,
-        run: () => onAddTopic({ slug: node.slug, title: node.label }),
+        run: () => onAddTopic({ id: node.id, title: node.label }),
       },
       {
         label: node.pinned ? 'Unpin from Workstream' : 'Pin to Workstream',
         icon: node.pinned ? 'pinned' : 'pin',
         disabled: false,
-        run: () => onTogglePin(node.slug),
+        run: () => onTogglePin(node.id),
       },
     ];
     for (const a of node.actions) {
@@ -194,8 +196,8 @@
     <span class="v">{ws.title}</span>
   </div>
   <div class="attr">
-    <span class="k">Slug</span>
-    <span class="v mono">{ws.slug ?? '—'}</span>
+    <span class="k">Id</span>
+    <span class="v mono">{ws.id ?? '—'}</span>
   </div>
   <div class="attr">
     <span class="k">Status</span>
@@ -229,7 +231,7 @@
   </div>
 </section>
 
-<AgentMessageCallouts agentMessages={ws.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} />
+<AgentMessageCallouts agentMessages={ws.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {attachmentBaseUrl} />
 
 {#snippet treeNode(node: TreeTopicVM)}
     {@const hasChildren = node.children.length > 0}
@@ -252,11 +254,11 @@
           class="tree-link"
           class:pinned={node.pinned}
           class:closed={node.status === 'closed'}
-          onclick={() => onOpenTopic(node.slug)}
+          onclick={() => onOpenTopic(node.id)}
         >
           <span class="codicon codicon-{node.icon}"></span>
           <span class="tree-label">{node.label}</span>
-          <span class="topic-slug mono">{node.slug}</span>
+          <span class="topic-id mono">{node.id}</span>
           {#if node.status !== 'open'}
             <span class="tree-meta">{node.status}</span>
           {/if}
@@ -267,7 +269,7 @@
               title="{node.agentMessageCount} agent messages needing attention"
             >{node.agentMessageCount}</span>
           {/if}
-          <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', node.id, node.slug)} />
+          <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', node.id, node.id)} />
         </button>
         {#if node.pinned}
           <button
@@ -276,7 +278,7 @@
             aria-label="Unpin {node.label} from this workstream"
             onclick={(event) => {
               event.stopPropagation();
-              onTogglePin(node.slug);
+              onTogglePin(node.id);
             }}
           ><span aria-hidden="true" class="codicon codicon-pinned"></span></button>
         {/if}
@@ -462,7 +464,7 @@
     padding: 2px 6px;
   }
 
-  .topic-slug {
+  .topic-id {
     color: var(--vscode-descriptionForeground);
     font-size: 0.85em;
   }
@@ -551,7 +553,7 @@
     opacity: 0.6;
   }
 
-  .tree-link.closed:not(.pinned) .topic-slug {
+  .tree-link.closed:not(.pinned) .topic-id {
     opacity: 0.85;
   }
 
@@ -571,7 +573,7 @@
     background: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 20%, transparent);
   }
 
-  .tree-link.pinned .topic-slug {
+  .tree-link.pinned .topic-id {
     color: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 70%, var(--vscode-descriptionForeground));
   }
 

@@ -49,7 +49,7 @@ export interface PanelAction {
 export interface PanelTopic {
   kind: 'topic';
   id: string;
-  /** Canonical Topic UUID; id above remains the stable UI row identity. */
+  /** Canonical Topic ID; id above remains the stable UI row identity. */
   documentId?: string;
   label: string;
   description: string;
@@ -84,8 +84,8 @@ export interface PanelTopicsGroup {
 export interface PanelWorkstream {
   kind: 'workstream';
   id: string;
-  /** The workstream's stable slug (null when it has none). */
-  slug: string | null;
+  /** The workstream's stable id (null when it has none). */
+
   label: string;
   description: string;
   tooltip: string;
@@ -170,7 +170,7 @@ export interface PanelTopicType {
   /** Codicon id (the type's own icon, falling back to the shape icon). */
   icon: string;
   tooltip: string;
-  /** `working-memory:/topic-type/<slug>.working-memory` unified-editor URI. */
+  /** `working-memory:/topic-type/<id>.working-memory` unified-editor URI. */
   openUri: string;
 }
 
@@ -223,12 +223,12 @@ function iconForType(
 
 /**
  * Per-topic context-menu actions: add the topic to a workstream, or remove it.
- * With no `workstreamSlug` the add command prompts a workstream picker.
+ * With no `workstreamId` the add command prompts a workstream picker.
  */
-function topicActions(topicSlug: string, workstreamSlug?: string): PanelAction[] {
+function topicActions(topicId: string, workstreamId?: string): PanelAction[] {
   const args = {
-    topicSlug,
-    ...(workstreamSlug ? { workstreamSlug } : {}),
+    topicId,
+    ...(workstreamId ? { workstreamId } : {}),
   };
   return [
     {
@@ -269,13 +269,12 @@ export function sectionForStatus(status: string): WorkstreamSection {
 }
 
 /**
- * Active-tab "send to section" actions for a workstream's context menu. Omits
+ * Active-tab lifecycle actions for a workstream's context menu. Omits
  * the section the workstream is already in. Each invokes the
- * `working-memory.setWorkstreamSection` command (registered in extension.ts),
- * which patches the lifecycle `status` via the control-plane workstream domain
- * layer and refreshes the panel.
+ * `working-memory.setWorkstreamSection` command, which patches only the
+ * workstream lifecycle status and refreshes the panel.
  */
-function sectionMoveActions(ws: { slug: string; status: string }): PanelAction[] {
+function sectionMoveActions(ws: { id: string; status: string }): PanelAction[] {
   const current = sectionForStatus(ws.status);
   const orderIndex: Record<WorkstreamSection, number> = {
     queue: 0,
@@ -293,7 +292,7 @@ function sectionMoveActions(ws: { slug: string; status: string }): PanelAction[]
     .map((t) => ({
       command: 'working-memory.setWorkstreamSection',
       title: t.title,
-      args: [{ slug: ws.slug, section: t.section }],
+      args: [{ id: ws.id, section: t.section }],
       icon:
         orderIndex[t.section] < currentIndex
           ? 'arrow-circle-up'
@@ -309,30 +308,28 @@ type ControlPlaneAlertBubble = {
 
 /**
  * Open-alert bubble for a single control-plane topic. Counts the OPEN alerts
- * (`status !== 'closed'`) whose `topics` refs include `topicSlug`; severity is
+ * (`status !== 'closed'`) whose `topics` refs include `topicId`; severity is
  * the max over those alerts (`alert` > `informational`, else `null` when none).
  */
 function controlPlaneTopicAlertBubble(
   alerts: ControlPlaneAlert[],
-  topicSlug: string,
-  topicId?: string,
+  topicId: string,
 ): ControlPlaneAlertBubble {
-  return agentMessageBubbleForTopic(alerts, topicSlug, topicId);
+  return agentMessageBubbleForTopic(alerts, topicId);
 }
 
 /**
- * Open-alert bubble rolled up across a workstream's member topic slugs. Takes
+ * Open-alert bubble rolled up across a workstream's member topic ids. Takes
  * the UNION of open alerts referencing any member topic, DEDUPED by alert `id`;
  * severity is the max over the deduped set (`alert` > `informational`).
  */
 function controlPlaneWorkstreamAlertBubble(
   alerts: ControlPlaneAlert[],
-  memberTopicSlugs: string[],
   memberTopicIds: string[],
   workstreamId: string,
 ): ControlPlaneAlertBubble {
   return agentMessageBubbleForTopics(alerts, {
-    topicSlugs: memberTopicSlugs,
+
     topicIds: memberTopicIds,
     workstreamIds: [workstreamId],
   });
@@ -359,23 +356,23 @@ function describeControlPlaneTopic(t: ControlPlaneTopic): string {
 /** Build a Topics-tab row (PanelTopicRow) for a single control-plane topic. */
 function buildControlPlaneTopicRow(
   t: ControlPlaneTopic,
-  parentSlug: string | null,
+  parentId: string | null,
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
 ): PanelTopicRow {
-  const slug = t.slug ?? '';
-  const bubble = controlPlaneTopicAlertBubble(alerts, slug, t.id);
+  const id = t.id ?? '';
+  const bubble = controlPlaneTopicAlertBubble(alerts, id);
   return {
     kind: 'topic-row',
-    id: `topics:topic:${parentSlug ?? 'root'}:${slug}`,
+    id: `topics:topic:${parentId ?? 'root'}:${id}`,
     label: t.title,
     description: describeControlPlaneTopic(t),
-    tooltip: `${t.title} (${slug}) — ${t.status}`,
+    tooltip: `${t.title} (${id}) — ${t.status}`,
     icon: iconForType(t.topicType, typeMap),
-    openUri: `working-memory:/topic/${slug}.working-memory`,
+    openUri: `working-memory:/topic/${id}.working-memory`,
     status: t.status,
     recentEntryCount: 0,
-    actions: topicActions(slug),
+    actions: topicActions(id),
     agentMessageCount: bubble.count,
     agentMessageSeverity: bubble.severity,
   };
@@ -388,8 +385,8 @@ function buildControlPlaneTopicRow(
  */
 function attachControlPlaneChildren(
   row: PanelTopicRow,
-  parentSlug: string,
-  childrenBySlug: Map<string, ControlPlaneTopic[]>,
+  parentId: string,
+  childrenById: Map<string, ControlPlaneTopic[]>,
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
   path: Set<string>,
@@ -398,21 +395,21 @@ function attachControlPlaneChildren(
   if (depth >= MAX_TOPIC_DEPTH) {
     return;
   }
-  const children = (childrenBySlug.get(parentSlug) ?? []).filter(
-    (c) => (c.slug ?? '') !== '' && !path.has(c.slug as string),
+  const children = (childrenById.get(parentId) ?? []).filter(
+    (c) => (c.id ?? '') !== '' && !path.has(c.id as string),
   );
   if (children.length === 0) {
     return;
   }
   row.children = children.map((c) => {
-    const childSlug = c.slug as string;
-    const childRow = buildControlPlaneTopicRow(c, parentSlug, typeMap, alerts);
+    const childId = c.id as string;
+    const childRow = buildControlPlaneTopicRow(c, parentId, typeMap, alerts);
     const nextPath = new Set(path);
-    nextPath.add(childSlug);
+    nextPath.add(childId);
     attachControlPlaneChildren(
       childRow,
-      childSlug,
-      childrenBySlug,
+      childId,
+      childrenById,
       typeMap,
       alerts,
       nextPath,
@@ -440,30 +437,30 @@ export function buildTopicsPanel(input: {
   }
   const alerts = input.agentMessages ?? [];
   const typeMap = input.topicTypes
-    ? new Map(input.topicTypes.map((t) => [t.slug ?? t.id, t]))
+    ? new Map(input.topicTypes.map((t) => [t.id, t]))
     : EMPTY_TYPE_MAP;
   const open = input.topics.filter(
-    (t) => t.status === 'open' && (t.slug ?? '') !== '',
+    (t) => t.status === 'open' && (t.id ?? '') !== '',
   );
-  const childrenBySlug = new Map<string, ControlPlaneTopic[]>();
+  const childrenById = new Map<string, ControlPlaneTopic[]>();
   for (const t of open) {
     for (const p of t.parents) {
-      const arr = childrenBySlug.get(p) ?? [];
+      const arr = childrenById.get(p) ?? [];
       arr.push(t);
-      childrenBySlug.set(p, arr);
+      childrenById.set(p, arr);
     }
   }
   const roots = open.filter((t) => t.parents.length === 0);
   const items: PanelItem[] = roots.map((t) => {
-    const slug = t.slug as string;
+    const id = t.id as string;
     const row = buildControlPlaneTopicRow(t, null, typeMap, alerts);
     attachControlPlaneChildren(
       row,
-      slug,
-      childrenBySlug,
+      id,
+      childrenById,
       typeMap,
       alerts,
-      new Set([slug]),
+      new Set([id]),
       1,
     );
     return row;
@@ -473,87 +470,86 @@ export function buildTopicsPanel(input: {
 
 /**
  * Build the per-workstream-card "Topics" group from the control-plane topics
- * whose `spec.workstreams` membership includes `wsSlug`. Nests a member under
+ * whose `spec.workstreams` membership includes `wsId`. Nests a member under
  * the first of its `spec.parents` that is ALSO a member. A topic is `focused`
- * when its `spec.focusedWorkstreams` includes `wsSlug`. Returns the group PLUS
+ * when its `spec.focusedWorkstreams` includes `wsId`. Returns the group PLUS
  * the flat membership-ordered `orderedTopics` so the caller can derive the
  * pinned `focused_topics` row.
  */
 function buildControlPlaneCardTopics(
-  wsSlug: string,
   wsId: string,
   tab: 'active' | 'archive',
   members: ControlPlaneTopic[],
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
 ): { group: PanelTopicsGroup; orderedTopics: PanelTopic[] } {
-  const panelBySlug = new Map<string, PanelTopic>();
-  const orderedSlugs: string[] = [];
+  const panelById = new Map<string, PanelTopic>();
+  const orderedIds: string[] = [];
   for (const t of members) {
-    const slug = t.slug ?? '';
-    if (slug === '') {
+    const id = t.id ?? '';
+    if (id === '') {
       continue;
     }
-    const bubble = controlPlaneTopicAlertBubble(alerts, slug, t.id);
-    panelBySlug.set(slug, {
+    const bubble = controlPlaneTopicAlertBubble(alerts, id);
+    panelById.set(id, {
       kind: 'topic',
-      id: `${tab}:topic:${wsId}:${slug}`,
+      id: `${tab}:topic:${wsId}:${id}`,
       documentId: t.id,
       label: t.title,
       description: describeControlPlaneTopic(t),
-      tooltip: `${t.title} (${slug}) — ${t.status}`,
+      tooltip: `${t.title} (${id}) — ${t.status}`,
       icon: iconForType(t.topicType, typeMap),
-      openUri: `working-memory:/topic/${slug}.working-memory`,
+      openUri: `working-memory:/topic/${id}.working-memory`,
       status: t.status,
-      focused: (t.focusedWorkstreams ?? []).includes(wsSlug),
+      focused: (t.focusedWorkstreams ?? []).includes(wsId),
       recentEntryCount: 0,
-      actions: topicActions(slug, wsSlug),
+      actions: topicActions(id, wsId),
       agentMessageCount: bubble.count,
       agentMessageSeverity: bubble.severity,
     });
-    orderedSlugs.push(slug);
+    orderedIds.push(id);
   }
-  const slugSet = new Set(panelBySlug.keys());
-  const childrenBySlug = new Map<string, string[]>();
-  const rootSlugs: string[] = [];
+  const idSet = new Set(panelById.keys());
+  const childrenById = new Map<string, string[]>();
+  const rootIds: string[] = [];
   for (const t of members) {
-    const slug = t.slug ?? '';
-    if (slug === '' || !slugSet.has(slug)) {
+    const id = t.id ?? '';
+    if (id === '' || !idSet.has(id)) {
       continue;
     }
-    const inSetParent = t.parents.find((p) => slugSet.has(p) && p !== slug);
+    const inSetParent = t.parents.find((p) => idSet.has(p) && p !== id);
     if (inSetParent) {
-      const arr = childrenBySlug.get(inSetParent) ?? [];
-      arr.push(slug);
-      childrenBySlug.set(inSetParent, arr);
+      const arr = childrenById.get(inSetParent) ?? [];
+      arr.push(id);
+      childrenById.set(inSetParent, arr);
     } else {
-      rootSlugs.push(slug);
+      rootIds.push(id);
     }
   }
-  const attach = (slug: string, path: Set<string>, depth: number): void => {
+  const attach = (id: string, path: Set<string>, depth: number): void => {
     if (depth >= MAX_TOPIC_DEPTH) {
       return;
     }
-    const kids = (childrenBySlug.get(slug) ?? []).filter((s) => !path.has(s));
+    const kids = (childrenById.get(id) ?? []).filter((s) => !path.has(s));
     if (kids.length === 0) {
       return;
     }
-    const panel = panelBySlug.get(slug);
+    const panel = panelById.get(id);
     if (!panel) {
       return;
     }
-    panel.children = kids.map((s) => panelBySlug.get(s) as PanelTopic);
+    panel.children = kids.map((s) => panelById.get(s) as PanelTopic);
     for (const s of kids) {
       const next = new Set(path);
       next.add(s);
       attach(s, next, depth + 1);
     }
   };
-  for (const s of rootSlugs) {
+  for (const s of rootIds) {
     attach(s, new Set([s]), 1);
   }
-  const children = rootSlugs.map((s) => panelBySlug.get(s) as PanelTopic);
-  const count = orderedSlugs.length;
+  const children = rootIds.map((s) => panelById.get(s) as PanelTopic);
+  const count = orderedIds.length;
   return {
     group: {
       kind: 'topics-group',
@@ -564,7 +560,7 @@ function buildControlPlaneCardTopics(
       collapsible: count > 0,
       children,
     },
-    orderedTopics: orderedSlugs.map((s) => panelBySlug.get(s) as PanelTopic),
+    orderedTopics: orderedIds.map((s) => panelById.get(s) as PanelTopic),
   };
 }
 
@@ -593,7 +589,6 @@ export interface WorkstreamTree {
  */
 export function buildWorkstreamTree(
   wsId: string,
-  wsSlug: string,
   tab: 'active' | 'archive',
   topics: ControlPlaneTopic[] | undefined,
   typeMap: Map<string, TopicType>,
@@ -601,13 +596,12 @@ export function buildWorkstreamTree(
 ): WorkstreamTree {
   const groups: PanelTopicsGroup[] = [];
   const members =
-    topics !== undefined && wsSlug.length > 0
-      ? topics.filter((t) => t.workstreams.includes(wsSlug))
+    topics !== undefined && wsId.length > 0
+      ? topics.filter((t) => t.workstreams.includes(wsId))
       : [];
   let focusedTopics: PanelTopic[] = [];
-  if (topics !== undefined && wsSlug.length > 0) {
+  if (topics !== undefined && wsId.length > 0) {
     const { group, orderedTopics } = buildControlPlaneCardTopics(
-      wsSlug,
       wsId,
       tab,
       members,
@@ -625,7 +619,7 @@ export function buildWorkstreamTree(
  * per-workstream "Topics" group is populated from control-plane topic membership
  * (`spec.workstreams`) when `topics` is supplied; absent → the group is omitted.
  * The open-alert bubble is rolled up from the control-plane `alerts` across the
- * card's member topic slugs. The per-workstream focused-topic PIN is populated
+ * card's member topic ids. The per-workstream focused-topic PIN is populated
  * from the control-plane `spec.focusedWorkstreams` subset.
  */
 function buildDomainWorkstreamCard(
@@ -635,46 +629,53 @@ function buildDomainWorkstreamCard(
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
 ): PanelWorkstream {
-  const slug = ws.slug ?? '';
+  const id = ws.id ?? '';
   const status = ws.status;
-  const baseTooltip = `${ws.title} (${slug || '∅'}) — ${status}`;
+  const baseTooltip = `${ws.title} (${id || '∅'}) — ${status}`;
   const tooltip = ws.closure?.trim()
     ? `${baseTooltip}\n\n${ws.closure.trim()}`
     : baseTooltip;
   const description =
     tab === 'archive' && ws.closure?.trim() ? ws.closure.trim() : '';
   const actions: PanelAction[] =
-    slug.length === 0
+    id.length === 0
       ? []
       : tab === 'archive'
         ? [
             {
               command: 'working-memory.reopenWorkstream',
               title: 'Reopen Workstream',
-              args: [{ slug }],
+              args: [{ id }],
             },
           ]
-        : sectionMoveActions({ slug, status });
+        : [
+            ...sectionMoveActions({ id, status }),
+            {
+              command: 'working-memory.setWorkstreamSection',
+              title: 'Close Workstream',
+              args: [{ id, section: 'closed' }],
+              icon: 'check',
+            },
+          ];
   const { groups: children, focusedTopics, members } = buildWorkstreamTree(
     ws.id,
-    slug,
     tab,
     topics,
     typeMap,
     alerts,
   );
-  const memberSlugs = members
-    .map((t) => t.slug ?? '')
+  const memberIds = members
+    .map((t) => t.id ?? '')
     .filter((s) => s !== '');
-  const wsBubble = controlPlaneWorkstreamAlertBubble(alerts, memberSlugs, members.map((topic) => topic.id), ws.id);
+  const wsBubble = controlPlaneWorkstreamAlertBubble(alerts, memberIds, ws.id);
   return {
     kind: 'workstream',
-    id: `${tab}:workstream:${ws.id}`,
-    slug: ws.slug ?? null,
+    id: ws.id,
+
     label: ws.title,
     description,
     tooltip,
-    openUri: `working-memory:/workstream/${encodeURIComponent(ws.slug ?? ws.id)}.working-memory`,
+    openUri: `working-memory:/workstream/${encodeURIComponent(ws.id)}.working-memory`,
     recentEntryCount: 0,
     ...(tab === 'active' ? { section: sectionForStatus(status) } : {}),
     agentMessageCount: wsBubble.count,
@@ -717,7 +718,7 @@ export function buildWorkstreamPanels(input: {
   }
   const alerts = input.agentMessages ?? [];
   const typeMap = input.topicTypes
-    ? new Map(input.topicTypes.map((t) => [t.slug ?? t.id, t]))
+    ? new Map(input.topicTypes.map((t) => [t.id, t]))
     : EMPTY_TYPE_MAP;
   const buckets: Record<WorkstreamSection, PanelWorkstream[]> = {
     queue: [],
@@ -750,16 +751,16 @@ export function buildWorkstreamPanels(input: {
     workstreams: buckets[s.section],
     emptyMessage: s.emptyMessage,
   }));
-  const activeWorkstreamSlugs = new Set(
+  const activeWorkstreamIds = new Set(
     input.workstreams
-      .filter((workstream) => workstream.status !== 'closed' && workstream.slug)
-      .map((workstream) => workstream.slug as string),
+      .filter((workstream) => workstream.status !== 'closed' && workstream.id)
+      .map((workstream) => workstream.id as string),
   );
   const topicBacklog = (input.topics ?? [])
     .filter((topic) =>
       topic.status === 'open' &&
-      topic.slug &&
-      !topic.workstreams.some((workstream) => activeWorkstreamSlugs.has(workstream)))
+      topic.id &&
+      !topic.workstreams.some((workstream) => activeWorkstreamIds.has(workstream)))
     .map((topic) => buildControlPlaneTopicRow(topic, null, typeMap, alerts))
     .sort((left, right) => left.label.localeCompare(right.label));
   return {
@@ -780,15 +781,14 @@ export function buildWorkstreamPanels(input: {
 /** Build one Blackboard row from a control-plane document envelope. */
 function buildDocumentRow(doc: DocumentEnvelope): PanelDocumentRow {
   const id = doc.metadata.id;
-  const slug = doc.metadata.slug;
   const idShort = id.slice(0, 8);
   const rv = doc.metadata.resourceVersion;
   return {
     kind: 'document-row',
     id: `blackboard:document:${id}`,
-    label: `${doc.kind}: ${slug ?? idShort}`,
+    label: `${doc.kind}: ${id ?? idShort}`,
     description: `v${rv} • ${idShort}`,
-    tooltip: `${doc.kind} ${id}${slug ? ` (${slug})` : ''} — resourceVersion ${rv}`,
+    tooltip: `${doc.kind} ${id}${id ? ` (${id})` : ''} — resourceVersion ${rv}`,
     icon: DOCUMENT_ROW_ICON,
     openUri: `working-memory:/document/${encodeURIComponent(id)}.working-memory`,
   };
@@ -863,15 +863,15 @@ export function buildAgentMessagesPanel(input: {
 
 /** Build one Topic-Types-tab row from a control-plane topic type. */
 function buildTopicTypeRow(tt: TopicType): PanelTopicType {
-  const slug = tt.slug ?? tt.id;
+  const id = tt.id;
   return {
     kind: 'topic-type',
-    id: `topic-type:${slug}`,
-    label: tt.label || slug,
-    description: slug,
+    id: `topic-type:${id}`,
+    label: tt.label || id,
+    description: id,
     icon: tt.icon || FALLBACK_TOPIC_ICON,
-    tooltip: tt.description || tt.label || slug,
-    openUri: `working-memory:/topic-type/${encodeURIComponent(slug)}.working-memory`,
+    tooltip: tt.description || tt.label || id,
+    openUri: `working-memory:/topic-type/${encodeURIComponent(id)}.working-memory`,
   };
 }
 
@@ -896,7 +896,7 @@ export function buildTopicTypesPanel(input: {
   const rows = (input.topicTypes ?? [])
     .slice()
     .sort((a, b) =>
-      (a.label || a.slug || '').localeCompare(b.label || b.slug || ''),
+      (a.label || a.id || '').localeCompare(b.label || b.id || ''),
     )
     .map(buildTopicTypeRow);
   return {

@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { AgentMessage, Topic, Workstream } from '../shared/controlPlaneClient';
 import { buildAgentMessagesPanel, buildWorkstreamPanels } from '../shared/panelData';
 
-function workstream(slug: string, status: Workstream['status']): Workstream {
+function workstream(id: string, status: Workstream['status']): Workstream {
   return {
-    id: `id-${slug}`,
-    slug,
-    title: slug,
+    id: `id-${id}`,
+
+    title: id,
     status,
     closure: null,
     position: 0,
@@ -17,16 +17,16 @@ function workstream(slug: string, status: Workstream['status']): Workstream {
   };
 }
 
-function topic(slug: string, workstreams: string[], status: Topic['status'] = 'open'): Topic {
+function topic(id: string, workstreams: string[], status: Topic['status'] = 'open'): Topic {
   return {
-    id: `id-${slug}`,
-    slug,
-    title: slug,
+    id: `id-${id}`,
+
+    title: id,
     body: '',
     status,
     topicType: 'topic',
     parents: [],
-    workstreams,
+    workstreams: workstreams.map((id) => `id-${id}`),
     focusedWorkstreams: [],
     created_at: 1,
     updated_at: 1,
@@ -35,6 +35,33 @@ function topic(slug: string, workstreams: string[], status: Topic['status'] = 'o
 }
 
 describe('active topic backlog', () => {
+  it('offers closing in every active section and reopening only in the archive', () => {
+    const panels = buildWorkstreamPanels({
+      available: true,
+      workstreams: [
+        workstream('queued', 'queue'),
+        workstream('active', 'progress'),
+        workstream('backlog', 'backlog'),
+        workstream('archived', 'closed'),
+      ],
+    });
+    const sections = panels.active.items.filter((item) => item.kind === 'workstream-section');
+    for (const section of sections) {
+      for (const card of section.workstreams) {
+        expect(card.actions.filter((action) => action.title === 'Close Workstream')).toEqual([{
+          command: 'working-memory.setWorkstreamSection',
+          title: 'Close Workstream',
+          args: [{ id: card.id, section: 'closed' }],
+          icon: 'check',
+        }]);
+        expect(card.actions.some((action) => action.command === 'working-memory.reopenWorkstream')).toBe(false);
+      }
+    }
+    expect(panels.archive.items).toMatchObject([{
+      actions: [{ command: 'working-memory.reopenWorkstream', title: 'Reopen Workstream', args: [{ id: 'id-archived' }] }],
+    }]);
+  });
+
   it('includes open topics outside active workstreams', () => {
     const panels = buildWorkstreamPanels({
       available: true,
@@ -63,8 +90,8 @@ describe('active topic backlog', () => {
 describe('canonical agent message panels', () => {
   const message: AgentMessage = {
     agent_id: 'agent-1', agent_name: 'Review Agent',
-    id: 'message-1', slug: null, title: 'Review', description: '**Review**', recommended_action: 'Review PR',
-    category: 'approval', severity: 'warning', status: 'open', attention: true, topics: ['one', 'two'],
+    id: 'message-1',  title: 'Review', description: '**Review**', recommended_action: 'Review PR',
+    category: 'approval', severity: 'warning', status: 'open', attention: true, topics: ['id-one', 'id-two'],
     relations: [], dedupe_key: null, created_by: 'agent', created_at: 1, updated_at: 2, resourceVersion: 1,
   };
 
@@ -115,10 +142,10 @@ describe('canonical agent message panels', () => {
       });
       const progress = panels.active.items.find((item) => item.kind === 'workstream-section' && item.section === 'progress');
       expect(progress).toMatchObject({ workstreams: [
-        { slug: 'active', agentMessageCount: 2, children: [{ children: [
+        { id: 'id-active', agentMessageCount: 2, children: [{ children: [
           { label: 'one', agentMessageCount: 1 }, { label: 'two', agentMessageCount: 0 },
         ] }] },
-        { slug: 'other', agentMessageCount: 0 },
+        { id: 'id-other', agentMessageCount: 0 },
       ] });
   });
 });

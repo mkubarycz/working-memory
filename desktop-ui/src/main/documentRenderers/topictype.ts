@@ -17,8 +17,8 @@ export function renderTopicTypeDocument(
   topicsOfType: Topic[] = [],
 ): string {
   const spec = env.spec ?? {};
-  const id = env.metadata.slug ?? env.metadata.id;
-  const label = asStr(spec.label) ?? env.metadata.slug ?? env.metadata.id;
+  const id = env.metadata.id;
+  const label = asStr(spec.label) ?? env.metadata.id;
   const icon = asStr(spec.icon);
   const description = asStr(spec.description);
   const bodyTemplate = asStr(spec.body_template);
@@ -51,17 +51,17 @@ export function renderTopicTypeDocument(
       if (b.updated_at !== a.updated_at) {
         return b.updated_at - a.updated_at;
       }
-      const aSlug = a.slug ?? a.id;
-      const bSlug = b.slug ?? b.id;
-      return aSlug.localeCompare(bSlug);
+      const aId = a.id;
+      const bId = b.id;
+      return aId.localeCompare(bId);
     })
     .slice(0, 25);
 
   if (recent.length > 0) {
     lines.push('## Recent topics', '');
     for (const t of recent) {
-      const slug = t.slug ?? t.id;
-      let row = `- [${t.title}](${deepLink('topic', slug)}) \`${slug}\``;
+      const id = t.id;
+      let row = `- [${t.title}](${deepLink('topic', id)}) \`${id}\``;
       if (typeof t.updated_at === 'number' && Number.isFinite(t.updated_at)) {
         row += ` — updated ${fmtTs(t.updated_at)}`;
       }

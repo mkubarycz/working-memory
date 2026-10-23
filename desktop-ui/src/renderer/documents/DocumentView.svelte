@@ -19,7 +19,6 @@
 <section class="attrs" aria-label="Document attributes">
   <div class="attr"><span class="k">Kind</span><span class="v">{doc.kind}</span></div>
   <div class="attr"><span class="k">Id</span><span class="v mono">{doc.id}</span></div>
-  <div class="attr"><span class="k">Slug</span><span class="v mono">{doc.slug ?? '—'}</span></div>
   <div class="attr"><span class="k">Created</span><span class="v">{fmtTs(doc.createdAt)}</span></div>
   <div class="attr"><span class="k">Updated</span><span class="v">{fmtTs(doc.updatedAt)}</span></div>
   <div class="attr"><span class="k">Resource version</span><span class="v mono">{doc.resourceVersion}</span></div>

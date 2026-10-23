@@ -17,14 +17,14 @@ export interface WorkstreamViewModel {
   kind: 'workstream';
   id: string;
   title: string;
-  slug: string | null;
+
   status: string;
   createdAt: number;
   updatedAt: number;
   closure: string | null;
   resourceVersion: number;
   editable: boolean;
-  topics: Array<{ id: string; title: string; slug: string; status: string; pinned: boolean }>;
+  topics: Array<{ id: string; title: string;  status: string; pinned: boolean }>;
   tree: WorkstreamTreeGroupViewModel[];
   agentMessages: AgentMessageVM[];
 }
@@ -44,7 +44,7 @@ export interface WorkstreamTreeTopicViewModel {
   label: string;
   icon: string;
   status: string;
-  slug: string;
+
   pinned: boolean;
   agentMessageCount: number;
   agentMessageSeverity: 'info' | 'warning' | 'error' | null;
@@ -70,7 +70,7 @@ function treeActions(actions: PanelAction[] | undefined): WorkstreamTreeActionVi
   }));
 }
 
-function topicSlugFromUri(uri: string): string {
+function topicIdFromUri(uri: string): string {
   const match = uri.match(/\/topic\/([^/]+)\.working-memory$/);
   return match ? decodeURIComponent(match[1]) : '';
 }
@@ -78,12 +78,12 @@ function topicSlugFromUri(uri: string): string {
 function treeNode(row: PanelTopic): WorkstreamTreeTopicViewModel {
   return {
     kind: 'topic',
-    id: row.id,
+    id: row.documentId ?? topicIdFromUri(row.openUri),
     documentId: row.documentId,
     label: row.label,
     icon: row.icon,
     status: row.status,
-    slug: topicSlugFromUri(row.openUri),
+
     pinned: row.focused,
     agentMessageCount: row.agentMessageCount ?? 0,
     agentMessageSeverity: row.agentMessageSeverity ?? null,
@@ -106,8 +106,6 @@ export async function readWorkstream(
   client: ControlPlaneClient,
   identifier: string,
 ): Promise<Workstream | null> {
-  const bySlug = await client.wsRead({ slug: identifier });
-  if (bySlug[0]) return bySlug[0];
   const byId = await client.wsRead({ id: identifier });
   return byId[0] ?? null;
 }
@@ -120,13 +118,13 @@ export async function loadWorkstreamViewModel(
   const workstream = await readWorkstream(client, identifier);
   if (!workstream) return null;
 
-  const slug = workstream.slug;
+  const id = workstream.id;
   let topics: Topic[] = [];
   let topicTypes: TopicType[] = [];
   let agentMessages: AgentMessage[] = [];
-  if (slug) {
+  if (id) {
     [topics, topicTypes] = await Promise.all([
-      client.topicRead({ workstream: slug }).catch(() => []),
+      client.topicRead({ workstream: id }).catch(() => []),
       client.topicTypeRead().catch(() => []),
     ]);
   }
@@ -136,40 +134,39 @@ export async function loadWorkstreamViewModel(
     .map((topic) => ({
       id: topic.id,
       title: topic.title,
-      slug: topic.slug ?? topic.id,
+
       status: topic.status,
-      pinned: slug ? topic.focusedWorkstreams.includes(slug) : false,
+      pinned: id ? topic.focusedWorkstreams.includes(id) : false,
     }))
     .sort((left, right) => left.title.localeCompare(right.title));
   const ordered = [...rows.filter((row) => row.pinned), ...rows.filter((row) => !row.pinned)];
-  const typeMap = new Map(topicTypes.map((type) => [type.slug ?? type.id, type]));
+  const typeMap = new Map(topicTypes.map((type) => [type.id, type]));
   const { groups } = buildWorkstreamTree(
     workstream.id,
-    slug ?? '',
     'active',
-    slug ? topics : undefined,
+    id ? topics : undefined,
     typeMap,
     agentMessages,
   );
-  const memberSlugs = topics
-    .map((topic) => topic.slug)
-    .filter((topicSlug): topicSlug is string => Boolean(topicSlug));
+  const memberIds = topics
+    .map((topic) => topic.id)
+    .filter((topicId): topicId is string => Boolean(topicId));
 
   return {
     kind: 'workstream',
     id: workstream.id,
     title: workstream.title,
-    slug,
+
     status: workstream.status,
     createdAt: workstream.opened_at,
     updatedAt: workstream.updated_at,
     closure: workstream.closure,
     resourceVersion: workstream.resourceVersion,
-    editable: Boolean(slug),
+    editable: Boolean(id),
     topics: ordered,
     tree: groups.map(treeGroup),
     agentMessages: buildAgentMessageVMs(agentMessages, {
-      topicSlugs: memberSlugs,
+
       topicIds: topics.map((topic) => topic.id),
       workstreamIds: [workstream.id],
     }, now),

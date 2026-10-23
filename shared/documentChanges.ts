@@ -1,7 +1,7 @@
 export interface DocumentChange {
   id: string;
   kind: string;
-  slug: string | null;
+
   resourceVersion: number;
   deleted: boolean;
 }
@@ -24,13 +24,12 @@ export function parseDocumentChanges(value: unknown): DocumentChanges {
     if (!change || typeof change !== 'object'
       || !('id' in change) || typeof change.id !== 'string'
       || !('kind' in change) || typeof change.kind !== 'string'
-      || !('slug' in change) || (change.slug !== null && typeof change.slug !== 'string')
       || !('resourceVersion' in change) || typeof change.resourceVersion !== 'number'
       || !Number.isSafeInteger(change.resourceVersion) || change.resourceVersion < 1
       || !('deleted' in change) || typeof change.deleted !== 'boolean') {
       throw new Error('Invalid document-change entry.');
     }
-    return { id: change.id, kind: change.kind, slug: change.slug, resourceVersion: change.resourceVersion, deleted: change.deleted };
+    return { id: change.id, kind: change.kind,  resourceVersion: change.resourceVersion, deleted: change.deleted };
   });
   return { resourceVersion: value.resourceVersion, reset: value.reset, changes };
 }

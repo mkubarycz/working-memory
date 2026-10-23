@@ -8,17 +8,17 @@ import { TOPIC_KIND, stringArray } from './topic.js';
 const MAX_CLOSE_TREE_TOPICS = 5_000;
 
 export interface TopicCloseTreeResult {
-  root: { id: string; slug: string; title: string; resourceVersion: number };
+  root: { id: string; title: string; resourceVersion: number };
   dryRun: boolean;
   includeSharedDescendants: boolean;
   matchedCount: number;
-  matchedSlugs: string[];
+  matchedIds: string[];
   closedCount: number;
-  closedSlugs: string[];
+  closedIds: string[];
   alreadyClosedCount: number;
-  alreadyClosedSlugs: string[];
+  alreadyClosedIds: string[];
   skippedSharedCount: number;
-  skippedSharedSlugs: string[];
+  skippedSharedIds: string[];
 }
 
 export function registerWsTopicCloseTree(server: McpServer, store: Store): void {
@@ -33,28 +33,26 @@ export function registerWsTopicCloseTree(server: McpServer, store: Store): void 
         'propagates to descendants until the remaining closure is exclusively owned. Set ' +
         '`includeSharedDescendants: true` only when the user intends to close every reachable descendant. ' +
         'Dry run returns the exact deterministic plan without writing.',
-      inputSchema: {
-        slug: z.string().min(1).describe('Root topic slug. The root is always included.'),
+      inputSchema: z.object({
+        id: z.string().min(1).describe('Root topic ID. The root is always included.'),
         includeSharedDescendants: z.boolean().default(false).describe(
           'Close descendants that also have parents outside the closure. Default false skips them and their no-longer-exclusive descendants.',
         ),
         dryRun: z.boolean().default(false).describe('Return the exact close plan without writing.'),
-      },
+      }).strict(),
     },
-    async ({ slug, includeSharedDescendants, dryRun }) => {
+    async ({ id, includeSharedDescendants, dryRun }) => {
       const documents = store.listDocuments({ kind: TOPIC_KIND });
-      const bySlug = new Map(documents.flatMap((document) =>
-        document.metadata.slug ? [[document.metadata.slug, document] as const] : []));
-      const root = bySlug.get(slug);
-      if (!root) return asError(`Unknown topic slug: "${slug}". No live topic with that slug.`);
+      const byId = new Map(documents.map((document) => [document.metadata.id, document]));
+      const root = byId.get(id);
+      if (!root) return asError(`Unknown topic ID: "${id}". No live topic with that ID.`);
 
       const children = new Map<string, string[]>();
       for (const document of documents) {
-        const childSlug = document.metadata.slug;
-        if (!childSlug) continue;
+        const childId = document.metadata.id;
         for (const parent of stringArray(document.spec.parents)) {
           const siblings = children.get(parent) ?? [];
-          siblings.push(childSlug);
+          siblings.push(childId);
           children.set(parent, siblings);
         }
       }
@@ -62,18 +60,18 @@ export function registerWsTopicCloseTree(server: McpServer, store: Store): void 
 
       const reachable: string[] = [];
       const seen = new Set<string>();
-      const pending = [slug];
+      const pending = [id];
       for (let pendingIndex = 0; pendingIndex < pending.length; pendingIndex += 1) {
         const current = pending[pendingIndex];
         if (seen.has(current)) continue;
         seen.add(current);
-        if (!bySlug.has(current)) continue;
+        if (!byId.has(current)) continue;
         reachable.push(current);
         pending.push(...(children.get(current) ?? []));
       }
       if (reachable.length > MAX_CLOSE_TREE_TOPICS) {
         return asError(
-          `Topic tree "${slug}" contains ${reachable.length} topics, exceeding the atomic close limit of ` +
+          `Topic tree "${id}" contains ${reachable.length} topics, exceeding the atomic close limit of ` +
           `${MAX_CLOSE_TREE_TOPICS}. Split the tree below the root and close smaller subtrees first.`,
         );
       }
@@ -81,18 +79,18 @@ export function registerWsTopicCloseTree(server: McpServer, store: Store): void 
       const reachableSet = new Set(reachable);
       const visited = new Set<string>();
       const activePathIndex = new Map<string, number>();
-      const path = [slug];
-      const dfsStack: Array<{ slug: string; nextChildIndex: number }> = [
-        { slug, nextChildIndex: 0 },
+      const path = [id];
+      const dfsStack: Array<{ id: string; nextChildIndex: number }> = [
+        { id, nextChildIndex: 0 },
       ];
-      activePathIndex.set(slug, 0);
+      activePathIndex.set(id, 0);
       let cycle: string[] | null = null;
       while (dfsStack.length > 0 && !cycle) {
         const frame = dfsStack[dfsStack.length - 1];
-        const descendants = children.get(frame.slug) ?? [];
+        const descendants = children.get(frame.id) ?? [];
         if (frame.nextChildIndex >= descendants.length) {
-          visited.add(frame.slug);
-          activePathIndex.delete(frame.slug);
+          visited.add(frame.id);
+          activePathIndex.delete(frame.id);
           dfsStack.pop();
           path.pop();
           continue;
@@ -107,10 +105,10 @@ export function registerWsTopicCloseTree(server: McpServer, store: Store): void 
         }
         activePathIndex.set(child, path.length);
         path.push(child);
-        dfsStack.push({ slug: child, nextChildIndex: 0 });
+        dfsStack.push({ id: child, nextChildIndex: 0 });
       }
       if (cycle) {
-        return asError(`Cannot close topic tree "${slug}": parent cycle detected (${cycle.join(' -> ')}). No topics were changed.`);
+        return asError(`Cannot close topic tree "${id}": parent cycle detected (${cycle.join(' -> ')}). No topics were changed.`);
       }
 
       const selected = new Set(reachable);
@@ -119,8 +117,8 @@ export function registerWsTopicCloseTree(server: McpServer, store: Store): void 
         while (changed) {
           changed = false;
           for (const candidate of reachable) {
-            if (candidate === slug || !selected.has(candidate)) continue;
-            const parents = stringArray(bySlug.get(candidate)!.spec.parents);
+            if (candidate === id || !selected.has(candidate)) continue;
+            const parents = stringArray(byId.get(candidate)!.spec.parents);
             if (parents.some((parent) => !selected.has(parent))) {
               selected.delete(candidate);
               changed = true;
@@ -129,32 +127,31 @@ export function registerWsTopicCloseTree(server: McpServer, store: Store): void 
         }
       }
 
-      const matchedSlugs = reachable.filter((candidate) => selected.has(candidate));
-      const skippedSharedSlugs = reachable.filter((candidate) => !selected.has(candidate));
-      const alreadyClosedSlugs = matchedSlugs.filter((candidate) => bySlug.get(candidate)!.spec.status === 'closed');
-      const closedSlugs = matchedSlugs.filter((candidate) => bySlug.get(candidate)!.spec.status !== 'closed');
+      const matchedIds = reachable.filter((candidate) => selected.has(candidate));
+      const skippedSharedIds = reachable.filter((candidate) => !selected.has(candidate));
+      const alreadyClosedIds = matchedIds.filter((candidate) => byId.get(candidate)!.spec.status === 'closed');
+      const closedIds = matchedIds.filter((candidate) => byId.get(candidate)!.spec.status !== 'closed');
       const result: TopicCloseTreeResult = {
         root: {
           id: root.metadata.id,
-          slug,
           title: typeof root.spec.title === 'string' ? root.spec.title : '',
           resourceVersion: root.metadata.resourceVersion,
         },
         dryRun,
         includeSharedDescendants,
-        matchedCount: matchedSlugs.length,
-        matchedSlugs,
-        closedCount: closedSlugs.length,
-        closedSlugs,
-        alreadyClosedCount: alreadyClosedSlugs.length,
-        alreadyClosedSlugs,
-        skippedSharedCount: skippedSharedSlugs.length,
-        skippedSharedSlugs,
+        matchedCount: matchedIds.length,
+        matchedIds,
+        closedCount: closedIds.length,
+        closedIds,
+        alreadyClosedCount: alreadyClosedIds.length,
+        alreadyClosedIds,
+        skippedSharedCount: skippedSharedIds.length,
+        skippedSharedIds,
       };
-      if (dryRun || closedSlugs.length === 0) return asText(result);
+      if (dryRun || closedIds.length === 0) return asText(result);
 
-      const batch: UpdateDocumentInput[] = closedSlugs.map((candidate) => {
-        const document = bySlug.get(candidate)!;
+      const batch: UpdateDocumentInput[] = closedIds.map((candidate) => {
+        const document = byId.get(candidate)!;
         return {
           id: document.metadata.id,
           expectedResourceVersion: document.metadata.resourceVersion,

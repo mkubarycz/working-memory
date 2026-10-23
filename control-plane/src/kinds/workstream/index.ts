@@ -1,6 +1,6 @@
 /**
  * The `Workstream` kind — mirrors the extension's existing workstreams
- * (slug + title + lifecycle status + closure note) as a control-plane document.
+ * (title + lifecycle status + closure note) as a control-plane document.
  *
  * Mirrors `schema/001_initial.sql` (the `workstreams` table) as amended by
  * `schema/014_workstream_lifecycle_status.sql` (status becomes the lifecycle
@@ -8,7 +8,6 @@
  * `schema/015_workstream_updated_at.sql` (adds updated_at).
  *
  * Field placement — these table columns are ENVELOPE metadata, not spec:
- *   - `slug`       → `metadata.slug`
  *   - `opened_at`  → `metadata.createdAt`
  *   - `closed_at` / `updated_at` → `metadata` timestamps
  * So `spec` below is only the authored/domain fields (title, status, closure,
@@ -62,17 +61,6 @@ const workstream: KindModule = {
         position: z.number().finite().default(0),
       })
       .strict(),
-    validateMetadata: ({ slug, store, excludeId }) => {
-      const slugConvention =
-        'A Workstream requires a unique slug: lowercase words separated with dashes.';
-      if (typeof slug !== 'string' || slug.trim() === '' || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(slug)) {
-        throw new Error(slugConvention);
-      }
-      const existing = store.getDocument({ slug, kind: WORKSTREAM_KIND, includeDeleted: true });
-      if (existing && existing.metadata.id !== excludeId) {
-        throw new Error(`${slugConvention} "${slug}" is already in use.`);
-      }
-    },
     // No envelope `status` schema → inherit Base (lifecycle-only, empty {}).
     fts: (r) => (r.spec.closure ? `${r.spec.title}\n${r.spec.closure}` : r.spec.title),
   },

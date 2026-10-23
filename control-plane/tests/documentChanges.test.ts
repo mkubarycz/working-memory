@@ -1,8 +1,9 @@
+import { fetch as authenticatedFetch } from '../../tests/authenticatedFixture';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { openStore, type Store } from '../src/store';
-import { startServer, type RunningServer } from '../src/server';
+import { startServer, type RunningServer } from '../../tests/authenticatedFixture';
 import { loadKinds } from '../src/kinds/loader';
-import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { ControlPlaneClient } from '../../tests/authenticatedFixture';
 import { parseDocumentChanges, type DocumentChanges } from '../../shared/documentChanges';
 
 let store: Store;
@@ -45,8 +46,8 @@ describe('committed document changes', () => {
     store = openStore(':memory:');
     const changed = vi.fn();
     const stop = store.onDocumentsChanged(changed);
-    const first = store.createDocument({ kind: 'Topic', slug: 'first', spec: { title: 'First' } });
-    const second = store.createDocument({ kind: 'Topic', slug: 'second', spec: { title: 'Second' } });
+    const first = store.createDocument({ kind: 'Topic', spec: { title: 'First' } });
+    const second = store.createDocument({ kind: 'Topic', spec: { title: 'Second' } });
     changed.mockClear();
     expect(() => store.updateDocuments([
       { id: first.metadata.id, expectedResourceVersion: first.metadata.resourceVersion, spec: { title: 'Changed' } },
@@ -74,23 +75,23 @@ describe('committed document changes', () => {
   it('waits without reading documents until a commit, then returns only change metadata', async () => {
     store = openStore(':memory:');
     server = await startServer({ port: 0, store });
-    const initial = parseDocumentChanges(await (await fetch(`${server.url}/changes`)).json());
+    const initial = parseDocumentChanges(await (await authenticatedFetch(`${server.url}/changes`)).json());
     expect(initial).toEqual({ resourceVersion: 0, reset: true, changes: [] });
     const read = vi.spyOn(store, 'listDocuments');
     let settled = false;
-    const waiting = fetch(`${server.url}/changes?since=0`).then(async (response) => {
+    const waiting = authenticatedFetch(`${server.url}/changes?since=0`).then(async (response) => {
       settled = true;
       return parseDocumentChanges(await response.json());
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(settled).toBe(false);
     expect(read).not.toHaveBeenCalled();
-    const doc = store.createDocument({ kind: 'Topic', slug: 'changed', spec: { title: 'Private body' } });
+    const doc = store.createDocument({ kind: 'Topic', spec: { title: 'Private body' } });
     expect(await waiting).toEqual({
       resourceVersion: doc.metadata.resourceVersion,
       reset: false,
       changes: [{
-        id: doc.metadata.id, kind: 'Topic', slug: 'changed',
+        id: doc.metadata.id, kind: 'Topic',
         resourceVersion: doc.metadata.resourceVersion, deleted: false,
       }],
     });
@@ -100,19 +101,20 @@ describe('committed document changes', () => {
   it('replays missed changes and resets cursors outside bounded history', async () => {
     store = openStore(':memory:');
     server = await startServer({ port: 0, store });
-    for (let index = 0; index < 260; index += 1) store.createDocument({ kind: 'Topic', slug: `topic-${index}` });
-    const missed = parseDocumentChanges(await (await fetch(`${server.url}/changes?since=258`)).json());
+    for (let index = 0; index < 260; index += 1) store.createDocument({ kind: 'Topic' });
+    const missed = parseDocumentChanges(await (await authenticatedFetch(`${server.url}/changes?since=258`)).json());
     expect(missed.reset).toBe(false);
     expect(missed.changes.map((change) => change.resourceVersion)).toEqual([259, 260]);
     for (const since of [0, 999]) {
-      expect(parseDocumentChanges(await (await fetch(`${server.url}/changes?since=${since}`)).json()))
+      expect(parseDocumentChanges(await (await authenticatedFetch(`${server.url}/changes?since=${since}`)).json()))
         .toEqual({ resourceVersion: 260, reset: true, changes: [] });
     }
-    expect((await fetch(`${server.url}/changes?since=bad`)).status).toBe(400);
+    expect((await authenticatedFetch(`${server.url}/changes?since=bad`)).status).toBe(400);
   });
 
   it('delivers external MCP writes to a watching client and aborts on disposal', async () => {
     store = openStore(':memory:');
+    store.createDocument({ kind: 'TopicType', spec: { label: 'Topic' } });
     server = await startServer({ port: 0, store });
     const writer = new ControlPlaneClient({ resolveUrl: () => `${server!.url}/mcp` });
     const reader = new ControlPlaneClient({ resolveUrl: () => `${server!.url}/mcp` });
@@ -122,7 +124,7 @@ describe('committed document changes', () => {
     const watching = reader.watchDocumentChanges((change) => changes.push(change), controller.signal);
     const stopped = watching.catch((error) => { if (error.name !== 'AbortError') throw error; });
     await vi.waitFor(() => expect(changes).toHaveLength(1));
-    const created = await writer.topicCreate({ slug: 'external-change', title: 'External change' });
+    const created = await writer.topicCreate({ title: 'External change' });
     await vi.waitFor(() => expect(changes.some((notice) =>
       notice.changes.some((change) => change.id === created.id && change.kind === 'Topic'))).toBe(true));
     await reader.dispose();

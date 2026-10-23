@@ -9,7 +9,7 @@ import {
 
 describe('topic transfer drag planning', () => {
   it('copies by default and moves when Command is held at drop time', () => {
-    const source = { slug: 'parent', sourceWorkstream: 'source' };
+    const source = { id: 'parent', sourceWorkstream: 'source' };
     expect(planTopicTransfer(source, 'target', false)).toEqual({
       ...source, targetWorkstream: 'target', move: false,
     });
@@ -20,23 +20,23 @@ describe('topic transfer drag planning', () => {
 
   describe('moving to a new workstream', () => {
     function draft(): NewWorkstreamMoveDraft {
-      return { slug: 'parent', sourceWorkstream: 'source', title: 'Edited workstream name', targetWorkstream: '' };
+      return { id: 'parent', sourceWorkstream: 'source', title: 'Edited workstream name', targetWorkstream: '' };
     }
 
     it('creates the named workstream then uses the existing topic-tree move operation', async () => {
       const value = draft();
-      const createWorkstream = vi.fn().mockResolvedValue({ slug: 'new-target', title: value.title });
+      const createWorkstream = vi.fn().mockResolvedValue({ id: 'new-target', title: value.title });
       const transfer = vi.fn<(request: TopicTransferRequest) => Promise<void>>().mockResolvedValue();
       await moveTopicToNewWorkstream(value, { createWorkstream }, transfer);
       expect(createWorkstream).toHaveBeenCalledExactlyOnceWith('Edited workstream name');
       expect(transfer).toHaveBeenCalledExactlyOnceWith({
-        slug: 'parent', sourceWorkstream: 'source', targetWorkstream: 'new-target', move: true,
+        id: 'parent', sourceWorkstream: 'source', targetWorkstream: 'new-target', move: true,
       });
     });
 
     it('reuses the created workstream after a failed move', async () => {
       const value = draft();
-      const createWorkstream = vi.fn().mockResolvedValue({ slug: 'new-target', title: value.title });
+      const createWorkstream = vi.fn().mockResolvedValue({ id: 'new-target', title: value.title });
       const transfer = vi.fn<(request: TopicTransferRequest) => Promise<void>>()
         .mockRejectedValueOnce(new Error('Backend unavailable')).mockResolvedValue();
       await expect(moveTopicToNewWorkstream(value, { createWorkstream }, transfer))
@@ -59,17 +59,17 @@ describe('topic transfer drag planning', () => {
 
   it('rejects missing and same-workstream targets', () => {
     expect(planTopicTransfer(null, 'target', false)).toBeNull();
-    expect(planTopicTransfer({ slug: 'parent', sourceWorkstream: 'source' }, 'source', false)).toBeNull();
+    expect(planTopicTransfer({ id: 'parent', sourceWorkstream: 'source' }, 'source', false)).toBeNull();
   });
 
   it('refreshes open topics and both affected workstreams without touching unrelated documents', () => {
     expect(topicTransferRefreshTargets([
-      { kind: 'topic', slug: 'parent' },
-      { kind: 'topic', slug: 'child' },
-      { kind: 'workstream', slug: 'source' },
-      { kind: 'workstream', slug: 'target' },
-      { kind: 'workstream', slug: 'unrelated' },
-      { kind: 'Config', slug: 'runner' },
+      { kind: 'topic', id: 'parent' },
+      { kind: 'topic', id: 'child' },
+      { kind: 'workstream', id: 'source' },
+      { kind: 'workstream', id: 'target' },
+      { kind: 'workstream', id: 'unrelated' },
+      { kind: 'Config', id: 'runner' },
     ], 'source', 'target')).toEqual([
       { kind: 'topic', identifier: 'parent', key: 'topic:parent' },
       { kind: 'topic', identifier: 'child', key: 'topic:child' },

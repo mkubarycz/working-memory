@@ -274,8 +274,6 @@ class ListMarkerWidget extends WidgetType {
   }
 }
 
-const linkTargetDecoration = Decoration.mark({ class: `cm-live-link ${LINK_TARGET_CLASS}` });
-
 function buildDecorations(state: EditorState): DecorationSet {
   const decorations: Range<Decoration>[] = [];
   const activeLines = activeLineStarts(state);
@@ -327,8 +325,11 @@ function buildDecorations(state: EditorState): DecorationSet {
           }
         }
         const href = linkHref(state, node.node, lookupDefinitions);
-        if (href && isOpenableMarkdownHref(href)) {
-          decorations.push(linkTargetDecoration.range(node.from, node.to));
+        if (href) {
+          decorations.push(Decoration.mark({
+            ...(isOpenableMarkdownHref(href) ? { class: `cm-live-link ${LINK_TARGET_CLASS}` } : {}),
+            attributes: { title: href },
+          }).range(node.from, node.to));
         }
       }
       if (node.name === 'LinkMark' && node.node.parent?.name === 'Link') return;

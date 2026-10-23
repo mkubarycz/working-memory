@@ -15,7 +15,7 @@ import { TopicType, TOPIC_TYPE_KIND } from './topictype.js';
 
 /**
  * Register the `ws-topictype-read` tool on an MCP session's server. Reads ONE
- * topic type by slug/id, or LISTs all live TopicTypes (optionally filtered),
+ * topic type by ID, or LISTs all live TopicTypes (optionally filtered),
  * always returning the uniform `{ count, topicTypes }` shape.
  */
 export function registerWsTopicTypeRead(server: McpServer, store: Store): void {
@@ -24,13 +24,12 @@ export function registerWsTopicTypeRead(server: McpServer, store: Store): void {
     {
       title: 'TopicType: Read',
       description:
-        'Read one TopicType or many. Read ONE by `slug` or `id`; otherwise LIST all TopicTypes ' +
+        'Read one TopicType or many. Read ONE by `id`; otherwise LIST all TopicTypes ' +
         '(newest-first), with an optional `query` case-insensitive substring filter and a `limit`. ' +
-        'ALWAYS returns { count, topicTypes } — a by-slug/id read yields a 0-or-1 element list, so ' +
+        'ALWAYS returns { count, topicTypes } — a by-ID read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
-      inputSchema: {
-        slug: z.string().optional().describe('Read ONE topic type by slug (registry key).'),
-        id: z.string().optional().describe('Read ONE topic type by document id (uuid).'),
+      inputSchema: z.object({
+        id: z.string().min(1).optional().describe('Read ONE topic type by document ID.'),
         query: z
           .string()
           .optional()
@@ -41,13 +40,13 @@ export function registerWsTopicTypeRead(server: McpServer, store: Store): void {
           .positive()
           .optional()
           .describe('Max topic types to return (list mode only).'),
-      },
+      }).strict(),
     },
-    async ({ slug, id, query, limit }) => {
-      // Single read: by id or slug. A foreign-kind id maps to nothing (the
+    async ({ id, query, limit }) => {
+      // Single read: by ID. A foreign-kind ID maps to nothing (the
       // `ws-topictype-*` API only speaks TopicTypes).
-      if (id !== undefined || slug !== undefined) {
-        const doc = store.getDocument({ id, slug, kind: TOPIC_TYPE_KIND });
+      if (id !== undefined) {
+        const doc = store.getDocument({ id, kind: TOPIC_TYPE_KIND });
         const topicTypes = doc && doc.kind === TOPIC_TYPE_KIND ? [new TopicType(doc)] : [];
         return asText({ count: topicTypes.length, topicTypes });
       }

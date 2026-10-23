@@ -33,6 +33,10 @@ For   **topics**, topic types, Agent Messages, and related control-plane documen
   an In Progress workstream and saves the description as its first topic;
   nothing is created until you confirm. If the topic save fails after workstream
   creation, the draft keeps that workstream for retry rather than creating another.
+- **Close a workstream:** right-click its row in the Active rail and choose
+  **Close Workstream**. It moves to the archive; its topics, memberships, and
+  authored content remain unchanged. **Reopen Workstream** returns it to
+  In Progress.
 - **Move to a new workstream:** right-click a topic in the Active rail, then
   **Move to... > New Workstream...**. Its saved title and body are used to suggest
   an editable workstream name. **Move** creates the In Progress workstream and
@@ -40,6 +44,11 @@ For   **topics**, topic types, Agent Messages, and related control-plane documen
   workstream memberships. Cancel makes no changes; a failed move can be retried
   without creating another workstream. The Active topic menu omits the redundant
   **Add to workstream** action; **Remove from workstream** remains available.
+- **Link targets:** hover over an internal or external link to see its target
+  URL in a tooltip, including links in live Markdown, document previews, and chat.
+  Authored Markdown is not changed.
+- **Topic identifiers:** topic headers show creation and update times without
+  the resource ID. Hover over a topic tab to see its full resource locator.
 - **Draft autocomplete:** suggestions start after an idle pause once the body
   contains at least 24 characters; punctuation is not required. Changes during
   the ten-second request cooldown are queued, and stale responses are ignored.
@@ -320,7 +329,7 @@ Keep a meaningful title and the authored Markdown in `description`, link
 detailed journal/PR provenance, and specify topic/object relations. Do not post
 dispatch/running chatter, duplicate summaries, or long operational reports.
 `attention` defaults to false; use it only for a specific human decision/action.
-For example, after substituting your registered agent ID and an existing topic slug:
+For example, after substituting your registered agent ID and an existing topic ID:
 
 ```json
 {
@@ -330,7 +339,7 @@ For example, after substituting your registered agent ID and an existing topic s
   "category": "request",
   "attention": true,
   "recommended_action": "Choose Friday evening or Saturday morning.",
-  "topics": ["existing-topic-slug"]
+  "topics": ["existing-topic-id"]
 }
 ```
 
@@ -464,7 +473,7 @@ copy to relaunch after the newly signed bundle is in place. Set
 without refreshing it.
 
 Register an app with `ws-containerclaim-create` (or a generic `ContainerClaim`
-document), providing a unique `slug`, `title`, `repository`, and complete
+document), providing a `title`, `repository`, and complete
 Docker `runtime` (`buildContext`, `dockerfile`, image/container names, ports,
 health/entry paths, and optional named volumes). Add `mcp` and `application`
 metadata for chat tools and live contracts. Optional `desktop` metadata accepts
@@ -473,12 +482,12 @@ icon and App Info rather than embedding. There are no app-name-specific
 presentation defaults: icons and embedding preferences belong in each claim's
 `desktop` configuration, including for previously bundled app registrations.
 
-For example, Sunset Chess 1.4 can be registered with slug `sunset-chess-1-4`,
-its dedicated source worktree, image `sunset-chess:1.4`, container
+For example, Sunset Chess 1.4 can be registered with its dedicated source
+worktree, image `sunset-chess:1.4`, container
 `working-memory-sunset-chess-1-4`, host port 4176/container port 4175, and
 named volume `working-memory-sunset-chess-1-4-data` mounted at `/data`.
 It can advertise application identity `sunset-chess` independently of its
-registration slug. Neither the original app nor its volume needs to change.
+registration's generated object ID. Neither the original app nor its volume needs to change.
 
 The catalog loads at startup and on environment switches, then refreshes when a
 ContainerClaim changes. The desktop listens to a commit-driven, metadata-only
@@ -500,7 +509,7 @@ deleting a claim removes it from the catalog without stopping or deleting its
 container or data. A claim without a Docker runtime is intent-only and is not
 listed. Registration itself never launches a container.
 
-Each action is routed by claim slug through one generic orchestration path.
+Each action is routed by claim object ID through one generic orchestration path.
 The launcher reads the authored claim without replacing its runtime, endpoints,
 or source revision with compiled defaults, builds its Dockerfile, and
 reconciles only the exactly labeled managed container. The browser opens an app
@@ -765,12 +774,12 @@ the desktop loopback bridge
 `http://127.0.0.1:7718/open/<kind>/<id>`, where:
 
 - `<kind>` is `topic`, `workstream`, `topic-type`, `alert`, or `document`
-- `<id>` is the resource slug or id
+- `<id>` is the existing immutable resource object ID; names are not aliases
 
 | Kind | Markdown shape | Example |
 |---|---|---|
-| Topic | `[label](http://127.0.0.1:7718/open/topic/<slug>)` | `[chat-clickable-links](http://127.0.0.1:7718/open/topic/chat-clickable-links)` |
-| Workstream | `[label](http://127.0.0.1:7718/open/workstream/<slug>)` | `[topic-types](http://127.0.0.1:7718/open/workstream/topic-types)` |
+| Topic | `[label](http://127.0.0.1:7718/open/topic/<id>)` | `[chat-clickable-links](http://127.0.0.1:7718/open/topic/00000000-0000-4000-8000-000000000001)` |
+| Workstream | `[label](http://127.0.0.1:7718/open/workstream/<id>)` | `[topic-types](http://127.0.0.1:7718/open/workstream/00000000-0000-4000-8000-000000000002)` |
 | Agent Message (compatibility route) | `[label](http://127.0.0.1:7718/open/alert/<id>)` | `[release blocker](http://127.0.0.1:7718/open/alert/1234)` |
 
 The loopback server accepts validated GET routes only, focuses the desktop app,
@@ -787,7 +796,7 @@ with `isTrusted = true` (e.g. a hover, a chat participant), you can
 still use:
 
 ```
-[label]\(command:working-memory.openTopic?%5B%22<slug>%22%5D\)
+[label]\(command:working-memory.openTopic?%5B%22<id>%22%5D\)
 ```
 
 The `?...` payload is `encodeURIComponent(JSON.stringify([id]))`. The
@@ -795,6 +804,49 @@ deep-link form above is preferred for chat because it does not require
 trust.
 
 ## Schema migrations
+
+### Upgrading to ID-only resources (1.3.0)
+
+Resource slugs are removed from storage, metadata, UI, clients, and MCP inputs.
+Use returned object IDs for reads, updates, deletes, deep links, parent/type
+references, workstream membership, and container registration references.
+Creating a resource no longer requires or generates a slug. Duplicate titles
+are allowed. Unsupported input fields are rejected rather than treated as
+aliases or silently ignored.
+
+The append-only `resource-ids` migration preserves existing IDs, timestamps,
+soft-deletion, row order, attachments, and child rows. It converts structured
+references and drops the old column without rebuilding the parent table.
+Startup does **not** rewrite authored Markdown. A missing or ambiguous target
+blocks the transaction rather than guessing or silently discarding a reference.
+Old slug-based URLs have no compatibility resolver; clicking one reports that
+the resource was not found. Old `vscode://` links are obsolete as well.
+
+Before the first launch of an upgraded backend, stop the desktop and backend,
+then run this explicit maintenance operation against the existing database:
+
+```bash
+npm run compile
+node scripts/upgrade-resource-ids.mjs --database "/path/to/journal.sqlite"
+# Review the dry-run output, then apply:
+node scripts/upgrade-resource-ids.mjs --database "/path/to/journal.sqlite" --apply
+```
+
+`--apply` creates a consistent sibling SQLite backup before changing data.
+It rewrites resolvable legacy native, loopback, and VS Code resource URLs to
+ID-based native URLs, excluding immutable `legacy_source` archives. It detaches
+unresolvable relationships, substitutes the existing general Topic type for
+a missing type, and creates one open report topic in an **Upgrade to 1.3.0**
+workstream, grouping repairs and unresolved links by risk with links to affected
+documents. No existing topic lifecycle status is changed. A dry run rolls back
+the entire transaction, including the proposed report. Once the migration is
+recorded, subsequent runs are no-ops.
+
+Saved desktop tabs and chat scope keys containing old names are not aliases;
+reopen affected resources by ID. Existing managed Docker containers and images
+retain old ownership labels. Recreate them through a reviewed, volume-preserving
+upgrade before managing them from the ID-only desktop; unrelated containers
+and volumes are never rewritten by the database migration.
 
 The active control plane owns a unified `resources` store, initialized by
 `control-plane/src/store.ts`. Agent Message conversion runs there using the
@@ -861,6 +913,487 @@ pattern when writing migrations that touch tables with `ON DELETE CASCADE`
 children. Migration 004 wiped two join tables by using a naïve
 create-copy-drop-rename pattern with `foreign_keys = ON` globally enabled;
 that template is the documented cure.
+
+## Approved Node.js host scripts (experimental)
+
+The desktop now supports a generic **register -> approve -> request -> run**
+workflow on macOS and Linux, separate from the unfinished Windows/Thrive
+integration below. This runs **trusted code as your local account, not in an
+OS sandbox**. It never elevates privileges or lets a caller submit script text,
+choose an executable, supply shell arguments, or change the process environment.
+
+### First local example
+
+1. Connect to the instance in the desktop. Sign in with its owner password.
+   On a locally managed
+   instance's first connection, choose **Set password and connect** and confirm
+   the native owner-setup prompt. Passwords must have at least 12 characters.
+   No token-file import or Keychain access is required.
+   An optional free-text **Password hint** (up to 1000 characters) is displayed
+   beside the password prompt before sign-in. It is public reminder text, not
+   a secret: never enter the password itself. After connecting, open
+   **Settings -> Access -> Edit password hint** to add, change, or clear it
+   without changing the password or enabling Host tasks.
+2. Open **Settings -> Features**. The grid lists each feature's name, short
+   description, and on/off toggle. It reuses your app session and has no
+   separate password form. **Host tasks** is off by default.
+3. Enable **Host tasks**, then select **Host Tasks** beside **Container Apps**
+   in the desktop rail. The rail lists registered scripts; selecting one opens
+   its editor and details in its own persistent document tab. Re-selecting a
+   script selects its existing tab, and multiple tasks can be open independently.
+   There is no footer launcher, popup, or platform/integration selector. No demo scripts
+   are installed automatically. Choose **Add script** to register your own script. For an optional example,
+   expand **Try a demo instead -> Add greeting demo**, review the native approval,
+   then select that script. The example only returns a greeting, Node version,
+   and platform; it does not access files or the network.
+4. Enter `{"name":"Michael"}`, choose **Review and queue one test**, approve
+   the native prompt, and **Start runner**. The JSON result appears in
+   the selected task's details and run history. This test does not grant any app access.
+5. For a real caller, select a script and expand **App access**. Export its own
+   private credential under **Add a caller**, select the caller,
+   and approve a **one-hour script grant**. Never give an agent
+   the desktop's owner session or password. Revoke the grant or script version to stop
+   future dispatch and result release.
+
+The runner polls only while its task's document tab is active and explicitly started.
+Switching document tabs or closing it stops new claims; a current run may finish. **Stop runner**
+also aborts the current process. A sleeping/closed desktop does not execute
+jobs. Runs are not automatically retried, because scripts may have side effects.
+
+### Instance feature flags
+
+**Settings -> Features** saves flags on the selected control-plane instance,
+not just in one desktop profile. Changing a flag requires a signed-in instance
+owner. New and existing instances default to Host tasks disabled until enabled.
+Turning it off removes the rail tab, closes its local task/detail tabs, and rejects
+host-task HTTP/MCP calls with HTTP 503 and
+`{"error":"feature_disabled","feature":"hostTasks","message":"Host tasks is turned off. Enable it in Settings > Features."}`.
+This covers both generic scripts and the legacy broker, including claims,
+completions, and result reads. Existing scripts, grants, jobs, and history are
+retained; disabling a feature is not revocation. Queued jobs remain subject to
+their original expiry if the feature is enabled again.
+
+The desktop aborts its current run when disabling the flag. Other active runners
+stop at their next status check; already completed host side effects cannot be
+undone. Other desktops refresh flag visibility with their regular health poll.
+`GET /features/v1` reports flag state to a signed-in owner; `POST /features/v1` accepts
+`{"hostTasks":true}` only with an active owner bearer session. Identity sign-in,
+initial local owner setup, and feature management stay available while Host tasks
+is off so an owner can re-enable it. These switches do not replace authorization.
+
+The footer displays the installed application's exact numbered version, such as
+**Version 1.2.0-build.80**, rather than the renderer's build time. Local development
+builds continue to display their immutable build timestamp.
+Revocation cannot undo host work already performed.
+
+### Registering your own script
+
+Choose a reviewed, self-contained `.cjs`/CommonJS `.js` file up to 32 KiB:
+
+```js
+module.exports = async function (parameters) {
+  return { greeting: `Hello, ${parameters.name}!` };
+};
+```
+
+Declare its allowed parameters as JSON in the registration form:
+
+```json
+{
+  "name": { "type": "string", "required": true, "maxLength": 80 },
+  "mode": { "type": "string", "enum": ["preview", "import"], "maxLength": 10 },
+  "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+  "verbose": { "type": "boolean" }
+}
+```
+
+Unknown keys, coercions, missing required values, unsupported schema fields,
+and out-of-range values are rejected. At most 20 parameters and 16 KiB of
+parameter JSON are accepted. Arguments arrive as a frozen object, not shell
+substitutions. Return JSON-serializable data up to 64 KiB. Console output is
+not returned; exceeding 64 KiB of console output fails the run.
+
+Registration stores a private immutable snapshot of the entry script and its
+parameter contract, host binding, and time limit. Its canonical SHA-256 is
+shown during native approval and rechecked before execution. Editing the
+original file does not change an approved version: register and approve a new
+version, and revoke the old one. The UI uses a 10-second time limit; the API
+supports 1–30 seconds. The runner uses the installed Electron Node runtime in
+a child process, with a minimal environment and best-effort process-group
+termination on timeout, cancellation, and completion. Deliberately detached
+descendants, runtime dependencies, and OS privileges are **not sandboxed**.
+Only built-in modules are supported through the supplied `require`; filesystem
+and network restrictions must be implemented in the reviewed script itself.
+Do not register code from an untrusted caller.
+
+### Authenticated tools and broker API
+
+An app-specific bearer credential plus an unexpired, exact-version script
+grant is required. Script definitions, grants, jobs, and private results live
+in protected broker tables, not editable Topic/Config documents. Native
+registration, grants, and owner tests require a cancel-default confirmation.
+Grants last at most 24 hours, queued jobs at most five minutes, with one active
+generic job per caller and at most ten requests per minute. Completed arguments
+are cleared; results/error payloads are retained at most 30 minutes and never
+past grant validity. Audit rows contain control metadata, not script source,
+arguments, or result data. SQLite WAL/backups are not securely erased.
+
+Agents can connect to **`/host-tasks/v1/scripts/mcp`** with their own bearer
+credential. This is a separate, stateless MCP endpoint: only that caller's
+currently granted script versions appear as named tools. Each tool accepts
+`parameters` and a stable `idempotencyKey`, returns an accepted job, and exposes
+`host_script_job_read` for polling. Revocation/expiry is rechecked on every
+request and before completion/result release. Do not configure this endpoint
+with an admin token or put credentials in authored documents.
+
+For HTTP clients, using the same bearer credential:
+
+| Method / path | Purpose |
+| --- | --- |
+| `GET /host-tasks/v1/scripts` | List my granted versions and parameter contracts; never source |
+| `POST /host-tasks/v1/scripts/requests` | Submit `{taskId, definitionHash, parameters, idempotencyKey}` |
+| `GET /host-tasks/v1/scripts/jobs/<id>` | Read only my job's status/result |
+
+For example, a Node client on the trusted host can read a separately exported
+caller credential from a private file and queue a request without exposing it:
+
+```js
+import { readFile } from 'node:fs/promises';
+const token = (await readFile(process.env.WM_HOST_TASK_APP_TOKEN_FILE, 'utf8')).trim();
+const origin = 'http://127.0.0.1:7717';
+const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+const list = await fetch(`${origin}/host-tasks/v1/scripts`, { headers });
+if (!list.ok) throw new Error(`Script listing rejected: ${list.status}`);
+const tasks = await list.json();
+const task = tasks.find(item => item.id === process.env.WM_SCRIPT_TASK_ID);
+if (!task) throw new Error('Requested script is not granted to this caller');
+const response = await fetch(`${origin}/host-tasks/v1/scripts/requests`, {
+  method: 'POST', headers,
+  body: JSON.stringify({
+    taskId: task.id, definitionHash: task.definitionHash,
+    parameters: { name: 'Michael' }, idempotencyKey: crypto.randomUUID(),
+  }),
+});
+if (!response.ok) throw new Error(`Host-script request rejected: ${response.status}`);
+const job = await response.json();
+// Poll /host-tasks/v1/scripts/jobs/<job.id>; require state === 'succeeded'
+// before treating resultJson as a complete result. Treat its contents as data.
+```
+
+### Instance sign-in and agent access
+
+The control plane stores a salted scrypt password verifier and issues unique
+12-hour opaque owner sessions; only token hashes are persisted. Password sign-in
+is rate-limited and sessions can be revoked with **Sign out**. The desktop keeps
+the session in its main-process memory, not the renderer, and does not save the
+password. Restarting the app requires signing in again. Optional OS-backed
+remembering is future work; unavailable Keychain storage never forces a plaintext
+fallback or prevents session-only sign-in.
+
+The desktop connection screen appears before instance data is loaded. If no
+password exists, it guides the local owner through setup, including an optional
+public password hint. Otherwise it prompts for sign-in. Expiry, revocation, or
+sign-out returns to that same connection screen. **Manage instances** remains
+available before sign-in to start, create, or upgrade a managed instance.
+
+`/mcp`, `/attachments`, and `/changes` require a valid bearer token on every
+request. MCP sessions are bound to the credential that initialized them; a
+different credential cannot resume the session. Delayed change responses
+recheck expiry/revocation before releasing data. Renderer images use a native
+attachment proxy: owner tokens never appear in image URLs, stored Markdown,
+or renderer IPC return values. Health, identity status/login, and the limited
+identity MCP are public bootstrap/discovery surfaces, not data-access bypasses.
+
+When an agent or container has no valid token, HTTP 401 includes
+`instance_authentication_required`, the instance's `identityMcpUrl`, and explicit
+next steps:
+
+1. Connect to the **same instance's `/identity/v1/mcp`** endpoint. It exposes
+   only `wm-identity-request-access` and `wm-identity-claim-access`, not documents.
+2. Call `wm-identity-request-access` with a recognizable `label`, `access`
+   (`read` or `write`; default `read`), and `refresh:false`.
+3. Ask the signed-in owner to open **Settings -> Access**. Pending requests
+   also produce a **Review** entry in the desktop footer. Approval requires
+   a cancel-default native confirmation showing the request ID, unverified
+   client label, network source, requested permissions, and expiry.
+4. Poll `wm-identity-claim-access` with the returned `requestId` and private
+   `requestSecret`. Only after approval does it return a bearer token, exactly
+   once. Requests expire after ten minutes; issued client tokens last twelve
+   hours. Denied, expired, or already-claimed requests explain how to request
+   access again.
+5. Store the token privately and configure that client's Authorization header
+   for data requests. The shared Node client accepts `WM_INSTANCE_TOKEN_FILE`
+   (a private file outside repositories) or `WM_INSTANCE_TOKEN`; desktop owner
+   credentials use the isolated main-process vault instead.
+
+For refresh, connect to the identity MCP with the previous client token in its
+Authorization header, even if expired, and request `refresh:true`. Refresh
+requires a new human approval and cannot change that identity's access level.
+Claiming a refresh rotates its credential; initialize a new data MCP session.
+Revoked credentials cannot refresh and must request new access. Owners can
+revoke clients in **Settings -> Access**. Never pass the owner password/session
+to an agent or reuse one client's token in another container.
+
+Client identities can read data, or read and change data, according to the
+approved request. Neither permits owner administration, feature changes, access
+approval, or host-script execution. Host-script caller credentials remain
+separate and still require exact-version grants; they cannot access ordinary
+instance data. Tokens and claim secrets are stored only as hashes in private
+identity tables, never as generic documents.
+
+**Existing-instance migration:** deploy the backend and desktop together and
+provision each existing API client before expecting its old anonymous
+integration to work. Data and named volumes are not replaced by authentication.
+Unconfigured clients get the recovery guidance above, not an empty/success
+response. There is no anonymous compatibility bypass. Do not expose bearer
+credentials over untrusted plaintext networks. Automatic credential injection
+into arbitrary containers, password change/recovery, and optional OS-backed
+remembering remain separate work.
+
+### Trusted initial owner setup (provisioning infrastructure)
+
+The control-plane daemon provisions a private initial-setup credential in its
+runtime directory. A managed Docker instance's desktop retrieves it through
+trusted Docker orchestration after verifying the registered image, Compose
+ownership, data mount, and exact loopback port. This supports Windows Docker
+volumes as well as macOS/Linux bind mounts; no host-specific token import or
+Keychain access is required. The user still chooses the password and approves
+the native setup prompt. The setup credential is never returned to the renderer.
+
+Self-hosted deployments can instead explicitly provision a private file outside
+repositories/synced folders:
+
+```bash
+node scripts/create-host-task-token.mjs "/private/path/host-task-admin.secret"
+```
+
+Configure `WM_HOST_TASK_ADMIN_TOKEN_FILE` **in the control-plane process** to
+that file's path, then restart it. A Docker broker needs the file mounted
+privately, read-only where practical; use its container-visible path and the
+broker's effective owner. POSIX mode 0600 and ownership are verified. This is
+an installation/bootstrap secret, not a token the user must import to sign in.
+For a locally managed macOS/Linux instance, place its host-side file at
+`host-task-admin.secret` in that instance's data directory. The trusted desktop
+main process reads it only for the initial password setup, after native approval.
+It is never returned to the renderer or requesting app.
+
+`POST /identity/v1/setup` (and the legacy
+`POST /host-tasks/v1/admin/identity/setup` alias) requires that bootstrap credential;
+an unauthenticated caller cannot claim ownership. Once a password is set,
+the bootstrap credential cannot manage scripts or overwrite the password;
+use an owner session instead. The legacy Thrive-specific backend protocol
+remains separate and disabled; it is not offered as a desktop workflow.
+Managed Windows setup reads the container-private credential rather than
+importing a Windows host file. Existing password-configured instances use
+platform-independent sign-in.
+
+For the existing Compose setup, an owner-maintained override can set the path
+to a token stored in the existing private data mount:
+
+```yaml
+services:
+  control-plane:
+    environment:
+      WM_HOST_TASK_ADMIN_TOKEN_FILE: /data/host-task-admin.secret
+```
+
+Keep this override with your local configuration, not with an app image or
+agent container. Include it whenever recreating the backend; omitting it
+changes the configured initial-setup path. Keep the broker on a protected local transport;
+bearer credentials must not cross an untrusted plaintext network.
+
+## Thrive host tasks (experimental; execution blocked)
+
+Working Memory owns the approval and durable broker boundary, not a generic
+host-command endpoint. **This is not production accepted or an operational
+Thrive transport replacement.** No Windows/Agency, Microsoft-policy, historical
+ADO, or Redis end-to-end behavior has been validated by the Linux fixtures.
+The production runner deliberately refuses execution until those integrations
+have independently verified trust and identity. There is no environment switch
+that turns fixture execution into a production runner.
+
+### Trust and provisioning
+
+- The capability is only `thrive.sync.read`: read Michael's/Comcast Thrive
+  work items in **CXPPMO / Customers**, created by or assigned to
+  `mkubarycz@microsoft.com`, **OR** under `Customers\Comcast`.
+  A grant covers routine five-minute reads, with bounded manual refresh, an
+  explicit expiry, and revocation; it does not approve ADO writes.
+- ContainerClaim IDs, labels, source IPs, MCP session IDs, and editable
+  Topic/Config documents are not credentials or grants. The dedicated broker
+  API uses separate app, trusted-administrator, and runner authentication.
+  An app can request, inspect, cancel, retrieve and acknowledge only its own
+  jobs; it cannot author a grant or register a runner.
+- A human must provision a distinct high-entropy admin secret into a private
+  file and configure the control plane's `WM_HOST_TASK_ADMIN_TOKEN_FILE`.
+  No default/bootstrap secret is baked into an image. Mount this file only
+  into the broker, not into agent containers. Without it, admin access fails
+  closed. Use a protected local transport; never expose bearer credentials on
+  an untrusted plaintext network.
+- The trusted desktop imports that secret through a native file picker and
+  stores it encrypted with OS-backed Electron `safeStorage`; insecure Linux
+  `basic_text` storage is rejected. The secret is not returned to the renderer,
+  general document CRUD, or chat tools. Per-app credentials are issued through
+  the trusted UI, exported once through a native save dialog, and should be
+  mounted only into the intended app instance as a read-only secret.
+  Windows ACL provisioning/verification remains a human/platform release gate;
+  Windows credential-file import/export is blocked until that verifier exists.
+  POSIX file modes are not evidence of a protected Windows mount.
+- Review the app instance, actual Windows SID, Microsoft tenant, finite expiry,
+  operation implementation/hash, fixed scope/actions/output and budgets before
+  granting. A typed SID is an approval binding, **not** proof of the effective
+  Windows or cached Microsoft identity. Grant approval never enables the
+  currently blocked runner. The current operation hash fingerprints the fixed
+  policy descriptor; it is **not** proof of immutable Agency/runner bytes or
+  executable publisher trust.
+- Trusted host code has the user's privileges: this is **not an OS sandbox**.
+  Host/Docker-administrator compromise is outside this boundary. There is no
+  shell, PowerShell/script, arbitrary WIQL/tool/URL/project/identity forwarding,
+  or host MCP HTTP listener. Local approval does not override Conditional
+  Access, ADO permissions or a required supported sign-in.
+
+### Broker and Thrive adapter contract
+
+`shared/hostTasks.ts` defines the versioned wire contract. The dedicated
+`/host-tasks/v1` surface is separate from `/mcp`; admin routes are below
+`/host-tasks/v1/admin`. Requests return accepted jobs, not synchronous UI
+callbacks. Broker time values use epoch **milliseconds**, unlike the document
+store's epoch-second timestamps; snapshot checkpoints are canonical UTC ISO
+timestamps. The controller owns state transitions and authorization, durable
+idempotency, expiry, leases/attempt fencing, grant generation checks and
+private result release. Restarting a runner must not allow a previous attempt
+to complete a newer lease. Revocation invalidates future dispatch and late
+results; it cannot undo an ADO read already performed. External cancellation
+is best effort. Audit events contain control metadata, not credentials, raw
+auth responses or ticket descriptions, and do not authorize anything.
+Broker audit metadata stays in a protected table rather than an editable
+CommandJournal document; the existing journal CRUD is not an authorization or
+private-result boundary.
+The general document API requires a separate instance owner or approved client
+session, as described above. Broker caller credentials do not grant document
+access, and broker grants and private result bytes never live in that API.
+Keep network exposure restricted as well as requiring authentication.
+
+| Principal | Method / path below `/host-tasks/v1` | Contract |
+| --- | --- | --- |
+| App | `POST /requests` | `capability`, `idempotencyKey`, optional `manualRefresh`, `mode`, `checkpoint`, `knownIds`; returns 202 job |
+| Same app | `GET /jobs/:id` | Controller-owned state; keep polling asynchronously |
+| Same app | `GET /jobs/:id/results` | Complete validated manifest only; not available for blocked/unfinished jobs |
+| Same app | `POST /jobs/:id/ack` | Empty JSON object, after atomic cache publication |
+| Same app | `POST /jobs/:id/cancel` | Empty JSON object; invalidates future result release |
+| Trusted admin | `GET /admin`, `POST /admin/apps`, `POST /admin/grants` | Metadata inspection, one-time credential provisioning, finite protected grant |
+| Trusted admin | `POST /admin/grants/:id/revoke`, `POST /admin/jobs/:id/deny` | Explicit user decision, not a document mutation |
+| Trusted admin | `POST /admin/apps/:id/revoke`, `POST /admin/runners/:id/revoke` | Revoke a provisioned principal and invalidate outstanding work |
+| Runner | `POST /runner/claim`, `/runner/heartbeat`, `/runner/results`, `/runner/failure` | Separate credential and fenced lease; unavailable without verified execution integration |
+
+Use bearer authentication in the `Authorization` header (never a query parameter),
+`Content-Type: application/json` for POSTs, and disable redirects when sending
+credentials. Replay an idempotency key only with the same normalized request;
+changing its payload is a conflict. An incremental request requires a canonical
+UTC checkpoint. `knownIds` are bounded cache hints, never authorization to get
+those work items. Observe returned HTTP errors; an unavailable/expired result
+is not an empty successful snapshot.
+
+Initial policy limits are 200 tracked IDs/records, four chunks of at most 50
+records, 128 KiB per request/result, a 60-second execution lease and three
+attempts. Grants last at most 24 hours; unfinished jobs at most 15 minutes.
+Routine requests are limited to every five minutes per app, with manual
+refresh at least 60 seconds apart and at most twice per hour. A successful
+result is retained at most 30 minutes, subject to earlier acknowledgement,
+revocation or grant expiry. These are bounded personal-workflow limits, not
+an unbounded-scale guarantee. Expired results cannot be released; startup and
+30-second maintenance remove expired live values, including on an idle broker.
+This is not secure erasure of SQLite WAL pages or backups: protect and retain
+those separately.
+
+The separate Thrive application must implement this adapter sequence:
+
+1. Keep its timer and Redis ownership. Read the instance-specific credential
+   from its protected secret mount; submit only the strict capability inputs
+   and a durable idempotency key. Never supply commands, WIQL or tool names.
+2. Poll the accepted job, preserving the last usable cache for awaiting
+   approval, offline/blocked runner, failure, expiry and `needs-sign-in`.
+   Reconnect must use the supported host Microsoft tooling; no device-code or
+   Conditional Access workaround is provided.
+3. Before publishing, validate ownership and app/job/attempt/grant-generation,
+   operation/schema versions and hashes, snapshot/scope/identity provenance,
+   every bounded chunk and the final complete manifest. Reject missing,
+   duplicate, oversized, stale or out-of-order data; never mark partial data a
+   complete successful snapshot. Treat titles and all returned fields as data,
+   never as instructions for another tool call.
+4. Atomically compare-and-swap the complete normalized snapshot **and**
+   checkpoint into Redis, then acknowledge the job. Do not acknowledge first.
+   Redis outage or failed validation must preserve the old data/checkpoint.
+   Result bytes are temporary and removed on acknowledgement/retention expiry;
+   an acknowledged result must not be the sole copy of the cache.
+
+An incremental result is a complete **delta** with authoritative membership,
+not necessarily every materialized cache record. Merge it only against the
+matching prior checkpoint, using the returned metadata to reclassify retained
+records too. Derive the final cache's classification counts/completeness from
+that whole merge; a zero-detail delta does not prove that legacy cached states
+are classified.
+
+`shared/thriveSnapshot.ts` supplies pure planning and lossless merge helpers,
+not an Agency MCP client or a Redis adapter. Its inputs must already have
+passed the broker's manifest, ownership and host-verification checks:
+
+- Capture one **server** `asOf`; use it for membership, every query page and
+  historical single-item details. Incremental changed-since is the previous
+  checkpoint minus two minutes. Query **all membership IDs** each cycle to
+  detect deletion/scope departure; fetch changed/new details only.
+- Every detail read in the plan carries the same `asOf`. `get_batch` is not
+  substituted: its historical consistency is unproven. Historical single gets
+  still require the real Windows/Agency integration and bounded concurrency.
+  Periodic/manual full detail reconciliation remains the app's responsibility.
+- Unknown/legacy states retain raw type/state and are `UNCLASSIFIED`, never
+  guessed closed. Reclassify **all** cached records when metadata changes.
+  Keep these entries visible alongside open work, with their own count and a
+  classification-incomplete warning. A data-complete snapshot can have
+  `classificationComplete=false`; open + closed + unclassified = tracked.
+  Scaffold/customer types remain explicit; tracked does not mean open tickets.
+- The helper produces a new candidate and never writes Redis. All fields
+  outside its small normalized contract are discarded. The external adapter
+  must map the broker's normalized schema explicitly, not cast wire objects.
+
+Keep the existing Redis volume during cutover. Remove Thrive's Azure
+CLI/device-code authentication only when the external adapter and acceptance
+gates pass; never copy the Windows credential cache into Docker.
+
+### Release gates and manual Windows QA
+
+- [x] Working Memory-owned protected contracts, trusted approval UI, durable
+  controller and deterministic boundary tests are included in this change.
+- [x] Pure snapshot planning/merge handles legacy classification without
+  inventing a historical batch contract.
+- [ ] Provision and verify Windows current-user protected runner credentials/
+  IPC, non-elevated lifecycle, secret-mount ACLs and trusted Agency executable
+  publisher/update policy. Verify immutable operation **bytes actually
+  executed**, not merely an approved mutable path or descriptor hash.
+- [ ] Verify the effective Agency Microsoft account and tenant, correct/wrong
+  account behavior, initial/expired sign-in and supported reconnect. No short
+  cached-sign-in proof guarantees renewal.
+- [ ] Exercise the actual fixed read allowlist and host-generated scope/query
+  with one server snapshot and historical reads; reject submitted out-of-scope
+  IDs. No real ADO mutations are authorized by this feature.
+- [ ] Connect the separate Thrive adapter to real Redis: first load,
+  incremental change, departure/deletion, empty result, legacy states, metadata
+  changes, malformed manifest, oversize, throttling, outage and out-of-order
+  results. Destructive cases use local fixtures.
+- [ ] Test real desktop restart, runner restart between lease/acknowledgement,
+  lock/sleep/offline/log-out, stale heartbeat, shutdown, and durable resume.
+  The app does not promise execution while asleep or logged out.
+- [ ] Repeat forged app/runner, self-approval, cross-app reads, operation-byte
+  tampering, revocation/expiry while queued/running, fenced old completion,
+  duplicate requests, retention and secret-redaction gates against the
+  integrated Windows runner.
+- [ ] Obtain explicit human provisioning/approval and record all end-to-end
+  acceptance evidence before enabling production execution or declaring the
+  feature delivered. Implementation completion does not authorize changing a
+  Working Memory topic/workstream status.
+
+The external Thrive repository and local Windows proof files are not part of
+this checkout. They were not located, modified or executed by this change.
 
 ## Release history
 

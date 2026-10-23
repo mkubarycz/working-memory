@@ -123,7 +123,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain("':scope > .active-context-menu-entry > button:not(:disabled)'");
     expect(activeRail).toContain("event.key === 'Escape'");
     expect(activeRail).toContain('aria-label="Move topic tree to workstream"');
-    expect(activeRail).toContain('moveTopicFromMenu(event, item, target.slug)');
+    expect(activeRail).toContain('moveTopicFromMenu(event, item, target.id)');
     expect(activeRail).toContain('sourceWorkstream: workstream');
     expect(activeRail).not.toContain('class="active-actions"');
     expect(activeRail).not.toContain('class="active-icon-button focus-button"');
@@ -134,7 +134,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('onclick={() => onOpen(topic.openUri)}');
     expect(activeRail).toContain('class="focused-topic-pin"');
     expect(activeRail).toContain('event.stopPropagation();');
-    expect(activeRail).toContain("onToggleFocus(workstream.slug ?? '', topicSlug);");
+    expect(activeRail).toContain("onToggleFocus(workstream.id ?? '', topicId);");
     expect(activeRail).toContain('class="codicon codicon-pinned"');
     expect(activeRail.indexOf('class="focused-topic-pin"')).toBeLessThan(activeRail.indexOf('class="focused-topic-open"'));
     expect(styles).toMatch(/\.active-context-menu[^}]*position:\s*fixed/s);
@@ -208,7 +208,7 @@ describe('desktop tree icon contract', () => {
     expect(settings).toContain("id: 'deep', label: 'Deep Thought'");
     expect(settings).toContain('bind:value={routing[`${depth.id}:${speed}`]}');
     expect(settings).toContain("testingProfileId === profile.id ? 'Testing...' : 'Test'");
-    expect(app).toContain("{ kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' }");
+    expect(app).toContain("{ kind: 'settings', id: 'desktop-settings',  title: 'Settings' }");
     expect(app).toContain('profiles: modelProfiles.map(modelProfileInput)');
     expect(preload).toContain("testModelProfile: (input) => invoke('config:test-profile', input)");
     expect(main).toContain("ipcMain.handle('config:test-profile'");
@@ -251,7 +251,7 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('ondrop=');
     expect(activeRail).toContain('class:drop-target=');
     expect(activeRail).toContain('class="active-drop-indicator"');
-    expect(activeRail).toContain('await onReorder(slug, section, index)');
+    expect(activeRail).toContain('await onReorder(id, section, index)');
     expect(activeRail).not.toContain('active-drag-handle');
     expect(activeRail).not.toContain(
       'class="active-card-header"\n      role="group"\n      draggable="true"',
@@ -268,17 +268,17 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('generation === dragPreparationGeneration');
     expect(activeRail).toContain('ondragleave={clearExternalDragVisual}');
     expect(activeRail).toContain('onpointermove={clearCompletedNativeDrag}');
-    expect(activeRail).toContain('class:dragging={draggingWorkstreamSlug === workstream.slug}');
+    expect(activeRail).toContain('class:dragging={draggingWorkstreamId === workstream.id}');
     expect(preload).toContain("ipcRenderer.send('resource:start-drag'");
     expect(preload).toContain("ipcRenderer.on('resource:drag-result'");
-    expect(app).toContain('planWorkstreamReorder(order, slug, targetSection, targetIndex)');
+    expect(app).toContain('planWorkstreamReorder(order, id, targetSection, targetIndex)');
     expect(app).toContain('window.workingMemory.reorderWorkstreams(updates)');
     expect(styles).toMatch(/\.active-section\.drop-target[^}]*var\(--desktop-accent\)/s);
     expect(styles).toMatch(/\.active-drop-indicator[^}]*height:\s*0/s);
     expect(styles).toMatch(/\.active-drop-indicator::after[^}]*height:\s*3px/s);
   });
 
-  it('shows the immutable desktop build timestamp in a global status bar', () => {
+  it('shows runtime desktop build identity in a global status bar with timestamp diagnostics', () => {
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
@@ -289,9 +289,22 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).not.toContain('desktopBuildLabel');
     expect(activeRail).not.toContain('DESKTOP_BUILD_TIMESTAMP');
     expect(app).toContain('class="desktop-status-bar"');
-    expect(app).toContain('Built {desktopBuildLabel}');
+    expect(app).toContain('class="desktop-build-status">{desktopBuildLabel}');
+    expect(app).toContain('window.workingMemory.getDesktopBuildInfo()');
     expect(app).toContain('title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}');
     expect(styles).toMatch(/\.desktop-status-bar\s*{[^}]*grid-column:\s*1\s*\/\s*-1/s);
+  });
+
+  it('gates the host-task entry, restore, and content and exposes instance feature settings', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const settings = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/SettingsView.svelte'), 'utf8');
+    expect(app).toContain('id="desktop-tab-host-tasks"');
+    expect(app).toContain("reference.kind === 'host-task' && instanceFeatures.hostTasks");
+    expect(app).toContain("activeDocument?.kind === 'host-task-create') && instanceFeatures.hostTasks");
+    expect(app).toContain("['log', 'container-apps', 'host-tasks'] : ['log', 'container-apps']");
+    expect(app).toContain('onFeaturesChanged={applyFeatures}');
+    expect(settings).toContain("tab === 'features'");
+    expect(settings).toContain('<FeaturesView');
   });
 
   it('subdues closed topics without rendering topic status text or muting alerts', () => {
@@ -374,7 +387,7 @@ describe('desktop tree icon contract', () => {
     };
     expect(app).toContain('class:preview={key === previewDocumentKey}');
     expect(styles).toContain('.document-tab.preview .document-tab-label { font-style: italic; }');
-    expect(app).toContain('Preview (double-click to keep open)');
+    expect(app).toContain('title={documentTabTooltip(document, key === previewDocumentKey)}');
     expect(app).toContain('ondblclick={() => promoteDocument(key)}');
     expect(app).toContain('use:promoteOnDocumentInput={() => promoteDocument()}');
     for (const name of ['saveTopic', 'saveWorkstream', 'mutate', 'updateComposerDraft', 'attachImages',

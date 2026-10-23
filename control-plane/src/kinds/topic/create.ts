@@ -10,36 +10,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
-import { validateMetadata, validateSpec, defaultStatus } from '../registry.js';
+import { validateSpec, defaultStatus } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Topic, TOPIC_KIND, stringArray } from './topic.js';
-
-function slugFromTitle(title: string): string {
-  const normalized = title
-    .trim()
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^A-Za-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase();
-  if (normalized === '') {
-    return 'topic';
-  }
-  return /^[a-z]/.test(normalized) ? normalized : `topic-${normalized}`;
-}
-
-function availableSlug(title: string, store: Store): string {
-  const base = slugFromTitle(title);
-  let candidate = base;
-  let suffix = 2;
-  while (store.getDocument({ kind: TOPIC_KIND, slug: candidate, includeDeleted: true })) {
-    candidate = `${base}-${suffix}`;
-    suffix += 1;
-  }
-  return candidate;
-}
+import { topicSpecWithDefaults, validateTopicReferences } from './references.js';
 
 /**
  * Register the `ws-topic-create` tool on an MCP session's server. The tool
@@ -53,31 +27,27 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
     {
       title: 'Topic: Create',
       description:
-        'Create a Topic. Provide a `title` (required, ≤120 chars). Omit `slug` to generate a unique ' +
-        'lowercase dash-separated slug from the title, or provide an explicit valid slug; optional `body`, ' +
-        "`status` ('open' | 'closed', default 'open'), `topicType` (default 'topic'), `parents` " +
-        '(parent topic slugs), `workstreams` (member workstream slugs), and `focusedWorkstreams` ' +
+        'Create a Topic. Provide a `title` (required, ≤120 chars); optional `body`, ' +
+        "`status` ('open' | 'closed', default 'open'), `topicType` (TopicType document ID), `parents` " +
+        '(parent topic IDs), `workstreams` (member workstream IDs), and `focusedWorkstreams` ' +
         '(subset of `workstreams` this topic is pinned/focused in). Topics may remain unassigned ' +
-        'when no workstream is supplied. The spec is validated ' +
+        'when no workstream is supplied. Omitted `topicType` resolves the single live TopicType ' +
+        'with spec.label equal to "Topic"; missing or ambiguous defaults are rejected. The spec is validated ' +
         'against the Topic kind (invalid status rejected). Returns the created topic.',
-      inputSchema: {
-        slug: z
-          .string()
-          .optional()
-          .describe('Optional explicit lowercase dash-separated slug. Omission generates a unique slug from title.'),
+      inputSchema: z.object({
         title: z.string().describe('Topic title (required, 1–120 chars).'),
         body: z.string().optional().describe('Topic body (markdown).'),
         status: z
           .string()
           .optional()
           .describe("Authored status: 'open' | 'closed' (default 'open')."),
-        topicType: z.string().optional().describe("Topic type discriminator (default 'topic')."),
-        parents: z.array(z.string()).optional().describe('Parent topic slugs.'),
+        topicType: z.string().min(1).optional().describe('TopicType document ID. Defaults to the unique live type with spec.label "Topic".'),
+        parents: z.array(z.string().min(1)).optional().describe('Parent topic IDs.'),
         workstreams: z
           .array(z.string())
           .optional()
           .describe(
-            'Member workstream slugs (topic membership). ' +
+            'Member workstream IDs (topic membership). ' +
               "When omitted and `parents` are given, the topic inherits the parents' workstreams. " +
               'Otherwise omission creates an unassigned topic.',
           ),
@@ -85,10 +55,9 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
           .array(z.string())
           .optional()
           .describe('Subset of `workstreams` this topic is focused/pinned in.'),
-      },
+      }).strict(),
     },
-    async ({ slug, title, body, status, topicType, parents, workstreams, focusedWorkstreams }) => {
-      const finalSlug = slug ?? availableSlug(title, store);
+    async ({ title, body, status, topicType, parents, workstreams, focusedWorkstreams }) => {
       const specInput: Record<string, unknown> = { title };
       if (body !== undefined) {
         specInput.body = body;
@@ -96,27 +65,24 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
       if (status !== undefined) {
         specInput.status = status;
       }
-      if (topicType !== undefined) {
-        specInput.topicType = topicType;
-      }
+      if (topicType !== undefined) specInput.topicType = topicType;
       if (parents !== undefined) {
         specInput.parents = parents;
       }
       // Workstream membership resolution (before schema validation):
       //   - explicit non-empty `workstreams` → use as-is.
       //   - none supplied but `parents` given → inherit the UNION of those
-      //     parents' current `workstreams` (resolve each parent slug via store).
+      //     parents' current `workstreams` (resolve each parent ID via store).
       //   - still empty after that → persist an unassigned topic.
       const suppliedWorkstreams = workstreams ?? [];
       let effectiveWorkstreams = suppliedWorkstreams;
       if (effectiveWorkstreams.length === 0 && parents !== undefined && parents.length > 0) {
         const inherited = new Set<string>();
-        for (const parentSlug of parents) {
-          const parentDoc = store.getDocument({ slug: parentSlug, kind: TOPIC_KIND });
-          if (parentDoc) {
-            for (const ws of stringArray(parentDoc.spec?.workstreams)) {
-              inherited.add(ws);
-            }
+        for (const parentId of parents) {
+          const parentDoc = store.getDocument({ id: parentId, kind: TOPIC_KIND });
+          if (!parentDoc) return asError(`Unknown parent topic ID: "${parentId}".`);
+          for (const ws of stringArray(parentDoc.spec?.workstreams)) {
+            inherited.add(ws);
           }
         }
         effectiveWorkstreams = [...inherited];
@@ -128,15 +94,14 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
       let validatedSpec: Record<string, unknown>;
       let docStatus: Record<string, unknown>;
       try {
-        validateMetadata(TOPIC_KIND, { slug: finalSlug, store });
-        validatedSpec = validateSpec(TOPIC_KIND, specInput);
+        validatedSpec = validateSpec(TOPIC_KIND, topicSpecWithDefaults(store, specInput));
+        validateTopicReferences(store, validatedSpec);
         docStatus = defaultStatus(TOPIC_KIND);
       } catch (err) {
         return asError((err as Error).message);
       }
       const doc = store.createDocument({
         kind: TOPIC_KIND,
-        slug: finalSlug,
         spec: validatedSpec,
         status: docStatus,
       });

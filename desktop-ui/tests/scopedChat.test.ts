@@ -13,12 +13,12 @@ function run(
 ): ChatRun {
   return {
     key, journalId: `journal/${key}`, startedAt, status: 'succeeded', userText: key,
-    scope: { kind, id: `${identifier}-id`, slug: identifier, title: identifier }, entityRefs, tools: [], attachments: [],
+    scope: { kind, id: identifier,  title: identifier }, entityRefs, tools: [], attachments: [],
   };
 }
 
 describe('scoped chat previews', () => {
-  const context = { kind: 'topic', routeKind: 'topic' as const, identifier: 'selected', title: 'Selected' };
+  const context = { kind: 'topic', routeKind: 'topic' as const, identifier: 'topic-uuid', title: 'Selected' };
 
   it('loads real persisted historical Alert scope and entity refs under canonical AgentMessage identity', async () => {
     const selected = { kind: 'AgentMessage', routeKind: 'agent-message' as const, identifier: 'message-id', title: 'Message' };
@@ -28,7 +28,7 @@ describe('scoped chat previews', () => {
       primaryScope: { kind, id: 'message-id' }, entityRefs: [], eventSummaries: [],
     }));
     summaries.push({
-      ...summaries[0], id: 'related', primaryScope: { kind: 'Topic', id: 'other' },
+      ...summaries[0], id: 'related', primaryScope: { kind: 'Topic', id: 'other-uuid' },
       entityRefs: [{ kind: 'alert', id: 'message-id', relation: 'referenced' }],
     });
     const loaded: CommandJournalSummary[] = [];
@@ -42,27 +42,27 @@ describe('scoped chat previews', () => {
 
   it('returns fewer than five matching runs when fewer are available', () => {
     const runs = [
-      run('old', 10, 'Topic', 'selected'),
-      run('wrong-kind', 40, 'Workstream', 'selected'),
+      run('old', 10, 'Topic', 'topic-uuid'),
+      run('wrong-kind', 40, 'Workstream', 'topic-uuid'),
       run('wrong-id', 50, 'Topic', 'selected-child'),
-      run('middle', 20, 'topic', 'selected'),
-      run('new', 30, 'topic', 'selected'),
+      run('middle', 20, 'topic', 'topic-uuid'),
+      run('new', 30, 'topic', 'topic-uuid'),
     ];
     expect(recentRunsForContext(runs, context).map((item) => item.key)).toEqual(['old', 'middle', 'new']);
   });
 
   it('returns no previews without a selected document and creates a stable encoded DOM id', () => {
-    const selected = run('stable', 10, 'Topic', 'selected');
+    const selected = run('stable', 10, 'Topic', 'topic-uuid');
     expect(recentRunsForContext([selected], undefined)).toEqual([]);
     expect(chatRunDomId(selected)).toBe('chat-run-journal%2Fstable');
   });
 
   it('includes runs that reference or mutate the current document from another primary scope', () => {
     const related = run('created-topic', 20, 'Workstream', '0-15-2', [
-      { kind: 'Topic', id: 'topic-uuid', slug: 'selected', relation: 'mutated' },
+      { kind: 'Topic', id: 'topic-uuid',  relation: 'mutated' },
     ]);
     const unrelated = run('other-topic', 30, 'Workstream', '0-15-2', [
-      { kind: 'Topic', id: 'other-uuid', slug: 'other', relation: 'referenced' },
+      { kind: 'Topic', id: 'other-uuid',  relation: 'referenced' },
     ]);
 
     expect(recentRunsForContext([related, unrelated], context).map((item) => item.key)).toEqual(['created-topic']);
@@ -85,8 +85,8 @@ describe('scoped chat previews', () => {
   });
 
   it('selects exactly the latest five without mutating global history; expansion retains all scoped runs', () => {
-    const runs = Array.from({ length: 9 }, (_, index) => run(`run-${index}`, index, 'Topic', 'selected')).reverse();
-    runs.push(run('unrelated', 100, 'Topic', 'other'));
+    const runs = Array.from({ length: 9 }, (_, index) => run(`run-${index}`, index, 'Topic', 'topic-uuid')).reverse();
+    runs.push(run('unrelated', 100, 'Topic', 'other-uuid'));
     const original = [...runs];
     expect(recentRunsForContext(runs, context).map((item) => item.key))
       .toEqual(['run-4', 'run-5', 'run-6', 'run-7', 'run-8']);
@@ -97,21 +97,21 @@ describe('scoped chat previews', () => {
   });
 
   it('orders tied timestamps by stable journal identity regardless of input order', () => {
-    const a = run('a', 10, 'Topic', 'selected');
-    const b = run('b', 10, 'Topic', 'selected');
+    const a = run('a', 10, 'Topic', 'topic-uuid');
+    const b = run('b', 10, 'Topic', 'topic-uuid');
     expect(recentRunsForContext([b, a], context)).toEqual([a, b]);
     expect(recentRunsForContext([a, b], context)).toEqual([a, b]);
   });
 
   it('matches UUID-only refs and canonical kind aliases without matching siblings or other kinds', () => {
-    const contextWithId = { ...context, kind: 'topic-type', id: 'uuid' };
-    const selected = run('selected', 10, 'TopicType', 'other-slug');
+    const contextWithId = { ...context, kind: 'topic-type', identifier: 'uuid' };
+    const selected = run('topic-uuid', 10, 'TopicType', 'other-id');
     selected.scope = { kind: 'TopicType', id: 'uuid' };
     const related = run('related', 20, 'Workstream', 'parent', [
       { kind: 'topic-type', id: 'uuid', relation: 'referenced' },
     ]);
     const sibling = run('sibling', 30, 'TopicType', 'selected-child');
-    const wrongKind = run('wrong-kind', 40, 'Topic', 'selected');
+    const wrongKind = run('wrong-kind', 40, 'Topic', 'topic-uuid');
     expect(allRunsForContext([wrongKind, sibling, related, selected], contextWithId)).toEqual([selected, related]);
   });
 
@@ -130,7 +130,7 @@ describe('scoped chat previews', () => {
       .mockResolvedValueOnce({ journals: Array.from({ length: 8 }, (_, i) => summary(i + 40)), nextCursor: 'last' })
       .mockResolvedValueOnce({ journals: [summary(50)] });
     const loaded: CommandJournalSummary[] = [];
-    await loadScopedHistory({ ...context, id: 'selected-id' }, readPage, () => true, (page) => loaded.push(...page));
+    await loadScopedHistory({ ...context, identifier: 'selected-id' }, readPage, () => true, (page) => loaded.push(...page));
     expect(loaded).toHaveLength(9);
     expect(readPage.mock.calls).toEqual([
       [{ limit: 100 }], [{ limit: 100, cursor: 'older' }], [{ limit: 100, cursor: 'last' }],
@@ -154,7 +154,7 @@ describe('scoped chat previews', () => {
     const onPage = vi.fn();
     const readPage = vi.fn().mockResolvedValueOnce({ journals: [summary(1)], nextCursor: 'older' })
       .mockRejectedValueOnce(new Error('offline'));
-    await expect(loadScopedHistory({ ...context, id: 'selected-id' }, readPage, () => true, onPage)).rejects.toThrow('offline');
+    await expect(loadScopedHistory({ ...context, identifier: 'selected-id' }, readPage, () => true, onPage)).rejects.toThrow('offline');
     expect(onPage.mock.calls[0][0]).toHaveLength(1);
     await expect(loadScopedHistory(context, async () => ({ journals: [], nextCursor: 'same' }),
       () => true, () => {})).rejects.toThrow('did not advance');
@@ -168,7 +168,7 @@ describe('scoped chat previews', () => {
     const readPage = vi.fn()
       .mockResolvedValueOnce({ journals: [deleted], nextCursor: 'older' })
       .mockImplementationOnce(() => new Promise<CommandJournalHistoryPage>((done) => { resolve = done; }));
-    const pending = loadScopedHistory({ ...context, id: 'selected-id' }, readPage, () => current,
+    const pending = loadScopedHistory({ ...context, identifier: 'selected-id' }, readPage, () => current,
       (page) => { loaded.push(...page); });
     await vi.waitFor(() => expect(readPage).toHaveBeenCalledTimes(2));
     loaded = loaded.filter((item) => item.id !== deleted.id);
@@ -180,7 +180,7 @@ describe('scoped chat previews', () => {
 
   it('does not clobber live status, progress, or confirmations with an equal-version scoped cache', () => {
     const cached = summary(1);
-    const live: ChatRun = { ...run(cached.id, 1, 'Topic', 'selected'), journalId: cached.id, resourceVersion: 1,
+    const live: ChatRun = { ...run(cached.id, 1, 'Topic', 'topic-uuid'), journalId: cached.id, resourceVersion: 1,
       status: 'awaiting_confirmation', progress: [{ name: 'write', status: 'completed', summary: 'outcome' }],
       pendingConfirmation: { id: 'confirm', tool: 'write', arguments: {} } };
     expect(mergeScopedHistory([live], [cached])[0]).toEqual(live);

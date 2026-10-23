@@ -1,528 +1,104 @@
-import { describe, it, expect, beforeAll } from 'vitest';
-import { startServer } from '../src/server';
-import { openStore } from '../src/store';
-import { clearKinds } from '../src/kinds/registry';
-import { loadKinds } from '../src/kinds/loader';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
+import { openStore, type DocumentEnvelope } from '../src/store';
+import { startServer } from '../../tests/authenticatedFixture';
+import { loadKinds } from '../src/kinds/loader';
 
-let sqliteAvailable = true;
-try {
-  await import('node:sqlite');
-} catch {
-  sqliteAvailable = false;
+const cleanup: Array<() => Promise<void>> = [];
+beforeAll(async () => { await loadKinds(); });
+afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
+function text(result: unknown): string { return (result as { content: Array<{ text?: string }> }).content.map((item) => item.text ?? '').join(''); }
+function json<T>(result: unknown): T { return JSON.parse(text(result)) as T; }
+function error(result: unknown): boolean { return (result as { isError?: boolean }).isError === true; }
+async function connect() {
+  const store = openStore(':memory:');
+  const type = store.createDocument({ kind: 'TopicType', spec: { label: 'Topic' } }).metadata.id;
+  const server = await startServer({ port: 0, store });
+  const client = new Client({ name: 'document-id-tests', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`)));
+  cleanup.push(async () => { await client.close(); await server.close(); store.close(); });
+  const call = (name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args });
+  const create = async (title: string) => json<DocumentEnvelope>(await call('wm-document-create', { kind: 'Topic', spec: { title } }));
+  return { store, client, type, call, create };
 }
-
-interface TextContent {
-  type: string;
-  text?: string;
-}
-
-/** Pull the JSON payload out of an MCP tool result's text content. */
-function jsonOf<T>(res: unknown): T {
-  const content = (res as { content: TextContent[] }).content;
-  const text = content.find((c) => c.type === 'text')?.text ?? '';
-  return JSON.parse(text) as T;
-}
-
-interface Envelope {
-  kind: string;
-  metadata: { id: string; slug: string | null; labels: Record<string, string>; resourceVersion: number };
-  spec: Record<string, unknown>;
-}
-
-/** True when an MCP tool result is flagged as an error. */
-function isErrorResult(res: unknown): boolean {
-  return (res as { isError?: boolean }).isError === true;
-}
-
-/** Pull the plain-text message out of an MCP tool result. */
-function textOf(res: unknown): string {
-  const content = (res as { content: TextContent[] }).content;
-  return content.find((c) => c.type === 'text')?.text ?? '';
-}
-
-(sqliteAvailable ? describe : describe.skip)('control-plane document tools', () => {
-  beforeAll(async () => {
-    clearKinds();
-    await loadKinds();
-  });
-
-  it('exposes the document tools and round-trips create → read (list) → read (by id)', async () => {
-    const store = openStore(':memory:');
-    const server = await startServer({ port: 0, store });
-    const client = new Client({ name: 'wm-cp-doc-test', version: '0.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
-    try {
-      await client.connect(transport);
-
-      const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toContain('wm-ping');
-      expect(names).toContain('wm-document-create');
-      expect(names).toContain('wm-document-read');
-      // The old get/list tools were collapsed into wm-document-read.
-      expect(names).not.toContain('wm_list_documents');
-      expect(names).not.toContain('wm_get_document');
-
-      const created = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'demo', spec: { title: 'Demo', workstreams: ['ws-one'] } },
-        }),
-      );
-      expect(created.kind).toBe('Topic');
-      expect(created.metadata.id).toMatch(/^[0-9a-f-]{36}$/);
-      expect(created.metadata.resourceVersion).toBe(1);
-      // The PARSED spec is persisted: defaults applied (body, status, topicType,
-      // parents), not just the raw `{ title }`.
-      expect(created.spec).toEqual({
-        title: 'Demo',
-        body: '',
-        status: 'open',
-        topicType: 'topic',
-        parents: [],
-        workstreams: ['ws-one'],
-        focusedWorkstreams: [],
-      });
-
-      const list = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm-document-read', arguments: {} }),
-      );
-      expect(list.count).toBe(1);
-      expect(list.documents[0]?.metadata.slug).toBe('demo');
-
-      // Read by id → uniform { count, documents } shape with a single element.
-      const got = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({
-          name: 'wm-document-read',
-          arguments: { id: created.metadata.id },
-        }),
-      );
-      expect(got.count).toBe(1);
-      expect(got.documents[0]?.metadata.slug).toBe('demo');
-
-      // A miss (unknown slug) is an empty list, not a special { found: false }.
-      const miss = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm-document-read', arguments: { slug: 'nope' } }),
-      );
-      expect(miss).toEqual({ count: 0, documents: [] });
-    } finally {
-      await client.close();
-      await server.close();
-      store.close();
+describe('generic ID-only document tools', () => {
+  it('creates ID-only envelopes and returns a uniform list/single read shape with kind filtering', async () => {
+    const { client, type, call, create } = await connect();
+    const created = await create('Demo');
+    expect(created.metadata).not.toHaveProperty('slug');
+    expect(created.metadata.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(created.spec).toEqual({ title: 'Demo', body: '', status: 'open', topicType: type, parents: [], workstreams: [], focusedWorkstreams: [] });
+    const got = json<{ count: number; documents: DocumentEnvelope[] }>(await call('wm-document-read', { id: created.metadata.id }));
+    expect(got).toEqual({ count: 1, documents: [created] });
+    expect(json(await call('wm-document-read', { id: created.metadata.id, kind: 'Config' }))).toEqual({ count: 0, documents: [] });
+    expect(json(await call('wm-document-read', { id: 'Demo' }))).toEqual({ count: 0, documents: [] });
+    const schemas = (await client.listTools()).tools.filter((tool) => ['wm-document-create', 'wm-document-read', 'wm-document-update'].includes(tool.name));
+    for (const tool of schemas) {
+      expect(tool.inputSchema.properties).not.toHaveProperty('slug');
+      expect(tool.inputSchema.additionalProperties).toBe(false);
     }
   });
 
-  it('rejects unregistered kinds and unknown spec fields, persisting nothing', async () => {
-    const store = openStore(':memory:');
-    const server = await startServer({ port: 0, store });
-    const client = new Client({ name: 'wm-cp-doc-reject', version: '0.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
-    try {
-      await client.connect(transport);
-
-      // Unregistered kind (lowercase 'topic', 'note') → hard error, no doc.
-      const unknownKind = await client.callTool({
-        name: 'wm-document-create',
-        arguments: { kind: 'note', slug: 'nope', spec: { title: 'x' } },
-      });
-      expect(isErrorResult(unknownKind)).toBe(true);
-      expect(textOf(unknownKind)).toMatch(/unknown kind/i);
-
-      const lowercaseTopic = await client.callTool({
-        name: 'wm-document-create',
-        arguments: { kind: 'topic', slug: 'nope2', spec: { title: 'x' } },
-      });
-      expect(isErrorResult(lowercaseTopic)).toBe(true);
-
-      // Topic metadata invariants apply through the generic document boundary,
-      // not only through the ws-topic-create input schema.
-      const missingTopicSlug = await client.callTool({
-        name: 'wm-document-create',
-        arguments: { kind: 'Topic', spec: { title: 'Missing slug', workstreams: ['ws-one'] } },
-      });
-      expect(isErrorResult(missingTopicSlug)).toBe(true);
-      expect(textOf(missingTopicSlug)).toMatch(/unique slug.*lowercase words separated with dashes/i);
-
-      // Registered kind but extra spec fields → validation error, no doc.
-      const extraFields = await client.callTool({
-        name: 'wm-document-create',
-        arguments: {
-          kind: 'Topic',
-          slug: 'demo',
-          spec: { title: 'Demo', steps: ['a'], supplies: 'glue' },
-        },
-      });
-      expect(isErrorResult(extraFields)).toBe(true);
-      expect(textOf(extraFields)).toMatch(/invalid spec/i);
-
-      // Nothing above should have persisted.
-      const list = jsonOf<{ count: number }>(
-        await client.callTool({ name: 'wm-document-read', arguments: {} }),
-      );
-      expect(list.count).toBe(0);
-    } finally {
-      await client.close();
-      await server.close();
-      store.close();
-    }
+  it('rejects obsolete locators, unknown kinds/fields and invalid references without writing', async () => {
+    const { store, call, type } = await connect();
+    const before = store.getResourceVersion();
+    for (const args of [
+      { kind: 'Topic', slug: 'old-name', spec: { title: 'Bad' } },
+      { kind: 'unknown', spec: {} },
+      { kind: 'Topic', spec: { topicType: type } },
+      { kind: 'Topic', spec: { title: 'Bad', bogus: true } },
+      { kind: 'Topic', spec: { title: 'Bad', topicType: 'missing' } },
+      { kind: 'Topic', spec: { title: 'Bad', workstreams: ['missing'] } },
+    ]) expect(error(await call('wm-document-create', args))).toBe(true);
+    expect(error(await call('wm-document-read', { slug: 'old-name' }))).toBe(true);
+    expect(store.getResourceVersion()).toBe(before);
   });
 
-  it('increments the version and honors the kind filter across tool calls', async () => {
-    const store = openStore(':memory:');
-    const server = await startServer({ port: 0, store });
-    const client = new Client({ name: 'wm-cp-doc-test-2', version: '0.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
-    try {
-      await client.connect(transport);
-
-      await client.callTool({
-        name: 'wm-document-create',
-        arguments: { kind: 'Topic', slug: 'a', spec: { title: 'A', workstreams: ['ws-one'] } },
-      });
-      // A non-Topic doc seeded directly through the (kind-agnostic) store, so
-      // the kind filter below has something to exclude.
-      store.createDocument({ kind: 'note', slug: 'b', spec: {}, status: {} });
-      const c = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'c', spec: { title: 'C', workstreams: ['ws-one'] } },
-        }),
-      );
-      expect(c.metadata.resourceVersion).toBe(3);
-
-      const topics = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Topic' } }),
-      );
-      expect(topics.count).toBe(2);
-      expect(topics.documents.map((d) => d.metadata.slug)).toEqual(['c', 'a']);
-    } finally {
-      await client.close();
-      await server.close();
-      store.close();
-    }
+  it('supports newest-first lists, case-insensitive search, kind filters and pagination', async () => {
+    const { store, call, create } = await connect();
+    const alpha = await create('Alpha Widget'), beta = await create('Beta Gadget');
+    store.createDocument({ kind: 'legacy', spec: {} });
+    const read = async (args: Record<string, unknown>) => json<{ documents: DocumentEnvelope[] }>(await call('wm-document-read', args)).documents;
+    expect((await read({ kind: 'Topic' })).map((doc) => doc.metadata.id)).toEqual([beta.metadata.id, alpha.metadata.id]);
+    expect((await read({ query: 'gAdGeT' }))[0].metadata.id).toBe(beta.metadata.id);
+    expect((await read({ kind: 'Topic', offset: 1, limit: 1 }))[0].metadata.id).toBe(alpha.metadata.id);
+    expect(await read({ query: 'no match' })).toEqual([]);
   });
 
-  it('wm-document-read: reads by id, by kind-filtered list, and by query substring', async () => {
-    const store = openStore(':memory:');
-    const server = await startServer({ port: 0, store });
-    const client = new Client({ name: 'wm-cp-doc-read', version: '0.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
-    try {
-      await client.connect(transport);
-
-      const alpha = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'alpha', spec: { title: 'Alpha Widget', workstreams: ['ws-one'] } },
-        }),
-      );
-      await client.callTool({
-        name: 'wm-document-create',
-        arguments: { kind: 'Topic', slug: 'beta', spec: { title: 'Beta Gadget', workstreams: ['ws-one'] } },
-      });
-      // A non-Topic doc so the kind filter has something to exclude.
-      store.createDocument({ kind: 'note', slug: 'gamma', spec: {}, status: {} });
-
-      // Mode 1: read one by id → uniform { count, documents } with a single element.
-      const byId = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm-document-read', arguments: { id: alpha.metadata.id } }),
-      );
-      expect(byId.count).toBe(1);
-      expect(byId.documents).toHaveLength(1);
-      expect(byId.documents[0]?.metadata.slug).toBe('alpha');
-
-      // Read one by slug too.
-      const bySlug = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm-document-read', arguments: { slug: 'beta' } }),
-      );
-      expect(bySlug.count).toBe(1);
-      expect(bySlug.documents[0]?.metadata.slug).toBe('beta');
-
-      // Mode 2: list filtered by kind → only the two Topics, newest-first.
-      const topics = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Topic' } }),
-      );
-      expect(topics.count).toBe(2);
-      expect(topics.documents.map((d) => d.metadata.slug)).toEqual(['beta', 'alpha']);
-
-      // Mode 3: basic case-insensitive substring query over document text.
-      const gadget = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm-document-read', arguments: { query: 'gadget' } }),
-      );
-      expect(gadget.count).toBe(1);
-      expect(gadget.documents[0]?.metadata.slug).toBe('beta');
-
-      // query combines with kind, and limit caps the result set.
-      const limited = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({
-          name: 'wm-document-read',
-          arguments: { kind: 'Topic', limit: 1 },
-        }),
-      );
-      expect(limited.count).toBe(1);
-      expect(limited.documents[0]?.metadata.slug).toBe('beta');
-
-      // A query that matches nothing → empty uniform shape.
-      const none = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm-document-read', arguments: { query: 'zzz-no-match' } }),
-      );
-      expect(none).toEqual({ count: 0, documents: [] });
-    } finally {
-      await client.close();
-      await server.close();
-      store.close();
-    }
+  it('shallow-merges specs with CAS, replaces labels and rejects invalid/no-op updates', async () => {
+    const { call, create } = await connect();
+    const initial = await create('Before');
+    const updated = json<DocumentEnvelope>(await call('wm-document-update', {
+      id: initial.metadata.id, expectedResourceVersion: initial.metadata.resourceVersion, spec: { body: 'Authored' }, labels: { area: 'core' },
+    }));
+    expect(updated.spec).toMatchObject({ title: 'Before', body: 'Authored' });
+    expect(updated.metadata.labels).toEqual({ area: 'core' });
+    expect(updated.metadata.resourceVersion).toBeGreaterThan(initial.metadata.resourceVersion);
+    for (const patch of [
+      { expectedResourceVersion: initial.metadata.resourceVersion, spec: { title: 'Stale' } },
+      { spec: { bogus: true } }, { spec: { parents: ['missing'] } }, {}, { slug: 'renamed' },
+    ]) expect(error(await call('wm-document-update', { id: initial.metadata.id, expectedResourceVersion: updated.metadata.resourceVersion, ...patch }))).toBe(true);
+    const relabeled = json<DocumentEnvelope>(await call('wm-document-update', { id: initial.metadata.id, expectedResourceVersion: updated.metadata.resourceVersion, labels: {} }));
+    expect(relabeled.metadata.labels).toEqual({});
+    expect(relabeled.spec).toEqual(updated.spec);
+    expect(error(await call('wm-document-update', { id: 'missing', expectedResourceVersion: 1, spec: {} }))).toBe(true);
   });
 
-  it('updates a document via CAS, rejecting stale versions, bad specs, and unknown ids', async () => {
-    const store = openStore(':memory:');
-    const server = await startServer({ port: 0, store });
-    const client = new Client({ name: 'wm-cp-doc-update', version: '0.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
-    try {
-      await client.connect(transport);
-
-      expect((await client.listTools()).tools.map((t) => t.name)).toContain('wm-document-update');
-
-      const created = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'edit-me', spec: { title: 'Before', workstreams: ['ws-one'] } },
-        }),
-      );
-      expect(created.metadata.resourceVersion).toBe(1);
-
-      // Happy path: change status + body with the correct expected version.
-      const updated = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-update',
-          arguments: {
-            id: created.metadata.id,
-            expectedResourceVersion: created.metadata.resourceVersion,
-            spec: { title: 'After', body: 'edited', status: 'closed' },
-          },
-        }),
-      );
-      expect(updated.metadata.resourceVersion).toBe(2);
-      expect(updated.spec).toEqual({
-        title: 'After',
-        body: 'edited',
-        status: 'closed',
-        topicType: 'topic',
-        parents: [],
-        workstreams: ['ws-one'],
-        focusedWorkstreams: [],
-      });
-
-      // Stale version → conflict error that mentions the current version.
-      const stale = await client.callTool({
-        name: 'wm-document-update',
-        arguments: {
-          id: created.metadata.id,
-          expectedResourceVersion: 1,
-          spec: { title: 'Nope' },
-        },
-      });
-      expect(isErrorResult(stale)).toBe(true);
-      expect(textOf(stale)).toMatch(/conflict/i);
-      expect(textOf(stale)).toMatch(/\b2\b/);
-
-      // Invalid / unknown-field spec → rejected, nothing persisted.
-      const bad = await client.callTool({
-        name: 'wm-document-update',
-        arguments: {
-          id: created.metadata.id,
-          expectedResourceVersion: 2,
-          spec: { title: 'x', bogus: 1 },
-        },
-      });
-      expect(isErrorResult(bad)).toBe(true);
-      expect(textOf(bad)).toMatch(/invalid spec/i);
-
-      // Row is unchanged after both failures (still version 2, 'After').
-      const after = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({
-          name: 'wm-document-read',
-          arguments: { id: created.metadata.id },
-        }),
-      );
-      expect(after.documents[0]?.metadata.resourceVersion).toBe(2);
-      expect(after.documents[0]?.spec.title).toBe('After');
-
-      // Unknown id → error.
-      const unknown = await client.callTool({
-        name: 'wm-document-update',
-        arguments: {
-          id: '00000000-0000-0000-0000-000000000000',
-          expectedResourceVersion: 1,
-          spec: { title: 'x' },
-        },
-      });
-      expect(isErrorResult(unknown)).toBe(true);
-      expect(textOf(unknown)).toMatch(/unknown id/i);
-    } finally {
-      await client.close();
-      await server.close();
-      store.close();
-    }
-  });
-
-  it('patches spec (partial merge), slug, and labels; requires at least one field', async () => {
-    const store = openStore(':memory:');
-    const server = await startServer({ port: 0, store });
-    const client = new Client({ name: 'wm-cp-doc-patch', version: '0.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
-    try {
-      await client.connect(transport);
-
-      const created = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-create',
-          arguments: {
-            kind: 'Topic',
-            slug: 'patch-me',
-            labels: { keep: 'me' },
-            spec: { title: 'Title', body: 'Body', workstreams: ['ws-one'] },
-          },
-        }),
-      );
-      expect(created.metadata.resourceVersion).toBe(1);
-
-      // Partial spec patch: only `status` provided → title/body preserved.
-      const closed = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-update',
-          arguments: {
-            id: created.metadata.id,
-            expectedResourceVersion: created.metadata.resourceVersion,
-            spec: { status: 'closed' },
-          },
-        }),
-      );
-      expect(closed.metadata.resourceVersion).toBe(2);
-      expect(closed.spec).toEqual({
-        title: 'Title',
-        body: 'Body',
-        status: 'closed',
-        topicType: 'topic',
-        parents: [],
-        workstreams: ['ws-one'],
-        focusedWorkstreams: [],
-      });
-      // slug/labels untouched by a spec-only patch.
-      expect(closed.metadata.slug).toBe('patch-me');
-      expect(closed.metadata.labels).toEqual({ keep: 'me' });
-
-      // Unknown field in the patch → merged spec is strict-invalid → rejected.
-      const bogus = await client.callTool({
-        name: 'wm-document-update',
-        arguments: {
-          id: created.metadata.id,
-          expectedResourceVersion: 2,
-          spec: { bogus: 1 },
-        },
-      });
-      expect(isErrorResult(bogus)).toBe(true);
-      expect(textOf(bogus)).toMatch(/invalid spec/i);
-      // Not persisted — still version 2.
-      const afterBogus = jsonOf<{ count: number; documents: Envelope[] }>(
-        await client.callTool({ name: 'wm-document-read', arguments: { id: created.metadata.id } }),
-      );
-      expect(afterBogus.documents[0]?.metadata.resourceVersion).toBe(2);
-
-      // slug-only patch → slug changes, spec unchanged.
-      const reslugged = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-update',
-          arguments: {
-            id: created.metadata.id,
-            expectedResourceVersion: 2,
-            slug: 'new-slug',
-          },
-        }),
-      );
-      expect(reslugged.metadata.slug).toBe('new-slug');
-      expect(reslugged.metadata.resourceVersion).toBe(3);
-      expect(reslugged.spec).toEqual(closed.spec);
-
-      // labels-only patch → whole labels object replaced.
-      const relabeled = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-update',
-          arguments: {
-            id: created.metadata.id,
-            expectedResourceVersion: 3,
-            labels: { a: 'b' },
-          },
-        }),
-      );
-      expect(relabeled.metadata.labels).toEqual({ a: 'b' });
-      expect(relabeled.metadata.resourceVersion).toBe(4);
-
-      // Clear a field explicitly: parents already []; set a parent then clear it.
-      const withParent = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-update',
-          arguments: {
-            id: created.metadata.id,
-            expectedResourceVersion: 4,
-            spec: { parents: ['p1'] },
-          },
-        }),
-      );
-      expect(withParent.spec.parents).toEqual(['p1']);
-      const cleared = jsonOf<Envelope>(
-        await client.callTool({
-          name: 'wm-document-update',
-          arguments: {
-            id: created.metadata.id,
-            expectedResourceVersion: withParent.metadata.resourceVersion,
-            spec: { parents: [] },
-          },
-        }),
-      );
-      expect(cleared.spec.parents).toEqual([]);
-
-      // No fields provided → error, nothing persisted.
-      const empty = await client.callTool({
-        name: 'wm-document-update',
-        arguments: {
-          id: created.metadata.id,
-          expectedResourceVersion: cleared.metadata.resourceVersion,
-        },
-      });
-      expect(isErrorResult(empty)).toBe(true);
-      expect(textOf(empty)).toMatch(/nothing to update/i);
-
-      // Stale version → conflict mentioning the current version.
-      const stale = await client.callTool({
-        name: 'wm-document-update',
-        arguments: {
-          id: created.metadata.id,
-          expectedResourceVersion: 2,
-          slug: 'whatever',
-        },
-      });
-      expect(isErrorResult(stale)).toBe(true);
-      expect(textOf(stale)).toMatch(/conflict/i);
-      expect(textOf(stale)).toMatch(new RegExp(`\\b${cleared.metadata.resourceVersion}\\b`));
-
-      // Unknown id → error.
-      const unknown = await client.callTool({
-        name: 'wm-document-update',
-        arguments: {
-          id: '00000000-0000-0000-0000-000000000000',
-          expectedResourceVersion: 1,
-          spec: { title: 'x' },
-        },
-      });
-      expect(isErrorResult(unknown)).toBe(true);
-      expect(textOf(unknown)).toMatch(/unknown id/i);
-    } finally {
-      await client.close();
-      await server.close();
-      store.close();
-    }
+  it('deletes and restores by ID including unregistered legacy kinds, with optional CAS', async () => {
+    const { store, call, create } = await connect();
+    const doc = await create('Keep');
+    expect(error(await call('wm-document-delete', { id: doc.metadata.id, slug: 'obsolete' }))).toBe(true);
+    expect(error(await call('wm-document-delete', { id: doc.metadata.id, expectedResourceVersion: -1 }))).toBe(true);
+    const deleted = json<DocumentEnvelope>(await call('wm-document-delete', { id: doc.metadata.id }));
+    expect(deleted.metadata.deletedAt).not.toBeNull();
+    expect(json(await call('wm-document-read', { id: doc.metadata.id }))).toEqual({ count: 0, documents: [] });
+    expect(json<{ count: number }>(await call('wm-document-read', { id: doc.metadata.id, includeDeleted: true })).count).toBe(1);
+    const restored = json<DocumentEnvelope>(await call('wm-document-delete', { id: doc.metadata.id, restore: true }));
+    expect(restored.metadata.deletedAt).toBeNull();
+    expect(restored.spec).toEqual(doc.spec);
+    const legacy = store.createDocument({ kind: 'unregistered', spec: { arbitrary: true } });
+    expect(error(await call('wm-document-delete', { id: legacy.metadata.id }))).toBe(false);
+    expect(error(await call('wm-document-delete', { id: legacy.metadata.id, restore: true }))).toBe(false);
   });
 });

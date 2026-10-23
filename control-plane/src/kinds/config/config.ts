@@ -3,8 +3,8 @@
  * from a Config document envelope.
  *
  * A *Config* holds one or more **key-value pairs** (`data`) plus a human `name`
- * and an authored `status`, identified by a registry-key `slug` (e.g.
- * `banking-app-developer`). It is a first-class kind like TopicType.
+ * and an authored `status`, identified by its document ID.
+ * It is a first-class kind like TopicType.
  *
  * This file is a ROOT of the config folder's import graph: it imports NOTHING
  * from its siblings (only the store's `DocumentEnvelope` type), so `index.ts`
@@ -12,7 +12,6 @@
  *
  * The document↔domain mapping:
  *   - `id`       ← `metadata.id`   (the control-plane uuid)
- *   - `slug`     ← `metadata.slug` (the registry key, e.g. 'banking-app-developer')
  *   - `name`     ← `spec.name`     (human label; absent → '')
  *   - `data`     ← `spec.data`     (the key-value pairs; non-string values dropped)
  *   - `status`   ← `spec.status`   (authored lifecycle/free-form; absent → '')
@@ -29,7 +28,6 @@ export const CONFIG_KIND = 'Config';
 /** The configmap shape, reconstructed from a Config document. */
 export interface IConfig {
   id: string;
-  slug: string | null;
   name: string;
   /** One or more key-value pairs. Values are always strings. */
   data: Record<string, string>;
@@ -42,7 +40,6 @@ export interface IConfig {
 /** A pure-data projection of a Config document envelope onto the configmap shape. */
 export class Config implements IConfig {
   id: string;
-  slug: string | null;
   name: string;
   data: Record<string, string>;
   status: string;
@@ -53,7 +50,6 @@ export class Config implements IConfig {
   constructor(env: DocumentEnvelope) {
     const spec = env.spec ?? {};
     this.id = env.metadata.id;
-    this.slug = env.metadata.slug;
     this.name = typeof spec.name === 'string' ? spec.name : '';
     this.data = readData(spec.data);
     this.status = typeof spec.status === 'string' ? spec.status : '';

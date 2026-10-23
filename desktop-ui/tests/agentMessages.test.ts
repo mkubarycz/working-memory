@@ -9,9 +9,9 @@ import { targetForRef, toolMode } from '../src/renderer/chatHistory';
 function message(index: number, extra: Partial<AgentMessageVM> = {}): AgentMessageVM {
   return { id: `message-${index}`, agentId: 'agent-1', agentName: 'Review Agent', title: `Message ${index}`, description: 'Body', recommendedAction: '',
     status: 'open', category: 'completion', severity: 'info', attention: false,
-    topics: ['topic-slug'], relations: [], createdAt: index, updatedAt: index, ...extra };
+    topics: ['topic-uuid'], relations: [], createdAt: index, updatedAt: index, ...extra };
 }
-const context = { kind: 'topic', routeKind: 'topic' as const, identifier: 'topic-slug', id: 'topic-uuid', title: 'Topic' };
+const context = { kind: 'topic', routeKind: 'topic' as const, identifier: 'topic-uuid', title: 'Topic' };
 
 describe('canonical agent message timeline', () => {
   it('declares the message refresh function in App script scope for startup and live-update callers', () => {
@@ -21,7 +21,10 @@ describe('canonical agent message timeline', () => {
     const topLevel = source.statements.filter(ts.isFunctionDeclaration);
     expect(topLevel.filter((node) => node.name?.text === 'refreshAgentMessages')).toHaveLength(1);
     const initializer = topLevel.find((node) => node.name?.text === 'initializeWorkspace');
-    expect(initializer?.getText(source)).toContain('refreshAgentMessages()');
+    expect(initializer?.getText(source)).toContain('refreshInstanceConnection()');
+    expect(initializer?.getText(source)).toContain('loadAuthenticatedWorkspace()');
+    const authenticated = topLevel.find((node) => node.name?.text === 'loadAuthenticatedWorkspace');
+    expect(authenticated?.getText(source)).toContain('refreshAgentMessages()');
     const latest = topLevel.find((node) => node.name?.text === 'refreshLatestHistory');
     expect(latest?.getText(source)).not.toContain('function refreshAgentMessages');
     const onChanges = topLevel.find((node) => node.name?.text === 'handleDocumentChanges')?.getText(source) ?? '';
@@ -69,7 +72,7 @@ describe('canonical agent message timeline', () => {
     expect(rows.map((row) => row.key)).toEqual(['run:before', 'agent-message:message-0', 'run:after']);
   });
 
-  it('matches canonical uuid, slug, direct relations, and workstream member topic ids without cross-kind leakage', () => {
+  it('matches canonical IDs and direct relations, and workstream member topic ids without cross-kind leakage', () => {
     const messages = [
       message(0), message(1, { topics: ['topic-uuid'] }),
       message(2, { topics: [], relations: [{ kind: 'Topic', id: 'topic-uuid' }] }),
@@ -77,20 +80,20 @@ describe('canonical agent message timeline', () => {
       message(4, { topics: ['other'] }),
     ];
     expect(messagesForContext(messages, context).map((item) => item.id)).toEqual(['message-0', 'message-1', 'message-2']);
-    const workstream = { kind: 'workstream', topics: [{ id: 'topic-uuid', slug: 'topic-slug' }], tree: [
-      { children: [{ id: 'synthetic-ui-id', documentId: 'topic-uuid', slug: 'topic-slug', children: [] }] },
+    const workstream = { kind: 'workstream', topics: [{ id: 'topic-uuid',  }], tree: [
+      { children: [{ id: 'synthetic-ui-id', documentId: 'topic-uuid',  children: [] }] },
     ] } as unknown as WorkstreamVM;
-    expect(messagesForContext(messages, { ...context, kind: 'Workstream', identifier: 'ws', id: 'ws-id' }, workstream))
+    expect(messagesForContext(messages, { ...context, kind: 'Workstream', identifier: 'ws' }, workstream))
       .toHaveLength(3);
     expect(messagesForContext([message(5, { topics: ['synthetic-ui-id'] })],
-      { ...context, kind: 'Workstream', identifier: 'ws', id: 'ws-id' }, workstream)).toEqual([]);
+      { ...context, kind: 'Workstream', identifier: 'ws' }, workstream)).toEqual([]);
     expect(messagesForContext(messages, undefined)).toEqual([]);
-    const missingIdentity = { kind: 'workstream', topics: [{ slug: '' }], tree: [
-      { children: [{ id: '', slug: '', children: [] }] },
+    const missingIdentity = { kind: 'workstream', topics: [{ id: '' }], tree: [
+      { children: [{ id: '',  children: [] }] },
     ] } as unknown as WorkstreamVM;
     expect(messagesForContext([
       message(5, { topics: [''], relations: [{ kind: 'Workstream', id: '' }] }),
-    ], { ...context, kind: 'Workstream', identifier: '', id: undefined }, missingIdentity)).toEqual([]);
+    ], { ...context, kind: 'Workstream', identifier: '' }, missingIdentity)).toEqual([]);
   });
 
   it('loads all independent pages, including older attention, and counts only open attention messages', async () => {

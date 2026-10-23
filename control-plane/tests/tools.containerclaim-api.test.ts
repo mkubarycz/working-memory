@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 import { clearKinds } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { openStore, type Store } from '../src/store';
 
 let sqliteAvailable = true;
@@ -28,7 +28,6 @@ function isErrorResult(result: unknown): boolean {
 
 interface Claim {
   id: string;
-  slug: string;
   title: string;
   repository: string;
   sourceRevision?: string;
@@ -83,12 +82,12 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
     };
     try {
       const created = await client.callTool({ name: 'ws-containerclaim-create', arguments: {
-        slug: 'feedback', title: 'Feedback', repository: '/Feedback', runtime,
+        title: 'Feedback', repository: '/Feedback', runtime,
       } });
       expect(isErrorResult(created)).toBe(false);
       expect(jsonOf<{ runtime: typeof runtime }>(created).runtime.additionalPorts).toEqual(runtime.additionalPorts);
       const rejected = await client.callTool({ name: 'ws-containerclaim-update', arguments: {
-        slug: 'feedback', runtime: { ...runtime, additionalPorts: [{ ...runtime.additionalPorts[0], hostIp: '8.8.8.8' }] },
+        id: jsonOf<Claim>(created).id, runtime: { ...runtime, additionalPorts: [{ ...runtime.additionalPorts[0], hostIp: '8.8.8.8' }] },
       } });
       expect(isErrorResult(rejected)).toBe(true);
     } finally { await close(); }
@@ -111,7 +110,6 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
         await client.callTool({
           name: 'ws-containerclaim-create',
           arguments: {
-            slug: 'working-memory-dev',
             title: 'Working Memory development container',
             repository: 'https://github.com/mkubarycz/working-memory.git',
             runtime: {
@@ -156,7 +154,7 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       expect(Object.keys(created).sort()).toEqual(
         [
           'application', 'created_at', 'desktop', 'id', 'mcp', 'repository', 'resourceVersion',
-          'runtime', 'slug', 'title', 'updated_at',
+          'runtime', 'title', 'updated_at',
         ].sort(),
       );
 
@@ -164,7 +162,7 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
         await client.callTool({
           name: 'ws-containerclaim-update',
           arguments: {
-            slug: created.slug, sourceRevision: 'feature/container-claims',
+            id: created.id, sourceRevision: 'feature/container-claims',
             desktop: { icon: 'rocket', embeddable: false },
           },
         }),
@@ -178,7 +176,7 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       const resetToDefault = jsonOf<Claim>(
         await client.callTool({
           name: 'ws-containerclaim-update',
-          arguments: { slug: created.slug, sourceRevision: null, desktop: null },
+          arguments: { id: created.id, sourceRevision: null, desktop: null },
         }),
       );
       expect(resetToDefault.sourceRevision).toBeUndefined();
@@ -191,20 +189,20 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
           arguments: { id: created.id },
         }),
       );
-      expect(read).toMatchObject({ count: 1, claims: [{ slug: created.slug }] });
+      expect(read).toMatchObject({ count: 1, claims: [{ id: created.id }] });
 
       expect(
-        jsonOf<{ ok: boolean; slug: string }>(
+        jsonOf<{ ok: boolean; id: string }>(
           await client.callTool({
             name: 'ws-containerclaim-delete',
-            arguments: { slug: created.slug },
+            arguments: { id: created.id },
           }),
         ),
-      ).toEqual({ ok: true, slug: created.slug });
+      ).toEqual({ ok: true, id: created.id });
       const afterDelete = jsonOf<{ count: number }>(
         await client.callTool({
           name: 'ws-containerclaim-read',
-          arguments: { slug: created.slug },
+          arguments: { id: created.id },
         }),
       );
       expect(afterDelete.count).toBe(0);
@@ -212,37 +210,34 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       const duplicateWhileDeleted = await client.callTool({
         name: 'ws-containerclaim-create',
         arguments: {
-          slug: created.slug,
           title: 'Replacement claim',
           repository: 'owner/replacement',
         },
       });
-      expect(isErrorResult(duplicateWhileDeleted)).toBe(true);
-      expect(textOf(duplicateWhileDeleted)).toContain('already in use');
+      expect(isErrorResult(duplicateWhileDeleted)).toBe(false);
+      expect(jsonOf<Claim>(duplicateWhileDeleted).id).not.toBe(created.id);
 
       const genericDuplicateWhileDeleted = await client.callTool({
         name: 'wm-document-create',
         arguments: {
           kind: 'ContainerClaim',
-          slug: created.slug,
           spec: { title: 'Generic replacement', repository: 'owner/generic-replacement' },
         },
       });
-      expect(isErrorResult(genericDuplicateWhileDeleted)).toBe(true);
-      expect(textOf(genericDuplicateWhileDeleted)).toContain('already in use');
+      expect(isErrorResult(genericDuplicateWhileDeleted)).toBe(false);
 
       expect(
-        jsonOf<{ ok: boolean; slug: string }>(
+        jsonOf<{ ok: boolean; id: string }>(
           await client.callTool({
             name: 'ws-containerclaim-delete',
-            arguments: { slug: created.slug, restore: true },
+            arguments: { id: created.id, restore: true },
           }),
         ),
-      ).toEqual({ ok: true, slug: created.slug });
+      ).toEqual({ ok: true, id: created.id });
       const restored = jsonOf<{ count: number; claims: Claim[] }>(
         await client.callTool({
           name: 'ws-containerclaim-read',
-          arguments: { query: created.slug },
+          arguments: { query: created.id },
         }),
       );
       expect(restored).toMatchObject({ count: 1, claims: [{ id: created.id }] });
@@ -251,7 +246,7 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
     }
   });
 
-  it('rejects invalid identity, missing intent fields, duplicate slugs, and extra fields', async () => {
+  it('rejects obsolete locators, missing intent fields, and extra fields without restricting duplicate titles', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       const invalidSlug = await client.callTool({
@@ -259,36 +254,34 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
         arguments: { slug: 'Not Valid', title: 'Claim', repository: 'owner/repo' },
       });
       expect(isErrorResult(invalidSlug)).toBe(true);
-      expect(textOf(invalidSlug)).toContain('lowercase words separated with dashes');
+      expect(textOf(invalidSlug)).toContain('slug');
 
       const missingRepository = await client.callTool({
         name: 'ws-containerclaim-create',
-        arguments: { slug: 'missing-source', title: 'Claim' },
+        arguments: { title: 'Claim' },
       });
       expect(isErrorResult(missingRepository)).toBe(true);
 
       const blankRepository = await client.callTool({
         name: 'ws-containerclaim-create',
-        arguments: { slug: 'blank-source', title: 'Claim', repository: '   ' },
+        arguments: { title: 'Claim', repository: '   ' },
       });
       expect(isErrorResult(blankRepository)).toBe(true);
 
       await client.callTool({
         name: 'ws-containerclaim-create',
-        arguments: { slug: 'one-claim', title: 'Claim', repository: 'owner/repo' },
+        arguments: { title: 'Claim', repository: 'owner/repo' },
       });
       const duplicate = await client.callTool({
         name: 'ws-containerclaim-create',
-        arguments: { slug: 'one-claim', title: 'Other', repository: 'other/repo' },
+        arguments: { title: 'Claim', repository: 'other/repo' },
       });
-      expect(isErrorResult(duplicate)).toBe(true);
-      expect(textOf(duplicate)).toContain('already in use');
+      expect(isErrorResult(duplicate)).toBe(false);
 
       const runtimeField = await client.callTool({
         name: 'wm-document-create',
         arguments: {
           kind: 'ContainerClaim',
-          slug: 'runtime-field',
           spec: { title: 'Claim', repository: 'owner/repo', dockerId: 'abc123' },
         },
       });
@@ -298,7 +291,6 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       const invalidApplication = await client.callTool({
         name: 'ws-containerclaim-create',
         arguments: {
-          slug: 'invalid-application',
           title: 'Invalid application',
           repository: 'owner/repo',
           application: {
@@ -319,7 +311,7 @@ async function connect(store: Store): Promise<{ client: Client; close: () => Pro
       ]) {
         const invalidDesktop = await client.callTool({
           name: 'ws-containerclaim-create',
-          arguments: { slug: 'invalid-desktop', title: 'Invalid desktop', repository: 'owner/repo', desktop },
+          arguments: { title: 'Invalid desktop', repository: 'owner/repo', desktop },
         });
         expect(isErrorResult(invalidDesktop)).toBe(true);
       }

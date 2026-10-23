@@ -37,7 +37,7 @@ describe('desktop chat history IPC contract', () => {
   it('refreshes changed journals without polling or clobbering the older-page cursor', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
 
-    expect(app).toContain('await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps()]);');
+    expect(app).toContain('await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps(), refreshFeatures()]);');
     expect(app).toContain('window.workingMemory.onDocumentChanges(handleDocumentChanges)');
     expect(app).toContain('stopListeningForChanges();');
     expect(app).not.toContain('setInterval(() => void refreshLatestHistory()');

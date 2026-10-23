@@ -12,8 +12,8 @@ const input: TopicAutocompleteInput = {
   currentTitle: '',
   currentTopicType: 'topic',
   topicTypes: [
-    { slug: 'topic', label: 'Topic', description: '' },
-    { slug: 'feature', label: 'Feature', description: 'New functionality' },
+    { id: 'topic', label: 'Topic', description: '' },
+    { id: 'feature', label: 'Feature', description: 'New functionality' },
   ],
 };
 

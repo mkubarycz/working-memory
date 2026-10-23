@@ -2,7 +2,7 @@ import type { ContainerClaim } from '../../../shared/controlPlaneClient';
 import type { ContainerAppDefinition } from '../shared/contracts';
 
 export function containerAppRegistration(id: string, claims: ContainerClaim[]): ContainerClaim {
-  const claim = claims.find((candidate) => candidate.slug === id && candidate.runtime);
+  const claim = claims.find((candidate) => candidate.id === id && candidate.runtime);
   if (!claim) throw new Error(`Unsupported container app: ${id}. No live Docker ContainerClaim exists.`);
   return claim;
 }
@@ -11,7 +11,7 @@ export function containerAppDefinitions(claims: ContainerClaim[]): ContainerAppD
   return claims.filter((claim) => claim.runtime).map((claim) => {
     const embeddable = claim.desktop?.embeddable ?? false;
     return {
-      id: claim.slug,
+      id: claim.id,
       displayName: claim.title,
       icon: claim.desktop?.icon ?? 'server-environment',
       ...(embeddable ? { embeddable } : {}),
@@ -22,7 +22,7 @@ export function containerAppDefinitions(claims: ContainerClaim[]): ContainerAppD
 }
 
 export function isContainerAppId(id: string, claims: ContainerClaim[]): boolean {
-  return claims.some((claim) => claim.slug === id && claim.runtime);
+  return claims.some((claim) => claim.id === id && claim.runtime);
 }
 
 export function isRegisteredContainerAppUiUrl(

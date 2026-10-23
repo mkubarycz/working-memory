@@ -44,7 +44,7 @@ const errText = (msg: string) => ({ isError: true, content: [{ type: 'text', tex
 
 const sampleWs: Workstream = {
   id: '11111111-1111-1111-1111-111111111111',
-  slug: 'cp',
+
   title: 'Control Plane',
   status: 'progress',
   closure: null,
@@ -67,7 +67,7 @@ describe('ControlPlaneClient ws-* methods (mocked callTool)', () => {
   });
 
   it('wsRead(list) parses { count, workstreams } into a typed Workstream[]', async () => {
-    const second: Workstream = { ...sampleWs, id: '22222222-2222-2222-2222-222222222222', slug: 'b' };
+    const second: Workstream = { ...sampleWs, id: '22222222-2222-2222-2222-222222222222',  };
     callToolMock.mockResolvedValueOnce(okText({ count: 2, workstreams: [sampleWs, second] }));
     const client = makeClient();
 
@@ -76,18 +76,18 @@ describe('ControlPlaneClient ws-* methods (mocked callTool)', () => {
     expect(callToolMock).toHaveBeenCalledWith({ name: 'ws-workstream-read', arguments: {} });
     expect(list).toHaveLength(2);
     expect(list[0]).toEqual(sampleWs);
-    expect(list[1]?.slug).toBe('b');
+    expect(list[1]?.id).toBe('22222222-2222-2222-2222-222222222222');
   });
 
-  it('wsRead(by slug/query/limit) forwards only the provided args', async () => {
+  it('wsRead(by id/query/limit) forwards only the provided args', async () => {
     callToolMock.mockResolvedValueOnce(okText({ count: 1, workstreams: [sampleWs] }));
     const client = makeClient();
 
-    const list = await client.wsRead({ slug: 'cp', query: 'plane', limit: 5 });
+    const list = await client.wsRead({ id: '11111111-1111-1111-1111-111111111111', query: 'plane', limit: 5 });
 
     expect(callToolMock).toHaveBeenCalledWith({
       name: 'ws-workstream-read',
-      arguments: { slug: 'cp', query: 'plane', limit: 5 },
+      arguments: { id: '11111111-1111-1111-1111-111111111111', query: 'plane', limit: 5 },
     });
     expect(list).toEqual([sampleWs]);
   });
@@ -96,11 +96,11 @@ describe('ControlPlaneClient ws-* methods (mocked callTool)', () => {
     callToolMock.mockResolvedValueOnce(okText(sampleWs));
     const client = makeClient();
 
-    const created = await client.wsCreate({ slug: 'cp', title: 'Control Plane', status: 'progress' });
+    const created = await client.wsCreate({ title: 'Control Plane', status: 'progress' });
 
     expect(callToolMock).toHaveBeenCalledWith({
       name: 'ws-workstream-create',
-      arguments: { title: 'Control Plane', slug: 'cp', status: 'progress' },
+      arguments: { title: 'Control Plane', status: 'progress' },
     });
     expect(created).toEqual(sampleWs);
   });
@@ -110,11 +110,11 @@ describe('ControlPlaneClient ws-* methods (mocked callTool)', () => {
     callToolMock.mockResolvedValueOnce(okText(updated));
     const client = makeClient();
 
-    const result = await client.wsUpdate({ slug: 'cp', title: 'v2', status: 'closed', position: 4 });
+    const result = await client.wsUpdate({ id: '11111111-1111-1111-1111-111111111111', title: 'v2', status: 'closed', position: 4 });
 
     expect(callToolMock).toHaveBeenCalledWith({
       name: 'ws-workstream-update',
-      arguments: { slug: 'cp', title: 'v2', status: 'closed', position: 4 },
+      arguments: { id: '11111111-1111-1111-1111-111111111111', title: 'v2', status: 'closed', position: 4 },
     });
     expect(result).toEqual(updated);
   });
@@ -122,7 +122,7 @@ describe('ControlPlaneClient ws-* methods (mocked callTool)', () => {
   it('wsReorder forwards the batch and parses mapped Workstreams', async () => {
     callToolMock.mockResolvedValueOnce(okText([sampleWs]));
     const client = makeClient();
-    const updates = [{ slug: 'cp', status: 'progress' as const, position: 1 }];
+    const updates = [{ id: '11111111-1111-1111-1111-111111111111', status: 'progress' as const, position: 1 }];
 
     const result = await client.wsReorder({ updates });
 
@@ -133,29 +133,29 @@ describe('ControlPlaneClient ws-* methods (mocked callTool)', () => {
     expect(result).toEqual([sampleWs]);
   });
 
-  it('wsDelete parses { ok, slug } and forwards restore:true', async () => {
-    callToolMock.mockResolvedValueOnce(okText({ ok: true, slug: 'cp' }));
+  it('wsDelete parses { ok, id } and forwards restore:true', async () => {
+    callToolMock.mockResolvedValueOnce(okText({ ok: true, id: '11111111-1111-1111-1111-111111111111' }));
     const client = makeClient();
 
-    const del = await client.wsDelete({ slug: 'cp' });
-    expect(callToolMock).toHaveBeenCalledWith({ name: 'ws-workstream-delete', arguments: { slug: 'cp' } });
-    expect(del).toEqual({ ok: true, slug: 'cp' });
+    const del = await client.wsDelete({ id: '11111111-1111-1111-1111-111111111111' });
+    expect(callToolMock).toHaveBeenCalledWith({ name: 'ws-workstream-delete', arguments: { id: '11111111-1111-1111-1111-111111111111' } });
+    expect(del).toEqual({ ok: true, id: '11111111-1111-1111-1111-111111111111' });
 
-    callToolMock.mockResolvedValueOnce(okText({ ok: true, slug: 'cp' }));
-    await client.wsDelete({ slug: 'cp', restore: true });
+    callToolMock.mockResolvedValueOnce(okText({ ok: true, id: '11111111-1111-1111-1111-111111111111' }));
+    await client.wsDelete({ id: '11111111-1111-1111-1111-111111111111', restore: true });
     expect(callToolMock).toHaveBeenLastCalledWith({
       name: 'ws-workstream-delete',
-      arguments: { slug: 'cp', restore: true },
+      arguments: { id: '11111111-1111-1111-1111-111111111111', restore: true },
     });
   });
 
   it('throws ControlPlaneClientError (with the message) when a tool result isError', async () => {
-    callToolMock.mockResolvedValueOnce(errText('Unknown workstream slug: "ghost".'));
+    callToolMock.mockResolvedValueOnce(errText('Unknown workstream id: "ghost".'));
     const client = makeClient();
 
-    await expect(client.wsRead({ slug: 'ghost' })).rejects.toBeInstanceOf(ControlPlaneClientError);
+    await expect(client.wsRead({ id: 'ghost' })).rejects.toBeInstanceOf(ControlPlaneClientError);
     callToolMock.mockResolvedValueOnce(errText('Conflict: workstream "cp" changed.'));
-    await expect(client.wsUpdate({ slug: 'cp', title: 'x' })).rejects.toThrow(/Conflict/);
+    await expect(client.wsUpdate({ id: '11111111-1111-1111-1111-111111111111', title: 'x' })).rejects.toThrow(/Conflict/);
   });
 
   it('throws ControlPlaneClientError when the daemon is unavailable (no URL), without calling callTool', async () => {

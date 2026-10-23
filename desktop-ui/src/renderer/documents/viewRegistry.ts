@@ -5,7 +5,7 @@
  * The control plane is a generic document store, so ONE custom editor renders
  * every kind. This module is the pure, framework-agnostic core of the
  * dispatcher: it maps a document `kind` to a view id, and maps a topic-type
- * slug to any UI customization. It imports NO Svelte and NO VS Code APIs so it
+ * id to any UI customization. It imports NO Svelte and NO VS Code APIs so it
  * can be unit-tested directly under vitest.
  */
 
@@ -40,7 +40,7 @@ export interface TopicTypeExtraSetting {
    * a function so a type can derive its own presentation without a new DB
    * column — this is UI-only type-awareness (the fields schema is deferred).
    */
-  value: (topic: { topicType: string; status: string; slug: string | null }) => string;
+  value: (topic: { topicType: string; status: string; id: string | null }) => string;
 }
 
 /**
@@ -61,7 +61,7 @@ export interface TopicTypeUiConfig {
 
 /**
  * The topic-type registry. This is the extension point: to give a topic type
- * bespoke UI, add an entry keyed by its slug. Empty by default — every type
+ * bespoke UI, add an entry keyed by its id. Empty by default — every type
  * currently falls back to the shared topic fields + the control-plane icon.
  */
 const TOPIC_TYPE_REGISTRY: Record<string, TopicTypeUiConfig> = {};

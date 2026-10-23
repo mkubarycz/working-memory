@@ -25,26 +25,24 @@ export function messageStatusActions(status: AgentMessageVM['status']): {
 
 export function messagesForContext(messages: AgentMessageVM[], context: ScopedChatContext | undefined,
   document?: DocumentVM | null): AgentMessageVM[] {
-  if (!context) return [];
-  const identifiers = new Set([context.identifier, context.id].filter((id): id is string => !!id));
+  if (!context?.identifier) return [];
+  const identifiers = new Set([context.identifier]);
   const topicIdentifiers = new Set<string>();
   if (normalizeKind(context.kind) === 'topic') identifiers.forEach((id) => topicIdentifiers.add(id));
   if (document?.kind === 'workstream') {
     for (const topic of (document as WorkstreamVM).topics) {
       if (topic.id) topicIdentifiers.add(topic.id);
-      if (topic.slug) topicIdentifiers.add(topic.slug);
     }
     const walk = (nodes: WorkstreamVM['tree'][number]['children']) => {
       for (const node of nodes) {
         if (node.documentId) topicIdentifiers.add(node.documentId);
-        if (node.slug) topicIdentifiers.add(node.slug);
         walk(node.children);
       }
     };
     for (const group of (document as WorkstreamVM).tree) walk(group.children);
   }
   return messages.filter((message) =>
-    (normalizeKind(context.kind) === 'agentmessage' && (identifiers.has(message.id) || !!message.slug && identifiers.has(message.slug)))
+    (normalizeKind(context.kind) === 'agentmessage' && identifiers.has(message.id))
     || message.topics.some((topic) => topicIdentifiers.has(topic))
     || message.relations.some((relation) =>
       normalizeKind(relation.kind) === normalizeKind(context.kind) && identifiers.has(relation.id)

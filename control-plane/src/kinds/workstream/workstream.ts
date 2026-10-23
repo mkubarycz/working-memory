@@ -15,7 +15,6 @@
  * both match the old object literal, so serialized key order is stable.
  *
  * The document↔domain mapping (unchanged from the old `mapWorkstream`):
- *   - `slug`       ← `metadata.slug`
  *   - `title`      ← `spec.title`
  *   - `status`     ← `spec.status`   (queue | progress | backlog | closed)
  *   - `closure`    ← `spec.closure`  (absent → null)
@@ -42,7 +41,6 @@ export type WorkstreamLifecycleStatus = 'queue' | 'progress' | 'backlog' | 'clos
  */
 export interface IWorkstream {
   id: string;
-  slug: string | null;
   title: string;
   status: WorkstreamLifecycleStatus;
   closure: string | null;
@@ -60,7 +58,6 @@ export interface IWorkstream {
  */
 export class Workstream implements IWorkstream {
   id: string;
-  slug: string | null;
   title: string;
   status: WorkstreamLifecycleStatus;
   closure: string | null;
@@ -75,7 +72,6 @@ export class Workstream implements IWorkstream {
     const status = (spec.status as WorkstreamLifecycleStatus | undefined) ?? 'progress';
     const closure = typeof spec.closure === 'string' ? spec.closure : null;
     this.id = env.metadata.id;
-    this.slug = env.metadata.slug;
     this.title = typeof spec.title === 'string' ? spec.title : '';
     this.status = status;
     this.closure = closure;

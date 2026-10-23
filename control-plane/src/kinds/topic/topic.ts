@@ -15,13 +15,12 @@
  *
  * The document↔domain mapping (mirrors the legacy topics row):
  *   - `id`            ← `metadata.id`
- *   - `slug`          ← `metadata.slug`
  *   - `title`         ← `spec.title`
  *   - `body`          ← `spec.body`
  *   - `status`        ← `spec.status`      (open | closed)
  *   - `topicType`     ← `spec.topicType`
- *   - `parents`       ← `spec.parents`     (parent topic slugs)
- *   - `workstreams`   ← `spec.workstreams` (member workstream slugs)
+ *   - `parents`       ← `spec.parents`     (parent topic IDs)
+ *   - `workstreams`   ← `spec.workstreams` (member workstream IDs)
  *   - `focusedWorkstreams` ← `spec.focusedWorkstreams` (subset of `workstreams` this topic is focused/pinned in)
  *   - `created_at`    ← `metadata.createdAt`
  *   - `updated_at`    ← `metadata.updatedAt`
@@ -47,7 +46,6 @@ export function stringArray(value: unknown): string[] {
  */
 export interface ITopic {
   id: string;
-  slug: string | null;
   title: string;
   body: string;
   status: TopicSpecStatus;
@@ -67,7 +65,6 @@ export interface ITopic {
  */
 export class Topic implements ITopic {
   id: string;
-  slug: string | null;
   title: string;
   body: string;
   status: TopicSpecStatus;
@@ -82,11 +79,10 @@ export class Topic implements ITopic {
   constructor(env: DocumentEnvelope) {
     const spec = env.spec ?? {};
     this.id = env.metadata.id;
-    this.slug = env.metadata.slug;
     this.title = typeof spec.title === 'string' ? spec.title : '';
     this.body = typeof spec.body === 'string' ? spec.body : '';
     this.status = (spec.status as TopicSpecStatus | undefined) ?? 'open';
-    this.topicType = typeof spec.topicType === 'string' ? spec.topicType : 'topic';
+    this.topicType = typeof spec.topicType === 'string' ? spec.topicType : '';
     this.parents = stringArray(spec.parents);
     this.workstreams = stringArray(spec.workstreams);
     this.focusedWorkstreams = stringArray(spec.focusedWorkstreams);

@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { openStore, type Store, type DocumentEnvelope } from '../src/store';
 import { clearKinds } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
 import { TopicType } from '../src/kinds/topictype/topictype';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 let sqliteAvailable = true;
 try {
@@ -35,7 +35,6 @@ function isErrorResult(res: unknown): boolean {
 /** The legacy topic-type shape the ws-topictype-* API maps documents to. */
 interface ITopicType {
   id: string;
-  slug: string | null;
   label: string;
   icon: string;
   description: string;
@@ -106,35 +105,35 @@ async function connect(store: Store): Promise<{
       const created = jsonOf<ITopicType>(
         await client.callTool({
           name: 'ws-topictype-create',
-          arguments: { slug: 'feature', label: 'Feature', icon: 'rocket', description: 'Ships things.' },
+          arguments: { label: 'Feature', icon: 'rocket', description: 'Ships things.' },
         }),
       );
-      expect(created.slug).toBe('feature');
+      expect(created).not.toHaveProperty('slug');
       expect(created.label).toBe('Feature');
       expect(created.icon).toBe('rocket');
       expect(created.body_template).toBe('');
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
       expect(created.resourceVersion).toBe(1);
 
-      // read by slug → mapped 0-or-1 list.
+      // Read by ID → mapped 0-or-1 list.
       const read = jsonOf<TopicTypeList>(
-        await client.callTool({ name: 'ws-topictype-read', arguments: { slug: 'feature' } }),
+        await client.callTool({ name: 'ws-topictype-read', arguments: { id: created.id } }),
       );
       expect(read.count).toBe(1);
       expect(read.topicTypes[0]?.label).toBe('Feature');
 
-      // read by slug miss → 0.
+      // Unknown ID → 0.
       const miss = jsonOf<TopicTypeList>(
-        await client.callTool({ name: 'ws-topictype-read', arguments: { slug: 'ghost' } }),
+        await client.callTool({ name: 'ws-topictype-read', arguments: { id: 'ghost' } }),
       );
       expect(miss.count).toBe(0);
 
-      // list mode (no slug/id) → contains it.
+      // List mode → contains it.
       const list = jsonOf<TopicTypeList>(
         await client.callTool({ name: 'ws-topictype-read', arguments: {} }),
       );
       expect(list.count).toBe(1);
-      expect(list.topicTypes[0]?.slug).toBe('feature');
+      expect(list.topicTypes[0]?.id).toBe(created.id);
 
       // query filter (case-insensitive substring): matches, then excludes.
       const queried = jsonOf<TopicTypeList>(
@@ -150,7 +149,7 @@ async function connect(store: Store): Promise<{
       const updated = jsonOf<ITopicType>(
         await client.callTool({
           name: 'ws-topictype-update',
-          arguments: { slug: 'feature', label: 'Feature v2', body_template: '## Problem\n' },
+          arguments: { id: created.id, label: 'Feature v2', body_template: '## Problem\n' },
         }),
       );
       expect(updated.label).toBe('Feature v2');
@@ -160,31 +159,31 @@ async function connect(store: Store): Promise<{
       expect(updated.resourceVersion).toBe(2);
 
       const afterUpdate = jsonOf<TopicTypeList>(
-        await client.callTool({ name: 'ws-topictype-read', arguments: { slug: 'feature' } }),
+        await client.callTool({ name: 'ws-topictype-read', arguments: { id: created.id } }),
       );
       expect(afterUpdate.topicTypes[0]?.label).toBe('Feature v2');
 
       // delete — drops out of ws-topictype-read.
-      const del = jsonOf<{ ok: boolean; slug: string }>(
-        await client.callTool({ name: 'ws-topictype-delete', arguments: { slug: 'feature' } }),
+      const del = jsonOf<{ ok: boolean; id: string }>(
+        await client.callTool({ name: 'ws-topictype-delete', arguments: { id: created.id } }),
       );
-      expect(del).toEqual({ ok: true, slug: 'feature' });
+      expect(del).toEqual({ ok: true, id: created.id });
       expect(
         jsonOf<TopicTypeList>(
-          await client.callTool({ name: 'ws-topictype-read', arguments: { slug: 'feature' } }),
+          await client.callTool({ name: 'ws-topictype-read', arguments: { id: created.id } }),
         ).count,
       ).toBe(0);
 
       // restore: true → back in ws-topictype-read, spec intact.
-      const restored = jsonOf<{ ok: boolean; slug: string }>(
+      const restored = jsonOf<{ ok: boolean; id: string }>(
         await client.callTool({
           name: 'ws-topictype-delete',
-          arguments: { slug: 'feature', restore: true },
+          arguments: { id: created.id, restore: true },
         }),
       );
-      expect(restored).toEqual({ ok: true, slug: 'feature' });
+      expect(restored).toEqual({ ok: true, id: created.id });
       const afterRestore = jsonOf<TopicTypeList>(
-        await client.callTool({ name: 'ws-topictype-read', arguments: { slug: 'feature' } }),
+        await client.callTool({ name: 'ws-topictype-read', arguments: { id: created.id } }),
       );
       expect(afterRestore.count).toBe(1);
       expect(afterRestore.topicTypes[0]?.label).toBe('Feature v2');
@@ -212,18 +211,18 @@ async function connect(store: Store): Promise<{
     };
     const { client, close } = await connect(store);
     try {
-      await client.callTool({
+      const created = jsonOf<ITopicType>(await client.callTool({
         name: 'ws-topictype-create',
-        arguments: { slug: 'race', label: 'Race', icon: 'sync', description: 'd' },
-      });
+        arguments: { label: 'Race', icon: 'sync', description: 'd' },
+      }));
       await client.callTool({
         name: 'ws-topictype-update',
-        arguments: { slug: 'race', label: 'Race v2' },
+        arguments: { id: created.id, label: 'Race v2' },
       });
       staleVersion = 1;
       const conflict = await client.callTool({
         name: 'ws-topictype-update',
-        arguments: { slug: 'race', label: 'Race v3' },
+        arguments: { id: created.id, label: 'Race v3' },
       });
       expect(isErrorResult(conflict)).toBe(true);
       expect(textOf(conflict)).toMatch(/conflict/i);
@@ -239,7 +238,7 @@ async function connect(store: Store): Promise<{
       // (z.string().min(1)) → kind-validation rejection, not a raw store error.
       const badCreate = await client.callTool({
         name: 'ws-topictype-create',
-        arguments: { slug: 'bad', label: 'L', icon: '', description: 'x' },
+        arguments: { label: 'L', icon: '', description: 'x' },
       });
       expect(isErrorResult(badCreate)).toBe(true);
       expect(textOf(badCreate)).toMatch(/icon/i);
@@ -249,19 +248,19 @@ async function connect(store: Store): Promise<{
       ).toBe(0);
 
       // A valid create, then an invalid-label update, is also rejected …
-      await client.callTool({
+      const created = jsonOf<ITopicType>(await client.callTool({
         name: 'ws-topictype-create',
-        arguments: { slug: 'ok', label: 'OK', icon: 'check', description: 'fine' },
-      });
+        arguments: { label: 'OK', icon: 'check', description: 'fine' },
+      }));
       const badUpdate = await client.callTool({
         name: 'ws-topictype-update',
-        arguments: { slug: 'ok', label: '' },
+        arguments: { id: created.id, label: '' },
       });
       expect(isErrorResult(badUpdate)).toBe(true);
       expect(textOf(badUpdate)).toMatch(/label/i);
       // … and leaves the topic type unchanged.
       const still = jsonOf<TopicTypeList>(
-        await client.callTool({ name: 'ws-topictype-read', arguments: { slug: 'ok' } }),
+        await client.callTool({ name: 'ws-topictype-read', arguments: { id: created.id } }),
       );
       expect(still.topicTypes[0]?.label).toBe('OK');
     } finally {
@@ -269,26 +268,26 @@ async function connect(store: Store): Promise<{
     }
   });
 
-  it('errors clearly on unknown-slug update, delete, and restore', async () => {
+  it('errors clearly on unknown-ID update, delete, and restore', async () => {
     const { client, close } = await connect(openStore(':memory:'));
     try {
       const badUpdate = await client.callTool({
         name: 'ws-topictype-update',
-        arguments: { slug: 'ghost', label: 'X' },
+        arguments: { id: 'ghost', label: 'X' },
       });
       expect(isErrorResult(badUpdate)).toBe(true);
       expect(textOf(badUpdate)).toMatch(/ghost/);
 
       const badDelete = await client.callTool({
         name: 'ws-topictype-delete',
-        arguments: { slug: 'ghost' },
+        arguments: { id: 'ghost' },
       });
       expect(isErrorResult(badDelete)).toBe(true);
       expect(textOf(badDelete)).toMatch(/ghost/);
 
       const badRestore = await client.callTool({
         name: 'ws-topictype-delete',
-        arguments: { slug: 'ghost', restore: true },
+        arguments: { id: 'ghost', restore: true },
       });
       expect(isErrorResult(badRestore)).toBe(true);
       expect(textOf(badRestore)).toMatch(/ghost/);
@@ -302,7 +301,6 @@ async function connect(store: Store): Promise<{
       kind: 'TopicType',
       metadata: {
         id: '11111111-1111-1111-1111-111111111111',
-        slug: 'feature',
         labels: {},
         createdAt: 1000,
         updatedAt: 2000,
@@ -315,7 +313,6 @@ async function connect(store: Store): Promise<{
     // Round-trip through JSON to assert the serialized projection exactly.
     expect(JSON.parse(JSON.stringify(new TopicType(env)))).toEqual({
       id: '11111111-1111-1111-1111-111111111111',
-      slug: 'feature',
       label: 'Feature',
       icon: 'rocket',
       description: 'Ships things.',

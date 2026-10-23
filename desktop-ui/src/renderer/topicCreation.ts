@@ -7,8 +7,8 @@ export async function createTopicFromDraft(
 ): Promise<DocumentVM> {
   if (draft.newWorkstreamTitle !== undefined && !draft.workstream) {
     const created = await api.createWorkstream(draft.newWorkstreamTitle);
-    // Retain the new slug so retrying a failed topic save reuses this workstream.
-    draft.workstream = created.slug;
+    // Retain the new id so retrying a failed topic save reuses this workstream.
+    draft.workstream = created.id;
     draft.workstreamTitle = created.title;
   }
   try {

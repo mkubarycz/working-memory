@@ -5,7 +5,7 @@
  * Workstream carries no outbound refs (its sessions are reverse relations,
  * deferred), so the envelope alone renders metadata + the authored spec. Its
  * member topics are ALSO a reverse relation (a Topic's `spec.workstreams[]`
- * lists the workstream slugs it belongs to), so they can't be read off the
+ * lists the workstream ids it belongs to), so they can't be read off the
  * workstream envelope: the caller resolves them and passes them in. The
  * renderer stays a pure function of `env` + `topics` (no I/O).
  */
@@ -18,7 +18,7 @@ export function renderWorkstreamDocument(
   topics: Topic[] = [],
 ): string {
   const spec = env.spec ?? {};
-  const title = asStr(spec.title) ?? env.metadata.slug ?? env.metadata.id;
+  const title = asStr(spec.title) ?? env.metadata.id;
   const status = asStr(spec.status) ?? '—';
   const closure = asStr(spec.closure);
 
@@ -39,8 +39,8 @@ export function renderWorkstreamDocument(
     const sorted = [...topics].sort((a, b) => a.title.localeCompare(b.title));
     lines.push('## Topics', '');
     for (const t of sorted) {
-      const slug = t.slug ?? t.id;
-      let row = `- [${t.title}](${deepLink('topic', slug)}) \`${slug}\``;
+      const id = t.id;
+      let row = `- [${t.title}](${deepLink('topic', id)}) \`${id}\``;
       if (t.status !== 'open') {
         row += ` — _${t.status}_`;
       }

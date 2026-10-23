@@ -33,9 +33,12 @@ import {
 } from './config.js';
 import { openStore, type Store, ConflictError, NotFoundError } from './store.js';
 import { createDocumentChangeFeed } from './documentChangeFeed.js';
+import { HostTaskBroker, HOST_TASK_CLEANUP_INTERVAL_MS, type HostTaskOptions } from './hostTasks.js';
+import { AccessError, InstanceAccess, type InstancePrincipal } from './instanceAccess.js';
+import { serveInstanceAccessMcp } from './instanceAccessMcp.js';
+import { topicSpecWithDefaults, validateTopicReferences } from './kinds/topic/references.js';
 import {
   getKind,
-  validateMetadata,
   validateSpec,
   defaultStatus,
   listKinds,
@@ -43,7 +46,7 @@ import {
   listKindApis,
 } from './kinds/registry.js';
 
-export interface StartServerOptions {
+export interface StartServerOptions extends HostTaskOptions {
   host?: string;
   /** TCP port; `0` binds an ephemeral port (used by tests). */
   port?: number;
@@ -106,20 +109,15 @@ export function createMcpServer(
       title: 'Working Memory: Create Document',
       description:
         'Create a new document (resource) in the Working Memory store. Provide a `kind`, ' +
-        'an optional `slug`, optional `labels`, and an optional `spec` object holding the ' +
+        'optional `labels`, and an optional `spec` object holding the ' +
         "document body/fields. The `kind` MUST be a registered kind (see `wm-list-kinds`); " +
         'unknown kinds are rejected. The `spec` MUST match the kind\'s schema exactly — ' +
         'required fields must be present and unknown fields are rejected (e.g. "Topic" ' +
-        'requires a `title`, ≤120 chars; Topic and Workstream also require unique slugs using lowercase words ' +
-        'separated with dashes, with 3-5 short, precise words as the best practice for Topic). The parsed spec ' +
+        'requires a `title`, ≤120 chars). Resources are identified only by their immutable object IDs. The parsed spec ' +
         '(defaults applied) is what gets ' +
         'persisted. Returns the created document envelope.',
-      inputSchema: {
+      inputSchema: z.object({
         kind: z.string().describe('The document kind. Must be registered (see wm-list-kinds), e.g. "Topic".'),
-        slug: z
-          .string()
-          .optional()
-          .describe('Optional for kinds that permit omission. Topic and Workstream require a unique lowercase dash-separated slug; Topic best practice is 3-5 short, precise words.'),
         labels: z
           .record(z.string(), z.string())
           .optional()
@@ -128,9 +126,9 @@ export function createMcpServer(
           .record(z.string(), z.unknown())
           .optional()
           .describe("Optional desired-state object; must match the kind's spec schema (unknown fields rejected)."),
-      },
+      }).strict(),
     },
-    async ({ kind, slug, labels, spec }) => {
+    async ({ kind, labels, spec }) => {
       // The kind MUST be registered — no freeform escape hatch. Rejection lives
       // here (tool/registry layer); the store stays kind-agnostic.
       if (!getKind(kind)) {
@@ -145,13 +143,13 @@ export function createMcpServer(
         // validateSpec parses (defaults applied, unknown fields rejected via
         // the kind's strict spec). We persist the PARSED value, never the raw
         // input, so a stored document always conforms to its kind.
-        validateMetadata(kind, { slug, store });
-        validatedSpec = validateSpec(kind, spec);
+        validatedSpec = validateSpec(kind, kind === 'Topic' ? topicSpecWithDefaults(store, spec ?? {}) : spec);
+        if (kind === 'Topic') validateTopicReferences(store, validatedSpec);
         status = defaultStatus(kind);
       } catch (err) {
         return asError((err as Error).message);
       }
-      return asText(store.createDocument({ kind, slug, labels, spec: validatedSpec, status }));
+      return asText(store.createDocument({ kind, labels, spec: validatedSpec, status }));
     },
   );
 
@@ -162,17 +160,17 @@ export function createMcpServer(
       description:
         'Patch an existing document (a versioned compare-and-swap write). You MUST pass ' +
         '`expectedResourceVersion` — the `resourceVersion` you just read via `wm-document-read`. ' +
-        'Provide at least one of `spec`, `slug`, or `labels`. `spec` is a PARTIAL: the fields you ' +
+        'Provide at least one of `spec` or `labels`. `spec` is a PARTIAL: the fields you ' +
         'pass are shallow-merged onto the current spec, then the MERGED spec is validated against ' +
         "the document's kind schema (unknown fields rejected); the parsed merged spec is what gets " +
-        'persisted. `slug` and `labels` are replace-if-provided — passing `labels` replaces the ' +
+        'persisted. `labels` are replace-if-provided — passing `labels` replaces the ' +
         'whole labels object; omitting a field leaves it unchanged. To clear/reset a field send it ' +
         'explicitly (e.g. `spec: { parents: [] }`). If the document changed since you read it ' +
         '(version mismatch), the update is rejected as a conflict and the current version is ' +
         'returned — re-fetch with `wm-document-read`, re-apply, and retry. The controller-owned ' +
         'envelope `status` is not editable here. Returns the updated document envelope (with a ' +
         'bumped `updatedAt` and `resourceVersion`).',
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().describe('The id (uuid) of the document to update.'),
         expectedResourceVersion: z
           .number()
@@ -185,17 +183,16 @@ export function createMcpServer(
             'Partial spec fields to merge onto the current spec; the merged spec must match the ' +
               "kind's schema (unknown fields rejected). Send a field explicitly to clear it (e.g. parents: []).",
           ),
-        slug: z.string().optional().describe('Optional new slug (replaces if provided).'),
         labels: z
           .record(z.string(), z.string())
           .optional()
           .describe('Optional new labels; replaces the whole labels object if provided.'),
-      },
+      }).strict(),
     },
-    async ({ id, expectedResourceVersion, spec, slug, labels }) => {
+    async ({ id, expectedResourceVersion, spec, labels }) => {
       // Require at least one editable field so a no-op patch is an explicit error.
-      if (spec === undefined && slug === undefined && labels === undefined) {
-        return asError('Nothing to update: provide at least one of `spec`, `slug`, or `labels`.');
+      if (spec === undefined && labels === undefined) {
+        return asError('Nothing to update: provide at least one of `spec` or `labels`.');
       }
       // Fetch the live doc first: we need its kind + current spec to merge and
       // validate, and to give a clear "unknown id" error before any write work.
@@ -211,8 +208,6 @@ export function createMcpServer(
             'cannot be validated. Register the kind (see wm-list-kinds) first.',
         );
       }
-      // slug / labels are replace-if-provided: fall back to current when omitted.
-      const newSlug = slug ?? existing.metadata.slug;
       const newLabels = labels ?? existing.metadata.labels;
       let validatedSpec: Record<string, unknown>;
       try {
@@ -220,8 +215,8 @@ export function createMcpServer(
         // the MERGED spec (strict → an unknown field in the patch is rejected).
         // Persist the PARSED merged spec. On validation failure nothing is written.
         const mergedSpec = { ...existing.spec, ...(spec ?? {}) };
-        validateMetadata(existing.kind, { slug: newSlug, store, excludeId: id });
         validatedSpec = validateSpec(existing.kind, mergedSpec);
+        if (existing.kind === 'Topic') validateTopicReferences(store, validatedSpec);
       } catch (err) {
         return asError((err as Error).message);
       }
@@ -231,7 +226,6 @@ export function createMcpServer(
             id,
             expectedResourceVersion,
             spec: validatedSpec,
-            slug: newSlug,
             labels: newLabels,
           }),
         );
@@ -262,14 +256,12 @@ export function createMcpServer(
         'lowercase `topic` docs). After deletion the document drops out of `wm-document-read` ' +
         '(both list and single-read modes). To **undelete** a previously soft-deleted document, call this ' +
         'same tool with `restore: true` (clears `deleted_at`, bumps its version). ' +
-        'Restoring a Workstream or ContainerClaim is rejected if another live document of the ' +
-        'same kind already owns its slug. ' +
         '`expectedResourceVersion` is OPTIONAL and only applies to deletes: when provided it ' +
         'acts as a compare-and-swap guard (the delete is rejected as a conflict if the document ' +
         'changed since you read it); when omitted the current live row is deleted ' +
         'unconditionally. Unknown or already-deleted ids (or already-live ids on restore) are ' +
         'rejected. Returns the affected document envelope.',
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().describe('The id (uuid) of the document to delete (or restore).'),
         restore: z
           .boolean()
@@ -280,26 +272,12 @@ export function createMcpServer(
           .int()
           .optional()
           .describe('Optional CAS guard for deletes: the resourceVersion you read via wm-document-read.'),
-      },
+      }).strict(),
     },
     async ({ id, restore, expectedResourceVersion }) => {
       // No spec validation here, so unregistered-kind documents remain manageable.
-      // Kinds with durable slug identity enforce that invariant on restore.
       try {
         if (restore === true) {
-          const deleted = store.getDocument({ id, includeDeleted: true });
-          if (
-            deleted &&
-            (deleted.kind === 'Workstream' || deleted.kind === 'ContainerClaim') &&
-            deleted.metadata.slug
-          ) {
-            const live = store.getDocument({ kind: deleted.kind, slug: deleted.metadata.slug });
-            if (live && live.metadata.id !== id) {
-              return asError(
-                `Cannot restore ${deleted.kind} ${id}: slug "${deleted.metadata.slug}" is already in use.`,
-              );
-            }
-          }
           return asText(store.restoreDocument({ id }));
         }
         return asText(store.deleteDocument({ id, expectedResourceVersion }));
@@ -347,20 +325,16 @@ export function createMcpServer(
     {
       title: 'Working Memory: Read Documents',
       description:
-        'Read one document or many. Read ONE by passing `id`, or by `slug` (optionally scoped by ' +
+        'Read one document or many. Read ONE by passing `id` (optionally scoped by ' +
         '`kind`). Otherwise LIST non-deleted documents newest-first: `kind` filters by kind, and ' +
         '`query` does a BASIC case-insensitive substring match over each document\'s text ' +
-        '(slug + spec JSON, i.e. title/body/etc.); `limit` caps how many are returned. This ' +
+        '(ID, labels and spec JSON, i.e. title/body/etc.); `limit` caps how many are returned. This ' +
         '`query` is a simple placeholder text filter, NOT full-text or agentic search. ALWAYS ' +
-        'returns { count, documents } \u2014 a by-id/slug read yields a 0-or-1 element list, so ' +
+        'returns { count, documents } \u2014 a by-id read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().optional().describe('Read a single document by id (uuid).'),
-        slug: z
-          .string()
-          .optional()
-          .describe('Read a single document by slug (optionally scoped by kind).'),
-        kind: z.string().optional().describe('Kind filter for a slug lookup or a list, e.g. "Topic".'),
+        kind: z.string().optional().describe('Kind filter for an ID lookup or a list, e.g. "Topic".'),
         includeDeleted: z
           .boolean()
           .optional()
@@ -378,13 +352,13 @@ export function createMcpServer(
           .optional()
           .describe('Max number of documents to return (list mode only).'),
         offset: z.number().int().nonnegative().optional().describe('Number of matching documents to skip (list mode only). Restart paging after document changes.'),
-      },
+      }).strict(),
     },
-    async ({ id, slug, kind, includeDeleted, query, limit, offset = 0 }) => {
-      // Single-document read: by id, or by slug (optionally kind-scoped). Return
+    async ({ id, kind, includeDeleted, query, limit, offset = 0 }) => {
+      // Single-document read by ID (optionally kind-scoped). Return
       // a 0-or-1 element list so the shape matches the list case exactly.
-      if (id !== undefined || slug !== undefined) {
-        const doc = store.getDocument({ id, slug, kind, includeDeleted });
+      if (id !== undefined) {
+        const doc = store.getDocument({ id, kind, includeDeleted });
         const documents = doc ? [doc] : [];
         return asText({ count: documents.length, documents });
       }
@@ -394,7 +368,7 @@ export function createMcpServer(
         : store.listDocuments({ kind, includeDeleted });
       if (query !== undefined && query.trim() !== '') {
         // Basic placeholder search: case-insensitive substring over the whole
-        // envelope's JSON (covers slug, spec title/body, labels). Real FTS is a
+        // envelope's JSON (covers ID, spec title/body, labels). Real FTS is a
         // separate story and deliberately not built here.
         const needle = query.toLowerCase();
         documents = documents.filter((doc) => JSON.stringify(doc).toLowerCase().includes(needle));
@@ -419,7 +393,10 @@ export function createMcpServer(
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let bytes = 0;
   for await (const chunk of req) {
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > 1024 * 1024) throw new Error('JSON request exceeds the 1 MiB limit.');
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) {
@@ -474,17 +451,25 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // store and own its lifecycle; when absent (tests) we own an ephemeral one.
   const providedStore = opts.store;
   const store = providedStore ?? openStore(':memory:');
+  const hostTasks = new HostTaskBroker(store.db, opts);
+  const access = new InstanceAccess(store.db, hostTasks.identity, opts.hostTaskClock);
   const ownsStore = providedStore === undefined;
   const changeFeed = createDocumentChangeFeed(store);
 
   // Per-server session registry (stateful Streamable HTTP), keyed by MCP
   // session id. Supports multiple concurrent clients, each with its own MCP
   // session and connected McpServer instance.
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const transports = new Map<string, { transport: StreamableHTTPServerTransport; principalKey: string }>();
 
-  async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, principal: InstancePrincipal): Promise<void> {
     const header = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(header) ? header[0] : header;
+    const session = sessionId ? transports.get(sessionId) : undefined;
+    if (session && session.principalKey !== principal.key) {
+      endJson(res, 403, { error: 'session_identity_mismatch',
+        message: 'This MCP session belongs to another credential. Initialize a new session with your own token.' });
+      return;
+    }
 
     if (req.method === 'POST') {
       let body: unknown;
@@ -499,7 +484,20 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         return;
       }
 
-      const existing = sessionId ? transports.get(sessionId) : undefined;
+      if (Array.isArray(body)) {
+        endJson(res, 400, { error: 'MCP batch requests are not supported. Send one authenticated request at a time.' });
+        return;
+      }
+      if (principal.access === 'read' && body && typeof body === 'object' && 'method' in body && body.method === 'tools/call') {
+        const call = z.object({ params: z.object({ name: z.string() }) }).safeParse(body);
+        const readTool = /^(?:wm-(?:ping|document-read|list-kinds)|ws-(?:workstream|topic|topictype|alert|agent-message|agent|containerclaim|commandjournal|config)-read)$/;
+        if (!call.success || !readTool.test(call.data.params.name)) {
+          endJson(res, 403, { error: 'read_only_identity',
+            message: 'This client has read-only access. Request a new write-access identity through the identity MCP; owner approval is required.' });
+          return;
+        }
+      }
+      const existing = session?.transport;
       if (existing) {
         await existing.handleRequest(req, res, body);
         return;
@@ -510,7 +508,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
           onsessioninitialized: (id) => {
-            transports.set(id, transport);
+            transports.set(id, { transport, principalKey: principal.key });
           },
         });
         transport.onclose = () => {
@@ -533,7 +531,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     }
 
     if (req.method === 'GET' || req.method === 'DELETE') {
-      const transport = sessionId ? transports.get(sessionId) : undefined;
+      const transport = session?.transport;
       if (!transport) {
         endJson(res, 400, { ok: false, error: 'invalid or missing session id' });
         return;
@@ -547,14 +545,81 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
 
   async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? `${host}:${port}`}`);
+    const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
 
+    if (url.pathname === '/identity/v1/mcp') {
+      if (req.headers.origin || url.search) { endJson(res, 400, { error: 'Use the identity MCP directly, without browser Origin or query credentials.' }); return; }
+      if (req.method !== 'POST') { endJson(res, 405, { error: 'Identity MCP accepts POST only.' }); return; }
+      await serveInstanceAccessMcp(req, res, access);
+      return;
+    }
+    if (url.pathname === '/identity/v1/setup') {
+      const setup = new URL(url);
+      setup.pathname = '/host-tasks/v1/admin/identity/setup';
+      await hostTasks.handle(req, res, setup);
+      return;
+    }
+    if (url.pathname === '/identity/v1/access') {
+      try {
+        if (req.headers.origin || url.search) throw new AccessError(400, 'Use the trusted desktop connection without query credentials.');
+        if (req.method === 'GET') { endJson(res, 200, access.snapshot(token)); return; }
+        if (req.method !== 'POST') throw new AccessError(405, 'Access management accepts GET or POST.');
+        if (!hostTasks.identity.authenticate(token)) throw new AccessError(401, 'Sign in as the instance owner to manage access.');
+        if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new AccessError(415, 'JSON required.');
+        const action = z.object({ action: z.enum(['approve', 'deny', 'revoke']), id: z.string().uuid() }).strict().parse(await readJsonBody(req));
+        if (action.action === 'revoke') access.revoke(token, action.id);
+        else access.decide(token, action.id, action.action === 'approve');
+        endJson(res, 200, access.snapshot(token));
+      } catch (error) {
+        if (error instanceof AccessError) endJson(res, error.status, { error: error.message });
+        else if (error instanceof z.ZodError || error instanceof SyntaxError) endJson(res, 400, { error: 'Provide a valid access action and request or client UUID.' });
+        else throw error;
+      }
+      return;
+    }
+    if (url.pathname === '/features/v1') {
+      await hostTasks.handleFeatures(req, res, url);
+      return;
+    }
+    if (url.pathname.startsWith('/identity/v1/')) {
+      await hostTasks.identity.handle(req, res, url);
+      return;
+    }
+    if (url.pathname === '/host-tasks/v1' || url.pathname.startsWith('/host-tasks/v1/')) {
+      await hostTasks.handle(req, res, url);
+      return;
+    }
+    if (hostTasks.isProtectedCredential(req.headers.authorization) && !hostTasks.identity.recognizes(token)) {
+      endJson(res, 403, { error: 'host_task_credential_wrong_surface',
+        message: 'Host-task credentials cannot access instance data. Request an instance credential through /identity/v1/mcp and ask the owner to approve it in Settings > Access.' });
+      return;
+    }
     if (req.method === 'GET' && url.pathname === HEALTH_PATH) {
       endJson(res, 200, { ok: true, version, uptime: (Date.now() - startedAt) / 1000 });
       return;
     }
+    const principal = access.authenticate(token);
+    if (!principal) {
+      const identityMcpUrl = new URL('/identity/v1/mcp', url).href;
+      res.setHeader('WWW-Authenticate', 'Bearer realm="working-memory"');
+      endJson(res, 401, { error: 'instance_authentication_required', identityMcpUrl,
+        message: 'A valid instance token is required. Desktop users: connect and set an owner password if none exists, or sign in. '
+          + `Agents: connect to ${identityMcpUrl}, call wm-identity-request-access, then ask a signed-in owner to approve in Settings > Access. `
+          + 'For an expired client token, request refresh with the previous token in the Authorization header. Claim the approved token using wm-identity-claim-access and initialize a new /mcp session.',
+        passwordConfigured: hostTasks.identity.configured() });
+      return;
+    }
+    if (req.headers.origin) {
+      endJson(res, 400, { error: 'Use a trusted client connection, not a browser Origin.' });
+      return;
+    }
+    if (principal.access === 'read' && req.method === 'POST' && url.pathname === '/attachments') {
+      endJson(res, 403, { error: 'read_only_identity', message: 'Attachment uploads require owner-approved write access.' });
+      return;
+    }
 
     if (req.method === 'GET' && url.pathname === '/changes') {
-      changeFeed.handle(req, res, url);
+      changeFeed.handle(req, res, url, () => !!access.authenticate(token));
       return;
     }
 
@@ -612,7 +677,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     }
 
     if (url.pathname === MCP_PATH) {
-      await handleMcp(req, res);
+      await handleMcp(req, res, principal);
       return;
     }
 
@@ -620,11 +685,12 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   }
 
   const httpServer = http.createServer((req, res) => {
-    void handleRequest(req, res).catch((err: unknown) => {
+    void handleRequest(req, res).catch(() => {
+      console.error('[control-plane] HTTP request failed.');
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' });
       }
-      res.end(JSON.stringify({ ok: false, error: (err as Error).message }));
+      res.end(JSON.stringify({ ok: false, error: 'Request failed. Check the control-plane service logs.' }));
     });
   });
 
@@ -639,14 +705,20 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
 
   const address = httpServer.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+  const hostTaskCleanupTimer = setInterval(() => {
+    try { hostTasks.cleanup(); }
+    catch { console.error('[host-tasks] Retention cleanup failed.'); }
+  }, HOST_TASK_CLEANUP_INTERVAL_MS);
+  hostTaskCleanupTimer.unref();
 
   return {
     host,
     port: boundPort,
     url: `http://${host}:${boundPort}`,
     close(): Promise<void> {
+      clearInterval(hostTaskCleanupTimer);
       changeFeed.close();
-      for (const transport of transports.values()) {
+      for (const { transport } of transports.values()) {
         void Promise.resolve(transport.close()).catch(() => undefined);
       }
       transports.clear();

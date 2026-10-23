@@ -11,10 +11,10 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
     {
       title: 'Container Claim: Update',
       description:
-        'Update the authored intent of a live ContainerClaim by `slug`. Pass only `title`, ' +
-        '`repository`, `sourceRevision`, runtime, MCP, application, or desktop metadata; the stable slug is not changed.',
-      inputSchema: {
-        slug: z.string().describe('Slug of the live claim to update.'),
+        'Update the authored intent of a live ContainerClaim by `id`. Pass only `title`, ' +
+        '`repository`, `sourceRevision`, runtime, MCP, application, or desktop metadata.',
+      inputSchema: z.object({
+        id: z.string().min(1).describe('ID of the live claim to update.'),
         title: z.string().optional().describe('Replacement human-readable title.'),
         repository: z.string().optional().describe('Replacement repository/codebase reference.'),
         sourceRevision: z
@@ -26,12 +26,12 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
         mcp: z.record(z.string(), z.unknown()).nullable().optional(),
         application: z.record(z.string(), z.unknown()).nullable().optional(),
         desktop: z.record(z.string(), z.unknown()).nullable().optional(),
-      },
+      }).strict(),
     },
-    async ({ slug, ...input }) => {
-      const existing = store.getDocument({ slug, kind: CONTAINER_CLAIM_KIND });
+    async ({ id, ...input }) => {
+      const existing = store.getDocument({ id, kind: CONTAINER_CLAIM_KIND });
       if (!existing || existing.kind !== CONTAINER_CLAIM_KIND) {
-        return asError(`Unknown container claim slug: "${slug}". No live claim with that slug.`);
+        return asError(`Unknown container claim ID: "${id}". No live claim with that ID.`);
       }
       const patch = Object.fromEntries(
         Object.entries(input).filter(([, value]) => value !== undefined),
@@ -59,12 +59,12 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
       } catch (err) {
         if (err instanceof ConflictError) {
           return asError(
-            `Conflict: container claim "${slug}" changed since it was read (current ` +
+            `Conflict: container claim "${id}" changed since it was read (current ` +
               `resourceVersion ${err.currentResourceVersion}). Re-read and retry.`,
           );
         }
         if (err instanceof NotFoundError) {
-          return asError(`Unknown container claim slug: "${slug}". It no longer exists.`);
+          return asError(`Unknown container claim ID: "${id}". It no longer exists.`);
         }
         throw err;
       }

@@ -11,7 +11,7 @@ import { renderDocumentByKind } from '../src/main/documentRenderers';
 
 const message: AgentMessage = {
   agent_id: 'agent-1', agent_name: 'Review Agent',
-  id: 'message-1', slug: null, title: 'Review', description: '**Review**', recommended_action: 'Review PR',
+  id: 'message-1',  title: 'Review', description: '**Review**', recommended_action: 'Review PR',
   category: 'approval', severity: 'warning', status: 'open', attention: true, topics: ['one', 'two'],
   relations: [{ kind: 'Topic', id: 'topic-1' }], dedupe_key: null, created_by: 'agent',
   created_at: 1, updated_at: 2, resourceVersion: 1,
@@ -67,19 +67,19 @@ describe('AgentMessage desktop plumbing', () => {
     expect(buildAgentMessageVMs(messages, ['one'])[2].dimmed).toBe(true);
   });
 
-  it('scopes UUID relation callouts and attention without treating slugs or missing IDs as UUIDs', () => {
+  it('scopes relation callouts by exact IDs, including preserved non-UUID IDs', () => {
     const messages: AgentMessage[] = [
       { ...message, id: 'topic-ref', topics: [], relations: [{ kind: 'Topic', id: 'topic-uuid' }] },
       { ...message, id: 'workstream-ref', topics: [], relations: [{ kind: 'Workstream', id: 'workstream-uuid' }] },
       { ...message, id: 'wrong-kind', topics: [], relations: [{ kind: 'Workstream', id: 'topic-uuid' }] },
-      { ...message, id: 'slug-not-id', topics: [], relations: [{ kind: 'Topic', id: 'one' }] },
+      { ...message, id: 'id-not-id', topics: [], relations: [{ kind: 'Topic', id: 'one' }] },
       { ...message, id: 'unrelated', topics: [], relations: [{ kind: 'Topic', id: 'other-uuid' }] },
     ];
-    const scope = { topicSlugs: ['one'], topicIds: ['topic-uuid'], workstreamIds: ['workstream-uuid'] };
+    const scope = {  topicIds: ['topic-uuid'], workstreamIds: ['workstream-uuid'] };
     expect(buildAgentMessageVMs(messages, scope).map((item) => item.id)).toEqual(['topic-ref', 'workstream-ref']);
     expect(agentMessageBubbleForTopics(messages, scope)).toEqual({ count: 2, severity: 'warning' });
-    expect(buildAgentMessageVMs(messages, { topicSlugs: ['one'] })).toEqual([]);
-    expect(agentMessageBubbleForTopics(messages, { topicSlugs: [], topicIds: [], workstreamIds: [] }))
+    expect(buildAgentMessageVMs(messages, { topicIds: ['one'] }).map(({ id }) => id)).toEqual(['id-not-id']);
+    expect(agentMessageBubbleForTopics(messages, {  topicIds: [], workstreamIds: [] }))
       .toEqual({ count: 0, severity: null });
   });
 
@@ -139,7 +139,7 @@ describe('AgentMessage desktop plumbing', () => {
 
   it('renders an AgentMessage document with lifecycle and unchanged Markdown', () => {
     const rendered = renderDocumentByKind({
-      kind: 'AgentMessage', metadata: { id: 'message-1', slug: null, createdAt: 1, updatedAt: 2, resourceVersion: 1 },
+      kind: 'AgentMessage', metadata: { id: 'message-1',  createdAt: 1, updatedAt: 2, resourceVersion: 1 },
       spec: { ...message },
     } as never);
     expect(rendered).toContain('# Agent message: Review');

@@ -72,7 +72,7 @@ const WRITE_ACTION = /-(?:create|update|delete|restore|run|acknowledge|resolve|r
 
 export function targetForRef(ref: CommandJournalScopeRef | CommandJournalEntityRef): ChatTarget | undefined {
   const kind = TARGET_KINDS[ref.kind.toLowerCase()];
-  const identifier = ref.slug ?? ref.id;
+  const identifier = ref.id;
   return kind && identifier ? { kind, identifier } : undefined;
 }
 
@@ -90,7 +90,7 @@ function entityForTool(
   const ref = refs.find((candidate) => candidate.kind.toLowerCase().replaceAll('-', '') === family);
   if (!ref) return undefined;
   return {
-    label: ref.title ?? ref.slug ?? ref.id,
+    label: ref.title ?? ref.id,
     target: targetForRef(ref),
   };
 }
@@ -192,8 +192,8 @@ export function mergeHistoryRuns(current: ChatRun[], summaries: CommandJournalSu
 function sameRequest(run: ChatRun, summary: CommandJournalSummary): boolean {
   const runKind = normalizeScopeKind(run.scope.kind);
   const summaryKind = normalizeScopeKind(summary.primaryScope.kind);
-  const runIdentifier = run.scope.slug ?? run.scope.id;
-  const summaryIdentifier = summary.primaryScope.slug ?? summary.primaryScope.id;
+  const runIdentifier = run.scope.id;
+  const summaryIdentifier = summary.primaryScope.id;
   return run.userText === summary.request.userText
     && runKind === summaryKind
     && runIdentifier === summaryIdentifier;

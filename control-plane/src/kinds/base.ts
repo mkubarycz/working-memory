@@ -10,7 +10,7 @@
  *
  * Every kind `extends` a single `Base` descriptor via Zod schema composition,
  * kept deliberately **shallow** (one Base; no deep chains). Base owns the
- * envelope everyone shares — `metadata` (id, slug, labels, timestamps,
+ * envelope everyone shares — `metadata` (id, labels, timestamps,
  * resourceVersion) — and the lifecycle already baked into the base model
  * (not-created → created → deleted, all metadata-derived). Because that
  * lifecycle lives in metadata, Base's `status` is empty: kinds that aren't
@@ -47,12 +47,6 @@ export interface KindDescriptor {
   status?: ZodTypeAny;
   /** Projection to FTS text (wired in a later slice). */
   fts?: (row: FtsRow) => string;
-  /** Validate envelope metadata before a document is created or updated. */
-  validateMetadata?: (input: {
-    slug: string | null | undefined;
-    store: Store;
-    excludeId?: string;
-  }) => void;
 }
 
 /** What a `*.kind.ts` file default-exports; the loader registers these. */

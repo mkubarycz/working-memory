@@ -17,7 +17,7 @@ import { ControlPlaneClient, ControlPlaneClientError } from '../shared/controlPl
 
 const envelope = {
   kind: 'AgentMessage',
-  metadata: { id: 'message-1', slug: null, createdAt: 100, updatedAt: 200, resourceVersion: 3 },
+  metadata: { id: 'message-1',  createdAt: 100, updatedAt: 200, resourceVersion: 3 },
   spec: {
     agent_id: '00000000-0000-4000-8000-000000000001', agent_name: 'Test Agent',
     title: 'Review PR', description: '**Human review**', recommended_action: 'Review PR',
@@ -106,7 +106,7 @@ describe('canonical AgentMessage shared client', () => {
     const messages = await client().agentMessageRead(input);
     expect(callTool).toHaveBeenCalledWith({ name: 'ws-agent-message-read', arguments: input });
     expect(messages).toMatchObject([{
-      id: 'message-1', slug: null, description: '**Human review**', category: 'approval',
+      id: 'message-1',  description: '**Human review**', category: 'approval',
       created_at: 100, updated_at: 200, resourceVersion: 3, relations: envelope.spec.relations,
       provenance: envelope.spec.provenance,
     }]);

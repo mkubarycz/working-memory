@@ -10,6 +10,12 @@
   import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
   import type { TopicVM } from './documents/types';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
+  import HostTasks from './HostTasks.svelte';
+  import HostScripts from './HostScripts.svelte';
+  import InstanceConnection from './InstanceConnection.svelte';
+  import InstancesView from './documents/InstancesView.svelte';
+  import type { InstanceConnectionState } from '../shared/instanceIdentity';
+  import type { ScriptTask } from '../shared/hostTasks';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
   import TopicView from './documents/TopicView.svelte';
@@ -58,7 +64,9 @@
   import type { CommandJournalScopeRef, CommandJournalSummary } from '../../../shared/controlPlaneClient';
   import type { PanelAction, PanelData } from '../../../shared/panelData';
   import { invokeActiveAction } from './activeContextMenu';
-  import { DESKTOP_BUILD_TIMESTAMP, formatDesktopBuildTimestamp } from './buildInfo';
+  import { DESKTOP_BUILD_TIMESTAMP, desktopBuildLabel as formatDesktopBuildLabel } from './buildInfo';
+  import type { DesktopBuildInfo } from '../shared/contracts';
+  import type { InstanceFeatures } from '../../../control-plane/src/instanceFeatures';
   import { isChatAtBottom } from './chatScroll';
   import { readComposerDraft, writeComposerDraft } from './composerDraft';
   import {
@@ -78,6 +86,9 @@
     createDocumentOpenGuard,
     documentTabKey,
     documentTabIcon,
+    documentTabTooltip,
+    hostTaskDocument,
+    newHostTaskDocument,
     keepSelectedTabVisible,
     openDocumentTab,
     parseDocumentTabs,
@@ -118,16 +129,28 @@
     type ToolDetail,
   } from './chatHistory';
 
-  type HeaderTab = 'log' | 'container-apps';
+  type HeaderTab = 'log' | 'container-apps' | 'host-tasks';
   const HISTORY_PAGE_SIZE = 30;
-  const HEADER_TABS: HeaderTab[] = ['log', 'container-apps'];
+  const HEADER_TABS: HeaderTab[] = $derived(instanceFeatures.hostTasks
+    ? ['log', 'container-apps', 'host-tasks'] : ['log', 'container-apps']);
+  let hostTasksRevision = $state(0);
+  let hostTaskArguments = $state<Record<string, string>>({});
   const AI_SPEEDS = ['slow', 'medium', 'fast'] as const;
   const AI_DEPTHS = [
     { id: 'simple', label: 'Simple' },
     { id: 'complex', label: 'Complex' },
     { id: 'deep', label: 'Deep Thought' },
   ] as const;
-  const desktopBuildLabel = formatDesktopBuildTimestamp(DESKTOP_BUILD_TIMESTAMP);
+  let desktopBuildInfo = $state<DesktopBuildInfo | null>(null);
+  let buildInfoError = $state('');
+  const desktopBuildLabel = $derived(formatDesktopBuildLabel(desktopBuildInfo, DESKTOP_BUILD_TIMESTAMP));
+  let instanceFeatures = $state<InstanceFeatures>({ hostTasks: false });
+  let instanceConnection = $state<InstanceConnectionState | null>(null);
+  let instanceConnectionError = $state('');
+  let managingInstancesBeforeSignIn = $state(false);
+  let pendingAccessRequests = $state(0);
+  let pendingResource: { kind: DesktopResourceKind; identifier: string } | null = null;
+  let featuresError = $state('');
 
   interface ComposerImage {
     attachment: AttachmentRef;
@@ -331,7 +354,11 @@
 
   function chatAttachmentUrl(id: string): string {
     if (!selectedEnvironment?.mcpUrl) return '';
-    return `${new URL(selectedEnvironment.mcpUrl).origin}/attachments/${encodeURIComponent(id)}`;
+    return `${selectedAttachmentBaseUrl()}/attachments/${encodeURIComponent(id)}`;
+  }
+
+  function selectedAttachmentBaseUrl(): string {
+    return selectedEnvironment ? `working-memory-attachment://${selectedEnvironment.port}` : '';
   }
 
   function clearComposerImages(): void {
@@ -1076,6 +1103,8 @@
   });
 
   onMount(() => {
+    void window.workingMemory.getDesktopBuildInfo().then(info => { desktopBuildInfo = info; })
+      .catch(cause => { buildInfoError = cause instanceof Error ? cause.message : String(cause); });
     activeRailWidth = parseStoredRailWidth(localStorage.getItem(RAIL_STORAGE_KEYS.active), 'active');
     chatRailWidth = parseStoredRailWidth(localStorage.getItem(RAIL_STORAGE_KEYS.chat), 'chat');
     viewportWidth = window.innerWidth;
@@ -1085,12 +1114,28 @@
     void refreshOpenAiHealth();
     void initializeWorkspace();
     const stopListeningForDeepLinks = window.workingMemory.onOpenResource(
-      (kind, identifier) => void openResource(kind, identifier),
+      (kind, identifier) => {
+        if (instanceConnection?.authenticated) void openResource(kind, identifier);
+        else pendingResource = { kind, identifier };
+      },
     );
+    const stopListeningForAuthentication = window.workingMemory.onInstanceAuthenticationChanged(event => {
+      if (event.mcpUrl !== selectedEnvironment?.mcpUrl || event.authenticated) return;
+      if (instanceConnection) instanceConnection = { ...instanceConnection, authenticated: false };
+      pendingAccessRequests = 0;
+    });
     const stopListeningForChanges = window.workingMemory.onDocumentChanges(handleDocumentChanges);
-    const backendHealthPoll = window.setInterval(() => void refreshBackendHealth(), 30_000);
+    const backendHealthPoll = window.setInterval(() => {
+      void refreshBackendHealth();
+      if (instanceConnection?.authenticated) {
+        void refreshInstanceConnection();
+        void refreshFeatures();
+        void refreshAccessRequests();
+      }
+    }, 30_000);
     return () => {
       stopListeningForDeepLinks();
+      stopListeningForAuthentication();
       stopListeningForChanges();
       documentChanges.clear();
       window.clearInterval(backendHealthPoll);
@@ -1103,9 +1148,59 @@
   async function initializeWorkspace(): Promise<void> {
     // Discovery waits for the launch-time data-tier start, which may change the selected environment.
     await discoverEnvironments(true);
+    if (!await refreshInstanceConnection()) return;
+    await loadAuthenticatedWorkspace();
+  }
+
+  async function refreshInstanceConnection(): Promise<boolean> {
+    const generation = environmentGeneration, mcpUrl = selectedEnvironment?.mcpUrl;
+    instanceConnectionError = '';
+    if (!mcpUrl) { instanceConnection = null; return false; }
+    try {
+      const state = await window.workingMemory.getInstanceIdentity();
+      if (generation !== environmentGeneration || selectedEnvironment?.mcpUrl !== mcpUrl) return false;
+      instanceConnection = state;
+      return state.authenticated;
+    } catch (cause) {
+      if (generation === environmentGeneration) {
+        instanceConnection = null;
+        instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+      }
+      return false;
+    }
+  }
+
+  async function refreshAccessRequests(): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      const snapshot = await window.workingMemory.getInstanceAccess();
+      if (generation === environmentGeneration && instanceConnection?.authenticated) {
+        pendingAccessRequests = snapshot.requests.filter(request => request.state === 'pending').length;
+      }
+    } catch (cause) {
+      if (generation === environmentGeneration && instanceConnection?.authenticated) {
+        instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+      }
+    }
+  }
+
+  async function connectedToInstance(): Promise<void> {
+    if (!await refreshInstanceConnection()) return;
+    managingInstancesBeforeSignIn = false;
+    await documentSaves.flushAll();
+    await loadAuthenticatedWorkspace();
+    if (pendingResource) {
+      const resource = pendingResource;
+      pendingResource = null;
+      await openResource(resource.kind, resource.identifier);
+    }
+  }
+
+  async function loadAuthenticatedWorkspace(): Promise<void> {
     restoreUnreadResponses();
-    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps()]);
-    await restoreDocumentTabs();
+    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps(), refreshFeatures()]);
+    await refreshAccessRequests();
+    if (!documentTabsPersistenceReady) await restoreDocumentTabs();
     await startDocumentChanges();
   }
 
@@ -1122,10 +1217,23 @@
     }
     const restored: DocumentVM[] = [];
     const restoreErrors: string[] = [];
+    const hostTaskNames = new Map<string, string>();
+    if (instanceFeatures.hostTasks && persisted.tabs.some(reference => reference.kind === 'host-task')) {
+      try {
+        const state = await window.workingMemory.getHostScripts();
+        for (const task of state.snapshot?.tasks ?? []) hostTaskNames.set(task.id, task.name);
+      } catch (error) {
+        restoreErrors.push(`Host task details: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     for (const reference of persisted.tabs) {
       try {
         let document: DocumentVM | null = null;
-        if (reference.kind === 'container-app') {
+        if (reference.kind === 'host-task' && instanceFeatures.hostTasks) {
+          document = hostTaskDocument({ id: reference.identifier, name: hostTaskNames.get(reference.identifier) ?? 'Host task' });
+        } else if (reference.kind === 'host-task-create' && reference.identifier === newHostTaskDocument().id && instanceFeatures.hostTasks) {
+          document = newHostTaskDocument();
+        } else if (reference.kind === 'container-app') {
           const app = containerApps.find((candidate) => candidate.id === reference.identifier);
           if (app) document = containerAppDocument(app);
         } else if (RESTORABLE_DOCUMENT_KINDS.has(reference.kind as DesktopResourceKind)) {
@@ -1161,7 +1269,9 @@
     const selectedAppId = containerAppIdForDocument(
       documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null,
     );
-    activeHeaderTab = selectedAppId ? 'container-apps' : 'log';
+    const selectedKind = documents.find(document => documentTabKey(document) === selectedDocumentKey)?.kind;
+    activeHeaderTab = selectedAppId ? 'container-apps'
+      : selectedKind === 'host-task' || selectedKind === 'host-task-create' ? 'host-tasks' : 'log';
     focusedHeaderTab = activeHeaderTab;
     restoreDocumentSaveStatus(selectedDocumentKey);
     if (restoreErrors.length) {
@@ -1268,6 +1378,13 @@
   }
 
   function resetEnvironmentState(): void {
+    instanceConnection = null;
+    instanceConnectionError = '';
+    pendingAccessRequests = 0;
+    pendingResource = null;
+    hostTaskArguments = {};
+    instanceFeatures = { hostTasks: false };
+    featuresError = '';
     const reset = emptyEnvironmentBoundRendererState();
     documentSaves.clear();
     documentChanges.clear();
@@ -1318,18 +1435,20 @@
     environmentLoading = true;
     environmentError = '';
     try {
-      await documentSaves.flushAll();
+      if (instanceConnection?.authenticated) await documentSaves.flushAll();
       documentTabsPersistenceReady = false;
       environmentGeneration += 1;
       historyRequestGeneration = null;
       resetEnvironmentState();
       const state = await window.workingMemory.switchEnvironment(mcpUrl);
       applyEnvironmentState(state);
+      if (!await refreshInstanceConnection()) return;
       restoreUnreadResponses();
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
       await refreshAgentMessages();
       await loadContainerApps();
+      await refreshFeatures();
       await restoreDocumentTabs();
       await refreshBackendHealth();
       await startDocumentChanges();
@@ -1556,12 +1675,67 @@
 
   let settingsTab = $state<SettingsTab>('models');
 
+  function applyFeatures(features: InstanceFeatures): void {
+    instanceFeatures = features;
+    featuresError = '';
+    if (!features.hostTasks) {
+      let next = documentTabsState();
+      for (const document of documents.filter(document => ['host-tasks', 'host-task', 'host-task-create'].includes(document.kind))) {
+        next = closeDocumentTab(next, documentTabKey(document));
+      }
+      documents = next.tabs;
+      selectedDocumentKey = next.selectedKey;
+      previewDocumentKey = next.previewKey ?? null;
+      if (activeHeaderTab === 'host-tasks') activeHeaderTab = 'log';
+      if (focusedHeaderTab === 'host-tasks') focusedHeaderTab = activeHeaderTab;
+    }
+  }
+
+  async function refreshFeatures(): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      const features = await window.workingMemory.getInstanceFeatures();
+      if (generation !== environmentGeneration) return;
+      applyFeatures(features);
+      featuresError = '';
+    } catch (cause) {
+      if (generation === environmentGeneration) featuresError = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
+  function openHostTask(task?: ScriptTask): void {
+    if (!instanceFeatures.hostTasks) {
+      documentError = 'Host tasks is turned off. Enable it in Settings > Features.';
+      return;
+    }
+    documentOpens.invalidate();
+    const next = openDocumentTab(documentTabsState(), task ? hostTaskDocument(task) : newHostTaskDocument(), false);
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
+    activateHeaderTab('host-tasks');
+    restoreDocumentSaveStatus(next.selectedKey);
+  }
+
+  function hostTaskRegistered(task: ScriptTask): void {
+    const next = closeDocumentTab(documentTabsState(), documentTabKey(newHostTaskDocument()));
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
+    openHostTask(task);
+  }
+
+  function updateHostTaskTitle(task: ScriptTask): void {
+    const next = updateDocumentTab(documentTabsState(), documentTabKey(hostTaskDocument(task)), hostTaskDocument(task));
+    documents = next.tabs;
+  }
+
   function openSettings(tab?: SettingsTab): void {
     documentOpens.invalidate();
     if (tab) settingsTab = tab;
     const next = openDocumentTab(
       documentTabsState(),
-      { kind: 'settings', id: 'desktop-settings', slug: null, title: 'Settings' },
+      { kind: 'settings', id: 'desktop-settings',  title: 'Settings' },
     );
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
@@ -1623,7 +1797,7 @@
   async function startTopicCreation(
     workstream: string,
     workstreamTitle: string,
-    parent?: { slug: string; title: string },
+    parent?: { id: string; title: string },
     newWorkstream = false,
   ): Promise<void> {
     documentOpens.invalidate();
@@ -1636,17 +1810,17 @@
       const draft: TopicCreateDraftVM = {
         kind: 'topic-create',
         id: crypto.randomUUID(),
-        slug: null,
+
         title: '',
         body: '',
-        topicType: topicTypes.find((topicType) => topicType.slug === 'topic')?.slug
-          ?? topicTypes[0]?.slug
+        topicType: topicTypes.find((topicType) => topicType.label === 'Topic')?.id
+          ?? topicTypes[0]?.id
           ?? '',
         topicTypes,
         workstream,
         workstreamTitle,
         ...(newWorkstream ? { newWorkstreamTitle: '' } : {}),
-        parent: parent?.slug ?? null,
+        parent: parent?.id ?? null,
         parentTitle: parent?.title ?? null,
       };
       const next = openDocumentTab(documentTabsState(), draft, false);
@@ -1665,7 +1839,7 @@
     const backlog: TopicBacklogVM = {
       kind: 'topic-backlog',
       id: 'open-topic-backlog',
-      slug: null,
+
       title: 'Open topic backlog',
       topics: activePanel?.topicBacklog ?? [],
     };
@@ -1752,7 +1926,7 @@
         request.targetWorkstream,
         'workingMemory.topic.transfer',
         [{
-          topicSlug: request.slug,
+          topicId: request.id,
           sourceWorkstream: request.sourceWorkstream,
           move: request.move,
         }],
@@ -1792,7 +1966,7 @@
   }
 
   async function reorderActiveWorkstream(
-    slug: string,
+    id: string,
     targetSection: WorkstreamSection,
     targetIndex: number,
   ): Promise<void> {
@@ -1801,10 +1975,10 @@
     for (const item of activePanel.items) {
       if (item.kind !== 'workstream-section') continue;
       order[item.section] = item.workstreams
-        .map((workstream) => workstream.slug ?? '')
+        .map((workstream) => workstream.id ?? '')
         .filter(Boolean);
     }
-    const updates = planWorkstreamReorder(order, slug, targetSection, targetIndex);
+    const updates = planWorkstreamReorder(order, id, targetSection, targetIndex);
     if (updates.length === 0) return;
     activeLoading = true;
     activeError = '';
@@ -1823,19 +1997,19 @@
     void mutateFromRail(workstream, () => window.workingMemory.togglePin(workstream, topic));
   }
 
-  async function reparentActiveTopic(slug: string, parent: string | null): Promise<void> {
+  async function reparentActiveTopic(id: string, parent: string | null): Promise<void> {
     activeError = '';
     try {
-      await window.workingMemory.reparentTopic(slug, parent);
+      await window.workingMemory.reparentTopic(id, parent);
     } catch (error) {
       activeError = error instanceof Error ? error.message : String(error);
     } finally {
       await refreshActive();
       const refreshed = await Promise.allSettled(documents
-        .filter((document) => document.kind === 'topic' && document.slug)
+        .filter((document) => document.kind === 'topic' && document.id)
         .map(async (document) => ({
           key: documentTabKey(document),
-          document: await window.workingMemory.openResource('topic', document.slug!),
+          document: await window.workingMemory.openResource('topic', document.id!),
         })));
       let state = documentTabsState();
       for (const result of refreshed) {
@@ -1851,13 +2025,13 @@
   }
 
   function saveWorkstream(document: DocumentVM | null, patch: { title?: string; status?: string }): void {
-    if (document?.kind !== 'workstream' || !document.slug) return;
+    if (document?.kind !== 'workstream' || !document.id) return;
     promoteDocument(documentTabKey(document));
     documentSaves.schedule(documentTabKey(document), patch);
   }
 
   function saveTopic(document: DocumentVM | null, patch: TopicPatch): void {
-    if (document?.kind !== 'topic' || !document.slug) return;
+    if (document?.kind !== 'topic' || !document.id) return;
     promoteDocument(documentTabKey(document));
     documentSaves.schedule(documentTabKey(document), patch);
   }
@@ -1906,14 +2080,14 @@
 
   function togglePin(topic: string): void {
     const document = activeDocument;
-    if (document?.kind !== 'workstream' || !document.slug) return;
-    void mutate(() => window.workingMemory.togglePin(document.slug!, topic));
+    if (document?.kind !== 'workstream' || !document.id) return;
+    void mutate(() => window.workingMemory.togglePin(document.id!, topic));
   }
 
   function invokeAction(command: string, args: unknown[]): void {
     const document = activeDocument;
-    if (document?.kind !== 'workstream' || !document.slug) return;
-    void mutate(() => window.workingMemory.invokeAction(document.slug!, command, args));
+    if (document?.kind !== 'workstream' || !document.id) return;
+    void mutate(() => window.workingMemory.invokeAction(document.id!, command, args));
   }
 
   function openRoute(route: string): void {
@@ -1962,7 +2136,8 @@
     if (documents.some((document) => documentTabKey(document) === key)) {
       documentOpens.invalidate();
       selectedDocumentKey = key;
-      activateHeaderTab('log');
+      const kind = documents.find(document => documentTabKey(document) === key)?.kind;
+      activateHeaderTab(kind === 'host-task' || kind === 'host-task-create' ? 'host-tasks' : 'log');
       restoreDocumentSaveStatus(key);
     }
   }
@@ -2134,6 +2309,25 @@
   }}
 />
 
+{#if !instanceConnection?.authenticated}
+  {#if managingInstancesBeforeSignIn}
+    <main class="connection-instances" style="padding: 24px; height: 100vh; overflow: auto;">
+      <button onclick={() => { managingInstancesBeforeSignIn = false; void refreshInstanceConnection(); }}>Back to sign-in</button>
+      <h1>Manage instances</h1>
+      <InstancesView selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
+        onMakeCurrent={async url => { managingInstancesBeforeSignIn = false; await switchEnvironment(url); }}
+        onInstancesChanged={async () => { await discoverEnvironments(); await refreshInstanceConnection(); }} />
+    </main>
+  {:else}
+    {#key selectedEnvironment?.mcpUrl}
+      <InstanceConnection connection={instanceConnection} error={instanceConnectionError || environmentError}
+        {environments} selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
+        onSwitch={switchEnvironment} onConnected={connectedToInstance}
+        onRetry={async () => { await discoverEnvironments(); if (await refreshInstanceConnection()) await loadAuthenticatedWorkspace(); }}
+        onManage={() => { managingInstancesBeforeSignIn = true; }} />
+    {/key}
+  {/if}
+{:else}
 <div
   class="shell"
   class:active-collapsed={activeRailCollapsed}
@@ -2170,12 +2364,12 @@
           onAction={runActiveAction}
           onReorder={reorderActiveWorkstream}
           onTransferTopic={transferActiveTopic}
-          onReparentTopic={(slug, parent) => void reparentActiveTopic(slug, parent)}
+          onReparentTopic={(id, parent) => void reparentActiveTopic(id, parent)}
           onAddTopic={(workstream, parent) => {
             const card = activePanel?.items
               .filter((item) => item.kind === 'workstream-section')
               .flatMap((section) => section.workstreams)
-              .find((candidate) => candidate.slug === workstream);
+              .find((candidate) => candidate.id === workstream);
             void startTopicCreation(workstream, card?.label ?? workstream, parent);
           }}
           onAddWorkstream={() => void startTopicCreation('', '', undefined, true)}
@@ -2219,7 +2413,7 @@
           {#each documents as document (documentTabKey(document))}
             {@const key = documentTabKey(document)}
             {@const tabApp = document.kind === 'container-app'
-              ? containerApps.find((app) => app.id === (document.slug ?? document.id))
+              ? containerApps.find((app) => app.id === (document.id))
               : undefined}
             {@const tabAppStatus = tabApp ? containerAppStatuses[tabApp.id] : undefined}
             <div
@@ -2234,7 +2428,7 @@
                 class="document-tab-select"
                 role="tab"
                 aria-selected={key === selectedDocumentKey}
-                title={key === previewDocumentKey ? `${document.title} — Preview (double-click to keep open)` : document.title}
+                title={documentTabTooltip(document, key === previewDocumentKey)}
                 onclick={() => selectDocument(key)}
                 ondblclick={() => promoteDocument(key)}
               >
@@ -2249,7 +2443,7 @@
                   ></span>
                 {/if}
                 <span class="document-tab-label">{document.kind === 'topic-create' && !document.title ? (document.newWorkstreamTitle !== undefined ? 'New Workstream' : 'New Topic') : document.title}</span>
-                {#if unreadResponseCount(unreadResponses, document.kind, document.slug, 'id' in document ? document.id : undefined) > 0}
+                {#if unreadResponseCount(unreadResponses, document.kind, document.id, 'id' in document ? document.id : undefined) > 0}
                   <span class="tab-unread-dot" title="Unread response" aria-label="Unread response"></span>
                 {/if}
               </button>
@@ -2360,7 +2554,17 @@
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
         {#key selectedDocumentKey}
-        {#if activeDocument?.kind === 'settings'}
+        {#if (activeDocument?.kind === 'host-task' || activeDocument?.kind === 'host-task-create') && instanceFeatures.hostTasks}
+          {#key selectedEnvironment?.mcpUrl}
+            <HostScripts taskId={activeDocument.id ?? ''} creating={activeDocument.kind === 'host-task-create'}
+              initialArgumentsJson={hostTaskArguments[activeDocument.id ?? ''] ?? '{}'}
+              onArgumentsChanged={(value) => {
+                if (activeDocument?.kind === 'host-task' && activeDocument.id) hostTaskArguments[activeDocument.id] = value;
+              }}
+              onRegistered={hostTaskRegistered} onTaskRead={updateHostTaskTitle}
+              onTasksChanged={() => { hostTasksRevision++; }} />
+          {/key}
+        {:else if activeDocument?.kind === 'settings'}
           <SettingsView
             profiles={modelProfiles}
             routing={modelRouting}
@@ -2378,6 +2582,7 @@
             selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
             onMakeCurrent={makeInstanceCurrent}
             onInstancesChanged={() => discoverEnvironments()}
+            onFeaturesChanged={applyFeatures}
           />
         {:else if activeDocument?.kind === 'container-app' && selectedContainerApp}
           <ContainerAppDetail
@@ -2393,22 +2598,21 @@
             ws={activeDocument}
             {saveState}
             onSave={saveWorkstream.bind(null, activeDocument)}
-            onOpenTopic={(slug) => void openResource('topic', slug)}
+            onOpenTopic={(id) => void openResource('topic', id)}
             onAddTopic={(parent) => {
               const workstream = activeDocument as WorkstreamVM;
-              if (workstream.slug) void startTopicCreation(workstream.slug, workstream.title, parent);
+              if (workstream.id) void startTopicCreation(workstream.id, workstream.title, parent);
             }}
             onInvoke={invokeAction}
             onTogglePin={togglePin}
             onSetAgentMessageStatus={setAgentMessageStatus}
             onRecordDecision={recordAgentMessageDecision}
+            attachmentBaseUrl={selectedAttachmentBaseUrl()}
           />
         {:else if activeDocument?.kind === 'topic-create'}
           <TopicCreateView
             draft={activeDocument as TopicCreateDraftVM}
-            attachmentBaseUrl={selectedEnvironment?.mcpUrl
-              ? new URL(selectedEnvironment.mcpUrl).origin
-              : ''}
+            attachmentBaseUrl={selectedAttachmentBaseUrl()}
             onAttachImages={attachImages}
             onCreate={createTopic.bind(null, activeDocument as TopicCreateDraftVM)}
           />
@@ -2416,7 +2620,7 @@
           <TopicBacklogView
             {unreadResponses}
             backlog={activeDocument}
-            onOpenTopic={(slug) => void openResource('topic', slug)}
+            onOpenTopic={(id) => void openResource('topic', id)}
           />
         {:else if activeDocument?.kind === 'topic'}
           <TopicView
@@ -2425,13 +2629,11 @@
             onShare={(topic) => { sharingTopic = topic; }}
             {saveState}
             onSaveTopic={saveTopic.bind(null, activeDocument)}
-            onOpenTopic={(slug) => void openResource('topic', slug)}
-            onOpenWorkstream={(slug) => void openResource('workstream', slug)}
+            onOpenTopic={(id) => void openResource('topic', id)}
+            onOpenWorkstream={(id) => void openResource('workstream', id)}
             onSetAgentMessageStatus={setAgentMessageStatus}
             onRecordDecision={recordAgentMessageDecision}
-            attachmentBaseUrl={selectedEnvironment?.mcpUrl
-              ? new URL(selectedEnvironment.mcpUrl).origin
-              : ''}
+            attachmentBaseUrl={selectedAttachmentBaseUrl()}
             onAttachImages={attachImages}
             onOpenLink={openLink}
           />
@@ -2460,6 +2662,7 @@
         {documents}
         {agentMessages}
         document={activeDocument}
+        attachmentBaseUrl={selectedAttachmentBaseUrl()}
         onSetAgentMessageStatus={setAgentMessageStatus}
         onRecordDecision={recordAgentMessageDecision}
         context={scopedContext}
@@ -2531,7 +2734,7 @@
               {#each composerResources as resource, index (`${resource.appId}:${resource.resourceKind}:${resource.resourceId}`)}
                 <article class="composer-resource">
                   <span class="codicon codicon-link" aria-hidden="true"></span>
-                  <a href={resource.deepLink} title={containerAppResourceLabel(resource)}>
+                  <a href={resource.deepLink} title={resource.deepLink}>
                     {containerAppResourceLabel(resource)}
                   </a>
                   <small>@{resource.appId} · {resource.resourceKind}</small>
@@ -2714,6 +2917,18 @@
             onfocus={() => (focusedHeaderTab = 'container-apps')}
             onkeydown={(event) => handleHeaderTabKeydown(event, 'container-apps')}
           >Container Apps</button>
+          {#if instanceFeatures.hostTasks}
+            <button
+              id="desktop-tab-host-tasks"
+              role="tab"
+              aria-selected={activeHeaderTab === 'host-tasks'}
+              aria-controls="desktop-panel-host-tasks"
+              tabindex={focusedHeaderTab === 'host-tasks' ? 0 : -1}
+              onclick={() => activateHeaderTab('host-tasks')}
+              onfocus={() => (focusedHeaderTab = 'host-tasks')}
+              onkeydown={(event) => handleHeaderTabKeydown(event, 'host-tasks')}
+            >Host Tasks</button>
+          {/if}
         </div>
         <button
           class="icon-button"
@@ -2754,6 +2969,7 @@
       {/if}
       <MessageTimeline runs={chatRuns} {agentMessages} attachRunIds
         {documents}
+        attachmentBaseUrl={selectedAttachmentBaseUrl()}
         {humanName}
         {unreadResponses}
         onViewed={markResponseViewed}
@@ -2863,6 +3079,16 @@
           <p class="container-panel-error" role="alert">{containerAppError}</p>
         {/if}
       </div>
+      {#if instanceFeatures.hostTasks}
+        <div id="desktop-panel-host-tasks" class="container-apps-panel"
+          role="tabpanel" aria-labelledby="desktop-tab-host-tasks"
+          hidden={activeHeaderTab !== 'host-tasks'} inert={activeHeaderTab !== 'host-tasks'}>
+          {#key selectedEnvironment?.mcpUrl}
+            <HostTasks selectedId={activeDocument?.kind === 'host-task' ? activeDocument.id ?? '' : ''}
+              revision={hostTasksRevision} onSelect={openHostTask} onAdd={() => openHostTask()} />
+          {/key}
+        </div>
+      {/if}
     {/if}
   </aside>
 
@@ -2881,6 +3107,13 @@
       <span class="status-dot"></span>
       AI: {openAiHealth.state}
     </span>
-    <span class="desktop-build-status">Built {desktopBuildLabel}</span>
+    {#if featuresError}<span role="alert">Features: {featuresError}</span>{/if}
+    {#if instanceConnectionError}<span role="alert">Connection: {instanceConnectionError}</span>{/if}
+    {#if pendingAccessRequests}
+      <button onclick={() => openSettings('access')}>{pendingAccessRequests} access request{pendingAccessRequests === 1 ? '' : 's'} - Review</button>
+    {/if}
+    {#if buildInfoError}<span role="alert">Build information: {buildInfoError}</span>{/if}
+    <span class="desktop-build-status">{desktopBuildLabel}</span>
   </footer>
 </div>
+{/if}

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, safeStorage, screen, shell } from 'electron';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -48,6 +48,7 @@ import {
   parseLoopbackMcpUrl,
   readPersistedEnvironment,
   writePersistedEnvironment,
+  probeInstanceIdentity,
 } from './environments';
 import { parseModelTurn } from './modelTools';
 import { AppMcpService, parseAppResourceContract } from './appMcpService';
@@ -87,6 +88,14 @@ import {
 import { DesktopLinkBridge } from './linkBridge';
 import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
+import { HostTaskCredentialVault } from './hostTaskBroker';
+import { registerHostTaskIpc } from './hostTaskIpc';
+import { registerHostScriptIpc } from './hostScriptIpc';
+import { DesktopInstanceIdentity } from './instanceIdentity';
+import { registerInstanceIdentityIpc } from './instanceIdentityIpc';
+import { serveInstanceAttachment } from './instanceAttachments';
+import { hostTaskOrigin } from './hostTaskBroker';
+import { loadHostTaskAdminCredential } from '../../../control-plane/src/hostTasks';
 import { LEGACY_USER_DATA_NAME, migrateLegacyUserData } from './userDataMigration';
 import { DesktopUpdater } from './desktopUpdater';
 import {
@@ -105,6 +114,7 @@ import {
   DataTierManager,
   DOCKER_DESKTOP_URL,
   readManagedInstances,
+  dataTierHostDirectory,
   type DataTierInstancesSnapshot,
 } from './dataTier';
 
@@ -132,6 +142,23 @@ let registeredContainerApps: ContainerClaim[] = [];
 let dataTier: DataTierManager | null = null;
 let dataTierLaunch: Promise<void> = Promise.resolve();
 let documentChangeController: AbortController | undefined;
+let instanceVault: HostTaskCredentialVault | null = null;
+let stopHostScripts: (() => void) | undefined;
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'working-memory-attachment',
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+}]);
+
+function instanceUnauthorized(mcpUrl: string, rejectedToken?: string | null): void {
+  if (rejectedToken !== undefined && instanceVault?.session(hostTaskOrigin(mcpUrl)) !== rejectedToken) return;
+  instanceVault?.clearSession(hostTaskOrigin(mcpUrl));
+  if (environmentManager.currentEnvironment?.mcpUrl === mcpUrl) {
+    documentChangeController?.abort();
+    stopHostScripts?.();
+  }
+  mainWindow?.webContents.send('instance:authentication-changed', { mcpUrl, authenticated: false });
+}
 
 function startDocumentChanges(): void {
   documentChangeController?.abort();
@@ -171,7 +198,12 @@ function startDocumentChanges(): void {
 }
 
 const environmentManager = new DesktopEnvironmentManager<ControlPlaneClient>({
-  createClient: (mcpUrl) => new ControlPlaneClient({ resolveUrl: () => mcpUrl }),
+  createClient: (mcpUrl) => new ControlPlaneClient({
+    resolveUrl: () => mcpUrl,
+    getToken: url => instanceVault?.session(hostTaskOrigin(url)) ?? null,
+    onUnauthorized: instanceUnauthorized,
+  }),
+  probe: probeInstanceIdentity,
   readPersistedSelection: () => readPersistedEnvironment(environmentFile),
   writePersistedSelection: (mcpUrl) => writePersistedEnvironment(environmentFile, mcpUrl),
   managedInstances: () => (app.isReady() ? readManagedInstances(dataTierStateDirectory()) : []),
@@ -456,7 +488,7 @@ async function openWorkstream(query: string): Promise<ChatResult> {
   return {
     message: `Opened ${workstream.title}.`,
     status: 'succeeded',
-    workstream: (await loadWorkstreamViewModel(controlPlane(), workstream.slug ?? workstream.id)) ?? undefined,
+    workstream: (await loadWorkstreamViewModel(controlPlane(), workstream.id)) ?? undefined,
   };
 }
 
@@ -475,7 +507,7 @@ async function loadResource(
     const controlPlaneKind = kind === 'alert' || kind === 'agent-message' ? 'AgentMessage' : kind === 'topic-type' ? 'TopicType' : undefined;
     let result = await controlPlane().getDocument({ id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) });
     if (result.available && !result.document && controlPlaneKind) {
-      result = await controlPlane().getDocument({ slug: identifier, kind: controlPlaneKind });
+      result = await controlPlane().getDocument({ id: identifier, kind: controlPlaneKind });
     }
     if (!result.available) throw new Error(result.error ?? 'Control plane is unavailable.');
     if (result.document) return toGenericDocumentViewModel(result.document);
@@ -537,10 +569,10 @@ async function prepareResourceDrag(
   let result = await controlPlane().getDocument(
     kind === 'document' || kind === 'alert' || kind === 'agent-message'
       ? { id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) }
-      : { slug: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) },
+      : { id: identifier, ...(controlPlaneKind ? { kind: controlPlaneKind } : {}) },
   );
   if (result.available && !result.document && (kind === 'alert' || kind === 'agent-message')) {
-    result = await controlPlane().getDocument({ slug: identifier, kind: 'AgentMessage' });
+    result = await controlPlane().getDocument({ id: identifier, kind: 'AgentMessage' });
   }
   if (!result.available) {
     throw new Error(result.error ?? 'Working Memory control plane is unavailable.');
@@ -562,7 +594,7 @@ async function prepareResourceDrag(
 async function invokeAction(workstream: string, command: string, args: unknown[]): Promise<DocumentVM> {
   const action = resolveDesktopAction(command, args, workstream);
   if (action.kind === 'workstream') {
-    await controlPlane().wsUpdate({ slug: action.slug, status: action.section });
+    await controlPlane().wsUpdate({ id: action.id, status: action.section });
   } else if (action.kind === 'topic') {
     if (action.operation === 'attach') await controlPlane().topicAttachWorkstream(action);
     else if (action.operation === 'detach') await controlPlane().topicDetachWorkstream(action);
@@ -690,7 +722,7 @@ async function callConfiguredModel(
     images: await loadPromptImages(
       images,
       environment ? new URL(environment.mcpUrl).origin : '',
-      fetch,
+      controlPlane().fetch.bind(controlPlane()),
       (data) => decodeQrPayloads(nativeImage.createFromBuffer(Buffer.from(data))),
     ),
     ...(appTools ? { appTools } : {}),
@@ -719,7 +751,7 @@ async function autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAu
 }
 
 async function requireContainerAppId(rawId: string): Promise<string> {
-  return (await liveClaim(rawId)).slug;
+  return (await liveClaim(rawId)).id;
 }
 
 async function readContainerAppDefinitions(): Promise<ReturnType<typeof containerAppDefinitions>> {
@@ -749,11 +781,11 @@ async function containerAppClaim(
   client: ControlPlaneClient,
   id: string,
 ): Promise<ContainerClaim> {
-  return containerAppRegistration(id, await client.containerClaimRead({ slug: id }));
+  return containerAppRegistration(id, await client.containerClaimRead({ id: id }));
 }
 
 async function currentClaim(id: string): Promise<ContainerClaim | undefined> {
-  const [claim] = await controlPlane().containerClaimRead({ slug: id });
+  const [claim] = await controlPlane().containerClaimRead({ id: id });
   return claim?.runtime ? claim : undefined;
 }
 
@@ -803,13 +835,67 @@ function restartInstalledDesktop(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('feedback:prepare', (_event, slug: string, requestId: string) => {
-    if (!feedbackSender) throw new Error('Feedback is not initialized.');
-    return feedbackSender.prepare(slug, requestId);
+  ipcMain.handle('desktop:build-info', () => ({
+    version: app.getVersion(), development: isLocalBuild() || !app.isPackaged,
+  }));
+  const hostTaskVault = new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets'));
+  instanceVault = hostTaskVault;
+  const bootstrapFile = (mcpUrl: string): string | null => {
+    const url = new URL(mcpUrl);
+    const port = Number(url.port);
+    if (url.origin !== `http://127.0.0.1:${port}` || url.pathname !== '/mcp'
+      || (port !== 7717 && !readManagedInstances(dataTierStateDirectory()).some(instance => instance.port === port))) return null;
+    return join(dataTierHostDirectory({ platform: process.platform, env: process.env, homedir: app.getPath('home') }, port), 'host-task-admin.secret');
+  };
+  const identity = new DesktopInstanceIdentity(hostTaskVault, async (mcpUrl) => {
+    const file = bootstrapFile(mcpUrl);
+    const port = Number(new URL(mcpUrl).port);
+    if (dataTier?.instances.some(instance => instance.port === port)) return dataTier.bootstrapCredential(port);
+    if (!file) throw new Error('Initial password setup requires a locally managed instance.');
+    const credential = loadHostTaskAdminCredential({ WM_HOST_TASK_ADMIN_TOKEN_FILE: file });
+    if (!credential) throw new Error('Local instance owner setup is unavailable.');
+    return credential;
+  }, (mcpUrl) => {
+    const file = bootstrapFile(mcpUrl);
+    return !!dataTier?.instances.some(instance => instance.port === Number(new URL(mcpUrl).port))
+      || (process.platform !== 'win32' && !!file && existsSync(file));
+  }, fetch, instanceUnauthorized);
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href;
+  const onSessionChanged = async (mcpUrl: string, authenticated: boolean) => {
+    documentChangeController?.abort();
+    if (!authenticated) stopHostScripts?.();
+    await environmentManager.resetClient();
+    mainWindow?.webContents.send('instance:authentication-changed', { mcpUrl, authenticated });
+  };
+  registerInstanceIdentityIpc({
+    ipc: ipcMain, dialog, getWindow: () => mainWindow,
+    getEnvironment: () => environmentManager.currentEnvironment,
+    rendererUrl, vault: hostTaskVault, identity, platform: process.platform,
+    onSessionChanged,
   });
-  ipcMain.handle('feedback:send', (_event, slug: string, requestId: string, serverId?: string) => {
+  stopHostScripts = registerHostScriptIpc({
+    ipc: ipcMain, dialog, getWindow: () => mainWindow,
+    getEnvironment: () => environmentManager.currentEnvironment,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
+    vault: hostTaskVault, identity, onSessionChanged,
+    platform: process.platform, directory: join(app.getPath('userData'), 'host-scripts'),
+  });
+  registerHostTaskIpc({
+    ipc: ipcMain,
+    dialog,
+    getWindow: () => mainWindow,
+    getEnvironment: () => environmentManager.currentEnvironment,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
+    vault: hostTaskVault,
+    platform: process.platform,
+  });
+  ipcMain.handle('feedback:prepare', (_event, id: string, requestId: string) => {
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
-    return feedbackSender.send(slug, requestId, serverId);
+    return feedbackSender.prepare(id, requestId);
+  });
+  ipcMain.handle('feedback:send', (_event, id: string, requestId: string, serverId?: string) => {
+    if (!feedbackSender) throw new Error('Feedback is not initialized.');
+    return feedbackSender.send(id, requestId, serverId);
   });
   ipcMain.handle('documents:watch', () => startDocumentChanges());
   ipcMain.on('app:restart', () => {
@@ -1023,25 +1109,25 @@ function registerIpc(): void {
     const title = rawTitle.trim();
     if (!title || title.length > 120) throw new Error('Enter a workstream title of 1 to 120 characters.');
     const created = await controlPlane().wsCreate({ title, status: 'progress' });
-    if (!created.slug) throw new Error('The created workstream did not return a slug.');
-    return { slug: created.slug, title: created.title };
+    if (!created.id) throw new Error('The created workstream did not return a id.');
+    return { id: created.id, title: created.title };
   });
   ipcMain.handle('workstream:save', async (_event, identifier: string, patch: { title?: string; status?: string }) => {
     const current = await loadWorkstreamViewModel(controlPlane(), identifier);
-    if (!current?.slug) throw new Error('This workstream cannot be edited.');
-    await controlPlane().wsUpdate({ slug: current.slug, ...patch });
-    return loadResource('workstream', current.slug);
+    if (!current?.id) throw new Error('This workstream cannot be edited.');
+    await controlPlane().wsUpdate({ id: current.id, ...patch });
+    return loadResource('workstream', current.id);
   });
   ipcMain.handle('topic:save', async (_event, identifier: string, patch: TopicPatch) => {
     const current = await loadTopicViewModel(controlPlane(), identifier);
-    if (!current?.slug) throw new Error('This topic cannot be edited.');
-    await controlPlane().topicUpdate({ slug: current.slug, ...patch });
-    return loadResource('topic', current.slug);
+    if (!current?.id) throw new Error('This topic cannot be edited.');
+    await controlPlane().topicUpdate({ id: current.id, ...patch });
+    return loadResource('topic', current.id);
   });
   ipcMain.handle('topic:list-types', async () => (await controlPlane().topicTypeRead())
-    .filter((topicType) => topicType.slug)
+    .filter((topicType) => topicType.id)
     .map((topicType) => ({
-      slug: topicType.slug,
+      id: topicType.id,
       label: topicType.label,
       icon: topicType.icon,
       description: topicType.description,
@@ -1066,10 +1152,10 @@ function registerIpc(): void {
       parents: input.parent ? [input.parent] : [],
       workstreams: [workstream],
     });
-    return loadResource('topic', created.slug ?? created.id);
+    return loadResource('topic', created.id);
   });
-  ipcMain.handle('topic:reparent', async (_event, slug: string, parent: string | null) => {
-    await controlPlane().topicUpdate({ slug, parents: parent ? [parent] : [] });
+  ipcMain.handle('topic:reparent', async (_event, id: string, parent: string | null) => {
+    await controlPlane().topicUpdate({ id, parents: parent ? [parent] : [] });
   });
   ipcMain.handle('attachment:upload', async (_event, file: {
     name: string;
@@ -1079,7 +1165,7 @@ function registerIpc(): void {
     const environment = environmentManager.currentEnvironment;
     if (!environment) throw new Error('No healthy Working Memory environment is selected.');
     const baseUrl = new URL(environment.mcpUrl).origin;
-    const response = await fetch(`${baseUrl}/attachments`, {
+    const response = await controlPlane().fetch(`${baseUrl}/attachments`, {
       method: 'POST',
       headers: {
         'content-type': file.type,
@@ -1099,12 +1185,12 @@ function registerIpc(): void {
     return { id: payload.id, filename: payload.filename, mimeType: payload.mimeType };
   });
   ipcMain.handle('topic:toggle-pin', async (_event, workstream: string, topic: string) => {
-    const [current] = await controlPlane().topicRead({ slug: topic });
-    if (!current?.slug) throw new Error(`Topic "${topic}" was not found.`);
+    const [current] = await controlPlane().topicRead({ id: topic });
+    if (!current?.id) throw new Error(`Topic "${topic}" was not found.`);
     if (current.focusedWorkstreams.includes(workstream)) {
-      await controlPlane().topicClearFocus({ slug: current.slug, workstream });
+      await controlPlane().topicClearFocus({ id: current.id, workstream });
     } else {
-      await controlPlane().topicSetFocus({ slug: current.slug, workstream });
+      await controlPlane().topicSetFocus({ id: current.id, workstream });
     }
     return loadResource('workstream', workstream);
   });
@@ -1435,12 +1521,12 @@ if (!ownsSingleInstanceLock) {
       process.platform,
       join(app.getPath('userData'), 'credential-vault.key'),
     );
-    feedbackSender = new FeedbackSender(async (slug) => {
+    feedbackSender = new FeedbackSender(async (id) => {
       const client = controlPlane();
       const environment = environmentManager.currentEnvironment;
       if (!environment) throw new Error('No Working Memory environment is selected.');
       const sourceUrl = environment.mcpUrl;
-      const [[topic], ping] = await Promise.all([client.topicRead({ slug }), client.callTool('wm-ping', {})]);
+      const [[topic], ping] = await Promise.all([client.topicRead({ id }), client.callTool('wm-ping', {})]);
       if (!topic) throw new Error('The feedback topic was not found.');
       if (!ping.ok) throw new Error(`Unable to read the selected backend version: ${ping.error ?? 'Backend unavailable.'}`);
       const result = ping.result;
@@ -1449,7 +1535,7 @@ if (!ownsSingleInstanceLock) {
         throw new Error('The selected backend did not report its version.');
       }
       return {
-        topic, sourceUrl,
+        topic, sourceUrl, fetcher: client.fetch.bind(client),
         recordReceipt: receipt => recordFeedbackReceipt(client, topic.id, receipt),
         context: { desktop: { version: app.getVersion(), build: __WM_BUILD_TIMESTAMP__ }, backend: { version: result.version } },
       };
@@ -1488,6 +1574,11 @@ if (!ownsSingleInstanceLock) {
       );
     }
     registerIpc();
+    protocol.handle('working-memory-attachment', async request => {
+      const environment = environmentManager.currentEnvironment;
+      if (!environment) return new Response('Select a Working Memory instance first.', { status: 401 });
+      return serveInstanceAttachment(request, environment, controlPlane());
+    });
     await ensureWindow();
     const initialDeepLink = deepLinkFromArgs(process.argv);
     if (initialDeepLink) {

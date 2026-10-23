@@ -7,8 +7,39 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const api: DesktopApi = {
-  prepareFeedback: (slug, requestId) => invoke('feedback:prepare', slug, requestId),
-  sendFeedback: (slug, requestId, serverId) => invoke('feedback:send', slug, requestId, serverId),
+  getDesktopBuildInfo: () => invoke('desktop:build-info'),
+  getInstanceIdentity: () => invoke('instance:identity'),
+  signInInstance: (input) => invoke('instance:sign-in', input),
+  signOutInstance: () => invoke('instance:sign-out'),
+  getInstanceAccess: () => invoke('instance:access'),
+  reviewInstanceAccess: (input) => invoke('instance:review-access', input),
+  onInstanceAuthenticationChanged: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
+    ipcRenderer.on('instance:authentication-changed', handler);
+    return () => ipcRenderer.removeListener('instance:authentication-changed', handler);
+  },
+  getInstanceFeatures: () => invoke('instance:features'),
+  setInstanceFeatures: (input) => invoke('instance:set-features', input),
+  signInHostScripts: (input) => invoke('host-scripts:sign-in', input),
+  setInstancePasswordHint: (hint) => invoke('host-scripts:password-hint', hint),
+  signOutHostScripts: () => invoke('host-scripts:sign-out'),
+  getHostScripts: () => invoke('host-scripts:get'),
+  registerHostScript: (input) => invoke('host-scripts:register', input),
+  grantHostScript: (input) => invoke('host-scripts:grant', input),
+  revokeHostScript: (id, grant) => invoke('host-scripts:revoke', id, grant),
+  testHostScript: (id, parameters) => invoke('host-scripts:test', id, parameters),
+  getHostScriptJob: (id) => invoke('host-scripts:job', id),
+  processNextHostScript: () => invoke('host-scripts:next'),
+  stopHostScript: () => invoke('host-scripts:stop'),
+  getHostTasks: () => invoke('host-tasks:get'),
+  provisionHostTaskAdmin: () => invoke('host-tasks:provision-admin'),
+  exportHostTaskApp: (input) => invoke('host-tasks:export-app', input),
+  revokeHostTaskApp: (id) => invoke('host-tasks:revoke-app', id),
+  approveHostTaskGrant: (input) => invoke('host-tasks:approve', input),
+  revokeHostTaskGrant: (id) => invoke('host-tasks:revoke', id),
+  denyHostTaskJob: (id) => invoke('host-tasks:deny', id),
+  prepareFeedback: (id, requestId) => invoke('feedback:prepare', id, requestId),
+  sendFeedback: (id, requestId, serverId) => invoke('feedback:send', id, requestId, serverId),
   startDocumentChanges: () => invoke('documents:watch'),
   onDocumentChanges: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
@@ -76,7 +107,7 @@ const api: DesktopApi = {
   listTopicTypes: () => invoke('topic:list-types'),
   createWorkstream: (title) => invoke('workstream:create', title),
   createTopic: (input) => invoke('topic:create', input),
-  reparentTopic: (slug, parent) => invoke('topic:reparent', slug, parent),
+  reparentTopic: (id, parent) => invoke('topic:reparent', id, parent),
   uploadAttachment: (file) => invoke('attachment:upload', file),
   togglePin: (workstream, topic) => invoke('topic:toggle-pin', workstream, topic),
   getAgentMessages: (input) => invoke('agent-message:list', input),

@@ -14,7 +14,6 @@
  *
  * The document↔domain mapping (mirrors migrations 008 + 013):
  *   - `id`            ← `metadata.id`   (the control-plane uuid)
- *   - `slug`          ← `metadata.slug` (the registry key, e.g. 'feature')
  *   - `label`         ← `spec.label`
  *   - `icon`          ← `spec.icon`
  *   - `description`   ← `spec.description`
@@ -35,7 +34,6 @@ export const TOPIC_TYPE_KIND = 'TopicType';
  */
 export interface ITopicType {
   id: string;
-  slug: string | null;
   label: string;
   icon: string;
   description: string;
@@ -51,7 +49,6 @@ export interface ITopicType {
  */
 export class TopicType implements ITopicType {
   id: string;
-  slug: string | null;
   label: string;
   icon: string;
   description: string;
@@ -63,7 +60,6 @@ export class TopicType implements ITopicType {
   constructor(env: DocumentEnvelope) {
     const spec = env.spec ?? {};
     this.id = env.metadata.id;
-    this.slug = env.metadata.slug;
     this.label = typeof spec.label === 'string' ? spec.label : '';
     this.icon = typeof spec.icon === 'string' ? spec.icon : '';
     this.description = typeof spec.description === 'string' ? spec.description : '';

@@ -11,7 +11,7 @@
  *
  * Column → field placement (migrations 016 + 017):
  *   - `id`                 → `metadata.id`  (INTEGER PK AUTOINCREMENT — NOT a
- *                             string key, so there is NO `metadata.slug`
+ *                             string key, so identity is `metadata.id`
  *                             mapping; the control-plane assigns its own uuid
  *                             `metadata.id`). The nearest human string key is
  *                             `dedupe_key`, kept in spec below.
@@ -33,7 +33,7 @@
  *                             raised it)
  *
  * Plus a spec-embedded ref (no edges table):
- *   - `topics`             → spec (topic-slug references the alert points at —
+ *   - `topics`             → spec (topic ID references the alert points at —
  *                             an ordinary array field, so `ws-alert-update`
  *                             edits it like any other spec field)
  *
@@ -82,7 +82,7 @@ const alert: KindModule = {
         dedupe_key: z.string().optional(),
         // `created_by` — NOT NULL DEFAULT 'system' (migration 016).
         created_by: z.string().default('system'),
-        // Topic-slug references the alert points at — a spec-embedded ref (no
+        // Topic ID references the alert points at — a spec-embedded ref (no
         // edges table), so `ws-alert-update` edits it like any other spec field.
         topics: z.array(z.string()).default([]),
       })
@@ -100,7 +100,7 @@ const alert: KindModule = {
  * wiring the four split tool files. Each tool lives in its own sibling file
  * (`create` / `read` / `update` / `delete`) in this kind folder and shares the
  * kind name + `Alert` projection via `./alert.js` and the result helpers via
- * `../toolResult.js`. Alerts have NO slug (the extension's PK is an
+ * `../toolResult.js`. Alerts use document IDs (the extension's PK is an
  * autoincrement integer → a control-plane uuid), so read/update/delete key on
  * the document `id`. Mirrors the Workstream kind exactly.
  */
