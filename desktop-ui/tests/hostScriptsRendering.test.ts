@@ -23,6 +23,8 @@ describe('generic host-task first screen', () => {
     expect(html).toContain('Run scripts you control, with access you approve.');
     expect(html).toContain('Connect to your Working Memory instance');
     expect(html).toContain('Instance password');
+    expect(html).toContain('Password hint:');
+    expect(html).toContain('aria-describedby="instance-password-hint"');
     expect(html).not.toContain('Import broker admin token');
     expect(html).not.toContain('Read Thrive items created by');
     expect(html).not.toContain('Approve an expiring grant');

@@ -929,6 +929,10 @@ choose an executable, supply shell arguments, or change the process environment.
    instance's first connection, choose **Set password and connect** and confirm
    the native owner-setup prompt. Passwords must have at least 12 characters.
    No token-file import or Keychain access is required.
+   An optional free-text **Password hint** (up to 1000 characters) is displayed
+   beside the password prompt before sign-in. It is public reminder text, not
+   a secret: never enter the password itself. After connecting, use **Edit
+   password hint** to add, change, or clear it without changing the password.
 3. Choose **Register harmless greeting example**, review the native approval,
    then select that script. The example only returns a greeting, Node version,
    and platform; it does not access files or the network.

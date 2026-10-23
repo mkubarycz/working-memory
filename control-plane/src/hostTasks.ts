@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { HostScriptBroker, HostScriptError, ensureHostScriptSchema } from './hostScripts.js';
 import { serveHostScriptMcp } from './hostScriptMcp.js';
-import { IdentityError, InstanceIdentity } from './instanceIdentity.js';
+import { IdentityError, InstanceIdentity, passwordHintSchema } from './instanceIdentity.js';
 
 // Standalone control-plane compilation cannot import root shared runtime files.
 // Keep this boundary predicate parity-tested against shared/hostTasks.ts.
@@ -742,13 +742,13 @@ export class HostTaskBroker {
         for await (const chunk of req) {
           const buffer = Buffer.from(chunk);
           bytes += buffer.length;
-          if (bytes > 8192) fail(413, 'body_too_large');
+          if (bytes > 16384) fail(413, 'body_too_large');
           chunks.push(buffer);
         }
         let value: unknown;
         try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { fail(400, 'invalid_json'); }
-        const input = z.object({ password: z.string().min(12).max(1024) }).strict().parse(value);
-        send(200, await this.identity.initialize(input.password));
+        const input = z.object({ password: z.string().min(12).max(1024), passwordHint: passwordHintSchema.default('') }).strict().parse(value);
+        send(200, await this.identity.initialize(input.password, input.passwordHint));
         return;
       }
       if (path === '/admin' || path.startsWith('/admin/')) this.admin(token);

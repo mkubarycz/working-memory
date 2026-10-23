@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -24,6 +24,42 @@ function fixture() {
 const password = 'a reviewed instance password';
 
 describe('instance owner identity', () => {
+  it('stores optional free-text hints, bounds their size, and only permits an active owner to edit them', async () => {
+    const { identity, store, advance } = fixture();
+    const hint = 'First pet & street\n<b>just text</b>';
+    const session = await identity.initialize(password, hint);
+    expect(identity.passwordHint()).toBe(hint);
+    const ownerBefore = store.db.prepare('SELECT password_salt,password_verifier FROM instance_owner').get();
+    identity.setPasswordHint(session.token, 'A revised reminder');
+    expect(identity.passwordHint()).toBe('A revised reminder');
+    expect(store.db.prepare('SELECT password_salt,password_verifier FROM instance_owner').get()).toEqual(ownerBefore);
+    expect(() => identity.setPasswordHint('not an owner', 'tampered')).toThrow('Sign in');
+    identity.setPasswordHint(session.token, 'x'.repeat(1000));
+    expect(identity.passwordHint()).toHaveLength(1000);
+    expect(() => identity.setPasswordHint(session.token, 'x'.repeat(1001))).toThrow();
+    identity.setPasswordHint(session.token, '');
+    expect(identity.passwordHint()).toBe('');
+    advance(12 * 60 * 60 * 1000);
+    expect(() => identity.setPasswordHint(session.token, 'expired edit')).toThrow('Sign in');
+  });
+
+  it('upgrades the original identity schema without changing an existing password verifier', async () => {
+    const original = fixture();
+    await original.identity.initialize(password);
+    const owner = original.store.db.prepare('SELECT * FROM instance_owner').get();
+    if (!owner) throw new Error('Missing test owner');
+    const store = openStore(':memory:');
+    stores.push(store);
+    store.db.exec(await readFile(new URL('../../schema/023_instance_identity.sql', import.meta.url), 'utf8'));
+    store.db.prepare(`INSERT INTO instance_owner
+      (singleton,instance_id,password_salt,password_verifier,created_at) VALUES(1,?,?,?,?)`)
+      .run(owner.instance_id, owner.password_salt, owner.password_verifier, owner.created_at);
+    const upgraded = new InstanceIdentity(store.db);
+    expect(upgraded.passwordHint()).toBe('');
+    expect((await upgraded.login({ password })).role).toBe('owner');
+    expect(new InstanceIdentity(store.db).passwordHint()).toBe('');
+  });
+
   it('stores salted password verifiers and hashed, expiring owner credentials outside documents', async () => {
     const { store, identity } = fixture();
     const first = await identity.initialize(password);
@@ -86,9 +122,15 @@ it('requires trusted bootstrap, exchanges passwords for owner sessions, and cann
   expect((await request('/identity/v1/status')).status).toBe(200);
   expect((await request(setup, { password })).status).toBe(401);
   expect((await request(setup, { password }, bootstrap, 'http://localhost')).status).toBe(400);
-  const initial = await request(setup, { password }, bootstrap);
+  const hint = 'A free-text reminder';
+  const initial = await request(setup, { password, passwordHint: hint }, bootstrap);
   expect(initial.status).toBe(200);
   const owner = await initial.json() as { token: string };
+  expect(await (await request('/identity/v1/status')).json()).toMatchObject({ passwordHint: hint });
+  expect((await request('/identity/v1/hint', { passwordHint: 'unauthorized' })).status).toBe(401);
+  expect((await request('/identity/v1/hint', { passwordHint: 'updated hint' }, owner.token)).status).toBe(200);
+  expect(await (await request('/identity/v1/status')).json()).toMatchObject({ passwordHint: 'updated hint' });
+  expect((await request('/identity/v1/hint', { passwordHint: 'x'.repeat(1001) }, owner.token)).status).toBe(400);
   expect((await request('/host-tasks/v1/admin/scripts', undefined, bootstrap)).status).toBe(401);
   expect((await request('/host-tasks/v1/admin/scripts', undefined, owner.token)).status).toBe(200);
   expect((await request(setup, { password }, bootstrap)).status).toBe(409);
@@ -98,6 +140,7 @@ it('requires trusted bootstrap, exchanges passwords for owner sessions, and cann
   const next = await login.json() as { token: string };
   expect(next.token).not.toBe(owner.token);
   expect((await request('/identity/v1/logout', {}, owner.token)).status).toBe(200);
+  expect((await request('/identity/v1/hint', { passwordHint: 'revoked edit' }, owner.token)).status).toBe(401);
   expect((await request('/host-tasks/v1/admin/scripts', undefined, owner.token)).status).toBe(401);
   expect((await request('/attachments/00000000-0000-4000-8000-000000000000', undefined, owner.token)).status).toBe(403);
   expect((await request('/host-tasks/v1/admin/scripts', undefined, next.token)).status).toBe(200);
@@ -109,7 +152,7 @@ it('retains owner verification and sessions across server restart without the ol
   const filename = join(directory, 'journal.sqlite');
   const firstStore = openStore(filename);
   stores.push(firstStore);
-  const session = await new InstanceIdentity(firstStore.db).initialize(password);
+  const session = await new InstanceIdentity(firstStore.db).initialize(password, 'Persistent hint');
   const firstServer = await startServer({ port: 0, store: firstStore, hostTaskAdminCredential: randomBytes(32).toString('hex') });
   await firstServer.close();
   firstStore.close();
@@ -122,6 +165,7 @@ it('retains owner verification and sessions across server restart without the ol
     headers: { Authorization: `Bearer ${session.token}` },
   });
   expect((await request()).status).toBe(200);
+  expect(await (await fetch(`${server.url}/identity/v1/status`)).json()).toMatchObject({ passwordHint: 'Persistent hint' });
   const login = await fetch(`${server.url}/identity/v1/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }),
   });

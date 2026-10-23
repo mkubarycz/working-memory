@@ -8,6 +8,7 @@ export class IdentityError extends Error {
 }
 
 const passwordSchema = z.string().min(12).max(1024);
+export const passwordHintSchema = z.string().max(1000);
 const loginSchema = z.object({ password: z.string().min(1).max(1024) }).strict();
 const digest = (token: string) => createHash('sha256').update(token).digest('hex');
 const sessionLifetime = 12 * 60 * 60 * 1000;
@@ -27,6 +28,9 @@ export function ensureInstanceIdentitySchema(db: DatabaseSync): void {
       expires_at INTEGER NOT NULL, revoked_at INTEGER
     );
   `);
+  if (!db.prepare('PRAGMA table_info(instance_owner)').all().some(column => column.name === 'password_hint')) {
+    db.exec("ALTER TABLE instance_owner ADD COLUMN password_hint TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 export class InstanceIdentity {
@@ -41,6 +45,17 @@ export class InstanceIdentity {
     return !!this.db.prepare('SELECT singleton FROM instance_owner WHERE singleton=1').get();
   }
 
+  passwordHint(): string {
+    const owner = this.db.prepare('SELECT password_hint FROM instance_owner WHERE singleton=1').get();
+    return String(owner?.password_hint ?? '');
+  }
+
+  setPasswordHint(token: string, hint: unknown): void {
+    if (!this.authenticate(token)) throw new IdentityError(401, 'Sign in to this instance to change its password hint.');
+    const result = this.db.prepare('UPDATE instance_owner SET password_hint=? WHERE singleton=1').run(passwordHintSchema.parse(hint));
+    if (!result.changes) throw new IdentityError(409, 'Set an owner password before changing its hint.');
+  }
+
   private issue(): { token: string; expiresAt: number; identityId: string; role: 'owner' } {
     const token = randomBytes(32).toString('base64url');
     const identityId = randomUUID(), now = this.clock(), expiresAt = now + sessionLifetime;
@@ -49,14 +64,15 @@ export class InstanceIdentity {
     return { token, expiresAt, identityId, role: 'owner' };
   }
 
-  async initialize(password: unknown): Promise<ReturnType<InstanceIdentity['issue']>> {
+  async initialize(password: unknown, passwordHint: unknown = ''): Promise<ReturnType<InstanceIdentity['issue']>> {
     const checked = passwordSchema.parse(password);
+    const hint = passwordHintSchema.parse(passwordHint);
     if (this.configured()) throw new IdentityError(409, 'The instance already has an owner password. Sign in instead.');
     const salt = randomBytes(32).toString('hex');
     const verifier = await derive(checked, salt);
     const result = this.db.prepare(`INSERT INTO instance_owner
-      (singleton,instance_id,password_salt,password_verifier,created_at) VALUES(1,?,?,?,?)
-      ON CONFLICT(singleton) DO NOTHING`).run(randomUUID(), salt, verifier.toString('hex'), this.clock());
+      (singleton,instance_id,password_salt,password_verifier,created_at,password_hint) VALUES(1,?,?,?,?,?)
+      ON CONFLICT(singleton) DO NOTHING`).run(randomUUID(), salt, verifier.toString('hex'), this.clock(), hint);
     if (!result.changes) throw new IdentityError(409, 'The instance already has an owner password. Sign in instead.');
     return this.issue();
   }
@@ -101,7 +117,7 @@ export class InstanceIdentity {
     try {
       if (url.search || req.headers.origin) throw new IdentityError(400, 'Use the trusted desktop connection, not a browser page.');
       if (req.method === 'GET' && url.pathname === '/identity/v1/status') {
-        send(200, { passwordConfigured: this.configured(), scope: 'host-tasks-preview' });
+        send(200, { passwordConfigured: this.configured(), passwordHint: this.passwordHint(), scope: 'host-tasks-preview' });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/identity/v1/logout') {
@@ -109,7 +125,10 @@ export class InstanceIdentity {
         send(200, { ok: true });
         return;
       }
-      if (req.method !== 'POST' || url.pathname !== '/identity/v1/login') throw new IdentityError(404, 'Identity endpoint not found.');
+      const updatingHint = url.pathname === '/identity/v1/hint';
+      if (req.method !== 'POST' || (!updatingHint && url.pathname !== '/identity/v1/login')) throw new IdentityError(404, 'Identity endpoint not found.');
+      const token = req.headers.authorization?.replace(/^Bearer /, '') ?? '';
+      if (updatingHint && !this.authenticate(token)) throw new IdentityError(401, 'Sign in to this instance to change its password hint.');
       if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new IdentityError(415, 'JSON required.');
       const chunks: Buffer[] = [];
       let bytes = 0;
@@ -122,10 +141,14 @@ export class InstanceIdentity {
       let input: unknown;
       try { input = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { throw new IdentityError(400, 'Invalid sign-in request.'); }
-      send(200, await this.login(input));
+      if (updatingHint) {
+        const value = z.object({ passwordHint: passwordHintSchema }).strict().parse(input);
+        this.setPasswordHint(token, value.passwordHint);
+        send(200, { ok: true });
+      } else send(200, await this.login(input));
     } catch (error) {
       if (error instanceof IdentityError) send(error.status, { error: error.message });
-      else if (error instanceof z.ZodError) send(400, { error: 'Provide a valid instance password.' });
+      else if (error instanceof z.ZodError) send(400, { error: 'Provide a valid password or a password hint up to 1000 characters.' });
       else {
         console.error('[identity] Sign-in service failed.');
         send(500, { error: 'Instance sign-in is unavailable.' });

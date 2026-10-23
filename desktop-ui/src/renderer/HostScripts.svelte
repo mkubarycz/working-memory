@@ -18,6 +18,7 @@
   let callerLabel = $state('My agent');
   let password = $state('');
   let repeatedPassword = $state('');
+  let passwordHint = $state('');
   const creatingPassword = $derived(state?.authentication?.passwordConfigured === false);
 
   async function signIn(): Promise<void> {
@@ -25,7 +26,9 @@
     const value = password;
     password = '';
     repeatedPassword = '';
-    await perform(() => window.workingMemory.signInHostScripts({ password: value, setup: creatingPassword }));
+    await perform(() => window.workingMemory.signInHostScripts({
+      password: value, setup: creatingPassword, ...(creatingPassword ? { passwordHint } : {}),
+    }));
   }
 
   onMount(() => { void perform(async () => {}); });
@@ -93,12 +96,19 @@
       {/if}
     {/if}
     <form onsubmit={(event) => { event.preventDefault(); void signIn(); }}>
+      {#if !creatingPassword}
+        <p id="instance-password-hint" class="password-hint">Password hint: {state?.authentication
+          ? state.authentication.passwordHint || 'No hint has been set.' : 'Loading…'}</p>
+      {/if}
       <label>Instance password
         <input type="password" bind:value={password} autocomplete={creatingPassword ? 'new-password' : 'current-password'}
+          aria-describedby={creatingPassword ? undefined : 'instance-password-hint'}
           minlength={creatingPassword ? 12 : 1} maxlength="1024" required />
       </label>
       {#if creatingPassword}
         <label>Confirm password <input type="password" bind:value={repeatedPassword} autocomplete="new-password" maxlength="1024" required /></label>
+        <label>Password hint (optional) <textarea bind:value={passwordHint} rows="2" maxlength="1000"></textarea></label>
+        <p class="hint">Visible before sign-in. Use a reminder, not your password or other secret information.</p>
       {/if}
       <button disabled={busy || !state?.authentication || !password || (creatingPassword && (!state.authentication.setupAvailable || password.length < 12))}>
         {creatingPassword ? 'Set password and connect' : 'Sign in'}
@@ -119,6 +129,17 @@
         selectedJob = null;
       })}>Sign out</button>
     </div>
+    <details ontoggle={(event) => {
+      if (event.currentTarget.open) passwordHint = state?.authentication?.passwordHint ?? '';
+    }}>
+      <summary>Edit password hint</summary>
+      <form onsubmit={(event) => { event.preventDefault(); void perform(() => window.workingMemory.setInstancePasswordHint(passwordHint)); }}>
+        <label>Password hint (optional) <textarea bind:value={passwordHint} rows="2" maxlength="1000"></textarea></label>
+        <p class="hint">Visible before sign-in. Use a reminder, not your password or other secret information.</p>
+        <button disabled={busy}>Save password hint</button>
+      </form>
+      <p class="password-hint">Saved hint: {state?.authentication?.passwordHint || 'No hint has been set.'}</p>
+    </details>
     <p>Only Node.js built-in modules are supported. Script changes require a new registration.</p>
   {/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -232,4 +253,5 @@
   article { padding: 10px; border: 1px solid var(--vscode-widget-border, #555); border-radius: 5px; }
   .error { color: var(--vscode-errorForeground, #e55); }
   .hint { color: var(--vscode-descriptionForeground); }
+  .password-hint { white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

@@ -16,7 +16,8 @@ export interface HostTaskDesktopState {
 }
 
 export interface HostTaskDesktopApi {
-  signInHostScripts(input: { password: string; setup: boolean }): Promise<void>;
+  signInHostScripts(input: { password: string; setup: boolean; passwordHint?: string }): Promise<void>;
+  setInstancePasswordHint(hint: string): Promise<void>;
   signOutHostScripts(): Promise<void>;
   getHostScripts(): Promise<HostScriptDesktopState>;
   registerHostScript(input: { name: string; description: string; parameters: unknown; timeoutMs: number; example: boolean }): Promise<ScriptTask | undefined>;
@@ -37,5 +38,5 @@ export interface HostTaskDesktopApi {
 
 export interface HostScriptDesktopState {
   environment: string; hostId: string; credentialReady: boolean; snapshot: ScriptSnapshot | null;
-  authentication?: { passwordConfigured: boolean; setupAvailable: boolean };
+  authentication?: { passwordConfigured: boolean; passwordHint: string; setupAvailable: boolean };
 }

@@ -65,13 +65,19 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   deps.ipc.handle('host-scripts:sign-in', async (event, raw: unknown) => {
     const ctx = context(event);
     if (!deps.identity) throw new Error('Instance sign-in is unavailable.');
-    const input = z.object({ password: z.string().min(1).max(1024), setup: z.boolean() }).strict().parse(raw);
+    const input = z.object({ password: z.string().min(1).max(1024), setup: z.boolean(), passwordHint: z.string().max(1000).default('') }).strict().parse(raw);
     if (input.setup && !await ctx.confirm('Set the owner password for this Working Memory instance?',
       'This creates the instance owner identity. The desktop session can manage all approved scripts and caller grants. '
       + 'It does not approve script execution or give container apps owner access.', false)) return;
-    const session = await deps.identity.signIn(ctx.environment.mcpUrl, input.password, input.setup);
+    const session = await deps.identity.signIn(ctx.environment.mcpUrl, input.password, input.setup, input.passwordHint);
     ctx.ensureCurrent();
     deps.vault.setSession(hostTaskOrigin(ctx.environment.mcpUrl), session.token, session.expiresAt);
+  });
+  deps.ipc.handle('host-scripts:password-hint', async (event, hint: unknown) => {
+    const ctx = context(event);
+    if (!deps.identity) throw new Error('Instance sign-in is unavailable.');
+    await deps.identity.setPasswordHint(ctx.environment.mcpUrl, z.string().max(1000).parse(hint));
+    ctx.ensureCurrent();
   });
   deps.ipc.handle('host-scripts:sign-out', async (event) => {
     const ctx = context(event);

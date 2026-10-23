@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { HostTaskCredentialVault, hostTaskOrigin } from './hostTaskBroker';
 
-const statusSchema = z.object({ passwordConfigured: z.boolean(), scope: z.literal('host-tasks-preview') });
+const statusSchema = z.object({ passwordConfigured: z.boolean(), passwordHint: z.string().max(1000), scope: z.literal('host-tasks-preview') });
 const sessionSchema = z.object({
   token: z.string().regex(/^[A-Za-z0-9_-]{32,256}$/), expiresAt: z.number().int(),
   identityId: z.string().uuid(), role: z.literal('owner'),
@@ -31,18 +31,25 @@ export class DesktopInstanceIdentity {
     return response.json();
   }
 
-  async status(mcpUrl: string): Promise<{ passwordConfigured: boolean; setupAvailable: boolean }> {
+  async status(mcpUrl: string): Promise<{ passwordConfigured: boolean; passwordHint: string; setupAvailable: boolean }> {
     const status = statusSchema.parse(await this.request(mcpUrl, '/identity/v1/status'));
-    return { passwordConfigured: status.passwordConfigured, setupAvailable: this.canBootstrap(mcpUrl) };
+    return { passwordConfigured: status.passwordConfigured, passwordHint: status.passwordHint, setupAvailable: this.canBootstrap(mcpUrl) };
   }
 
-  async signIn(mcpUrl: string, password: unknown, setup: boolean): Promise<{ token: string; expiresAt: number }> {
+  async signIn(mcpUrl: string, password: unknown, setup: boolean, passwordHint = ''): Promise<{ token: string; expiresAt: number }> {
     const checked = z.string().min(setup ? 12 : 1).max(1024).parse(password);
     if (setup && !this.canBootstrap(mcpUrl)) throw new Error('Only the local instance owner can set its initial password.');
     const session = sessionSchema.parse(await this.request(mcpUrl,
       setup ? '/host-tasks/v1/admin/identity/setup' : '/identity/v1/login',
-      { password: checked }, setup ? await this.bootstrap(mcpUrl) : undefined));
+      { password: checked, ...(setup ? { passwordHint: z.string().max(1000).parse(passwordHint) } : {}) },
+      setup ? await this.bootstrap(mcpUrl) : undefined));
     return { token: session.token, expiresAt: session.expiresAt };
+  }
+
+  async setPasswordHint(mcpUrl: string, hint: unknown): Promise<void> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in to this instance to change its password hint.');
+    await this.request(mcpUrl, '/identity/v1/hint', { passwordHint: z.string().max(1000).parse(hint) }, token);
   }
 
   async signOut(mcpUrl: string): Promise<void> {
