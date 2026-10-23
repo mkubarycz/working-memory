@@ -9,6 +9,7 @@ import { startServer, type RunningServer } from '../../control-plane/src/server'
 import { HostScriptAdminClient } from '../src/main/hostScriptClient';
 import { executeHostScript, HOST_SCRIPT_EXAMPLE, hostScriptHostId } from '../src/main/hostScriptRunner';
 import { registerHostScriptIpc } from '../src/main/hostScriptIpc';
+import { registerInstanceIdentityIpc } from '../src/main/instanceIdentityIpc';
 import { scriptDefinitionSchema, scriptDefinitionHash, scriptJobSchema, type ScriptLease } from '../../control-plane/src/hostScriptPolicy';
 import type { IpcMainInvokeEvent } from 'electron';
 import { openStore, type Store } from '../../control-plane/src/store';
@@ -34,7 +35,7 @@ async function serverFixture() {
   return { server, credential, broker: new HostScriptAdminClient(`${server.url}/mcp`, credential) };
 }
 
-it('configures flags through trusted IPC while off and aborts an active runner when disabled', async () => {
+it.each(['feature-disabled', 'signed-out'])('aborts an active runner when %s through trusted IPC', async reason => {
   const { server, credential } = await serverFixture();
   const directory = await mkdtemp(join(tmpdir(), 'wm-host-feature-'));
   directories.push(directory);
@@ -55,7 +56,7 @@ it('configures flags through trusted IPC while off and aborts an active runner w
   const started = new Promise<void>(resolve => { executing = resolve; });
   let aborted = false;
   const dialog = { showMessageBox: vi.fn().mockResolvedValue({ response: 1 }), showOpenDialog: vi.fn(), showSaveDialog: vi.fn() };
-  registerHostScriptIpc({
+  const stop = registerHostScriptIpc({
     ipc: { handle: (channel, handler) => { handlers.set(channel, handler); } },
     dialog, vault, identity, directory, getWindow: () => window,
     getEnvironment: () => ({ mcpUrl, displayName: 'Test' }), rendererUrl, platform: process.platform,
@@ -64,6 +65,12 @@ it('configures flags through trusted IPC while off and aborts an active runner w
       executing();
     }),
   } as unknown as Parameters<typeof registerHostScriptIpc>[0]);
+  registerInstanceIdentityIpc({
+    ipc: { handle: (channel, handler) => { handlers.set(channel, handler); } },
+    dialog, vault, identity, getWindow: () => window,
+    getEnvironment: () => ({ mcpUrl, displayName: 'Test' }), rendererUrl, platform: process.platform,
+    onSessionChanged: async (_url: string, authenticated: boolean) => { if (!authenticated) stop(); },
+  } as unknown as Parameters<typeof registerInstanceIdentityIpc>[0]);
   const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!(event, ...args);
   expect(await call('instance:features')).toEqual({ hostTasks: false });
   expect(await call('host-scripts:get')).toMatchObject({ credentialReady: true, features: { hostTasks: false }, snapshot: null });
@@ -74,12 +81,13 @@ it('configures flags through trusted IPC while off and aborts an active runner w
   const task = await call('host-scripts:register', input) as { id: string };
   await call('host-scripts:test', task.id, { name: 'Michael' });
   const next = call('host-scripts:next');
-  const stopped = expect(next).rejects.toThrow('turned off');
+  const stopped = expect(next).rejects.toThrow();
   await started;
-  await call('instance:set-features', { hostTasks: false });
+  if (reason === 'feature-disabled') await call('instance:set-features', { hostTasks: false });
+  else await call('instance:sign-out');
   await stopped;
   expect(aborted).toBe(true);
-  await expect(call('host-scripts:next')).rejects.toThrow('turned off');
+  await expect(call('host-scripts:next')).rejects.toThrow(reason === 'feature-disabled' ? 'turned off' : 'Sign in');
 }, 10000);
 function lease(source = HOST_SCRIPT_EXAMPLE): ScriptLease {
   const definition = scriptDefinitionSchema.parse({

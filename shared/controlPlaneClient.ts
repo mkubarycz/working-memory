@@ -790,6 +790,8 @@ export interface CommandJournalDetailInput {
 
 
 export interface ControlPlaneClientOptions {
+  getToken?: (mcpUrl: string) => string | null;
+  onUnauthorized?: (mcpUrl: string, rejectedToken: string | null) => void;
   /**
    * Resolve the `/mcp` URL to connect to, or `null` when the daemon is
    * unavailable. Defaults to reading the discovery port file. Tests inject a
@@ -812,6 +814,8 @@ export interface ControlPlaneClientOptions {
    */
   onError?: (err: unknown) => void;
 }
+
+export class InstanceAuthenticationError extends Error {}
 
 /**
  * One canonical tool as advertised by the control-plane's MCP `tools/list`. The
@@ -968,7 +972,7 @@ export class ControlPlaneClient {
     while (!stopped.aborted) {
       const url = new URL('/changes', mcpUrl);
       if (version !== undefined) url.searchParams.set('since', String(version));
-      const response = await fetch(url, { signal: AbortSignal.any([stopped, AbortSignal.timeout(35_000)]) });
+      const response = await this.fetch(url, { signal: AbortSignal.any([stopped, AbortSignal.timeout(35_000)]) });
       if (!response.ok) {
         throw new Error(response.status === 404
           ? 'Live updates require upgrading the selected Working Memory data-tier instance.'
@@ -981,6 +985,9 @@ export class ControlPlaneClient {
   }
   private readonly resolveUrl: () => string | null;
   private readonly onError: (err: unknown) => void;
+  private readonly getToken: (mcpUrl: string) => string | null;
+  private readonly onUnauthorized: (mcpUrl: string, rejectedToken: string | null) => void;
+  private authenticationError: string | null = null;
   private client: Client | null = null;
   private transport: StreamableHTTPClientTransport | null = null;
   /** In-flight connect, so concurrent calls share one handshake. */
@@ -991,13 +998,43 @@ export class ControlPlaneClient {
     this.resolveUrl =
       options.resolveUrl ?? (() => defaultResolveUrl(options.allowEnvOverride ?? false));
     this.onError = options.onError ?? (() => {});
+    this.getToken = options.getToken ?? (() => {
+      let token = process.env.WM_INSTANCE_TOKEN?.trim();
+      if (process.env.WM_INSTANCE_TOKEN_FILE) {
+        try { token = readFileSync(process.env.WM_INSTANCE_TOKEN_FILE, 'utf8').trim(); }
+        catch { throw new InstanceAuthenticationError('Cannot read the instance credential file. Request access through /identity/v1/mcp and store the issued token privately.'); }
+      }
+      if (token && !/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new InstanceAuthenticationError('Invalid instance credential. Request new access through /identity/v1/mcp.');
+      return token || null;
+    });
+    this.onUnauthorized = options.onUnauthorized ?? (() => {});
+  }
+
+  async fetch(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
+    const mcpUrl = this.resolveUrl();
+    if (!mcpUrl) throw new Error('Select a Working Memory instance first.');
+    const url = input instanceof Request ? new URL(input.url) : new URL(input), origin = new URL(mcpUrl).origin;
+    if (url.origin !== origin || url.username || url.password || url.hash) {
+      throw new Error('Refusing to send instance credentials outside the selected instance.');
+    }
+    const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+    const token = this.getToken(mcpUrl);
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const response = await fetch(input, { ...init, headers, redirect: 'error' });
+    if (response.status === 401) {
+      this.authenticationError = 'Working Memory sign-in is required. Desktop: sign in to the selected instance. '
+        + `Agents: request access or an owner-approved refresh at ${origin}/identity/v1/mcp, then initialize a new MCP session.`;
+      this.onUnauthorized(mcpUrl, token);
+      throw new InstanceAuthenticationError(this.authenticationError);
+    }
+    return response;
   }
 
   /** List documents via `wm-document-read` (list mode), optionally filtered by `kind`. */
   async listDocuments(kind?: string): Promise<ListDocumentsResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, documents: [], error: 'Control plane not running' };
+      return { available: false, documents: [], error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const result = await client.callTool({
@@ -1019,7 +1056,7 @@ export class ControlPlaneClient {
   async getDocument(input: GetDocumentInput): Promise<GetDocumentResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, document: null, error: 'Control plane not running' };
+      return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const result = await client.callTool({
@@ -1045,7 +1082,7 @@ export class ControlPlaneClient {
   async createDocument(input: CreateDocumentInput): Promise<WriteDocumentResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, document: null, error: 'Control plane not running' };
+      return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const args: Record<string, unknown> = { kind: input.kind };
@@ -1070,7 +1107,7 @@ export class ControlPlaneClient {
   async updateDocument(input: UpdateDocumentInput): Promise<WriteDocumentResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, document: null, error: 'Control plane not running' };
+      return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const args: Record<string, unknown> = {
@@ -1101,7 +1138,7 @@ export class ControlPlaneClient {
   async deleteDocument(input: DeleteDocumentInput): Promise<WriteDocumentResult> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { available: false, document: null, error: 'Control plane not running' };
+      return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
       const args: Record<string, unknown> = { id: input.id };
@@ -1136,7 +1173,7 @@ export class ControlPlaneClient {
   async listTools(): Promise<CanonicalToolDef[]> {
     const client = await this.ensureConnected();
     if (!client) {
-      throw new ControlPlaneClientError('Control plane not running');
+      throw new ControlPlaneClientError(this.authenticationError ?? 'Control plane not running');
     }
     let res: unknown;
     try {
@@ -1176,7 +1213,7 @@ export class ControlPlaneClient {
   ): Promise<ToolCallOutcome> {
     const client = await this.ensureConnected();
     if (!client) {
-      return { ok: false, error: 'Control plane not running' };
+      return { ok: false, error: this.authenticationError ?? 'Control plane not running' };
     }
     let result: unknown;
     try {
@@ -1213,7 +1250,7 @@ export class ControlPlaneClient {
   ): Promise<unknown> {
     const client = await this.ensureConnected();
     if (!client) {
-      throw new ControlPlaneClientError('Control plane not running');
+      throw new ControlPlaneClientError(this.authenticationError ?? 'Control plane not running');
     }
     let result: unknown;
     try {
@@ -2156,7 +2193,11 @@ export class ControlPlaneClient {
       // Pass a fetch that 405s the standalone GET SSE stream so it never opens —
       // eliminating the undici "TypeError: terminated" unhandled rejection on
       // daemon restart/shutdown. See {@link sseDecliningFetch}.
-      transport = new StreamableHTTPClientTransport(new URL(url), { fetch: sseDecliningFetch });
+      transport = new StreamableHTTPClientTransport(new URL(url), {
+        fetch: (input, init) => (init?.method ?? 'GET').toUpperCase() === 'GET'
+          ? sseDecliningFetch(input, init)
+          : this.fetch(input, init),
+      });
     } catch {
       return null;
     }
@@ -2169,8 +2210,11 @@ export class ControlPlaneClient {
     client.onerror = (err) => this.onError(err);
     try {
       // connect() performs the MCP initialize handshake.
+      this.authenticationError = null;
       await client.connect(transport);
-    } catch {
+    } catch (error) {
+      if (error instanceof InstanceAuthenticationError) this.authenticationError = error.message;
+      this.onError(error);
       await closeQuietly(client, transport);
       return null;
     }

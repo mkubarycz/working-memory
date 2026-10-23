@@ -32,7 +32,7 @@ export class InstanceFeatureStore {
     };
     try {
       if (req.headers.origin || url.search) throw new IdentityError(400, 'Origins and query parameters are not allowed.');
-      if (req.method === 'GET') { send(200, this.read()); return; }
+      if (req.method === 'GET') { authorize(); send(200, this.read()); return; }
       if (req.method !== 'POST') { send(405, { error: 'method_not_allowed' }); return; }
       authorize();
       if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') {

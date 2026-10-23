@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 import { clearKinds } from '../../control-plane/src/kinds/registry';
 import { loadKinds } from '../../control-plane/src/kinds/loader';
-import { startServer, type RunningServer } from '../../control-plane/src/server';
+import { startServer, type RunningServer } from '../../tests/authenticatedFixture';
 import { desktopToolDescriptors } from '../src/main/modelTools';
-import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { ControlPlaneClient } from '../../tests/authenticatedFixture';
 import { updateAgentMessageStatus } from '../src/main/agentMessageLifecycle';
 
 describe('desktop tool coverage', () => {

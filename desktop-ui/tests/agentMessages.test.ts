@@ -21,7 +21,10 @@ describe('canonical agent message timeline', () => {
     const topLevel = source.statements.filter(ts.isFunctionDeclaration);
     expect(topLevel.filter((node) => node.name?.text === 'refreshAgentMessages')).toHaveLength(1);
     const initializer = topLevel.find((node) => node.name?.text === 'initializeWorkspace');
-    expect(initializer?.getText(source)).toContain('refreshAgentMessages()');
+    expect(initializer?.getText(source)).toContain('refreshInstanceConnection()');
+    expect(initializer?.getText(source)).toContain('loadAuthenticatedWorkspace()');
+    const authenticated = topLevel.find((node) => node.name?.text === 'loadAuthenticatedWorkspace');
+    expect(authenticated?.getText(source)).toContain('refreshAgentMessages()');
     const latest = topLevel.find((node) => node.name?.text === 'refreshLatestHistory');
     expect(latest?.getText(source)).not.toContain('function refreshAgentMessages');
     const onChanges = topLevel.find((node) => node.name?.text === 'handleDocumentChanges')?.getText(source) ?? '';

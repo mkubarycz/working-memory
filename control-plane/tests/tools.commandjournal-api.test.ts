@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { startServer } from '../src/server';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
+import { startServer } from '../../tests/authenticatedFixture';
 import { openStore } from '../src/store';
 import { clearKinds, validateSpec } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';

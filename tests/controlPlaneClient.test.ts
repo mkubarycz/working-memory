@@ -1,13 +1,13 @@
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
-import { startServer, type RunningServer } from '../control-plane/src/server';
+import { startServer, type RunningServer } from './authenticatedFixture';
 import { clearKinds } from '../control-plane/src/kinds/registry';
 import { loadKinds } from '../control-plane/src/kinds/loader';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from './authenticatedFixture';
 import {
   ControlPlaneClient,
   type DocumentEnvelope,
-} from '../shared/controlPlaneClient';
+} from './authenticatedFixture';
 
 /**
  * The Blackboard tab reads documents through the SAME MCP surface an agent

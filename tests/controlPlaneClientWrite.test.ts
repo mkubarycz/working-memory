@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
-import { startServer, type RunningServer } from '../control-plane/src/server';
+import { startServer, type RunningServer } from './authenticatedFixture';
 import { clearKinds } from '../control-plane/src/kinds/registry';
 import { loadKinds } from '../control-plane/src/kinds/loader';
-import { ControlPlaneClient } from '../shared/controlPlaneClient';
+import { ControlPlaneClient } from './authenticatedFixture';
 
 /**
  * Exercises the {@link ControlPlaneClient} WRITE methods (create/update/delete)

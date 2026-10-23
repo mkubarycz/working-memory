@@ -34,6 +34,8 @@ import {
 import { openStore, type Store, ConflictError, NotFoundError } from './store.js';
 import { createDocumentChangeFeed } from './documentChangeFeed.js';
 import { HostTaskBroker, HOST_TASK_CLEANUP_INTERVAL_MS, type HostTaskOptions } from './hostTasks.js';
+import { AccessError, InstanceAccess, type InstancePrincipal } from './instanceAccess.js';
+import { serveInstanceAccessMcp } from './instanceAccessMcp.js';
 import { topicSpecWithDefaults, validateTopicReferences } from './kinds/topic/references.js';
 import {
   getKind,
@@ -391,7 +393,10 @@ export function createMcpServer(
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let bytes = 0;
   for await (const chunk of req) {
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > 1024 * 1024) throw new Error('JSON request exceeds the 1 MiB limit.');
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) {
@@ -447,17 +452,24 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const providedStore = opts.store;
   const store = providedStore ?? openStore(':memory:');
   const hostTasks = new HostTaskBroker(store.db, opts);
+  const access = new InstanceAccess(store.db, hostTasks.identity, opts.hostTaskClock);
   const ownsStore = providedStore === undefined;
   const changeFeed = createDocumentChangeFeed(store);
 
   // Per-server session registry (stateful Streamable HTTP), keyed by MCP
   // session id. Supports multiple concurrent clients, each with its own MCP
   // session and connected McpServer instance.
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const transports = new Map<string, { transport: StreamableHTTPServerTransport; principalKey: string }>();
 
-  async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, principal: InstancePrincipal): Promise<void> {
     const header = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(header) ? header[0] : header;
+    const session = sessionId ? transports.get(sessionId) : undefined;
+    if (session && session.principalKey !== principal.key) {
+      endJson(res, 403, { error: 'session_identity_mismatch',
+        message: 'This MCP session belongs to another credential. Initialize a new session with your own token.' });
+      return;
+    }
 
     if (req.method === 'POST') {
       let body: unknown;
@@ -472,7 +484,20 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         return;
       }
 
-      const existing = sessionId ? transports.get(sessionId) : undefined;
+      if (Array.isArray(body)) {
+        endJson(res, 400, { error: 'MCP batch requests are not supported. Send one authenticated request at a time.' });
+        return;
+      }
+      if (principal.access === 'read' && body && typeof body === 'object' && 'method' in body && body.method === 'tools/call') {
+        const call = z.object({ params: z.object({ name: z.string() }) }).safeParse(body);
+        const readTool = /^(?:wm-(?:ping|document-read|list-kinds)|ws-(?:workstream|topic|topictype|alert|agent-message|agent|containerclaim|commandjournal|config)-read)$/;
+        if (!call.success || !readTool.test(call.data.params.name)) {
+          endJson(res, 403, { error: 'read_only_identity',
+            message: 'This client has read-only access. Request a new write-access identity through the identity MCP; owner approval is required.' });
+          return;
+        }
+      }
+      const existing = session?.transport;
       if (existing) {
         await existing.handleRequest(req, res, body);
         return;
@@ -483,7 +508,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
           onsessioninitialized: (id) => {
-            transports.set(id, transport);
+            transports.set(id, { transport, principalKey: principal.key });
           },
         });
         transport.onclose = () => {
@@ -506,7 +531,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     }
 
     if (req.method === 'GET' || req.method === 'DELETE') {
-      const transport = sessionId ? transports.get(sessionId) : undefined;
+      const transport = session?.transport;
       if (!transport) {
         endJson(res, 400, { ok: false, error: 'invalid or missing session id' });
         return;
@@ -520,7 +545,38 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
 
   async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? `${host}:${port}`}`);
+    const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
 
+    if (url.pathname === '/identity/v1/mcp') {
+      if (req.headers.origin || url.search) { endJson(res, 400, { error: 'Use the identity MCP directly, without browser Origin or query credentials.' }); return; }
+      if (req.method !== 'POST') { endJson(res, 405, { error: 'Identity MCP accepts POST only.' }); return; }
+      await serveInstanceAccessMcp(req, res, access);
+      return;
+    }
+    if (url.pathname === '/identity/v1/setup') {
+      const setup = new URL(url);
+      setup.pathname = '/host-tasks/v1/admin/identity/setup';
+      await hostTasks.handle(req, res, setup);
+      return;
+    }
+    if (url.pathname === '/identity/v1/access') {
+      try {
+        if (req.headers.origin || url.search) throw new AccessError(400, 'Use the trusted desktop connection without query credentials.');
+        if (req.method === 'GET') { endJson(res, 200, access.snapshot(token)); return; }
+        if (req.method !== 'POST') throw new AccessError(405, 'Access management accepts GET or POST.');
+        if (!hostTasks.identity.authenticate(token)) throw new AccessError(401, 'Sign in as the instance owner to manage access.');
+        if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new AccessError(415, 'JSON required.');
+        const action = z.object({ action: z.enum(['approve', 'deny', 'revoke']), id: z.string().uuid() }).strict().parse(await readJsonBody(req));
+        if (action.action === 'revoke') access.revoke(token, action.id);
+        else access.decide(token, action.id, action.action === 'approve');
+        endJson(res, 200, access.snapshot(token));
+      } catch (error) {
+        if (error instanceof AccessError) endJson(res, error.status, { error: error.message });
+        else if (error instanceof z.ZodError || error instanceof SyntaxError) endJson(res, 400, { error: 'Provide a valid access action and request or client UUID.' });
+        else throw error;
+      }
+      return;
+    }
     if (url.pathname === '/features/v1') {
       await hostTasks.handleFeatures(req, res, url);
       return;
@@ -533,18 +589,37 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       await hostTasks.handle(req, res, url);
       return;
     }
-    const ownerToken = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
-    if (hostTasks.isProtectedCredential(req.headers.authorization) && !hostTasks.identity.authenticate(ownerToken)) {
-      endJson(res, 403, { error: 'host_task_credential_wrong_surface' });
+    if (hostTasks.isProtectedCredential(req.headers.authorization) && !hostTasks.identity.recognizes(token)) {
+      endJson(res, 403, { error: 'host_task_credential_wrong_surface',
+        message: 'Host-task credentials cannot access instance data. Request an instance credential through /identity/v1/mcp and ask the owner to approve it in Settings > Access.' });
       return;
     }
     if (req.method === 'GET' && url.pathname === HEALTH_PATH) {
       endJson(res, 200, { ok: true, version, uptime: (Date.now() - startedAt) / 1000 });
       return;
     }
+    const principal = access.authenticate(token);
+    if (!principal) {
+      const identityMcpUrl = new URL('/identity/v1/mcp', url).href;
+      res.setHeader('WWW-Authenticate', 'Bearer realm="working-memory"');
+      endJson(res, 401, { error: 'instance_authentication_required', identityMcpUrl,
+        message: 'A valid instance token is required. Desktop users: connect and set an owner password if none exists, or sign in. '
+          + `Agents: connect to ${identityMcpUrl}, call wm-identity-request-access, then ask a signed-in owner to approve in Settings > Access. `
+          + 'For an expired client token, request refresh with the previous token in the Authorization header. Claim the approved token using wm-identity-claim-access and initialize a new /mcp session.',
+        passwordConfigured: hostTasks.identity.configured() });
+      return;
+    }
+    if (req.headers.origin) {
+      endJson(res, 400, { error: 'Use a trusted client connection, not a browser Origin.' });
+      return;
+    }
+    if (principal.access === 'read' && req.method === 'POST' && url.pathname === '/attachments') {
+      endJson(res, 403, { error: 'read_only_identity', message: 'Attachment uploads require owner-approved write access.' });
+      return;
+    }
 
     if (req.method === 'GET' && url.pathname === '/changes') {
-      changeFeed.handle(req, res, url);
+      changeFeed.handle(req, res, url, () => !!access.authenticate(token));
       return;
     }
 
@@ -602,7 +677,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     }
 
     if (url.pathname === MCP_PATH) {
-      await handleMcp(req, res);
+      await handleMcp(req, res, principal);
       return;
     }
 
@@ -610,11 +685,12 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   }
 
   const httpServer = http.createServer((req, res) => {
-    void handleRequest(req, res).catch((err: unknown) => {
+    void handleRequest(req, res).catch(() => {
+      console.error('[control-plane] HTTP request failed.');
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' });
       }
-      res.end(JSON.stringify({ ok: false, error: (err as Error).message }));
+      res.end(JSON.stringify({ ok: false, error: 'Request failed. Check the control-plane service logs.' }));
     });
   });
 
@@ -642,7 +718,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     close(): Promise<void> {
       clearInterval(hostTaskCleanupTimer);
       changeFeed.close();
-      for (const transport of transports.values()) {
+      for (const { transport } of transports.values()) {
         void Promise.resolve(transport.close()).catch(() => undefined);
       }
       transports.clear();

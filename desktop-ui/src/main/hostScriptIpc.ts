@@ -16,7 +16,8 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   directory: string;
   execute?: typeof executeHostScript;
   identity?: DesktopInstanceIdentity;
-}): void {
+  onSessionChanged?: (mcpUrl: string, authenticated: boolean) => Promise<void>;
+}): () => void {
   let running: AbortController | null = null;
   const context = (event: Parameters<typeof assertHostTaskSender>[0]) => {
     const window = deps.getWindow();
@@ -92,6 +93,7 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     const session = await deps.identity.signIn(ctx.environment.mcpUrl, input.password, input.setup, input.passwordHint);
     ctx.ensureCurrent();
     deps.vault.setSession(hostTaskOrigin(ctx.environment.mcpUrl), session.token, session.expiresAt);
+    await deps.onSessionChanged?.(ctx.environment.mcpUrl, true);
   });
   deps.ipc.handle('host-scripts:password-hint', async (event, hint: unknown) => {
     const ctx = context(event);
@@ -105,6 +107,7 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     running?.abort();
     await deps.identity.signOut(ctx.environment.mcpUrl);
     ctx.ensureCurrent();
+    await deps.onSessionChanged?.(ctx.environment.mcpUrl, false);
   });
   deps.ipc.handle('host-scripts:register', async (event, raw: unknown) => {
     const ctx = context(event);
@@ -223,4 +226,5 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
       running = null;
     }
   });
+  return () => running?.abort();
 }

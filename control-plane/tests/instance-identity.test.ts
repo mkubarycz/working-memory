@@ -144,7 +144,7 @@ it('requires trusted bootstrap, exchanges passwords for owner sessions, and cann
   expect((await request('/identity/v1/logout', {}, owner.token)).status).toBe(200);
   expect((await request('/identity/v1/hint', { passwordHint: 'revoked edit' }, owner.token)).status).toBe(401);
   expect((await request('/host-tasks/v1/admin/scripts', undefined, owner.token)).status).toBe(401);
-  expect((await request('/attachments/00000000-0000-4000-8000-000000000000', undefined, owner.token)).status).toBe(403);
+  expect((await request('/attachments/00000000-0000-4000-8000-000000000000', undefined, owner.token)).status).toBe(401);
   expect((await request('/host-tasks/v1/admin/scripts', undefined, next.token)).status).toBe(200);
 });
 

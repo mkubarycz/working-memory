@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openStore, type Store } from '../src/store';
 import { loadKinds } from '../src/kinds/loader';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { SYSTEM_IMPORT_AGENT_ID } from '../src/kinds/agent/spec';
-import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { ControlPlaneClient } from '../../tests/authenticatedFixture';
 
 const stores: Store[] = [];
 const directories: string[] = [];

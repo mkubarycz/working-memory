@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 import { openStore, type DocumentEnvelope } from '../src/store';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { loadKinds } from '../src/kinds/loader';
 
 const cleanup: Array<() => Promise<void>> = [];

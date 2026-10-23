@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, safeStorage, screen, shell } from 'electron';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -48,6 +48,7 @@ import {
   parseLoopbackMcpUrl,
   readPersistedEnvironment,
   writePersistedEnvironment,
+  probeInstanceIdentity,
 } from './environments';
 import { parseModelTurn } from './modelTools';
 import { AppMcpService, parseAppResourceContract } from './appMcpService';
@@ -91,6 +92,9 @@ import { HostTaskCredentialVault } from './hostTaskBroker';
 import { registerHostTaskIpc } from './hostTaskIpc';
 import { registerHostScriptIpc } from './hostScriptIpc';
 import { DesktopInstanceIdentity } from './instanceIdentity';
+import { registerInstanceIdentityIpc } from './instanceIdentityIpc';
+import { serveInstanceAttachment } from './instanceAttachments';
+import { hostTaskOrigin } from './hostTaskBroker';
 import { loadHostTaskAdminCredential } from '../../../control-plane/src/hostTasks';
 import { LEGACY_USER_DATA_NAME, migrateLegacyUserData } from './userDataMigration';
 import { DesktopUpdater } from './desktopUpdater';
@@ -138,6 +142,23 @@ let registeredContainerApps: ContainerClaim[] = [];
 let dataTier: DataTierManager | null = null;
 let dataTierLaunch: Promise<void> = Promise.resolve();
 let documentChangeController: AbortController | undefined;
+let instanceVault: HostTaskCredentialVault | null = null;
+let stopHostScripts: (() => void) | undefined;
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'working-memory-attachment',
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+}]);
+
+function instanceUnauthorized(mcpUrl: string, rejectedToken?: string | null): void {
+  if (rejectedToken !== undefined && instanceVault?.session(hostTaskOrigin(mcpUrl)) !== rejectedToken) return;
+  instanceVault?.clearSession(hostTaskOrigin(mcpUrl));
+  if (environmentManager.currentEnvironment?.mcpUrl === mcpUrl) {
+    documentChangeController?.abort();
+    stopHostScripts?.();
+  }
+  mainWindow?.webContents.send('instance:authentication-changed', { mcpUrl, authenticated: false });
+}
 
 function startDocumentChanges(): void {
   documentChangeController?.abort();
@@ -177,7 +198,12 @@ function startDocumentChanges(): void {
 }
 
 const environmentManager = new DesktopEnvironmentManager<ControlPlaneClient>({
-  createClient: (mcpUrl) => new ControlPlaneClient({ resolveUrl: () => mcpUrl }),
+  createClient: (mcpUrl) => new ControlPlaneClient({
+    resolveUrl: () => mcpUrl,
+    getToken: url => instanceVault?.session(hostTaskOrigin(url)) ?? null,
+    onUnauthorized: instanceUnauthorized,
+  }),
+  probe: probeInstanceIdentity,
   readPersistedSelection: () => readPersistedEnvironment(environmentFile),
   writePersistedSelection: (mcpUrl) => writePersistedEnvironment(environmentFile, mcpUrl),
   managedInstances: () => (app.isReady() ? readManagedInstances(dataTierStateDirectory()) : []),
@@ -696,7 +722,7 @@ async function callConfiguredModel(
     images: await loadPromptImages(
       images,
       environment ? new URL(environment.mcpUrl).origin : '',
-      fetch,
+      controlPlane().fetch.bind(controlPlane()),
       (data) => decodeQrPayloads(nativeImage.createFromBuffer(Buffer.from(data))),
     ),
     ...(appTools ? { appTools } : {}),
@@ -813,6 +839,7 @@ function registerIpc(): void {
     version: app.getVersion(), development: isLocalBuild() || !app.isPackaged,
   }));
   const hostTaskVault = new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets'));
+  instanceVault = hostTaskVault;
   const bootstrapFile = (mcpUrl: string): string | null => {
     const url = new URL(mcpUrl);
     const port = Number(url.port);
@@ -822,19 +849,35 @@ function registerIpc(): void {
   };
   const identity = new DesktopInstanceIdentity(hostTaskVault, async (mcpUrl) => {
     const file = bootstrapFile(mcpUrl);
+    const port = Number(new URL(mcpUrl).port);
+    if (dataTier?.instances.some(instance => instance.port === port)) return dataTier.bootstrapCredential(port);
     if (!file) throw new Error('Initial password setup requires a locally managed instance.');
     const credential = loadHostTaskAdminCredential({ WM_HOST_TASK_ADMIN_TOKEN_FILE: file });
     if (!credential) throw new Error('Local instance owner setup is unavailable.');
     return credential;
   }, (mcpUrl) => {
     const file = bootstrapFile(mcpUrl);
-    return process.platform !== 'win32' && !!file && existsSync(file);
+    return !!dataTier?.instances.some(instance => instance.port === Number(new URL(mcpUrl).port))
+      || (process.platform !== 'win32' && !!file && existsSync(file));
+  }, fetch, instanceUnauthorized);
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href;
+  const onSessionChanged = async (mcpUrl: string, authenticated: boolean) => {
+    documentChangeController?.abort();
+    if (!authenticated) stopHostScripts?.();
+    await environmentManager.resetClient();
+    mainWindow?.webContents.send('instance:authentication-changed', { mcpUrl, authenticated });
+  };
+  registerInstanceIdentityIpc({
+    ipc: ipcMain, dialog, getWindow: () => mainWindow,
+    getEnvironment: () => environmentManager.currentEnvironment,
+    rendererUrl, vault: hostTaskVault, identity, platform: process.platform,
+    onSessionChanged,
   });
-  registerHostScriptIpc({
+  stopHostScripts = registerHostScriptIpc({
     ipc: ipcMain, dialog, getWindow: () => mainWindow,
     getEnvironment: () => environmentManager.currentEnvironment,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
-    vault: hostTaskVault, identity,
+    vault: hostTaskVault, identity, onSessionChanged,
     platform: process.platform, directory: join(app.getPath('userData'), 'host-scripts'),
   });
   registerHostTaskIpc({
@@ -1122,7 +1165,7 @@ function registerIpc(): void {
     const environment = environmentManager.currentEnvironment;
     if (!environment) throw new Error('No healthy Working Memory environment is selected.');
     const baseUrl = new URL(environment.mcpUrl).origin;
-    const response = await fetch(`${baseUrl}/attachments`, {
+    const response = await controlPlane().fetch(`${baseUrl}/attachments`, {
       method: 'POST',
       headers: {
         'content-type': file.type,
@@ -1492,7 +1535,7 @@ if (!ownsSingleInstanceLock) {
         throw new Error('The selected backend did not report its version.');
       }
       return {
-        topic, sourceUrl,
+        topic, sourceUrl, fetcher: client.fetch.bind(client),
         recordReceipt: receipt => recordFeedbackReceipt(client, topic.id, receipt),
         context: { desktop: { version: app.getVersion(), build: __WM_BUILD_TIMESTAMP__ }, backend: { version: result.version } },
       };
@@ -1531,6 +1574,11 @@ if (!ownsSingleInstanceLock) {
       );
     }
     registerIpc();
+    protocol.handle('working-memory-attachment', async request => {
+      const environment = environmentManager.currentEnvironment;
+      if (!environment) return new Response('Select a Working Memory instance first.', { status: 401 });
+      return serveInstanceAttachment(request, environment, controlPlane());
+    });
     await ensureWindow();
     const initialDeepLink = deepLinkFromArgs(process.argv);
     if (initialDeepLink) {

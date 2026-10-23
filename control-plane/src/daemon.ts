@@ -8,6 +8,9 @@
  */
 
 import * as fs from 'node:fs';
+import { join } from 'node:path';
+import { ensureInstanceBootstrap } from './instanceBootstrap.js';
+import { InstanceIdentity } from './instanceIdentity.js';
 import {
   dbPath,
   lockPath,
@@ -54,8 +57,12 @@ function resolvePreferredPort(): number {
 
 async function startWithFallback(preferred: number, store: Store): Promise<RunningServer> {
   const host = resolveHost();
-  // No implicit bootstrap: only an explicitly configured, externally provisioned file.
-  const hostTaskAdminCredential = loadHostTaskAdminCredential();
+  const configured = new InstanceIdentity(store.db).configured();
+  const hostTaskAdminCredential = configured ? undefined : loadHostTaskAdminCredential()
+    ?? (process.platform === 'win32' ? undefined : ensureInstanceBootstrap(join(runtimeDir(), 'instance-bootstrap.secret')));
+  if (!configured && !hostTaskAdminCredential) {
+    console.warn('[identity] Initial owner setup requires a managed Docker instance on Windows. Data access remains locked until an owner password is configured.');
+  }
   try {
     return await startServer({ host, port: preferred, version: SERVICE_VERSION, store, hostTaskAdminCredential });
   } catch (err) {

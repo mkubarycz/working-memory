@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 import { openStore, type Store } from '../src/store';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { loadKinds } from '../src/kinds/loader';
 import { validateSpec } from '../src/kinds/registry';
 import type { ITopic } from '../src/kinds/topic/topic';

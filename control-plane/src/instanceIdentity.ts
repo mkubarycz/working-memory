@@ -117,7 +117,9 @@ export class InstanceIdentity {
     try {
       if (url.search || req.headers.origin) throw new IdentityError(400, 'Use the trusted desktop connection, not a browser page.');
       if (req.method === 'GET' && url.pathname === '/identity/v1/status') {
-        send(200, { passwordConfigured: this.configured(), passwordHint: this.passwordHint(), scope: 'host-tasks-preview' });
+        const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+        send(200, { passwordConfigured: this.configured(), passwordHint: this.passwordHint(),
+          authenticated: this.authenticate(token), scope: 'instance' });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/identity/v1/logout') {

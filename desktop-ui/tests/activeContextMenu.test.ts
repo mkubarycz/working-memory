@@ -6,9 +6,9 @@ import {
 } from '../src/renderer/activeContextMenu';
 import type { WorkstreamVM } from '../src/renderer/documents/types';
 import { openStore } from '../../control-plane/src/store';
-import { startServer } from '../../control-plane/src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { loadKinds } from '../../control-plane/src/kinds/loader';
-import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { ControlPlaneClient } from '../../tests/authenticatedFixture';
 import { loadActivePanelData, loadWorkstreamViewModel, resolveDesktopAction } from '../src/main/resolver';
 
 function reactiveProxy<T extends object>(value: T, cache = new WeakMap<object, object>()): T {

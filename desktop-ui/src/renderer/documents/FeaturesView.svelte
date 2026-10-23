@@ -1,11 +1,9 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import HostScripts from '../HostScripts.svelte';
   import type { InstanceFeatures } from '../../../../control-plane/src/instanceFeatures';
 
   let { onChanged }: { onChanged: (features: InstanceFeatures) => void } = $props();
   let features = $state<InstanceFeatures | null>(null);
-  let connected = $state(false);
   let enabled = $state(false);
   let busy = $state(false);
   let error = $state('');
@@ -19,7 +17,7 @@
       enabled = features.hostTasks;
       error = '';
       onChanged(features);
-    } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+    } catch (cause) { if (active) error = cause instanceof Error ? cause.message : String(cause); }
   }
   async function toggle(requested: boolean): Promise<void> {
     busy = true;
@@ -38,23 +36,34 @@
 
 <section aria-label="Feature flags">
   <h2>Features</h2>
-  <p>Features are saved on the selected control-plane instance and shared by all its clients.
-    Sign in as the instance owner to change them.</p>
-  <HostScripts connectionOnly onConnectionChanged={(value) => { connected = value; }} />
-  <label>
-    <input type="checkbox" bind:checked={enabled} disabled={!features || !connected || busy}
-      onchange={(event) => void toggle(event.currentTarget.checked)} />
-    Host tasks (experimental)
-  </label>
-  <p>Off by default. Enables approved host scripts, caller permissions, and the desktop runner.
-    Turning it off hides the Host tasks tab entry and blocks host-task HTTP/MCP requests with a feature-disabled error.
-    Existing scripts, grants, and history are retained.</p>
+  <p>Features apply to the selected instance and all its clients.</p>
+  <table>
+    <thead><tr><th>Feature name</th><th>Short description</th><th>Enabled</th></tr></thead>
+    <tbody><tr>
+      <th scope="row">Host tasks <small>Experimental</small></th>
+      <td>Run owner-approved scripts on this computer with controlled agent access.</td>
+      <td>
+        <input type="checkbox" role="switch" aria-label="Host tasks" bind:checked={enabled}
+          disabled={!features || busy} onchange={(event) => void toggle(event.currentTarget.checked)} />
+      </td>
+    </tr></tbody>
+  </table>
+  <p class="hint">Turning off Host tasks hides its UI and blocks new requests. Existing scripts, permissions, and history are retained.</p>
   <button disabled={busy} onclick={() => void load()}>Refresh features</button>
   {#if error}<p role="alert">{error}</p>{/if}
 </section>
 
 <style>
   section { display: grid; gap: 12px; }
-  label { display: flex; align-items: center; gap: 8px; }
-  input { width: auto; }
+  table { width: 100%; border-collapse: collapse; text-align: left; }
+  th, td { padding: 12px; border-bottom: 1px solid var(--vscode-panel-border, #444); vertical-align: middle; }
+  th:last-child, td:last-child { text-align: center; width: 80px; }
+  small { display: block; font-weight: normal; color: var(--desktop-chat-muted); }
+  .hint { font-size: 12px; color: var(--desktop-chat-muted); }
+  input { appearance: none; width: 36px; height: 20px; border-radius: 12px; background: var(--vscode-input-background, #555); border: 1px solid var(--vscode-input-border, #888); position: relative; cursor: pointer; }
+  input::before { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--vscode-foreground, #eee); }
+  input:checked { background: var(--vscode-button-background, #0078d4); }
+  input:checked::before { left: 18px; }
+  input:disabled { opacity: 0.5; cursor: default; }
+  input:focus-visible { outline: 2px solid var(--vscode-focusBorder, #0078d4); outline-offset: 2px; }
 </style>

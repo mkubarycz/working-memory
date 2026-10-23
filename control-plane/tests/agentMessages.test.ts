@@ -1,16 +1,17 @@
+import { fetch as authenticatedFetch } from '../../tests/authenticatedFixture';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 import { openStore, type DocumentEnvelope, type Store } from '../src/store';
 import { loadKinds } from '../src/kinds/loader';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { ensureSystemImportAgent } from '../src/agentMessageMigration';
 import { SYSTEM_IMPORT_AGENT_ID } from '../src/kinds/agent/spec';
-import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { ControlPlaneClient } from '../../tests/authenticatedFixture';
 
 const directories: string[] = [];
 const stores: Store[] = [];
@@ -365,7 +366,7 @@ describe('versioned automatic Alert migration', () => {
     stores.push(store);
     const server = await startServer({ port: 0, store });
     try {
-      const notice = await (await fetch(`${server.url}/changes?since=10`)).json();
+      const notice = await (await authenticatedFetch(`${server.url}/changes?since=10`)).json();
       const firstVersion = revision === 'fresh' ? 12 : 11;
       expect(notice).toEqual({ resourceVersion: firstVersion + 1, reset: true, changes: [] });
       expect(store.getDocument({ id: 'old-0' })).toMatchObject({

@@ -47,7 +47,8 @@ it('blocks all host-task HTTP/MCP usage while off, preserves records, and requir
       ...(origin ? { Origin: origin } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  expect(await (await request('/features/v1')).json()).toEqual({ hostTasks: false });
+  expect((await request('/features/v1')).status).toBe(401);
+  expect(await (await request('/features/v1', 'GET', undefined, owner.token)).json()).toEqual({ hostTasks: false });
   for (const [method, path] of [
     ['GET', '/admin'], ['GET', '/admin/scripts'], ['POST', '/admin/apps'], ['POST', '/requests'],
     ['POST', '/runner/claim'], ['POST', '/scripts/mcp'], ['POST', '/admin/scripts/claim'],

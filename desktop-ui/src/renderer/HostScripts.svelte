@@ -141,12 +141,12 @@
     <details>
       <summary>Connection · instance owner</summary>
       <p>Connected to <code>{state.environment}</code>. This session is kept in memory until sign-out or app restart.</p>
-      <p class="hint">This preview protects host-task administration. Instance-wide API permissions and automatic
-        container credentials are separate roadmap work.</p>
+      <p class="hint">Your owner session protects instance data and settings. Agent credentials and
+        host-script execution require separate approval.</p>
       <button disabled={busy} onclick={() => void perform(async () => {
         runnerActive = false;
         if (timer) clearInterval(timer);
-        await window.workingMemory.signOutHostScripts();
+        await window.workingMemory.signOutInstance();
         selectedJob = null;
       })}>Sign out</button>
       <details ontoggle={(event) => {

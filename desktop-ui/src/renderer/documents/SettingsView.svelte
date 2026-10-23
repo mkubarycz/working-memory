@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type SettingsTab = 'models' | 'routing' | 'human' | 'instances' | 'updates' | 'features';
+  export type SettingsTab = 'models' | 'routing' | 'human' | 'instances' | 'updates' | 'features' | 'access';
 </script>
 
 <script lang="ts">
@@ -14,6 +14,7 @@
   import InstancesView from './InstancesView.svelte';
   import UpdatesView from './UpdatesView.svelte';
   import FeaturesView from './FeaturesView.svelte';
+  import AccessView from './AccessView.svelte';
   import type { InstanceFeatures } from '../../../../control-plane/src/instanceFeatures';
 
   interface Props {
@@ -104,6 +105,7 @@
     <button role="tab" aria-selected={tab === 'instances'} onclick={() => (tab = 'instances')}>Instances</button>
     <button role="tab" aria-selected={tab === 'updates'} onclick={() => (tab = 'updates')}>Updates</button>
     <button role="tab" aria-selected={tab === 'features'} onclick={() => (tab = 'features')}>Features</button>
+    <button role="tab" aria-selected={tab === 'access'} onclick={() => (tab = 'access')}>Access</button>
   </div>
   {#if tab === 'models'}
     <p class="settings-intro">
@@ -213,6 +215,8 @@
     <InstancesView {selectedMcpUrl} {onMakeCurrent} {onInstancesChanged} />
   {:else if tab === 'features'}
     {#key selectedMcpUrl}<FeaturesView onChanged={onFeaturesChanged} />{/key}
+  {:else if tab === 'access'}
+    {#key selectedMcpUrl}<AccessView />{/key}
   {:else if tab === 'updates'}
     <UpdatesView />
   {:else}

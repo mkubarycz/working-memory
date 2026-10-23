@@ -12,6 +12,9 @@
   import ContainerAppDetail from './ContainerAppDetail.svelte';
   import HostTasks from './HostTasks.svelte';
   import HostScripts from './HostScripts.svelte';
+  import InstanceConnection from './InstanceConnection.svelte';
+  import InstancesView from './documents/InstancesView.svelte';
+  import type { InstanceConnectionState } from '../shared/instanceIdentity';
   import type { ScriptTask } from '../shared/hostTasks';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
@@ -142,6 +145,11 @@
   let buildInfoError = $state('');
   const desktopBuildLabel = $derived(formatDesktopBuildLabel(desktopBuildInfo, DESKTOP_BUILD_TIMESTAMP));
   let instanceFeatures = $state<InstanceFeatures>({ hostTasks: false });
+  let instanceConnection = $state<InstanceConnectionState | null>(null);
+  let instanceConnectionError = $state('');
+  let managingInstancesBeforeSignIn = $state(false);
+  let pendingAccessRequests = $state(0);
+  let pendingResource: { kind: DesktopResourceKind; identifier: string } | null = null;
   let featuresError = $state('');
 
   interface ComposerImage {
@@ -346,11 +354,11 @@
 
   function chatAttachmentUrl(id: string): string {
     if (!selectedEnvironment?.mcpUrl) return '';
-    return `${new URL(selectedEnvironment.mcpUrl).origin}/attachments/${encodeURIComponent(id)}`;
+    return `${selectedAttachmentBaseUrl()}/attachments/${encodeURIComponent(id)}`;
   }
 
   function selectedAttachmentBaseUrl(): string {
-    return selectedEnvironment?.mcpUrl ? new URL(selectedEnvironment.mcpUrl).origin : '';
+    return selectedEnvironment ? `working-memory-attachment://${selectedEnvironment.port}` : '';
   }
 
   function clearComposerImages(): void {
@@ -1106,15 +1114,28 @@
     void refreshOpenAiHealth();
     void initializeWorkspace();
     const stopListeningForDeepLinks = window.workingMemory.onOpenResource(
-      (kind, identifier) => void openResource(kind, identifier),
+      (kind, identifier) => {
+        if (instanceConnection?.authenticated) void openResource(kind, identifier);
+        else pendingResource = { kind, identifier };
+      },
     );
+    const stopListeningForAuthentication = window.workingMemory.onInstanceAuthenticationChanged(event => {
+      if (event.mcpUrl !== selectedEnvironment?.mcpUrl || event.authenticated) return;
+      if (instanceConnection) instanceConnection = { ...instanceConnection, authenticated: false };
+      pendingAccessRequests = 0;
+    });
     const stopListeningForChanges = window.workingMemory.onDocumentChanges(handleDocumentChanges);
     const backendHealthPoll = window.setInterval(() => {
       void refreshBackendHealth();
-      void refreshFeatures();
+      if (instanceConnection?.authenticated) {
+        void refreshInstanceConnection();
+        void refreshFeatures();
+        void refreshAccessRequests();
+      }
     }, 30_000);
     return () => {
       stopListeningForDeepLinks();
+      stopListeningForAuthentication();
       stopListeningForChanges();
       documentChanges.clear();
       window.clearInterval(backendHealthPoll);
@@ -1127,9 +1148,59 @@
   async function initializeWorkspace(): Promise<void> {
     // Discovery waits for the launch-time data-tier start, which may change the selected environment.
     await discoverEnvironments(true);
+    if (!await refreshInstanceConnection()) return;
+    await loadAuthenticatedWorkspace();
+  }
+
+  async function refreshInstanceConnection(): Promise<boolean> {
+    const generation = environmentGeneration, mcpUrl = selectedEnvironment?.mcpUrl;
+    instanceConnectionError = '';
+    if (!mcpUrl) { instanceConnection = null; return false; }
+    try {
+      const state = await window.workingMemory.getInstanceIdentity();
+      if (generation !== environmentGeneration || selectedEnvironment?.mcpUrl !== mcpUrl) return false;
+      instanceConnection = state;
+      return state.authenticated;
+    } catch (cause) {
+      if (generation === environmentGeneration) {
+        instanceConnection = null;
+        instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+      }
+      return false;
+    }
+  }
+
+  async function refreshAccessRequests(): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      const snapshot = await window.workingMemory.getInstanceAccess();
+      if (generation === environmentGeneration && instanceConnection?.authenticated) {
+        pendingAccessRequests = snapshot.requests.filter(request => request.state === 'pending').length;
+      }
+    } catch (cause) {
+      if (generation === environmentGeneration && instanceConnection?.authenticated) {
+        instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+      }
+    }
+  }
+
+  async function connectedToInstance(): Promise<void> {
+    if (!await refreshInstanceConnection()) return;
+    managingInstancesBeforeSignIn = false;
+    await documentSaves.flushAll();
+    await loadAuthenticatedWorkspace();
+    if (pendingResource) {
+      const resource = pendingResource;
+      pendingResource = null;
+      await openResource(resource.kind, resource.identifier);
+    }
+  }
+
+  async function loadAuthenticatedWorkspace(): Promise<void> {
     restoreUnreadResponses();
     await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps(), refreshFeatures()]);
-    await restoreDocumentTabs();
+    await refreshAccessRequests();
+    if (!documentTabsPersistenceReady) await restoreDocumentTabs();
     await startDocumentChanges();
   }
 
@@ -1307,6 +1378,10 @@
   }
 
   function resetEnvironmentState(): void {
+    instanceConnection = null;
+    instanceConnectionError = '';
+    pendingAccessRequests = 0;
+    pendingResource = null;
     hostTaskArguments = {};
     instanceFeatures = { hostTasks: false };
     featuresError = '';
@@ -1360,13 +1435,14 @@
     environmentLoading = true;
     environmentError = '';
     try {
-      await documentSaves.flushAll();
+      if (instanceConnection?.authenticated) await documentSaves.flushAll();
       documentTabsPersistenceReady = false;
       environmentGeneration += 1;
       historyRequestGeneration = null;
       resetEnvironmentState();
       const state = await window.workingMemory.switchEnvironment(mcpUrl);
       applyEnvironmentState(state);
+      if (!await refreshInstanceConnection()) return;
       restoreUnreadResponses();
       input = readComposerDraft(localStorage, selectedEnvironment?.id);
       await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
@@ -2233,6 +2309,25 @@
   }}
 />
 
+{#if !instanceConnection?.authenticated}
+  {#if managingInstancesBeforeSignIn}
+    <main class="connection-instances" style="padding: 24px; height: 100vh; overflow: auto;">
+      <button onclick={() => { managingInstancesBeforeSignIn = false; void refreshInstanceConnection(); }}>Back to sign-in</button>
+      <h1>Manage instances</h1>
+      <InstancesView selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
+        onMakeCurrent={async url => { managingInstancesBeforeSignIn = false; await switchEnvironment(url); }}
+        onInstancesChanged={async () => { await discoverEnvironments(); await refreshInstanceConnection(); }} />
+    </main>
+  {:else}
+    {#key selectedEnvironment?.mcpUrl}
+      <InstanceConnection connection={instanceConnection} error={instanceConnectionError || environmentError}
+        {environments} selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
+        onSwitch={switchEnvironment} onConnected={connectedToInstance}
+        onRetry={async () => { await discoverEnvironments(); if (await refreshInstanceConnection()) await loadAuthenticatedWorkspace(); }}
+        onManage={() => { managingInstancesBeforeSignIn = true; }} />
+    {/key}
+  {/if}
+{:else}
 <div
   class="shell"
   class:active-collapsed={activeRailCollapsed}
@@ -2538,9 +2633,7 @@
             onOpenWorkstream={(id) => void openResource('workstream', id)}
             onSetAgentMessageStatus={setAgentMessageStatus}
             onRecordDecision={recordAgentMessageDecision}
-            attachmentBaseUrl={selectedEnvironment?.mcpUrl
-              ? new URL(selectedEnvironment.mcpUrl).origin
-              : ''}
+            attachmentBaseUrl={selectedAttachmentBaseUrl()}
             onAttachImages={attachImages}
             onOpenLink={openLink}
           />
@@ -3015,7 +3108,12 @@
       AI: {openAiHealth.state}
     </span>
     {#if featuresError}<span role="alert">Features: {featuresError}</span>{/if}
+    {#if instanceConnectionError}<span role="alert">Connection: {instanceConnectionError}</span>{/if}
+    {#if pendingAccessRequests}
+      <button onclick={() => openSettings('access')}>{pendingAccessRequests} access request{pendingAccessRequests === 1 ? '' : 's'} - Review</button>
+    {/if}
     {#if buildInfoError}<span role="alert">Build information: {buildInfoError}</span>{/if}
     <span class="desktop-build-status">{desktopBuildLabel}</span>
   </footer>
 </div>
+{/if}

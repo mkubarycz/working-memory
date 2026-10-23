@@ -9,6 +9,7 @@ import type {
 import type { PanelData } from '../../../shared/panelData';
 import type { DocumentChanges } from '../../../shared/documentChanges';
 import type { HostTaskDesktopApi } from './hostTasks';
+import type { InstanceIdentityApi } from './instanceIdentity';
 import type { WorkstreamSection } from '../../../shared/panelData';
 import type {
   ApplicationContractMetadata,
@@ -400,7 +401,7 @@ export interface DesktopBuildInfo {
   development: boolean;
 }
 
-export interface DesktopApi extends HostTaskDesktopApi {
+export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   getDesktopBuildInfo(): Promise<DesktopBuildInfo>;
   prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
   sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;

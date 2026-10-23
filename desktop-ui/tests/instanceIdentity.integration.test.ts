@@ -16,7 +16,8 @@ it('connects without Keychain or secret files, keeps the password transient, and
   const vault = new HostTaskCredentialVault(native, process.platform, '/not-used-session-only');
   const identity = new DesktopInstanceIdentity(vault, async () => bootstrap, () => true);
   const mcpUrl = `${server.url}/mcp`, password = 'a private owner password';
-  expect(await identity.status(mcpUrl)).toEqual({ passwordConfigured: false, passwordHint: '', setupAvailable: true });
+  expect(await identity.status(mcpUrl)).toEqual({ environment: server.url, authenticated: false,
+    passwordConfigured: false, passwordHint: '', setupAvailable: true });
   const setup = await identity.signIn(mcpUrl, password, true, 'First owner reminder');
   vault.setSession(server.url, setup.token, setup.expiresAt);
   expect(await identity.features(mcpUrl)).toEqual({ hostTasks: false });
@@ -24,7 +25,8 @@ it('connects without Keychain or secret files, keeps the password transient, and
   expect(await identity.setFeatures(mcpUrl, { hostTasks: true })).toEqual({ hostTasks: true });
   expect(await vault.read(server.url)).toBe(setup.token);
   expect(await new HostScriptAdminClient(mcpUrl, setup.token).scripts()).toMatchObject({ tasks: [] });
-  expect(await identity.status(mcpUrl)).toEqual({ passwordConfigured: true, passwordHint: 'First owner reminder', setupAvailable: true });
+  expect(await identity.status(mcpUrl)).toEqual({ environment: server.url, authenticated: true,
+    passwordConfigured: true, passwordHint: 'First owner reminder', setupAvailable: true });
   await identity.setPasswordHint(mcpUrl, 'An updated reminder\nwith free text');
   expect((await identity.status(mcpUrl)).passwordHint).toBe('An updated reminder\nwith free text');
   await identity.signOut(mcpUrl);

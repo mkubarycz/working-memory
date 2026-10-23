@@ -10,10 +10,10 @@ import {
 } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
 import alertModule from '../src/kinds/alert';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { openStore } from '../src/store';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 let sqliteAvailable = true;
 try {

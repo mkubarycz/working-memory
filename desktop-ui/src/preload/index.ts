@@ -8,6 +8,16 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 
 const api: DesktopApi = {
   getDesktopBuildInfo: () => invoke('desktop:build-info'),
+  getInstanceIdentity: () => invoke('instance:identity'),
+  signInInstance: (input) => invoke('instance:sign-in', input),
+  signOutInstance: () => invoke('instance:sign-out'),
+  getInstanceAccess: () => invoke('instance:access'),
+  reviewInstanceAccess: (input) => invoke('instance:review-access', input),
+  onInstanceAuthenticationChanged: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
+    ipcRenderer.on('instance:authentication-changed', handler);
+    return () => ipcRenderer.removeListener('instance:authentication-changed', handler);
+  },
   getInstanceFeatures: () => invoke('instance:features'),
   setInstanceFeatures: (input) => invoke('instance:set-features', input),
   signInHostScripts: (input) => invoke('host-scripts:sign-in', input),

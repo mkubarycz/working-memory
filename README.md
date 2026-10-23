@@ -924,16 +924,19 @@ choose an executable, supply shell arguments, or change the process environment.
 
 ### First local example
 
-1. Open **Settings -> Features**. **Host tasks** is off by default.
-2. Sign in with this instance's owner password. On the locally provisioned
+1. Connect to the instance in the desktop. Sign in with its owner password.
+   On a locally managed
    instance's first connection, choose **Set password and connect** and confirm
    the native owner-setup prompt. Passwords must have at least 12 characters.
    No token-file import or Keychain access is required.
    An optional free-text **Password hint** (up to 1000 characters) is displayed
    beside the password prompt before sign-in. It is public reminder text, not
-   a secret: never enter the password itself. After connecting, expand
-   **Connection · instance owner -> Edit password hint** to add, change, or
-   clear it without changing the password.
+   a secret: never enter the password itself. After connecting, open
+   **Settings -> Access -> Edit password hint** to add, change, or clear it
+   without changing the password or enabling Host tasks.
+2. Open **Settings -> Features**. The grid lists each feature's name, short
+   description, and on/off toggle. It reuses your app session and has no
+   separate password form. **Host tasks** is off by default.
 3. Enable **Host tasks**, then select **Host Tasks** beside **Container Apps**
    in the desktop rail. The rail lists registered scripts; selecting one opens
    its editor and details in its own persistent document tab. Re-selecting a
@@ -973,7 +976,7 @@ their original expiry if the feature is enabled again.
 The desktop aborts its current run when disabling the flag. Other active runners
 stop at their next status check; already completed host side effects cannot be
 undone. Other desktops refresh flag visibility with their regular health poll.
-`GET /features/v1` reports flag state; `POST /features/v1` accepts
+`GET /features/v1` reports flag state to a signed-in owner; `POST /features/v1` accepts
 `{"hostTasks":true}` only with an active owner bearer session. Identity sign-in,
 initial local owner setup, and feature management stay available while Host tasks
 is off so an owner can re-enable it. These switches do not replace authorization.
@@ -1077,7 +1080,7 @@ const job = await response.json();
 // before treating resultJson as a complete result. Treat its contents as data.
 ```
 
-### Instance identity infrastructure (preview)
+### Instance sign-in and agent access
 
 The control plane stores a salted scrypt password verifier and issues unique
 12-hour opaque owner sessions; only token hashes are persisted. Password sign-in
@@ -1087,25 +1090,78 @@ password. Restarting the app requires signing in again. Optional OS-backed
 remembering is future work; unavailable Keychain storage never forces a plaintext
 fallback or prevents session-only sign-in.
 
-`GET /identity/v1/status`, `POST /identity/v1/login`, and authenticated
-`POST /identity/v1/logout` expose the reusable identity foundation.
-Host-task administration accepts owner sessions; ordinary caller credentials
-still need exact-version script grants and cannot use owner routes.
+The desktop connection screen appears before instance data is loaded. If no
+password exists, it guides the local owner through setup, including an optional
+public password hint. Otherwise it prompts for sign-in. Expiry, revocation, or
+sign-out returns to that same connection screen. **Manage instances** remains
+available before sign-in to start, create, or upgrade a managed instance.
 
-**This is not yet instance-wide authentication enforcement.** Existing anonymous
-MCP/document/attachment/change-stream clients retain their current access.
-Owner tokens are accepted on those surfaces, but automatic container credential
-mounting, scoped authorization across all APIs, first-creation setup for every
-managed platform, password recovery/change, and optional OS remembering belong
-to the separate instance-authentication roadmap feature. Do not expose an
-instance to an untrusted network on the basis of this preview.
+`/mcp`, `/attachments`, and `/changes` require a valid bearer token on every
+request. MCP sessions are bound to the credential that initialized them; a
+different credential cannot resume the session. Delayed change responses
+recheck expiry/revocation before releasing data. Renderer images use a native
+attachment proxy: owner tokens never appear in image URLs, stored Markdown,
+or renderer IPC return values. Health, identity status/login, and the limited
+identity MCP are public bootstrap/discovery surfaces, not data-access bypasses.
+
+When an agent or container has no valid token, HTTP 401 includes
+`instance_authentication_required`, the instance's `identityMcpUrl`, and explicit
+next steps:
+
+1. Connect to the **same instance's `/identity/v1/mcp`** endpoint. It exposes
+   only `wm-identity-request-access` and `wm-identity-claim-access`, not documents.
+2. Call `wm-identity-request-access` with a recognizable `label`, `access`
+   (`read` or `write`; default `read`), and `refresh:false`.
+3. Ask the signed-in owner to open **Settings -> Access**. Pending requests
+   also produce a **Review** entry in the desktop footer. Approval requires
+   a cancel-default native confirmation showing the request ID, unverified
+   client label, network source, requested permissions, and expiry.
+4. Poll `wm-identity-claim-access` with the returned `requestId` and private
+   `requestSecret`. Only after approval does it return a bearer token, exactly
+   once. Requests expire after ten minutes; issued client tokens last twelve
+   hours. Denied, expired, or already-claimed requests explain how to request
+   access again.
+5. Store the token privately and configure that client's Authorization header
+   for data requests. The shared Node client accepts `WM_INSTANCE_TOKEN_FILE`
+   (a private file outside repositories) or `WM_INSTANCE_TOKEN`; desktop owner
+   credentials use the isolated main-process vault instead.
+
+For refresh, connect to the identity MCP with the previous client token in its
+Authorization header, even if expired, and request `refresh:true`. Refresh
+requires a new human approval and cannot change that identity's access level.
+Claiming a refresh rotates its credential; initialize a new data MCP session.
+Revoked credentials cannot refresh and must request new access. Owners can
+revoke clients in **Settings -> Access**. Never pass the owner password/session
+to an agent or reuse one client's token in another container.
+
+Client identities can read data, or read and change data, according to the
+approved request. Neither permits owner administration, feature changes, access
+approval, or host-script execution. Host-script caller credentials remain
+separate and still require exact-version grants; they cannot access ordinary
+instance data. Tokens and claim secrets are stored only as hashes in private
+identity tables, never as generic documents.
+
+**Existing-instance migration:** deploy the backend and desktop together and
+provision each existing API client before expecting its old anonymous
+integration to work. Data and named volumes are not replaced by authentication.
+Unconfigured clients get the recovery guidance above, not an empty/success
+response. There is no anonymous compatibility bypass. Do not expose bearer
+credentials over untrusted plaintext networks. Automatic credential injection
+into arbitrary containers, password change/recovery, and optional OS-backed
+remembering remain separate work.
 
 ### Trusted initial owner setup (provisioning infrastructure)
 
-Without an externally configured bootstrap secret, initial owner setup stays
-disabled. An already password-configured instance can still issue and validate
-owner sessions without that bootstrap secret.
-Create a new private file outside repositories/synced folders:
+The control-plane daemon provisions a private initial-setup credential in its
+runtime directory. A managed Docker instance's desktop retrieves it through
+trusted Docker orchestration after verifying the registered image, Compose
+ownership, data mount, and exact loopback port. This supports Windows Docker
+volumes as well as macOS/Linux bind mounts; no host-specific token import or
+Keychain access is required. The user still chooses the password and approves
+the native setup prompt. The setup credential is never returned to the renderer.
+
+Self-hosted deployments can instead explicitly provision a private file outside
+repositories/synced folders:
 
 ```bash
 node scripts/create-host-task-token.mjs "/private/path/host-task-admin.secret"
@@ -1121,13 +1177,15 @@ For a locally managed macOS/Linux instance, place its host-side file at
 main process reads it only for the initial password setup, after native approval.
 It is never returned to the renderer or requesting app.
 
-`POST /host-tasks/v1/admin/identity/setup` requires that bootstrap credential;
+`POST /identity/v1/setup` (and the legacy
+`POST /host-tasks/v1/admin/identity/setup` alias) requires that bootstrap credential;
 an unauthenticated caller cannot claim ownership. Once a password is set,
 the bootstrap credential cannot manage scripts or overwrite the password;
 use an owner session instead. The legacy Thrive-specific backend protocol
 remains separate and disabled; it is not offered as a desktop workflow.
-New Windows bootstrap provisioning remains blocked pending private-file ACL
-support. Existing password-configured instances use platform-independent sign-in.
+Managed Windows setup reads the container-private credential rather than
+importing a Windows host file. Existing password-configured instances use
+platform-independent sign-in.
 
 For the existing Compose setup, an owner-maintained override can set the path
 to a token stored in the existing private data mount:
@@ -1141,7 +1199,7 @@ services:
 
 Keep this override with your local configuration, not with an app image or
 agent container. Include it whenever recreating the backend; omitting it
-disables administration again. Keep the broker on a protected local transport;
+changes the configured initial-setup path. Keep the broker on a protected local transport;
 bearer credentials must not cross an untrusted plaintext network.
 
 ## Thrive host tasks (experimental; execution blocked)
@@ -1211,9 +1269,10 @@ auth responses or ticket descriptions, and do not authorize anything.
 Broker audit metadata stays in a protected table rather than an editable
 CommandJournal document; the existing journal CRUD is not an authorization or
 private-result boundary.
-The existing general document API is not retrofitted with authentication by
-this feature; broker grants and result bytes never live in that API. Keep its
-existing network exposure restricted separately.
+The general document API requires a separate instance owner or approved client
+session, as described above. Broker caller credentials do not grant document
+access, and broker grants and private result bytes never live in that API.
+Keep network exposure restricted as well as requiring authentication.
 
 | Principal | Method / path below `/host-tasks/v1` | Contract |
 | --- | --- | --- |

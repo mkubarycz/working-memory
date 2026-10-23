@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
 import { clearKinds } from '../../control-plane/src/kinds/registry';
 import { loadKinds } from '../../control-plane/src/kinds/loader';
-import { startServer } from '../../control-plane/src/server';
-import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { startServer } from '../../tests/authenticatedFixture';
+import { ControlPlaneClient } from '../../tests/authenticatedFixture';
 import { toAgentMessageVM } from '../../shared/viewModels/agentMessageVms';
 import { mergeMessageRows } from '../src/renderer/agentMessages';
 import type { ChatRun } from '../src/renderer/chatHistory';

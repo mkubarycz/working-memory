@@ -12,6 +12,7 @@ export async function serializeFeedback(
   sourceUrl: string,
   requestId: string,
   context: FeedbackContext,
+  fetcher: typeof fetch = fetch,
 ): Promise<string> {
   if (!UUID.test(requestId)) throw new Error('A valid sharing request ID is required.');
   const sharedBody = `${topic.body}\n\n---\n\n## Feedback environment\n\n`
@@ -24,7 +25,7 @@ export async function serializeFeedback(
   let total = 0;
   for (const id of ids) {
     if (!UUID.test(id)) throw new Error(`Invalid attachment reference: ${id}`);
-    const response = await fetch(new URL(`/attachments/${id}`, sourceUrl), { signal: AbortSignal.timeout(30_000), redirect: 'error' });
+    const response = await fetcher(new URL(`/attachments/${id}`, sourceUrl), { signal: AbortSignal.timeout(30_000), redirect: 'error' });
     if (!response.ok) throw new Error(`Unable to read screenshot ${id} (HTTP ${response.status}); nothing was shared.`);
     const mimeType = response.headers.get('content-type')?.split(';')[0].trim() ?? '';
     if (!IMAGE_TYPES[mimeType]) throw new Error(`Unsupported screenshot type: ${mimeType}`);
@@ -140,6 +141,7 @@ export class FeedbackSender {
   constructor(private readonly source: (id: string) => Promise<{
     topic: Pick<Topic, 'title' | 'body' | 'topicType'>; sourceUrl: string; context: FeedbackContext;
     recordReceipt: (receipt: SharedTopicReceipt) => Promise<void>;
+    fetcher?: typeof fetch;
   }>) {}
 
   private async snapshot(id: string, requestId: string): Promise<FeedbackSnapshot> {
@@ -147,8 +149,8 @@ export class FeedbackSender {
     if (this.requestId !== requestId || !this.pending) {
       this.requestId = requestId;
       this.pending = (async () => {
-        const { topic, sourceUrl, context, recordReceipt } = await this.source(id);
-        return { id, body: await serializeFeedback(topic, sourceUrl, requestId, context), context, recordReceipt, servers: [], createdAt: Date.now() };
+        const { topic, sourceUrl, context, recordReceipt, fetcher } = await this.source(id);
+        return { id, body: await serializeFeedback(topic, sourceUrl, requestId, context, fetcher), context, recordReceipt, servers: [], createdAt: Date.now() };
       })();
     }
     let snapshot: FeedbackSnapshot;

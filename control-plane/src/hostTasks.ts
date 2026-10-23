@@ -728,7 +728,7 @@ export class HostTaskBroker {
   async handleFeatures(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     await this.features.handle(req, res, url, () => {
       const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
-      if (!this.identity.authenticate(token)) throw new IdentityError(401, 'Sign in as the instance owner to change features.');
+      if (!this.identity.authenticate(token)) throw new IdentityError(401, 'Sign in as the instance owner to access feature settings.');
     });
   }
 
