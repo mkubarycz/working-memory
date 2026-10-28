@@ -10,10 +10,10 @@ import {
 } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
 import alertModule from '../src/kinds/alert';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { openStore } from '../src/store';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 let sqliteAvailable = true;
 try {
@@ -38,7 +38,7 @@ function jsonOf<T>(res: unknown): T {
 
 interface Envelope {
   kind: string;
-  metadata: { id: string; slug: string | null; resourceVersion: number };
+  metadata: { id: string; resourceVersion: number };
   spec: Record<string, unknown>;
   status: Record<string, unknown>;
 }
@@ -185,7 +185,6 @@ describe('Alert kind loader', () => {
           name: 'wm-document-create',
           arguments: {
             kind: 'Alert',
-            slug: 'disk-space',
             spec: { description: 'Disk is nearly full.' },
           },
         }),
@@ -231,7 +230,7 @@ describe('Alert kind loader', () => {
       await client.connect(transport);
       const res = await client.callTool({
         name: 'wm-document-create',
-        arguments: { kind: 'Alert', slug: 'bad', spec: { description: 'D', status: 'open' } },
+        arguments: { kind: 'Alert', spec: { description: 'D', status: 'open' } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);
       expect(store.listDocuments({ kind: 'Alert' })).toEqual([]);

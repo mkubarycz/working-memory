@@ -5,11 +5,12 @@ import { posix, win32 } from 'node:path';
 import { CopilotClient, RuntimeConnection, type CopilotSession } from '@github/copilot-sdk';
 import type { CopilotModels } from '../shared/contracts';
 import type { ModelConversation, ParsedModelTurn } from './modelTools';
+import { githubCliToken } from './githubCliAuth';
 
 export function copilotEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
   return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] =>
     entry[1] !== undefined && !entry[0].startsWith('COPILOT_PROVIDER_')
-    && !['COPILOT_MODEL', 'COPILOT_OFFLINE', 'COPILOT_CLI_PATH', 'ELECTRON_RUN_AS_NODE'].includes(entry[0])));
+    && !['COPILOT_MODEL', 'COPILOT_OFFLINE', 'COPILOT_CLI_PATH', 'COPILOT_SDK_AUTH_TOKEN', 'ELECTRON_RUN_AS_NODE'].includes(entry[0])));
 }
 
 /**
@@ -105,30 +106,53 @@ export class LocalCopilotProvider {
   private starting: Promise<Client> | undefined;
   private readonly active = new Set<AbortController>();
 
-  constructor(private readonly createClient: () => Client = () => new CopilotClient({
+  constructor(private readonly createClient: (gitHubToken?: string) => Client = (gitHubToken) => new CopilotClient({
     connection: copilotConnection(),
     workingDirectory: homedir(),
     logLevel: 'error',
     clientInfo: { applicationName: 'Working Memory' },
-  })) {}
+    ...(gitHubToken ? { gitHubToken } : {}),
+  }), private readonly readGitHubToken: () => Promise<string | undefined> = githubCliToken) {}
+
+  private async disconnect(client: Client): Promise<void> {
+    if (this.client !== client) return;
+    this.client = undefined;
+    const errors = await client.stop();
+    if (errors?.length) throw new AggregateError(errors, 'Failed to stop local Copilot cleanly.');
+  }
 
   private async connect(): Promise<Client> {
     if (!this.starting) {
-      const client = this.client ??= this.createClient();
-      const starting = client.start().then(() => client).catch((error: unknown) => {
-        if (this.client === client) this.client = undefined;
+      let client = this.client ??= this.createClient();
+      const starting: Promise<Client> = client.start().then(async () => {
+        let auth = await client.getAuthStatus();
+        if (!auth.isAuthenticated) {
+          await this.disconnect(client);
+          const token = await this.readGitHubToken();
+          if (this.starting !== starting) throw new Error('Copilot is shutting down.');
+          if (token) {
+            client = this.client = this.createClient(token);
+            await client.start();
+            auth = await client.getAuthStatus();
+          }
+        }
+        if (!auth.isAuthenticated) {
+          throw new Error('Not signed in. Run "copilot login" or "gh auth login" in Terminal, then retry.');
+        }
+        return client;
+      }).catch(async (error: unknown) => {
+        try {
+          await this.disconnect(client);
+        } catch (cleanupError) {
+          console.error('[copilot] Failed to stop runtime after connection failed:', cleanupError);
+        }
         throw error;
       }).finally(() => {
         if (this.starting === starting) this.starting = undefined;
       });
       this.starting = starting;
     }
-    const client = await this.starting;
-    const auth = await client.getAuthStatus();
-    if (!auth.isAuthenticated) {
-      throw new Error('GitHub Copilot is not signed in. Install GitHub Copilot CLI and run "copilot login" (or sign in with "gh auth login"), then retry. Your account must have Copilot access and your organization must permit CLI use.');
-    }
-    return client;
+    return this.starting;
   }
 
   async listModels(): Promise<CopilotModels> {
@@ -258,9 +282,7 @@ export class LocalCopilotProvider {
 
   async stop(): Promise<void> {
     for (const controller of this.active) controller.abort(new Error('Copilot is shutting down.'));
-    const errors = await this.client?.stop();
-    this.client = undefined;
     this.starting = undefined;
-    if (errors?.length) throw new AggregateError(errors, 'Failed to stop local Copilot cleanly.');
+    if (this.client) await this.disconnect(this.client);
   }
 }

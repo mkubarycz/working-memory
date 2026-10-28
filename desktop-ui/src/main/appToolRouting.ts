@@ -43,7 +43,7 @@ export interface NamespacedAppTools {
 export interface AppMentionContext {
   appId: ContainerAppId;
   displayName: string;
-  claimSlug: string;
+  claimId: string;
   claimTitle: string;
   repository: string;
   endpoint: import('../shared/contracts').AppMcpEndpoint;
@@ -57,7 +57,7 @@ export interface AppMentionContext {
 }
 
 export interface LiveAppClaim {
-  slug: string;
+  id: string;
   title: string;
   repository: string;
   runtime?: DockerRuntimeSpec;
@@ -230,7 +230,7 @@ export async function resolveMentionedAppTools(
     const claim = claims.get(definition.id);
     return {
       ...definition,
-      aliases: [...(definition.aliases ?? []), ...(claim ? [claim.slug, claim.title] : [])],
+      aliases: [...(definition.aliases ?? []), ...(claim ? [claim.id, claim.title] : [])],
     };
   });
   const explicitlyMentioned = hasExplicitMention
@@ -307,7 +307,7 @@ export async function resolveMentionedAppTools(
     return {
       appId: app.id,
       displayName: app.displayName,
-      claimSlug: claim.slug,
+      claimId: claim.id,
       claimTitle: claim.title,
       repository: claim.repository,
       endpoint: app.endpoint,
@@ -330,7 +330,7 @@ export function appMentionSystemInstructions(contexts: readonly AppMentionContex
   const identity = contexts.map((context) => JSON.stringify({
     id: context.appId,
     title: context.displayName,
-    claim: { slug: context.claimSlug, title: context.claimTitle, repository: context.repository },
+    claim: { id: context.claimId, title: context.claimTitle, repository: context.repository },
     connection: { transport: context.endpoint.transport, url: context.endpoint.url },
     contractVersion: context.contractVersion,
     capabilities: context.capabilities,

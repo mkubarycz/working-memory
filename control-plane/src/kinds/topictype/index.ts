@@ -6,7 +6,7 @@
  * TopicType document so the same subtypes are expressible as documents.
  *
  * Column → field placement (migrations 008 + 013):
- *   - `id`            → `metadata.slug`   (the registry key, a string PK)
+ *   - identity        → `metadata.id` (the existing document ID)
  *   - `created_at`    → `metadata.createdAt`
  *   - `updated_at`    → `metadata` timestamp
  *   - `label`         → spec (authored, NOT NULL)
@@ -69,9 +69,7 @@ const topicType: KindModule = {
  * server by wiring the four split tool files. Each tool lives in its own sibling
  * file (`create` / `read` / `update` / `delete`) in this kind folder and shares
  * the kind name + `TopicType` projection via `./topictype.js` and the result
- * helpers via `../toolResult.js`. TopicType has a registry-key `slug` (e.g.
- * 'feature'), so read/update/delete key on `slug`. Mirrors the Workstream kind
- * exactly.
+ * helpers via `../toolResult.js`. Read/update/delete locate types by document ID.
  */
 function registerTopicTypeApi(server: McpServer, store: Store): void {
   registerWsTopicTypeCreate(server, store);

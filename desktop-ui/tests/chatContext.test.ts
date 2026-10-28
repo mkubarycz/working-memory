@@ -2,16 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { chatContextForDocument } from '../src/shared/contracts';
 
 describe('chatContextForDocument', () => {
+  it('targets registered host tasks without inventing a context for lists or unregistered tasks', () => {
+    expect(chatContextForDocument({
+      kind: 'host-tasks', id: 'approved-host-tasks', title: 'Host tasks',
+    })).toBeUndefined();
+    expect(chatContextForDocument({ kind: 'host-task', id: 'task-id', title: 'Import messages' })).toEqual({
+      kind: 'host-task', routeKind: 'host-task', identifier: 'task-id', title: 'Import messages',
+    });
+    expect(chatContextForDocument({ kind: 'host-task-create', id: 'new-host-task', title: 'Add host task' })).toBeUndefined();
+  });
+
   it('projects a selected document into stable model context', () => {
     expect(chatContextForDocument({
       kind: 'topic',
       id: 'topic-id',
-      slug: 'selected-topic',
+
       title: 'Selected topic',
     })).toEqual({
       kind: 'topic',
       routeKind: 'topic',
-      identifier: 'selected-topic',
+      identifier: 'topic-id',
       title: 'Selected topic',
     });
   });
@@ -20,7 +30,7 @@ describe('chatContextForDocument', () => {
     expect(chatContextForDocument({
       kind: 'Config',
       id: 'config-id',
-      slug: null,
+
       title: 'Daily review',
     })).toEqual({
       kind: 'Config',
@@ -28,14 +38,14 @@ describe('chatContextForDocument', () => {
       identifier: 'config-id',
       title: 'Daily review',
     });
-    expect(chatContextForDocument({ kind: 'topic', id: '', slug: null, title: 'Untitled' })).toBeUndefined();
+    expect(chatContextForDocument({ kind: 'topic', id: '',  title: 'Untitled' })).toBeUndefined();
   });
 
   it('marks a container-app virtual document as an implicit app target', () => {
     expect(chatContextForDocument({
       kind: 'container-app',
       id: 'sunset-chess',
-      slug: 'sunset-chess',
+
       title: 'Sunset Chess',
     })).toEqual({
       kind: 'container-app',
@@ -50,7 +60,7 @@ describe('chatContextForDocument', () => {
     expect(chatContextForDocument({
       kind: 'topic-create',
       id: 'draft-id',
-      slug: null,
+
       title: 'New Topic',
     })).toBeUndefined();
   });

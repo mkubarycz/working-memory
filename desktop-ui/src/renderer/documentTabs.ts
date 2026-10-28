@@ -1,5 +1,6 @@
-import type { DocumentVM } from './documents/types';
+import type { DocumentVM, HostTaskVM, HostTaskCreateVM } from './documents/types';
 import { normalizeScopeKind } from './scopeIdentity';
+import { desktopDeepLink } from '../shared/deepLink';
 
 export interface DocumentTabsState {
   tabs: DocumentVM[];
@@ -15,6 +16,23 @@ export interface PersistedDocumentTabs {
 
 const MAX_PERSISTED_TABS = 50;
 
+export function hostTaskDocument(task: { id: string; name: string; draftName?: string }): HostTaskVM {
+  return { kind: 'host-task', id: task.id, title: task.draftName ?? task.name };
+}
+
+export function newHostTaskDocument(): HostTaskCreateVM {
+  return { kind: 'host-task-create', id: 'new-host-task', title: 'Add host task' };
+}
+
+export function documentTabTooltip(document: DocumentVM, preview = false): string {
+  const title = preview
+    ? `${document.title} — Preview (double-click to keep open)`
+    : document.title;
+  return document.kind === 'topic' && document.id
+    ? `${title}\n${desktopDeepLink('topic', document.id)}`
+    : title;
+}
+
 export function documentTabIcon(document: DocumentVM): string {
   switch (document.kind) {
     case 'workstream': return 'briefcase';
@@ -23,6 +41,8 @@ export function documentTabIcon(document: DocumentVM): string {
     case 'topic-backlog': return 'inbox';
     case 'container-app': return 'server-environment';
     case 'settings': return 'gear';
+    case 'host-task': return 'checklist';
+    case 'host-task-create': return 'add';
     default: return 'file';
   }
 }
@@ -98,7 +118,7 @@ export function keepSelectedTabVisible(node: HTMLElement, selected: boolean) {
 }
 
 export function documentTabKey(document: DocumentVM): string {
-  const identifier = document.slug ?? ('id' in document ? document.id : undefined) ?? document.title;
+  const identifier = document.id ?? ('id' in document ? document.id : undefined) ?? document.title;
   return `${documentRouteKind(document.kind)}:${identifier}`;
 }
 
@@ -109,7 +129,7 @@ export function serializeDocumentTabs(state: DocumentTabsState): string {
     version: 1,
     tabs: tabs.map((document) => ({
       kind: documentRouteKind(document.kind),
-      identifier: document.slug ?? ('id' in document ? document.id : undefined) ?? document.title,
+      identifier: document.id ?? ('id' in document ? document.id : undefined) ?? document.title,
     })),
     selectedKey: tabs.some((document) => documentTabKey(document) === canonicalSelectedKey(state.selectedKey))
       ? canonicalSelectedKey(state.selectedKey) : tabs[0] ? documentTabKey(tabs[0]) : null,

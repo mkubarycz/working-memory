@@ -1,6 +1,6 @@
 /**
  * Webview-side scope-key helpers for the right-rail command widget. The host
- * tags an in-flight result with the context slug used when it started,
+ * tags an in-flight result with the context id used when it started,
  * bucketing unscoped runs under a sentinel.
  *
  * The widget uses this to guard mid-run messages: a `brief`/`briefRunning`/
@@ -12,10 +12,10 @@
 /** The scope key used when the widget has no selected document. */
 export const GLOBAL_SCOPE_KEY = '__global__';
 
-/** The scope key for an in-flight turn (context slug, or the sentinel). */
-export function scopeKeyFor(contextSlug: string | null | undefined): string {
-  const slug = (contextSlug ?? '').trim();
-  return slug.length > 0 ? slug : GLOBAL_SCOPE_KEY;
+/** The scope key for an in-flight turn (context id, or the sentinel). */
+export function scopeKeyFor(contextId: string | null | undefined): string {
+  const id = (contextId ?? '').trim();
+  return id.length > 0 ? id : GLOBAL_SCOPE_KEY;
 }
 
 /**

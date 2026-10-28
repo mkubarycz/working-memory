@@ -18,8 +18,7 @@ import { Alert, ALERT_KIND } from './alert.js';
  * Register the `ws-alert-create` tool on an MCP session's server. The tool
  * speaks the legacy alert shape and is backed by generic `store` document ops
  * for kind `Alert`, with the kind's own `validateSpec` gating the write. Alerts
- * have NO slug (the extension's PK is an autoincrement integer → a control-plane
- * uuid), so identity is the store-assigned `metadata.id`.
+ * use the store-assigned `metadata.id` as identity.
  */
 export function registerWsAlertCreate(server: McpServer, store: Store): void {
   server.registerTool(
@@ -32,7 +31,7 @@ export function registerWsAlertCreate(server: McpServer, store: Store): void {
         'approval requests never authorize execution or topic lifecycle changes. Provide a `description` (required) ' +
         'plus optional `title`, `recommended_action`, `status` (\'alert\' | \'informational\' | ' +
         "'closed', default 'alert'), `dedupe_key` (recurrence key), `created_by` (default " +
-        "'system'), and `topics` (topic-slug references). The spec is validated against the Alert " +
+        "'system'), and `topics` (topic document ID references). The spec is validated against the Alert " +
         'kind. Returns the created alert.',
       inputSchema: z.object({
         title: z.string().optional().describe('Short friendly title (default empty).'),
@@ -44,7 +43,7 @@ export function registerWsAlertCreate(server: McpServer, store: Store): void {
           .describe("Lifecycle status: 'alert' | 'informational' | 'closed' (default 'alert')."),
         dedupe_key: z.string().optional().describe('Optional recurrence/dedupe key.'),
         created_by: z.string().optional().describe("Who raised it (default 'system')."),
-        topics: z.array(z.string()).optional().describe('Topic slugs the alert references.'),
+        topics: z.array(z.string()).optional().describe('Topic document IDs the alert references.'),
       }).strict(),
     },
     async ({ title, description, recommended_action, status, dedupe_key, created_by, topics }) => {
@@ -75,7 +74,7 @@ export function registerWsAlertCreate(server: McpServer, store: Store): void {
       } catch (err) {
         return asError((err as Error).message);
       }
-      // Alerts have no slug — the store assigns the uuid `metadata.id` as identity.
+      // The store assigns `metadata.id` as identity.
       const doc = store.createDocument({ kind: ALERT_KIND, spec: validatedSpec, status: docStatus });
       return asText(new Alert(doc));
     },

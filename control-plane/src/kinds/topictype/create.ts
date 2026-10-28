@@ -25,12 +25,11 @@ export function registerWsTopicTypeCreate(server: McpServer, store: Store): void
     {
       title: 'TopicType: Create',
       description:
-        'Create a TopicType (a topic subtype like "feature" or "task"). Provide an optional `slug` ' +
-        '(the registry key), a `label` (required), an `icon` (required, a codicon id), a ' +
+        'Create a TopicType (a topic subtype like "feature" or "task"). Provide ' +
+        'a `label` (required), an `icon` (required, a codicon id), a ' +
         '`description` (required), and an optional `body_template` (markdown scaffold, default ' +
         'empty). The spec is validated against the TopicType kind. Returns the created topic type.',
-      inputSchema: {
-        slug: z.string().optional().describe('Optional registry-key slug (e.g. "feature").'),
+      inputSchema: z.object({
         label: z.string().describe('Human-readable singular label (required).'),
         icon: z.string().describe('VS Code codicon id (required).'),
         description: z.string().describe('One-sentence semantics (required).'),
@@ -38,9 +37,9 @@ export function registerWsTopicTypeCreate(server: McpServer, store: Store): void
           .string()
           .optional()
           .describe('Markdown body scaffold for topics of this type (default empty).'),
-      },
+      }).strict(),
     },
-    async ({ slug, label, icon, description, body_template }) => {
+    async ({ label, icon, description, body_template }) => {
       const specInput: Record<string, unknown> = { label, icon, description };
       if (body_template !== undefined) {
         specInput.body_template = body_template;
@@ -55,7 +54,6 @@ export function registerWsTopicTypeCreate(server: McpServer, store: Store): void
       }
       const doc = store.createDocument({
         kind: TOPIC_TYPE_KIND,
-        slug,
         spec: validatedSpec,
         status: docStatus,
       });

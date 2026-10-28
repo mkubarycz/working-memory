@@ -1,8 +1,9 @@
+import { fetch as authenticatedFetch } from '../../tests/authenticatedFixture';
 import { describe, it, expect } from 'vitest';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { SERVICE_VERSION } from '../src/config';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 interface HealthBody {
   ok: boolean;
@@ -22,7 +23,7 @@ describe('control-plane server bootstrap', () => {
       expect(server.host).toBe('127.0.0.1');
       expect(server.port).toBeGreaterThan(0);
 
-      const res = await fetch(`${server.url}/health`);
+      const res = await authenticatedFetch(`${server.url}/health`);
       expect(res.status).toBe(200);
       const body = (await res.json()) as HealthBody;
       expect(body.ok).toBe(true);
@@ -37,7 +38,7 @@ describe('control-plane server bootstrap', () => {
   it('returns 404 for unknown routes', async () => {
     const server = await startServer({ port: 0 });
     try {
-      const res = await fetch(`${server.url}/definitely-not-a-route`);
+      const res = await authenticatedFetch(`${server.url}/definitely-not-a-route`);
       expect(res.status).toBe(404);
     } finally {
       await server.close();
@@ -47,7 +48,7 @@ describe('control-plane server bootstrap', () => {
   it('stores and serves image attachments from SQLite', async () => {
     const server = await startServer({ port: 0 });
     try {
-      const upload = await fetch(`${server.url}/attachments`, {
+      const upload = await authenticatedFetch(`${server.url}/attachments`, {
         method: 'POST',
         headers: {
           'content-type': 'image/png',
@@ -59,7 +60,7 @@ describe('control-plane server bootstrap', () => {
       const created = await upload.json() as { id: string; filename: string };
       expect(created.filename).toBe('pasted image.png');
 
-      const downloaded = await fetch(`${server.url}/attachments/${created.id}`);
+      const downloaded = await authenticatedFetch(`${server.url}/attachments/${created.id}`);
       expect(downloaded.status).toBe(200);
       expect(downloaded.headers.get('content-type')).toBe('image/png');
       expect(Buffer.from(await downloaded.arrayBuffer()).toString()).toBe('png-bytes');
@@ -71,7 +72,7 @@ describe('control-plane server bootstrap', () => {
   it('rejects unsupported attachment types', async () => {
     const server = await startServer({ port: 0 });
     try {
-      const upload = await fetch(`${server.url}/attachments`, {
+      const upload = await authenticatedFetch(`${server.url}/attachments`, {
         method: 'POST',
         headers: { 'content-type': 'text/html' },
         body: '<script>alert(1)</script>',

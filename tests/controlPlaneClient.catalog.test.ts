@@ -83,19 +83,19 @@ describe('ControlPlaneClient catalog surface (mocked listTools/callTool)', () =>
   });
 
   it('callTool() forwards the name + args and parses the JSON text payload', async () => {
-    callToolMock.mockResolvedValueOnce(okText({ ok: true, slug: 'roadmap' }));
+    callToolMock.mockResolvedValueOnce(okText({ ok: true, id: 'roadmap' }));
     const outcome = await makeClient().callTool('ws-topic-create', { title: 'Roadmap' });
     expect(callToolMock).toHaveBeenCalledWith({
       name: 'ws-topic-create',
       arguments: { title: 'Roadmap' },
     });
-    expect(outcome).toEqual({ ok: true, result: { ok: true, slug: 'roadmap' } });
+    expect(outcome).toEqual({ ok: true, result: { ok: true, id: 'roadmap' } });
   });
 
   it('callTool() maps an isError result to { ok: false, error }', async () => {
-    callToolMock.mockResolvedValueOnce(errText('slug already exists'));
-    const outcome = await makeClient().callTool('ws-topic-create', { slug: 'dup' });
-    expect(outcome).toEqual({ ok: false, error: 'slug already exists' });
+    callToolMock.mockResolvedValueOnce(errText('id already exists'));
+    const outcome = await makeClient().callTool('ws-topic-create', { id: 'dup' });
+    expect(outcome).toEqual({ ok: false, error: 'id already exists' });
   });
 
   it('callTool() returns { ok: false } when the daemon is down (no throw)', async () => {

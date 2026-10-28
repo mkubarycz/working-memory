@@ -1,7 +1,7 @@
 import type { DesktopApi } from '../shared/contracts';
 
 export interface TopicDragSource {
-  slug: string;
+  id: string;
   sourceWorkstream: string;
 }
 
@@ -22,12 +22,12 @@ export async function moveTopicToNewWorkstream(
 ): Promise<void> {
   if (!draft.targetWorkstream) {
     const workstream = await api.createWorkstream(draft.title);
-    draft.targetWorkstream = workstream.slug;
+    draft.targetWorkstream = workstream.id;
     draft.title = workstream.title;
   }
   try {
     await transfer({
-      slug: draft.slug,
+      id: draft.id,
       sourceWorkstream: draft.sourceWorkstream,
       targetWorkstream: draft.targetWorkstream,
       move: true,
@@ -42,7 +42,7 @@ export async function moveTopicToNewWorkstream(
 
 export interface TopicTransferRefreshCandidate {
   kind: string;
-  slug?: string | null;
+  id?: string | null;
 }
 
 export interface TopicTransferRefreshTarget {
@@ -56,7 +56,7 @@ export function planTopicTransfer(
   targetWorkstream: string,
   move: boolean,
 ): TopicTransferRequest | null {
-  if (!source?.slug || !source.sourceWorkstream || !targetWorkstream || source.sourceWorkstream === targetWorkstream) {
+  if (!source?.id || !source.sourceWorkstream || !targetWorkstream || source.sourceWorkstream === targetWorkstream) {
     return null;
   }
   return { ...source, targetWorkstream, move };
@@ -69,14 +69,14 @@ export function topicTransferRefreshTargets(
 ): TopicTransferRefreshTarget[] {
   const targets: TopicTransferRefreshTarget[] = [];
   for (const document of documents) {
-    if (!document.slug) continue;
+    if (!document.id) continue;
     if (document.kind === 'topic') {
-      targets.push({ kind: 'topic', identifier: document.slug, key: `topic:${document.slug}` });
+      targets.push({ kind: 'topic', identifier: document.id, key: `topic:${document.id}` });
       continue;
     }
     if (document.kind === 'workstream' &&
-      (document.slug === sourceWorkstream || document.slug === targetWorkstream)) {
-      targets.push({ kind: 'workstream', identifier: document.slug, key: `workstream:${document.slug}` });
+      (document.id === sourceWorkstream || document.id === targetWorkstream)) {
+      targets.push({ kind: 'workstream', identifier: document.id, key: `workstream:${document.id}` });
     }
   }
   return targets;

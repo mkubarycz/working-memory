@@ -11,16 +11,14 @@
  * `JSON.stringify(new Alert(env))` is a stable projection of the document.
  *
  * The document↔domain mapping (mirrors migrations 016 + 017):
- *   - `id`                 ← `metadata.id`   (the control-plane uuid; the
- *                            extension's INTEGER PK is not carried over — Alerts
- *                            have NO slug, so `slug` is always null)
+ *   - `id`                 ← `metadata.id`   (the document ID)
  *   - `title`              ← `spec.title` (absent → '')
  *   - `description`        ← `spec.description`
  *   - `recommended_action` ← `spec.recommended_action` (absent → '')
  *   - `status`             ← `spec.status` (alert | informational | closed)
  *   - `dedupe_key`         ← `spec.dedupe_key` (absent → null)
  *   - `created_by`         ← `spec.created_by` (absent → 'system')
- *   - `topics`             ← `spec.topics` (topic-slug references; absent → [])
+ *   - `topics`             ← `spec.topics` (topic ID references; absent → [])
  *   - `created_at`         ← `metadata.createdAt`
  *   - `updated_at`         ← `metadata.updatedAt`
  *   - `resourceVersion`    ← `metadata.resourceVersion` (carried so callers can update)
@@ -46,7 +44,6 @@ export type AlertStatus = 'alert' | 'informational' | 'closed';
  */
 export interface IAlert {
   id: string;
-  slug: string | null;
   title: string;
   description: string;
   recommended_action: string;
@@ -62,7 +59,6 @@ export interface IAlert {
 /** A pure-data projection of an Alert document envelope onto the legacy alert shape. */
 export class Alert implements IAlert {
   id: string;
-  slug: string | null;
   title: string;
   description: string;
   recommended_action: string;
@@ -77,7 +73,6 @@ export class Alert implements IAlert {
   constructor(env: DocumentEnvelope) {
     const spec = env.spec ?? {};
     this.id = env.metadata.id;
-    this.slug = env.metadata.slug;
     this.title = typeof spec.title === 'string' ? spec.title : '';
     this.description = typeof spec.description === 'string' ? spec.description : '';
     this.recommended_action =

@@ -2,9 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   activeContextMenuItems,
   invokeActiveAction,
-  topicSlugFromOpenUri,
+  topicIdFromOpenUri,
 } from '../src/renderer/activeContextMenu';
 import type { WorkstreamVM } from '../src/renderer/documents/types';
+import { openStore } from '../../control-plane/src/store';
+import { startServer } from '../../tests/authenticatedFixture';
+import { loadKinds } from '../../control-plane/src/kinds/loader';
+import { ControlPlaneClient } from '../../tests/authenticatedFixture';
+import { loadActivePanelData, loadWorkstreamViewModel, resolveDesktopAction } from '../src/main/resolver';
 
 function reactiveProxy<T extends object>(value: T, cache = new WeakMap<object, object>()): T {
   const existing = cache.get(value);
@@ -42,8 +47,8 @@ describe('Active rail context-menu projection', () => {
       focused: false,
       sourceWorkstream: 'source',
       moveTargets: [
-        { slug: 'source', title: 'Source' },
-        { slug: 'target', title: 'Target' },
+        { id: 'source', title: 'Source' },
+        { id: 'target', title: 'Target' },
       ],
     })).toEqual([
       { kind: 'create-child', title: 'Add Child...', icon: 'add', enabled: true, topic: 'topic-one' },
@@ -54,7 +59,7 @@ describe('Active rail context-menu projection', () => {
         icon: 'arrow-swap',
         enabled: true,
         topic: 'topic-one',
-        targets: [{ slug: 'target', title: 'Target' }],
+        targets: [{ id: 'target', title: 'Target' }],
       },
     ]);
     expect(activeContextMenuItems([], {
@@ -73,7 +78,7 @@ describe('Active rail context-menu projection', () => {
       topic: 'topic-one',
       focused: false,
       sourceWorkstream: 'source',
-      moveTargets: [{ slug: 'source', title: 'Source' }],
+      moveTargets: [{ id: 'source', title: 'Source' }],
     })[2]).toMatchObject({
       kind: 'move',
       enabled: true,
@@ -91,9 +96,9 @@ describe('Active rail context-menu projection', () => {
     }
   });
 
-  it('extracts and decodes the topic slug from a panel URI', () => {
-    expect(topicSlugFromOpenUri('working-memory:/topic/design%20notes.working-memory')).toBe('design notes');
-    expect(topicSlugFromOpenUri('not a uri')).toBe('');
+  it('extracts and decodes the topic id from a panel URI', () => {
+    expect(topicIdFromOpenUri('working-memory:/topic/design%20notes.working-memory')).toBe('design notes');
+    expect(topicIdFromOpenUri('not a uri')).toBe('');
   });
 
   it('omits the redundant Add to workstream action while retaining move and removal', () => {
@@ -110,12 +115,12 @@ describe('Active rail context-menu projection', () => {
     const action = reactiveProxy({
       command: 'working-memory.setWorkstreamSection',
       title: 'Send to In Progress',
-      args: [{ slug: 'queued-item', section: 'progress' }],
+      args: [{ id: 'queued-item', section: 'progress' }],
     });
     const returned: WorkstreamVM = {
       kind: 'workstream',
       title: 'Queued item',
-      slug: 'queued-item',
+      id: 'queued-item',
       status: 'progress',
       createdAt: 0,
       updatedAt: 1,
@@ -144,11 +149,59 @@ describe('Active rail context-menu projection', () => {
       args: [
         'queued-item',
         'working-memory.setWorkstreamSection',
-        [{ slug: 'queued-item', section: 'progress' }],
+        [{ id: 'queued-item', section: 'progress' }],
       ],
     });
     expect(() => structuredClone(invocation)).not.toThrow();
     expect(incoming).toEqual(returned);
     expect(() => structuredClone(incoming)).not.toThrow();
+  });
+
+  it('persists Close Workstream from the menu, archives only that workstream, and supports reopening', async () => {
+    await loadKinds();
+    const store = openStore(':memory:');
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      const workstream = await client.wsCreate({ title: 'Close from menu', status: 'progress' });
+      const other = await client.wsCreate({ title: 'Unchanged', status: 'queue' });
+      const topic = store.createDocument({
+        kind: 'Topic', spec: { title: 'Keep open', status: 'open', workstreams: [workstream.id], parents: [] },
+      });
+      const before = store.getDocument({ id: topic.metadata.id });
+      const active = await loadActivePanelData(client);
+      const card = active.items.flatMap((item) => item.kind === 'workstream-section' ? item.workstreams : [])
+        .find((item) => item.id === workstream.id)!;
+      const close = activeContextMenuItems(card.actions).find((item) => item.title === 'Close Workstream');
+      expect(close).toMatchObject({ kind: 'action', enabled: true, icon: 'check' });
+      if (close?.kind !== 'action') throw new Error('Close menu item is missing.');
+
+      const invoke = async (id: string, command: string, args: unknown[]) => {
+        const action = resolveDesktopAction(command, args, id);
+        if (action.kind !== 'workstream') throw new Error('Expected a workstream action.');
+        await client.wsUpdate({ id: action.id, status: action.section });
+        const vm = await loadWorkstreamViewModel(client, id);
+        if (!vm) throw new Error('Updated workstream is missing.');
+        return vm;
+      };
+      expect(await invokeActiveAction(invoke, workstream.id, close.action)).toMatchObject({ id: workstream.id, status: 'closed' });
+      expect((await client.wsRead({ id: other.id }))[0].status).toBe('queue');
+      expect(store.getDocument({ id: topic.metadata.id })).toEqual(before);
+      const refreshed = await loadActivePanelData(client);
+      expect(refreshed.items.flatMap((item) => item.kind === 'workstream-section' ? item.workstreams : [])
+        .some((item) => item.id === workstream.id)).toBe(false);
+
+      expect(await invokeActiveAction(invoke, workstream.id, {
+        command: 'working-memory.reopenWorkstream', title: 'Reopen Workstream', args: [{ id: workstream.id }],
+      })).toMatchObject({ status: 'progress' });
+      expect(store.getDocument({ id: topic.metadata.id })).toEqual(before);
+      await expect(invokeActiveAction(invoke, 'missing', {
+        ...close.action, args: [{ id: 'missing', section: 'closed' }],
+      })).rejects.toThrow('Unknown workstream');
+    } finally {
+      await client.dispose();
+      await server.close();
+      store.close();
+    }
   });
 });

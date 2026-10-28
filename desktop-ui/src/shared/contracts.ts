@@ -8,6 +8,8 @@ import type {
 } from '../renderer/documents/types';
 import type { PanelData } from '../../../shared/panelData';
 import type { DocumentChanges } from '../../../shared/documentChanges';
+import type { HostTaskDesktopApi } from './hostTasks';
+import type { InstanceIdentityApi } from './instanceIdentity';
 import type { WorkstreamSection } from '../../../shared/panelData';
 import type {
   ApplicationContractMetadata,
@@ -76,7 +78,7 @@ export interface ContainerAppStatus {
   id: ContainerAppId;
   displayName: string;
   claimTitle: string;
-  claimSlug: string;
+  claimId: string;
   repository: string;
   buildContext: string;
   dockerfile: string;
@@ -184,7 +186,7 @@ export interface TopicAutocompleteInput {
   body: string;
   currentTitle: string;
   currentTopicType: string;
-  topicTypes: Array<{ slug: string; label: string; description: string }>;
+  topicTypes: Array<{ id: string; label: string; description: string }>;
   currentWorkstreamTitle?: string;
 }
 
@@ -217,16 +219,17 @@ export interface DesktopEnvironmentState {
 
 export interface ChatContext {
   kind: string;
-  routeKind: DesktopResourceKind;
+  routeKind: DesktopResourceKind | 'host-task';
   identifier: string;
   title: string;
   containerAppId?: ContainerAppId;
+  hostTaskVersion?: number;
 }
 
 interface ChatContextDocument {
   kind: string;
   id: string;
-  slug: string | null;
+
   title: string;
 }
 
@@ -236,13 +239,15 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
     document.kind === 'topic-create'
     || document.kind === 'topic-backlog'
     || document.kind === 'settings'
+    || document.kind === 'host-tasks'
+    || document.kind === 'host-task-create'
   ) return undefined;
-  const identifier = (document.slug ?? document.id).trim();
+  const identifier = (document.id).trim();
   if (!identifier) return undefined;
   const routeKind = document.kind === 'AgentMessage' || document.kind === 'alert'
     ? 'agent-message'
-    : ['workstream', 'topic', 'agent-message', 'topic-type'].includes(document.kind)
-      ? document.kind as DesktopResourceKind
+    : ['workstream', 'topic', 'agent-message', 'topic-type', 'host-task'].includes(document.kind)
+      ? document.kind as ChatContext['routeKind']
       : 'document';
   return {
     kind: document.kind,
@@ -294,7 +299,7 @@ export interface TopicCreateInput {
 }
 
 export interface DesktopWorkstreamReorderUpdate {
-  slug: string;
+  id: string;
   section: WorkstreamSection;
   position: number;
 }
@@ -381,7 +386,7 @@ export type DocumentChangeEvent = { mcpUrl: string } & (
 );
 
 export interface SharedTopicReceipt {
-  id: string; slug: string; title: string; duplicate: boolean; statusUrl: string; submittedAt: string;
+  id: string;  title: string; duplicate: boolean; statusUrl: string; submittedAt: string;
 }
 export interface FeedbackServer { id: string; name: string; address: string }
 export interface FeedbackContext {
@@ -391,9 +396,15 @@ export interface FeedbackContext {
 export interface FeedbackPreparation { servers: FeedbackServer[]; context: FeedbackContext }
 export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt } | { status: 'choose'; servers: FeedbackServer[] };
 
-export interface DesktopApi {
-  prepareFeedback(slug: string, requestId: string): Promise<FeedbackPreparation>;
-  sendFeedback(slug: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
+export interface DesktopBuildInfo {
+  version: string;
+  development: boolean;
+}
+
+export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
+  getDesktopBuildInfo(): Promise<DesktopBuildInfo>;
+  prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
+  sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
   startDocumentChanges(): Promise<void>;
   onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;
@@ -440,9 +451,9 @@ export interface DesktopApi {
   saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;
   saveTopic(identifier: string, patch: TopicPatch): Promise<DocumentVM>;
   listTopicTypes(): Promise<TopicTypeMetaVM[]>;
-  createWorkstream(title: string): Promise<{ slug: string; title: string }>;
+  createWorkstream(title: string): Promise<{ id: string; title: string }>;
   createTopic(input: TopicCreateInput): Promise<DocumentVM>;
-  reparentTopic(slug: string, parent: string | null): Promise<void>;
+  reparentTopic(id: string, parent: string | null): Promise<void>;
   uploadAttachment(file: AttachmentUpload): Promise<AttachmentRef>;
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;
   getAgentMessages(input?: { limit?: number; offset?: number }): Promise<AgentMessageVM[]>;

@@ -66,7 +66,6 @@ export const scopeRef = z
   .object({
     kind: identifier,
     id: identifier,
-    slug: identifier.optional(),
     title: boundedText.optional(),
   })
   .strict();

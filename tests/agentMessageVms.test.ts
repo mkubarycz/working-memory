@@ -5,10 +5,10 @@ import { buildAgentMessagesPanel, buildTopicsPanel, buildWorkstreamTree } from '
 
 function message(extra: Partial<AgentMessage> = {}): AgentMessage {
   return {
-    id: 'message-1', slug: null, title: 'Review required', description: '# Original\n\n**Markdown**',
+    id: 'message-1',  title: 'Review required', description: '# Original\n\n**Markdown**',
     agent_id: 'agent-1', agent_name: 'Review Agent',
     recommended_action: 'Review the proposal', category: 'approval', severity: 'info',
-    status: 'open', attention: false, topics: ['topic-one'], relations: [],
+    status: 'open', attention: false, topics: ['topic-id'], relations: [],
     dedupe_key: null, created_by: 'agent', created_at: 10, updated_at: 20,
     resourceVersion: 1, ...extra,
   };
@@ -32,12 +32,12 @@ describe('canonical AgentMessage view models', () => {
     expect(vm.topics).not.toBe(original.topics);
     expect(vm.relations).not.toBe(original.relations);
   });
-  it('scopes by topic slug and preserves old resolved history indefinitely', () => {
+  it('scopes by topic id and preserves old resolved history indefinitely', () => {
     const messages = [
       message({ id: 'resolved', status: 'resolved', updated_at: 1 }),
       message({ id: 'other', topics: ['different-topic'] }),
     ];
-    expect(buildAgentMessageVMs(messages, ['topic-one'], Date.now())).toMatchObject([{ id: 'resolved', dimmed: true }]);
+    expect(buildAgentMessageVMs(messages, ['topic-id'], Date.now())).toMatchObject([{ id: 'resolved', dimmed: true }]);
   });
   it('sorts open, acknowledged, resolved, then newest-first without mutating input', () => {
     const messages = [
@@ -46,7 +46,7 @@ describe('canonical AgentMessage view models', () => {
       message({ id: 'ack', status: 'acknowledged' }),
       message({ id: 'newer', updated_at: 30 }),
     ];
-    expect(buildAgentMessageVMs(messages, ['topic-one']).map((vm) => vm.id)).toEqual(['newer', 'older', 'ack', 'resolved']);
+    expect(buildAgentMessageVMs(messages, ['topic-id']).map((vm) => vm.id)).toEqual(['newer', 'older', 'ack', 'resolved']);
     expect(messages.map((item) => item.id)).toEqual(['resolved', 'older', 'ack', 'newer']);
   });
   it('derives a display title without rewriting the stored Markdown source', () => {
@@ -63,12 +63,12 @@ describe('canonical AgentMessage view models', () => {
       message({ id: 'resolved', status: 'resolved', attention: true }),
       message({ id: 'other', attention: true, topics: ['other'] }),
     ];
-    expect(agentMessageBubbleForTopic(messages, 'topic-one')).toEqual({ count: 1, severity: 'info' });
+    expect(agentMessageBubbleForTopic(messages, 'topic-id')).toEqual({ count: 1, severity: 'info' });
   });
   it('deduplicates cross-topic attention and chooses canonical maximum severity', () => {
-    const shared = message({ id: 'shared', attention: true, severity: 'warning', topics: ['topic-one', 'topic-two'] });
+    const shared = message({ id: 'shared', attention: true, severity: 'warning', topics: ['topic-id', 'topic-two'] });
     const messages = [shared, shared, message({ id: 'error', attention: true, severity: 'error', topics: ['topic-two'] })];
-    expect(agentMessageBubbleForTopics(messages, ['topic-one', 'topic-two'])).toEqual({ count: 2, severity: 'error' });
+    expect(agentMessageBubbleForTopics(messages, ['topic-id', 'topic-two'])).toEqual({ count: 2, severity: 'error' });
     expect(agentMessageBubbleForTopic(messages, 'missing')).toEqual({ count: 0, severity: null });
   });
   it('keeps canonical message history rows and same-id native routes, including resolved records', () => {
@@ -83,8 +83,8 @@ describe('canonical AgentMessage view models', () => {
   });
   it('uses canonical attention summaries in both topic panels and workstream trees', () => {
     const topic: Topic = {
-      id: 'topic-id', slug: 'topic-one', title: 'Topic', body: '', status: 'open',
-      topicType: 'feature', parents: [], workstreams: ['workstream'], focusedWorkstreams: [],
+      id: 'topic-id',  title: 'Topic', body: '', status: 'open',
+      topicType: 'feature', parents: [], workstreams: ['ws-id'], focusedWorkstreams: [],
       created_at: 10, updated_at: 20, resourceVersion: 1,
     };
     const messages = [
@@ -93,7 +93,7 @@ describe('canonical AgentMessage view models', () => {
     ];
     const panel = buildTopicsPanel({ available: true, topics: [topic], agentMessages: messages });
     expect(panel.items[0]).toMatchObject({ agentMessageCount: 1, agentMessageSeverity: 'error' });
-    const tree = buildWorkstreamTree('ws-id', 'workstream', 'active', [topic], new Map(), messages);
+    const tree = buildWorkstreamTree('ws-id', 'active', [topic], new Map(), messages);
     expect(tree.groups[0].children[0]).toMatchObject({ agentMessageCount: 1, agentMessageSeverity: 'error' });
     expect(topic.status).toBe('open');
   });

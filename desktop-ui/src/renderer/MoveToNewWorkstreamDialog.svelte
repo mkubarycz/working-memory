@@ -11,7 +11,7 @@
   } = $props();
 
   let dialog: HTMLDialogElement;
-  let draft = $state<NewWorkstreamMoveDraft>({ slug: '', sourceWorkstream: '', title: '', targetWorkstream: '' });
+  let draft = $state<NewWorkstreamMoveDraft>({ id: '', sourceWorkstream: '', title: '', targetWorkstream: '' });
   let topicTitle = $state('');
   let suggesting = $state(false);
   let moving = $state(false);
@@ -21,7 +21,7 @@
   let suggestionError = $state('');
 
   onMount(() => {
-    draft.slug = source.slug;
+    draft.id = source.id;
     draft.sourceWorkstream = source.sourceWorkstream;
     dialog.showModal();
     void suggestName();
@@ -34,7 +34,7 @@
     suggestionError = '';
     try {
       await beforeMove();
-      const topic = await window.workingMemory.openResource('topic', source.slug);
+      const topic = await window.workingMemory.openResource('topic', source.id);
       if (request !== generation) return;
       if (topic.kind !== 'topic') throw new Error('The selected resource is not a topic.');
       topicTitle = topic.title;
@@ -43,8 +43,8 @@
         currentTitle: topic.title,
         currentTopicType: topic.topicType,
         topicTypes: (topic.topicTypes ?? [topic.typeMeta ?? {
-          slug: topic.topicType, label: topic.topicType, description: '',
-        }]).map(({ slug, label, description }) => ({ slug: slug ?? '', label, description })),
+          id: topic.topicType, label: topic.topicType, description: '',
+        }]).map(({ id, label, description }) => ({ id: id ?? '', label, description })),
         currentWorkstreamTitle: draft.title,
       });
       if (request !== generation) return;
@@ -75,7 +75,7 @@
 
 <dialog bind:this={dialog} aria-labelledby="new-workstream-move-title" oncancel={(event) => { event.preventDefault(); if (!moving) onClose(); }}>
   <h2 id="new-workstream-move-title">Move to New Workstream</h2>
-  <p>{topicTitle || source.slug}</p>
+  <p>{topicTitle || source.id}</p>
   <label>
     New workstream
     <input

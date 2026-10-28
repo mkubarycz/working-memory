@@ -18,7 +18,7 @@ import { Workstream } from './workstream.js';
  * Register the `ws-workstream-update` tool on an MCP session's server. Reads the
  * current document for its id + resourceVersion, merges the patch, re-validates
  * the whole spec against the Workstream kind, then does a compare-and-swap
- * write. Unknown slug and version conflicts are surfaced clearly.
+ * write. Unknown IDs and version conflicts are surfaced clearly.
  */
 export function registerWsWorkstreamUpdate(server: McpServer, store: Store): void {
   server.registerTool(
@@ -26,12 +26,12 @@ export function registerWsWorkstreamUpdate(server: McpServer, store: Store): voi
     {
       title: 'Workstream: Update',
       description:
-        'Update a Workstream identified by `slug`. Pass only the fields you are changing ' +
+        'Update a Workstream identified by `id`. Pass only the fields you are changing ' +
         '(`title`, `status`, `closure`, `position`). Reads the current document for its id + resourceVersion, ' +
-        'then does a compare-and-swap write of the merged, re-validated spec. Unknown slug and ' +
+        'then does a compare-and-swap write of the merged, re-validated spec. Unknown IDs and ' +
         'version conflicts are surfaced clearly. Returns the updated workstream.',
-      inputSchema: {
-        slug: z.string().describe('Slug of the workstream to update (required).'),
+      inputSchema: z.object({
+        id: z.string().min(1).describe('ID of the workstream to update (required).'),
         title: z.string().optional().describe('New title (≤120 chars).'),
         status: z
           .string()
@@ -39,12 +39,12 @@ export function registerWsWorkstreamUpdate(server: McpServer, store: Store): voi
           .describe("New lifecycle status: 'queue' | 'progress' | 'backlog' | 'closed'."),
         closure: z.string().optional().describe('New closure note.'),
         position: z.number().finite().optional().describe('Sort position within the lifecycle section.'),
-      },
+      }).strict(),
     },
-    async ({ slug, title, status, closure, position }) => {
-      const existing = store.getDocument({ slug, kind: WORKSTREAM_KIND });
+    async ({ id, title, status, closure, position }) => {
+      const existing = store.getDocument({ id, kind: WORKSTREAM_KIND });
       if (!existing) {
-        return asError(`Unknown workstream slug: "${slug}". No live workstream with that slug.`);
+        return asError(`Unknown workstream ID: "${id}". No live workstream with that ID.`);
       }
       const patch: Record<string, unknown> = {};
       if (title !== undefined) {
@@ -82,13 +82,13 @@ export function registerWsWorkstreamUpdate(server: McpServer, store: Store): voi
       } catch (err) {
         if (err instanceof ConflictError) {
           return asError(
-            `Conflict: workstream "${slug}" changed since it was read (current resourceVersion ` +
+            `Conflict: workstream "${id}" changed since it was read (current resourceVersion ` +
               `${err.currentResourceVersion}). Re-read with ws-workstream-read and retry.`,
           );
         }
         if (err instanceof NotFoundError) {
           return asError(
-            `Unknown workstream slug: "${slug}". It no longer exists (it may have been deleted).`,
+            `Unknown workstream ID: "${id}". It no longer exists (it may have been deleted).`,
           );
         }
         throw err;

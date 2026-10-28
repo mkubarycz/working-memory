@@ -13,7 +13,7 @@ function makeEnvelope(
     kind: 'topic',
     metadata: {
       id: 'doc-123',
-      slug: 'my-topic',
+
       labels: { area: 'ui' },
       createdAt: 1000,
       updatedAt: 2000,
@@ -29,7 +29,7 @@ function makeEnvelope(
 describe('renderDocumentEnvelopeDoc', () => {
   it('renders kind, metadata, labels, spec, status and a JSON envelope block', () => {
     const md = renderDocumentEnvelopeDoc(makeEnvelope());
-    expect(md).toContain('# topic: my-topic');
+    expect(md).toContain('# topic: doc-123');
     expect(md).toContain('## Kind');
     expect(md).toContain('## Metadata');
     expect(md).toContain('`id`: `doc-123`');
@@ -48,12 +48,12 @@ describe('renderDocumentEnvelopeDoc', () => {
     expect(JSON.parse(json).metadata.id).toBe('doc-123');
   });
 
-  it('falls back to the id in the title when slug is missing', () => {
+  it('falls back to the id in the title when id is missing', () => {
     const md = renderDocumentEnvelopeDoc(
       makeEnvelope({
         metadata: {
           id: 'doc-999',
-          slug: null,
+
           labels: {},
           createdAt: null,
           updatedAt: null,

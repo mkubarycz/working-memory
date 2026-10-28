@@ -132,7 +132,9 @@ describe('container app contracts and renderer', () => {
     const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
     expect(app).toContain('createLiveRun(');
     expect(app).toContain('liveScope(context)');
-    expect(app).toContain('window.workingMemory.sendChat(message, context, images)');
+    expect(app.includes('let requestContext = context;')).toBe(true);
+    expect(app.includes('requestContext = { ...context, hostTaskVersion: prepared.version };')).toBe(true);
+    expect(app.includes('window.workingMemory.sendChat(message, requestContext, images)')).toBe(true);
     expect(app).not.toContain('sendChat(`@${');
   });
 });

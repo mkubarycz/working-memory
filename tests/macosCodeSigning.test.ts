@@ -8,7 +8,7 @@ import {
 } from '../scripts/macos-code-signing.mjs';
 
 describe('macOS desktop code signing', () => {
-  it('uses a stable designated requirement for local ad-hoc builds', () => {
+  it('keeps the bundle identifier stable for ad-hoc builds', () => {
     expect(macCodeSignArguments('/tmp/Working Memory.app', {
       identity: '-',
     })).toEqual([
@@ -45,6 +45,63 @@ describe('macOS desktop code signing', () => {
         stderr: '',
       }),
     })).toBe(MAC_LOCAL_CODESIGN_IDENTITY);
+  });
+
+  it('prefers an Apple Development certificate with a stable Team ID over the local certificate', () => {
+    const fingerprint = 'A'.repeat(40);
+    expect(resolveMacCodeSignIdentity({
+      platform: 'darwin',
+      findIdentities: () => ({
+        status: 0,
+        stdout: `1) ${'B'.repeat(40)} "${MAC_LOCAL_CODESIGN_IDENTITY}"\n2) ${fingerprint} "Apple Development: Example (TEAM123456)"\n2 valid identities found`,
+        stderr: '',
+      }),
+    })).toBe(fingerprint);
+    expect(macCodeSignArguments('/tmp/Working Memory.app', { deep: true, identity: fingerprint }))
+      .toEqual(['--force', '--deep', '--sign', fingerprint, '/tmp/Working Memory.app']);
+  });
+
+  it('recognizes legacy Mac Developer certificates', () => {
+    const fingerprint = 'C'.repeat(40);
+    expect(resolveMacCodeSignIdentity({
+      platform: 'darwin',
+      findIdentities: () => ({
+        status: 0, stdout: `1) ${fingerprint} "Mac Developer: Example (TEAM123456)"`, stderr: '',
+      }),
+    })).toBe(fingerprint);
+  });
+
+  it('requires an explicit choice instead of silently switching between development identities', () => {
+    expect(() => resolveMacCodeSignIdentity({
+      platform: 'darwin',
+      findIdentities: () => ({
+        status: 0,
+        stdout: `1) ${'A'.repeat(40)} "Apple Development: First (TEAM123456)"\n2) ${'B'.repeat(40)} "Apple Development: Second (TEAM654321)"`,
+        stderr: '',
+      }),
+    })).toThrow('WM_DESKTOP_CODESIGN_IDENTITY');
+  });
+
+  it('honors explicit distribution or development identities without looking up another signer', () => {
+    expect(resolveMacCodeSignIdentity({
+      configuredIdentity: 'Developer ID Application: Example',
+      platform: 'darwin',
+      findIdentities: () => { throw new Error('Unexpected identity lookup'); },
+    })).toBe('Developer ID Application: Example');
+  });
+
+  it('surfaces Keychain lookup failures instead of silently falling back to ad-hoc signing', () => {
+    expect(() => resolveMacCodeSignIdentity({
+      platform: 'darwin',
+      findIdentities: () => ({ status: 1, stdout: '', stderr: 'Keychain is unavailable' }),
+    })).toThrow('Keychain is unavailable');
+  });
+
+  it('does not inspect macOS Keychain on other platforms', () => {
+    expect(resolveMacCodeSignIdentity({
+      platform: 'linux',
+      findIdentities: () => { throw new Error('Unexpected identity lookup'); },
+    })).toBe('-');
   });
 
   it('falls back to ad-hoc signing when the local certificate is unavailable', () => {

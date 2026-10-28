@@ -29,7 +29,7 @@ export function createDocumentChangeFeed(store: Store) {
   }
 
   return {
-    handle(_req: IncomingMessage, res: ServerResponse, url: URL): void {
+    handle(_req: IncomingMessage, res: ServerResponse, url: URL, authorized: () => boolean = () => true): void {
       const raw = url.searchParams.get('since');
       const since = raw === null ? undefined : Number(raw);
       if (raw !== null && (!/^\d+$/.test(raw) || !Number.isSafeInteger(since))) {
@@ -45,6 +45,12 @@ export function createDocumentChangeFeed(store: Store) {
       };
       const respond = () => {
         cleanup();
+        if (!authorized()) {
+          res.writeHead(401, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({ error: 'instance_authentication_required',
+            message: 'Your credential expired or was revoked. Sign in again, or request an owner-approved refresh through /identity/v1/mcp.' }));
+          return;
+        }
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
         res.end(JSON.stringify(snapshot(since)));
       };

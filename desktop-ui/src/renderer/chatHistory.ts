@@ -12,7 +12,7 @@ import type { ChatContext, ChatResult, DesktopResourceKind, PendingConfirmation,
 import { normalizeScopeKind } from './scopeIdentity';
 
 export interface ChatTarget {
-  kind: DesktopResourceKind;
+  kind: DesktopResourceKind | 'host-task';
   identifier: string;
 }
 
@@ -54,7 +54,9 @@ export interface ToolDetail {
   partial: boolean;
 }
 
-const TARGET_KINDS: Record<string, DesktopResourceKind> = {
+const TARGET_KINDS: Record<string, ChatTarget['kind']> = {
+  hosttask: 'host-task',
+  'host-task': 'host-task',
   workstream: 'workstream',
   topic: 'topic',
   alert: 'alert',
@@ -72,7 +74,7 @@ const WRITE_ACTION = /-(?:create|update|delete|restore|run|acknowledge|resolve|r
 
 export function targetForRef(ref: CommandJournalScopeRef | CommandJournalEntityRef): ChatTarget | undefined {
   const kind = TARGET_KINDS[ref.kind.toLowerCase()];
-  const identifier = ref.slug ?? ref.id;
+  const identifier = ref.id;
   return kind && identifier ? { kind, identifier } : undefined;
 }
 
@@ -84,13 +86,13 @@ function entityForTool(
   tool: CommandJournalToolEventSummary,
   refs: CommandJournalEntityRef[],
 ): ChatToolRow['entity'] {
-  const family = tool.toolName.startsWith('ws-agent-message-')
+  const family = tool.toolName.startsWith('desktop-host-task-') ? 'hosttask' : tool.toolName.startsWith('ws-agent-message-')
     ? 'agentmessage' : tool.toolName.match(/^ws-([a-z]+)-/)?.[1];
   if (!family) return undefined;
   const ref = refs.find((candidate) => candidate.kind.toLowerCase().replaceAll('-', '') === family);
   if (!ref) return undefined;
   return {
-    label: ref.title ?? ref.slug ?? ref.id,
+    label: ref.title ?? ref.id,
     target: targetForRef(ref),
   };
 }
@@ -192,8 +194,8 @@ export function mergeHistoryRuns(current: ChatRun[], summaries: CommandJournalSu
 function sameRequest(run: ChatRun, summary: CommandJournalSummary): boolean {
   const runKind = normalizeScopeKind(run.scope.kind);
   const summaryKind = normalizeScopeKind(summary.primaryScope.kind);
-  const runIdentifier = run.scope.slug ?? run.scope.id;
-  const summaryIdentifier = summary.primaryScope.slug ?? summary.primaryScope.id;
+  const runIdentifier = run.scope.id;
+  const summaryIdentifier = summary.primaryScope.id;
   return run.userText === summary.request.userText
     && runKind === summaryKind
     && runIdentifier === summaryIdentifier;

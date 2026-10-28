@@ -7,6 +7,9 @@ import {
   createDocumentOpenGuard,
   documentTabKey,
   documentTabIcon,
+  documentTabTooltip,
+  hostTaskDocument,
+  newHostTaskDocument,
   keepSelectedTabVisible,
   openDocumentTab,
   parseDocumentTabs,
@@ -19,20 +22,70 @@ import {
 } from '../src/renderer/documentTabs';
 import { containerAppDocument } from '../src/renderer/containerApps';
 
-function topic(slug: string, title = slug): TopicVM {
+function topic(id: string, title = id): TopicVM {
   return {
-    kind: 'topic', title, slug, status: 'open', topicType: 'feature', typeMeta: null,
+    kind: 'topic', title, id, status: 'open', topicType: 'feature', typeMeta: null,
     body: '', createdAt: 1, updatedAt: 1, resourceVersion: 1, editable: true,
     parents: [], children: [], workstreams: [], focusedWorkstreams: [], agentMessages: [],
   };
 }
 
 describe('document tabs', () => {
+  it('keeps separate permanent task tabs and deduplicates each task and creation tab', () => {
+    const first = hostTaskDocument({ id: 'first-task', name: 'Untitled task', draftName: 'Import messages' });
+    const second = hostTaskDocument({ id: 'second-task', name: 'Back up notes' });
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, first, false);
+    state = openDocumentTab(state, second, false);
+    state = openDocumentTab(state, newHostTaskDocument(), false);
+    state = openDocumentTab(state, newHostTaskDocument(), false);
+    state = openDocumentTab(state, topic('preview'));
+    state = openDocumentTab(state, first, false);
+    expect(state.tabs.map(documentTabKey)).toEqual([
+      'topic:preview', 'host-task-create:new-host-task', 'host-task:second-task', 'host-task:first-task',
+    ]);
+    expect(state.selectedKey).toBe('host-task:first-task');
+    expect(documentTabIcon(first)).toBe('checklist');
+    expect(documentTabTooltip(first)).toBe('Import messages');
+    expect(documentTabIcon(newHostTaskDocument())).toBe('add');
+    expect(parseDocumentTabs(serializeDocumentTabs(state))).toEqual({
+      version: 1,
+      tabs: [
+        { kind: 'host-task-create', identifier: 'new-host-task' },
+        { kind: 'host-task', identifier: 'second-task' },
+        { kind: 'host-task', identifier: 'first-task' },
+      ],
+      selectedKey: 'host-task:first-task',
+    });
+    expect(closeDocumentTab(state, 'host-task:first-task').selectedKey).toBe('host-task:second-task');
+  });
+
+  it('shows topic locators in tab tooltips while retaining the title and preview hint', () => {
+    const document = topic('topic-id', 'A readable title');
+    expect(documentTabTooltip(document)).toBe('A readable title\nworking-memory://open/topic/topic-id');
+    expect(documentTabTooltip(document, true)).toBe(
+      'A readable title — Preview (double-click to keep open)\nworking-memory://open/topic/topic-id',
+    );
+    expect(documentTabTooltip(topic('old id/#'), false))
+      .toBe('old id/#\nworking-memory://open/topic/old%20id%2F%23');
+    expect(documentTabTooltip(topic('', 'No locator yet'))).toBe('No locator yet');
+  });
+
+  it('does not invent topic locators for other document kinds or unsaved drafts', () => {
+    const settings: DocumentVM = { kind: 'settings', id: 'desktop-settings', title: 'Settings' };
+    expect(documentTabTooltip(settings)).toBe('Settings');
+    expect(documentTabTooltip(settings, true)).toBe('Settings — Preview (double-click to keep open)');
+    const draft: DocumentVM = {
+      kind: 'topic-create', id: 'draft-id', title: 'New topic', body: '', topicType: '',
+      topicTypes: [], workstream: '', workstreamTitle: '', parent: null, parentTitle: null,
+    };
+    expect(documentTabTooltip(draft)).toBe('New topic');
+  });
+
   it('shares topic type icons with message context links without changing tab fallbacks', () => {
     const document = topic('selected');
     expect(documentTabIcon(document)).toBe('symbol-misc');
     expect(documentTabIcon({ ...document, typeMeta: {
-      slug: 'feature', label: 'Feature', icon: 'rocket', description: '',
+      id: 'feature', label: 'Feature', icon: 'rocket', description: '',
     } })).toBe('rocket');
     expect(documentTabIcon(containerAppDocument({ id: 'app', displayName: 'App', icon: 'server-environment' })))
       .toBe('server-environment');
@@ -60,7 +113,7 @@ describe('document tabs', () => {
     const backlog: DocumentVM = {
       kind: 'topic-backlog',
       id: 'open-topic-backlog',
-      slug: null,
+
       title: 'Open topic backlog',
       topics: [],
     };
@@ -84,7 +137,7 @@ describe('document tabs', () => {
     const settings: DocumentVM = {
       kind: 'settings',
       id: 'desktop-settings',
-      slug: null,
+
       title: 'Settings',
     };
     let state = openDocumentTab({ tabs: [], selectedKey: null }, settings, false);

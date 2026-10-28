@@ -23,6 +23,13 @@ export interface NativeCredentialStorage {
   isEncryptionAvailable(): boolean;
   encryptString(value: string): Buffer;
   decryptString(value: Buffer): string;
+  getSelectedStorageBackend?(): string;
+}
+
+export function nativeCredentialStorageAvailable(native: NativeCredentialStorage, platform: NodeJS.Platform): boolean {
+  return native.isEncryptionAvailable() && (platform !== 'linux'
+    || !!native.getSelectedStorageBackend
+      && ['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'].includes(native.getSelectedStorageBackend()));
 }
 
 export class DesktopCredentialVault {

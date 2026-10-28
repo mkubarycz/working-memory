@@ -15,7 +15,7 @@ import { Config, CONFIG_KIND } from './config.js';
 
 /**
  * Register the `ws-config-read` tool on an MCP session's server. Reads ONE
- * config by slug/id, or LISTs all live Configs (optionally filtered), always
+ * config by ID, or LISTs all live Configs (optionally filtered), always
  * returning the uniform `{ count, configs }` shape.
  */
 export function registerWsConfigRead(server: McpServer, store: Store): void {
@@ -24,12 +24,11 @@ export function registerWsConfigRead(server: McpServer, store: Store): void {
     {
       title: 'Config: Read',
       description:
-        'Read one Config or many. Read ONE by `slug` or `id`; otherwise LIST all Configs ' +
+        'Read one Config or many. Read ONE by `id`; otherwise LIST all Configs ' +
         '(newest-first), with an optional `query` case-insensitive substring filter and a `limit`. ' +
-        'ALWAYS returns { count, configs } — a by-slug/id read yields a 0-or-1 element list, so ' +
+        'ALWAYS returns { count, configs } — a by-ID read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
-      inputSchema: {
-        slug: z.string().optional().describe('Read ONE config by slug (registry key).'),
+      inputSchema: z.object({
         id: z.string().optional().describe('Read ONE config by document id (uuid).'),
         query: z
           .string()
@@ -41,13 +40,13 @@ export function registerWsConfigRead(server: McpServer, store: Store): void {
           .positive()
           .optional()
           .describe('Max configs to return (list mode only).'),
-      },
+      }).strict(),
     },
-    async ({ slug, id, query, limit }) => {
-      // Single read: by id or slug. A foreign-kind id maps to nothing (the
+    async ({ id, query, limit }) => {
+      // Single read: by ID. A foreign-kind ID maps to nothing (the
       // `ws-config-*` API only speaks Configs).
-      if (id !== undefined || slug !== undefined) {
-        const doc = store.getDocument({ id, slug, kind: CONFIG_KIND });
+      if (id !== undefined) {
+        const doc = store.getDocument({ id, kind: CONFIG_KIND });
         const configs = doc && doc.kind === CONFIG_KIND ? [new Config(doc)] : [];
         return asText({ count: configs.length, configs });
       }

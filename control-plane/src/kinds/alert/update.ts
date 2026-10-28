@@ -47,7 +47,7 @@ export function registerWsAlertUpdate(server: McpServer, store: Store): void {
           .describe("New status: 'alert' | 'informational' | 'closed'."),
         dedupe_key: z.string().optional().describe('New dedupe key.'),
         created_by: z.string().optional().describe('New author.'),
-        topics: z.array(z.string()).optional().describe('Replacement topic slugs.'),
+        topics: z.array(z.string()).optional().describe('Replacement topic document IDs.'),
       }).strict(),
     },
     async ({ id, title, description, recommended_action, status, dedupe_key, created_by, topics }) => {
@@ -86,7 +86,7 @@ export function registerWsAlertUpdate(server: McpServer, store: Store): void {
       try {
         // Merge the patch onto the current spec, then re-validate the whole spec.
         const legacy = new Alert(existing);
-        const { id: _id, slug: _slug, created_at: _created, updated_at: _updated, resourceVersion: _version, ...base } = legacy;
+        const { id: _id, created_at: _created, updated_at: _updated, resourceVersion: _version, ...base } = legacy;
         if (base.dedupe_key === null) delete (base as Partial<typeof base>).dedupe_key;
         const parsed = validateSpec(ALERT_KIND, { ...base, ...patch });
         const mapping = legacyToMessage(parsed, parsed.description === existing.spec.description

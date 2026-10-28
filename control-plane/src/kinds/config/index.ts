@@ -1,7 +1,7 @@
 /**
  * The `Config` kind — a "configmap": a named bag of string key-value pairs
- * (`data`) plus an optional human `name` and authored `status`, identified by a
- * registry-key `slug` (e.g. `banking-app-developer`).
+ * (`data`) plus an optional human `name` and authored `status`, identified by its
+ * document ID.
  *
  * `data` values are ALWAYS strings — the spec schema rejects a non-string value
  * outright. `data` is required (an empty object is allowed). Unknown top-level
@@ -47,11 +47,11 @@ const config: KindModule = {
       })
       .strict(),
     // No envelope `status` schema → inherit Base (lifecycle-only, empty {}).
-    // FTS projects the slug + name + the data KEYS only — NEVER the values,
+    // FTS projects the ID + name + the data KEYS only — NEVER the values,
     // which may be secrets.
     fts: (r) =>
       [
-        r.metadata.slug,
+        r.metadata.id,
         r.spec.name,
         ...Object.keys((r.spec.data as Record<string, unknown> | undefined) ?? {}),
       ]
@@ -68,9 +68,7 @@ const config: KindModule = {
  * wiring the four split tool files. Each tool lives in its own sibling file
  * (`create` / `read` / `update` / `delete`) in this kind folder and shares the
  * kind name + `Config` projection via `./config.js` and the result helpers via
- * `../toolResult.js`. Config has a registry-key `slug` (e.g.
- * 'banking-app-developer'), so read/update/delete key on `slug`. Mirrors the
- * TopicType kind exactly.
+ * `../toolResult.js`. Read/update/delete locate configs by document ID.
  */
 function registerConfigApi(server: McpServer, store: Store): void {
   registerWsConfigCreate(server, store);

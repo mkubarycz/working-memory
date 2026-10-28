@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { openStore } from '../src/store';
 import { clearKinds } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 let sqliteAvailable = true;
 try {
@@ -32,7 +32,7 @@ function isErrorResult(res: unknown): boolean {
 
 interface Envelope {
   kind: string;
-  metadata: { id: string; slug: string | null; resourceVersion: number; deletedAt: number | null };
+  metadata: { id: string; resourceVersion: number; deletedAt: number | null };
   spec: Record<string, unknown>;
 }
 
@@ -61,6 +61,7 @@ interface Envelope {
 
   it('deletes a Topic by id → gone from wm-document-read, then restores it', async () => {
     const store = openStore(':memory:');
+    store.createDocument({ kind: 'TopicType', spec: { label: 'Topic' } });
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'wm-cp-del-roundtrip', version: '0.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
@@ -70,7 +71,7 @@ interface Envelope {
       const created = jsonOf<Envelope>(
         await client.callTool({
           name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'to-delete', spec: { title: 'Delete me', workstreams: ['ws-one'] } },
+          arguments: { kind: 'Topic', spec: { title: 'Delete me' } },
         }),
       );
 
@@ -85,7 +86,7 @@ interface Envelope {
       const afterDelete = jsonOf<{ count: number; documents: Envelope[] }>(
         await client.callTool({ name: 'wm-document-read', arguments: {} }),
       );
-      expect(afterDelete.count).toBe(0);
+      expect(afterDelete.count).toBe(1);
 
       // Restore brings it back via the same tool with restore: true.
       const restored = jsonOf<Envelope>(
@@ -99,8 +100,8 @@ interface Envelope {
       const afterRestore = jsonOf<{ count: number; documents: Envelope[] }>(
         await client.callTool({ name: 'wm-document-read', arguments: {} }),
       );
-      expect(afterRestore.count).toBe(1);
-      expect(afterRestore.documents[0]?.metadata.slug).toBe('to-delete');
+      expect(afterRestore.count).toBe(2);
+      expect(afterRestore.documents.some((doc) => doc.metadata.id === created.metadata.id)).toBe(true);
     } finally {
       await client.close();
       await server.close();
@@ -120,7 +121,6 @@ interface Envelope {
       // hallucinated fields — the sort of thing wm-document-create would reject.
       const junk = store.createDocument({
         kind: 'topic',
-        slug: 'legacy-junk',
         spec: { hallucinated: 'field' },
       });
 

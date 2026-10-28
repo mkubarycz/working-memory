@@ -13,7 +13,7 @@ vi.mock('../src/main/feedbackDiscovery', () => ({ discoverFeedbackServers: vi.fn
 const requestId = 'ed9cc832-401a-4fba-9fd0-33cb7b0f2d0c';
 const imageId = '503789c7-8f3a-439a-a8d9-680b50b993cd';
 const receipt = {
-  id: requestId, slug: `shared-${requestId}`, title: 'A bug', duplicate: false,
+  id: requestId,  title: 'A bug', duplicate: false,
   statusUrl: `/submissions/${requestId}`, submittedAt: '2026-10-20T19:52:00.000Z',
 };
 const recordReceipt = vi.fn(async () => {});
@@ -178,7 +178,7 @@ describe('automatic encrypted feedback', () => {
 
 describe('source topic tracking note', () => {
   const document = {
-    kind: 'Topic', metadata: { id: imageId, slug: 'source', resourceVersion: 42, labels: {}, createdAt: 1, updatedAt: 2, deletedAt: null },
+    kind: 'Topic', metadata: { id: imageId,  resourceVersion: 42, labels: {}, createdAt: 1, updatedAt: 2, deletedAt: null },
     spec: { body: 'Latest authored edits', status: 'open' }, status: {},
   };
   const savedReceipt = { ...receipt, statusUrl: `https://192.168.0.175:7720${receipt.statusUrl}` };

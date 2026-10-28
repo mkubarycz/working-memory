@@ -18,7 +18,7 @@ function makeEnvelope(
     kind,
     metadata: {
       id: 'doc-1',
-      slug: 'the-slug',
+
       labels: {},
       createdAt: 1000,
       updatedAt: 2000,
@@ -81,7 +81,7 @@ describe('renderTopicDocument', () => {
       '`topicType`: [feature](working-memory://open/topic-type/feature)',
     );
     expect(md).toContain('the body text');
-    // Workstreams degrade to slug labels when no resolved titles are injected.
+    // Workstreams degrade to id labels when no resolved titles are injected.
     expect(md).toContain(
       '[control-plane](working-memory://open/workstream/control-plane)',
     );
@@ -104,25 +104,25 @@ describe('renderTopicDocument', () => {
       }),
       [],
       {
-        workstreams: [{ slug: 'ws-a', title: 'Workstream A' }],
+        workstreams: [{ id: 'ws-a', title: 'Workstream A' }],
         family: [
           {
-            slug: 'grandparent',
+            id: 'grandparent',
             title: 'Grandparent',
             isCurrent: false,
             children: [
               {
-                slug: 'parent',
+                id: 'parent',
                 title: 'Parent',
                 isCurrent: false,
                 children: [
                   {
-                    slug: 'the-slug',
+                    id: 'the-id',
                     title: 'Family Node',
                     isCurrent: true,
                     children: [
                       {
-                        slug: 'child',
+                        id: 'child',
                         title: 'Child',
                         isCurrent: false,
                         children: [],
@@ -136,7 +136,7 @@ describe('renderTopicDocument', () => {
         ],
       },
     );
-    // Friendly workstream link (title label, not slug).
+    // Friendly workstream link (title label, not id).
     expect(md).toContain(
       '[Workstream A](working-memory://open/workstream/ws-a)',
     );
@@ -154,16 +154,16 @@ describe('renderTopicDocument', () => {
     );
   });
 
-  it('falls back to the slug label for a dangling family ref', () => {
+  it('falls back to the id label for a dangling family ref', () => {
     const md = renderTopicDocument(makeEnvelope('Topic', { title: 'X' }), [], {
       family: [
         {
-          slug: 'ghost-parent',
+          id: 'ghost-parent',
           title: 'ghost-parent',
           isCurrent: false,
           children: [
             {
-              slug: 'the-slug',
+              id: 'the-id',
               title: 'X',
               isCurrent: true,
               children: [],
@@ -172,7 +172,7 @@ describe('renderTopicDocument', () => {
         },
       ],
     });
-    // Title unresolved → the slug itself is the label, so the link never breaks.
+    // Title unresolved → the id itself is the label, so the link never breaks.
     expect(md).toContain(
       '- [ghost-parent](working-memory://open/topic/ghost-parent)',
     );
@@ -217,7 +217,7 @@ describe('renderTopicTypeDocument', () => {
           description: 'A shippable capability.',
           body_template: '## Problem\n## Proposal',
         },
-        { slug: 'feature' },
+        { id: 'feature' },
       ),
     );
     expect(md).toContain('# TopicType: Feature');

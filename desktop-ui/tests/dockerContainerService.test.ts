@@ -12,8 +12,8 @@ import {
 import { CONTAINER_APP_FIXTURES } from './fixtures/containerApps';
 import type { ContainerClaimCreateInput } from '../../shared/controlPlaneClient';
 
-const desired: ContainerClaimCreateInput = {
-  slug: 'clarinet-hero',
+const desired: ContainerClaimCreateInput & { id: string } = {
+  id: 'clarinet-hero',
   title: 'Clarinet Hero',
   repository: '/repo/ClarinetHero',
   runtime: {
@@ -85,7 +85,7 @@ describe('DockerContainerService', () => {
     };
     let existing = false;
     const inspect = {
-      Config: { Image: extended.runtime.imageName, Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: extended.slug } },
+      Config: { Image: extended.runtime.imageName, Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: extended.id } },
       State: { Running: true },
       HostConfig: { PortBindings: {
         '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '4173' }],
@@ -128,7 +128,7 @@ describe('DockerContainerService', () => {
     await expect(new DockerContainerService().ensure(claimClient, desired))
       .resolves.toMatchObject({ status: 'error', code: 'claim_error' });
     expect(claimClient.containerClaimUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      slug: desired.slug,
+      id: desired.id,
       mcp: null,
       application: null,
     }));
@@ -210,7 +210,7 @@ describe('DockerContainerService', () => {
             State: { Running: true },
             Config: {
               Image: desired.runtime!.imageName,
-              Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: desired.slug },
+              Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: desired.id },
             },
             HostConfig: { PortBindings: { '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '4173' }] } },
           }]),
@@ -455,7 +455,7 @@ describe('DockerContainerService', () => {
       const status = await new DockerContainerService({ runner, readiness: async () => true }).inspect(desired);
       expect(status).toMatchObject({
         displayName: 'Clarinet Hero',
-        claimSlug: 'clarinet-hero',
+        claimId: 'clarinet-hero',
         state: 'healthy',
         ready: true,
         dockerContext: 'desktop-linux',
@@ -571,7 +571,7 @@ describe('claim-owned container isolation', () => {
 
   it('cannot stop another app container when given the banking definition', async () => {
       const bankingDesired: ContainerClaimCreateInput = {
-        slug: banking.id,
+        id: banking.id,
         title: banking.displayName,
         repository: '/repo/BankingApp',
         runtime: {

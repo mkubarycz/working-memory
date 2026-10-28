@@ -11,22 +11,22 @@ export function registerWsWorkstreamReorder(server: McpServer, store: Store): vo
     {
       title: 'Workstream: Reorder',
       description: 'Atomically update lifecycle section and sort position for a set of workstreams.',
-      inputSchema: {
+      inputSchema: z.object({
         updates: z.array(z.object({
-          slug: z.string().min(1),
+          id: z.string().min(1),
           status: z.enum(['queue', 'progress', 'backlog']),
           position: z.number().finite(),
-        })).min(1),
-      },
+        }).strict()).min(1),
+      }).strict(),
     },
     async ({ updates }) => {
-      const slugs = updates.map((update) => update.slug);
-      if (new Set(slugs).size !== slugs.length) return asError('Duplicate workstream slug in reorder request.');
+      const ids = updates.map((update) => update.id);
+      if (new Set(ids).size !== ids.length) return asError('Duplicate workstream ID in reorder request.');
 
       const batch: UpdateDocumentInput[] = [];
       for (const update of updates) {
-        const existing = store.getDocument({ slug: update.slug, kind: WORKSTREAM_KIND });
-        if (!existing) return asError(`Unknown workstream slug: "${update.slug}". No live workstream with that slug.`);
+        const existing = store.getDocument({ id: update.id, kind: WORKSTREAM_KIND });
+        if (!existing) return asError(`Unknown workstream ID: "${update.id}". No live workstream with that ID.`);
         let spec: Record<string, unknown>;
         try {
           spec = validateSpec(WORKSTREAM_KIND, {

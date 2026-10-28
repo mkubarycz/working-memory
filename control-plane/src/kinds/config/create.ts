@@ -27,20 +27,19 @@ export function registerWsConfigCreate(server: McpServer, store: Store): void {
       title: 'Config: Create',
       description:
         'Create a Config (a "configmap": a named bag of string key-value pairs). Provide an ' +
-        'optional `slug` (the registry key, e.g. "banking-app-developer"), an optional `name` ' +
+        'optional `name` ' +
         '(human label), the required `data` (an object of string→string pairs; may be empty), ' +
         'and an optional `status` (authored free-form). Every `data` value MUST be a string. The ' +
         'spec is validated against the Config kind. Returns the created config.',
-      inputSchema: {
-        slug: z.string().optional().describe('Optional registry-key slug (e.g. "banking-app-developer").'),
+      inputSchema: z.object({
         name: z.string().optional().describe('Human-readable label (optional).'),
         data: z
           .record(z.string(), z.unknown())
           .describe('The key-value pairs (required, may be empty). All values MUST be strings.'),
         status: z.string().optional().describe('Authored free-form status (optional).'),
-      },
+      }).strict(),
     },
-    async ({ slug, name, data, status }) => {
+    async ({ name, data, status }) => {
       const specInput: Record<string, unknown> = { data };
       if (name !== undefined) {
         specInput.name = name;
@@ -58,7 +57,6 @@ export function registerWsConfigCreate(server: McpServer, store: Store): void {
       }
       const doc = store.createDocument({
         kind: CONFIG_KIND,
-        slug,
         spec: validatedSpec,
         status: docStatus,
       });

@@ -18,7 +18,7 @@ export const agentMessageDecision = z.object({
   decided_at: z.number().int().nonnegative().optional().describe('Server-recorded Unix seconds. Omit when recording a decision; never authorization or proof of identity.'),
 }).strict();
 export const agentMessageSpec = z.object({
-  agent_id: z.string().uuid().describe('Required registered caller ID. Look up your agent name with ws-agent-read; if missing, register with ws-agent-create. Remember the returned metadata.id and reuse it here for every message. Do not impersonate another caller. Registration is attribution, not authentication or authorization.'),
+  agent_id: z.string().min(1).describe('Required registered caller ID. Look up your agent name with ws-agent-read; if missing, register with ws-agent-create. Remember the returned metadata.id and reuse it here for every message. Do not impersonate another caller. Registration is attribution, not authentication or authorization.'),
   agent_name: z.string().trim().min(1).optional().describe('Server-owned send-time registered caller name. Omit when creating a message; do not edit.'),
   title: z.string().refine((value) => value.trim().length > 0, 'A meaningful nonblank title is required.').describe('Required meaningful Markdown title; preserved as authored source.'),
   description: z.string().refine((value) => value.trim().length > 0, 'A meaningful nonblank body is required.').describe('Required Markdown body; never rewritten by rendering or migration.'),
@@ -27,8 +27,8 @@ export const agentMessageSpec = z.object({
   status: z.enum(['open', 'acknowledged', 'resolved']).default('open'),
   attention: z.boolean().default(false).describe('Opt in only for an open message needing a human decision/intervention. Completion and PR notices normally remain false.'),
   recommended_action: z.string().default('').describe('Suggested human next step; informational, never an executable authorization.'),
-  topics: z.array(z.string().min(1)).default([]).describe('Distinct Topic slugs, not document IDs. New/changed links must be live; unchanged migrated historical links are retained even if their Topic is gone. Does not change topic lifecycle.'),
-  relations: z.array(z.object({ kind: z.string().min(1), id: z.string().min(1) }).strict()).default([]).describe('Distinct live document references by exact kind and document ID; not slugs.'),
+  topics: z.array(z.string().min(1)).default([]).describe('Distinct Topic document IDs. New/changed links must be live; unchanged historical links are retained even if their Topic is gone. Does not change topic lifecycle.'),
+  relations: z.array(z.object({ kind: z.string().min(1), id: z.string().min(1) }).strict()).default([]).describe('Distinct live document references by exact kind and document ID.'),
   dedupe_key: z.string().min(1).optional().describe('Stable retry identity among live unresolved messages. Same authored content reuses the active record; changed content conflicts. Resolved/deleted history never revives: a recurrence creates a new ID.'),
   created_by: z.string().default('system'),
   provenance: agentMessageProvenance.optional().describe('Optional origin identifiers/links: agent, journal_id, run_id, session_id, url, pr, source. Timestamps are server-owned metadata.createdAt/updatedAt in Unix seconds.'),

@@ -18,7 +18,7 @@ import { TopicType, TOPIC_TYPE_KIND } from './topictype.js';
  * Register the `ws-topictype-update` tool on an MCP session's server. Reads the
  * current document for its id + resourceVersion, merges the patch, re-validates
  * the whole spec against the TopicType kind, then does a compare-and-swap write.
- * Unknown slug and version conflicts are surfaced clearly.
+ * Unknown IDs and version conflicts are surfaced clearly.
  */
 export function registerWsTopicTypeUpdate(server: McpServer, store: Store): void {
   server.registerTool(
@@ -26,22 +26,22 @@ export function registerWsTopicTypeUpdate(server: McpServer, store: Store): void
     {
       title: 'TopicType: Update',
       description:
-        'Update a TopicType identified by `slug`. Pass only the fields you are changing (`label`, ' +
+        'Update a TopicType identified by `id`. Pass only the fields you are changing (`label`, ' +
         '`icon`, `description`, `body_template`). Reads the current document for its id + ' +
         'resourceVersion, then does a compare-and-swap write of the merged, re-validated spec. ' +
-        'Unknown slug and version conflicts are surfaced clearly. Returns the updated topic type.',
-      inputSchema: {
-        slug: z.string().describe('Slug of the topic type to update (required).'),
+        'Unknown IDs and version conflicts are surfaced clearly. Returns the updated topic type.',
+      inputSchema: z.object({
+        id: z.string().min(1).describe('ID of the topic type to update (required).'),
         label: z.string().optional().describe('New label.'),
         icon: z.string().optional().describe('New codicon id.'),
         description: z.string().optional().describe('New description.'),
         body_template: z.string().optional().describe('New body template.'),
-      },
+      }).strict(),
     },
-    async ({ slug, label, icon, description, body_template }) => {
-      const existing = store.getDocument({ slug, kind: TOPIC_TYPE_KIND });
+    async ({ id, label, icon, description, body_template }) => {
+      const existing = store.getDocument({ id, kind: TOPIC_TYPE_KIND });
       if (!existing) {
-        return asError(`Unknown topic type slug: "${slug}". No live topic type with that slug.`);
+        return asError(`Unknown topic type ID: "${id}". No live topic type with that ID.`);
       }
       const patch: Record<string, unknown> = {};
       if (label !== undefined) {
@@ -78,13 +78,13 @@ export function registerWsTopicTypeUpdate(server: McpServer, store: Store): void
       } catch (err) {
         if (err instanceof ConflictError) {
           return asError(
-            `Conflict: topic type "${slug}" changed since it was read (current resourceVersion ` +
+            `Conflict: topic type "${id}" changed since it was read (current resourceVersion ` +
               `${err.currentResourceVersion}). Re-read with ws-topictype-read and retry.`,
           );
         }
         if (err instanceof NotFoundError) {
           return asError(
-            `Unknown topic type slug: "${slug}". It no longer exists (it may have been deleted).`,
+            `Unknown topic type ID: "${id}". It no longer exists (it may have been deleted).`,
           );
         }
         throw err;

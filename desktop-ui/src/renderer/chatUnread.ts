@@ -28,7 +28,7 @@ export function collectUnreadResponses(
     if (old ? hasResponse(old) : !includeNew) continue;
     records.set(responseKey(run), {
       key: responseKey(run),
-      refs: [run.scope, ...run.entityRefs].map(({ kind, id, slug }) => ({ kind, id, ...(slug ? { slug } : {}) })),
+      refs: [run.scope, ...run.entityRefs].map(({ kind, id }) => ({ kind, id })),
     });
   }
   return [...records.values()].slice(-200);
@@ -38,7 +38,7 @@ export function unreadResponseCount(records: UnreadResponse[], kind: string, ...
   const normalized = kind.toLowerCase().replaceAll('-', '');
   return records.filter((record) => record.refs.some((ref) =>
     ref.kind.toLowerCase().replaceAll('-', '') === normalized
-    && identifiers.some((id) => id && (ref.id === id || ref.slug === id)))).length;
+    && identifiers.some((id) => id && ref.id === id))).length;
 }
 
 export function parseUnreadResponses(raw: string | null): UnreadResponse[] {
@@ -51,7 +51,7 @@ export function parseUnreadResponses(raw: string | null): UnreadResponse[] {
       && Array.isArray(record.refs) && record.refs.every((ref: unknown) =>
         ref && typeof ref === 'object' && 'kind' in ref && typeof ref.kind === 'string'
         && 'id' in ref && typeof ref.id === 'string'
-        && (!('slug' in ref) || typeof ref.slug === 'string'))
+        && (!('id' in ref) || typeof ref.id === 'string'))
     )).slice(-200);
   } catch {
     return [];

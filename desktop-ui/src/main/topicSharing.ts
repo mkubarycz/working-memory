@@ -12,6 +12,7 @@ export async function serializeFeedback(
   sourceUrl: string,
   requestId: string,
   context: FeedbackContext,
+  fetcher: typeof fetch = fetch,
 ): Promise<string> {
   if (!UUID.test(requestId)) throw new Error('A valid sharing request ID is required.');
   const sharedBody = `${topic.body}\n\n---\n\n## Feedback environment\n\n`
@@ -24,7 +25,7 @@ export async function serializeFeedback(
   let total = 0;
   for (const id of ids) {
     if (!UUID.test(id)) throw new Error(`Invalid attachment reference: ${id}`);
-    const response = await fetch(new URL(`/attachments/${id}`, sourceUrl), { signal: AbortSignal.timeout(30_000), redirect: 'error' });
+    const response = await fetcher(new URL(`/attachments/${id}`, sourceUrl), { signal: AbortSignal.timeout(30_000), redirect: 'error' });
     if (!response.ok) throw new Error(`Unable to read screenshot ${id} (HTTP ${response.status}); nothing was shared.`);
     const mimeType = response.headers.get('content-type')?.split(';')[0].trim() ?? '';
     if (!IMAGE_TYPES[mimeType]) throw new Error(`Unsupported screenshot type: ${mimeType}`);
@@ -85,7 +86,7 @@ function parseReceipt(status: number, payload: unknown, receiverUrl: URL): Share
   if (!payload || typeof payload !== 'object' || !('ok' in payload) || payload.ok !== true
     || !('topic' in payload) || !payload.topic || typeof payload.topic !== 'object'
     || !('id' in payload.topic) || typeof payload.topic.id !== 'string'
-    || !('slug' in payload.topic) || typeof payload.topic.slug !== 'string'
+    || !('id' in payload.topic) || typeof payload.topic.id !== 'string'
     || !('title' in payload.topic) || typeof payload.topic.title !== 'string'
     || !UUID.test(payload.topic.id)
     || !('duplicate' in payload.topic) || typeof payload.topic.duplicate !== 'boolean'
@@ -100,7 +101,7 @@ function parseReceipt(status: number, payload: unknown, receiverUrl: URL): Share
     throw new Error('Feedback returned a status link outside its own API; retry in this dialog.');
   }
   return {
-    id: payload.topic.id, slug: payload.topic.slug, title: payload.topic.title, duplicate: payload.topic.duplicate,
+    id: payload.topic.id,  title: payload.topic.title, duplicate: payload.topic.duplicate,
     statusUrl: statusUrl.href, submittedAt: new Date(payload.topic.submittedAt).toISOString(),
   };
 }
@@ -124,7 +125,7 @@ export async function recordFeedbackReceipt(
 }
 
 interface FeedbackSnapshot {
-  slug: string;
+  id: string;
   body: string;
   context: FeedbackContext;
   servers: FeedbackDestination[];
@@ -137,39 +138,40 @@ interface FeedbackSnapshot {
 export class FeedbackSender {
   private pending: Promise<FeedbackSnapshot> | undefined;
   private requestId = '';
-  constructor(private readonly source: (slug: string) => Promise<{
+  constructor(private readonly source: (id: string) => Promise<{
     topic: Pick<Topic, 'title' | 'body' | 'topicType'>; sourceUrl: string; context: FeedbackContext;
     recordReceipt: (receipt: SharedTopicReceipt) => Promise<void>;
+    fetcher?: typeof fetch;
   }>) {}
 
-  private async snapshot(slug: string, requestId: string): Promise<FeedbackSnapshot> {
+  private async snapshot(id: string, requestId: string): Promise<FeedbackSnapshot> {
     if (!UUID.test(requestId)) throw new Error('Invalid feedback request ID.');
     if (this.requestId !== requestId || !this.pending) {
       this.requestId = requestId;
       this.pending = (async () => {
-        const { topic, sourceUrl, context, recordReceipt } = await this.source(slug);
-        return { slug, body: await serializeFeedback(topic, sourceUrl, requestId, context), context, recordReceipt, servers: [], createdAt: Date.now() };
+        const { topic, sourceUrl, context, recordReceipt, fetcher } = await this.source(id);
+        return { id, body: await serializeFeedback(topic, sourceUrl, requestId, context, fetcher), context, recordReceipt, servers: [], createdAt: Date.now() };
       })();
     }
     let snapshot: FeedbackSnapshot;
     try { snapshot = await this.pending; }
     catch (error) { this.pending = undefined; throw error; }
-    if (snapshot.slug !== slug) throw new Error('This feedback request belongs to a different topic.');
+    if (snapshot.id !== id) throw new Error('This feedback request belongs to a different topic.');
     if (!snapshot.receipt && Date.now() - snapshot.createdAt > 5 * 60_000) throw new Error('Feedback snapshot expired. Close this dialog and try again.');
     return snapshot;
   }
 
-  async prepare(slug: string, requestId: string): Promise<FeedbackPreparation> {
-    const snapshot = await this.snapshot(slug, requestId);
+  async prepare(id: string, requestId: string): Promise<FeedbackPreparation> {
+    const snapshot = await this.snapshot(id, requestId);
     snapshot.servers = await discoverFeedbackServers();
     if (!snapshot.servers.length) throw new Error('No Feedback servers found. Start the Feedback container app; allow UDP 7721 and TCP 7720 on the same LAN.');
     return { context: snapshot.context, servers: snapshot.servers.map(({ id, name, url }) => ({ id, name, address: new URL(url).hostname })) };
   }
 
-  async send(slug: string, requestId: string, serverId?: string): Promise<FeedbackSendResult> {
-    const snapshot = await this.snapshot(slug, requestId);
+  async send(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult> {
+    const snapshot = await this.snapshot(id, requestId);
     if (!snapshot.receipt) {
-      if (!serverId) await this.prepare(slug, requestId);
+      if (!serverId) await this.prepare(id, requestId);
       const server = serverId ? snapshot.servers.find((candidate) => candidate.id === serverId)
         : snapshot.servers.length === 1 ? snapshot.servers[0] : undefined;
       if (serverId && !server) throw new Error('That Feedback server was not discovered for this request.');

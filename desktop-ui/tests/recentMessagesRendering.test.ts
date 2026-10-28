@@ -10,6 +10,7 @@ let render: typeof import('svelte/server').render;
 let RecentMessages: Component<any>;
 let ToolActivity: Component<any>;
 let AgentMessageCard: Component<any>;
+let AgentMessageCallouts: Component<any>;
 let MessageTimeline: Component<any>;
 const context = { kind: 'topic', routeKind: 'topic', identifier: 'selected', title: 'Selected' };
 const noop = vi.fn();
@@ -50,6 +51,7 @@ beforeAll(async () => {
   RecentMessages = (await server.ssrLoadModule('/src/renderer/RecentMessages.svelte')).default;
   ToolActivity = (await server.ssrLoadModule('/src/renderer/ToolActivity.svelte')).default;
   AgentMessageCard = (await server.ssrLoadModule('/src/renderer/documents/AgentMessageCard.svelte')).default;
+  AgentMessageCallouts = (await server.ssrLoadModule('/src/renderer/documents/AgentMessageCallouts.svelte')).default;
   MessageTimeline = (await server.ssrLoadModule('/src/renderer/MessageTimeline.svelte')).default;
 });
 
@@ -61,6 +63,53 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
       recommendedAction: '', category: 'completion', severity: 'info', status: 'open', attention: false,
       topics: ['selected'], relations: [], createdAt: (index + .5) / 1000, updatedAt: (index + .5) / 1000, ...extra };
   }
+
+  it('resolves AgentMessage attachment references in description and recommended action on both surfaces', () => {
+    const value = message(1, {
+      description: '![Description image](wm-attachment:11111111-1111-1111-1111-111111111111)',
+      recommendedAction: '![Action image](wm-attachment:22222222-2222-2222-2222-222222222222)',
+    });
+    const attachmentBaseUrl = 'https://control.example';
+    const expectedDescription = 'src="https://control.example/attachments/11111111-1111-1111-1111-111111111111"';
+    const expectedAction = 'src="https://control.example/attachments/22222222-2222-2222-2222-222222222222"';
+    const card = render(AgentMessageCard, { props: {
+      message: value, onSetStatus: noop, attachmentBaseUrl,
+    } }).body;
+    expect(card).toContain(expectedDescription);
+    expect(card).toContain(expectedAction);
+
+    const callouts = render(AgentMessageCallouts, { props: {
+      agentMessages: [value], onSetAgentMessageStatus: noop, attachmentBaseUrl,
+    } }).body;
+    expect(callouts).toContain(expectedDescription);
+    expect(callouts).toContain(expectedAction);
+
+    const timeline = render(MessageTimeline, { props: {
+      ...props([run(1)]), agentMessages: [value], expanded: true, attachmentBaseUrl,
+    } }).body;
+    expect(timeline).toContain(expectedDescription);
+    expect(timeline).toContain(expectedAction);
+  });
+
+  it('shows target URLs on message headers and links in message content and chat', () => {
+    const internal = 'working-memory://open/topic/selected';
+    const external = 'https://example.com/docs';
+    const value = message(1, {
+      description: `[Topic](${internal})`,
+      recommendedAction: `[Docs](${external})`,
+    });
+    const card = render(AgentMessageCard, { props: { message: value, onSetStatus: noop } }).body;
+    expect(card).toContain(`href="working-memory://open/agent-message/${value.id}" title="working-memory://open/agent-message/${value.id}"`);
+    expect(card).toContain(`href="${internal}" title="${internal}"`);
+    expect(card).toContain(`href="${external}" title="${external}"`);
+    const timeline = render(MessageTimeline, { props: {
+      ...props([run(1, { userText: `[Topic](${internal})`, assistantText: `[Docs](${external})` })]),
+      agentMessages: [],
+      expanded: true,
+    } }).body;
+    expect(timeline).toContain(`href="${internal}" title="${internal}"`);
+    expect(timeline).toContain(`href="${external}" title="${external}"`);
+  });
 
   it('collapses five recent rows plus older attention requests, each appearing once in chronological order', () => {
     const messages = [message(0, { attention: true, category: 'approval' }), message(4), message(7)];
@@ -226,11 +275,11 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     }
   });
 
-  it.each(['selected-id', 'selected-slug'])('puts the topic-type context icon above initials for scope %s', (identifier) => {
+  it.each(['selected-id', 'selected-id'])('puts the topic-type context icon above initials for scope %s', (identifier) => {
     const document: TopicVM = {
-      kind: 'topic', id: 'selected-id', slug: 'selected-slug', title: 'Selected',
+      kind: 'topic', id: 'selected-id',  title: 'Selected',
       status: 'open', topicType: 'experiment', typeMeta: {
-        slug: 'experiment', label: 'Experiment', icon: 'beaker', description: '',
+        id: 'experiment', label: 'Experiment', icon: 'beaker', description: '',
       },
       body: '', createdAt: 1, updatedAt: 1, resourceVersion: 1, editable: true,
       parents: [], children: [], workstreams: [], focusedWorkstreams: [], agentMessages: [],

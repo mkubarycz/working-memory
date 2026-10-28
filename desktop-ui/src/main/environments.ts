@@ -88,6 +88,19 @@ async function probeWorkingMemory(
   }
 }
 
+export async function probeInstanceIdentity(environment: DesktopEnvironment): Promise<boolean> {
+  try {
+    const response = await fetch(new URL('/identity/v1/status', environment.mcpUrl), {
+      redirect: 'error', signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) return false;
+    const status: unknown = await response.json();
+    return !!status && typeof status === 'object' && 'scope' in status
+      && (status.scope === 'instance' || status.scope === 'host-tasks-preview')
+      && 'passwordConfigured' in status && typeof status.passwordConfigured === 'boolean';
+  } catch { return false; }
+}
+
 function isWorkingMemoryPing(result: unknown): boolean {
   if (!result || typeof result !== 'object') return false;
   const ping = result as { ok?: unknown; version?: unknown };
@@ -134,11 +147,9 @@ export async function discoverDesktopEnvironments(
   const env = dependencies.env ?? process.env;
   const homedir = dependencies.homedir ?? systemHomedir();
   const readTextFile = dependencies.readTextFile ?? ((filePath) => readFile(filePath, 'utf8'));
-  const probe = dependencies.probe
-    ?? ((environment: DesktopEnvironment) => probeWorkingMemory(
-      environment,
-      dependencies.createClient ?? fixedClient,
-    ));
+  const probe = dependencies.probe ?? (dependencies.createClient
+    ? (environment: DesktopEnvironment) => probeWorkingMemory(environment, dependencies.createClient!)
+    : probeInstanceIdentity);
   const discovered = new Map<string, DesktopEnvironment>();
   const seen = new Set<string>();
 
@@ -249,6 +260,13 @@ export class DesktopEnvironmentManager<TClient extends EnvironmentClient = Envir
     const previous = this.client;
     this.client = null;
     this.selected = null;
+    await previous?.dispose();
+  }
+
+  async resetClient(): Promise<void> {
+    if (!this.selected) return;
+    const previous = this.client;
+    this.client = this.createClient(this.selected.mcpUrl);
     await previous?.dispose();
   }
 

@@ -4,17 +4,17 @@ import type { DesktopResourceKind } from '../shared/contracts';
 import { normalizeScopeKind } from './scopeIdentity';
 
 export function documentMatchesChange(
-  document: Pick<DocumentVM, 'kind' | 'slug'> & { id?: string },
+  document: Pick<DocumentVM, 'kind' | 'id'>,
   change: DocumentChange,
 ): boolean {
-  return change.id === document.id || Boolean(change.slug && change.slug === document.slug
-    && normalizeScopeKind(change.kind) === normalizeScopeKind(document.kind));
+  return change.id === document.id
+    && normalizeScopeKind(change.kind) === normalizeScopeKind(document.kind);
 }
 
 export function documentRefreshTarget(document: DocumentVM): { kind: DesktopResourceKind; identifier: string } | undefined {
-  if (['settings', 'topic-create', 'topic-backlog', 'container-app'].includes(document.kind)) return undefined;
-  if ((document.kind === 'topic' || document.kind === 'workstream') && document.slug) {
-    return { kind: document.kind, identifier: document.slug };
+  if (['settings', 'host-tasks', 'host-task', 'host-task-create', 'topic-create', 'topic-backlog', 'container-app'].includes(document.kind)) return undefined;
+  if ((document.kind === 'topic' || document.kind === 'workstream') && document.id) {
+    return { kind: document.kind, identifier: document.id };
   }
   return 'id' in document && document.id ? { kind: 'document', identifier: document.id } : undefined;
 }

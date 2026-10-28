@@ -104,7 +104,7 @@
           </button>
         {/if}
         {#if update.available}
-          <a href={update.available.releaseUrl} target="_blank" rel="noreferrer">Release notes</a>
+          <a href={update.available.releaseUrl} title={update.available.releaseUrl} target="_blank" rel="noreferrer">Release notes</a>
         {/if}
       </div>
     {/if}

@@ -7,10 +7,21 @@ import {
   parseMarkdownImage,
   requestMeasureWhenImageSettles,
 } from '../src/renderer/documents/attachmentImages';
-import { resolveMarkdownImageSource } from '../src/renderer/documents/markdown';
+import { renderMarkdown, resolveMarkdownImageSource } from '../src/renderer/documents/markdown';
+import { instanceAttachmentBaseUrl } from '../src/shared/instanceAttachments';
 import { livePreviewActivated } from '../src/renderer/documents/liveMarkdownPreview';
 
 describe('hybrid Markdown images', () => {
+  it('uses a nonnumeric Chromium-safe instance hostname in both preview and Markdown rendering', () => {
+    const base = instanceAttachmentBaseUrl(7717);
+    const id = 'e102c958-c57f-42bc-9377-f257d9124940';
+    expect(base).toBe('working-memory-attachment://instance-7717');
+    expect(resolveMarkdownImageSource(`wm-attachment:${id}`, base)).toBe(`${base}/attachments/${id}`);
+    expect(renderMarkdown(`![image.png](wm-attachment:${id})`, base)).toContain(`src="${base}/attachments/${id}"`);
+    expect(() => instanceAttachmentBaseUrl(0)).toThrow('Invalid attachment instance port');
+    expect(() => instanceAttachmentBaseUrl(65536)).toThrow('Invalid attachment instance port');
+  });
+
   it('parses attachment image syntax without changing the source', () => {
     expect(parseMarkdownImage(
       '![screen capture](wm-attachment:643b0c71-938c-4339-810c-15df424a19cf)',

@@ -1,8 +1,8 @@
 /**
  * The `Topic` kind — mirrors the extension's existing topics
- * (slug + title + body + open|closed + topic_type) as a control-plane document,
+ * (title + body + open|closed + topic type) as a control-plane document,
  * PLUS workstream membership modeled as a spec ref (`workstreams`: an array of
- * workstream slugs) rather than a separate edges table.
+ * workstream document IDs) rather than a separate edges table.
  *
  * Drop-in discovered by `loader.ts`; no registration list to edit.
  *
@@ -55,33 +55,21 @@ const topic: KindModule = {
         // AUTHORED open/closed — a SPEC field, NOT the controller-owned envelope
         // status (which Topic inherits empty from Base).
         status: z.enum(['open', 'closed']).default('open'),
-        topicType: z.string().default('topic'),
-        // Parent topic slugs. NOTE: `parents` will migrate to `parent-of` edges
+        topicType: z.string().min(1),
+        // Parent topic IDs. NOTE: `parents` will migrate to `parent-of` edges
         // once the edges table lands.
-        parents: z.array(z.string()).default([]),
+        parents: z.array(z.string().min(1)).default([]),
         // Workstream MEMBERSHIP as a spec ref. An empty list is valid: the
         // desktop surfaces open topics outside active workstreams in its topic
         // backlog so they remain visible and assignable.
-        workstreams: z.array(z.string()).default([]),
+        workstreams: z.array(z.string().min(1)).default([]),
         // Per-workstream FOCUS pin as a spec ref: the subset of `workstreams`
         // for which this topic is focused/pinned. A workstream's focused topics =
-        // topics whose `focusedWorkstreams` includes that workstream's slug.
+        // topics whose `focusedWorkstreams` includes that workstream's ID.
         // Symmetric with `workstreams`; edited via ordinary `ws-topic-update`.
-        focusedWorkstreams: z.array(z.string()).default([]),
+        focusedWorkstreams: z.array(z.string().min(1)).default([]),
       })
       .strict(),
-    validateMetadata: ({ slug, store, excludeId }) => {
-      const slugConvention =
-        'A Topic requires a unique slug: lowercase words separated with dashes ' +
-        '(best practice: 3-5 words, short and precise).';
-      if (typeof slug !== 'string' || slug.trim() === '' || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(slug)) {
-        throw new Error(slugConvention);
-      }
-      const existing = store.getDocument({ slug, kind: TOPIC_KIND });
-      if (existing && existing.metadata.id !== excludeId) {
-        throw new Error(`${slugConvention} "${slug}" is already in use.`);
-      }
-    },
     // No envelope `status` schema → inherit Base (lifecycle-only, empty {}).
     fts: (r) => `${r.spec.title}\n${r.spec.body}`,
   },

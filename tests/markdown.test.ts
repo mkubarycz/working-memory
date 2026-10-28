@@ -15,7 +15,7 @@ describe('renderMarkdown', () => {
 
   it('renders a link', () => {
     const html = renderMarkdown('[VS Code](https://code.visualstudio.com)');
-    expect(html).toContain('<a href="https://code.visualstudio.com">VS Code</a>');
+    expect(html).toContain('<a href="https://code.visualstudio.com" title="https://code.visualstudio.com">VS Code</a>');
   });
 
   it('renders a fenced code block', () => {
@@ -27,7 +27,7 @@ describe('renderMarkdown', () => {
 
   it('autolinks bare URLs (linkify)', () => {
     const html = renderMarkdown('see https://example.com now');
-    expect(html).toContain('<a href="https://example.com">');
+    expect(html).toContain('<a href="https://example.com" title="https://example.com">');
   });
 
   it('resolves portable attachment image links against the active control plane', () => {

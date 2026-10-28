@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { startServer } from '../src/server';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
+import { startServer } from '../../tests/authenticatedFixture';
 import { openStore } from '../src/store';
 import { clearKinds, validateSpec } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
@@ -30,7 +30,7 @@ const baseCreate = {
   startedAt: 1_000,
   provider: { endpoint: 'http://127.0.0.1:11434', mode: 'local', model: 'qwen3:14b' },
   request: { userText: 'Update the selected topic.' },
-  primaryScope: { kind: 'Topic', id: 'topic-1', slug: 'selected-topic', title: 'Selected topic' },
+  primaryScope: { kind: 'Topic', id: 'topic-1', title: 'Selected topic' },
 };
 
 describe('CommandJournal schema', () => {
@@ -94,7 +94,7 @@ describe('CommandJournal schema', () => {
         { id: 'call-1', sequence: 2, timestamp: 1_002, type: 'tool_call', modelTurnId: 'turn-1', callId: 'c1', toolName: 'ws-topic-read', argumentParseError: 'Malformed JSON at byte 4' },
         { id: 'result-1', sequence: 3, timestamp: 1_003, type: 'tool_result', callId: 'c1', status: 'cancelled', error: { message: 'Cancelled by operator' }, durationMs: 2 },
         { id: 'turn-2', sequence: 4, timestamp: 1_004, type: 'model_turn', role: 'system', iteration: 2, durationMs: 3 },
-        { id: 'call-2', sequence: 5, timestamp: 1_005, type: 'tool_call', modelTurnId: 'turn-2', callId: 'c2', toolName: 'ws-topic-update', arguments: { slug: 'selected-topic' } },
+        { id: 'call-2', sequence: 5, timestamp: 1_005, type: 'tool_call', modelTurnId: 'turn-2', callId: 'c2', toolName: 'ws-topic-update', arguments: { id: 'topic-1' } },
         { id: 'confirm-1', sequence: 6, timestamp: 1_006, type: 'confirmation_requested', confirmationId: 'approval-1', callId: 'c2', prompt: 'Proceed?' },
         { id: 'confirm-2', sequence: 7, timestamp: 1_007, type: 'confirmation_resolved', confirmationId: 'approval-1', callId: 'c2', resolution: 'approved' },
         { id: 'result-2', sequence: 8, timestamp: 1_008, type: 'tool_result', callId: 'c2', status: 'success', result: { updated: true }, durationMs: 12 },
@@ -152,7 +152,7 @@ describe('CommandJournal schema', () => {
     const client = new Client({ name: 'commandjournal-happy-test', version: '0.0.0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`)));
     try {
-      const created = jsonOf<any>(await client.callTool({ name: 'ws-commandjournal-create', arguments: { ...baseCreate, entityRefs: [{ kind: 'Topic', id: 'topic-1', slug: 'selected-topic', relation: 'referenced' }] } }));
+      const created = jsonOf<any>(await client.callTool({ name: 'ws-commandjournal-create', arguments: { ...baseCreate, entityRefs: [{ kind: 'Topic', id: 'topic-1', relation: 'referenced' }] } }));
       expect(created).toMatchObject({ schemaVersion: 2, status: 'running', events: [], resourceVersion: 1 });
 
       const appended = jsonOf<any>(await client.callTool({
@@ -162,7 +162,7 @@ describe('CommandJournal schema', () => {
           expectedResourceVersion: created.resourceVersion,
           events: [
             { id: 'turn-1', sequence: 1, timestamp: 1_010, type: 'model_turn', role: 'assistant', iteration: 1, assistantText: 'Reading.', durationMs: 20 },
-            { id: 'call-event-1', sequence: 2, timestamp: 1_011, type: 'tool_call', modelTurnId: 'turn-1', callId: 'call-1', toolName: 'ws-topic-read', arguments: { slug: 'selected-topic' } },
+            { id: 'call-event-1', sequence: 2, timestamp: 1_011, type: 'tool_call', modelTurnId: 'turn-1', callId: 'call-1', toolName: 'ws-topic-read', arguments: { id: 'topic-1' } },
             { id: 'result-1', sequence: 3, timestamp: 1_012, type: 'tool_result', callId: 'call-1', status: 'success', result: { count: 1 }, durationMs: 5 },
           ],
           entityRefs: [
@@ -174,7 +174,7 @@ describe('CommandJournal schema', () => {
       }));
       expect(appended.events.map((event: any) => event.sequence)).toEqual([1, 2, 3]);
       expect(appended.entityRefs).toEqual([
-        { kind: 'Topic', id: 'topic-1', slug: 'selected-topic', title: 'Selected topic', relation: 'mutated' },
+        { kind: 'Topic', id: 'topic-1', title: 'Selected topic', relation: 'mutated' },
         { kind: 'Workstream', id: 'workstream-1', relation: 'mutated' },
       ]);
       expect(appended.resourceVersion).toBe(2);
@@ -202,13 +202,13 @@ describe('CommandJournal schema', () => {
           status: 'succeeded',
           completedAt: 1_100,
           completion: { finalAssistantText: 'Updated.', stopReason: 'stop', mutated: true, navigationTarget: baseCreate.primaryScope },
-          entityRefs: [{ kind: 'Workstream', id: 'workstream-1', slug: 'active-work', relation: 'mutated' }],
+          entityRefs: [{ kind: 'Workstream', id: 'workstream-1', relation: 'mutated' }],
         },
       }));
       expect(finalized).toMatchObject({ status: 'succeeded', completedAt: 1_100, completion: { finalAssistantText: 'Updated.', mutated: true }, resourceVersion: 4 });
       expect(finalized.entityRefs.slice(0, 2)).toEqual([
-        { kind: 'Topic', id: 'topic-1', slug: 'selected-topic', title: 'Selected topic', relation: 'mutated' },
-        { kind: 'Workstream', id: 'workstream-1', slug: 'active-work', relation: 'mutated' },
+        { kind: 'Topic', id: 'topic-1', title: 'Selected topic', relation: 'mutated' },
+        { kind: 'Workstream', id: 'workstream-1', relation: 'mutated' },
       ]);
       expect(finalized.entityRefs).toHaveLength(500);
     } finally {

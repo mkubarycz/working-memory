@@ -3,7 +3,7 @@ import type { CommandJournalHistoryInput, CommandJournalHistoryPage, CommandJour
 import { mergeHistoryRuns, summaryToChatRun, type ChatRun } from './chatHistory';
 import { normalizeScopeKind } from './scopeIdentity';
 
-export type ScopedChatContext = ChatContext & { id?: string };
+export type ScopedChatContext = ChatContext;
 
 export function collapseChatOnInteraction(node: HTMLElement, collapse: () => void): { destroy(): void } {
   node.addEventListener('pointerdown', collapse, { capture: true });
@@ -26,9 +26,7 @@ export function matchesChatContext(
 ): boolean {
   const kind = normalizeScopeKind(ref.kind);
   if (!context) return kind === 'desktopchat';
-  return kind === normalizeScopeKind(context.kind)
-    && (ref.slug === context.identifier || ref.id === context.identifier
-      || (context.id !== undefined && ref.id === context.id));
+  return kind === normalizeScopeKind(context.kind) && ref.id === context.identifier;
 }
 
 export function chatContextBusy(runs: ChatRun[], context: ChatContext | undefined): boolean {
@@ -80,7 +78,7 @@ export async function loadScopedHistory(
   const seenCursors = new Set<string>();
   do {
     if (!isCurrent()) return;
-    // Server filters use exact kind/id only; scan pages to also match aliases and entity relationships.
+    // Scan pages to include both primary scopes and entity relationships.
     const page = await readPage({ limit: 100, ...(cursor ? { cursor } : {}) });
     if (!isCurrent()) return;
     onPage(page.journals.filter((summary) => allRunsForContext([summaryToChatRun(summary)], context).length > 0));

@@ -10,20 +10,18 @@ export function registerWsContainerClaimRead(server: McpServer, store: Store): v
     {
       title: 'Container Claim: Read',
       description:
-        'Read one live ContainerClaim by `slug` or `id`, or list live claims. Always returns ' +
+        'Read one live ContainerClaim by `id`, or list live claims. Always returns ' +
         '`{ count, claims }`. Optional `query` matches claim text case-insensitively.',
-      inputSchema: {
-        slug: z.string().optional().describe('Read one claim by slug.'),
-        id: z.string().optional().describe('Read one claim by document id.'),
+      inputSchema: z.object({
+        id: z.string().min(1).optional().describe('Read one claim by document ID.'),
         query: z.string().optional().describe('Case-insensitive substring filter in list mode.'),
         limit: z.number().int().positive().optional().describe('Maximum claims in list mode.'),
-      },
+      }).strict(),
     },
-    async ({ slug, id, query, limit }) => {
-      if (slug !== undefined || id !== undefined) {
+    async ({ id, query, limit }) => {
+      if (id !== undefined) {
         const doc = store.getDocument({
-          ...(id !== undefined ? { id } : {}),
-          ...(slug !== undefined ? { slug } : {}),
+          id,
           kind: CONTAINER_CLAIM_KIND,
         });
         const claims = doc?.kind === CONTAINER_CLAIM_KIND ? [new ContainerClaim(doc)] : [];

@@ -10,26 +10,26 @@ const order = {
 describe('planWorkstreamReorder', () => {
   it('reorders within a lifecycle section', () => {
     expect(planWorkstreamReorder(order, 'p3', 'progress', 0)).toEqual([
-      { slug: 'p3', section: 'progress', position: 0 },
-      { slug: 'p1', section: 'progress', position: 1 },
-      { slug: 'p2', section: 'progress', position: 2 },
+      { id: 'p3', section: 'progress', position: 0 },
+      { id: 'p1', section: 'progress', position: 1 },
+      { id: 'p2', section: 'progress', position: 2 },
     ]);
   });
 
   it('moves into Queue and normalizes both affected sections', () => {
     expect(planWorkstreamReorder(order, 'p2', 'queue', 1)).toEqual([
-      { slug: 'p1', section: 'progress', position: 0 },
-      { slug: 'p3', section: 'progress', position: 1 },
-      { slug: 'q1', section: 'queue', position: 0 },
-      { slug: 'p2', section: 'queue', position: 1 },
-      { slug: 'q2', section: 'queue', position: 2 },
+      { id: 'p1', section: 'progress', position: 0 },
+      { id: 'p3', section: 'progress', position: 1 },
+      { id: 'q1', section: 'queue', position: 0 },
+      { id: 'p2', section: 'queue', position: 1 },
+      { id: 'q2', section: 'queue', position: 2 },
     ]);
   });
 
   it('moves into an empty Backlog and clamps the target index', () => {
     expect(planWorkstreamReorder({ ...order, backlog: [] }, 'q1', 'backlog', 99)).toEqual([
-      { slug: 'q2', section: 'queue', position: 0 },
-      { slug: 'q1', section: 'backlog', position: 0 },
+      { id: 'q2', section: 'queue', position: 0 },
+      { id: 'q1', section: 'backlog', position: 0 },
     ]);
   });
 
@@ -39,9 +39,9 @@ describe('planWorkstreamReorder', () => {
 
   it('adjusts original-list boundaries when moving downward in the same section', () => {
     expect(planWorkstreamReorder(order, 'p1', 'progress', 3)).toEqual([
-      { slug: 'p2', section: 'progress', position: 0 },
-      { slug: 'p3', section: 'progress', position: 1 },
-      { slug: 'p1', section: 'progress', position: 2 },
+      { id: 'p2', section: 'progress', position: 0 },
+      { id: 'p3', section: 'progress', position: 1 },
+      { id: 'p1', section: 'progress', position: 2 },
     ]);
     expect(planWorkstreamReorder(order, 'p2', 'progress', 2)).toEqual([]);
   });

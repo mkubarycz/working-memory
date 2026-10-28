@@ -3,7 +3,7 @@ import type { DocumentVM } from './documents/types';
 import { toIpcPayload } from '../preload/ipcPayload';
 
 export interface ActiveMoveTarget {
-  slug: string;
+  id: string;
   title: string;
 }
 
@@ -38,7 +38,7 @@ export type ActiveContextMenuItem =
       targets: ActiveMoveTarget[];
     };
 
-export function topicSlugFromOpenUri(openUri: string): string {
+export function topicIdFromOpenUri(openUri: string): string {
   try {
     const segment = new URL(openUri).pathname.split('/').at(-1) ?? '';
     return decodeURIComponent(segment.replace(/\.working-memory$/, ''));
@@ -72,7 +72,7 @@ export function activeContextMenuItems(
       enabled: Boolean(topic.topic),
       topic: topic.topic,
     });
-    const targets = topic.moveTargets.filter((target) => target.slug !== topic.sourceWorkstream);
+    const targets = topic.moveTargets.filter((target) => target.id !== topic.sourceWorkstream);
     items.push({
       kind: 'move',
       title: 'Move to...',

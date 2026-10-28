@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
 import { clearKinds } from '../../control-plane/src/kinds/registry';
 import { loadKinds } from '../../control-plane/src/kinds/loader';
-import { startServer } from '../../control-plane/src/server';
-import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { startServer } from '../../tests/authenticatedFixture';
+import { ControlPlaneClient } from '../../tests/authenticatedFixture';
 import { toAgentMessageVM } from '../../shared/viewModels/agentMessageVms';
 import { mergeMessageRows } from '../src/renderer/agentMessages';
 import type { ChatRun } from '../src/renderer/chatHistory';
@@ -67,11 +67,12 @@ it('persists communication-only decisions through the real desktop helper and pr
   const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
   try {
     const agent = await client.agentCreate({ name: 'Decision Validation' });
-    const topic = await client.topicCreate({ title: 'Human-owned decision scope', slug: 'decision-scope' });
+    await client.topicTypeCreate({ label: 'Topic', icon: 'notebook', description: 'Default' });
+    const topic = await client.topicCreate({ title: 'Human-owned decision scope' });
     const approval = await client.agentMessageCreate({
       agent_id: agent.id,
       title: 'Request human review', description: 'This approval request cannot execute anything.',
-      category: 'approval', topics: [topic.slug!], relations: [{ kind: 'Topic', id: topic.id }],
+      category: 'approval', topics: [topic.id!], relations: [{ kind: 'Topic', id: topic.id }],
     });
     for (const outcome of ['approved', 'rejected'] as const) {
       await recordAgentMessageDecision(client, approval.id, {

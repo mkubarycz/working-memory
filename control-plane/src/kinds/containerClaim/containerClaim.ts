@@ -34,7 +34,6 @@ export interface ApplicationContractMetadata {
 
 export interface IContainerClaim {
   id: string;
-  slug: string;
   title: string;
   repository: string;
   sourceRevision?: string;
@@ -50,7 +49,6 @@ export interface IContainerClaim {
 /** A pure-data projection of a live ContainerClaim document. */
 export class ContainerClaim implements IContainerClaim {
   id: string;
-  slug: string;
   title: string;
   repository: string;
   sourceRevision?: string;
@@ -65,7 +63,6 @@ export class ContainerClaim implements IContainerClaim {
   constructor(env: DocumentEnvelope) {
     const spec = env.spec ?? {};
     this.id = env.metadata.id;
-    this.slug = env.metadata.slug ?? '';
     this.title = typeof spec.title === 'string' ? spec.title : '';
     this.repository = typeof spec.repository === 'string' ? spec.repository : '';
     if (typeof spec.sourceRevision === 'string') {

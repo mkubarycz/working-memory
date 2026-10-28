@@ -1,12 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { openStore, type Store } from '../src/store';
 import { loadKinds } from '../src/kinds/loader';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { SYSTEM_IMPORT_AGENT_ID } from '../src/kinds/agent/spec';
-import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { ControlPlaneClient } from '../../tests/authenticatedFixture';
 
 const stores: Store[] = [];
 const directories: string[] = [];
@@ -82,7 +82,8 @@ describe('registered Agent senders', () => {
     store.deleteDocument({ id: first.metadata.id });
     store.createDocument({ kind: 'Agent', spec: { name: 'release agent' } });
     expect(() => store.restoreDocument({ id: first.metadata.id })).toThrow(/already registered/);
-    const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Not an agent' } });
+    const type = store.createDocument({ kind: 'TopicType', spec: { label: 'Topic', icon: 'circle', description: 'Topic' } });
+    const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Not an agent', topicType: type.metadata.id } });
     expect(() => store.createDocument({ kind: 'AgentMessage', spec: { ...body, agent_id: topic.metadata.id } })).toThrow(/registered Agent/);
   });
 
@@ -90,8 +91,8 @@ describe('registered Agent senders', () => {
     const store = memory();
     const first = store.createDocument({ kind: 'Agent', spec: { name: 'Équipe' } });
     expect(() => store.db.prepare(`INSERT INTO resources
-      (id, kind, slug, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
-      VALUES (?, 'Agent', NULL, '{}', ?, '{}', ?, 1, 1, NULL, 1)`)
+      (id, kind, labels, spec, status, agent_name_key, created_at, updated_at, deleted_at, resource_version)
+      VALUES (?, 'Agent', '{}', ?, '{}', ?, 1, 1, NULL, 1)`)
       .run('00000000-0000-4000-8000-000000000099',
         JSON.stringify({ name: 'équipe', description: '' }), 'équipe'))
       .toThrow(/UNIQUE constraint failed/);
@@ -116,7 +117,8 @@ describe('registered Agent senders', () => {
   });
 
   it('reports legacy Unicode name collisions during the normalization migration', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'wm-agent-name-collision-'));
+    const directory = join(process.cwd(), `.wm-agent-name-collision-${randomUUID()}`);
+    mkdirSync(directory);
     directories.push(directory);
     const file = join(directory, 'store.db');
     const store = openStore(file);
@@ -124,8 +126,8 @@ describe('registered Agent senders', () => {
     store.createDocument({ kind: 'Agent', spec: { name: 'Équipe' } });
     store.db.exec('DROP INDEX idx_agent_name');
     store.db.prepare(`INSERT INTO resources
-      (id, kind, slug, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
-      VALUES (?, 'Agent', NULL, '{}', ?, '{}', 1, 1, NULL, 1)`)
+      (id, kind, labels, spec, status, created_at, updated_at, deleted_at, resource_version)
+      VALUES (?, 'Agent', '{}', ?, '{}', 1, 1, NULL, 1)`)
       .run('00000000-0000-4000-8000-000000000099', JSON.stringify({ name: 'équipe', description: '' }));
     store.db.exec(`CREATE UNIQUE INDEX idx_agent_name
       ON resources(lower(trim(json_extract(spec, '$.name'))))
@@ -138,7 +140,8 @@ describe('registered Agent senders', () => {
   });
 
   it('migrates v3 live and deleted messages to one System Import agent without altering authored content or timestamps', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'wm-registered-agents-'));
+    const directory = join(process.cwd(), `.wm-registered-agents-${randomUUID()}`);
+    mkdirSync(directory);
     directories.push(directory);
     const file = join(directory, 'store.db');
     const initial = openStore(file);

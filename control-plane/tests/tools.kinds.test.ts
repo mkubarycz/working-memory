@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { startServer } from '../src/server';
+import { startServer } from '../../tests/authenticatedFixture';
 import { openStore } from '../src/store';
 import { loadKinds } from '../src/kinds/loader';
 import { clearKinds } from '../src/kinds/registry';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 let sqliteAvailable = true;
 try {
@@ -68,6 +68,7 @@ interface Envelope {
 
   it('creates a Topic with a valid spec and defaults its status', async () => {
     const store = openStore(':memory:');
+    const type = store.createDocument({ kind: 'TopicType', spec: { label: 'Topic' } }).metadata.id;
     const server = await startServer({ port: 0, store });
     const client = new Client({ name: 'wm-cp-kinds-2', version: '0.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
@@ -76,7 +77,7 @@ interface Envelope {
       const created = jsonOf<Envelope>(
         await client.callTool({
           name: 'wm-document-create',
-          arguments: { kind: 'Topic', slug: 'demo', spec: { title: 'Demo Topic', workstreams: ['ws-one'] } },
+          arguments: { kind: 'Topic', spec: { title: 'Demo Topic' } },
         }),
       );
       expect(created.kind).toBe('Topic');
@@ -84,10 +85,10 @@ interface Envelope {
       expect(created.spec).toEqual({
         title: 'Demo Topic',
         body: '',
-        topicType: 'topic',
+        topicType: type,
         status: 'open',
         parents: [],
-        workstreams: ['ws-one'],
+        workstreams: [],
         focusedWorkstreams: [],
       });
       // Envelope status inherits Base's empty default.
@@ -98,7 +99,7 @@ interface Envelope {
         await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Topic' } }),
       );
       expect(list.count).toBe(1);
-      expect(list.documents[0]?.metadata.slug).toBe('demo');
+      expect(list.documents[0]?.metadata.id).toBe(created.metadata.id);
     } finally {
       await client.close();
       await server.close();
@@ -115,7 +116,7 @@ interface Envelope {
       await client.connect(transport);
       const res = await client.callTool({
         name: 'wm-document-create',
-        arguments: { kind: 'Topic', slug: 'bad', spec: {} },
+        arguments: { kind: 'Topic', spec: { topicType: 'type-id' } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);
       expect(textOf(res)).toMatch(/title/i);
@@ -138,7 +139,7 @@ interface Envelope {
       await client.connect(transport);
       const res = await client.callTool({
         name: 'wm-document-create',
-        arguments: { kind: 'Topic', slug: 'toolong', spec: { title: 'x'.repeat(200) } },
+        arguments: { kind: 'Topic', spec: { title: 'x'.repeat(200), topicType: 'type-id' } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);
       expect(store.listDocuments()).toEqual([]);
@@ -159,7 +160,7 @@ interface Envelope {
       const res = await client.callTool({
         name: 'wm-document-create',
         // 'note' is not registered → hard error (unknown kind), nothing stored.
-        arguments: { kind: 'note', slug: 'n1', spec: { anything: 'goes' } },
+        arguments: { kind: 'note', spec: { anything: 'goes' } },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);
       expect(textOf(res)).toMatch(/unknown kind/i);
@@ -182,8 +183,7 @@ interface Envelope {
         name: 'wm-document-create',
         arguments: {
           kind: 'Topic',
-          slug: 'extra',
-          spec: { title: 'Has Extras', steps: ['a'], owner: 'me', priority: 1 },
+          spec: { title: 'Has Extras', topicType: 'type-id', steps: ['a'], owner: 'me', priority: 1 },
         },
       });
       expect((res as { isError?: boolean }).isError).toBe(true);

@@ -19,7 +19,7 @@ import { Config, CONFIG_KIND } from './config.js';
  * current document for its id + resourceVersion, MERGES the `data` patch onto
  * the existing map (keys in the patch overwrite; existing keys survive), and
  * REPLACES `name`/`status` when provided, re-validates the whole spec against
- * the Config kind, then does a compare-and-swap write. Unknown slug and version
+ * the Config kind, then does a compare-and-swap write. Unknown IDs and version
  * conflicts are surfaced clearly.
  */
 export function registerWsConfigUpdate(server: McpServer, store: Store): void {
@@ -28,25 +28,25 @@ export function registerWsConfigUpdate(server: McpServer, store: Store): void {
     {
       title: 'Config: Update',
       description:
-        'Update a Config identified by `slug`. `data` is MERGED onto the existing map (keys you ' +
+        'Update a Config identified by `id`. `data` is MERGED onto the existing map (keys you ' +
         'pass overwrite; existing keys survive) — every value MUST be a string. `name` and ' +
         '`status` REPLACE the current value when provided. Reads the current document for its id ' +
         '+ resourceVersion, then does a compare-and-swap write of the merged, re-validated spec. ' +
-        'Unknown slug and version conflicts are surfaced clearly. Returns the updated config.',
-      inputSchema: {
-        slug: z.string().describe('Slug of the config to update (required).'),
+        'Unknown IDs and version conflicts are surfaced clearly. Returns the updated config.',
+      inputSchema: z.object({
+        id: z.string().min(1).describe('ID of the config to update (required).'),
         name: z.string().optional().describe('New human label (replaces the current).'),
         data: z
           .record(z.string(), z.unknown())
           .optional()
           .describe('Key-value pairs to MERGE onto the existing map. All values MUST be strings.'),
         status: z.string().optional().describe('New authored status (replaces the current).'),
-      },
+      }).strict(),
     },
-    async ({ slug, name, data, status }) => {
-      const existing = store.getDocument({ slug, kind: CONFIG_KIND });
+    async ({ id, name, data, status }) => {
+      const existing = store.getDocument({ id, kind: CONFIG_KIND });
       if (!existing) {
-        return asError(`Unknown config slug: "${slug}". No live config with that slug.`);
+        return asError(`Unknown config ID: "${id}". No live config with that ID.`);
       }
       if (name === undefined && data === undefined && status === undefined) {
         // Nothing to change: return the current mapped config rather than a
@@ -84,13 +84,13 @@ export function registerWsConfigUpdate(server: McpServer, store: Store): void {
       } catch (err) {
         if (err instanceof ConflictError) {
           return asError(
-            `Conflict: config "${slug}" changed since it was read (current resourceVersion ` +
+            `Conflict: config "${id}" changed since it was read (current resourceVersion ` +
               `${err.currentResourceVersion}). Re-read with ws-config-read and retry.`,
           );
         }
         if (err instanceof NotFoundError) {
           return asError(
-            `Unknown config slug: "${slug}". It no longer exists (it may have been deleted).`,
+            `Unknown config ID: "${id}". It no longer exists (it may have been deleted).`,
           );
         }
         throw err;

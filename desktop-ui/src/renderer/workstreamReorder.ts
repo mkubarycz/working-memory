@@ -1,7 +1,7 @@
 import type { WorkstreamSection } from '../../../shared/panelData';
 
 export interface WorkstreamReorderUpdate {
-  slug: string;
+  id: string;
   section: WorkstreamSection;
   position: number;
 }
@@ -20,24 +20,24 @@ export function workstreamDropIndex(boundaries: WorkstreamDropBoundary[], pointe
 
 export function planWorkstreamReorder(
   order: WorkstreamSectionOrder,
-  slug: string,
+  id: string,
   targetSection: WorkstreamSection,
   targetIndex: number,
 ): WorkstreamReorderUpdate[] {
   const sourceSection = (Object.keys(order) as WorkstreamSection[])
-    .find((section) => order[section].includes(slug));
+    .find((section) => order[section].includes(id));
   if (!sourceSection) return [];
 
-  const sourceIndex = order[sourceSection].indexOf(slug);
-  const source = order[sourceSection].filter((candidate) => candidate !== slug);
+  const sourceIndex = order[sourceSection].indexOf(id);
+  const source = order[sourceSection].filter((candidate) => candidate !== id);
   const target = sourceSection === targetSection
     ? source
-    : order[targetSection].filter((candidate) => candidate !== slug);
+    : order[targetSection].filter((candidate) => candidate !== id);
   const adjustedTargetIndex = sourceSection === targetSection && sourceIndex < targetIndex
     ? targetIndex - 1
     : targetIndex;
   const insertionIndex = Math.max(0, Math.min(adjustedTargetIndex, target.length));
-  target.splice(insertionIndex, 0, slug);
+  target.splice(insertionIndex, 0, id);
 
   if (sourceSection === targetSection && target.every((candidate, index) => candidate === order[targetSection][index])) {
     return [];
@@ -47,7 +47,7 @@ export function planWorkstreamReorder(
     ? [targetSection]
     : [sourceSection, targetSection];
   return changedSections.flatMap((section) => {
-    const slugs = section === targetSection ? target : source;
-    return slugs.map((candidate, position) => ({ slug: candidate, section, position }));
+    const ids = section === targetSection ? target : source;
+    return ids.map((candidate, position) => ({ id: candidate, section, position }));
   });
 }
