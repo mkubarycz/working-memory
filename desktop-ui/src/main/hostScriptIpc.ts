@@ -11,13 +11,14 @@ import {
 } from '../../../control-plane/src/hostScriptPolicy';
 import type { HostScriptDesktopState } from '../shared/hostTasks';
 import type { DesktopInstanceIdentity } from './instanceIdentity';
+import type { HostScriptChatService } from './hostScriptChatTools';
 
 export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   directory: string;
   execute?: typeof executeHostScript;
   identity?: DesktopInstanceIdentity;
   onSessionChanged?: (mcpUrl: string, authenticated: boolean) => Promise<void>;
-}): () => void {
+}) {
   let running: AbortController | null = null;
   const context = (event: Parameters<typeof assertHostTaskSender>[0]) => {
     const window = deps.getWindow();
@@ -109,6 +110,17 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     ctx.ensureCurrent();
     await deps.onSessionChanged?.(ctx.environment.mcpUrl, false);
   });
+  deps.ipc.handle('host-scripts:create', async (event) => {
+    const ctx = context(event);
+    if (deps.platform === 'win32') throw new Error('Local script execution currently requires macOS or Linux');
+    const broker = await ctx.client();
+    const hostId = await hostScriptHostId(deps.directory);
+    ctx.ensureCurrent();
+    return broker.registerScript({
+      name: 'Untitled task', description: '', hostId, parameters: {}, timeoutMs: 10000,
+      source: 'module.exports = async function (parameters) {\n  return {};\n};\n',
+    });
+  });
   deps.ipc.handle('host-scripts:register', async (event, raw: unknown) => {
     const ctx = context(event);
     if (deps.platform === 'win32') throw new Error('Local script execution currently requires macOS or Linux');
@@ -148,6 +160,28 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     ctx.ensureCurrent();
     return broker.registerScript(definition);
   });
+  deps.ipc.handle('host-scripts:detail', async (event, id: unknown) => {
+    const ctx = context(event);
+    return (await ctx.client()).script(z.string().uuid().parse(id));
+  });
+  deps.ipc.handle('host-scripts:save-version', async (event, id: unknown, raw: unknown) => {
+    const ctx = context(event);
+    const definition = scriptDefinitionSchema.parse(raw);
+    if (definition.hostId !== await hostScriptHostId(deps.directory)) throw new Error('Choose a script on this host');
+    ctx.ensureCurrent();
+    return (await ctx.client()).saveScriptVersion(z.string().uuid().parse(id), definition);
+  });
+  deps.ipc.handle('host-scripts:publish', async (event, id: unknown, rawVersion: unknown, rawHash: unknown) => {
+    const ctx = context(event);
+    const broker = await ctx.client();
+    const identifier = z.string().uuid().parse(id);
+    const version = z.number().int().positive().parse(rawVersion);
+    const hash = z.string().regex(/^[a-f0-9]{64}$/).parse(rawHash);
+    const details = await broker.script(identifier);
+    if (details.task.hostId !== await hostScriptHostId(deps.directory)) throw new Error('Choose a script on this host');
+    ctx.ensureCurrent();
+    return broker.publishScriptVersion(identifier, version, hash);
+  });
   deps.ipc.handle('host-scripts:grant', async (event, raw: unknown) => {
     const ctx = context(event);
     const input = z.object({ taskId: z.string().uuid(), appId: z.string().uuid(), expiresAt: z.number().int() }).strict().parse(raw);
@@ -167,38 +201,38 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     const identifier = z.string().uuid().parse(id);
     const isGrant = z.boolean().parse(grant);
     const broker = await ctx.client();
-    if (!await ctx.confirm(isGrant ? 'Revoke this caller grant?' : 'Revoke this script version?',
+    if (!await ctx.confirm(isGrant ? 'Revoke this caller grant?' : 'Revoke this task and all its versions?',
       'Queued runs and result access will be cancelled. A running process is stopped at the next status check; already completed host side effects cannot be undone.')) return;
     if (isGrant) await broker.revokeScriptGrant(identifier);
     else await broker.revokeScript(identifier);
-  });
-  deps.ipc.handle('host-scripts:test', async (event, id: unknown, raw: unknown) => {
-    const ctx = context(event);
-    const broker = await ctx.client(), snapshot = await broker.scripts();
-    const task = snapshot.tasks.find(task => task.id === z.string().uuid().parse(id) && task.revokedAt === null);
-    if (!task || task.hostId !== await hostScriptHostId(deps.directory)) throw new Error('Choose an active script on this host');
-    const parameters: ScriptArguments = validateScriptArguments(task.parameters, raw);
-    if (!await ctx.confirm('Queue one local test run?',
-      `Script: ${task.name}\nSHA-256: ${task.definitionHash}\nParameters: ${JSON.stringify(parameters)}\n`
-      + 'This approves this one test only; it does not grant access to other apps.')) return;
-    return broker.testScript({ taskId: task.id, definitionHash: task.definitionHash, parameters, idempotencyKey: randomUUID() });
   });
   deps.ipc.handle('host-scripts:job', async (event, id: unknown) => {
     const ctx = context(event);
     return (await ctx.client()).scriptJob(z.string().uuid().parse(id));
   });
   deps.ipc.handle('host-scripts:stop', async (event) => { context(event); running?.abort(); });
-  deps.ipc.handle('host-scripts:next', async (event) => {
-    const ctx = context(event);
+  async function run(ctx: ReturnType<typeof context>, test?: { taskId: string; version: number; parameters: unknown }, signal?: AbortSignal) {
     if (deps.platform === 'win32') throw new Error('Local script execution currently requires macOS or Linux');
     if (running) throw new Error('A local host script is already running');
+    signal?.throwIfAborted();
     const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
     running = controller;
     let timer: ReturnType<typeof setInterval> | undefined;
     try {
       const broker = await ctx.client();
       const hostId = await hostScriptHostId(deps.directory);
-      const lease = await broker.claimScript(hostId);
+      let lease;
+      if (test) {
+        const details = await broker.script(test.taskId);
+        const version = details.versions.find(item => item.version === test.version);
+        if (details.task.revokedAt || !version || version.definition.hostId !== hostId) throw new Error('Choose an active script version on this host');
+        const parameters: ScriptArguments = validateScriptArguments(version.definition.parameters, test.parameters);
+        ctx.ensureCurrent();
+        lease = await broker.startTest({ taskId: test.taskId, version: test.version, definitionHash: version.definitionHash,
+          parameters, idempotencyKey: randomUUID(), hostId });
+      } else lease = await broker.claimScript(hostId);
       ctx.ensureCurrent();
       if (!lease) return null;
       if (lease.definition.hostId !== hostId) throw new Error('Broker returned a script registered to a different host');
@@ -223,8 +257,40 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
       return await broker.completeScript({ jobId: lease.jobId, leaseToken: lease.leaseToken, ...result });
     } finally {
       if (timer) clearInterval(timer);
+      signal?.removeEventListener('abort', abort);
       running = null;
     }
+  }
+  deps.ipc.handle('host-scripts:next', async (event) => run(context(event)));
+  deps.ipc.handle('host-scripts:test', async (event, id: unknown, version: unknown, parameters: unknown) => {
+    const job = await run(context(event), {
+      taskId: z.string().uuid().parse(id), version: z.number().int().positive().parse(version), parameters,
+    });
+    if (!job) throw new Error('The test was not claimed');
+    return job;
   });
-  return () => running?.abort();
+  return {
+    stop: () => running?.abort(),
+    forChat(event: Parameters<typeof assertHostTaskSender>[0], id: string): HostScriptChatService {
+      const ctx = context(event);
+      const taskId = z.string().uuid().parse(id);
+      return {
+        read: async () => {
+          const details = await (await ctx.client()).script(taskId);
+          ctx.ensureCurrent();
+          return details;
+        },
+        save: async (definition, expectedLatestVersion) => {
+          if (definition.hostId !== await hostScriptHostId(deps.directory)) throw new Error('Choose a script on this host');
+          ctx.ensureCurrent();
+          return (await ctx.client()).saveScriptVersion(taskId, scriptDefinitionSchema.parse(definition), expectedLatestVersion);
+        },
+        test: async (version, parameters, signal) => {
+          const job = await run(ctx, { taskId, version, parameters }, signal);
+          if (!job) throw new Error('The test was not claimed');
+          return job;
+        },
+      };
+    },
+  };
 }

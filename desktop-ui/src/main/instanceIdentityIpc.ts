@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { assertHostTaskSender, type HostTaskIpcDependencies } from './hostTaskIpc';
 import { hostTaskOrigin } from './hostTaskBroker';
 import type { DesktopInstanceIdentity } from './instanceIdentity';
+import { instancePermissionsSchema } from '../../../control-plane/src/instancePermissions';
 
 export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
   identity: DesktopInstanceIdentity;
@@ -20,14 +21,18 @@ export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
     return { window: window!, environment, ensureCurrent };
   };
   deps.ipc.handle('instance:identity', async event => {
-    const ctx = context(event), state = await deps.identity.status(ctx.environment.mcpUrl);
+    const ctx = context(event), before = deps.vault.session(hostTaskOrigin(ctx.environment.mcpUrl));
+    const state = await deps.identity.status(ctx.environment.mcpUrl);
     ctx.ensureCurrent();
+    if (state.authenticated && deps.vault.session(hostTaskOrigin(ctx.environment.mcpUrl)) !== before) {
+      await deps.onSessionChanged(ctx.environment.mcpUrl, true);
+    }
     return state;
   });
   deps.ipc.handle('instance:sign-in', async (event, raw: unknown) => {
     const ctx = context(event);
     const input = z.object({ password: z.string().min(1).max(1024), setup: z.boolean(),
-      passwordHint: z.string().max(1000).default('') }).strict().parse(raw);
+      passwordHint: z.string().max(1000).default(''), rememberPassword: z.boolean().default(false) }).strict().parse(raw);
     if (input.setup) {
       const approved = await deps.dialog.showMessageBox(ctx.window, {
         type: 'warning', title: 'Working Memory instance owner',
@@ -39,7 +44,7 @@ export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
       ctx.ensureCurrent();
       if (approved.response !== 1) return;
     }
-    const session = await deps.identity.signIn(ctx.environment.mcpUrl, input.password, input.setup, input.passwordHint);
+    const session = await deps.identity.signIn(ctx.environment.mcpUrl, input.password, input.setup, input.passwordHint, input.rememberPassword);
     ctx.ensureCurrent();
     deps.vault.setSession(hostTaskOrigin(ctx.environment.mcpUrl), session.token, session.expiresAt);
     await deps.onSessionChanged(ctx.environment.mcpUrl, true);
@@ -57,23 +62,16 @@ export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
   });
   deps.ipc.handle('instance:review-access', async (event, raw: unknown) => {
     const ctx = context(event);
-    const action = z.object({ id: z.string().uuid(), action: z.enum(['approve', 'deny', 'revoke']) }).strict().parse(raw);
+    const action = z.union([
+      z.object({ id: z.string().uuid(), action: z.enum(['approve', 'deny', 'revoke']) }).strict(),
+      z.object({ id: z.string().uuid(), action: z.literal('permissions'),
+        target: z.enum(['request', 'client']), permissions: instancePermissionsSchema }).strict(),
+    ]).parse(raw);
     if (action.action === 'approve') {
       const snapshot = await deps.identity.access(ctx.environment.mcpUrl);
       const request = snapshot.requests.find(request => request.id === action.id && request.state === 'pending');
       if (!request) throw new Error('This access request expired or was already reviewed. Refresh the list.');
-      const approved = await deps.dialog.showMessageBox(ctx.window, {
-        type: 'warning', title: 'Approve instance data access',
-        message: `Allow ${request.label} to access this instance?`,
-        detail: `Instance: ${hostTaskOrigin(ctx.environment.mcpUrl)}\nRequest: ${request.id}\n`
-          + `Type: ${request.clientId ? 'Refresh existing identity' : 'New identity (label is not verified)'}\n`
-          + `Network source: ${request.source}\nAccess: ${request.access === 'write' ? 'Read and change all instance documents' : 'Read all instance documents'}\n`
-          + 'Expires in 12 hours. Does not allow owner administration or host-script execution. '
-          + 'Only approve a request you recognize; a client-provided name is not proof of identity.',
-        buttons: ['Cancel', 'Approve access'], defaultId: 0, cancelId: 0, noLink: true,
-      });
       ctx.ensureCurrent();
-      if (approved.response !== 1) return deps.identity.access(ctx.environment.mcpUrl);
     }
     const snapshot = await deps.identity.access(ctx.environment.mcpUrl, action);
     ctx.ensureCurrent();

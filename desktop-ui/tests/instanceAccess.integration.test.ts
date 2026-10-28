@@ -10,6 +10,7 @@ import { HostTaskCredentialVault } from '../src/main/hostTaskBroker';
 import { DesktopInstanceIdentity } from '../src/main/instanceIdentity';
 import { registerInstanceIdentityIpc } from '../src/main/instanceIdentityIpc';
 import { loadKinds } from '../../control-plane/src/kinds/loader';
+import { defaultInstancePermissions } from '../../control-plane/src/instancePermissions';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -65,28 +66,26 @@ it('guides initial setup through native approval and uses one isolated owner ses
   expect((await client.listDocuments()).error).toMatch(/sign-in|identity\/v1\/mcp/i);
 });
 
-it('requires explicit native approval of agent requests and never exposes credentials in owner IPC', async () => {
+it('approves agent requests with one explicit owner action, no second dialog, and no credential exposure in IPC', async () => {
   const f = await fixture();
   f.dialog.showMessageBox.mockResolvedValue({ response: 1 });
   await f.call('instance:sign-in', { password: 'my private owner password', setup: true });
   const access = new InstanceAccess(f.store.db, new InstanceIdentity(f.store.db));
   const request = access.request({ label: 'Coding agent', access: 'write', refresh: false }, '', 'test source');
   const action = { id: request.requestId, action: 'approve' };
-  f.dialog.showMessageBox.mockResolvedValue({ response: 0 });
-  await f.call('instance:review-access', action);
   expect(access.claim(request.requestId, request.requestSecret).state).toBe('pending');
-  f.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+  f.dialog.showMessageBox.mockClear();
+  const invalidEvent = { ...f.event, senderFrame: { url: 'https://untrusted.invalid' } } as unknown as IpcMainInvokeEvent;
+  await expect(f.handlers.get('instance:review-access')!(invalidEvent, action)).rejects.toThrow();
+  expect(access.claim(request.requestId, request.requestSecret).state).toBe('pending');
   await f.call('instance:review-access', action);
+  expect(f.dialog.showMessageBox).not.toHaveBeenCalled();
+  await expect(f.call('instance:review-access', action)).rejects.toThrow('expired or was already reviewed');
   const issued = access.claim(request.requestId, request.requestSecret);
   if (!('token' in issued)) throw new Error('Expected approved credential');
   const snapshot = JSON.stringify(await f.call('instance:access'));
   expect(snapshot).not.toContain(issued.token);
   expect(snapshot).not.toContain(request.requestSecret);
-  expect(f.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
-    defaultId: 0, cancelId: 0, detail: expect.stringContaining('Read and change all instance documents'),
-  }));
-  const invalidEvent = { ...f.event, senderFrame: { url: 'https://untrusted.invalid' } } as unknown as IpcMainInvokeEvent;
-  await expect(f.handlers.get('instance:review-access')!(invalidEvent, action)).rejects.toThrow();
   await f.call('instance:review-access', { id: issued.clientId, action: 'revoke' });
   expect(access.authenticate(issued.token)).toBeNull();
 });
@@ -99,6 +98,29 @@ it('clears revoked sessions and signals the global connection screen instead of 
   expect(await f.call('instance:identity')).toMatchObject({ authenticated: false });
   expect(f.vault.session(f.server.url)).toBeNull();
   expect(f.unauthorized).toHaveBeenCalledWith(f.environment.mcpUrl);
+});
+
+it('persists checkbox permissions through trusted IPC without a confirmation dialog or exposing credentials', async () => {
+  const f = await fixture();
+  f.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+  await f.call('instance:sign-in', { password: 'my private owner password', setup: true });
+  const access = new InstanceAccess(f.store.db, new InstanceIdentity(f.store.db));
+  const request = access.request({ label: 'Permission editor', access: 'write', refresh: false }, '', 'test');
+  const permissions = defaultInstancePermissions('read');
+  permissions.settings.read = false;
+  const action = { id: request.requestId, action: 'permissions', target: 'request', permissions };
+  f.dialog.showMessageBox.mockClear();
+  const snapshot = JSON.stringify(await f.call('instance:review-access', action));
+  expect(snapshot).toContain('"settings":{"create":false,"read":false,"update":false,"delete":false}');
+  expect(snapshot).not.toContain(request.requestSecret);
+  expect(f.dialog.showMessageBox).not.toHaveBeenCalled();
+  await f.call('instance:review-access', { id: request.requestId, action: 'approve' });
+  const issued = access.claim(request.requestId, request.requestSecret);
+  if (!('token' in issued)) throw new Error('Expected approved credential');
+  permissions.content.create = true;
+  await f.call('instance:review-access', { ...action, id: issued.clientId, target: 'client' });
+  expect(access.authenticate(issued.token)?.permissions).toEqual(permissions);
+  await expect(f.call('instance:review-access', { ...action, target: 'owner' })).rejects.toThrow();
 });
 
 it('allows the signed-in owner to change or clear the public hint while Host tasks remains disabled', async () => {

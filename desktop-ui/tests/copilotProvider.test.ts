@@ -15,8 +15,10 @@ const sdk = vi.hoisted(() => {
     deleteSession: vi.fn(async () => {}),
     stop: vi.fn(async () => []),
   };
-  return { session, client, construct: vi.fn() };
+  return { session, client, construct: vi.fn(), token: vi.fn<() => Promise<string | undefined>>() };
 });
+
+vi.mock('../src/main/githubCliAuth', () => ({ githubCliToken: sdk.token }));
 
 vi.mock('@github/copilot-sdk', () => ({
   CopilotClient: class {
@@ -35,6 +37,7 @@ const tools = [{ name: 'ws-topic-read', inputSchema: { type: 'object', propertie
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('WM_COPILOT_CLI_PATH', process.execPath);
+  sdk.token.mockResolvedValue(undefined);
   sdk.client.getAuthStatus.mockResolvedValue({ isAuthenticated: true, login: 'test-user' });
   sdk.client.listModels.mockResolvedValue([
     { id: 'auto', name: 'Auto' },
@@ -82,7 +85,7 @@ describe('local Copilot provider', () => {
       PATH: '/bin', GH_TOKEN: 'github-token', COPILOT_PROVIDER_BASE_URL: 'https://azure.example',
       COPILOT_PROVIDER_API_KEY: 'azure-key', COPILOT_MODEL: 'azure-model', COPILOT_OFFLINE: 'true',
       ELECTRON_RUN_AS_NODE: '1', EMPTY: undefined,
-      COPILOT_CLI_PATH: '/external/copilot',
+      COPILOT_CLI_PATH: '/external/copilot', COPILOT_SDK_AUTH_TOKEN: 'unrelated-agent-session-token',
     })).toEqual({ PATH: '/bin', GH_TOKEN: 'github-token' });
   });
 
@@ -152,6 +155,69 @@ describe('local Copilot provider', () => {
   it('reports missing authentication without creating a session', async () => {
     sdk.client.getAuthStatus.mockResolvedValue({ isAuthenticated: false });
     await expect(new LocalCopilotProvider().complete('auto', 'hello', 1000)).rejects.toThrow('copilot login');
+    expect(sdk.client.createSession).not.toHaveBeenCalled();
+    expect(sdk.client.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses GitHub CLI sign-in only when the Copilot CLI account is unavailable', async () => {
+    sdk.client.getAuthStatus.mockResolvedValueOnce({ isAuthenticated: false });
+    sdk.token.mockResolvedValueOnce('gho_unit-test');
+    const provider = new LocalCopilotProvider();
+    expect((await provider.listModels()).models).toHaveLength(2);
+    expect(sdk.construct).toHaveBeenCalledTimes(2);
+    expect(sdk.construct.mock.calls[1][0]).toMatchObject({ gitHubToken: 'gho_unit-test' });
+    expect(sdk.client.stop).toHaveBeenCalledTimes(1);
+    expect(await provider.complete('allowed', 'hello', 1000)).toBe('connected');
+    expect(sdk.token).toHaveBeenCalledTimes(1);
+    await provider.stop();
+  });
+
+  it('keeps the existing Copilot account without reading another GitHub identity', async () => {
+    await new LocalCopilotProvider().listModels();
+    expect(sdk.token).not.toHaveBeenCalled();
+  });
+
+  it('recreates an unauthenticated runtime so retry can discover a new sign-in', async () => {
+    sdk.client.getAuthStatus.mockResolvedValueOnce({ isAuthenticated: false });
+    const provider = new LocalCopilotProvider();
+    await expect(provider.listModels()).rejects.toThrow('copilot login');
+    expect(sdk.client.stop).toHaveBeenCalledTimes(1);
+    expect((await provider.listModels()).models).toHaveLength(2);
+    expect(sdk.construct).toHaveBeenCalledTimes(2);
+    await provider.stop();
+  });
+
+  it('shares connection and sign-in discovery across concurrent requests', async () => {
+    sdk.client.getAuthStatus.mockResolvedValueOnce({ isAuthenticated: false });
+    sdk.token.mockResolvedValueOnce('gho_unit-test');
+    const provider = new LocalCopilotProvider();
+    await Promise.all([provider.listModels(), provider.complete('allowed', 'hello', 1000)]);
+    expect(sdk.construct).toHaveBeenCalledTimes(2);
+    expect(sdk.client.start).toHaveBeenCalledTimes(2);
+    expect(sdk.token).toHaveBeenCalledTimes(1);
+    await provider.stop();
+  });
+
+  it('surfaces failed GitHub authentication without creating a model session', async () => {
+    sdk.client.getAuthStatus.mockResolvedValue({ isAuthenticated: false });
+    sdk.token.mockResolvedValueOnce('gho_invalid-unit-test');
+    await expect(new LocalCopilotProvider().complete('auto', 'hello', 1000)).rejects.toThrow('gh auth login');
+    expect(sdk.client.createSession).not.toHaveBeenCalled();
+    expect(sdk.client.stop).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not restart after shutdown while GitHub sign-in is being read', async () => {
+    let release!: (token: string) => void;
+    sdk.client.getAuthStatus.mockResolvedValueOnce({ isAuthenticated: false });
+    sdk.token.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const provider = new LocalCopilotProvider();
+    const request = provider.listModels();
+    const rejected = expect(request).rejects.toThrow('shutting down');
+    await vi.waitFor(() => expect(sdk.token).toHaveBeenCalled());
+    await provider.stop();
+    release('gho_unit-test');
+    await rejected;
+    expect(sdk.construct).toHaveBeenCalledTimes(1);
     expect(sdk.client.createSession).not.toHaveBeenCalled();
   });
 

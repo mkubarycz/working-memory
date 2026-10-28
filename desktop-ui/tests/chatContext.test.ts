@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { chatContextForDocument } from '../src/shared/contracts';
 
 describe('chatContextForDocument', () => {
-  it('does not invent a stored document context for the local host-task tab', () => {
+  it('targets registered host tasks without inventing a context for lists or unregistered tasks', () => {
     expect(chatContextForDocument({
       kind: 'host-tasks', id: 'approved-host-tasks', title: 'Host tasks',
     })).toBeUndefined();
-    expect(chatContextForDocument({ kind: 'host-task', id: 'task-id', title: 'Import messages' })).toBeUndefined();
+    expect(chatContextForDocument({ kind: 'host-task', id: 'task-id', title: 'Import messages' })).toEqual({
+      kind: 'host-task', routeKind: 'host-task', identifier: 'task-id', title: 'Import messages',
+    });
     expect(chatContextForDocument({ kind: 'host-task-create', id: 'new-host-task', title: 'Add host task' })).toBeUndefined();
   });
 

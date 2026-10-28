@@ -31,6 +31,15 @@ function summary(overrides: Partial<CommandJournalSummary> = {}): CommandJournal
 }
 
 describe('chat history presentation', () => {
+  it('restores host-task context and opens host-task entities without treating them as Topic documents', () => {
+    const ref = { kind: 'HostTask', id: 'task-id', title: 'Greeting' };
+    expect(targetForRef(ref)).toEqual({ kind: 'host-task', identifier: 'task-id' });
+    expect(chatContextForScope(ref)).toEqual({ kind: 'HostTask', routeKind: 'host-task', identifier: 'task-id', title: 'Greeting' });
+    const run = summaryToChatRun(summary({ primaryScope: ref,
+      entityRefs: [{ ...ref, relation: 'mutated' }],
+      eventSummaries: [{ sequence: 2, timestamp: 12, toolName: 'desktop-host-task-update', callId: 'call-1', status: 'success' }] }));
+    expect(run.tools[0]).toMatchObject({ mode: 'write', entity: { label: 'Greeting', target: { kind: 'host-task', identifier: 'task-id' } } });
+  });
   it('merges newest-first pages into deterministic chronological runs without duplicates', () => {
     const newest = summary({ id: 'new', startedAt: 30 });
     const middle = summary({ id: 'middle', startedAt: 20 });

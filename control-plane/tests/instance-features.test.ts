@@ -53,6 +53,10 @@ it('blocks all host-task HTTP/MCP usage while off, preserves records, and requir
     ['GET', '/admin'], ['GET', '/admin/scripts'], ['POST', '/admin/apps'], ['POST', '/requests'],
     ['POST', '/runner/claim'], ['POST', '/scripts/mcp'], ['POST', '/admin/scripts/claim'],
     ['GET', '/scripts/jobs/any-id'], ['POST', '/admin/scripts/complete'],
+    ['POST', '/admin/scripts'], ['POST', '/admin/scripts/test/claim'],
+    ['GET', '/admin/scripts/00000000-0000-4000-8000-000000000001'],
+    ['POST', '/admin/scripts/00000000-0000-4000-8000-000000000001/versions'],
+    ['POST', '/admin/scripts/00000000-0000-4000-8000-000000000001/publish'],
   ]) {
     const response = await request(`/host-tasks/v1${path}`, method, undefined, owner.token);
     expect(response.status, path).toBe(503);

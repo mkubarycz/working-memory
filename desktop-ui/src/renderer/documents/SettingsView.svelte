@@ -84,10 +84,10 @@
     copilotStatus = 'Checking local Copilot...';
     try {
       copilot = await window.workingMemory.listCopilotModels();
-      copilotStatus = `Signed in as ${copilot.account}. ${copilot.models.length} models available.`;
+      copilotStatus = `Signed in. ${copilot.models.length} models available.`;
     } catch (error) {
-      copilot = null;
-      copilotStatus = error instanceof Error ? error.message : String(error);
+      copilotStatus = (error instanceof Error ? error.message : String(error))
+        .replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
     } finally {
       loadingCopilot = false;
     }
@@ -137,9 +137,8 @@
             </select>
           </label>
           {#if profile.provider === 'copilot'}
-            <p>Uses the local Copilot CLI and its GitHub sign-in, not an Azure API key.
-              Sign in from Terminal with <code>copilot login</code> if needed.
-              Copilot plan allowances and organization policies apply. No automatic Azure fallback.</p>
+            <p class="copilot-help">Uses your Copilot CLI or active GitHub CLI sign-in.
+              To sign in, run <code>copilot login</code> or <code>gh auth login</code> in Terminal.</p>
             <label>Model
               <select bind:value={profile.model}>
                 <option value="auto">Auto (Copilot default)</option>
@@ -153,12 +152,7 @@
                 {/each}
               </select>
             </label>
-            {#if !loadingCopilot && copilot === null}
-              <button class="secondary" disabled={saving || testingProfileId !== null} onclick={() => void loadCopilotModels()}>
-                Retry loading models
-              </button>
-            {/if}
-            <p role="status">{copilotStatus}</p>
+            <p class="copilot-status" role="status">{copilotStatus}</p>
           {:else}
             <label>Endpoint<input bind:value={profile.endpoint} placeholder="http://localhost:11434/v1" /></label>
             <label>Model<input bind:value={profile.model} placeholder="qwen3:14b" /></label>
@@ -173,6 +167,12 @@
             </label>
           {/if}
           <div class="model-profile-actions">
+            {#if profile.provider === 'copilot'}
+              <button class="secondary" disabled={loadingCopilot || saving || testingProfileId !== null}
+                onclick={() => void loadCopilotModels()}>
+                {loadingCopilot ? 'Loading models...' : copilot ? 'Refresh models' : 'Retry loading models'}
+              </button>
+            {/if}
             <button
               class="secondary"
               disabled={saving || testingProfileId !== null}
@@ -233,7 +233,7 @@
       <p>Your initials appear beside your messages in the inline chat response.</p>
     </div>
   {/if}
-  {#if tab !== 'instances' && tab !== 'updates' && tab !== 'features'}
+  {#if tab !== 'instances' && tab !== 'updates' && tab !== 'features' && tab !== 'access'}
     <div class="settings-actions">
       <button class="primary" disabled={saving || testingProfileId !== null} onclick={() => void onSave()}>
         {saving ? 'Saving...' : 'Save'}

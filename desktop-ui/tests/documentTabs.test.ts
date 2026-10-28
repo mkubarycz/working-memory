@@ -32,7 +32,7 @@ function topic(id: string, title = id): TopicVM {
 
 describe('document tabs', () => {
   it('keeps separate permanent task tabs and deduplicates each task and creation tab', () => {
-    const first = hostTaskDocument({ id: 'first-task', name: 'Import messages' });
+    const first = hostTaskDocument({ id: 'first-task', name: 'Untitled task', draftName: 'Import messages' });
     const second = hostTaskDocument({ id: 'second-task', name: 'Back up notes' });
     let state = openDocumentTab({ tabs: [], selectedKey: null }, first, false);
     state = openDocumentTab(state, second, false);

@@ -69,18 +69,25 @@ it.each(['feature-disabled', 'signed-out'])('aborts an active runner when %s thr
     ipc: { handle: (channel, handler) => { handlers.set(channel, handler); } },
     dialog, vault, identity, getWindow: () => window,
     getEnvironment: () => ({ mcpUrl, displayName: 'Test' }), rendererUrl, platform: process.platform,
-    onSessionChanged: async (_url: string, authenticated: boolean) => { if (!authenticated) stop(); },
+    onSessionChanged: async (_url: string, authenticated: boolean) => { if (!authenticated) stop.stop(); },
   } as unknown as Parameters<typeof registerInstanceIdentityIpc>[0]);
   const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!(event, ...args);
   expect(await call('instance:features')).toEqual({ hostTasks: false });
   expect(await call('host-scripts:get')).toMatchObject({ credentialReady: true, features: { hostTasks: false }, snapshot: null });
   const input = { name: '', description: '', parameters: {}, timeoutMs: 1000, example: true };
   await expect(call('host-scripts:register', input)).rejects.toThrow('turned off');
+  await expect(call('host-scripts:create')).rejects.toThrow('turned off');
+  const chat = stop.forChat(event, randomUUID());
+  await expect(chat.read()).rejects.toThrow('turned off');
+  await expect(chat.test(1, {})).rejects.toThrow('turned off');
+  await expect(chat.save({
+    name: 'Blocked chat draft', description: '', source: 'module.exports = () => ({});',
+    parameters: {}, timeoutMs: 1000, hostId: await hostScriptHostId(directory),
+  }, 1)).rejects.toThrow('turned off');
   expect(dialog.showMessageBox).not.toHaveBeenCalled();
   await call('instance:set-features', { hostTasks: true });
   const task = await call('host-scripts:register', input) as { id: string };
-  await call('host-scripts:test', task.id, { name: 'Michael' });
-  const next = call('host-scripts:next');
+  const next = call('host-scripts:test', task.id, 1, { name: 'Michael' });
   const stopped = expect(next).rejects.toThrow();
   await started;
   if (reason === 'feature-disabled') await call('instance:set-features', { hostTasks: false });
@@ -174,7 +181,7 @@ it('exposes only granted named MCP tools and completes a real authenticated requ
 }, 10000);
 
 it('requires the trusted native frame and approval, then registers and runs the harmless example through IPC', async () => {
-  const { server, credential } = await serverFixture();
+  const { server, credential, broker } = await serverFixture();
   const directory = await mkdtemp(join(tmpdir(), 'wm-host-script-'));
   directories.push(directory);
   expect(await hostScriptHostId(directory)).toBe(await hostScriptHostId(directory));
@@ -185,7 +192,7 @@ it('requires the trusted native frame and approval, then registers and runs the 
   const vault = { read: vi.fn().mockResolvedValue(credential), import: vi.fn() };
   const dialog = { showMessageBox: vi.fn().mockResolvedValue({ response: 1 }), showOpenDialog: vi.fn(), showSaveDialog: vi.fn() };
   const event = { sender: window.webContents, senderFrame: frame } as unknown as IpcMainInvokeEvent;
-  registerHostScriptIpc({
+  const controller = registerHostScriptIpc({
     ipc: { handle: (channel, handler) => { handlers.set(channel, handler); } },
     dialog, vault, directory, getWindow: () => window,
     getEnvironment: () => ({ mcpUrl: `${server.url}/mcp`, displayName: 'Test' }),
@@ -196,6 +203,16 @@ it('requires the trusted native frame and approval, then registers and runs the 
     await expect(handler({ ...event, sender: {} } as IpcMainInvokeEvent)).rejects.toThrow('main frame');
   }
   expect(vault.read).not.toHaveBeenCalled();
+  const starter = await call('create') as { id: string };
+  const starterDetails = await broker.script(starter.id);
+  expect(starterDetails.versions[0].definition).toMatchObject({
+    name: 'Untitled task', description: '', parameters: {}, timeoutMs: 10000,
+    source: 'module.exports = async function (parameters) {\n  return {};\n};\n',
+  });
+  expect((await controller.forChat(event, starter.id).read()).task.id).toBe(starter.id);
+  expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+  expect((await broker.scripts()).grants).toEqual([]);
   const input = { name: '', description: '', parameters: {}, timeoutMs: 1000, example: true };
   dialog.showMessageBox.mockResolvedValueOnce({ response: 0 });
   expect(await call('register', input)).toBeUndefined();
@@ -203,10 +220,34 @@ it('requires the trusted native frame and approval, then registers and runs the 
   expect(task.id).toBeTruthy();
   expect(dialog.showMessageBox.mock.calls[1][1]).toMatchObject({ defaultId: 0, cancelId: 0 });
   expect(dialog.showMessageBox.mock.calls[1][1].detail).toContain('SHA-256');
-  await expect(call('test', task.id, { name: 'Michael', command: 'not allowed' })).rejects.toThrow('Unknown parameter');
-  await call('test', task.id, { name: 'Michael' });
-  const completed = await call('next');
+  const confirmations = dialog.showMessageBox.mock.calls.length;
+  await expect(call('test', task.id, 1, { name: 'Michael', command: 'not allowed' })).rejects.toThrow('Unknown parameter');
+  const completed = await call('test', task.id, 1, { name: 'Michael' });
   expect(completed).toMatchObject({ state: 'succeeded' });
   expect(JSON.stringify(completed)).toContain('Hello, Michael!');
+  expect(dialog.showMessageBox).toHaveBeenCalledTimes(confirmations);
+  const details = await broker.script(task.id);
+  expect(() => controller.forChat({ ...event, sender: {} }, task.id)).toThrow('main frame');
+  const chat = controller.forChat(event, task.id);
+  expect((await chat.read()).task.id).toBe(task.id);
+  const draft = await chat.save({
+    ...details.versions[0].definition, source: 'module.exports = parameters => ({ edited: parameters.name });',
+  }, details.task.latestVersion);
+  const caller = await broker.createApp({ label: 'Unrelated caller', instanceId: randomUUID() });
+  await broker.grantScript({ taskId: task.id, appId: caller.appId, definitionHash: details.task.definitionHash, expiresAt: Date.now() + 60000 });
+  const queued = await fetch(`${server.url}/host-tasks/v1/scripts/requests`, {
+    method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${caller.credential}` },
+    body: JSON.stringify({ taskId: task.id, definitionHash: details.task.definitionHash, parameters: { name: 'Unrelated' }, idempotencyKey: 'unrelated' }),
+  });
+  expect(queued.status).toBe(202);
+  const unrelated = scriptJobSchema.parse(await queued.json());
+  expect(await chat.test(draft.version, { name: 'Ada' })).toMatchObject({
+    version: 2, state: 'succeeded', resultJson: '{"edited":"Ada"}',
+  });
+  expect(await broker.scriptJob(unrelated.id)).toMatchObject({ state: 'queued' });
+  expect((await broker.script(task.id)).task.publishedVersion).toBe(1);
+  expect(dialog.showMessageBox).toHaveBeenCalledTimes(confirmations);
+  expect(await call('publish', task.id, draft.version, details.task.definitionHash)).toMatchObject({ publishedVersion: 2 });
+  expect(await broker.scriptJob(unrelated.id)).toMatchObject({ state: 'cancelled' });
   expect(await call('next')).toBeNull();
 }, 10000);

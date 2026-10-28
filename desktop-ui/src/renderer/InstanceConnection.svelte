@@ -12,7 +12,17 @@
   let passwordHint = $state('');
   let busy = $state(false);
   let signInError = $state('');
+  let rememberPassword = $state(false);
   const setup = $derived(connection?.passwordConfigured === false);
+  $effect(() => {
+    selectedMcpUrl;
+    password = '';
+    repeatedPassword = '';
+    passwordHint = '';
+    rememberPassword = false;
+    signInError = '';
+  });
+  $effect(() => { if (!connection?.rememberPasswordAvailable) rememberPassword = false; });
   async function connect(): Promise<void> {
     if (setup && password !== repeatedPassword) { signInError = 'The passwords do not match.'; return; }
     busy = true;
@@ -21,7 +31,8 @@
     password = '';
     repeatedPassword = '';
     try {
-      await window.workingMemory.signInInstance({ password: value, setup, ...(setup ? { passwordHint } : {}) });
+      await window.workingMemory.signInInstance({ password: value, setup, rememberPassword,
+        ...(setup ? { passwordHint } : {}) });
       await onConnected();
     } catch (cause) { signInError = cause instanceof Error ? cause.message : String(cause); }
     finally { busy = false; }
@@ -62,11 +73,24 @@
           <label>Password hint (optional)<textarea bind:value={passwordHint} rows="2" maxlength="1000"></textarea></label>
           <p class="hint">The hint is visible before sign-in. Do not include your password or other secrets.</p>
         {/if}
+        <label class="remember">
+          <input type="checkbox" bind:checked={rememberPassword} disabled={busy || !connection.rememberPasswordAvailable} />
+          Remember on this device
+        </label>
+        <p class="hint">{connection.rememberPasswordAvailable
+          ? 'Save in native secure storage. Your OS may ask permission.'
+          : 'Native secure storage is unavailable. You can still sign in; your password will not be saved.'}</p>
+        {#if connection.rememberPasswordAvailable}
+          <p class="hint">{connection.rememberPasswordShared
+            ? 'Installed and development builds share remembered sign-in for your OS account. Their UI settings and windows remain separate.'
+            : 'Remembered sign-in is saved for this UI profile. Other UI profiles need their own sign-in.'}</p>
+        {/if}
+        {#if connection.rememberPasswordError}<p role="alert">{connection.rememberPasswordError}</p>{/if}
         <button disabled={busy || !password || (setup && (!connection.setupAvailable || password.length < 12))}>
           {busy ? 'Connecting...' : setup ? 'Set password and connect' : 'Sign in'}
         </button>
       </form>
-      <p class="hint">Your password is not saved. The private session stays in the desktop process until sign-out, expiry, or app restart. OS credential storage is not required.</p>
+      <p class="hint">Without Remember on this device, your password is not saved and restarting the app requires sign-in. Private sessions stay in the desktop process and expire after 12 hours.</p>
     {:else if !error}
       <p role="status">{selectedMcpUrl ? 'Checking instance connection...' : 'No instance is selected. Start or create one using Manage instances.'}</p>
     {/if}
@@ -84,6 +108,7 @@
   h1, p { margin: 0; }
   form, label { display: grid; gap: 8px; }
   form { gap: 16px; }
+  .remember { display: flex; align-items: center; gap: 8px; }
   .actions { display: flex; gap: 8px; }
   .hint, .instance-address { color: var(--desktop-chat-muted); font-size: 12px; overflow-wrap: anywhere; }
   [role="alert"] { color: var(--vscode-errorForeground, #f48771); }

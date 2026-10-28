@@ -19,6 +19,16 @@ function run(
 
 describe('scoped chat previews', () => {
   const context = { kind: 'topic', routeKind: 'topic' as const, identifier: 'topic-uuid', title: 'Selected' };
+  it('keeps task-scoped history separate while including related task edits', () => {
+    const task = { kind: 'host-task', routeKind: 'host-task' as const, identifier: 'task-id', title: 'Greeting' };
+    const runs = [
+      run('own', 1, 'HostTask', 'task-id'),
+      run('related', 2, 'DesktopChat', 'desktop-chat', [{ kind: 'HostTask', id: 'task-id', relation: 'mutated' }]),
+      run('other', 3, 'HostTask', 'another-task'),
+    ];
+    expect(allRunsForContext(runs, task).map(run => run.key)).toEqual(['own', 'related']);
+    expect(chatContextKey(task)).toBe(chatContextKey({ ...task, kind: 'HostTask' }));
+  });
 
   it('loads real persisted historical Alert scope and entity refs under canonical AgentMessage identity', async () => {
     const selected = { kind: 'AgentMessage', routeKind: 'agent-message' as const, identifier: 'message-id', title: 'Message' };

@@ -1,7 +1,7 @@
 import type { HostTaskAdminSnapshot } from '../../../shared/hostTasks';
 import type { HostTaskGrantApprovalInput, HostTaskAppProvisionInput } from '../../../shared/hostTasks';
-import type { ScriptSnapshot, ScriptTask, ScriptParameters, ScriptJob } from '../../../control-plane/src/hostScriptPolicy';
-export type { ScriptTask, ScriptParameters, ScriptJob } from '../../../control-plane/src/hostScriptPolicy';
+import type { ScriptSnapshot, ScriptTask, ScriptParameters, ScriptJob, ScriptDefinition, ScriptDetails, ScriptVersion } from '../../../control-plane/src/hostScriptPolicy';
+export type { ScriptTask, ScriptParameters, ScriptJob, ScriptDefinition, ScriptDetails, ScriptVersion } from '../../../control-plane/src/hostScriptPolicy';
 export type { HostTaskAdminSnapshot } from '../../../shared/hostTasks';
 export { HOST_TASK_SCOPE } from '../../../shared/hostTasks';
 export type HostTaskGrantInput = Pick<HostTaskGrantApprovalInput, 'appId' | 'windowsSid' | 'tenantId' | 'expiresAt'>;
@@ -22,10 +22,14 @@ export interface HostTaskDesktopApi {
   setInstancePasswordHint(hint: string): Promise<void>;
   signOutHostScripts(): Promise<void>;
   getHostScripts(): Promise<HostScriptDesktopState>;
+  getHostScript(id: string): Promise<ScriptDetails>;
+  createHostScript(): Promise<ScriptTask>;
+  saveHostScriptVersion(id: string, definition: ScriptDefinition): Promise<ScriptVersion>;
+  publishHostScriptVersion(id: string, version: number, expectedPublishedHash: string): Promise<ScriptTask>;
   registerHostScript(input: { name: string; description: string; parameters: unknown; timeoutMs: number; example: boolean }): Promise<ScriptTask | undefined>;
   grantHostScript(input: { taskId: string; appId: string; expiresAt: number }): Promise<void>;
   revokeHostScript(id: string, grant: boolean): Promise<void>;
-  testHostScript(id: string, parameters: unknown): Promise<ScriptJob | undefined>;
+  testHostScript(id: string, version: number, parameters: unknown): Promise<ScriptJob>;
   getHostScriptJob(id: string): Promise<ScriptJob>;
   processNextHostScript(): Promise<ScriptJob | null>;
   stopHostScript(): Promise<void>;
@@ -36,6 +40,11 @@ export interface HostTaskDesktopApi {
   approveHostTaskGrant(input: HostTaskGrantInput): Promise<void>;
   revokeHostTaskGrant(id: string): Promise<void>;
   denyHostTaskJob(id: string): Promise<void>;
+}
+
+export interface HostScriptDraft {
+  source: string; parametersJson: string; baseVersion: number;
+  name?: string; description?: string; timeoutMs?: number;
 }
 
 export interface HostScriptDesktopState {

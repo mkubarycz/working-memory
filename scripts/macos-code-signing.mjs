@@ -17,8 +17,20 @@ export function resolveMacCodeSignIdentity({
   if (configuredIdentity) return configuredIdentity;
   if (platform !== 'darwin') return '-';
   const result = findIdentities();
-  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  return result.status === 0 && output.includes(`"${MAC_LOCAL_CODESIGN_IDENTITY}"`)
+  if (result.status !== 0) {
+    throw new Error(
+      `Unable to inspect macOS signing identities: ${result.stderr?.trim() || result.error?.message || `security exited with status ${result.status}`}`,
+    );
+  }
+  const output = result.stdout ?? '';
+  const developmentIdentities = [...output.matchAll(/^\s*\d+\)\s+([a-fA-F0-9]{40})\s+"(?:Apple Development:|Mac Developer:)[^"]*"\s*$/gm)];
+  if (developmentIdentities.length > 1) {
+    throw new Error(
+      'Multiple Apple Development signing identities are available. Set WM_DESKTOP_CODESIGN_IDENTITY to the certificate SHA-1 to choose one.',
+    );
+  }
+  if (developmentIdentities.length === 1) return developmentIdentities[0][1];
+  return output.includes(`"${MAC_LOCAL_CODESIGN_IDENTITY}"`)
     ? MAC_LOCAL_CODESIGN_IDENTITY
     : '-';
 }

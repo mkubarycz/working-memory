@@ -36,6 +36,12 @@ import { createDocumentChangeFeed } from './documentChangeFeed.js';
 import { HostTaskBroker, HOST_TASK_CLEANUP_INTERVAL_MS, type HostTaskOptions } from './hostTasks.js';
 import { AccessError, InstanceAccess, type InstancePrincipal } from './instanceAccess.js';
 import { serveInstanceAccessMcp } from './instanceAccessMcp.js';
+import { InstanceOAuth } from './instanceOAuth.js';
+import { IdentityError } from './instanceIdentity.js';
+import { documentPermissionCategory, instancePermissionsSchema, permits } from './instancePermissions.js';
+import { authorizeInstanceTool, instanceToolPermissions } from './instanceAuthorization.js';
+import type { PermissionSelection } from './instancePermissions.js';
+import { registerInstanceTaskTools } from './instanceToolsMcp.js';
 import { topicSpecWithDefaults, validateTopicReferences } from './kinds/topic/references.js';
 import {
   getKind,
@@ -78,8 +84,11 @@ export function createMcpServer(
   store: Store,
   version: string = SERVICE_VERSION,
   name: string = SERVICE_NAME,
+  taskDispatch?: (method: string, path: string, input?: unknown) => unknown,
+  canReadKind: (kind: string) => boolean = () => true,
 ): McpServer {
   const server = new McpServer({ name, version });
+  if (taskDispatch) registerInstanceTaskTools(server, taskDispatch);
 
   const asText = (result: unknown) => ({
     content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
@@ -88,6 +97,25 @@ export function createMcpServer(
   const asError = (message: string) => ({
     isError: true,
     content: [{ type: 'text' as const, text: message }],
+  });
+
+  server.registerTool('wm-attachment-create', {
+    title: 'Working Memory: Upload Image',
+    description: 'Store an image attachment (up to 700 KiB via MCP). Provide filename, mimeType and canonical base64 data. Returns an ID and a portable wm-attachment:<id> reference for Markdown. Requires Content Create.',
+    inputSchema: {
+      filename: z.string().trim().min(1).max(255),
+      mimeType: z.string().refine(value => IMAGE_MIME_TYPES.has(value), 'Unsupported image type.'),
+      data: z.string().min(4).max(Math.ceil(700 * 1024 / 3) * 4)
+        .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+    },
+  }, async ({ filename, mimeType, data }) => {
+    const bytes = Buffer.from(data, 'base64');
+    if (!bytes.length || bytes.length > 700 * 1024 || bytes.toString('base64') !== data) {
+      return asError('Provide a non-empty image up to 700 KiB encoded as canonical base64.');
+    }
+    const attachment = store.createAttachment({ filename, mimeType, data: bytes });
+    return asText({ id: attachment.id, filename: attachment.filename, mimeType: attachment.mimeType,
+      size: bytes.length, reference: `wm-attachment:${attachment.id}` });
   });
 
   server.registerTool(
@@ -359,13 +387,14 @@ export function createMcpServer(
       // a 0-or-1 element list so the shape matches the list case exactly.
       if (id !== undefined) {
         const doc = store.getDocument({ id, kind, includeDeleted });
-        const documents = doc ? [doc] : [];
+        const documents = doc && canReadKind(doc.kind) ? [doc] : [];
         return asText({ count: documents.length, documents });
       }
       // List mode: non-deleted docs, newest-first, optional kind + query + limit.
       let documents = kind === 'Alert' || kind === 'AgentMessage'
         ? store.listDocumentsByCreation({ kind, includeDeleted }).map(({ document }) => document)
         : store.listDocuments({ kind, includeDeleted });
+      documents = documents.filter(doc => canReadKind(doc.kind));
       if (query !== undefined && query.trim() !== '') {
         // Basic placeholder search: case-insensitive substring over the whole
         // envelope's JSON (covers ID, spec title/body, labels). Real FTS is a
@@ -453,6 +482,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const store = providedStore ?? openStore(':memory:');
   const hostTasks = new HostTaskBroker(store.db, opts);
   const access = new InstanceAccess(store.db, hostTasks.identity, opts.hostTaskClock);
+  let oauth: InstanceOAuth;
   const ownsStore = providedStore === undefined;
   const changeFeed = createDocumentChangeFeed(store);
 
@@ -460,6 +490,23 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // session id. Supports multiple concurrent clients, each with its own MCP
   // session and connected McpServer instance.
   const transports = new Map<string, { transport: StreamableHTTPServerTransport; principalKey: string }>();
+
+  function denyPermission(req: http.IncomingMessage, res: http.ServerResponse, required: PermissionSelection[] | null): void {
+    try {
+      const request = required?.length ? access.requestPermissions(
+        req.headers.authorization?.slice(7) ?? '', required, req.socket.remoteAddress ?? 'unknown',
+      ) : undefined;
+      endJson(res, 403, { error: 'permission_denied', permissionRequest: request,
+        message: request?.state === 'pending'
+          ? 'Additional access requested. Ask the owner to approve it at the top of Settings > Access, then retry.'
+          : request?.state === 'denied'
+          ? 'The owner denied this permission request. No access was granted. Do not retry until the owner changes access or the request expires.'
+          : 'This client lacks the required permission.' });
+    } catch (error) {
+      if (!(error instanceof AccessError)) throw error;
+      endJson(res, error.status, { error: 'permission_denied', message: error.message });
+    }
+  }
 
   async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, principal: InstancePrincipal): Promise<void> {
     const header = req.headers['mcp-session-id'];
@@ -488,12 +535,15 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         endJson(res, 400, { error: 'MCP batch requests are not supported. Send one authenticated request at a time.' });
         return;
       }
-      if (principal.access === 'read' && body && typeof body === 'object' && 'method' in body && body.method === 'tools/call') {
-        const call = z.object({ params: z.object({ name: z.string() }) }).safeParse(body);
-        const readTool = /^(?:wm-(?:ping|document-read|list-kinds)|ws-(?:workstream|topic|topictype|alert|agent-message|agent|containerclaim|commandjournal|config)-read)$/;
-        if (!call.success || !readTool.test(call.data.params.name)) {
-          endJson(res, 403, { error: 'read_only_identity',
-            message: 'This client has read-only access. Request a new write-access identity through the identity MCP; owner approval is required.' });
+      const current = access.authenticate(req.headers.authorization?.slice(7) ?? '');
+      if (!current) {
+        endJson(res, 401, { error: 'Client access expired or was revoked.' }); return;
+      }
+      principal = current;
+      if (principal.role === 'client' && body && typeof body === 'object' && 'method' in body && body.method === 'tools/call') {
+        const call = z.object({ params: z.object({ name: z.string(), arguments: z.record(z.string(), z.unknown()).default({}) }) }).safeParse(body);
+        if (!call.success || !authorizeInstanceTool(principal, call.data.params.name, call.data.params.arguments, store)) {
+          denyPermission(req, res, call.success ? instanceToolPermissions(call.data.params.name, call.data.params.arguments, store) : null);
           return;
         }
       }
@@ -516,7 +566,16 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             transports.delete(transport.sessionId);
           }
         };
-        const server = createMcpServer(store, version, name);
+        const sessionToken = req.headers.authorization?.slice(7) ?? '';
+        const server = createMcpServer(store, version, name, (method, path, input) => {
+          const current = access.authenticate(sessionToken);
+          if (!current) throw new AccessError(401, 'Client access expired or was revoked.');
+          return hostTasks.dispatchInstanceTask(current, method, path, input);
+        }, kind => {
+          const current = access.authenticate(sessionToken);
+          const category = documentPermissionCategory(kind);
+          return !!current && (current.role === 'owner' || category !== null && permits(current.permissions, category, 'read'));
+        });
         await server.connect(transport);
         await transport.handleRequest(req, res, body);
         return;
@@ -547,6 +606,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? `${host}:${port}`}`);
     const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
 
+    if (oauth.handles(url.pathname)) {
+      oauth.handle(req, res);
+      return;
+    }
     if (url.pathname === '/identity/v1/mcp') {
       if (req.headers.origin || url.search) { endJson(res, 400, { error: 'Use the identity MCP directly, without browser Origin or query credentials.' }); return; }
       if (req.method !== 'POST') { endJson(res, 405, { error: 'Identity MCP accepts POST only.' }); return; }
@@ -566,8 +629,12 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         if (req.method !== 'POST') throw new AccessError(405, 'Access management accepts GET or POST.');
         if (!hostTasks.identity.authenticate(token)) throw new AccessError(401, 'Sign in as the instance owner to manage access.');
         if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new AccessError(415, 'JSON required.');
-        const action = z.object({ action: z.enum(['approve', 'deny', 'revoke']), id: z.string().uuid() }).strict().parse(await readJsonBody(req));
-        if (action.action === 'revoke') access.revoke(token, action.id);
+        const action = z.union([
+          z.object({ action: z.enum(['approve', 'deny', 'revoke']), id: z.string().uuid() }).strict(),
+          z.object({ action: z.literal('permissions'), id: z.string().uuid(), target: z.enum(['request', 'client']), permissions: instancePermissionsSchema }).strict(),
+        ]).parse(await readJsonBody(req));
+        if (action.action === 'permissions') access.setPermissions(token, action.id, action.target, action.permissions);
+        else if (action.action === 'revoke') access.revoke(token, action.id);
         else access.decide(token, action.id, action.action === 'approve');
         endJson(res, 200, access.snapshot(token));
       } catch (error) {
@@ -578,7 +645,18 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       return;
     }
     if (url.pathname === '/features/v1') {
-      await hostTasks.handleFeatures(req, res, url);
+      const principal = access.authenticate(token);
+      if (principal?.role === 'client') {
+        if (['GET', 'POST'].includes(req.method ?? '') && !permits(principal.permissions, 'settings', req.method === 'GET' ? 'read' : 'update')) {
+          denyPermission(req, res, [{ category: 'settings', operation: req.method === 'GET' ? 'read' : 'update' }]); return;
+        }
+        await hostTasks.features.handle(req, res, url, () => {
+          const current = access.authenticate(token);
+          if (!current || !permits(current.permissions, 'settings', req.method === 'GET' ? 'read' : 'update')) {
+            throw new IdentityError(403, 'Settings permission required.');
+          }
+        });
+      } else await hostTasks.handleFeatures(req, res, url);
       return;
     }
     if (url.pathname.startsWith('/identity/v1/')) {
@@ -601,7 +679,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     const principal = access.authenticate(token);
     if (!principal) {
       const identityMcpUrl = new URL('/identity/v1/mcp', url).href;
-      res.setHeader('WWW-Authenticate', 'Bearer realm="working-memory"');
+      res.setHeader('WWW-Authenticate', `Bearer realm="working-memory", resource_metadata="${oauth.origin}/.well-known/oauth-protected-resource/mcp"`);
       endJson(res, 401, { error: 'instance_authentication_required', identityMcpUrl,
         message: 'A valid instance token is required. Desktop users: connect and set an owner password if none exists, or sign in. '
           + `Agents: connect to ${identityMcpUrl}, call wm-identity-request-access, then ask a signed-in owner to approve in Settings > Access. `
@@ -613,13 +691,20 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       endJson(res, 400, { error: 'Use a trusted client connection, not a browser Origin.' });
       return;
     }
-    if (principal.access === 'read' && req.method === 'POST' && url.pathname === '/attachments') {
-      endJson(res, 403, { error: 'read_only_identity', message: 'Attachment uploads require owner-approved write access.' });
+    if (principal.role === 'client' && url.pathname.startsWith('/attachments')
+      && !permits(principal.permissions, 'content', req.method === 'POST' ? 'create' : 'read')) {
+      denyPermission(req, res, [{ category: 'content', operation: req.method === 'POST' ? 'create' : 'read' }]);
       return;
     }
 
     if (req.method === 'GET' && url.pathname === '/changes') {
-      changeFeed.handle(req, res, url, () => !!access.authenticate(token));
+      if (principal.role === 'client' && (!principal.permissions.content.read || !principal.permissions.settings.read)) {
+        denyPermission(req, res, [{ category: 'content', operation: 'read' }, { category: 'settings', operation: 'read' }]); return;
+      }
+      changeFeed.handle(req, res, url, () => {
+        const current = access.authenticate(token);
+        return !!current && (current.role === 'owner' || current.permissions.content.read && current.permissions.settings.read);
+      });
       return;
     }
 
@@ -669,7 +754,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       res.writeHead(200, {
         'content-type': attachment.mimeType,
         'content-length': attachment.data.byteLength,
-        'cache-control': 'public, max-age=31536000, immutable',
+        'cache-control': 'private, no-store',
         'x-content-type-options': 'nosniff',
       });
       res.end(Buffer.from(attachment.data));
@@ -705,6 +790,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
 
   const address = httpServer.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+  oauth = new InstanceOAuth(store.db, access, `http://127.0.0.1:${boundPort}`, opts.hostTaskClock);
   const hostTaskCleanupTimer = setInterval(() => {
     try { hostTasks.cleanup(); }
     catch { console.error('[host-tasks] Retention cleanup failed.'); }

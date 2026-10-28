@@ -16,8 +16,8 @@ export interface PersistedDocumentTabs {
 
 const MAX_PERSISTED_TABS = 50;
 
-export function hostTaskDocument(task: { id: string; name: string }): HostTaskVM {
-  return { kind: 'host-task', id: task.id, title: task.name };
+export function hostTaskDocument(task: { id: string; name: string; draftName?: string }): HostTaskVM {
+  return { kind: 'host-task', id: task.id, title: task.draftName ?? task.name };
 }
 
 export function newHostTaskDocument(): HostTaskCreateVM {

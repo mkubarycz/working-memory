@@ -1,38 +1,59 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import HostScripts from './HostScripts.svelte';
   import type { HostScriptDesktopState, ScriptTask } from '../shared/hostTasks';
 
-  let { selectedId = '', revision = 0, onSelect, onAdd }: {
-    selectedId?: string; revision?: number;
-    onSelect: (task: ScriptTask) => void; onAdd: () => void;
+  let { selectedId = '', revision = 0, active = true, onSelect, onAdd }: {
+    selectedId?: string; revision?: number; active?: boolean;
+    onSelect: (task: ScriptTask) => void; onAdd: () => Promise<void>;
   } = $props();
   let state = $state<HostScriptDesktopState | null>(null);
   let loading = $state(false);
   let error = $state('');
   let showRevoked = $state(false);
+  let adding = $state(false);
   let request = 0;
+  let mounted = true;
   const tasks = $derived(state?.snapshot?.tasks.filter(task => showRevoked || !task.revokedAt) ?? []);
 
   async function refresh(): Promise<void> {
+    if (!mounted || !active || loading || document.hidden) return;
     const current = ++request;
     loading = true;
     error = '';
     try {
       const result = await window.workingMemory.getHostScripts();
-      if (current === request) state = result;
+      if (mounted && current === request) state = result;
     } catch (cause) {
-      if (current === request) error = cause instanceof Error ? cause.message : String(cause);
-    } finally { if (current === request) loading = false; }
+      if (mounted && current === request) error = cause instanceof Error ? cause.message : String(cause);
+    } finally { loading = false; }
   }
-  $effect(() => { revision; untrack(() => { void refresh(); }); });
-  onDestroy(() => { request++; });
+  $effect(() => { revision; active; untrack(() => { request++; void refresh(); }); });
+  onMount(() => {
+    const timer = setInterval(() => void refresh(), 2000);
+    const visible = () => { if (!document.hidden) void refresh(); };
+    window.addEventListener('focus', visible);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', visible);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  });
+  onDestroy(() => { mounted = false; request++; });
 </script>
 
 <section aria-label="Host tasks">
   <div class="list-actions">
-    <button disabled={loading || !state?.credentialReady} onclick={onAdd}>Add script</button>
-    <button disabled={loading} onclick={() => void refresh()}>Refresh</button>
+    <button disabled={adding || loading || !state?.credentialReady || state.features?.hostTasks === false}
+      onclick={async () => {
+        adding = true;
+        try { await onAdd(); }
+        catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+        finally { adding = false; }
+      }}>
+      {adding ? 'Adding…' : 'Add script'}
+    </button>
   </div>
   {#if error}<p class="container-panel-error" role="alert">{error}</p>{/if}
   {#if loading && !state}<p role="status">Loading host tasks…</p>{/if}
@@ -46,14 +67,14 @@
       {#each tasks as task (task.id)}
         <div role="listitem">
           <button class="container-app-list-item" class:selected={selectedId === task.id}
-            aria-pressed={selectedId === task.id} title={task.description} onclick={() => onSelect(task)}>
+            aria-pressed={selectedId === task.id} title={task.draftDescription ?? task.description} onclick={() => onSelect(task)}>
             <span class="codicon codicon-checklist" aria-hidden="true"></span>
-            <span class="container-app-list-label">{task.name}</span>
+            <span class="container-app-list-label">{task.draftName ?? task.name}</span>
             <small>{task.revokedAt ? 'Revoked' : task.hostId === state?.hostId ? 'This computer' : 'Other computer'}</small>
           </button>
         </div>
       {:else}
-        <p class="container-app-list-empty">No tasks added. Choose Add script to register one. No demo tasks are installed automatically.</p>
+        <p class="container-app-list-empty">No tasks yet. Choose Add script to create one.</p>
       {/each}
     </div>
   {/if}

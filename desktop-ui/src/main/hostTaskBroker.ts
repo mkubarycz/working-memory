@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { NativeCredentialStorage } from './credentialVault';
+import { nativeCredentialStorageAvailable, type NativeCredentialStorage } from './credentialVault';
 import {
   HOST_TASK_SCOPE as ADO_SCOPE,
   HOST_TASK_CAPABILITY,
@@ -111,10 +111,7 @@ export class HostTaskCredentialVault {
   clearSession(origin: string): void { this.sessions.delete(origin); }
 
   private requireSecureStorage(): void {
-    if (!this.native.isEncryptionAvailable()
-      || (this.platform === 'linux'
-        && (!this.native.getSelectedStorageBackend
-          || !['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'].includes(this.native.getSelectedStorageBackend())))) {
+    if (!nativeCredentialStorageAvailable(this.native, this.platform)) {
       throw new Error('Host-task secrets require OS-backed safeStorage encryption; basic_text is forbidden.');
     }
   }

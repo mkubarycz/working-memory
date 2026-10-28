@@ -51,10 +51,12 @@ it('places the task list beside Container Apps and task details in the document 
   expect(panelNodes.some(({ node }) => node.name === 'dialog')).toBe(false);
   expect(panelNodes.filter(({ node }) => node.type === 'Component' && node.name === 'HostScripts')).toHaveLength(1);
   expect(panel).not.toMatch(/Thrive|Windows|workflow|showModal/);
-  expect(source).toContain('task ? hostTaskDocument(task) : newHostTaskDocument(), false');
+  expect(source.includes('openDocumentTab(documentTabsState(), hostTaskDocument(task), false)')).toBe(true);
+  expect(source.includes('await window.workingMemory.createHostScript()')).toBe(true);
+  expect(source.includes('newHostTaskDocument')).toBe(false);
   expect(source).toContain("reference.kind === 'host-task' && instanceFeatures.hostTasks");
   expect(source).toContain('onSelect={openHostTask}');
-  expect(source).toContain('onRegistered={hostTaskRegistered}');
+  expect(source.includes('onAdd={addHostTask}')).toBe(true);
   expect(source).toContain('onTaskRead={updateHostTaskTitle}');
   expect(source).toContain('hidden={activeHeaderTab !== \'host-tasks\'} inert={activeHeaderTab !== \'host-tasks\'}');
   const styles = readFileSync(resolve(root, 'src/renderer/style.css'), 'utf8');

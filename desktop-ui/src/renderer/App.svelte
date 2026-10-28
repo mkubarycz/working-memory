@@ -15,7 +15,8 @@
   import InstanceConnection from './InstanceConnection.svelte';
   import InstancesView from './documents/InstancesView.svelte';
   import type { InstanceConnectionState } from '../shared/instanceIdentity';
-  import type { ScriptTask } from '../shared/hostTasks';
+  import { instanceAttachmentBaseUrl } from '../shared/instanceAttachments';
+  import type { ScriptTask, HostScriptDraft } from '../shared/hostTasks';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
   import TopicView from './documents/TopicView.svelte';
@@ -88,7 +89,6 @@
     documentTabIcon,
     documentTabTooltip,
     hostTaskDocument,
-    newHostTaskDocument,
     keepSelectedTabVisible,
     openDocumentTab,
     parseDocumentTabs,
@@ -135,6 +135,11 @@
     ? ['log', 'container-apps', 'host-tasks'] : ['log', 'container-apps']);
   let hostTasksRevision = $state(0);
   let hostTaskArguments = $state<Record<string, string>>({});
+  let hostTaskDrafts = $state<Record<string, HostScriptDraft | null>>({});
+  let hostScriptEditor = $state<{
+    prepareChat(): Promise<{ taskId: string; version: number }>;
+    refreshFromChat(): Promise<void>;
+  } | null>(null);
   const AI_SPEEDS = ['slow', 'medium', 'fast'] as const;
   const AI_DEPTHS = [
     { id: 'simple', label: 'Simple' },
@@ -358,7 +363,7 @@
   }
 
   function selectedAttachmentBaseUrl(): string {
-    return selectedEnvironment ? `working-memory-attachment://${selectedEnvironment.port}` : '';
+    return selectedEnvironment ? instanceAttachmentBaseUrl(selectedEnvironment.port) : '';
   }
 
   function clearComposerImages(): void {
@@ -929,6 +934,11 @@
       || (result.journalId && run.journalId === result.journalId));
     const foreground = source && matchesChatContext(source.scope, currentChatContext);
     setChatRuns(reconcileLiveRun(chatRuns, runKey, result));
+    if (foreground && currentChatContext?.routeKind === 'host-task' && result.mutated && hostScriptEditor) {
+      try { await hostScriptEditor.refreshFromChat(); }
+      catch (cause) { documentError = cause instanceof Error ? cause.message : String(cause); }
+      hostTasksRevision++;
+    }
     const document = result.document ?? result.workstream;
     if (document && foreground) {
       documentOpens.invalidate();
@@ -1221,7 +1231,7 @@
     if (instanceFeatures.hostTasks && persisted.tabs.some(reference => reference.kind === 'host-task')) {
       try {
         const state = await window.workingMemory.getHostScripts();
-        for (const task of state.snapshot?.tasks ?? []) hostTaskNames.set(task.id, task.name);
+        for (const task of state.snapshot?.tasks ?? []) hostTaskNames.set(task.id, task.draftName ?? task.name);
       } catch (error) {
         restoreErrors.push(`Host task details: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -1231,8 +1241,6 @@
         let document: DocumentVM | null = null;
         if (reference.kind === 'host-task' && instanceFeatures.hostTasks) {
           document = hostTaskDocument({ id: reference.identifier, name: hostTaskNames.get(reference.identifier) ?? 'Host task' });
-        } else if (reference.kind === 'host-task-create' && reference.identifier === newHostTaskDocument().id && instanceFeatures.hostTasks) {
-          document = newHostTaskDocument();
         } else if (reference.kind === 'container-app') {
           const app = containerApps.find((candidate) => candidate.id === reference.identifier);
           if (app) document = containerAppDocument(app);
@@ -1383,6 +1391,7 @@
     pendingAccessRequests = 0;
     pendingResource = null;
     hostTaskArguments = {};
+    hostTaskDrafts = {};
     instanceFeatures = { hostTasks: false };
     featuresError = '';
     const reset = emptyEnvironmentBoundRendererState();
@@ -1514,7 +1523,14 @@
     scopePreviewExpanded = true;
     const generation = environmentGeneration;
     try {
-      const result = await window.workingMemory.sendChat(message, context, images);
+      let requestContext = context;
+      if (context?.routeKind === 'host-task' && activeDocument?.id === context.identifier && hostScriptEditor) {
+        const prepared = await hostScriptEditor.prepareChat();
+        if (prepared.taskId !== context.identifier) throw new Error('The selected host task changed before chat started.');
+        requestContext = { ...context, hostTaskVersion: prepared.version };
+      }
+      if (generation !== environmentGeneration) throw new Error('The selected environment changed before chat started.');
+      const result = await window.workingMemory.sendChat(message, requestContext, images);
       if (generation === environmentGeneration) {
         observeOpenAi(result.status === 'failed' ? 'degraded' : 'healthy', `Request ${result.status}.`);
         await applyChatResult(result, runKey);
@@ -1703,13 +1719,13 @@
     }
   }
 
-  function openHostTask(task?: ScriptTask): void {
+  function openHostTask(task: ScriptTask): void {
     if (!instanceFeatures.hostTasks) {
       documentError = 'Host tasks is turned off. Enable it in Settings > Features.';
       return;
     }
     documentOpens.invalidate();
-    const next = openDocumentTab(documentTabsState(), task ? hostTaskDocument(task) : newHostTaskDocument(), false);
+    const next = openDocumentTab(documentTabsState(), hostTaskDocument(task), false);
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
     previewDocumentKey = next.previewKey ?? null;
@@ -1717,12 +1733,19 @@
     restoreDocumentSaveStatus(next.selectedKey);
   }
 
-  function hostTaskRegistered(task: ScriptTask): void {
-    const next = closeDocumentTab(documentTabsState(), documentTabKey(newHostTaskDocument()));
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
-    openHostTask(task);
+  async function addHostTask(): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      const task = await window.workingMemory.createHostScript();
+      if (generation !== environmentGeneration) return;
+      hostTasksRevision++;
+      openHostTask(task);
+    } catch (cause) {
+      if (generation === environmentGeneration) {
+        documentError = cause instanceof Error ? cause.message : String(cause);
+        throw cause;
+      }
+    }
   }
 
   function updateHostTaskTitle(task: ScriptTask): void {
@@ -1766,7 +1789,16 @@
     documentError = key ? (documentSaveErrors[key] ?? '') : '';
   }
 
-  async function openResource(kind: DesktopResourceKind, identifier: string): Promise<void> {
+  async function openResource(kind: DesktopResourceKind | 'host-task', identifier: string): Promise<void> {
+    if (kind === 'host-task') {
+      const generation = environmentGeneration;
+      try {
+        const task = (await window.workingMemory.getHostScript(identifier)).task;
+        if (generation === environmentGeneration) openHostTask(task);
+      }
+      catch (cause) { documentError = cause instanceof Error ? cause.message : String(cause); }
+      return;
+    }
     documentOpens.invalidate();
     const existing = documents.find((document) => documentTabKey(document) === `${kind}:${identifier}`);
     if (existing) {
@@ -2554,14 +2586,20 @@
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
         {#key selectedDocumentKey}
-        {#if (activeDocument?.kind === 'host-task' || activeDocument?.kind === 'host-task-create') && instanceFeatures.hostTasks}
+        {#if activeDocument?.kind === 'host-task' && instanceFeatures.hostTasks}
           {#key selectedEnvironment?.mcpUrl}
-            <HostScripts taskId={activeDocument.id ?? ''} creating={activeDocument.kind === 'host-task-create'}
-              initialArgumentsJson={hostTaskArguments[activeDocument.id ?? ''] ?? '{}'}
+            <HostScripts bind:this={hostScriptEditor} chatBusy={busy || !!pendingRun}
+              attachmentBaseUrl={selectedAttachmentBaseUrl()} onOpenLink={openLink}
+              taskId={activeDocument.id ?? ''}
+              initialArgumentsJson={hostTaskArguments[activeDocument.id ?? ''] ?? ''}
+              initialDraft={hostTaskDrafts[activeDocument.id ?? ''] ?? null}
+              onDraftChanged={(value) => {
+                if (activeDocument?.kind === 'host-task' && activeDocument.id) hostTaskDrafts[activeDocument.id] = value;
+              }}
               onArgumentsChanged={(value) => {
                 if (activeDocument?.kind === 'host-task' && activeDocument.id) hostTaskArguments[activeDocument.id] = value;
               }}
-              onRegistered={hostTaskRegistered} onTaskRead={updateHostTaskTitle}
+              onTaskRead={updateHostTaskTitle}
               onTasksChanged={() => { hostTasksRevision++; }} />
           {/key}
         {:else if activeDocument?.kind === 'settings'}
@@ -3084,8 +3122,8 @@
           role="tabpanel" aria-labelledby="desktop-tab-host-tasks"
           hidden={activeHeaderTab !== 'host-tasks'} inert={activeHeaderTab !== 'host-tasks'}>
           {#key selectedEnvironment?.mcpUrl}
-            <HostTasks selectedId={activeDocument?.kind === 'host-task' ? activeDocument.id ?? '' : ''}
-              revision={hostTasksRevision} onSelect={openHostTask} onAdd={() => openHostTask()} />
+            <HostTasks active={activeHeaderTab === 'host-tasks'} selectedId={activeDocument?.kind === 'host-task' ? activeDocument.id ?? '' : ''}
+              revision={hostTasksRevision} onSelect={openHostTask} onAdd={addHostTask} />
           {/key}
         </div>
       {/if}

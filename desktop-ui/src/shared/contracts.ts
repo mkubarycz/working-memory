@@ -219,10 +219,11 @@ export interface DesktopEnvironmentState {
 
 export interface ChatContext {
   kind: string;
-  routeKind: DesktopResourceKind;
+  routeKind: DesktopResourceKind | 'host-task';
   identifier: string;
   title: string;
   containerAppId?: ContainerAppId;
+  hostTaskVersion?: number;
 }
 
 interface ChatContextDocument {
@@ -239,15 +240,14 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
     || document.kind === 'topic-backlog'
     || document.kind === 'settings'
     || document.kind === 'host-tasks'
-    || document.kind === 'host-task'
     || document.kind === 'host-task-create'
   ) return undefined;
   const identifier = (document.id).trim();
   if (!identifier) return undefined;
   const routeKind = document.kind === 'AgentMessage' || document.kind === 'alert'
     ? 'agent-message'
-    : ['workstream', 'topic', 'agent-message', 'topic-type'].includes(document.kind)
-      ? document.kind as DesktopResourceKind
+    : ['workstream', 'topic', 'agent-message', 'topic-type', 'host-task'].includes(document.kind)
+      ? document.kind as ChatContext['routeKind']
       : 'document';
   return {
     kind: document.kind,

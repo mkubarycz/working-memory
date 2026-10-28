@@ -16,22 +16,20 @@ beforeAll(async () => {
 afterAll(async () => { await server?.close(); });
 
 describe('generic host-task first screen', () => {
-  it('leads with owner-controlled scripts rather than the blocked Thrive-specific form', () => {
+  it('loads connection state before presenting owner-controlled scripts', () => {
     const html = renderHostTasks();
     expect(html).toContain('Approved host tasks');
-    expect(html).toContain('Connect to your Working Memory instance');
-    expect(html).toContain('Instance password');
-    expect(html).toContain('Password hint:');
-    expect(html).toContain('aria-describedby="instance-password-hint"');
+    expect(html).toContain('Loading task…');
+    expect(html).not.toContain('Instance password');
     expect(html).not.toContain('Import broker admin token');
     expect(html).not.toContain('Read Thrive items created by');
     expect(html).not.toContain('Approve an expiring grant');
     expect(html).not.toMatch(/Thrive|Windows|My Node\.js scripts|<dialog/);
   });
-  it('explains session-only authentication separately from script approval', () => {
+  it('does not expose script actions while authentication is loading', () => {
     const html = renderHostTasks();
-    expect(html).toContain('does not approve a script');
-    expect(html).toContain('no Keychain or token-file import is required');
+    expect(html).not.toContain('aria-label="Task title"');
+    expect(html).not.toContain('>Test</button>');
     expect(html).not.toContain('Start runner');
     expect(html).not.toContain('Add greeting demo');
   });

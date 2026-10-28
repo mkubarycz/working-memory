@@ -103,6 +103,9 @@ export interface StartChatInput {
     callTool: DesktopChatDependencies['callTool'];
     systemInstructions: string;
     requiresConfirmation?: (toolName: string) => boolean;
+    separateConfirmation?: (toolName: string) => boolean;
+    deduplicate?: (toolName: string) => boolean;
+    onCancel?: () => void;
   };
 }
 
@@ -127,6 +130,8 @@ interface Session {
   usedCallIds: Set<string>;
   navigation?: NavigationHint;
   appToolsRequiringConfirmation: Set<string>;
+  separateConfirmations: Set<string>;
+  nonDeduplicatedTools: Set<string>;
   approvedCalls: Set<ModelToolCall>;
   suspended?: {
     turn: ParsedModelTurn;
@@ -240,6 +245,7 @@ export class DesktopChatAgent {
       journalTail: Promise.resolve(),
     };
     this.active.add(run);
+    if (input.appTools?.onCancel) run.controller.signal.addEventListener('abort', input.appTools.onCancel, { once: true });
     try {
     const tools = [
       ...desktopToolDescriptors(await this.external(run, run.dependencies.listTools())),
@@ -310,6 +316,8 @@ export class DesktopChatAgent {
           .filter((tool) => input.appTools?.requiresConfirmation?.(tool.name))
           .map((tool) => tool.name) ?? [],
       ),
+      separateConfirmations: new Set(input.appTools?.tools.filter(tool => input.appTools?.separateConfirmation?.(tool.name)).map(tool => tool.name)),
+      nonDeduplicatedTools: new Set(input.appTools?.tools.filter(tool => input.appTools?.deduplicate?.(tool.name) === false).map(tool => tool.name)),
       approvedCalls: new Set(),
     };
     run.session = session;
@@ -347,7 +355,7 @@ export class DesktopChatAgent {
     this.pending.delete(id);
     session.suspended = undefined;
     if (confirmed) {
-      confirmationBatch(state.calls, state.index, session.appToolsRequiringConfirmation)
+      confirmationBatch(state.calls, state.index, session.appToolsRequiringConfirmation, session.separateConfirmations)
         .slice(1)
         .forEach((approvedCall) => session.approvedCalls.add(approvedCall));
       state.results.push({ call, output: await this.execute(session, call) });
@@ -437,7 +445,7 @@ export class DesktopChatAgent {
         const callId = this.journalCallId(session, call);
         const key = executionKey(call);
         const previousExecution = session.executed.get(key);
-        const duplicate = previousExecution?.status === 'success' ? previousExecution : undefined;
+        const duplicate = previousExecution?.status === 'success' && !session.nonDeduplicatedTools.has(call.name) ? previousExecution : undefined;
         const previous = session.lastExecutionByTool.get(call.name);
         events.push({
           id: `${session.journal.id}:event:${session.journal.events.length + events.length + 1}`,
@@ -486,7 +494,7 @@ export class DesktopChatAgent {
       const call = calls[index];
       const requiresConfirmation = callRequiresConfirmation(call, session.appToolsRequiringConfirmation);
       if (requiresConfirmation && !session.approvedCalls.delete(call)) {
-        const batch = confirmationBatch(calls, index, session.appToolsRequiringConfirmation);
+        const batch = confirmationBatch(calls, index, session.appToolsRequiringConfirmation, session.separateConfirmations);
         const batchActions = summarizeBatchActions(batch);
         const id = this.createId();
         session.suspended = { turn, calls, results, index };
@@ -542,7 +550,7 @@ export class DesktopChatAgent {
     this.assertCurrent(session.run);
     const key = executionKey(call);
     const previous = session.executed.get(key);
-    if (previous?.status === 'success') {
+    if (previous?.status === 'success' && !session.nonDeduplicatedTools.has(call.name)) {
       session.progress.push({ name: call.name, status: 'completed', summary: 'Skipped duplicate call' });
       const output = { ok: true, deduped: true, result: previous.output };
       await this.persistToolResult(session, call, output, 'success', 0);
@@ -857,13 +865,15 @@ function confirmationBatch(
   calls: ModelToolCall[],
   startIndex: number,
   appToolsRequiringConfirmation: Set<string>,
+  separateConfirmations: Set<string>,
 ): ModelToolCall[] {
   const first = calls[startIndex];
   if (!first || !callRequiresConfirmation(first, appToolsRequiringConfirmation)) {
     return first ? [first] : [];
   }
+  if (separateConfirmations.has(first.name)) return [first];
   return calls.slice(startIndex).filter((call) =>
-    callRequiresConfirmation(call, appToolsRequiringConfirmation));
+    callRequiresConfirmation(call, appToolsRequiringConfirmation) && !separateConfirmations.has(call.name));
 }
 
 function callRequiresConfirmation(
@@ -1009,6 +1019,11 @@ function entityRefsForCalls(calls: ModelToolCall[], relation: CommandJournalEnti
 }
 
 function entityRefsForTool(call: ModelToolCall, value: unknown, relation: CommandJournalEntityRef['relation']): CommandJournalEntityRef[] {
+  if (call.name.startsWith('desktop-host-task-')) {
+    if (!value || typeof value !== 'object' || !('taskId' in value) || typeof value.taskId !== 'string') return [];
+    return [{ kind: 'HostTask', id: value.taskId, relation,
+      ...('title' in value && typeof value.title === 'string' ? { title: value.title } : {}) }];
+  }
   const family = call.name.match(/^ws-(agent-message|[a-z]+)-/)?.[1];
   const kind = family ? ENTITY_KINDS[family] : undefined;
   if (!kind) return [];

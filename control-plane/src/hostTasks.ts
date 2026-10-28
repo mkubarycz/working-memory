@@ -7,6 +7,8 @@ import { HostScriptBroker, HostScriptError, ensureHostScriptSchema } from './hos
 import { serveHostScriptMcp } from './hostScriptMcp.js';
 import { IdentityError, InstanceIdentity, passwordHintSchema } from './instanceIdentity.js';
 import { InstanceFeatureStore } from './instanceFeatures.js';
+import type { InstancePrincipal } from './instanceAccess.js';
+import { permits } from './instancePermissions.js';
 
 // Standalone control-plane compilation cannot import root shared runtime files.
 // Keep this boundary predicate parity-tested against shared/hostTasks.ts.
@@ -274,6 +276,10 @@ export class HostTaskBroker {
     return hostTaskHash(this.grant(grant));
   }
   private sweep(): void {
+    if (this.get("SELECT name FROM sqlite_master WHERE name='instance_clients'")) {
+      this.run(`UPDATE host_task_apps SET revoked_at=? WHERE id IN
+        (SELECT id FROM instance_clients WHERE revoked_at IS NOT NULL OR expires_at<=?) AND revoked_at IS NULL`, this.clock(), this.clock());
+    }
     this.scripts.cleanup();
     const now = this.clock();
     for (const job of this.all("SELECT * FROM host_task_jobs WHERE state IN ('awaiting-approval','queued','running','succeeded')") as Job[]) {
@@ -438,6 +444,39 @@ export class HostTaskBroker {
     this.lease(input, runner);
   }
   /** Synchronous SQLite transaction covers every authorization-to-mutation race. */
+  dispatchInstanceTask(principal: InstancePrincipal, method: string, path: string, body?: unknown): unknown {
+    if (!this.features.read().hostTasks) fail(503, 'host_tasks_feature_disabled');
+    const operation = path === '/run' ? 'run' : method === 'GET' ? 'read'
+      : path === '/tasks' ? 'create' : path.endsWith('/revoke') ? 'delete' : 'update';
+    if (principal.role !== 'owner' && !permits(principal.permissions, 'tools', operation)) fail(403, 'tools_permission_required');
+    const clientId = principal.clientId;
+    if (principal.role !== 'owner' && !clientId) fail(403, 'client_identity_required');
+    this.cleanup();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (clientId) {
+        const client = this.get('SELECT label FROM instance_clients WHERE id=? AND revoked_at IS NULL AND expires_at>?', clientId, this.clock());
+        if (!client) fail(401, 'client_access_expired');
+        if (path === '/run' && !this.get('SELECT id FROM host_task_apps WHERE id=? AND revoked_at IS NULL', clientId)) {
+          fail(403, 'This client needs Tools Run and a new owner-approved script grant.');
+        }
+      }
+      let result;
+      if (method === 'GET' && path === '/tasks') {
+        const snapshot = this.scripts.route('GET', '/admin/scripts', undefined, null).body as { tasks: unknown[] };
+        result = snapshot.tasks;
+      } else if (path === '/run') {
+        result = this.scripts.route('POST', clientId ? '/scripts/requests' : '/admin/scripts/test', body, clientId ?? null).body;
+      } else if (/^\/jobs\/[a-f0-9-]{36}$/.test(path)) {
+        result = this.scripts.route('GET', `${clientId ? '' : '/admin'}/scripts${path}`, undefined, clientId ?? null).body;
+      } else if (method === 'POST' && (path === '/tasks' || /^\/tasks\/[a-f0-9-]{36}(?:\/revoke)?$/.test(path))) {
+        result = this.scripts.route(method, path.replace('/tasks', '/admin/scripts'), body, null).body;
+      } else fail(404, 'task_route_not_found');
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
   dispatch(method: string, path: string, token: string, body?: unknown): { status: number; body: unknown } {
     if (!this.features.read().hostTasks) fail(503, 'host_tasks_feature_disabled');
     if (path === '/admin' || path.startsWith('/admin/')) this.admin(token);

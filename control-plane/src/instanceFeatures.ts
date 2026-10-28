@@ -49,6 +49,7 @@ export class InstanceFeatureStore {
       let input: unknown;
       try { input = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { throw new IdentityError(400, 'Invalid JSON.'); }
+      authorize();
       send(200, this.write(input));
     } catch (error) {
       if (error instanceof IdentityError) send(error.status, { error: error.message });

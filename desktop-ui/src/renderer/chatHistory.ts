@@ -12,7 +12,7 @@ import type { ChatContext, ChatResult, DesktopResourceKind, PendingConfirmation,
 import { normalizeScopeKind } from './scopeIdentity';
 
 export interface ChatTarget {
-  kind: DesktopResourceKind;
+  kind: DesktopResourceKind | 'host-task';
   identifier: string;
 }
 
@@ -54,7 +54,9 @@ export interface ToolDetail {
   partial: boolean;
 }
 
-const TARGET_KINDS: Record<string, DesktopResourceKind> = {
+const TARGET_KINDS: Record<string, ChatTarget['kind']> = {
+  hosttask: 'host-task',
+  'host-task': 'host-task',
   workstream: 'workstream',
   topic: 'topic',
   alert: 'alert',
@@ -84,7 +86,7 @@ function entityForTool(
   tool: CommandJournalToolEventSummary,
   refs: CommandJournalEntityRef[],
 ): ChatToolRow['entity'] {
-  const family = tool.toolName.startsWith('ws-agent-message-')
+  const family = tool.toolName.startsWith('desktop-host-task-') ? 'hosttask' : tool.toolName.startsWith('ws-agent-message-')
     ? 'agentmessage' : tool.toolName.match(/^ws-([a-z]+)-/)?.[1];
   if (!family) return undefined;
   const ref = refs.find((candidate) => candidate.kind.toLowerCase().replaceAll('-', '') === family);

@@ -172,14 +172,32 @@ environment, then reopens current resource data in the same order after a
 restart. CI builds prepare the application bundle but skip the local
 `/Applications` installation.
 
-Local builds automatically use the reusable
-`Working Memory Local Code Signing` identity when it is installed in the macOS
-login Keychain. Certificate-backed signing is required for Keychain
-**Always Allow** decisions to survive application rebuilds; ad-hoc signatures
-cannot provide persistent Keychain trust. Other machines can set
-`WM_DESKTOP_CODESIGN_IDENTITY` to an installed certificate identity.
-When no identity is available, builds fall back to ad-hoc signing for CI and
-environments that do not access macOS Keychain credentials.
+For local builds that remember credentials, create an **Apple Development**
+certificate once in **Xcode -> Settings -> Accounts -> Manage Certificates ->
++ -> Apple Development**. A free Apple account is sufficient for local
+development signing; this is not distribution signing or notarization.
+Builds automatically prefer a single valid Apple Development certificate and
+use its SHA-1 to select the signing identity unambiguously. If several are
+installed, set `WM_DESKTOP_CODESIGN_IDENTITY` to the desired certificate SHA-1.
+An explicit identity always takes precedence, including Developer ID
+certificates used for distribution.
+If a newly created certificate is not listed as valid, check that Apple's
+[Worldwide Developer Relations G3 intermediate certificate](https://developer.apple.com/support/expiration/)
+is installed. Install the intermediate from Apple's Certificate Authority
+site; do not override certificate trust or add an unverified root.
+
+The stable Apple **Team ID** lets macOS retain Keychain trust across changed
+builds. The first build with the new signer may ask for the Mac login password:
+choose **Always Allow** in that native dialog once. The signing key may also
+need a one-time authorization for `codesign`. Never enter either password in
+chat, scripts or environment variables.
+
+Without an Apple Development identity, builds retain the
+`Working Memory Local Code Signing` fallback when installed, or use ad-hoc
+signing for CI and machines without credentials. A self-signed certificate
+without an Apple Team ID is **not** enough to avoid repeat prompts: macOS may
+record a per-build code hash even when its designated requirement is stable.
+Identity lookup failures stop the build rather than silently changing signers.
 
 ## Desktop AI providers
 
@@ -198,6 +216,8 @@ To dogfood Copilot:
 3. Add a model profile in Settings and choose **GitHub Copilot (local CLI)**.
 4. The model dropdown loads automatically. Choose a model (or `auto`) and **Test**.
    If loading fails, the error is displayed with **Retry loading models**.
+   Retrying starts a fresh connection after a sign-in failure. A failed refresh
+   preserves the loaded model list, selected model, and routing.
 5. Assign that profile in **Routing matrix** and save. Chat currently uses
    **Complex / medium**; topic title/type autocomplete uses **Simple / fast**.
    Assign all nine cells to Copilot to replace Azure for all configured routes.
@@ -210,8 +230,14 @@ default runtime path. Set `WM_COPILOT_CLI_PATH` in the app's launch environment 
 to explicitly select an external executable, whose runtime dependencies you
 must provide; `bundled` selects the default runtime. Inherited
 `COPILOT_CLI_PATH` overrides are ignored. It uses the CLI's existing
-authentication; Working Memory does not copy GitHub tokens into its model
-configuration. Copilot requires an eligible account and employer permission
+authentication. If that account is not signed in, it can reuse the active
+`github.com` account from GitHub CLI (`gh`), including Homebrew installations
+missing from a macOS GUI's PATH. The token is read by the native process and
+passed only to the Copilot runtime; it is never stored in model configuration
+or sent to the renderer. Explicit token overrides are not replaced with another
+GitHub identity. Inherited SDK session tokens are ignored so a desktop launch
+does not depend on an agent's temporary sign-in.
+Copilot requires an eligible account and employer permission
 for CLI use; plan allowances, model access, and billing rules apply.
 
 This is a model-only integration: Copilot's shell, filesystem, MCP tools,
@@ -942,20 +968,38 @@ choose an executable, supply shell arguments, or change the process environment.
    its editor and details in its own persistent document tab. Re-selecting a
    script selects its existing tab, and multiple tasks can be open independently.
    There is no footer launcher, popup, or platform/integration selector. No demo scripts
-   are installed automatically. Choose **Add script** to register your own script. For an optional example,
-   expand **Try a demo instead -> Add greeting demo**, review the native approval,
-   then select that script. The example only returns a greeting, Node version,
-   and platform; it does not access files or the network.
-4. Enter `{"name":"Michael"}`, choose **Review and queue one test**, approve
-   the native prompt, and **Start runner**. The JSON result appears in
-   the selected task's details and run history. This test does not grant any app access.
-5. For a real caller, select a script and expand **App access**. Export its own
-   private credential under **Add a caller**, select the caller,
+   are installed automatically. **Add script** immediately saves an untitled task
+   with an inert starter script and opens the same editor used for existing tasks.
+   It has an ID straight away for chat and tools; creation neither runs code nor grants caller access.
+4. The editor uses subtabs: **Settings**, **Code and parameters**, **Testing**,
+   **App access**, **Add a caller**, **Recent runs**, and **Integration details**.
+   Rename directly in the title field; **Settings** uses the document-style
+   Markdown live-preview editor for the description. Markdown is stored as source.
+   Name, description, time limit, code and parameter schema autosave as numbered
+   drafts after a short typing pause. Owner task lists show the latest draft name;
+   caller metadata and executable code remain on the published version.
+   Code and JSON use syntax-highlighted editors; **Testing** starts with example JSON.
+   Choose **Test**
+   to execute only the displayed version immediately and show its formatted
+   result or error. The click authorizes this one host execution; there is no
+   second approval popup and no need to start the background runner.
+   Edits automatically save as numbered draft versions. Choose **Publish**
+   to select the one version available to callers; testing never publishes.
+   With this task selected, desktop chat targets the task rather than a Topic:
+   ask it to change the code or parameter contract and test a draft. Chat first
+   saves pending editor changes and uses the displayed version. It can read
+   versions, append conflict-checked drafts, and request real native tests.
+   Each test requires its own approval in chat, with no second native popup.
+   The editor shows chat changes and test results. Publishing and caller
+   grants remain manual; chat cannot publish or start the general runner.
+5. For a real caller, open **App access**. Export its own
+   private credential in **Add a caller**, select the caller in **App access**,
    and approve a **one-hour script grant**. Never give an agent
    the desktop's owner session or password. Revoke the grant or script version to stop
    future dispatch and result release.
 
-The runner polls only while its task's document tab is active and explicitly started.
+Task lists, versions and run status refresh automatically while visible.
+The background runner under **App access** polls only while its task's document tab is active and explicitly started.
 Switching document tabs or closing it stops new claims; a current run may finish. **Stop runner**
 also aborts the current process. A sleeping/closed desktop does not execute
 jobs. Runs are not automatically retried, because scripts may have side effects.
@@ -963,7 +1007,8 @@ jobs. Runs are not automatically retried, because scripts may have side effects.
 ### Instance feature flags
 
 **Settings -> Features** saves flags on the selected control-plane instance,
-not just in one desktop profile. Changing a flag requires a signed-in instance
+not just in one desktop profile. Changes save immediately, and the Features tab
+refreshes automatically every two seconds while open. Changing a flag requires a signed-in instance
 owner. New and existing instances default to Host tasks disabled until enabled.
 Turning it off removes the rail tab, closes its local task/detail tabs, and rejects
 host-task HTTP/MCP calls with HTTP 503 and
@@ -1016,8 +1061,13 @@ not returned; exceeding 64 KiB of console output fails the run.
 Registration stores a private immutable snapshot of the entry script and its
 parameter contract, host binding, and time limit. Its canonical SHA-256 is
 shown during native approval and rechecked before execution. Editing the
-original file does not change an approved version: register and approve a new
-version, and revoke the old one. The UI uses a 10-second time limit; the API
+original file does not change an approved version. The owner can read and edit
+stored code in the desktop: edits create immutable numbered drafts without
+changing the published version or its grants. Version 1 of an existing task
+is preserved during upgrade. The version selector opens older versions;
+**Publish** selects exactly one and invalidates existing caller grants, which
+must be approved again for that published version. A stale publish is rejected.
+The UI uses a 10-second time limit; the API
 supports 1–30 seconds. The runner uses the installed Electron Node runtime in
 a child process, with a minimal environment and best-effort process-group
 termination on timeout, cancellation, and completion. Deliberately detached
@@ -1031,7 +1081,10 @@ Do not register code from an untrusted caller.
 An app-specific bearer credential plus an unexpired, exact-version script
 grant is required. Script definitions, grants, jobs, and private results live
 in protected broker tables, not editable Topic/Config documents. Native
-registration, grants, and owner tests require a cancel-default confirmation.
+registration and grants require a cancel-default confirmation. Owner tests
+are explicitly authorized by **Test** in the trusted desktop; the broker
+atomically queues and claims that exact version's test, and the native host
+executor returns its result without consuming unrelated queued work.
 Grants last at most 24 hours, queued jobs at most five minutes, with one active
 generic job per caller and at most ten requests per minute. Completed arguments
 are cleared; results/error payloads are retained at most 30 minutes and never
@@ -1053,6 +1106,14 @@ For HTTP clients, using the same bearer credential:
 | `GET /host-tasks/v1/scripts` | List my granted versions and parameter contracts; never source |
 | `POST /host-tasks/v1/scripts/requests` | Submit `{taskId, definitionHash, parameters, idempotencyKey}` |
 | `GET /host-tasks/v1/scripts/jobs/<id>` | Read only my job's status/result |
+
+Owner-only endpoints below `/host-tasks/v1/admin/scripts` expose `GET /<id>`
+for source and version history, `POST /<id>` to append a draft definition,
+and `POST /<id>/publish` with `{version, expectedPublishedHash}` to publish.
+`POST /test/claim` accepts the test request plus `version` and `hostId` and
+returns an execution lease for only that test. Source and publishing are
+not exposed through the caller script endpoint. `wm-host-task-update`
+also saves a draft; it cannot publish or replace the active version.
 
 For example, a Node client on the trusted host can read a separately exported
 caller credential from a private file and queue a request without exposing it:
@@ -1085,10 +1146,24 @@ const job = await response.json();
 The control plane stores a salted scrypt password verifier and issues unique
 12-hour opaque owner sessions; only token hashes are persisted. Password sign-in
 is rate-limited and sessions can be revoked with **Sign out**. The desktop keeps
-the session in its main-process memory, not the renderer, and does not save the
-password. Restarting the app requires signing in again. Optional OS-backed
-remembering is future work; unavailable Keychain storage never forces a plaintext
-fallback or prevents session-only sign-in.
+the session in its main-process memory, not the renderer. **Remember on this
+device** optionally saves the password using native secure storage (macOS
+Keychain, Windows DPAPI, or a supported Linux secret service), never plaintext
+or a locally stored fallback key. Native storage may ask for OS permission.
+Without it, restarting the app requires signing in again; unavailable or locked
+secure storage never prevents manual, session-only sign-in.
+
+Installed and development UI builds retain independent settings and windows.
+On macOS and supported Linux secret services they share a stable native
+encryption identity and the per-OS-user Working Memory `instance-sign-in`
+directory. Windows DPAPI uses a profile-specific encryption key, so remembered
+passwords remain isolated to each UI profile there; each profile signs in once.
+Remembered passwords are separated by instance origin, and used only by the
+main process to obtain fresh 12-hour owner sessions. **Sign out**
+forgets the password for that instance before revoking the current session.
+Signing in without Remember also removes a previously saved password. Failed
+restoration is shown explicitly and does not repeatedly retry or silently fall
+back to another storage scheme. It never gives agents the owner's credentials.
 
 The desktop connection screen appears before instance data is loaded. If no
 password exists, it guides the local owner through setup, including an optional
@@ -1103,6 +1178,128 @@ recheck expiry/revocation before releasing data. Renderer images use a native
 attachment proxy: owner tokens never appear in image URLs, stored Markdown,
 or renderer IPC return values. Health, identity status/login, and the limited
 identity MCP are public bootstrap/discovery surfaces, not data-access bypasses.
+The proxy uses `working-memory-attachment://instance-<port>/attachments/<id>`
+so Chromium does not reinterpret a numeric instance hostname as an IPv4
+address. Stored `wm-attachment:<id>` references remain unchanged.
+
+**Settings -> Access** combines requests and approved clients in one
+automatically refreshed grid. **Edit permissions** opens a checkbox matrix;
+each change is saved immediately, including for already connected clients.
+Content (documents/messages), Settings (configuration, topic types, registered
+agents and container claims), and Tools (host task definitions) each have
+Create, Read, Update and Delete permissions. Tools also has a separate **Run**
+permission. Passwords, stored secrets, client approvals/revocation and
+script-grant administration remain owner-only. Client revocation is not owner
+sign-out.
+
+When a connected client attempts an operation without permission, the instance
+queues a request for only the missing permission. Repeated attempts reuse the
+pending request. A card above the Access grid identifies the client and requested
+access, with **Approve** and **Deny** actions. Approval adds those permissions to
+the existing identity immediately, without replacing its credential or extending
+its expiry. The blocked operation is not executed; retry it after approval.
+Expired, revoked, denied or manually invalidated requests cannot grant access.
+Denied requests are not automatically recreated during their ten-minute lifetime.
+The identity MCP also exposes `wm-identity-request-permissions` for explicit
+requests using an existing client credential.
+
+Existing read/write identities retain their document/configuration permissions
+without gaining Tools or Run. Pending requests can be narrowed before approval.
+Changing an active identity invalidates outstanding renewal requests so they
+cannot restore older permissions. Read-only OAuth requests cannot be upgraded
+beyond their requested scope; reconnect requesting write access first.
+Only the latest renewal for an existing client remains actionable.
+Generic document lists filter out categories the client cannot read, including
+before pagination. Attachments require Content Read/Create. The unfiltered
+change feed requires both Content and Settings Read, rechecked before delivery.
+`wm-attachment-create` uploads base64 images up to 700 KiB through authenticated
+MCP and returns a portable `wm-attachment:<id>` reference. Larger images can use
+the existing 10 MiB HTTP attachment endpoint.
+
+Host tasks are available through `wm-host-task-create`, `-read`, `-update`,
+`-delete`, `-run` and `-job-read` on the authenticated MCP endpoint when the
+Host Tasks feature is enabled. **Run alone never approves execution**: an owner
+must also grant the client's identity the exact script version, using the
+existing Host Tasks grant controls. Editing saves a numbered draft without
+changing published access. Explicit owner publication changes the active version,
+revokes old grants and cancels affected caller jobs. Removing Run or revoking a client
+cancels its jobs and grants; enabling Run again does not restore those grants.
+Runner claims/completions and the owner test path are not client Tools CRUD.
+
+#### VS Code / Copilot: automatic MCP sign-in
+
+Some VS Code builds run OAuth discovery in a renderer whose Content Security
+Policy allows HTTPS but blocks HTTP loopback fetches. Their **Sign In** button
+fails before requesting owner approval, even though the HTTP MCP transport can
+reach the backend. Do not weaken that policy. For these builds, use the bundled
+native stdio connector instead:
+
+```json
+{
+  "servers": {
+    "working-memory": {
+      "type": "stdio",
+      "command": "/Applications/Working Memory.app/Contents/MacOS/Electron",
+      "args": ["--mcp-stdio", "http://127.0.0.1:7717/mcp"]
+    }
+  }
+}
+```
+
+Use the installed desktop executable on the current OS. The connector runs
+headlessly, independently of the desktop's single-instance window lock. It
+never reads or reuses remembered owner passwords. It requests its own
+read/write identity, keeps claim proofs private in process memory, and stores
+only its approved client credential in native-encrypted `mcp-client-sign-in`
+storage, separate from owner sign-in. It refuses plaintext fallback.
+
+Before approval, only `wm-connection-status` and `wm-request-access` are
+available. The status tool and MCP stderr show the nonsecret request ID to
+match in desktop **Settings -> Access**. Approval exposes the data tools using
+MCP's tool-list-changed notification. Restarting the connector restores the
+approved client without another prompt until its 90-day expiry or revocation.
+If the server rejects an expired or revoked credential, the connector removes
+the data tools and reports disconnection. Calling `wm-request-access` requests
+a new owner approval; restarting also recovers from a rejected saved credential
+without manually deleting credential files.
+Denial/expiry/storage failures are explicit; call `wm-request-access` to retry.
+No token is returned to Copilot or placed in MCP configuration. The connector
+must not be reused as another container's identity.
+
+For clients whose OAuth discovery can reach the instance, standard HTTP
+authorization is also available:
+
+Keep the HTTP MCP configuration pointed at the instance's
+`http://127.0.0.1:<port>/mcp`; do not add an owner password, bearer header, or
+manual broker token. Restart the MCP server after upgrading an existing
+connection. VS Code discovers the standard OAuth protected-resource and
+authorization-server metadata from the HTTP 401 challenge, registers a public
+client, and starts an authorization-code flow with S256 PKCE.
+
+The browser shows a request ID and directs you to the signed-in desktop's
+**Settings -> Access**. Match that ID, review the inline permissions and expiry,
+then click **Approve** once. There is no second confirmation popup.
+The page cannot approve access, and never asks for or receives the owner
+password/session. After approval, it returns a single-use, one-minute code to
+VS Code's registered loopback callback. VS Code exchanges the code using its
+private verifier, then manages its own scoped, revocable credential using its
+native authentication facilities. Declining approval returns `access_denied`.
+
+OAuth supports `wm.read` and `wm.write` (read/write); the access request states
+the actual requested access. If no scope is supplied, read/write is requested
+and still requires owner approval. Access lasts 90 days. There is no unattended
+refresh token: expiry or revocation requires another owner-approved sign-in.
+Owner sessions remain 12 hours, independently of client access.
+
+This local integration supports desktop clients with HTTP loopback callbacks,
+including VS Code's dynamically chosen callback ports. VS Code's web redirect
+URIs may be included in registration metadata, but remote/web authorization
+callbacks are explicitly rejected. Client labels are unverified, redirect URIs
+are validated against registration, and codes are bound to the client, exact
+callback, PKCE challenge, instance resource, and prior owner approval. Only
+hashes of codes, approval proofs, and issued credentials are persisted.
+
+#### Other agents and containers: identity MCP enrollment
 
 When an agent or container has no valid token, HTTP 401 includes
 `instance_authentication_required`, the instance's `identityMcpUrl`, and explicit
@@ -1113,14 +1310,14 @@ next steps:
 2. Call `wm-identity-request-access` with a recognizable `label`, `access`
    (`read` or `write`; default `read`), and `refresh:false`.
 3. Ask the signed-in owner to open **Settings -> Access**. Pending requests
-   also produce a **Review** entry in the desktop footer. Approval requires
-   a cancel-default native confirmation showing the request ID, unverified
-   client label, network source, requested permissions, and expiry.
+   also produce a **Review** entry in the desktop footer. Review the request ID,
+   unverified client label, network source, requested permissions, and expiry
+   directly in the Access tab, then click **Approve** once.
 4. Poll `wm-identity-claim-access` with the returned `requestId` and private
    `requestSecret`. Only after approval does it return a bearer token, exactly
-   once. Requests expire after ten minutes; issued client tokens last twelve
-   hours. Denied, expired, or already-claimed requests explain how to request
-   access again.
+   once. Requests expire after ten minutes; newly issued client tokens last 90
+   days. Existing tokens retain their original expiry until renewed. Denied,
+   expired, or already-claimed requests explain how to request access again.
 5. Store the token privately and configure that client's Authorization header
    for data requests. The shared Node client accepts `WM_INSTANCE_TOKEN_FILE`
    (a private file outside repositories) or `WM_INSTANCE_TOKEN`; desktop owner
@@ -1129,6 +1326,8 @@ next steps:
 For refresh, connect to the identity MCP with the previous client token in its
 Authorization header, even if expired, and request `refresh:true`. Refresh
 requires a new human approval and cannot change that identity's access level.
+Approval covers the client's permitted operations until expiry or revocation,
+not individual topic reads or writes.
 Claiming a refresh rotates its credential; initialize a new data MCP session.
 Revoked credentials cannot refresh and must request new access. Owners can
 revoke clients in **Settings -> Access**. Never pass the owner password/session
@@ -1147,8 +1346,7 @@ integration to work. Data and named volumes are not replaced by authentication.
 Unconfigured clients get the recovery guidance above, not an empty/success
 response. There is no anonymous compatibility bypass. Do not expose bearer
 credentials over untrusted plaintext networks. Automatic credential injection
-into arbitrary containers, password change/recovery, and optional OS-backed
-remembering remain separate work.
+into arbitrary containers and password change/recovery remain separate work.
 
 ### Trusted initial owner setup (provisioning infrastructure)
 

@@ -4,7 +4,7 @@
   import { markdown } from '@codemirror/lang-markdown';
   import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
   import { tags } from '@lezer/highlight';
-  import { EditorState, Transaction } from '@codemirror/state';
+  import { Compartment, EditorState, Transaction } from '@codemirror/state';
   import {
     drawSelection,
     dropCursor,
@@ -27,6 +27,8 @@
 
   interface Props {
     value: string;
+    label?: string;
+    disabled?: boolean;
     attachmentBaseUrl?: string;
     onInput: (value: string) => void;
     onAttachImages?: (files: File[]) => Promise<AttachmentRef[]>;
@@ -35,14 +37,17 @@
 
   let {
     value,
+    label = 'Topic body (Markdown live preview)',
+    disabled = false,
     attachmentBaseUrl = '',
     onInput,
-    onAttachImages = async () => [],
+    onAttachImages,
     onOpenLink,
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
-  let view: EditorView | null = null;
+  let view = $state<EditorView | null>(null);
+  const editable = new Compartment();
   let attachingImages = $state(false);
   let attachmentError = $state('');
   let syncingExternalValue = false;
@@ -61,14 +66,16 @@
   }
 
   async function attachImages(files: File[]): Promise<void> {
-    if (!view || files.length === 0 || attachingImages) return;
+    const attach = onAttachImages;
+    if (!view || disabled || !attach || files.length === 0 || attachingImages) return;
     const sourceView = view;
     const applyInput = onInput;
     const selection = sourceView.state.selection.main;
     attachingImages = true;
     attachmentError = '';
     try {
-      const markdownSource = attachmentMarkdown(await onAttachImages(files));
+      const markdownSource = attachmentMarkdown(await attach(files));
+      if (disabled) throw new Error('The editor is read-only. The image could not be inserted.');
       const before = sourceView.state.doc.sliceString(0, selection.from);
       const after = sourceView.state.doc.sliceString(selection.to);
       const prefix = before && !before.endsWith('\n') ? '\n\n' : '';
@@ -111,8 +118,9 @@
           dropCursor(),
           keymap.of([...defaultKeymap, ...historyKeymap]),
           EditorView.lineWrapping,
+          editable.of([EditorState.readOnly.of(disabled), EditorView.editable.of(!disabled)]),
           EditorView.contentAttributes.of({
-            'aria-label': 'Topic body (Markdown live preview)',
+            'aria-label': label,
             spellcheck: 'true',
           }),
           placeholder('Write a note…'),
@@ -155,6 +163,7 @@
               return false;
             },
             paste: (event) => {
+              if (disabled || !onAttachImages) return false;
               const files = imageFilesFromTransfer(event.clipboardData);
               if (files.length === 0) return false;
               event.preventDefault();
@@ -162,6 +171,7 @@
               return true;
             },
             dragover: (event) => {
+              if (disabled || !onAttachImages) return false;
               const hasImage = [...(event.dataTransfer?.items ?? [])]
                 .some((item) => item.kind === 'file' && item.type.startsWith('image/'));
               if (!hasImage) return false;
@@ -170,6 +180,7 @@
               return true;
             },
             drop: (event) => {
+              if (disabled || !onAttachImages) return false;
               const files = imageFilesFromTransfer(event.dataTransfer);
               if (files.length === 0) return false;
               event.preventDefault();
@@ -200,6 +211,9 @@
       annotations: Transaction.addToHistory.of(false),
     });
     syncingExternalValue = false;
+  });
+  $effect(() => {
+    view?.dispatch({ effects: editable.reconfigure([EditorState.readOnly.of(disabled), EditorView.editable.of(!disabled)]) });
   });
 </script>
 

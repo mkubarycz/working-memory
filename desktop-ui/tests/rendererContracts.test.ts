@@ -39,7 +39,7 @@ describe('desktop tree icon contract', () => {
     expect(settings).toContain('<option value={profile.model}>{profile.model}</option>');
     expect(settings).toContain('<option value={model.id}>{model.name}</option>');
     expect(settings).toContain('Retry loading models');
-    expect(settings).toContain("copilotStatus = error instanceof Error ? error.message : String(error)");
+    expect(/copilotStatus\s*=\s*\(?error instanceof Error \? error.message : String\(error\)/.test(settings)).toBe(true);
     expect(settings).not.toContain('<datalist');
   });
 
@@ -300,7 +300,9 @@ describe('desktop tree icon contract', () => {
     const settings = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/SettingsView.svelte'), 'utf8');
     expect(app).toContain('id="desktop-tab-host-tasks"');
     expect(app).toContain("reference.kind === 'host-task' && instanceFeatures.hostTasks");
-    expect(app).toContain("activeDocument?.kind === 'host-task-create') && instanceFeatures.hostTasks");
+    expect(app.includes("activeDocument?.kind === 'host-task' && instanceFeatures.hostTasks")).toBe(true);
+    expect(app.includes('await window.workingMemory.createHostScript()')).toBe(true);
+    expect(app.includes("documentError = 'Host tasks is turned off.")).toBe(true);
     expect(app).toContain("['log', 'container-apps', 'host-tasks'] : ['log', 'container-apps']");
     expect(app).toContain('onFeaturesChanged={applyFeatures}');
     expect(settings).toContain("tab === 'features'");

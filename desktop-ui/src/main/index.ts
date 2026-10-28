@@ -88,9 +88,12 @@ import {
 import { DesktopLinkBridge } from './linkBridge';
 import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
+import { InstancePasswordVault, NativeInstanceCredentialVault } from './instancePasswordVault';
+import { InstanceMcpConnector } from './instanceMcpConnector';
 import { HostTaskCredentialVault } from './hostTaskBroker';
-import { registerHostTaskIpc } from './hostTaskIpc';
+import { assertHostTaskSender, registerHostTaskIpc } from './hostTaskIpc';
 import { registerHostScriptIpc } from './hostScriptIpc';
+import { createHostScriptChatTools } from './hostScriptChatTools';
 import { DesktopInstanceIdentity } from './instanceIdentity';
 import { registerInstanceIdentityIpc } from './instanceIdentityIpc';
 import { serveInstanceAttachment } from './instanceAttachments';
@@ -143,7 +146,7 @@ let dataTier: DataTierManager | null = null;
 let dataTierLaunch: Promise<void> = Promise.resolve();
 let documentChangeController: AbortController | undefined;
 let instanceVault: HostTaskCredentialVault | null = null;
-let stopHostScripts: (() => void) | undefined;
+let hostScripts: ReturnType<typeof registerHostScriptIpc> | undefined;
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'working-memory-attachment',
@@ -155,7 +158,7 @@ function instanceUnauthorized(mcpUrl: string, rejectedToken?: string | null): vo
   instanceVault?.clearSession(hostTaskOrigin(mcpUrl));
   if (environmentManager.currentEnvironment?.mcpUrl === mcpUrl) {
     documentChangeController?.abort();
-    stopHostScripts?.();
+    hostScripts?.stop();
   }
   mainWindow?.webContents.send('instance:authentication-changed', { mcpUrl, authenticated: false });
 }
@@ -652,7 +655,7 @@ function configuredRequest(config: StoredConfig | StoredModelProfile): { mode: R
 
 async function presentAgentResult(result: DesktopAgentResult, context?: ChatContext): Promise<ChatResult> {
   let document: DocumentVM | undefined;
-  const target = result.navigation ?? (result.mutated && context
+  const target = result.navigation ?? (result.mutated && context && context.routeKind !== 'host-task'
     ? { kind: context.routeKind, identifier: context.identifier }
     : undefined);
   if (target) {
@@ -678,6 +681,7 @@ async function callConfiguredModel(
   config: StoredConfig,
   context?: ChatContext,
   images: ChatPromptImage[] = [],
+  hostTaskTools?: ReturnType<typeof createHostScriptChatTools>,
 ): Promise<ChatResult> {
   const profile = resolveModelProfile(config, 'medium', 'complex');
   if (!profile.model.trim()) throw new Error('Configure a model for Medium / Complex requests first.');
@@ -692,12 +696,17 @@ async function callConfiguredModel(
     connect: async (appId, endpoint) => { await appMcp.connect(appId, endpoint); },
     listTools: (appId, endpoint) => appMcp.listToolsForRoute(appId, endpoint),
   }, context?.containerAppId ? [context.containerAppId] : []);
-  const appTools = mentioned.tools.length ? {
-    tools: mentioned.tools,
-    systemInstructions: appMentionSystemInstructions(mentioned.contexts),
+  const hostToolNames = new Set(hostTaskTools?.tools.map(tool => tool.name));
+  const appTools = mentioned.tools.length || hostTaskTools ? {
+    tools: [...mentioned.tools, ...(hostTaskTools?.tools ?? [])],
+    systemInstructions: [appMentionSystemInstructions(mentioned.contexts), hostTaskTools?.systemInstructions].filter(Boolean).join(' '),
     requiresConfirmation: (name: string) =>
-      appToolRequiresConfirmation(mentioned.routes.get(name)),
+      hostToolNames.has(name) ? hostTaskTools?.requiresConfirmation?.(name) === true : appToolRequiresConfirmation(mentioned.routes.get(name)),
+    separateConfirmation: (name: string) => hostTaskTools?.separateConfirmation?.(name) === true,
+    deduplicate: (name: string) => hostToolNames.has(name) ? hostTaskTools?.deduplicate?.(name) !== false : true,
+    onCancel: hostTaskTools?.onCancel,
     callTool: async (name: string, args: Record<string, unknown>): Promise<ToolCallOutcome> => {
+      if (hostToolNames.has(name) && hostTaskTools) return hostTaskTools.callTool(name, args);
       const route = mentioned.routes.get(name);
       if (!route) return { ok: false, error: `Unknown application tool route: ${name}` };
       try {
@@ -859,11 +868,15 @@ function registerIpc(): void {
     const file = bootstrapFile(mcpUrl);
     return !!dataTier?.instances.some(instance => instance.port === Number(new URL(mcpUrl).port))
       || (process.platform !== 'win32' && !!file && existsSync(file));
-  }, fetch, instanceUnauthorized);
+  }, fetch, instanceUnauthorized,
+  new InstancePasswordVault(safeStorage, process.platform, join(
+    process.platform === 'win32' ? app.getPath('userData') : join(app.getPath('appData'), 'Working Memory'),
+    'instance-sign-in',
+  ), process.platform !== 'win32'));
   const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href;
   const onSessionChanged = async (mcpUrl: string, authenticated: boolean) => {
     documentChangeController?.abort();
-    if (!authenticated) stopHostScripts?.();
+    if (!authenticated) hostScripts?.stop();
     await environmentManager.resetClient();
     mainWindow?.webContents.send('instance:authentication-changed', { mcpUrl, authenticated });
   };
@@ -873,7 +886,7 @@ function registerIpc(): void {
     rendererUrl, vault: hostTaskVault, identity, platform: process.platform,
     onSessionChanged,
   });
-  stopHostScripts = registerHostScriptIpc({
+  hostScripts = registerHostScriptIpc({
     ipc: ipcMain, dialog, getWindow: () => mainWindow,
     getEnvironment: () => environmentManager.currentEnvironment,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
@@ -1035,14 +1048,19 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle('chat:send', async (
-    _event,
+    event,
     message: string,
     context?: ChatContext,
     images: ChatPromptImage[] = [],
   ) => {
     try {
       const config = await readStoredConfig(configFile);
-      if (resolveModelProfile(config, 'medium', 'complex').model.trim()) return await callConfiguredModel(message, config, context, images);
+      let hostTaskTools: ReturnType<typeof createHostScriptChatTools> | undefined;
+      if (context?.routeKind === 'host-task') {
+        if (!hostScripts) throw new Error('Host task execution is unavailable.');
+        hostTaskTools = createHostScriptChatTools(hostScripts.forChat(event, context.identifier), context.identifier, context.hostTaskVersion);
+      }
+      if (resolveModelProfile(config, 'medium', 'complex').model.trim()) return await callConfiguredModel(message, config, context, images, hostTaskTools);
       const query = localWorkstreamQuery(message);
       return query
         ? await openWorkstream(query)
@@ -1053,8 +1071,9 @@ function registerIpc(): void {
   });
   ipcMain.handle('topic:autocomplete', (_event, input: TopicAutocompleteInput) =>
     autocompleteTopic(input));
-  ipcMain.handle('chat:confirm', async (_event, id: string, confirmed: boolean, context?: ChatContext) => {
+  ipcMain.handle('chat:confirm', async (event, id: string, confirmed: boolean, context?: ChatContext) => {
     try {
+      assertHostTaskSender(event, mainWindow, rendererUrl);
       return await presentAgentResult(await chatAgent.resolveConfirmation(id, confirmed), context);
     } catch (error) {
       return { message: `Unable to resolve that action: ${error instanceof Error ? error.message : String(error)}`, status: 'failed' };
@@ -1470,6 +1489,33 @@ function registerDesktopProtocol(): void {
   }
 }
 
+// Share the native storage identity without merging development and installed UI profiles.
+const originalUserData = app.getPath('userData');
+app.setName('Working Memory');
+app.setPath('userData', originalUserData);
+
+const connectorIndex = process.argv.indexOf('--mcp-stdio');
+if (connectorIndex !== -1) {
+  console.log = (...args: unknown[]) => console.error(...args);
+  app.dock?.hide();
+  void app.whenReady().then(async () => {
+    const mcpUrl = process.argv[connectorIndex + 1];
+    if (!mcpUrl) throw new Error('Pass the loopback instance /mcp URL after --mcp-stdio.');
+    const connector = new InstanceMcpConnector({
+      mcpUrl,
+      credentials: new NativeInstanceCredentialVault(safeStorage, process.platform, join(
+        process.platform === 'win32' ? app.getPath('userData') : join(app.getPath('appData'), 'Working Memory'),
+        'mcp-client-sign-in',
+      )),
+    });
+    process.stdin.once('end', () => { void connector.close().finally(() => app.exit(0)); });
+    process.once('SIGTERM', () => { void connector.close().finally(() => app.exit(0)); });
+    await connector.start();
+  }).catch(error => {
+    console.error('[working-memory-connector]', error instanceof Error ? error.message : 'Startup failed.');
+    app.exit(1);
+  });
+} else {
 try {
   const migrated = migrateLegacyUserData(
     app.getPath('userData'),
@@ -1601,4 +1647,5 @@ if (!ownsSingleInstanceLock) {
     if (mainWindow) saveWindowState(mainWindow, true);
     void gracefulShutdown(event);
   });
+}
 }

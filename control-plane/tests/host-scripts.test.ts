@@ -7,6 +7,42 @@ import {
   scriptTaskSchema, scriptParametersSchema, validateScriptArguments,
 } from '../src/hostScriptPolicy';
 import { z } from 'zod';
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
+import { ensureHostScriptSchema } from '../src/hostScripts';
+import { scriptDetailsSchema, scriptVersionSchema, exampleScriptArguments } from '../src/hostScriptPolicy';
+
+it('upgrades legacy script tables once without changing approved bytes', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(readFileSync(new URL('../../schema/022_host_scripts.sql', import.meta.url), 'utf8'));
+    const definition = scriptDefinitionSchema.parse({ name: 'Legacy', description: '', hostId: randomUUID(),
+      source: 'module.exports = () => true;', parameters: {}, timeoutMs: 1000 });
+    const id = randomUUID(), hash = scriptDefinitionHash(definition);
+    db.prepare('INSERT INTO host_script_tasks VALUES(?,?,?,?,NULL)').run(id, JSON.stringify(definition), hash, 100);
+    ensureHostScriptSchema(db);
+    ensureHostScriptSchema(db);
+    expect(db.prepare('SELECT published_version,definition_hash FROM host_script_tasks').get())
+      .toMatchObject({ published_version: 1, definition_hash: hash });
+    expect(db.prepare('SELECT version,definition_json FROM host_script_versions').all())
+      .toEqual([{ version: 1, definition_json: JSON.stringify(definition) }]);
+  } finally { db.close(); }
+});
+
+it('generates valid example JSON for enums, bounded integers, booleans and short strings', () => {
+  const schema = scriptParametersSchema.parse({
+    name: { type: 'string', required: true, maxLength: 80 },
+    mode: { type: 'string', enum: ['Ada'], maxLength: 3 },
+    count: { type: 'integer', minimum: 4, maximum: 10 },
+    negative: { type: 'integer', minimum: -10, maximum: -2 },
+    flag: { type: 'boolean' }, short: { type: 'string', maxLength: 1 },
+  });
+  expect(exampleScriptArguments(schema)).toEqual({ name: 'World', mode: 'Ada', count: 4, negative: -2, flag: false, short: 'W' });
+  expect(exampleScriptArguments({})).toEqual({});
+  expect(() => exampleScriptArguments(scriptParametersSchema.parse({
+    invalid: { type: 'string', enum: ['too long'], maxLength: 1 },
+  }))).toThrow('No valid example');
+});
 
 describe('protected generic host scripts', () => {
   let store: Store;
@@ -43,6 +79,81 @@ describe('protected generic host scripts', () => {
     const input = { taskId: task.id, definitionHash: task.definitionHash, parameters: { name: 'Michael' }, idempotencyKey: 'test-1' };
     return { task, caller, grant, input };
   }
+  it('saves immutable numbered drafts without changing the published code, grants or queued jobs', () => {
+    const { task, caller, input } = approved();
+    const job = scriptJobSchema.parse(call('POST', '/scripts/requests', caller.credential, input));
+    const changed = { ...definition, name: 'Draft greeting', source: 'module.exports = p => ({ draft: p.name });' };
+    const second = scriptVersionSchema.parse(call('POST', `/admin/scripts/${task.id}`, admin, changed));
+    expect(second.version).toBe(2);
+    expect(call('POST', `/admin/scripts/${task.id}`, admin, changed)).toEqual(second);
+    const third = scriptVersionSchema.parse(call('POST', `/admin/scripts/${task.id}`, admin, { ...changed, description: 'Third' }));
+    expect(third.version).toBe(3);
+    const details = scriptDetailsSchema.parse(call('GET', `/admin/scripts/${task.id}`));
+    expect(details.task).toMatchObject({ publishedVersion: 1, latestVersion: 3, definitionHash: task.definitionHash });
+    expect(details.versions.map(version => version.version)).toEqual([3, 2, 1]);
+    expect(details.versions[2].definition).toEqual(definition);
+    expect(details.versions[1].definition).toEqual(changed);
+    expect(call('GET', `/scripts/jobs/${job.id}`, caller.credential)).toMatchObject({ state: 'queued' });
+    const { draftName, draftDescription, ...publishedTask } = details.task;
+    expect({ draftName, draftDescription }).toEqual({ draftName: 'Draft greeting', draftDescription: 'Third' });
+    expect(call('GET', '/admin/scripts')).toMatchObject({ tasks: [{ draftName, draftDescription }] });
+    expect(call('GET', '/scripts', caller.credential)).toEqual([publishedTask]);
+    expect(() => call('GET', `/admin/scripts/${task.id}`, caller.credential)).toThrow('invalid_credential');
+    expect(() => call('POST', `/admin/scripts/${task.id}`, admin, { ...changed, hostId: randomUUID() })).toThrow('registered host');
+  });
+  it('publishes exactly one selected version with conflict detection and invalidates only then', () => {
+    const { task, caller, input } = approved();
+    const job = scriptJobSchema.parse(call('POST', '/scripts/requests', caller.credential, input));
+    const draft = scriptVersionSchema.parse(call('POST', `/admin/scripts/${task.id}`, admin, { ...definition, description: 'Draft' }));
+    const published = scriptTaskSchema.parse(call('POST', `/admin/scripts/${task.id}/publish`, admin, {
+      version: draft.version, expectedPublishedHash: task.definitionHash,
+    }));
+    expect(published).toMatchObject({ publishedVersion: 2, definitionHash: draft.definitionHash });
+    expect(call('GET', `/scripts/jobs/${job.id}`, caller.credential)).toMatchObject({ state: 'cancelled' });
+    expect(call('GET', '/scripts', caller.credential)).toEqual([]);
+    expect(() => call('POST', `/admin/scripts/${task.id}/publish`, admin, {
+      version: 1, expectedPublishedHash: task.definitionHash,
+    })).toThrow('Published version changed');
+    expect(() => call('POST', `/admin/scripts/${task.id}/publish`, caller.credential, {
+      version: 1, expectedPublishedHash: published.definitionHash,
+    })).toThrow('invalid_credential');
+    expect(call('POST', `/admin/scripts/${task.id}/publish`, admin, {
+      version: 1, expectedPublishedHash: published.definitionHash,
+    })).toMatchObject({ publishedVersion: 1, latestVersion: 2 });
+    expect(store.db.prepare('SELECT COUNT(*) AS count FROM host_script_tasks WHERE id=?').get(task.id)?.count).toBe(1);
+  });
+  it('fences chat draft saves against concurrent task edits', () => {
+    const task = register();
+    const changed = { ...definition, description: 'First edit' };
+    expect(call('POST', `/admin/scripts/${task.id}/versions`, admin, { definition: changed, expectedLatestVersion: 1 }))
+      .toMatchObject({ version: 2 });
+    expect(() => call('POST', `/admin/scripts/${task.id}/versions`, admin, {
+      definition: { ...definition, description: 'Stale edit' }, expectedLatestVersion: 1,
+    })).toThrow('Task drafts changed');
+    const details = scriptDetailsSchema.parse(call('GET', `/admin/scripts/${task.id}`));
+    expect(details.versions).toHaveLength(2);
+    expect(details.versions[0].definition).toEqual(changed);
+    expect(details.task.publishedVersion).toBe(1);
+  });
+  it('atomically claims only the requested draft test, keeping other jobs and published access separate', () => {
+    const { task, caller, input } = approved();
+    const callerJob = scriptJobSchema.parse(call('POST', '/scripts/requests', caller.credential, input));
+    const changed = { ...definition, source: 'module.exports = p => ({ draft: p.name });' };
+    const draft = scriptVersionSchema.parse(call('POST', `/admin/scripts/${task.id}`, admin, changed));
+    const test = { taskId: task.id, version: 2, definitionHash: draft.definitionHash,
+      parameters: { name: 'Ada' }, idempotencyKey: 'owner-test', hostId };
+    expect(() => call('POST', '/admin/scripts/test/claim', admin, { ...test, hostId: randomUUID() })).toThrow('on this host');
+    const lease = scriptLeaseSchema.parse(call('POST', '/admin/scripts/test/claim', admin, test));
+    expect(lease.jobId).not.toBe(callerJob.id);
+    expect(lease.definition).toEqual(changed);
+    expect(call('GET', `/admin/scripts/jobs/${lease.jobId}`)).toMatchObject({ version: 2, state: 'running', appId: null });
+    expect(call('GET', `/scripts/jobs/${callerJob.id}`, caller.credential)).toMatchObject({ state: 'queued' });
+    expect(() => call('GET', `/scripts/jobs/${lease.jobId}`, caller.credential)).toThrow('Job not found');
+    expect(() => call('POST', '/scripts/requests', caller.credential, test)).toThrow();
+    call('POST', `/admin/scripts/${task.id}/publish`, admin, { version: 2, expectedPublishedHash: task.definitionHash });
+    expect(call('POST', '/admin/scripts/complete', admin, { jobId: lease.jobId, leaseToken: lease.leaseToken, resultJson: '{"draft":"Ada"}' }))
+      .toMatchObject({ version: 2, state: 'succeeded', resultJson: '{"draft":"Ada"}' });
+  });
   it('pins source, parameters, timeout, and host while keeping definitions outside document CRUD', () => {
     const task = register();
     expect(task).not.toHaveProperty('source');

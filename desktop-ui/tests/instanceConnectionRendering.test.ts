@@ -48,6 +48,22 @@ it('shows the password hint as literal text on later connections with a clear re
   expect(html).not.toContain('Confirm password');
 });
 
+it('offers native remembered sign-in without blocking session-only use when secure storage is unavailable', () => {
+  const enabled = renderConnection({ ...state, passwordConfigured: true,
+    rememberPasswordAvailable: true, rememberPasswordShared: true });
+  expect(enabled).toContain('Remember on this device');
+  expect(enabled).toContain('native secure storage');
+  expect(enabled).toContain('Installed and development builds share remembered sign-in');
+  expect(enabled).not.toContain('Sign out to forget it');
+  const profileOnly = renderConnection({ ...state, rememberPasswordAvailable: true, rememberPasswordShared: false });
+  expect(profileOnly).toContain('Other UI profiles need their own sign-in');
+  const unavailable = renderConnection({ ...state, rememberPasswordAvailable: false,
+    rememberPasswordError: 'Cannot unlock remembered sign-in.' });
+  expect(unavailable).toContain('Native secure storage is unavailable');
+  expect(unavailable).toContain('Cannot unlock remembered sign-in.');
+  expect(unavailable).toMatch(/type="checkbox"[^>]*disabled/);
+});
+
 it('renders Features as a name-description-toggle grid without password or connection forms', () => {
   const html = renderFeatures();
   expect(html).toContain('<table ');
@@ -55,15 +71,16 @@ it('renders Features as a name-description-toggle grid without password or conne
   expect(html).toContain('Short description');
   expect(html).toContain('Enabled');
   expect(html).toContain('role="switch"');
+  expect(html).toMatch(/class="feature-switch[^"]*"/);
   expect(html).toContain('aria-label="Host tasks"');
-  expect(html).not.toMatch(/type="password"|<form|Password hint|Sign in|Connection ·/);
+  expect(html).not.toMatch(/type="password"|<form|Password hint|Sign in|Connection ·|Refresh features/);
 });
 
-it('keeps the public password hint editable in Access without enabling Host tasks or requesting the password again', () => {
+it('renders one concise Access grid without password forms, refresh, save or sign-out actions', () => {
   const html = renderAccess();
-  expect(html).toContain('Edit password hint');
-  expect(html).toContain('Password hint (optional)');
-  expect(html).toContain('Save password hint');
-  expect(html).toContain('visible before sign-in');
-  expect(html).not.toMatch(/type="password"|Enable.*Host tasks/);
+  expect(html.match(/<table(?:\s|>)/g)).toHaveLength(1);
+  for (const column of ['Client', 'Access', 'Status']) expect(html).toMatch(new RegExp(`<th[^>]*>${column}</th>`));
+  expect(html).not.toMatch(/type="password"|Password hint|Refresh access requests|Sign out|>Save</);
+  expect(html).toContain('90 days');
+  expect(html).toContain('names are not verified');
 });
