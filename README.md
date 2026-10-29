@@ -493,6 +493,11 @@ as a full-stage document tab. The tab health light and gear menu expose launch,
 reload, external-open, stop, refresh, and App Info actions. Non-embeddable apps
 open directly to App Info.
 
+Container Apps and managed instances share Docker CLI discovery, including Docker
+Desktop's installation directories when the app is launched without a shell PATH.
+Docker child processes also receive the paths needed for credential helpers and
+Compose. A missing CLI is reported separately from an unavailable Docker engine.
+
 On local macOS builds, the desktop installer signals the running installed
 copy to relaunch after the newly signed bundle is in place. Set
 `WM_DESKTOP_SKIP_REFRESH=1` only when a build must update the application

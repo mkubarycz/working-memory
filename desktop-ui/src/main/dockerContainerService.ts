@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { homedir } from 'node:os';
+import { dockerCliPath, dockerEnvironment } from './dockerCli';
 import type {
   ContainerClaim,
   ContainerClaimCreateInput,
@@ -106,6 +108,16 @@ export class CommandTimeoutError extends CommandExecutionError {
 export class ExecFileCommandRunner implements CommandRunner {
   run(file: string, args: string[], options: CommandRunOptions): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
+      if (file === 'docker' || file === 'docker.exe') {
+        const host = { platform: process.platform, env: options.env ?? process.env, homedir: homedir() };
+        const executable = dockerCliPath(host);
+        if (!executable) {
+          reject(new CommandExecutionError('Docker CLI was not found. Install Docker Desktop or enable its command-line tools, then retry.', 'ENOENT'));
+          return;
+        }
+        file = executable;
+        options = { ...options, env: dockerEnvironment(host, executable) };
+      }
       execFile(file, args, {
         encoding: 'utf8',
         maxBuffer: 10 * 1024 * 1024,
@@ -402,7 +414,7 @@ export class DockerContainerService {
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<CommandResult> {
-    return this.runner.run('docker', ['--context', context, ...args], { timeoutMs, signal });
+    return this.runner.run('docker', ['--context', context, ...args], { timeoutMs, signal, env: this.env });
   }
 
   private async resolveDockerContext(signal?: AbortSignal): Promise<string> {
