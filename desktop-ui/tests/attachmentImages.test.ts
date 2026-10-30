@@ -49,6 +49,22 @@ describe('hybrid Markdown images', () => {
     )).toBe('https://example.com/image.png');
   });
 
+  it('renders an accessible image-open control without a caption or rewritten source', () => {
+    const source = '![screen capture](wm-attachment:643b0c71-938c-4339-810c-15df424a19cf)';
+    const html = renderMarkdown(source, instanceAttachmentBaseUrl(7717));
+    expect(html).toContain('alt="screen capture"');
+    expect(html).not.toContain('figcaption');
+    expect(html).toContain('aria-label="Open image in default viewer"');
+    expect(html).toContain('codicon-zoom-in');
+    expect(html).toContain('data-image-source="working-memory-attachment://instance-7717/attachments/643b0c71-938c-4339-810c-15df424a19cf"');
+  });
+
+  it('escapes image sources before adding control attributes', () => {
+    const html = renderMarkdown('![image](https://example.com/image.png?x=%22&y=1)');
+    expect(html).not.toContain('data-image-source="https://example.com/image.png?x="');
+    expect(html).toContain('&amp;y=1');
+  });
+
   it('keeps rendered images atomic when the caret is at a source boundary', () => {
     const source = '![screen capture](wm-attachment:643b0c71-938c-4339-810c-15df424a19cf)';
     const state = EditorState.create({

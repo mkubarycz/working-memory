@@ -12,7 +12,7 @@ export async function serveInstanceAttachment(
     return new Response('Attachment does not belong to the selected instance.', { status: 403 });
   }
   try {
-    const response = await client.fetch(new URL(url.pathname, environment.mcpUrl));
+    const response = await client.fetch(new URL(url.pathname, environment.mcpUrl), { signal: request.signal });
     const headers = new Headers(response.headers);
     headers.set('cache-control', 'no-store');
     return new Response(response.body, { status: response.status, headers });

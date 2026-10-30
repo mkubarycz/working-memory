@@ -1,4 +1,5 @@
 import { markdown } from '@codemirror/lang-markdown';
+import { Autolink } from '@lezer/markdown';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { describe, expect, it, vi } from 'vitest';
@@ -19,7 +20,7 @@ describe('live Markdown preview', () => {
     return EditorState.create({
       doc,
       selection: { anchor },
-      extensions: [markdown(), livePreviewActivated, liveMarkdownPreview],
+      extensions: [markdown({ extensions: [Autolink] }), livePreviewActivated, liveMarkdownPreview],
     });
   }
 
@@ -185,7 +186,7 @@ describe('live Markdown link clicks', () => {
     const state = EditorState.create({
       doc,
       selection: { anchor },
-      extensions: [markdown(), livePreviewActivated, liveMarkdownPreview],
+      extensions: [markdown({ extensions: [Autolink] }), livePreviewActivated, liveMarkdownPreview],
     });
     return activated ? state.update({ effects: activateLivePreview.of() }).state : state;
   }
@@ -256,6 +257,41 @@ describe('live Markdown link clicks', () => {
     expect(href('https://example.com/auto')).toBe('https://example.com/auto');
     expect(href('topic]')).toBe('working-memory://open/topic/next-step');
     expect(href('file]')).toBe('wm-attachment:0f0e-1');
+  });
+
+  it.each([
+    ['https://example.com/incidents/details/123456789/summary',
+      'https://example.com/incidents/details/123456789/summary'],
+    ['See https://example.com/a_(b).', 'https://example.com/a_(b)'],
+    ['**https://example.com/path**', 'https://example.com/path'],
+    ['http://example.com/?a=1&b=2', 'http://example.com/?a=1&b=2'],
+    ['www.example.com/path', 'http://www.example.com/path'],
+  ])('opens a rendered bare URL without rewriting it: %s', (doc, expected) => {
+    const state = createState(doc);
+    const position = doc.search(/https?:\/\/|www\./) + 3;
+    expect(renderedMarkdownLinkAt(state, position)?.href).toBe(expected);
+    expect(linkTargets(state)).toHaveLength(1);
+    expect(state.doc.toString()).toBe(doc);
+    const editing = state.update({
+      selection: { anchor: position }, effects: activateLivePreview.of(),
+    }).state;
+    expect(renderedMarkdownLinkAt(editing, position)).toBeNull();
+  });
+
+  it('does not turn code, images, or link definitions into standalone links', () => {
+    const doc = [
+      '`https://example.com/inline`',
+      '```',
+      'https://example.com/fenced',
+      '```',
+      '![image](https://example.com/image.png)',
+      '[docs]: https://example.com/definition',
+    ].join('\n\n');
+    const state = createState(doc);
+    expect(linkTargets(state)).toEqual([]);
+    for (const needle of ['inline', 'fenced', 'image.png', 'definition']) {
+      expect(renderedMarkdownLinkAt(state, at(doc, needle))).toBeNull();
+    }
   });
 
   it('decorates rendered links with their resolved target as the native hover tooltip', () => {

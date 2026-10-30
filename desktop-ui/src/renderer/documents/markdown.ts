@@ -23,6 +23,12 @@ export const unescapeMarkdown = md.utils.unescapeAll;
 
 const defaultImageRenderer = md.renderer.rules.image;
 
+export function imageOpenButton(source: string): string {
+  return `<button type="button" class="markdown-image-open" data-image-source="${md.utils.escapeHtml(source)}"`
+    + ' title="Open image in default viewer" aria-label="Open image in default viewer">'
+    + '<span class="codicon codicon-zoom-in" aria-hidden="true"></span></button>';
+}
+
 export function resolveMarkdownImageSource(src: string, attachmentBaseUrl = ''): string {
   const match = /^wm-attachment:([0-9a-f-]+)$/.exec(src);
   const baseUrl = attachmentBaseUrl.replace(/\/$/, '');
@@ -38,9 +44,11 @@ md.renderer.rules.image = (tokens, idx, options, env, self) => {
   if (src && srcIndex >= 0 && tokens[idx].attrs) {
     tokens[idx].attrs![srcIndex][1] = resolveMarkdownImageSource(String(src), attachmentBaseUrl);
   }
-  return defaultImageRenderer
+  const image = defaultImageRenderer
     ? defaultImageRenderer(tokens, idx, options, env, self)
     : self.renderToken(tokens, idx, options);
+  const resolvedSource = String(tokens[idx].attrGet('src') ?? '');
+  return `<span class="markdown-image">${image}${imageOpenButton(resolvedSource)}</span>`;
 };
 
 /** Render markdown source to an HTML string that is safe to inject as `{@html}`. */

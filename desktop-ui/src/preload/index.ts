@@ -13,6 +13,8 @@ const api: DesktopApi = {
   signOutInstance: () => invoke('instance:sign-out'),
   getInstanceAccess: () => invoke('instance:access'),
   reviewInstanceAccess: (input) => invoke('instance:review-access', input),
+  getSessionDiagnostics: (before) => invoke('instance:sessions', before),
+  updateSessionPolicy: (policy, mcpUrl) => invoke('instance:session-policy', { policy, mcpUrl }),
   onInstanceAuthenticationChanged: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
     ipcRenderer.on('instance:authentication-changed', handler);
@@ -130,6 +132,7 @@ const api: DesktopApi = {
   getAppResourceContract: (id) => invoke('app-mcp:contract', id),
   restartDesktop: () => ipcRenderer.send('app:restart'),
   openExternal: (url) => invoke('external:open', url),
+  openImage: (source) => invoke('image:open', source),
 };
 
 contextBridge.exposeInMainWorld('workingMemory', api);

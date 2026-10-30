@@ -4,6 +4,7 @@
   import { markdown } from '@codemirror/lang-markdown';
   import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
   import { tags } from '@lezer/highlight';
+  import { Autolink } from '@lezer/markdown';
   import { Compartment, EditorState, Transaction } from '@codemirror/state';
   import {
     drawSelection,
@@ -16,6 +17,7 @@
   import { imageFilesFromTransfer } from './imageFiles';
   import { attachmentImagePreview } from './attachmentImages';
   import { resolveMarkdownImageSource } from './markdown';
+  import { markdownFromClipboard } from './markdownPaste';
   import {
     activateLivePreview,
     liveMarkdownPreview,
@@ -106,7 +108,7 @@
       state: EditorState.create({
         doc: value,
         extensions: [
-          markdown(),
+          markdown({ extensions: [Autolink] }),
           syntaxHighlighting(HighlightStyle.define([
             { tag: tags.strong, class: 'cm-live-strong' },
             { tag: tags.emphasis, class: 'cm-live-emphasis' },
@@ -162,13 +164,32 @@
               activateAfterEvent(currentView);
               return false;
             },
-            paste: (event) => {
-              if (disabled || !onAttachImages) return false;
+            paste: (event, currentView) => {
+              if (disabled) return false;
               const files = imageFilesFromTransfer(event.clipboardData);
-              if (files.length === 0) return false;
-              event.preventDefault();
-              void attachImages(files);
-              return true;
+              if (onAttachImages && files.length > 0) {
+                event.preventDefault();
+                void attachImages(files);
+                return true;
+              }
+              try {
+                const source = markdownFromClipboard(event.clipboardData);
+                if (source === null) return false;
+                event.preventDefault();
+                attachmentError = '';
+                if (source) {
+                  currentView.dispatch(currentView.state.replaceSelection(source), {
+                    effects: activateLivePreview.of(),
+                    userEvent: 'input.paste',
+                    scrollIntoView: true,
+                  });
+                }
+                return true;
+              } catch (error) {
+                event.preventDefault();
+                attachmentError = error instanceof Error ? error.message : String(error);
+                return true;
+              }
             },
             dragover: (event) => {
               if (disabled || !onAttachImages) return false;
@@ -242,12 +263,6 @@
     max-width: 100%;
     max-height: 560px;
     border-radius: 4px;
-  }
-
-  .hybrid-editor :global(.hybrid-markdown-image figcaption) {
-    margin-top: 4px;
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.82em;
   }
 
   .attachment-status,

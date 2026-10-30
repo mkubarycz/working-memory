@@ -27,7 +27,7 @@
 import * as os from 'node:os';
 import { readFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { parseDocumentChanges, type DocumentChanges } from './documentChanges';
 import {
   controlPlanePortFilePath,
@@ -37,6 +37,10 @@ import {
 
 /** Client identity advertised to the control-plane during the MCP handshake. */
 const CLIENT_NAME = 'working-memory-extension';
+const RETRYABLE_READ_TOOLS = new Set([
+  'ws-workstream-read', 'ws-containerclaim-read', 'ws-topic-read', 'ws-topictype-read', 'ws-config-read',
+  'ws-agent-read', 'ws-agent-message-read', 'ws-alert-read', 'ws-commandjournal-read',
+]);
 const CLIENT_VERSION = '0.1.0';
 
 /**
@@ -989,6 +993,7 @@ export class ControlPlaneClient {
   private readonly onUnauthorized: (mcpUrl: string, rejectedToken: string | null) => void;
   private authenticationError: string | null = null;
   private client: Client | null = null;
+  private readonly staleConnections = new WeakSet<Client>();
   private transport: StreamableHTTPClientTransport | null = null;
   /** In-flight connect, so concurrent calls share one handshake. */
   private connecting: Promise<Client | null> | null = null;
@@ -1037,10 +1042,10 @@ export class ControlPlaneClient {
       return { available: false, documents: [], error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
-      const result = await client.callTool({
+      const result = await this.retryStaleRead(client, connected => connected.callTool({
         name: 'wm-document-read',
         arguments: kind ? { kind } : {},
-      });
+      }));
       const parsed = parseToolText(result) as { documents?: unknown } | null;
       const documents = Array.isArray(parsed?.documents)
         ? (parsed!.documents as DocumentEnvelope[])
@@ -1059,10 +1064,10 @@ export class ControlPlaneClient {
       return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
-      const result = await client.callTool({
+      const result = await this.retryStaleRead(client, connected => connected.callTool({
         name: 'wm-document-read',
         arguments: { ...input },
-      });
+      }));
       const parsed = parseToolText(result) as { documents?: unknown } | null;
       const documents = Array.isArray(parsed?.documents)
         ? (parsed!.documents as DocumentEnvelope[])
@@ -1177,7 +1182,7 @@ export class ControlPlaneClient {
     }
     let res: unknown;
     try {
-      res = await client.listTools();
+      res = await this.retryStaleRead(client, connected => connected.listTools());
     } catch (err) {
       this.resetConnection();
       throw new ControlPlaneClientError(messageOf(err));
@@ -1254,7 +1259,8 @@ export class ControlPlaneClient {
     }
     let result: unknown;
     try {
-      result = await client.callTool({ name, arguments: args });
+      const call = (connected: Client) => connected.callTool({ name, arguments: args });
+      result = RETRYABLE_READ_TOOLS.has(name) ? await this.retryStaleRead(client, call) : await call(client);
     } catch (err) {
       this.resetConnection();
       throw new ControlPlaneClientError(messageOf(err));
@@ -1263,6 +1269,23 @@ export class ControlPlaneClient {
       throw new ControlPlaneClientError(errorTextOf(result));
     }
     return result;
+  }
+
+  private async retryStaleRead<T>(client: Client, read: (connected: Client) => Promise<T>): Promise<T> {
+    try { return await read(client); }
+    catch (error) {
+      const stale = this.staleConnections.has(client) || error instanceof StreamableHTTPError && (
+        error.code === 404 && error.message.includes('Session not found or expired.')
+        || error.code === 400 && error.message.includes('"message":"Bad Request: no valid session ID"')
+      );
+      if (!stale || this.disposed) throw error;
+      this.staleConnections.add(client);
+      // Another concurrent read may already have replaced this expired connection.
+      if (this.client === client) this.resetConnection();
+      const connected = await this.ensureConnected();
+      if (!connected) throw error;
+      return read(connected);
+    }
   }
 
   /** Parse a `ws-*` success result into the owned {@link Workstream} shape. */

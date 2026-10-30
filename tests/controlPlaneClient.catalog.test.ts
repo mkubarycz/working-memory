@@ -24,7 +24,8 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   },
 }));
 
-vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
+vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', async importOriginal => ({
+  ...await importOriginal<typeof import('@modelcontextprotocol/sdk/client/streamableHttp.js')>(),
   StreamableHTTPClientTransport: class {
     constructor(_url: URL) {}
     close = transportCloseMock;
