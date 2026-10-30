@@ -463,6 +463,9 @@ permanent before its work can be replaced. New-topic drafts and documents
 returned by an authored chat request open as permanent tabs. Container-app
 tabs also stay permanent because edits inside their embedded UI cannot be
 observed reliably by the desktop renderer.
+**Backlog**, **Settings**, and host-task views are permanent utility tabs too:
+opening them does not replace a document preview. Backlog and Settings restore
+locally without attempting to fetch a control-plane document.
 
 Tab identities and order are saved per environment, but previews are
 session-only: they are omitted on restart or environment switch. When the
@@ -482,6 +485,28 @@ rendered link opens it without entering editing. Editing its line reveals the
 original Markdown; rendering never rewrites the stored source. URI autolinks
 continue to display their URL.
 
+## Backlog
+
+The left rail shows **Queue** and **In Progress** workstreams. Its backlog button
+opens the **Backlog** page, where workstreams with backlog status appear first,
+above open topics that do not belong to any non-closed workstream. Topics in a
+backlog workstream stay grouped under that workstream rather than appearing twice.
+Expand a backlog workstream to browse its topic tree, including nested child
+topics, or click its title to open it. **Send to Queue** and **Send to In Progress**
+move the workstream directly from the backlog page. The page refreshes as
+membership and status change.
+
+Backlog nodes use the same tree interactions as the left rail: right-click for
+context-sensitive topic/workstream actions, drag between workstreams to copy a
+topic tree (hold Command to move), drop on topics to reparent, and drag workstreams
+between Backlog, Queue, and In Progress or reorder within a section. Dragged
+resources also carry the same Markdown/context-file references for editors and
+other apps. Unassigned topic trees can be added to a workstream without removing
+any existing memberships; this requires a backend supporting source-free
+`ws-topic-transfer`.
+The shared tree uses light cards and menus on the backlog page while retaining
+the dark rail palette. Move buttons wrap below titles when the page is narrow.
+
 ## Desktop container apps
 
 The desktop **Container Apps** right-rail tab lists live ContainerClaims with a
@@ -492,6 +517,16 @@ source changes, rebuild, or installation. Selecting an app registered with
 as a full-stage document tab. The tab health light and gear menu expose launch,
 reload, external-open, stop, refresh, and App Info actions. Non-embeddable apps
 open directly to App Info.
+
+Container Apps and managed instances share Docker CLI discovery, including Docker
+Desktop's installation directories when the app is launched without a shell PATH.
+Docker child processes also receive the paths needed for credential helpers and
+Compose. A missing CLI is reported separately from an unavailable Docker engine.
+
+Send Feedback imports every copy as **User Story** in the receiving environment.
+It does not look up or require the original topic's type, and never retypes the
+source topic. The receiver resolves its own User Story TopicType UUID; a missing
+or ambiguous User Story definition is reported before image upload or topic creation.
 
 On local macOS builds, the desktop installer signals the running installed
 copy to relaunch after the newly signed bundle is in place. Set

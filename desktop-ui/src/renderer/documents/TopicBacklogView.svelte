@@ -1,60 +1,28 @@
 <script lang="ts">
+  import type { ComponentProps } from 'svelte';
+  import ActiveRail from '../ActiveRail.svelte';
+  import type { ActiveResourceDrag } from '../resourceDrag';
   import type { TopicBacklogVM } from './types';
-  import UnreadBadge from '../UnreadBadge.svelte';
-  import { unreadResponseCount, type UnreadResponse } from '../chatUnread';
 
   interface Props {
-    unreadResponses?: UnreadResponse[];
     backlog: TopicBacklogVM;
-    onOpenTopic: (id: string) => void;
+    treeProps: ComponentProps<typeof ActiveRail>;
+    activeDrag?: ActiveResourceDrag | null;
   }
 
-  let { backlog, onOpenTopic, unreadResponses = [] }: Props = $props();
-
-  function idFromUri(openUri: string): string {
-    try {
-      const segment = new URL(openUri).pathname.split('/').at(-1) ?? '';
-      return decodeURIComponent(segment.replace(/\.working-memory$/, ''));
-    } catch {
-      return '';
-    }
-  }
+  let { backlog, treeProps, activeDrag = $bindable(null) }: Props = $props();
 </script>
 
 <header class="backlog-head">
   <div>
     <p class="eyebrow">Backlog</p>
     <h1>{backlog.title}</h1>
-    <p>Open topics that are not part of an active workstream.</p>
+    <p>Backlog workstreams and open topics that are not part of an active workstream.</p>
   </div>
-  <span class="backlog-count">{backlog.topics.length}</span>
+  <span class="backlog-count">{backlog.workstreams.length + backlog.topics.length}</span>
 </header>
 
-{#if backlog.topics.length === 0}
-  <p class="backlog-empty">Every open topic belongs to an active workstream.</p>
-{:else}
-  <div class="backlog-list">
-    {#each backlog.topics as topic (topic.id)}
-      {@const id = idFromUri(topic.openUri)}
-      <button
-        class="backlog-row"
-        disabled={!id}
-        onclick={() => id && onOpenTopic(id)}
-      >
-        <span aria-hidden="true" class="topic-icon codicon codicon-{topic.icon}"></span>
-        <span class="topic-copy">
-          <strong>{topic.label}</strong>
-          <small>{topic.description || id}</small>
-        </span>
-        {#if topic.agentMessageCount}
-          <span class="alert-count" class:severe={topic.agentMessageSeverity === 'error'} title="Agent messages needing attention">{topic.agentMessageCount}</span>
-        {/if}
-        <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id, id)} />
-        <span aria-hidden="true" class="codicon codicon-chevron-right"></span>
-      </button>
-    {/each}
-  </div>
-{/if}
+<ActiveRail {...treeProps} {backlog} bind:activeDrag />
 
 <style>
   .backlog-head {
@@ -92,80 +60,5 @@
     font-size: 1.1em;
     font-weight: 800;
     background: var(--desktop-accent-strong);
-  }
-
-  .backlog-list {
-    display: grid;
-    gap: 1px;
-    overflow: hidden;
-    border: 1px solid #d1ced0;
-    border-radius: 6px;
-    background: #d1ced0;
-  }
-
-  .backlog-row {
-    display: grid;
-    grid-template-columns: 24px minmax(0, 1fr) auto 18px;
-    align-items: center;
-    gap: 10px;
-    min-height: 52px;
-    padding: 8px 12px;
-    border: 0;
-    background: #ffffff;
-    color: #292629;
-    text-align: left;
-  }
-
-  .backlog-row:hover:not(:disabled),
-  .backlog-row:focus-visible {
-    outline: none;
-    background: #f5edf1;
-  }
-
-  .topic-icon {
-    color: var(--desktop-accent-strong);
-    font-size: 18px;
-  }
-
-  .topic-copy {
-    display: grid;
-    min-width: 0;
-    gap: 2px;
-  }
-
-  .topic-copy strong,
-  .topic-copy small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .topic-copy small {
-    color: #6c666b;
-  }
-
-  .alert-count {
-    display: grid;
-    place-items: center;
-    min-width: 20px;
-    height: 20px;
-    padding: 0 5px;
-    border-radius: 10px;
-    background: #666168;
-    color: #ffffff;
-    font-size: 0.72em;
-    font-weight: 800;
-  }
-
-  .alert-count.severe {
-    background: #c42b1c;
-  }
-
-  .backlog-empty {
-    padding: 28px;
-    border: 1px dashed #c9c6c8;
-    border-radius: 6px;
-    color: #6c666b;
-    text-align: center;
   }
 </style>

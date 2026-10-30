@@ -17,10 +17,13 @@ import {
   promoteOnDocumentInput,
   replaceSelectedTab,
   serializeDocumentTabs,
+  restoreLocalDocumentTab,
+  settingsDocument,
   selectedTabScrollLeft,
   updateDocumentTab,
 } from '../src/renderer/documentTabs';
 import { containerAppDocument } from '../src/renderer/containerApps';
+import { topicBacklogDocument } from '../src/renderer/topicBacklog';
 
 function topic(id: string, title = id): TopicVM {
   return {
@@ -31,6 +34,41 @@ function topic(id: string, title = id): TopicVM {
 }
 
 describe('document tabs', () => {
+  it('keeps utility tabs permanent without replacing or persisting a document preview', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('preview'));
+    const backlog = topicBacklogDocument(null);
+    state = openDocumentTab(state, backlog);
+    state = openDocumentTab(state, settingsDocument());
+    state = openDocumentTab(state, containerAppDocument({ id: 'app', displayName: 'App' }));
+    expect(state.previewKey).toBe('topic:preview');
+    expect(state.tabs.map(documentTabKey)).toEqual([
+      'container-app:app', 'settings:desktop-settings', 'topic-backlog:open-topic-backlog', 'topic:preview',
+    ]);
+    expect(parseDocumentTabs(serializeDocumentTabs(state))).toEqual({
+      version: 1,
+      tabs: [
+        { kind: 'container-app', identifier: 'app' },
+        { kind: 'settings', identifier: 'desktop-settings' },
+        { kind: 'topic-backlog', identifier: 'open-topic-backlog' },
+      ],
+      selectedKey: 'container-app:app',
+    });
+  });
+
+  it.each(['settings', 'topic-backlog', 'host-task-create'])('restores a selected %s tab in its original position', kind => {
+    const documents = [topicBacklogDocument(null), settingsDocument(), newHostTaskDocument()];
+    const selected = documents.find(document => document.kind === kind)!;
+    const persisted = parseDocumentTabs(serializeDocumentTabs({
+      tabs: documents, selectedKey: documentTabKey(selected), previewKey: null,
+    }))!;
+    const restored = persisted.tabs.map(reference => restoreLocalDocumentTab(reference, null, true));
+    expect(restored).toEqual(documents);
+    expect(restored.map(document => documentTabKey(document!))).toContain(persisted.selectedKey);
+    expect(restoreLocalDocumentTab({ kind: 'host-task-create', identifier: 'new-host-task' }, null, false)).toBeNull();
+    expect(restoreLocalDocumentTab({ kind: 'topic', identifier: 'remote-topic' }, null, true)).toBeNull();
+    expect(restoreLocalDocumentTab({ kind, identifier: 'invalid' }, null, true)).toBeNull();
+  });
+
   it('keeps separate permanent task tabs and deduplicates each task and creation tab', () => {
     const first = hostTaskDocument({ id: 'first-task', name: 'Untitled task', draftName: 'Import messages' });
     const second = hostTaskDocument({ id: 'second-task', name: 'Back up notes' });
@@ -114,7 +152,8 @@ describe('document tabs', () => {
       kind: 'topic-backlog',
       id: 'open-topic-backlog',
 
-      title: 'Open topic backlog',
+      title: 'Backlog',
+      workstreams: [],
       topics: [],
     };
     let state = openDocumentTab({ tabs: [], selectedKey: null }, backlog);

@@ -8,6 +8,7 @@
     PanelAction,
     PanelData,
     PanelTopic,
+    PanelTopicRow,
     PanelTopicsGroup,
     PanelWorkstream,
     PanelWorkstreamSection,
@@ -24,7 +25,9 @@
     type ActiveSectionBoundary,
     type ActiveSectionHeights,
   } from './activeSectionLayout';
-  import { setResourceDragData } from './resourceDrag';
+  import { setResourceDragData, type ActiveResourceDrag } from './resourceDrag';
+  import type { TopicBacklogVM } from './documents/types';
+  import { backlogMoveActions } from './topicBacklog';
   import { attachTreeConnector } from './treeConnector';
   import { setNodeAndChildrenExpanded, setSubtreeExpanded, type ExpandableTreeNode } from './treeExpansion';
   import { workstreamColorClass } from './workstreamColor';
@@ -32,6 +35,8 @@
   import { planTopicTransfer, type TopicDragSource, type TopicTransferRequest } from './topicTransfer';
 
   interface Props {
+    backlog?: TopicBacklogVM;
+    activeDrag?: ActiveResourceDrag | null;
     unreadResponses?: UnreadResponse[];
     environments: DesktopEnvironment[];
     selectedEnvironment: DesktopEnvironment | null;
@@ -45,7 +50,7 @@
     onCollapse: () => void;
     onOpen: (uri: string) => void;
     onToggleFocus: (workstream: string, topic: string) => void;
-    onAction: (workstream: string, action: PanelAction) => void;
+    onAction: (workstream: string, action: PanelAction) => void | Promise<void>;
     onReorder: (id: string, section: PanelWorkstreamSection['section'], index: number) => Promise<void>;
     onTransferTopic: (request: TopicTransferRequest) => void;
     onReparentTopic: (id: string, parent: string | null) => void;
@@ -59,6 +64,8 @@
   }
 
   let {
+    backlog,
+    activeDrag = $bindable(null),
     unreadResponses = [],
     environments, selectedEnvironment, environmentLoading, environmentError,
     data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder, onTransferTopic,
@@ -83,11 +90,7 @@
   let sectionHeights = $state<ActiveSectionHeights | null>(null);
   let environmentMenuOpen = $state(false);
   let sectionDrag: { boundary: ActiveSectionBoundary; startY: number; initial: ActiveSectionHeights } | null = null;
-  let activeDrag = $state<
-    | ({ kind: 'topic' } & TopicDragSource)
-    | { kind: 'workstream'; id: string; section: PanelWorkstreamSection['section'] }
-    | null
-  >(null);
+  const pendingActions = new SvelteSet<string>();
   const topicDrag = $derived(activeDrag?.kind === 'topic' ? activeDrag : null);
   const workstreamDrag = $derived(activeDrag?.kind === 'workstream' ? activeDrag : null);
   let topicDropTarget = $state<string | null>(null);
@@ -102,11 +105,14 @@
   const sections = $derived(
     (data?.items.filter((item): item is PanelWorkstreamSection => item.kind === 'workstream-section')) ?? [],
   );
+  const railSections = $derived(sections.filter(section => section.section !== 'backlog'));
+  const backlogWorkstreams = $derived(sections.find(section => section.section === 'backlog')?.workstreams ?? []);
   const moveTargets = $derived(sections.flatMap((section) =>
     section.workstreams.flatMap((workstream): ActiveMoveTarget[] =>
       workstream.id ? [{ id: workstream.id, title: workstream.label }] : [])));
 
   $effect(() => {
+    if (backlog) return;
     if (seeded || sections.length === 0) return;
     seeded = true;
     for (const section of sections) {
@@ -132,6 +138,7 @@
           for (const topic of group.children) prepareTopicDragTree(topic);
         }
       }
+      for (const topic of data?.topicBacklog ?? []) prepareTopicDragTree(topic);
     }
   });
 
@@ -216,11 +223,21 @@
       const topic = findTopic(workstream, item.topic);
       onAddTopic(workstream, { id: item.topic, title: topic?.label ?? item.topic });
     } else if (item.kind === 'focus') onToggleFocus(workstream, item.topic);
-    else onAction(workstream, item.action);
+    else void runWorkstreamAction(workstream, item.action);
   }
 
-  function findTopic(workstream: string, id: string): PanelTopic | undefined {
-    const visit = (topics: PanelTopic[]): PanelTopic | undefined => {
+  async function runWorkstreamAction(workstream: string, action: PanelAction): Promise<void> {
+    if (pendingActions.has(workstream) || action.enabled === false) return;
+    pendingActions.add(workstream);
+    try {
+      await onAction(workstream, action);
+    } finally {
+      pendingActions.delete(workstream);
+    }
+  }
+
+  function findTopic(workstream: string, id: string): PanelTopic | PanelTopicRow | undefined {
+    const visit = (topics: (PanelTopic | PanelTopicRow)[]): PanelTopic | PanelTopicRow | undefined => {
       for (const topic of topics) {
         if (topicIdFromOpenUri(topic.openUri) === id) return topic;
         const nested = visit(topic.children ?? []);
@@ -228,6 +245,7 @@
       }
       return undefined;
     };
+    if (!workstream) return visit(data?.topicBacklog ?? []);
     for (const section of sections) {
       const card = section.workstreams.find((candidate) => candidate.id === workstream);
       if (!card) continue;
@@ -259,7 +277,7 @@
   function moveToNewWorkstreamFromMenu(event: MouseEvent, topic: string): void {
     event.stopPropagation();
     const sourceWorkstream = menu?.workstream;
-    if (!sourceWorkstream || !topic) return;
+    if (sourceWorkstream === undefined || !topic) return;
     menu = null;
     onMoveToNewWorkstream({ id: topic, sourceWorkstream });
   }
@@ -322,7 +340,7 @@
     if (!sectionsElement) return null;
     const height = (section: keyof ActiveSectionHeights) =>
       sectionsElement?.querySelector<HTMLElement>(`.section-${section}`)?.getBoundingClientRect().height ?? 0;
-    const measured = { queue: height('queue'), progress: height('progress'), backlog: height('backlog') };
+    const measured = { queue: height('queue'), progress: height('progress') };
     return Object.values(measured).every((value) => value > 0) ? measured : null;
   }
 
@@ -353,7 +371,7 @@
     document.body.classList.remove('resizing-active-sections');
   }
 
-  function prepareTopicDragTree(topic: PanelTopic, generation = dragPreparationGeneration): void {
+  function prepareTopicDragTree(topic: PanelTopic | PanelTopicRow, generation = dragPreparationGeneration): void {
     prepareResourceDrag(topic.openUri, topic.label, generation);
     for (const child of topic.children ?? []) prepareTopicDragTree(child, generation);
   }
@@ -534,13 +552,13 @@
   {/if}
 {/snippet}
 
-{#snippet nodeRow(node: PanelTopic, workstream: string, depth: number)}
+{#snippet nodeRow(node: PanelTopic | PanelTopicRow, workstream: string, depth: number)}
   {@const children = node.children ?? []}
   {@const open = expanded.has(node.id)}
   {@const topicId = topicIdFromOpenUri(node.openUri)}
   {@const menuItems = activeContextMenuItems(node.actions, {
     topic: topicId,
-    focused: node.focused,
+    focused: 'focused' in node && node.focused,
     sourceWorkstream: workstream,
     moveTargets,
   })}
@@ -640,16 +658,17 @@
 {#snippet workstreamCard(workstream: PanelWorkstream, sectionStatus: PanelWorkstreamSection['section'], compact: boolean)}
   {@const open = expanded.has(workstream.id)}
   {@const hasDetails = workstream.focused_topics.length > 0 || workstream.children.length > 0}
-  {@const expandable = sectionStatus === 'progress' && hasDetails}
+  {@const expandable = (backlog !== undefined || sectionStatus === 'progress') && hasDetails}
   {@const menuItems = activeContextMenuItems(workstream.actions)}
   <article
     class="active-card {workstreamColorClass(workstream.id)}"
     class:compact
-    class:summary={sectionStatus !== 'progress'}
+    class:summary={!backlog && sectionStatus !== 'progress'}
     class:dragging={draggingWorkstreamId === workstream.id}
     class:topic-drop-target={topicDropTarget === workstream.id}
     data-section-status={sectionStatus}
     data-workstream={workstream.id}
+    aria-busy={pendingActions.has(workstream.id)}
     ondragenter={(event) => updateTopicDropTarget(event, workstream.id ?? '')}
     ondragover={(event) => updateTopicDropTarget(event, workstream.id ?? '')}
     ondragleave={(event) => {
@@ -687,6 +706,15 @@
       </button>
       {@render attentionBubble(workstream.agentMessageCount, workstream.agentMessageSeverity)}
       <UnreadBadge count={unreadResponseCount(unreadResponses, 'workstream', workstream.id, workstream.id)} />
+      {#if backlog}
+        <div class="backlog-workstream-actions">
+          {#each backlogMoveActions(workstream) as action (action.title)}
+            <button disabled={pendingActions.has(workstream.id) || action.enabled === false} onclick={() => void runWorkstreamAction(workstream.id, action)}>
+              {action.title}
+            </button>
+          {/each}
+        </div>
+      {/if}
     </div>
     {#if expandable && open}
       <div class="active-card-body">
@@ -743,6 +771,49 @@
   </article>
 {/snippet}
 
+{#if backlog}
+  <div class="backlog-tree-surface">
+    <section class="backlog-section" aria-label="Backlog workstreams">
+      <h2>Workstreams <small>({backlog.workstreams.length})</small></h2>
+      <div
+        class="backlog-workstreams"
+        class:drop-target={dropTarget?.section === 'backlog'}
+        role="group"
+        aria-label="Backlog workstream order"
+        ondragenter={(event) => updateDropTarget(event, 'backlog')}
+        ondragover={(event) => updateDropTarget(event, 'backlog')}
+        ondrop={(event) => void dropWorkstream(event, 'backlog')}
+      >
+        {#if backlog.workstreams.length === 0}
+          <p class="backlog-empty">No workstreams are on the backlog.</p>
+        {/if}
+        {#each backlog.workstreams as workstream, index (workstream.id)}
+          {#if dropTarget?.section === 'backlog' && dropTarget.index === index}
+            <div class="active-drop-indicator" aria-hidden="true"></div>
+          {/if}
+          {@render workstreamCard(workstream, 'backlog', false)}
+        {/each}
+        {#if dropTarget?.section === 'backlog' && dropTarget.index === backlog.workstreams.length}
+          <div class="active-drop-indicator" aria-hidden="true"></div>
+        {/if}
+      </div>
+    </section>
+    <section class="backlog-section" aria-label="Topics outside active workstreams">
+      <h2>Topics outside active workstreams <small>({backlog.topics.length})</small></h2>
+      {#if backlog.topics.length === 0}
+        <p class="backlog-empty">Every open topic belongs to an active workstream.</p>
+      {:else}
+        <div class="topic-tree backlog-orphan-topics" use:attachTreeConnector>
+          <ul class="active-tree">
+            {#each backlog.topics as topic (topic.id)}
+              {@render nodeRow(topic, '', 0)}
+            {/each}
+          </ul>
+        </div>
+      {/if}
+    </section>
+  </div>
+{:else}
 <div
   class="active-rail-inner"
   role="region"
@@ -812,12 +883,12 @@
     </button>
     <button
       class="active-header-button topic-backlog-button"
-      title="Open topics outside active workstreams"
-      aria-label={`Open topic backlog (${data?.topicBacklog?.length ?? 0})`}
+      title="Open backlog workstreams and topics outside active workstreams"
+      aria-label={`Open backlog (${backlogWorkstreams.length} workstreams, ${data?.topicBacklog?.length ?? 0} topics)`}
       onclick={onOpenTopicBacklog}
     >
       <span aria-hidden="true" class="codicon codicon-library"></span>
-      <span class="topic-backlog-badge">{data?.topicBacklog?.length ?? 0}</span>
+      <span class="topic-backlog-badge">{backlogWorkstreams.length + (data?.topicBacklog?.length ?? 0)}</span>
     </button>
     <button class="active-header-button" title="Settings" aria-label="Settings" onclick={onSettings}>
       <span aria-hidden="true" class="codicon codicon-settings-gear"></span>
@@ -832,28 +903,28 @@
     class="active-sections"
     aria-label="Active workstreams"
     style={sectionHeights
-      ? `grid-template-rows: ${sectionHeights.queue}px ${sectionHeights.progress}px minmax(76px, 1fr);`
+      ? `grid-template-rows: ${sectionHeights.queue}px minmax(120px, 1fr);`
       : undefined}
   >
     {#if error}<p class="active-error" role="alert">{error}</p>{/if}
     {#if !data && loading}<p class="active-empty">Loading active work…</p>{/if}
-    {#each sections as section (section.id)}
+    {#each railSections as section (section.id)}
       <section class="active-section section-{section.section}" class:drop-target={dropTarget?.section === section.section} aria-label={section.label}>
         <header class="active-section-header">
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <div
           class="active-section-heading"
-          class:resizable={section.section !== 'queue'}
-          role={section.section !== 'queue' ? 'separator' : undefined}
-          aria-label={section.section !== 'queue' ? `Resize ${section.label} section` : undefined}
-          aria-orientation={section.section !== 'queue' ? 'horizontal' : undefined}
-          tabindex={section.section !== 'queue' ? 0 : undefined}
-          title={section.section !== 'queue' ? `Drag to resize ${section.label}` : undefined}
-          onpointerdown={(event) => section.section !== 'queue' && startSectionResize(section.section, event)}
+          class:resizable={section.section === 'progress'}
+          role={section.section === 'progress' ? 'separator' : undefined}
+          aria-label={section.section === 'progress' ? `Resize ${section.label} section` : undefined}
+          aria-orientation={section.section === 'progress' ? 'horizontal' : undefined}
+          tabindex={section.section === 'progress' ? 0 : undefined}
+          title={section.section === 'progress' ? `Drag to resize ${section.label}` : undefined}
+          onpointerdown={(event) => section.section === 'progress' && startSectionResize(section.section, event)}
           onpointermove={moveSectionResize}
           onpointerup={finishSectionResize}
           onpointercancel={finishSectionResize}
-          onkeydown={(event) => section.section !== 'queue' && resizeSectionWithKeyboard(section.section, event)}
+          onkeydown={(event) => section.section === 'progress' && resizeSectionWithKeyboard(section.section, event)}
         >
           <span>{section.label}</span>
         </div>
@@ -894,11 +965,13 @@
     {/each}
   </div>
 </div>
+{/if}
 
 {#if menu}
   <div
     bind:this={menuElement}
     class="active-context-menu"
+    class:backlog-context-menu={backlog !== undefined}
     role="menu"
     aria-label="Row actions"
     tabindex="-1"
@@ -920,6 +993,7 @@
           {#if item.kind === 'move'}
             <span aria-hidden="true" class="codicon codicon-chevron-right active-context-submenu-arrow"></span>
           {/if}
+
         </button>
         {#if item.kind === 'move' && item.enabled}
           <div
@@ -949,3 +1023,158 @@
     {/each}
   </div>
 {/if}
+
+<style>
+  .backlog-tree-surface,
+  .backlog-context-menu {
+    --desktop-active-fg: #292629;
+    --desktop-active-muted: #6c666b;
+    --desktop-active-hover: #f1e8ed;
+    --desktop-active-raised: #ffffff;
+    --tree-group-fg: var(--desktop-active-muted);
+    --tree-menu-border: #d1c9cf;
+    --tree-menu-hover-fg: var(--desktop-active-fg);
+    color: var(--desktop-active-fg);
+  }
+
+  .backlog-tree-surface {
+    container-type: inline-size;
+  }
+
+  .backlog-context-menu {
+    padding: 6px;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(41, 38, 41, .15);
+  }
+
+  .backlog-section {
+    margin-bottom: 24px;
+  }
+  .backlog-section h2 {
+    margin: 0 0 10px;
+    font-size: 1em;
+  }
+  .backlog-section h2 small {
+    font-weight: normal;
+    color: #6c666b;
+  }
+  .backlog-empty {
+    padding: 28px;
+    border: 1px dashed #c9c6c8;
+    border-radius: 6px;
+    color: #6c666b;
+    text-align: center;
+  }
+  .backlog-workstreams {
+    min-height: 36px;
+  }
+  .backlog-workstream-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  .backlog-workstream-actions button {
+    min-height: 32px;
+    padding: 5px 10px;
+    border: 1px solid #d5c6cf;
+    border-radius: 5px;
+    background: #ffffff;
+    color: var(--desktop-accent-strong);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 20px;
+    white-space: nowrap;
+  }
+
+  .backlog-workstream-actions button:hover:not(:disabled) {
+    border-color: var(--desktop-accent-strong);
+    background: #f9eaf1;
+  }
+
+  .backlog-workstream-actions button:focus-visible {
+    outline: 2px solid var(--desktop-accent-strong);
+    outline-offset: 2px;
+  }
+
+  .backlog-workstream-actions button:disabled {
+    color: var(--desktop-active-muted);
+    background: #f5f2f4;
+    cursor: default;
+  }
+
+  .backlog-tree-surface :global(.active-card) {
+    --ws-card-bg: hsl(var(--ws-card-hue) 20% 99%);
+    --ws-card-border: hsl(var(--ws-card-hue) 20% 78%);
+    --ws-card-header-bg: hsl(var(--ws-card-hue) 24% 96%);
+    margin-bottom: 10px;
+    border: 1px solid var(--ws-card-border);
+    border-left: 3px solid hsl(var(--ws-card-hue) 24% 43%);
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(41, 38, 41, .05);
+  }
+
+  .backlog-tree-surface :global(.active-card-header) {
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 48px;
+    padding: 8px 12px;
+  }
+
+  .backlog-tree-surface :global(.workstream-open) {
+    flex: 1 1 180px;
+    min-height: 32px;
+  }
+
+  .backlog-tree-surface :global(.workstream-open .active-label) {
+    font-size: 14px;
+  }
+
+  .backlog-tree-surface :global(.active-twistie) {
+    color: var(--desktop-active-muted);
+  }
+
+  .backlog-tree-surface :global(.active-twistie:hover) {
+    color: var(--desktop-active-fg);
+  }
+
+  .backlog-tree-surface :global(.active-card-body) {
+    padding: 4px 8px 8px;
+  }
+
+  .backlog-tree-surface :global(.active-card .topic-tree) {
+    --graph-color: hsl(var(--ws-card-hue) 24% 43%);
+  }
+
+  .backlog-tree-surface :global(.active-group-add) {
+    color: var(--desktop-accent-strong);
+  }
+
+  .backlog-tree-surface :global(.active-row) {
+    min-height: 32px;
+    font-size: 13px;
+  }
+
+  .backlog-tree-surface :global(.active-open) {
+    border-radius: 4px;
+  }
+  .backlog-orphan-topics {
+    --graph-color: var(--desktop-accent-strong);
+    --ws-card-bg: #ffffff;
+    --active-tree-control-width: 22px;
+    color: #292629;
+  }
+
+  @container (max-width: 560px) {
+    .backlog-workstream-actions {
+      flex: none;
+      width: calc(100% - 34px);
+      margin-left: 34px;
+    }
+
+    .backlog-workstream-actions button {
+      flex: 1;
+    }
+  }
+</style>

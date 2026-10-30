@@ -62,11 +62,21 @@ describe('automatic encrypted feedback', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(Buffer.from('image'), { headers: { 'content-type': 'image/png' } })));
     const payload = JSON.parse(await serializeFeedback(topic, 'http://local:7717/mcp', requestId, context));
     expect(payload.requestId).toBe(requestId);
-    expect(payload.topic).toMatchObject({ title: topic.title, topicType: topic.topicType });
+    expect(payload.topic.title).toBe(topic.title);
+    expect(payload.topic).not.toHaveProperty('topicType');
+    expect(payload.topic).not.toHaveProperty('topicTypeLabel');
     expect(payload.topic.body).toContain(topic.body);
     expect(payload.topic.body).toContain('Selected backend version: "2.0.7"');
     expect(payload.attachments[0].data).toBe(Buffer.from('image').toString('base64'));
     expect(topic.body).toBe(`![Shot](wm-attachment:${imageId})`);
+  });
+
+  it('prepares the same payload with missing, foreign, or stale source type references', async () => {
+    const topic = { title: 'Feedback', body: 'Original Markdown' };
+    const plain = await serializeFeedback(topic, 'http://local/mcp', requestId, context);
+    for (const topicType of ['', 'Feature', imageId, 'deleted-type']) {
+      expect(await serializeFeedback({ ...topic, topicType }, 'http://local/mcp', requestId, context)).toBe(plain);
+    }
   });
 
   it('rejects missing screenshots before any feedback submission', async () => {

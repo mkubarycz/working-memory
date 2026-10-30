@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
-import { accessSync, constants, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir as systemHomedir } from 'node:os';
-import { join, posix, win32 } from 'node:path';
+import { join, win32 } from 'node:path';
 import { z } from 'zod';
 import {
   DEFAULT_CONTROL_PLANE_SERVICE_PORT,
@@ -14,6 +14,7 @@ import {
   type CommandRunner,
 } from './dockerContainerService';
 import { parseBackendImage } from './updateChannels';
+import { defaultFileExists, dockerCliPath, dockerEnvironment, type DockerHost as DataTierHost } from './dockerCli';
 import type {
   BackendUpdateTarget,
   DataTierInstanceState,
@@ -23,18 +24,14 @@ import type {
 } from '../shared/contracts';
 
 export type { DataTierInstanceState, DataTierInstanceStatus, DataTierInstancesSnapshot, ManagedDataTierInstance };
+export { dockerCliPath, dockerEnvironment } from './dockerCli';
+export type { DockerHost as DataTierHost } from './dockerCli';
 
 export const DATA_TIER_PROJECT = 'working-memory';
 export const DATA_TIER_SERVICE = 'control-plane';
 export const DATA_TIER_CONTAINER = 'working-memory-control-plane';
 export const DATA_TIER_VOLUME = 'working-memory-data';
 export const DOCKER_DESKTOP_URL = 'https://www.docker.com/products/docker-desktop/';
-
-export interface DataTierHost {
-  platform: NodeJS.Platform;
-  env: NodeJS.ProcessEnv;
-  homedir: string;
-}
 
 export interface DataTierOptions extends Partial<DataTierHost> {
   /** Directory containing the prebuilt control-plane image archive. */
@@ -76,70 +73,6 @@ export class DataTierError extends Error {
     this.name = 'DataTierError';
   }
 }
-
-function pathFor(platform: NodeJS.Platform): typeof posix {
-  return platform === 'win32' ? win32 : posix;
-}
-
-function pathDirectories(host: DataTierHost): string[] {
-  const raw = host.env.PATH ?? host.env.Path ?? '';
-  return raw.split(host.platform === 'win32' ? ';' : ':').filter(Boolean);
-}
-
-/** Install locations that GUI-launched apps often lack on PATH. */
-function extraDockerDirectories(host: DataTierHost): string[] {
-  const path = pathFor(host.platform);
-  if (host.platform === 'win32') {
-    const programFiles = host.env.ProgramFiles || 'C:\\Program Files';
-    return [path.join(programFiles, 'Docker', 'Docker', 'resources', 'bin')];
-  }
-  if (host.platform === 'darwin') {
-    return [
-      '/usr/local/bin',
-      '/opt/homebrew/bin',
-      path.join(host.homedir, '.docker', 'bin'),
-      '/Applications/Docker.app/Contents/Resources/bin',
-    ];
-  }
-  return ['/usr/local/bin', '/usr/bin'];
-}
-
-function defaultFileExists(platform: NodeJS.Platform): (candidate: string) => boolean {
-  return (candidate) => {
-    try {
-      accessSync(candidate, platform === 'win32' ? constants.F_OK : constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-}
-
-export function dockerCliPath(
-  host: DataTierHost,
-  fileExists: (path: string) => boolean = defaultFileExists(host.platform),
-): string | undefined {
-  const path = pathFor(host.platform);
-  const executable = host.platform === 'win32' ? 'docker.exe' : 'docker';
-  return [...pathDirectories(host), ...extraDockerDirectories(host)]
-    .map((directory) => path.join(directory, executable))
-    .find(fileExists);
-}
-
-/** Child environment that can find Docker's Compose plugin and credential helpers. */
-export function dockerEnvironment(host: DataTierHost, dockerPath: string): NodeJS.ProcessEnv {
-  const path = pathFor(host.platform);
-  const separator = host.platform === 'win32' ? ';' : ':';
-  const directories = [...new Set([
-    path.dirname(dockerPath),
-    ...extraDockerDirectories(host),
-    ...pathDirectories(host),
-  ])];
-  const { Path: _windowsPath, ...env } = host.env;
-  return { ...env, PATH: directories.join(separator) };
-}
-
-
 
 /** Ports for added instances; 7718 is reserved for the desktop link bridge. */
 export const DATA_TIER_INSTANCE_PORT_FIRST = 7719;

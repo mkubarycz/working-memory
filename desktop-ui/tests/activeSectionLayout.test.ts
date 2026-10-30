@@ -4,35 +4,30 @@ import {
   resizeActiveSections,
 } from '../src/renderer/activeSectionLayout';
 
-const initial = { queue: 140, progress: 300, backlog: 160 };
+const initial = { queue: 140, progress: 300 };
 
 describe('Active rail section layout', () => {
   it('moves the In Progress boundary between Queue and In Progress', () => {
     expect(resizeActiveSections('progress', 30, initial)).toEqual({
       queue: 170,
       progress: 270,
-      backlog: 160,
     });
   });
 
-  it('moves the Backlog boundary between In Progress and Backlog', () => {
-    expect(resizeActiveSections('backlog', -40, initial)).toEqual({
-      queue: 140,
-      progress: 260,
-      backlog: 200,
-    });
-  });
-
-  it('clamps both sides of each boundary to useful minimum heights', () => {
+  it('clamps Queue and In Progress to useful minimum heights', () => {
     expect(resizeActiveSections('progress', -1_000, initial)).toEqual({
       queue: ACTIVE_SECTION_MIN_HEIGHTS.queue,
       progress: 364,
-      backlog: 160,
     });
-    expect(resizeActiveSections('backlog', 1_000, initial)).toEqual({
-      queue: 140,
-      progress: 384,
-      backlog: ACTIVE_SECTION_MIN_HEIGHTS.backlog,
+    expect(resizeActiveSections('progress', 1_000, initial)).toEqual({
+      queue: 320,
+      progress: ACTIVE_SECTION_MIN_HEIGHTS.progress,
     });
+  });
+
+  it('preserves the available height without mutating the measured layout', () => {
+    const next = resizeActiveSections('progress', 70, initial);
+    expect(next.queue + next.progress).toBe(initial.queue + initial.progress);
+    expect(initial).toEqual({ queue: 140, progress: 300 });
   });
 });

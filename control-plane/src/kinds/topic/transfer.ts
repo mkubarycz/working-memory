@@ -13,17 +13,18 @@ export function registerWsTopicTransfer(server: McpServer, store: Store): void {
       title: 'Topic: Transfer',
       description:
         'Atomically copy or move a topic and all of its descendants between workstreams. ' +
-        'Copy keeps source membership; move removes it and clears source focus.',
+        'Copy keeps source membership; move removes it and clears source focus. ' +
+        'Omit sourceWorkstream to add a tree to a workstream without removing existing memberships.',
       inputSchema: z.object({
         id: z.string().min(1),
-        sourceWorkstream: z.string().min(1),
+        sourceWorkstream: z.string().min(1).optional(),
         targetWorkstream: z.string().min(1),
         move: z.boolean().default(false),
       }).strict(),
     },
     async ({ id, sourceWorkstream, targetWorkstream, move }) => {
       if (sourceWorkstream === targetWorkstream) return asError('Source and target workstreams must differ.');
-      for (const workstream of [sourceWorkstream, targetWorkstream]) {
+      for (const workstream of sourceWorkstream ? [sourceWorkstream, targetWorkstream] : [targetWorkstream]) {
         if (!store.getDocument({ id: workstream, kind: WORKSTREAM_KIND })) {
           return asError(`Unknown workstream ID: "${workstream}". No live workstream with that ID.`);
         }
@@ -33,14 +34,14 @@ export function registerWsTopicTransfer(server: McpServer, store: Store): void {
       const byId = new Map(documents.map((document) => [document.metadata.id, document]));
       const root = byId.get(id);
       if (!root) return asError(`Unknown topic ID: "${id}". No live topic with that ID.`);
-      if (!stringArray(root.spec.workstreams).includes(sourceWorkstream)) {
+      if (sourceWorkstream && !stringArray(root.spec.workstreams).includes(sourceWorkstream)) {
         return asError(`Topic "${id}" does not belong to source workstream "${sourceWorkstream}".`);
       }
 
       const children = new Map<string, string[]>();
       for (const document of documents) {
         const childId = document.metadata.id;
-        if (!stringArray(document.spec.workstreams).includes(sourceWorkstream)) continue;
+        if (sourceWorkstream && !stringArray(document.spec.workstreams).includes(sourceWorkstream)) continue;
         for (const parent of stringArray(document.spec.parents)) {
           children.set(parent, [...(children.get(parent) ?? []), childId]);
         }

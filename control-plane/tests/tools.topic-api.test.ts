@@ -34,6 +34,25 @@ async function connect() {
 }
 
 describe('Topic ID-only domain API', () => {
+  it('atomically assigns an unassigned tree while preserving other memberships and topic statuses', async () => {
+    const { call, workstream, seed, read, store } = await connect();
+    const archived = workstream('Archived membership');
+    const archivedDocument = store.getDocument({ id: archived })!;
+    store.updateDocument({ id: archived, expectedResourceVersion: archivedDocument.metadata.resourceVersion, spec: { status: 'closed' } });
+    const target = workstream('Target');
+    const root = seed('Unassigned parent');
+    const child = seed('Child', { parents: [root], workstreams: [archived], status: 'closed' });
+    const unrelated = seed('Unrelated');
+    const result = await call('ws-topic-transfer', { id: root, targetWorkstream: target, move: true });
+    expect(error(result)).toBe(false);
+    expect(json<ITopic[]>(result).map(topic => topic.id)).toEqual([root, child]);
+    expect(await read(root)).toMatchObject({ workstreams: [target], status: 'open' });
+    expect(await read(child)).toMatchObject({ workstreams: [archived, target], status: 'closed' });
+    expect(await read(unrelated)).toMatchObject({ workstreams: [] });
+    expect(error(await call('ws-topic-transfer', { id: root, targetWorkstream: 'missing' }))).toBe(true);
+    expect(await read(root)).toMatchObject({ workstreams: [target] });
+  });
+
   it('exposes strict ID-only schemas and no create-time locator', async () => {
     const { client, call } = await connect();
     const tools = (await client.listTools()).tools;

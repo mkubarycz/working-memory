@@ -6,9 +6,10 @@ import { discoverFeedbackServers, type FeedbackDestination } from './feedbackDis
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IMAGE_TYPES: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+type FeedbackTopic = Pick<Topic, 'title' | 'body'> & Partial<Pick<Topic, 'topicType'>>;
 
 export async function serializeFeedback(
-  topic: Pick<Topic, 'title' | 'body' | 'topicType'>,
+  topic: FeedbackTopic,
   sourceUrl: string,
   requestId: string,
   context: FeedbackContext,
@@ -36,7 +37,8 @@ export async function serializeFeedback(
     }
     attachments.push({ id, filename: `${id}.${IMAGE_TYPES[mimeType]}`, mimeType, data: bytes.toString('base64') });
   }
-  const body = JSON.stringify({ version: 1, requestId, topic: { title: topic.title, body: sharedBody, topicType: topic.topicType }, attachments });
+  const body = JSON.stringify({ version: 1, requestId,
+    topic: { title: topic.title, body: sharedBody }, attachments });
   if (Buffer.byteLength(body) > 29 * 1024 * 1024) throw new Error('The shared topic exceeds the receiver payload limit.');
   return body;
 }
@@ -139,7 +141,7 @@ export class FeedbackSender {
   private pending: Promise<FeedbackSnapshot> | undefined;
   private requestId = '';
   constructor(private readonly source: (id: string) => Promise<{
-    topic: Pick<Topic, 'title' | 'body' | 'topicType'>; sourceUrl: string; context: FeedbackContext;
+    topic: FeedbackTopic; sourceUrl: string; context: FeedbackContext;
     recordReceipt: (receipt: SharedTopicReceipt) => Promise<void>;
     fetcher?: typeof fetch;
   }>) {}

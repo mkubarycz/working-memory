@@ -359,7 +359,7 @@ export interface TopicUpdateInput {
 
 export interface TopicTransferInput {
   id: string;
-  sourceWorkstream: string;
+  sourceWorkstream?: string;
   targetWorkstream: string;
   move?: boolean;
 }
@@ -1493,7 +1493,7 @@ export class ControlPlaneClient {
   async topicTransfer(input: TopicTransferInput): Promise<Topic[]> {
     const result = await this.callDomainTool('ws-topic-transfer', {
       id: input.id,
-      sourceWorkstream: input.sourceWorkstream,
+      ...(input.sourceWorkstream ? { sourceWorkstream: input.sourceWorkstream } : {}),
       targetWorkstream: input.targetWorkstream,
       move: input.move ?? false,
     });
