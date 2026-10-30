@@ -5,6 +5,12 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = resolve(import.meta.dirname, '../..');
 
 describe('desktop tree icon contract', () => {
+  it('does not require a source topic-type lookup to prepare feedback', () => {
+    const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
+    expect(main).not.toContain('client.topicTypeRead({ id: topic.topicType })');
+    expect(main).toContain('topic, sourceUrl, fetcher: client.fetch.bind(client)');
+    expect(main).not.toContain('The feedback topic type was not found in the selected environment.');
+  });
   it('keeps selected tabs visible and gives empty topic drafts a content-independent stage width', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
@@ -49,7 +55,7 @@ describe('desktop tree icon contract', () => {
     const preload = readFileSync(resolve(repoRoot, 'desktop-ui/src/preload/index.ts'), 'utf8');
     const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
 
-    expect(app).toContain('onRefresh={() => window.workingMemory.restartDesktop()}');
+    expect(app).toContain('onRefresh: () => window.workingMemory.restartDesktop()');
     expect(activeRail).toContain('title="Restart to apply latest build"');
     expect(activeRail).toContain('aria-label="Restart Working Memory"');
     expect(preload).toContain("restartDesktop: () => ipcRenderer.send('app:restart')");
@@ -208,7 +214,7 @@ describe('desktop tree icon contract', () => {
     expect(settings).toContain("id: 'deep', label: 'Deep Thought'");
     expect(settings).toContain('bind:value={routing[`${depth.id}:${speed}`]}');
     expect(settings).toContain("testingProfileId === profile.id ? 'Testing...' : 'Test'");
-    expect(app).toContain("{ kind: 'settings', id: 'desktop-settings',  title: 'Settings' }");
+    expect(app).toContain('settingsDocument(),');
     expect(app).toContain('profiles: modelProfiles.map(modelProfileInput)');
     expect(preload).toContain("testModelProfile: (input) => invoke('config:test-profile', input)");
     expect(main).toContain("ipcMain.handle('config:test-profile'");
@@ -218,15 +224,15 @@ describe('desktop tree icon contract', () => {
     expect(main).toContain("ipcMain.handle('topic:autocomplete'");
   });
 
-  it('renders queue and backlog as summaries while progress alone owns disclosure and graph details', () => {
+  it('keeps queue compact while progress and backlog-page cards share disclosure and graph details', () => {
     const activeRail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
 
     expect(activeRail).toContain("workstreamCard(workstream: PanelWorkstream, sectionStatus: PanelWorkstreamSection['section'], compact: boolean)");
-    expect(activeRail).toContain("const expandable = sectionStatus === 'progress' && hasDetails");
+    expect(activeRail).toContain("const expandable = (backlog !== undefined || sectionStatus === 'progress') && hasDetails");
     expect(activeRail).toContain('setNodeAndChildrenExpanded(expanded, workstream)');
     expect(activeRail).toContain('onclick={() => toggleWorkstream(workstream)}');
-    expect(activeRail).toContain("class:summary={sectionStatus !== 'progress'}");
+    expect(activeRail).toContain("class:summary={!backlog && sectionStatus !== 'progress'}");
     expect(activeRail).toContain('data-section-status={sectionStatus}');
     expect(activeRail).toContain("{:else if sectionStatus === 'progress'}");
     expect(activeRail).toContain('{#if expandable && open}');
@@ -256,7 +262,8 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).not.toContain(
       'class="active-card-header"\n      role="group"\n      draggable="true"',
     );
-    expect(activeRail).toContain("let activeDrag = $state<");
+    expect(activeRail).toContain('activeDrag = $bindable(null)');
+    expect(app).toContain('bind:activeDrag={activeTreeDrag}');
     expect(activeRail).toContain("activeDrag?.kind === 'topic'");
     expect(activeRail).toContain("activeDrag?.kind === 'workstream'");
     expect(activeRail).toContain('event.preventDefault();');
@@ -334,10 +341,31 @@ describe('desktop tree icon contract', () => {
 
     expect(styles).toMatch(/\.active-section-header[^}]*background:\s*var\(--desktop-accent\)/s);
     expect(styles).toMatch(/\.active-section-heading\.resizable[^}]*cursor:\s*row-resize[^}]*touch-action:\s*none/s);
-    expect(activeRail).toContain("role={section.section !== 'queue' ? 'separator' : undefined}");
-    expect(activeRail).toContain("aria-orientation={section.section !== 'queue' ? 'horizontal' : undefined}");
+    expect(activeRail).toContain("role={section.section === 'progress' ? 'separator' : undefined}");
+    expect(activeRail).toContain("aria-orientation={section.section === 'progress' ? 'horizontal' : undefined}");
     expect(activeRail).toContain('onpointerdown=');
     expect(activeRail).toContain('resizeSectionWithKeyboard');
+  });
+
+  it('renders backlog workstreams above topics on the backlog page rather than in the left rail', () => {
+    const view = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/TopicBacklogView.svelte'), 'utf8');
+    const rail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
+
+    expect(rail).toContain("sections.filter(section => section.section !== 'backlog')");
+    expect(rail).toContain('{#each railSections as section');
+    expect(rail).toContain('onclick={onOpenTopicBacklog}');
+    expect(rail).toContain('backlogWorkstreams.length + (data?.topicBacklog?.length ?? 0)');
+    expect(styles).toMatch(/\.active-sections\s*{[^}]*grid-template-rows:\s*minmax\(76px, auto\) minmax\(120px, 1fr\);/s);
+    expect(rail.indexOf('{#each backlog.workstreams')).toBeLessThan(rail.indexOf('{#each backlog.topics'));
+    expect(view).toContain('<ActiveRail {...treeProps} {backlog} bind:activeDrag />');
+    expect(rail).toContain("unreadResponseCount(unreadResponses, 'workstream', workstream.id");
+    expect(rail).toContain('No workstreams are on the backlog.');
+    expect(rail).toContain('Every open topic belongs to an active workstream.');
+    expect(app).toContain('? topicBacklogDocument(panel)');
+    expect(app).toContain('treeProps={activeTreeProps}');
+    expect(app).toContain('restoreLocalDocumentTab(reference, activePanel, instanceFeatures.hostTasks)');
   });
 
   it('keeps selected-document context and composer in a stable center-stage row', () => {

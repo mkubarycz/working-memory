@@ -2,6 +2,12 @@ import type {
   ContainerAppResourceReference,
   PreparedResourceDrag,
 } from '../shared/contracts';
+import type { WorkstreamSection } from '../../../shared/panelData';
+import type { TopicDragSource } from './topicTransfer';
+
+export type ActiveResourceDrag =
+  | ({ kind: 'topic' } & TopicDragSource)
+  | { kind: 'workstream'; id: string; section: WorkstreamSection };
 
 const RESOURCE_URI_RE =
   /^working-memory:\/(?:\/)?(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)\.working-memory$/;

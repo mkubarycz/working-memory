@@ -23,6 +23,7 @@
   import TopicCreateView from './documents/TopicCreateView.svelte';
   import { createTopicFromDraft } from './topicCreation';
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
+  import { topicBacklogDocument } from './topicBacklog';
   import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
@@ -32,7 +33,6 @@
     SaveState,
     TopicPatch,
     TopicCreateDraftVM,
-    TopicBacklogVM,
     WorkstreamVM,
   } from './documents/types';
   import { chatContextForDocument } from '../shared/contracts';
@@ -95,7 +95,9 @@
     promoteDocumentTab,
     promoteOnDocumentInput,
     replaceSelectedTab,
+    restoreLocalDocumentTab,
     serializeDocumentTabs,
+    settingsDocument,
     updateDocumentTab,
     type DocumentTabsState,
   } from './documentTabs';
@@ -107,6 +109,7 @@
   import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
   import { topicTransferRefreshTargets, type TopicDragSource, type TopicTransferRequest } from './topicTransfer';
+  import type { ActiveResourceDrag } from './resourceDrag';
   import type { WorkstreamSection } from '../../../shared/panelData';
   import type { RailSide, RailWidths } from './railLayout';
   import {
@@ -267,6 +270,7 @@
   let environmentGeneration = 0;
   let historyRequestGeneration: number | null = null;
   let documentTabsPersistenceReady = $state(false);
+  let activeTreeDrag = $state<ActiveResourceDrag | null>(null);
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
   const selectedContainerAppId = $derived(containerAppIdForDocument(activeDocument));
   const selectedContainerApp = $derived(containerApps.find((app) => app.id === selectedContainerAppId) ?? null);
@@ -1238,13 +1242,13 @@
     }
     for (const reference of persisted.tabs) {
       try {
-        let document: DocumentVM | null = null;
-        if (reference.kind === 'host-task' && instanceFeatures.hostTasks) {
+        let document = restoreLocalDocumentTab(reference, activePanel, instanceFeatures.hostTasks);
+        if (!document && reference.kind === 'host-task' && instanceFeatures.hostTasks) {
           document = hostTaskDocument({ id: reference.identifier, name: hostTaskNames.get(reference.identifier) ?? 'Host task' });
-        } else if (reference.kind === 'container-app') {
+        } else if (!document && reference.kind === 'container-app') {
           const app = containerApps.find((candidate) => candidate.id === reference.identifier);
           if (app) document = containerAppDocument(app);
-        } else if (RESTORABLE_DOCUMENT_KINDS.has(reference.kind as DesktopResourceKind)) {
+        } else if (!document && RESTORABLE_DOCUMENT_KINDS.has(reference.kind as DesktopResourceKind)) {
           document = await window.workingMemory.openResource(
             reference.kind as DesktopResourceKind,
             reference.identifier,
@@ -1353,7 +1357,7 @@
       activePanel = panel;
       documents = documents.map((document) =>
         document.kind === 'topic-backlog'
-          ? { ...document, topics: panel.topicBacklog ?? [] }
+          ? topicBacklogDocument(panel)
           : document,
       );
       if (activePanel.items.length === 0 && activePanel.emptyMessage !== 'No active workstreams.') {
@@ -1446,6 +1450,7 @@
     try {
       if (instanceConnection?.authenticated) await documentSaves.flushAll();
       documentTabsPersistenceReady = false;
+      activeTreeDrag = null;
       environmentGeneration += 1;
       historyRequestGeneration = null;
       resetEnvironmentState();
@@ -1758,7 +1763,7 @@
     if (tab) settingsTab = tab;
     const next = openDocumentTab(
       documentTabsState(),
-      { kind: 'settings', id: 'desktop-settings',  title: 'Settings' },
+      settingsDocument(),
     );
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
@@ -1868,13 +1873,7 @@
 
   function openTopicBacklog(): void {
     documentOpens.invalidate();
-    const backlog: TopicBacklogVM = {
-      kind: 'topic-backlog',
-      id: 'open-topic-backlog',
-
-      title: 'Open topic backlog',
-      topics: activePanel?.topicBacklog ?? [],
-    };
+    const backlog = topicBacklogDocument(activePanel);
     const next = openDocumentTab(documentTabsState(), backlog);
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
@@ -1942,10 +1941,37 @@
     }
   }
 
-  function runActiveAction(workstream: string, action: PanelAction): void {
+  async function runActiveAction(workstream: string, action: PanelAction): Promise<void> {
     if (!workstream || action.enabled === false) return;
-    void mutateFromRail(workstream, () => invokeActiveAction(window.workingMemory.invokeAction, workstream, action));
+    await mutateFromRail(workstream, () => invokeActiveAction(window.workingMemory.invokeAction, workstream, action));
   }
+
+  const activeTreeProps = $derived({
+    unreadResponses, environments, selectedEnvironment, environmentLoading, environmentError,
+    data: activePanel, loading: activeLoading, error: activeError,
+    onDiscoverEnvironments: discoverEnvironments,
+    onSwitchEnvironment: switchEnvironment,
+    onManageInstances: openInstances,
+    onRefresh: () => window.workingMemory.restartDesktop(),
+    onSettings: () => openSettings(),
+    onCollapse: () => (activeRailCollapsed = true),
+    onOpen: openRoute,
+    onToggleFocus: toggleActiveFocus,
+    onAction: runActiveAction,
+    onReorder: reorderActiveWorkstream,
+    onTransferTopic: transferActiveTopic,
+    onReparentTopic: (id: string, parent: string | null) => void reparentActiveTopic(id, parent),
+    onAddTopic: (workstream: string, parent?: { id: string; title: string }) => {
+      const card = activePanel?.items
+        .filter((item) => item.kind === 'workstream-section')
+        .flatMap((section) => section.workstreams)
+        .find((candidate) => candidate.id === workstream);
+      void startTopicCreation(workstream, card?.label ?? workstream, parent);
+    },
+    onAddWorkstream: () => void startTopicCreation('', '', undefined, true),
+    onMoveToNewWorkstream: (source: TopicDragSource) => { movingToNewWorkstream = source; },
+    onOpenTopicBacklog: openTopicBacklog,
+  });
 
   async function transferActiveTopic(request: TopicTransferRequest): Promise<boolean> {
     activeLoading = true;
@@ -2376,38 +2402,7 @@
       ><span aria-hidden="true" class="codicon codicon-chevron-right"></span></button>
     {:else}
       {#key selectedEnvironment?.id ?? 'no-environment'}
-        <ActiveRail
-          {unreadResponses}
-          {environments}
-          {selectedEnvironment}
-          {environmentLoading}
-          {environmentError}
-          data={activePanel}
-          loading={activeLoading}
-          error={activeError}
-          onDiscoverEnvironments={discoverEnvironments}
-          onSwitchEnvironment={switchEnvironment}
-          onManageInstances={openInstances}
-          onRefresh={() => window.workingMemory.restartDesktop()}
-          onSettings={() => openSettings()}
-          onCollapse={() => (activeRailCollapsed = true)}
-          onOpen={openRoute}
-          onToggleFocus={toggleActiveFocus}
-          onAction={runActiveAction}
-          onReorder={reorderActiveWorkstream}
-          onTransferTopic={transferActiveTopic}
-          onReparentTopic={(id, parent) => void reparentActiveTopic(id, parent)}
-          onAddTopic={(workstream, parent) => {
-            const card = activePanel?.items
-              .filter((item) => item.kind === 'workstream-section')
-              .flatMap((section) => section.workstreams)
-              .find((candidate) => candidate.id === workstream);
-            void startTopicCreation(workstream, card?.label ?? workstream, parent);
-          }}
-          onAddWorkstream={() => void startTopicCreation('', '', undefined, true)}
-          onMoveToNewWorkstream={(source) => { movingToNewWorkstream = source; }}
-          onOpenTopicBacklog={openTopicBacklog}
-        />
+        <ActiveRail {...activeTreeProps} bind:activeDrag={activeTreeDrag} />
       {/key}
     {/if}
   </aside>
@@ -2656,9 +2651,9 @@
           />
         {:else if activeDocument?.kind === 'topic-backlog'}
           <TopicBacklogView
-            {unreadResponses}
             backlog={activeDocument}
-            onOpenTopic={(id) => void openResource('topic', id)}
+            treeProps={activeTreeProps}
+            bind:activeDrag={activeTreeDrag}
           />
         {:else if activeDocument?.kind === 'topic'}
           <TopicView

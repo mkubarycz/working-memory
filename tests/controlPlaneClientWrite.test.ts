@@ -223,6 +223,24 @@ describe('ControlPlaneClient write methods', () => {
     }
   });
 
+  it('assigns an unassigned topic tree through the typed client without a source workstream', async () => {
+    server = await startServer({ port: 0 });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server!.url}/mcp` });
+    try {
+      const target = await client.wsCreate({ title: 'Target' });
+      await client.topicTypeCreate({ label: 'Topic', icon: 'notebook', description: 'Default' });
+      const parent = await client.topicCreate({ title: 'Parent' });
+      const child = await client.topicCreate({ title: 'Child', parents: [parent.id] });
+      const assigned = await client.topicTransfer({ id: parent.id, targetWorkstream: target.id });
+      expect(assigned.map(topic => topic.id).sort()).toEqual([parent.id, child.id].sort());
+      expect(assigned.every(topic => topic.workstreams.includes(target.id))).toBe(true);
+      const retry = await client.topicTransfer({ id: parent.id, sourceWorkstream: '', targetWorkstream: target.id });
+      expect(retry.map(topic => topic.resourceVersion)).toEqual(assigned.map(topic => topic.resourceVersion));
+    } finally {
+      await client.dispose();
+    }
+  });
+
   it('sets then clears per-workstream focus via topicSetFocus / topicClearFocus', async () => {
     server = await startServer({ port: 0 });
     const mcpUrl = `${server.url}/mcp`;

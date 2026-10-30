@@ -56,10 +56,10 @@ export function planTopicTransfer(
   targetWorkstream: string,
   move: boolean,
 ): TopicTransferRequest | null {
-  if (!source?.id || !source.sourceWorkstream || !targetWorkstream || source.sourceWorkstream === targetWorkstream) {
+  if (!source?.id || !targetWorkstream || source.sourceWorkstream === targetWorkstream) {
     return null;
   }
-  return { ...source, targetWorkstream, move };
+  return { id: source.id, sourceWorkstream: source.sourceWorkstream, targetWorkstream, move };
 }
 
 export function topicTransferRefreshTargets(

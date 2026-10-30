@@ -1,4 +1,6 @@
-import type { DocumentVM, HostTaskVM, HostTaskCreateVM } from './documents/types';
+import type { DocumentVM, HostTaskVM, HostTaskCreateVM, SettingsVM } from './documents/types';
+import type { PanelData } from '../../../shared/panelData';
+import { topicBacklogDocument } from './topicBacklog';
 import { normalizeScopeKind } from './scopeIdentity';
 import { desktopDeepLink } from '../shared/deepLink';
 
@@ -15,6 +17,24 @@ export interface PersistedDocumentTabs {
 }
 
 const MAX_PERSISTED_TABS = 50;
+const PERMANENT_TAB_KINDS = new Set(['settings', 'topic-backlog', 'container-app', 'host-task', 'host-task-create']);
+
+export function settingsDocument(): SettingsVM {
+  return { kind: 'settings', id: 'desktop-settings', title: 'Settings' };
+}
+
+export function restoreLocalDocumentTab(
+  reference: PersistedDocumentTabs['tabs'][number],
+  panel: PanelData | null,
+  hostTasksEnabled: boolean,
+): DocumentVM | null {
+  if (reference.kind === 'settings' && reference.identifier === 'desktop-settings') return settingsDocument();
+  if (reference.kind === 'topic-backlog' && reference.identifier === 'open-topic-backlog') return topicBacklogDocument(panel);
+  if (reference.kind === 'host-task-create' && reference.identifier === 'new-host-task' && hostTasksEnabled) {
+    return newHostTaskDocument();
+  }
+  return null;
+}
 
 export function hostTaskDocument(task: { id: string; name: string; draftName?: string }): HostTaskVM {
   return { kind: 'host-task', id: task.id, title: task.draftName ?? task.name };
@@ -183,6 +203,7 @@ export function openDocumentTab(
   document: DocumentVM,
   preview = true,
 ): DocumentTabsState {
+  if (PERMANENT_TAB_KINDS.has(document.kind)) preview = false;
   const key = documentTabKey(document);
   const index = state.tabs.findIndex((tab) => documentTabKey(tab) === key);
   if (index >= 0) {

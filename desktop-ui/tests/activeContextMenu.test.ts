@@ -86,14 +86,16 @@ describe('Active rail context-menu projection', () => {
     });
   });
 
-  it('disables Move to when the topic or source is unavailable', () => {
-    for (const source of [
-      { topic: '', sourceWorkstream: 'source' },
-      { topic: 'topic-one', sourceWorkstream: '' },
-    ]) {
-      expect(activeContextMenuItems([], { ...source, focused: false, moveTargets: [] })[2])
-        .toMatchObject({ kind: 'move', enabled: false });
-    }
+  it('allows unassigned topics to move but disables actions that require existing membership', () => {
+    expect(activeContextMenuItems([], {
+      topic: '', sourceWorkstream: 'source', focused: false, moveTargets: [],
+    })[2]).toMatchObject({ kind: 'move', enabled: false });
+    const items = activeContextMenuItems([
+      { command: 'workingMemory.topic.removeFromWorkstream', title: 'Remove from workstream' },
+    ], { topic: 'topic-one', sourceWorkstream: '', focused: false, moveTargets: [] });
+    expect(items.map(item => [item.kind, item.enabled])).toEqual([
+      ['create-child', false], ['focus', false], ['move', true], ['action', false],
+    ]);
   });
 
   it('extracts and decodes the topic id from a panel URI', () => {

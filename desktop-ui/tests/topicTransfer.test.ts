@@ -62,6 +62,12 @@ describe('topic transfer drag planning', () => {
     expect(planTopicTransfer({ id: 'parent', sourceWorkstream: 'source' }, 'source', false)).toBeNull();
   });
 
+  it('adds an unassigned topic tree without inventing a source workstream', () => {
+    expect(planTopicTransfer({ id: 'parent', sourceWorkstream: '' }, 'target', true)).toEqual({
+      id: 'parent', sourceWorkstream: '', targetWorkstream: 'target', move: true,
+    });
+  });
+
   it('refreshes open topics and both affected workstreams without touching unrelated documents', () => {
     expect(topicTransferRefreshTargets([
       { kind: 'topic', id: 'parent' },

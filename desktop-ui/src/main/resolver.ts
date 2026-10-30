@@ -220,7 +220,7 @@ export function resolveDesktopAction(
     const sourceWorkstream = value && typeof value === 'object' && 'sourceWorkstream' in value &&
       typeof value.sourceWorkstream === 'string' ? value.sourceWorkstream : '';
     const move = Boolean(value && typeof value === 'object' && 'move' in value && value.move === true);
-    if (sourceWorkstream && workstream && sourceWorkstream !== workstream) {
+    if (workstream && sourceWorkstream !== workstream) {
       return {
         kind: 'topic', operation: 'transfer', id: topicId,
         sourceWorkstream, targetWorkstream: workstream, move,

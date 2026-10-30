@@ -69,7 +69,7 @@ export function activeContextMenuItems(
       kind: 'focus',
       title: topic.focused ? 'Remove from Focus' : 'Add to Focus',
       icon: topic.focused ? 'pinned' : 'pin',
-      enabled: Boolean(topic.topic),
+      enabled: Boolean(topic.topic) && Boolean(topic.sourceWorkstream),
       topic: topic.topic,
     });
     const targets = topic.moveTargets.filter((target) => target.id !== topic.sourceWorkstream);
@@ -77,7 +77,7 @@ export function activeContextMenuItems(
       kind: 'move',
       title: 'Move to...',
       icon: 'arrow-swap',
-      enabled: Boolean(topic.topic) && Boolean(topic.sourceWorkstream),
+      enabled: Boolean(topic.topic),
       topic: topic.topic,
       targets,
     });
@@ -86,7 +86,8 @@ export function activeContextMenuItems(
     kind: 'action' as const,
     title: action.title,
     icon: action.icon || 'arrow-swap',
-    enabled: action.enabled !== false,
+    enabled: action.enabled !== false
+      && !(topic && !topic.sourceWorkstream && action.command === 'workingMemory.topic.removeFromWorkstream'),
     action,
   })));
 }

@@ -1,4 +1,4 @@
-import type { PanelTopicRow } from '../../../../shared/panelData';
+import type { PanelTopicRow, PanelWorkstream } from '../../../../shared/panelData';
 
 /**
  * Shared view-model + message types for the unified `.working-memory` document
@@ -162,7 +162,8 @@ export interface TopicBacklogVM {
   kind: 'topic-backlog';
   id: 'open-topic-backlog';
 
-  title: 'Open topic backlog';
+  title: 'Backlog';
+  workstreams: PanelWorkstream[];
   topics: PanelTopicRow[];
 }
 
