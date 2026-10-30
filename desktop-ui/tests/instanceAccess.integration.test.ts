@@ -11,6 +11,7 @@ import { DesktopInstanceIdentity } from '../src/main/instanceIdentity';
 import { registerInstanceIdentityIpc } from '../src/main/instanceIdentityIpc';
 import { loadKinds } from '../../control-plane/src/kinds/loader';
 import { defaultInstancePermissions } from '../../control-plane/src/instancePermissions';
+import { DEFAULT_SESSION_POLICY, sessionSnapshotSchema } from '../../control-plane/src/sessionPolicy';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -40,6 +41,90 @@ async function fixture() {
   const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!(event, ...args);
   return { store, server, vault, identity, unauthorized, environment, event, handlers, dialog, changed, call };
 }
+
+it('reads and saves owner session diagnostics through trusted, environment-bound IPC', async () => {
+  const f = await fixture();
+  await expect(f.call('instance:sessions')).rejects.toThrow('Sign in');
+  f.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+  await f.call('instance:sign-in', { password: 'my private owner password', setup: true });
+  const snapshot = sessionSnapshotSchema.parse(await f.call('instance:sessions'));
+  expect(snapshot.policy).toEqual(DEFAULT_SESSION_POLICY);
+  await f.call('instance:session-policy', { mcpUrl: f.environment.mcpUrl, policy: { ...DEFAULT_SESSION_POLICY, idleMinutes: 70 } });
+  expect(sessionSnapshotSchema.parse(await f.call('instance:sessions')).policy.idleMinutes).toBe(70);
+  await expect(f.call('instance:sessions', -1)).rejects.toThrow();
+  await expect(f.call('instance:session-policy', {
+    mcpUrl: f.environment.mcpUrl, policy: { ...DEFAULT_SESSION_POLICY, retentionDays: 0 },
+  })).rejects.toThrow();
+  await expect(f.call('instance:session-policy', {
+    mcpUrl: 'http://127.0.0.1:9999/mcp', policy: DEFAULT_SESSION_POLICY,
+  })).rejects.toThrow('selected instance changed');
+  expect(sessionSnapshotSchema.parse(await f.call('instance:sessions')).policy.idleMinutes).toBe(70);
+  const invalidEvent = { ...f.event, senderFrame: { url: 'https://untrusted.invalid' } } as unknown as IpcMainInvokeEvent;
+  await expect(f.handlers.get('instance:sessions')!(invalidEvent)).rejects.toThrow();
+  const pending = f.call('instance:sessions');
+  f.environment.mcpUrl = 'http://127.0.0.1:9999/mcp';
+  await expect(pending).rejects.toThrow('selected instance changed');
+});
+
+it('serializes policy saves across view lifetimes and continues after a failed save', async () => {
+  const f = await fixture();
+  f.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+  await f.call('instance:sign-in', { password: 'my private owner password', setup: true });
+  const original = f.identity.sessions.bind(f.identity);
+  let release!: () => void, started!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const running = new Promise<void>(resolve => { started = resolve; });
+  const sessions = vi.spyOn(f.identity, 'sessions').mockImplementationOnce(async (...args) => {
+    started(); await waiting;
+    return original(...args);
+  });
+  const save = (idleMinutes: number) => f.call('instance:session-policy', {
+    mcpUrl: f.environment.mcpUrl, policy: { ...DEFAULT_SESSION_POLICY, idleMinutes },
+  });
+  try {
+    const first = save(61);
+    await running;
+    const second = save(62);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(sessions).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([first, second]);
+    expect(sessionSnapshotSchema.parse(await f.call('instance:sessions')).policy.idleMinutes).toBe(62);
+    sessions.mockRejectedValueOnce(new Error('test policy save failure'));
+    await expect(save(63)).rejects.toThrow('test policy save failure');
+    await save(64);
+    expect(sessionSnapshotSchema.parse(await f.call('instance:sessions')).policy.idleMinutes).toBe(64);
+  } finally { release(); sessions.mockRestore(); }
+});
+
+it('rejects queued policy writes if the selected instance changes before they start', async () => {
+  const f = await fixture();
+  f.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+  await f.call('instance:sign-in', { password: 'my private owner password', setup: true });
+  const original = f.identity.sessions.bind(f.identity);
+  const mcpUrl = f.environment.mcpUrl;
+  let release!: () => void, started!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const running = new Promise<void>(resolve => { started = resolve; });
+  const sessions = vi.spyOn(f.identity, 'sessions').mockImplementationOnce(async (...args) => {
+    started(); await waiting;
+    return original(...args);
+  });
+  try {
+    const first = f.call('instance:session-policy', { mcpUrl, policy: { ...DEFAULT_SESSION_POLICY, idleMinutes: 61 } });
+    await running;
+    const second = f.call('instance:session-policy', { mcpUrl, policy: { ...DEFAULT_SESSION_POLICY, idleMinutes: 62 } });
+    const results = Promise.allSettled([first, second]);
+    f.environment.mcpUrl = 'http://127.0.0.1:9999/mcp';
+    release();
+    expect(await results).toMatchObject([
+      { status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('selected instance changed') }) },
+      { status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('selected instance changed') }) },
+    ]);
+    expect(sessions).toHaveBeenCalledTimes(1);
+    expect((await original(mcpUrl)).policy.idleMinutes).toBe(61);
+  } finally { release(); sessions.mockRestore(); }
+});
 
 it('guides initial setup through native approval and uses one isolated owner session for all data', async () => {
   const f = await fixture();

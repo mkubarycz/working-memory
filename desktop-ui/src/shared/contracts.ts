@@ -475,4 +475,5 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   getAppResourceContract(id: ContainerAppId): Promise<AppResourceContract>;
   restartDesktop(): void;
   openExternal(url: string): Promise<void>;
+  openImage(source: string): Promise<void>;
 }

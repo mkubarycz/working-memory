@@ -5,6 +5,7 @@ import type { InstanceConnectionState, InstanceAccessSnapshot } from '../shared/
 import type { InstancePasswordVault } from './instancePasswordVault';
 import { instancePermissionsSchema } from '../../../control-plane/src/instancePermissions';
 import type { InstanceAccessAction } from '../shared/instanceIdentity';
+import { sessionPolicySchema, sessionSnapshotSchema, type SessionPolicy, type SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
 
 const statusSchema = z.object({ passwordConfigured: z.boolean(), passwordHint: z.string().max(1000),
   authenticated: z.boolean(), scope: z.literal('instance') });
@@ -55,6 +56,9 @@ export class DesktopInstanceIdentity {
       }
       if (response.status === 429) throw new Error('Too many sign-in attempts. Try again in a minute.');
       if (response.status === 409) throw new Error('Instance setup changed. Refresh the connection and try again.');
+      if (path.startsWith('/identity/v1/sessions') && response.status === 404) {
+        throw new Error('This instance does not support session diagnostics yet. Upgrade its backend, then refresh.');
+      }
       throw new Error(`Instance connection failed (HTTP ${response.status}). Check that this instance supports password sign-in.`);
     }
     return response.json();
@@ -167,5 +171,16 @@ export class DesktopInstanceIdentity {
       throw new Error('Sign in as the instance owner to manage access.');
     }
     return accessSchema.parse(await this.request(mcpUrl, '/identity/v1/access', action, token));
+  }
+
+  async sessions(mcpUrl: string, before?: number, policy?: SessionPolicy): Promise<SessionSnapshot> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) {
+      this.onUnauthorized(mcpUrl);
+      throw new Error('Sign in as the instance owner to view sessions.');
+    }
+    const cursor = before === undefined ? '' : `?before=${z.number().int().positive().max(Number.MAX_SAFE_INTEGER).parse(before)}`;
+    return sessionSnapshotSchema.parse(await this.request(mcpUrl, `/identity/v1/sessions${cursor}`,
+      policy === undefined ? undefined : sessionPolicySchema.parse(policy), token));
   }
 }

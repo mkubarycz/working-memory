@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type SettingsTab = 'models' | 'routing' | 'human' | 'instances' | 'updates' | 'features' | 'access';
+  export type SettingsTab = 'models' | 'routing' | 'human' | 'instances' | 'updates' | 'features' | 'access' | 'sessions';
 </script>
 
 <script lang="ts">
@@ -15,6 +15,7 @@
   import UpdatesView from './UpdatesView.svelte';
   import FeaturesView from './FeaturesView.svelte';
   import AccessView from './AccessView.svelte';
+  import SessionsView from './SessionsView.svelte';
   import type { InstanceFeatures } from '../../../../control-plane/src/instanceFeatures';
 
   interface Props {
@@ -106,6 +107,7 @@
     <button role="tab" aria-selected={tab === 'updates'} onclick={() => (tab = 'updates')}>Updates</button>
     <button role="tab" aria-selected={tab === 'features'} onclick={() => (tab = 'features')}>Features</button>
     <button role="tab" aria-selected={tab === 'access'} onclick={() => (tab = 'access')}>Access</button>
+    <button role="tab" aria-selected={tab === 'sessions'} onclick={() => (tab = 'sessions')}>Sessions</button>
   </div>
   {#if tab === 'models'}
     <p class="settings-intro">
@@ -217,6 +219,8 @@
     {#key selectedMcpUrl}<FeaturesView onChanged={onFeaturesChanged} />{/key}
   {:else if tab === 'access'}
     {#key selectedMcpUrl}<AccessView />{/key}
+  {:else if tab === 'sessions'}
+    {#key selectedMcpUrl}<SessionsView mcpUrl={selectedMcpUrl} />{/key}
   {:else if tab === 'updates'}
     <UpdatesView />
   {:else}
@@ -233,7 +237,7 @@
       <p>Your initials appear beside your messages in the inline chat response.</p>
     </div>
   {/if}
-  {#if tab !== 'instances' && tab !== 'updates' && tab !== 'features' && tab !== 'access'}
+  {#if tab !== 'instances' && tab !== 'updates' && tab !== 'features' && tab !== 'access' && tab !== 'sessions'}
     <div class="settings-actions">
       <button class="primary" disabled={saving || testingProfileId !== null} onclick={() => void onSave()}>
         {saving ? 'Saving...' : 'Save'}

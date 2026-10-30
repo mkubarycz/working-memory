@@ -1,4 +1,5 @@
 import type { InstancePermissions } from '../../../control-plane/src/instancePermissions';
+import type { SessionPolicy, SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
 export type { InstancePermissions };
 export type InstanceAccessAction =
   | { id: string; action: 'approve' | 'deny' | 'revoke' }
@@ -33,5 +34,7 @@ export interface InstanceIdentityApi {
   signOutInstance(): Promise<void>;
   getInstanceAccess(): Promise<InstanceAccessSnapshot>;
   reviewInstanceAccess(input: InstanceAccessAction): Promise<InstanceAccessSnapshot>;
+  getSessionDiagnostics(before?: number): Promise<SessionSnapshot>;
+  updateSessionPolicy(policy: SessionPolicy, mcpUrl: string): Promise<SessionSnapshot>;
   onInstanceAuthenticationChanged(listener: (event: { mcpUrl: string; authenticated: boolean }) => void): () => void;
 }

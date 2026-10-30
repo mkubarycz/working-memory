@@ -92,8 +92,14 @@ export interface MarkdownLink {
 type SyntaxNode = ReturnType<ReturnType<typeof syntaxTree>['resolveInner']>;
 
 const LINK_NODES = new Set(['Link', 'Autolink']);
+const LINK_DESTINATION_PARENTS = new Set(['Link', 'Autolink', 'Image', 'LinkReference']);
 const LINK_TARGET_CLASS = 'cm-live-link-target';
 const OPENABLE_SCHEME = /^(?:https?|working-memory|vscode|wm-attachment):/i;
+
+function isLinkNode(node: SyntaxNode): boolean {
+  return LINK_NODES.has(node.name)
+    || (node.name === 'URL' && !LINK_DESTINATION_PARENTS.has(node.parent?.name ?? ''));
+}
 
 function normalizeLinkLabel(label: string): string {
   return label.replace(/^\[|\]$/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -134,6 +140,10 @@ function linkHref(
   node: SyntaxNode,
   definitions: () => Map<string, string>,
 ): string | null {
+  if (node.name === 'URL') {
+    const destination = state.doc.sliceString(node.from, node.to);
+    return /^www\./i.test(destination) ? `http://${destination}` : destination;
+  }
   const url = node.getChild('URL');
   if (node.name === 'Autolink') {
     const destination = url ? state.doc.sliceString(url.from, url.to) : '';
@@ -165,7 +175,7 @@ export function renderedMarkdownLinkAt(state: EditorState, pos: number): Markdow
   const lookup = () => (definitions ??= markdownLinkDefinitions(state));
   for (const side of [1, -1] as const) {
     for (let node: SyntaxNode | null = tree.resolveInner(pos, side); node; node = node.parent) {
-      if (!LINK_NODES.has(node.name)) continue;
+      if (!isLinkNode(node)) continue;
       if (!linkIsRendered(state, activeLines, node.from, node.to)) return null;
       const href = linkHref(state, node, lookup);
       return href && isOpenableMarkdownHref(href) ? { from: node.from, to: node.to, href } : null;
@@ -314,7 +324,7 @@ function buildDecorations(state: EditorState): DecorationSet {
         decorations.push(Decoration.line({ class: headingClass }).range(line.from));
         decoratedHeadingLines.add(line.from);
       }
-      if (LINK_NODES.has(node.name) && linkIsRendered(state, activeLines, node.from, node.to)) {
+      if (isLinkNode(node.node) && linkIsRendered(state, activeLines, node.from, node.to)) {
         if (node.name === 'Link') {
           const [opening, closing] = node.node.getChildren('LinkMark');
           if (opening && closing) {

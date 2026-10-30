@@ -2184,6 +2184,14 @@
   }
 
   function handleDocumentClick(event: MouseEvent): void {
+    const imageButton = event.target instanceof Element ? event.target.closest('button[data-image-source]') : null;
+    if (imageButton) {
+      event.preventDefault();
+      void window.workingMemory.openImage(imageButton.getAttribute('data-image-source') ?? '').catch(error => {
+        documentError = error instanceof Error ? error.message : String(error);
+      });
+      return;
+    }
     const target = event.target instanceof Element ? event.target.closest('a[href]') : null;
     if (!(target instanceof HTMLAnchorElement)) return;
     event.preventDefault();

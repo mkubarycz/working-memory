@@ -37,6 +37,7 @@ import { HostTaskBroker, HOST_TASK_CLEANUP_INTERVAL_MS, type HostTaskOptions } f
 import { AccessError, InstanceAccess, type InstancePrincipal } from './instanceAccess.js';
 import { serveInstanceAccessMcp } from './instanceAccessMcp.js';
 import { InstanceOAuth } from './instanceOAuth.js';
+import { McpSessions, SessionAdmissionError, type SessionDiagnosticsOptions } from './mcpSessions.js';
 import { IdentityError } from './instanceIdentity.js';
 import { documentPermissionCategory, instancePermissionsSchema, permits } from './instancePermissions.js';
 import { authorizeInstanceTool, instanceToolPermissions } from './instanceAuthorization.js';
@@ -53,6 +54,7 @@ import {
 } from './kinds/registry.js';
 
 export interface StartServerOptions extends HostTaskOptions {
+  sessionDiagnostics?: SessionDiagnosticsOptions;
   host?: string;
   /** TCP port; `0` binds an ephemeral port (used by tests). */
   port?: number;
@@ -482,6 +484,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const store = providedStore ?? openStore(':memory:');
   const hostTasks = new HostTaskBroker(store.db, opts);
   const access = new InstanceAccess(store.db, hostTasks.identity, opts.hostTaskClock);
+  const sessions = new McpSessions(store.db, opts.sessionDiagnostics);
   let oauth: InstanceOAuth;
   const ownsStore = providedStore === undefined;
   const changeFeed = createDocumentChangeFeed(store);
@@ -489,7 +492,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // Per-server session registry (stateful Streamable HTTP), keyed by MCP
   // session id. Supports multiple concurrent clients, each with its own MCP
   // session and connected McpServer instance.
-  const transports = new Map<string, { transport: StreamableHTTPServerTransport; principalKey: string }>();
+  const transports = new Map<string, StreamableHTTPServerTransport>();
 
   function denyPermission(req: http.IncomingMessage, res: http.ServerResponse, required: PermissionSelection[] | null): void {
     try {
@@ -511,7 +514,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, principal: InstancePrincipal): Promise<void> {
     const header = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(header) ? header[0] : header;
-    const session = sessionId ? transports.get(sessionId) : undefined;
+    const session = sessionId ? sessions.get(sessionId) : undefined;
     if (session && session.principalKey !== principal.key) {
       endJson(res, 403, { error: 'session_identity_mismatch',
         message: 'This MCP session belongs to another credential. Initialize a new session with your own token.' });
@@ -519,6 +522,12 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     }
 
     if (req.method === 'POST') {
+      if (session) await sessions.request(session, handlePost);
+      else await handlePost();
+      return;
+    }
+
+    async function handlePost(): Promise<void> {
       let body: unknown;
       try {
         body = await readJsonBody(req);
@@ -547,55 +556,85 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           return;
         }
       }
-      const existing = session?.transport;
-      if (existing) {
+      const existing = sessionId ? transports.get(sessionId) : undefined;
+      if (session && existing) {
         await existing.handleRequest(req, res, body);
         return;
       }
 
       if (!sessionId && isInitializeRequest(body)) {
+        let managed;
+        try {
+          managed = sessions.admit(principal, body.params.clientInfo.name);
+        } catch (error) {
+          if (!(error instanceof SessionAdmissionError)) throw error;
+          res.setHeader('Retry-After', String(error.retryAfter));
+          endJson(res, error.status, { jsonrpc: '2.0', error: { code: -32000, message: error.message },
+            id: 'id' in body && (typeof body.id === 'number' || typeof body.id === 'string') ? body.id : null });
+          return;
+        }
         const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
+          sessionIdGenerator: () => managed.protocolId,
           enableJsonResponse: true,
           onsessioninitialized: (id) => {
-            transports.set(id, { transport, principalKey: principal.key });
+            transports.set(id, transport);
+            sessions.initialized(managed);
           },
         });
         transport.onclose = () => {
           if (transport.sessionId) {
             transports.delete(transport.sessionId);
           }
+          sessions.closed(managed);
         };
-        const sessionToken = req.headers.authorization?.slice(7) ?? '';
-        const server = createMcpServer(store, version, name, (method, path, input) => {
-          const current = access.authenticate(sessionToken);
-          if (!current) throw new AccessError(401, 'Client access expired or was revoked.');
-          return hostTasks.dispatchInstanceTask(current, method, path, input);
-        }, kind => {
-          const current = access.authenticate(sessionToken);
-          const category = documentPermissionCategory(kind);
-          return !!current && (current.role === 'owner' || category !== null && permits(current.permissions, category, 'read'));
-        });
-        await server.connect(transport);
-        await transport.handleRequest(req, res, body);
+        managed.close = () => transport.close();
+        try {
+          const sessionToken = req.headers.authorization?.slice(7) ?? '';
+          const server = createMcpServer(store, version, name, (method, path, input) => {
+            const current = access.authenticate(sessionToken);
+            if (!current) throw new AccessError(401, 'Client access expired or was revoked.');
+            return hostTasks.dispatchInstanceTask(current, method, path, input);
+          }, kind => {
+            const current = access.authenticate(sessionToken);
+            const category = documentPermissionCategory(kind);
+            return !!current && (current.role === 'owner' || category !== null && permits(current.permissions, category, 'read'));
+          });
+          managed.close = async () => {
+            transports.delete(managed.protocolId);
+            await server.close();
+          };
+          await sessions.request(managed, async () => {
+            await server.connect(transport);
+            await transport.handleRequest(req, res, body);
+          });
+        } catch (error) {
+          sessions.failed(managed);
+          throw error;
+        } finally {
+          if (managed.state === 'initializing') sessions.failed(managed);
+        }
         return;
       }
 
-      endJson(res, 400, {
+      endJson(res, sessionId ? 404 : 400, {
         jsonrpc: '2.0',
-        error: { code: -32000, message: 'Bad Request: no valid session ID' },
+        error: { code: -32000, message: sessionId ? 'Session not found or expired. Initialize a new session.' : 'Bad Request: no valid session ID' },
         id: null,
       });
       return;
     }
 
     if (req.method === 'GET' || req.method === 'DELETE') {
-      const transport = session?.transport;
-      if (!transport) {
-        endJson(res, 400, { ok: false, error: 'invalid or missing session id' });
+      const transport = sessionId ? transports.get(sessionId) : undefined;
+      if (!session || !transport) {
+        endJson(res, sessionId ? 404 : 400, { ok: false, error: 'invalid or missing session id' });
         return;
       }
-      await transport.handleRequest(req, res);
+      if (req.method === 'GET') {
+        // A notification stream is not an in-flight tool request.
+        sessions.touch(session);
+        await transport.handleRequest(req, res);
+      } else await sessions.request(session, () => transport.handleRequest(req, res));
       return;
     }
 
@@ -620,6 +659,26 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       const setup = new URL(url);
       setup.pathname = '/host-tasks/v1/admin/identity/setup';
       await hostTasks.handle(req, res, setup);
+      return;
+    }
+    if (url.pathname === '/identity/v1/sessions') {
+      try {
+        if (req.headers.origin) throw new AccessError(400, 'Use the trusted desktop connection.');
+        if (!hostTasks.identity.authenticate(token)) throw new AccessError(401, 'Sign in as the instance owner to view sessions.');
+        const query = z.object({ before: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional() }).strict()
+          .parse(Object.fromEntries(url.searchParams));
+        if (req.method === 'POST') {
+          if (url.search) throw new AccessError(400, 'Policy updates do not accept query parameters.');
+          if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new AccessError(415, 'JSON required.');
+          sessions.setPolicy(await readJsonBody(req));
+        } else if (req.method !== 'GET') throw new AccessError(405, 'Session management accepts GET or POST.');
+        endJson(res, 200, sessions.snapshot(query.before));
+      } catch (error) {
+        if (error instanceof AccessError) endJson(res, error.status, { error: error.message });
+        else if (error instanceof z.ZodError || error instanceof SyntaxError) {
+          endJson(res, 400, { error: 'Provide a valid session policy or event cursor. Per-client sessions must not exceed the total limit.' });
+        } else throw error;
+      }
       return;
     }
     if (url.pathname === '/identity/v1/access') {
@@ -796,17 +855,21 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     catch { console.error('[host-tasks] Retention cleanup failed.'); }
   }, HOST_TASK_CLEANUP_INTERVAL_MS);
   hostTaskCleanupTimer.unref();
+  const sessionCleanupTimer = setInterval(() => {
+    try { sessions.sweep(); }
+    catch (error) { console.error('[mcp-sessions] Retention cleanup failed:', error); }
+  }, 60000);
+  sessionCleanupTimer.unref();
 
   return {
     host,
     port: boundPort,
     url: `http://${host}:${boundPort}`,
-    close(): Promise<void> {
+    async close(): Promise<void> {
       clearInterval(hostTaskCleanupTimer);
+      clearInterval(sessionCleanupTimer);
       changeFeed.close();
-      for (const { transport } of transports.values()) {
-        void Promise.resolve(transport.close()).catch(() => undefined);
-      }
+      await sessions.close();
       transports.clear();
       return new Promise<void>((resolve, reject) => {
         httpServer.close((err) => {

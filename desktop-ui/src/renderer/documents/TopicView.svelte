@@ -6,6 +6,7 @@
   import { getTopicTypeConfig, iconForTopic } from './viewRegistry';
   import { renderMarkdown } from './markdown';
   import { imageFilesFromTransfer } from './imageFiles';
+  import { markdownFromClipboard } from './markdownPaste';
   import SaveStatus from './SaveStatus.svelte';
   import AgentMessageCallouts from './AgentMessageCallouts.svelte';
   import HybridMarkdownEditor from './HybridMarkdownEditor.svelte';
@@ -116,11 +117,24 @@
 
   function onBodyPaste(event: ClipboardEvent): void {
     const files = imageFilesFromTransfer(event.clipboardData);
-    if (files.length === 0) {
+    if (files.length > 0) {
+      event.preventDefault();
+      void attachImages(files);
       return;
     }
-    event.preventDefault();
-    void attachImages(files);
+    try {
+      const source = markdownFromClipboard(event.clipboardData);
+      if (source === null || !bodyInput) return;
+      event.preventDefault();
+      attachmentError = '';
+      if (source) {
+        bodyInput.setRangeText(source, bodyInput.selectionStart, bodyInput.selectionEnd, 'end');
+        updateBody(topic, onSaveTopic, bodyInput.value);
+      }
+    } catch (error) {
+      event.preventDefault();
+      attachmentError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   function onBodyDragOver(event: DragEvent): void {
