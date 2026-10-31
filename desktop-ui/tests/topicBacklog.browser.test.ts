@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { createServer } from 'vite';
+import { createServer, normalizePath } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Topic, Workstream } from '../../shared/controlPlaneClient';
 import { buildWorkstreamPanels } from '../../shared/panelData';
 
@@ -95,14 +96,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       </style>
     `);
     const server = await createServer({
-      configFile: false, root: new URL('..', import.meta.url).pathname,
+      configFile: false, root: fileURLToPath(new URL('..', import.meta.url)),
       resolve: { dedupe: ['svelte'] }, cacheDir: join(directory, 'vite-cache'),
       optimizeDeps: { include: ['svelte'] },
       plugins: [svelte(), {
         name: 'backlog-browser-fixture',
         resolveId: id => id === '/backlog-fixture.js' ? '\0backlog-fixture' : undefined,
         load: id => id === '\0backlog-fixture'
-          ? `import { mount } from 'svelte'; import Harness from ${JSON.stringify(`/@fs${harness}`)}; mount(Harness, { target: document.body });`
+          ? `import { mount } from 'svelte'; import Harness from ${JSON.stringify(`/@fs/${normalizePath(harness)}`)}; mount(Harness, { target: document.body });`
           : undefined,
         configureServer(server) {
           server.middlewares.use((req, res, next) => {
@@ -112,7 +113,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           });
         },
       }],
-      server: { host: '127.0.0.1', port: 0, fs: { allow: [new URL('../..', import.meta.url).pathname, directory] } },
+      server: { host: '127.0.0.1', port: 0, fs: { allow: [fileURLToPath(new URL('../..', import.meta.url)), directory] } },
       appType: 'custom',
     });
     try {

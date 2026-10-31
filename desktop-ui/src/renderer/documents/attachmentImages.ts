@@ -6,7 +6,7 @@ import {
   WidgetType,
   type DecorationSet,
 } from '@codemirror/view';
-import { resolveMarkdownImageSource } from './markdown';
+import { imageOpenButton, resolveMarkdownImageSource } from './markdown';
 import { livePreviewActivated } from './liveMarkdownPreview';
 
 const IMAGE_PATTERN = /^!\[([^\]]*)\]\((\S+?)(?:\s+["'][^"']*["'])?\)$/;
@@ -55,17 +55,18 @@ class ImageWidget extends WidgetType {
     image.alt = this.image.alt;
     image.loading = 'lazy';
     requestMeasureWhenImageSettles(image, () => view.requestMeasure());
-    figure.appendChild(image);
-    if (this.image.alt) {
-      const caption = document.createElement('figcaption');
-      caption.textContent = this.image.alt;
-      figure.appendChild(caption);
-    }
+    const container = document.createElement('span');
+    container.className = 'markdown-image';
+    container.appendChild(image);
+    container.insertAdjacentHTML('beforeend', imageOpenButton(image.src));
+    figure.appendChild(container);
     return figure;
   }
 
-  ignoreEvent(): boolean {
-    return false;
+  ignoreEvent(event: Event): boolean {
+    return event.type === 'contextmenu'
+      || (event instanceof MouseEvent && event.button === 2)
+      || (event.target instanceof Element && Boolean(event.target.closest('.markdown-image-open')));
   }
 }
 

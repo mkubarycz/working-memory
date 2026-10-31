@@ -355,7 +355,7 @@ button { cursor: pointer; }
 .primary { background: var(--desktop-accent); color: #24151c; }
 .secondary { background: transparent; color: var(--desktop-accent-strong); }
 .settings-actions span { color: #6c676b; margin-left: 8px; }
-.settings-tabs { display: flex; gap: 2px; margin: 18px 0 14px; border-bottom: 1px solid #cbc7ca; }
+.settings-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin: 18px 0 14px; border-bottom: 1px solid #cbc7ca; }
 .settings-tabs button { padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #6c676b; font-weight: 700; }
 .settings-tabs button[aria-selected="true"] { border-bottom-color: var(--desktop-accent-strong); color: var(--desktop-accent-strong); }
 .settings-tabs button:focus-visible { outline: 2px solid var(--desktop-accent); outline-offset: -2px; }
@@ -552,4 +552,37 @@ button { cursor: pointer; }
 @media (max-width: 1100px) {
   .document-host { padding-inline: 22px; }
   .active-description { display: none; }
+}
+.markdown-image {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.markdown-image-open {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: #292629;
+  background: #fff;
+  border: 1px solid #b8b2b7;
+  border-radius: 6px;
+  box-shadow: 0 1px 5px #0003;
+  cursor: zoom-in;
+}
+
+.markdown-image-open:hover {
+  background: #f1e8ed;
+}
+
+.markdown-image-open:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
 }

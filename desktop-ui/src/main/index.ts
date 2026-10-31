@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, safeStorage, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, safeStorage, screen, shell } from 'electron';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -97,6 +97,7 @@ import { createHostScriptChatTools } from './hostScriptChatTools';
 import { DesktopInstanceIdentity } from './instanceIdentity';
 import { registerInstanceIdentityIpc } from './instanceIdentityIpc';
 import { serveInstanceAttachment } from './instanceAttachments';
+import { DesktopImageViewer } from './imageViewer';
 import { hostTaskOrigin } from './hostTaskBroker';
 import { loadHostTaskAdminCredential } from '../../../control-plane/src/hostTasks';
 import { LEGACY_USER_DATA_NAME, migrateLegacyUserData } from './userDataMigration';
@@ -395,6 +396,14 @@ const chatAgent = new DesktopChatAgent({
   },
 });
 
+const imageViewer = new DesktopImageViewer(
+  app.getPath('temp'),
+  request => request.url.startsWith('working-memory-attachment:')
+    ? serveInstanceAttachment(request, environmentManager.currentEnvironment, controlPlane())
+    : fetch(request, { credentials: 'omit' }),
+  path => shell.openPath(path),
+);
+
 const gracefulShutdown = createGracefulShutdown({
   resetAgent: async () => {
     documentChangeController?.abort();
@@ -402,6 +411,7 @@ const gracefulShutdown = createGracefulShutdown({
     await copilotProvider.stop();
     await appMcp.disconnectAll();
     await desktopLinkBridge?.close();
+    await imageViewer.dispose();
   },
   disposeEnvironment: () => environmentManager.dispose(),
   quit: () => app.quit(),
@@ -1318,6 +1328,12 @@ function registerIpc(): void {
     }
     await shell.openExternal(url.toString());
   });
+  ipcMain.handle('image:open', async (event, source: string) => {
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+      throw new Error('Only the desktop document view can open images.');
+    }
+    await imageViewer.open(source);
+  });
 }
 
 function currentWindowBounds(window: BrowserWindow) {
@@ -1375,6 +1391,19 @@ async function createWindow(): Promise<BrowserWindow> {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  window.webContents.on('context-menu', (_event, params) => {
+    if (params.frame !== window.webContents.mainFrame || params.mediaType !== 'image') return;
+    Menu.buildFromTemplate([{
+      label: 'Open Image in Default Viewer',
+      enabled: params.hasImageContents,
+      click: () => {
+        void imageViewer.open(params.srcURL).catch(error => {
+          console.error('[desktop] Unable to open image:', error);
+          dialog.showErrorBox('Unable to open image', error instanceof Error ? error.message : String(error));
+        });
+      },
+    }]).popup({ window });
   });
   window.webContents.on('will-frame-navigate', (event) => {
     if (event.isMainFrame) return;

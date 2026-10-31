@@ -3,15 +3,18 @@ import { assertHostTaskSender, type HostTaskIpcDependencies } from './hostTaskIp
 import { hostTaskOrigin } from './hostTaskBroker';
 import type { DesktopInstanceIdentity } from './instanceIdentity';
 import { instancePermissionsSchema } from '../../../control-plane/src/instancePermissions';
+import { sessionPolicySchema } from '../../../control-plane/src/sessionPolicy';
 
 export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
   identity: DesktopInstanceIdentity;
   onSessionChanged: (mcpUrl: string, authenticated: boolean) => Promise<void>;
 }): void {
+  let policySave: Promise<unknown> = Promise.resolve();
   const context = (event: Parameters<typeof assertHostTaskSender>[0]) => {
-    const window = deps.getWindow(), environment = deps.getEnvironment();
+    const window = deps.getWindow(), selected = deps.getEnvironment();
     assertHostTaskSender(event, window, deps.rendererUrl);
-    if (!environment) throw new Error('Select a Working Memory instance first.');
+    if (!selected) throw new Error('Select a Working Memory instance first.');
+    const environment = { ...selected };
     const ensureCurrent = () => {
       assertHostTaskSender(event, deps.getWindow(), deps.rendererUrl);
       if (deps.getWindow() !== window || deps.getEnvironment()?.mcpUrl !== environment.mcpUrl) {
@@ -59,6 +62,31 @@ export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
     const ctx = context(event), snapshot = await deps.identity.access(ctx.environment.mcpUrl);
     ctx.ensureCurrent();
     return snapshot;
+  });
+  deps.ipc.handle('instance:sessions', async (event, raw: unknown) => {
+    const ctx = context(event);
+    const before = z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().parse(raw);
+    const snapshot = await deps.identity.sessions(ctx.environment.mcpUrl, before);
+    ctx.ensureCurrent();
+    return snapshot;
+  });
+  deps.ipc.handle('instance:session-policy', async (event, raw: unknown) => {
+    const ctx = context(event);
+    const { policy, mcpUrl } = z.object({
+      policy: sessionPolicySchema, mcpUrl: z.string().min(1),
+    }).strict().parse(raw);
+    if (mcpUrl !== ctx.environment.mcpUrl) {
+      throw new Error('The selected instance changed. Retry in the current instance.');
+    }
+    const save = async () => {
+      ctx.ensureCurrent();
+      const snapshot = await deps.identity.sessions(mcpUrl, undefined, policy);
+      ctx.ensureCurrent();
+      return snapshot;
+    };
+    const pending = policySave.then(save, save);
+    policySave = pending;
+    return pending;
   });
   deps.ipc.handle('instance:review-access', async (event, raw: unknown) => {
     const ctx = context(event);

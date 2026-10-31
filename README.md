@@ -482,8 +482,24 @@ typing does not change the form's width.
 In topic **Live** view, labeled Markdown links display only their label, not
 their destination, optional title, or reference suffix. A plain click on a
 rendered link opens it without entering editing. Editing its line reveals the
-original Markdown; rendering never rewrites the stored source. URI autolinks
-continue to display their URL.
+original Markdown; rendering never rewrites the stored source. Bare HTTP(S)
+URLs and `www.` addresses are clickable too and continue to display their URL.
+URLs inside code, image destinations, and link definitions are not standalone
+click targets.
+
+Pasting rich text into **Live** or **Source** converts clipboard HTML to authored
+Markdown, preserving hyperlinks (including their display text), headings, basic
+emphasis, lists, and code. Plain-text/Markdown paste remains unchanged. Image-file
+paste still uses attachments, stored as `wm-attachment:` references; clipboard-only
+local or embedded image URLs are not stored as broken image references. Raw HTML,
+scripts, and unsupported link targets are not imported as executable markup.
+
+Rendered images retain accessible alt text without a filename caption. Use the
+magnifying-glass button or right-click **Open Image in Default Viewer** to view
+the full-size image in the system's image viewer. Instance images are downloaded
+through the selected environment's authenticated attachment proxy. Raster images
+(PNG, JPEG, GIF, WebP, or AVIF; up to 30 MB) are opened as private temporary files,
+which are removed when Working Memory quits.
 
 ## Backlog
 
@@ -1333,6 +1349,46 @@ callbacks are explicitly rejected. Client labels are unverified, redirect URIs
 are validated against registration, and codes are bound to the client, exact
 callback, PKCE challenge, instance resource, and prior owner approval. Only
 hashes of codes, approval proofs, and issued credentials are persisted.
+
+#### MCP sessions and diagnostics
+
+**Settings -> Sessions** shows the selected instance's active MCP connections,
+JavaScript heap usage, and persisted session/enforcement events. This is an
+owner-only view; it never exposes bearer tokens, credential hashes, or protocol
+session IDs. Displayed session IDs are separate diagnostic identifiers.
+
+The instance persists adjustable defaults of **60 minutes idle**, **100 active
+sessions per approved client**, **500 active sessions total**, and **1,000
+new-session attempts per client per minute**. Owner connections share one
+owner quota. These counts are ceilings: new sessions are also rejected at
+**60% of the V8 heap limit**, while existing sessions can continue working.
+Idle expiration closes the transport and its MCP server, never interrupts an
+in-flight request, and never changes access approvals. Lowered count limits
+apply to new connections rather than forcibly disconnecting current ones.
+Limit fields save automatically after a short typing pause or when leaving the
+field, with visible saving/error feedback. Invalid values are not submitted;
+edits made during a save are queued without overwriting newer input.
+Leaving the view flushes queued valid edits through an instance-bound,
+serialized save queue; changing instances never sends old edits to the new
+instance.
+
+Events survive backend restarts and are retained for **10 days** by default,
+with configurable day-based retention and paginated history, not a row-count
+cap. Repeated rejection events from the same client are aggregated per minute.
+If cleanup and its audit insert both fail, both failures are reported in the
+backend logs without leaving an unhandled cleanup rejection.
+The view refreshes every five seconds; loading older events pauses the log
+until Refresh, while active sessions continue updating. Older backends must be
+upgraded before this tab is available.
+
+Trusted owner clients use `GET /identity/v1/sessions` (optional `before` event
+cursor) and `POST /identity/v1/sessions` with the complete policy:
+`idleMinutes`, `maxPerClient`, `maxTotal`, `handshakesPerMinute`, `retentionDays`.
+Unknown/expired MCP sessions return HTTP 404. The desktop reconnects and retries
+a recognized stale-session read once; generic tool calls and writes are never
+automatically replayed. Short-lived MCP consumers should send session DELETE
+(`transport.terminateSession()`) before `client.close()` to reclaim resources
+immediately instead of waiting for idle cleanup.
 
 #### Other agents and containers: identity MCP enrollment
 
