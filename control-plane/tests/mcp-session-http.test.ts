@@ -82,6 +82,64 @@ it('restricts diagnostics and policy to trusted owner requests and hides all pro
   expect((await f.snapshot()).policy.idleMinutes).toBe(75);
 });
 
+it('releases instance-bound sessions on switching away and reconnects at a one-session cap', async () => {
+  const first = await fixture(), second = await fixture();
+  await first.policy({ maxPerClient: 1, maxTotal: 1 });
+  await second.policy({ maxPerClient: 1, maxTotal: 1 });
+  let selected = first;
+  const client = () => {
+    const connected = new ControlPlaneClient({
+      resolveUrl: () => `${selected.server.url}/mcp`,
+      getToken: url => url === `${first.server.url}/mcp` ? first.owner.token : second.owner.token,
+    });
+    cleanup.push(() => connected.dispose());
+    return connected;
+  };
+  const original = client();
+  expect((await original.listDocuments()).available).toBe(true);
+  expect((await first.snapshot()).active).toHaveLength(1);
+  selected = second;
+  await original.dispose();
+  expect((await first.snapshot()).active).toEqual([]);
+  expect((await first.snapshot()).events[0].type).toBe('closed');
+  const other = client();
+  expect((await other.listDocuments()).available).toBe(true);
+  selected = first;
+  await other.dispose();
+  expect((await second.snapshot()).active).toEqual([]);
+  const replacement = client();
+  expect((await replacement.listDocuments()).available).toBe(true);
+  expect((await first.snapshot()).active).toHaveLength(1);
+});
+
+it('waits for a pending initialization to release its session during disposal', async () => {
+  const f = await fixture(), client = f.data();
+  let release!: () => void, started!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const running = new Promise<void>(resolve => { started = resolve; });
+  const original = globalThis.fetch;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const response = await original(input, init);
+    if (init?.method === 'POST' && typeof init.body === 'string' && init.body.includes('"method":"initialize"')) {
+      started(); await waiting;
+    }
+    return response;
+  });
+  let disposed = false;
+  try {
+    const pending = client.listDocuments();
+    await running;
+    const stopping = client.dispose().then(() => { disposed = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(disposed).toBe(false);
+    release();
+    expect((await pending).available).toBe(false);
+    await stopping;
+    expect((await f.snapshot()).active).toEqual([]);
+    expect((await f.snapshot()).events[0].type).toBe('closed');
+  } finally { release(); }
+});
+
 it('expires real MCP transports with 404, preserves approval, and admits a new authenticated session', async () => {
   const f = await fixture(), issued = f.enroll();
   await f.policy({ idleMinutes: 1 });

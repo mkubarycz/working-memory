@@ -997,6 +997,7 @@ export class ControlPlaneClient {
   private transport: StreamableHTTPClientTransport | null = null;
   /** In-flight connect, so concurrent calls share one handshake. */
   private connecting: Promise<Client | null> | null = null;
+  private closing: Promise<void> = Promise.resolve();
   private disposed = false;
 
   constructor(options: ControlPlaneClientOptions = {}) {
@@ -1018,6 +1019,10 @@ export class ControlPlaneClient {
   async fetch(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
     const mcpUrl = this.resolveUrl();
     if (!mcpUrl) throw new Error('Select a Working Memory instance first.');
+    return this.fetchInstance(mcpUrl, input, init);
+  }
+
+  private async fetchInstance(mcpUrl: string, input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
     const url = input instanceof Request ? new URL(input.url) : new URL(input), origin = new URL(mcpUrl).origin;
     if (url.origin !== origin || url.username || url.password || url.hash) {
       throw new Error('Refusing to send instance credentials outside the selected instance.');
@@ -2163,24 +2168,19 @@ export class ControlPlaneClient {
 
   /** Close the client + transport and release the singleton. */
   async dispose(): Promise<void> {
+    if (this.disposed) { await this.closing; return; }
     this.disposed = true;
     this.lifetime.abort();
     const client = this.client;
     const transport = this.transport;
+    const connecting = this.connecting;
     this.client = null;
     this.transport = null;
     this.connecting = null;
-    // Abort the transport's in-flight streams SYNCHRONOUSLY (transport.close()
-    // aborts before its first await) so a control-plane kill that follows can't
-    // RST an open SSE/HTTP stream — the source of the unhandled undici
-    // "TypeError: terminated". An aborted stream surfaces as an intentional
-    // AbortError the SDK does not try to reconnect.
-    try {
-      void transport?.close();
-    } catch {
-      // ignore
-    }
-    await closeQuietly(client, transport);
+    this.closing = Promise.all([
+      this.closing, closeQuietly(client, transport, this.onError), connecting,
+    ]).then(() => {});
+    await this.closing;
   }
 
   /**
@@ -2206,6 +2206,8 @@ export class ControlPlaneClient {
   }
 
   private async connect(): Promise<Client | null> {
+    await this.closing;
+    if (this.disposed) return null;
     const url = this.resolveUrl();
     if (!url) {
       return null;
@@ -2217,9 +2219,14 @@ export class ControlPlaneClient {
       // eliminating the undici "TypeError: terminated" unhandled rejection on
       // daemon restart/shutdown. See {@link sseDecliningFetch}.
       transport = new StreamableHTTPClientTransport(new URL(url), {
-        fetch: (input, init) => (init?.method ?? 'GET').toUpperCase() === 'GET'
-          ? sseDecliningFetch(input, init)
-          : this.fetch(input, init),
+        fetch: (input, init) => {
+          const method = (init?.method ?? 'GET').toUpperCase();
+          if (method === 'GET') return sseDecliningFetch(input, init);
+          const timeout = method === 'DELETE' ? AbortSignal.timeout(5000) : null;
+          return this.fetchInstance(url, input, timeout ? {
+            ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+          } : init);
+        },
       });
     } catch {
       return null;
@@ -2238,11 +2245,11 @@ export class ControlPlaneClient {
     } catch (error) {
       if (error instanceof InstanceAuthenticationError) this.authenticationError = error.message;
       this.onError(error);
-      await closeQuietly(client, transport);
+      await closeQuietly(client, transport, this.onError);
       return null;
     }
     if (this.disposed) {
-      await closeQuietly(client, transport);
+      await closeQuietly(client, transport, this.onError);
       return null;
     }
     this.client = client;
@@ -2256,23 +2263,31 @@ export class ControlPlaneClient {
     const transport = this.transport;
     this.client = null;
     this.transport = null;
-    void closeQuietly(client, transport);
+    this.closing = Promise.all([
+      this.closing, closeQuietly(client, transport, this.onError),
+    ]).then(() => {});
   }
 }
 
-/** Close a client + transport, swallowing any teardown errors. */
+/** Release server-side quota before local closure; report best-effort cleanup failures. */
 async function closeQuietly(
   client: Client | null,
   transport: StreamableHTTPClientTransport | null,
+  onError: (err: unknown) => void,
 ): Promise<void> {
   try {
+    if (transport?.sessionId) await transport.terminateSession();
+  } catch (error) {
+    onError(error);
+  }
+  try {
     await client?.close();
-  } catch {
-    // ignore
+  } catch (error) {
+    onError(error);
   }
   try {
     await transport?.close();
-  } catch {
-    // ignore
+  } catch (error) {
+    onError(error);
   }
 }
