@@ -15,6 +15,9 @@ function imageExtension(data: Buffer): string {
 
 export class DesktopImageViewer {
   private directory: Promise<string> | undefined;
+  private readonly stopping = new AbortController();
+  private readonly opening = new Set<Promise<void>>();
+  private disposal: Promise<void> | undefined;
 
   constructor(
     private readonly temporaryRoot: string,
@@ -22,19 +25,31 @@ export class DesktopImageViewer {
     private readonly openPath: (path: string) => Promise<string>,
   ) {}
 
-  async open(source: string): Promise<void> {
+  open(source: string): Promise<void> {
+    if (this.stopping.signal.aborted) return Promise.reject(new Error('The image viewer is shutting down.'));
+    const pending = this.openImage(source);
+    this.opening.add(pending);
+    const finished = () => { this.opening.delete(pending); };
+    void pending.then(finished, finished);
+    return pending;
+  }
+
+  private async openImage(source: string): Promise<void> {
     const url = new URL(source);
     if (!['working-memory-attachment:', 'https:', 'http:'].includes(url.protocol)
       || url.username || url.password) {
       throw new Error('Only instance attachments and HTTP(S) images can be opened in the system viewer.');
     }
-    const response = await this.fetchImage(new Request(url, { signal: AbortSignal.timeout(30_000) }));
+    const response = await this.fetchImage(new Request(url, {
+      signal: AbortSignal.any([this.stopping.signal, AbortSignal.timeout(30_000)]),
+    }));
     if (!response.ok) throw new Error(`Unable to load image (${response.status}).`);
     const reader = response.body?.getReader();
     if (!reader) throw new Error('The image response was empty.');
     const chunks: Buffer[] = [];
     let size = 0;
     try {
+      this.stopping.signal.throwIfAborted();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -48,14 +63,25 @@ export class DesktopImageViewer {
     const data = Buffer.concat(chunks);
     if (data.length === 0) throw new Error('The image response was empty.');
     const extension = imageExtension(data);
+    this.stopping.signal.throwIfAborted();
     this.directory ??= mkdtemp(join(this.temporaryRoot, 'working-memory-images-'));
-    const path = join(await this.directory, `${randomUUID()}.${extension}`);
+    const directory = await this.directory;
+    this.stopping.signal.throwIfAborted();
+    const path = join(directory, `${randomUUID()}.${extension}`);
     await writeFile(path, data, { mode: 0o600, flag: 'wx' });
+    this.stopping.signal.throwIfAborted();
     const error = await this.openPath(path);
     if (error) throw new Error(`Unable to open the system image viewer: ${error}`);
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    this.stopping.abort();
+    this.disposal ??= this.cleanup();
+    return this.disposal;
+  }
+
+  private async cleanup(): Promise<void> {
+    await Promise.allSettled(this.opening);
     if (this.directory) await rm(await this.directory, { recursive: true, force: true });
   }
 }

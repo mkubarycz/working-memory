@@ -489,7 +489,8 @@ click targets.
 
 Pasting rich text into **Live** or **Source** converts clipboard HTML to authored
 Markdown, preserving hyperlinks (including their display text), headings, basic
-emphasis, lists, and code. Plain-text/Markdown paste remains unchanged. Image-file
+emphasis, lists, and code. Rich-text paste participates in normal undo/redo in
+both Live and Source. Plain-text/Markdown paste remains unchanged. Image-file
 paste still uses attachments, stored as `wm-attachment:` references; clipboard-only
 local or embedded image URLs are not stored as broken image references. Raw HTML,
 scripts, and unsupported link targets are not imported as executable markup.
@@ -500,6 +501,8 @@ the full-size image in the system's image viewer. Instance images are downloaded
 through the selected environment's authenticated attachment proxy. Raster images
 (PNG, JPEG, GIF, WebP, or AVIF; up to 30 MB) are opened as private temporary files,
 which are removed when Working Memory quits.
+Shutdown cancels or drains pending image opens before removing their temporary
+files, and never starts a new image viewer after shutdown begins.
 
 ## Backlog
 
@@ -1371,6 +1374,8 @@ edits made during a save are queued without overwriting newer input.
 Leaving the view flushes queued valid edits through an instance-bound,
 serialized save queue; changing instances never sends old edits to the new
 instance.
+Reopened diagnostics wait for pending saves before loading a policy draft, so
+editing another field cannot overwrite earlier queued edits.
 
 Events survive backend restarts and are retained for **10 days** by default,
 with configurable day-based retention and paginated history, not a row-count
@@ -1389,6 +1394,8 @@ a recognized stale-session read once; generic tool calls and writes are never
 automatically replayed. Short-lived MCP consumers should send session DELETE
 (`transport.terminateSession()`) before `client.close()` to reclaim resources
 immediately instead of waiting for idle cleanup.
+The shared desktop client also terminates sessions during orderly teardown
+before closing its local transport, releasing quota when switching instances.
 
 #### Other agents and containers: identity MCP enrollment
 

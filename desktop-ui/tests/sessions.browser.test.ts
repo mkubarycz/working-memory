@@ -38,12 +38,17 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       let policySave = Promise.resolve();
       window.workingMemory = {
         async getSessionDiagnostics(cursor) {
-          state.calls.push(cursor ?? 'latest');
-          if (state.failRead) { state.failRead = false; throw new Error('Session refresh failed'); }
-          const result = structuredClone(state.snapshot);
-          if (cursor) { result.events = [event(199)]; result.nextCursor = null; }
-          if (state.pause) { state.pause = false; await new Promise(resolve => state.release = resolve); }
-          return result;
+          const currentUrl = state.currentUrl;
+          const read = async () => {
+            if (currentUrl !== state.currentUrl) throw new Error('The selected instance changed.');
+            state.calls.push(cursor ?? 'latest');
+            if (state.failRead) { state.failRead = false; throw new Error('Session refresh failed'); }
+            const result = structuredClone(state.snapshot);
+            if (cursor) { result.events = [event(199)]; result.nextCursor = null; }
+            if (state.pause) { state.pause = false; await new Promise(resolve => state.release = resolve); }
+            return result;
+          };
+          return policySave.then(read, read);
         },
         async updateSessionPolicy(policy, mcpUrl) {
           if (mcpUrl !== state.currentUrl) throw new Error('The selected instance changed.');
@@ -188,12 +193,15 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("window.__sessionsTest.saves.at(-1).idleMinutes === 91");
           await setIdle(92);
           await evaluate("window.__sessionsTest.mount('http://127.0.0.1:7717/mcp')");
-          await wait("document.querySelector('input')?.value === '88'");
-          await setIdle(93);
-          await new Promise(resolve => setTimeout(resolve, 600));
+          await new Promise(resolve => setTimeout(resolve, 100));
+          assert.equal(await evaluate("document.querySelector('.session-limits input') === null"), true);
           await evaluate("window.__sessionsTest.releaseSave()");
-          await wait("window.__sessionsTest.snapshot.policy.idleMinutes === 93 && document.querySelector('[role=status]')?.textContent === 'Saved automatically.'");
-          assert.deepEqual(await evaluate("window.__sessionsTest.saves.slice(-3).map(policy => policy.idleMinutes)"), [91, 92, 93]);
+          await wait("document.querySelector('input')?.value === '92'");
+          await evaluate(\`(() => { const input = document.querySelectorAll('.session-limits input')[4];
+            input.value = 12; input.dispatchEvent(new Event('input', { bubbles: true })); })()\`);
+          await wait("window.__sessionsTest.snapshot.policy.retentionDays === 12 && document.querySelector('[role=status]')?.textContent === 'Saved automatically.'");
+          assert.deepEqual(await evaluate("window.__sessionsTest.saves.slice(-3).map(policy => policy.idleMinutes)"), [91, 92, 92]);
+          assert.equal(await evaluate("window.__sessionsTest.snapshot.policy.idleMinutes"), 92);
           assert.equal(await evaluate("window.__sessionsTest.maxInFlight"), 1);
           await evaluate(button('Load older events') + '.click()');
           await wait("document.querySelectorAll('[aria-label=\\"Session event log\\"] tbody tr').length === 2");

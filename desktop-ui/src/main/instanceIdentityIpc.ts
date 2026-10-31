@@ -66,7 +66,11 @@ export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
   deps.ipc.handle('instance:sessions', async (event, raw: unknown) => {
     const ctx = context(event);
     const before = z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().parse(raw);
-    const snapshot = await deps.identity.sessions(ctx.environment.mcpUrl, before);
+    const read = () => {
+      ctx.ensureCurrent();
+      return deps.identity.sessions(ctx.environment.mcpUrl, before);
+    };
+    const snapshot = await policySave.then(read, read);
     ctx.ensureCurrent();
     return snapshot;
   });

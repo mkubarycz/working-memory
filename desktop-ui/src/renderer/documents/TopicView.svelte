@@ -128,8 +128,11 @@
       event.preventDefault();
       attachmentError = '';
       if (source) {
-        bodyInput.setRangeText(source, bodyInput.selectionStart, bodyInput.selectionEnd, 'end');
-        updateBody(topic, onSaveTopic, bodyInput.value);
+        bodyInput.focus();
+        // Native insertion preserves Chromium's textarea undo/redo history.
+        if (!bodyInput.ownerDocument.execCommand('insertText', false, source)) {
+          throw new Error('Unable to insert formatted Markdown into the Source editor.');
+        }
       }
     } catch (error) {
       event.preventDefault();
