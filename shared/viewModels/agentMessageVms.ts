@@ -9,6 +9,7 @@ export interface AgentMessageVM {
   recommendedAction: string;
   status: AgentMessage['status'];
   category: AgentMessage['category'];
+  dueAt?: number;
   severity: AgentMessage['severity'];
   attention: boolean;
   topics: string[];
@@ -32,6 +33,7 @@ export function toAgentMessageVM(message: AgentMessage): AgentMessageVM {
     recommendedAction: message.recommended_action,
     status: message.status,
     category: message.category,
+    ...(message.due_at !== undefined ? { dueAt: message.due_at } : {}),
     severity: message.severity,
     attention: message.attention,
     topics: [...message.topics],
@@ -64,22 +66,33 @@ function scopedMessagePredicate(scope: readonly string[] | AgentMessageScope): (
 }
 
 /** Preserve complete history, scoped by authored topic ids and explicit document IDs. */
+export function compareAgentMessages(a: AgentMessage, b: AgentMessage): number {
+  const rank = { open: 0, acknowledged: 1, resolved: 2 };
+  return rank[a.status] - rank[b.status]
+    || (a.status === 'open'
+      ? Number(b.category === 'reminder') - Number(a.category === 'reminder')
+        || (a.category === 'reminder' && b.category === 'reminder' ? a.due_at! - b.due_at! : 0)
+      : 0)
+    || b.updated_at - a.updated_at;
+}
+
 export function buildAgentMessageVMs(
   messages: AgentMessage[],
   scope: readonly string[] | AgentMessageScope,
   _now?: number,
 ): AgentMessageVM[] {
   const matches = scopedMessagePredicate(scope);
-  const rank = { open: 0, acknowledged: 1, resolved: 2 };
   return messages
     .filter(matches)
-    .sort((a, b) => rank[a.status] - rank[b.status] || b.updated_at - a.updated_at)
+    .sort(compareAgentMessages)
     .map(toAgentMessageVM);
 }
 
+export type AgentMessageDisplaySeverity = AgentMessage['severity'] | 'overdue';
+
 export interface AgentMessageBubble {
   count: number;
-  severity: AgentMessage['severity'] | null;
+  severity: AgentMessageDisplaySeverity | null;
 }
 
 export function agentMessageBubbleForTopics(
@@ -88,13 +101,14 @@ export function agentMessageBubbleForTopics(
 ): AgentMessageBubble {
   const matches = scopedMessagePredicate(scope);
   const seen = new Set<string>();
-  const rank = { info: 0, warning: 1, error: 2 };
-  let severity: AgentMessage['severity'] | null = null;
+  const rank = { info: 0, warning: 1, error: 2, overdue: 3 };
+  let severity: AgentMessageDisplaySeverity | null = null;
   for (const message of messages) {
     if (message.status !== 'open' || !message.attention || seen.has(message.id)
       || !matches(message)) continue;
     seen.add(message.id);
-    if (severity === null || rank[message.severity] > rank[severity]) severity = message.severity;
+    const displaySeverity = message.category === 'reminder' ? 'overdue' : message.severity;
+    if (severity === null || rank[displaySeverity] > rank[severity]) severity = displaySeverity;
   }
   return { count: seen.size, severity };
 }

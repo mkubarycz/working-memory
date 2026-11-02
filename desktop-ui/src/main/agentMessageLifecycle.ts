@@ -34,6 +34,15 @@ export async function updateAgentMessageStatus(
   });
 }
 
+export async function snoozeAgentMessage(client: ControlPlaneClient, id: unknown, dueAt: unknown): Promise<void> {
+  if (typeof id !== 'string' || !id.trim() || typeof dueAt !== 'number'
+    || !Number.isSafeInteger(dueAt) || dueAt <= Math.floor(Date.now() / 1000)
+    || dueAt > 8_640_000_000_000) {
+    throw new Error('Snooze requires a valid reminder ID and a future deadline in Unix seconds.');
+  }
+  await client.agentMessageSnooze({ id, due_at: dueAt });
+}
+
 /** Record communication only; this path has no access to chat confirmation authority. */
 export async function recordAgentMessageDecision(
   client: ControlPlaneClient,

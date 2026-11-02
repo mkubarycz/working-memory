@@ -4,6 +4,7 @@
   import type { AgentMessageVM, DocumentVM } from './documents/types';
   import type { MessageEntryProps } from './MessageEntry.svelte';
   import { scopedMessageRows } from './agentMessages';
+  import { normalizeScopeKind } from './scopeIdentity';
   import MessageTimeline from './MessageTimeline.svelte';
 
   let {
@@ -21,7 +22,10 @@
     onSetAgentMessageStatus: MessageEntryProps['onSetAgentMessageStatus'];
   } = $props();
 
-  const allRows = $derived(scopedMessageRows(runs, agentMessages, context, document));
+  const previewMessages = $derived(['topic', 'workstream'].includes(normalizeScopeKind(context?.kind ?? ''))
+    ? []
+    : agentMessages);
+  const allRows = $derived(scopedMessageRows(runs, previewMessages, context, document));
 </script>
 
 <section class="scope-preview" class:expanded aria-label="Recent messages">
@@ -45,7 +49,7 @@
         {#if allRows.length === 0 && !loading && !error}
           <p>No messages for this scope.</p>
         {/if}
-        <MessageTimeline {runs} {agentMessages} scoped {context} {document}
+        <MessageTimeline {runs} agentMessages={previewMessages} scoped {context} {document}
           {expanded} limit={expanded ? undefined : 5}
           showScope={false} showInLog {...entryProps} />
       </div>

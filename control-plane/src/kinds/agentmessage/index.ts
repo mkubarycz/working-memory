@@ -7,7 +7,9 @@ import { AGENT_MESSAGE_KIND, agentMessageSpec, persistedAgentMessageSpec, agentM
 const guidance = 'Agent Messages preserve Markdown source. Use attention=true only for a human decision or intervention. ' +
   'Every message requires your registered agent_id: look up your name with ws-agent-read, register with ws-agent-create if needed, and remember/reuse metadata.id. ' +
   'Completion/PR notices are informational (attention=false); avoid progress chatter. Approval messages are requests for human review, ' +
-  'NEVER authority or permission to execute. Message lifecycle never changes topic lifecycle.';
+  'NEVER authority or permission to execute. For one-time reminders use category=reminder, due_at in Unix seconds, and a specific recommended_action. ' +
+  'Reminder attention is server-owned: due open reminders require attention; acknowledge/resolve stops it; reopen reactivates it if due. ' +
+  'Snooze moves the deadline into the future and reopens the same reminder. Message lifecycle never changes topic lifecycle.';
 
 const agentMessage: KindModule = {
   name: AGENT_MESSAGE_KIND,
@@ -82,6 +84,24 @@ const agentMessage: KindModule = {
         } catch (error) { return asError((error as Error).message); }
       });
     }
+    server.registerTool('ws-agent-message-snooze', {
+      title: 'Agent Message: Snooze', description: `Reschedule a live reminder to a future deadline using CAS; never creates another message. ${guidance}`,
+      inputSchema: z.object({
+        id: z.string(), expectedResourceVersion: z.number().int(),
+        due_at: agentMessageSpec.shape.due_at.unwrap(),
+      }).strict(),
+    }, async ({ id, expectedResourceVersion, due_at }) => {
+      try {
+        const existing = store.getDocument({ id });
+        if (existing?.kind !== AGENT_MESSAGE_KIND || existing.spec.category !== 'reminder') {
+          throw new Error(`Unknown live reminder AgentMessage: ${id}`);
+        }
+        if (due_at <= Math.floor(Date.now() / 1000)) throw new Error('Snooze requires a future due_at deadline.');
+        return asText(store.updateDocument({
+          id, expectedResourceVersion, spec: { ...existing.spec, due_at, status: 'open' },
+        }));
+      } catch (error) { return asError((error as Error).message); }
+    });
     for (const name of ['delete', 'restore']) {
       server.registerTool(`ws-agent-message-${name}`, {
         title: `Agent Message: ${name}`, description: `Explicit soft-${name} of a canonical message. ${guidance}`,

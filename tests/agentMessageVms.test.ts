@@ -15,6 +15,26 @@ function message(extra: Partial<AgentMessage> = {}): AgentMessage {
 }
 
 describe('canonical AgentMessage view models', () => {
+  it('projects deadlines, orders open reminders by due time, and uses overdue display urgency without changing severity', () => {
+    const messages = [
+      message({ id: 'later', category: 'reminder', due_at: 200, attention: false }),
+      message({ id: 'ordinary', attention: true }),
+      message({ id: 'due', category: 'reminder', due_at: 100, attention: true }),
+      message({ id: 'ack', category: 'reminder', due_at: 50, status: 'acknowledged', attention: false }),
+    ];
+    const vms = buildAgentMessageVMs(messages, ['topic-id']);
+    expect(vms.map((vm) => vm.id)).toEqual(['due', 'later', 'ordinary', 'ack']);
+    expect(vms[0]).toMatchObject({ category: 'reminder', dueAt: 100, severity: 'info' });
+    expect(agentMessageBubbleForTopic(messages, 'topic-id')).toEqual({ count: 2, severity: 'overdue' });
+    expect(messages[2].severity).toBe('info');
+    expect(agentMessageBubbleForTopics(messages, { workstreamIds: ['ws'] })).toEqual({ count: 0, severity: null });
+    const panel = buildAgentMessagesPanel({ available: true, agentMessages: messages });
+    expect(panel.items.map((item) => item.id)).toEqual([
+      'agent-message:due', 'agent-message:later', 'agent-message:ordinary', 'agent-message:ack',
+    ]);
+    expect(panel.items[0]).toMatchObject({ dueAt: 100, icon: 'history' });
+  });
+
   it('preserves Markdown, canonical categories, lifecycle and object relations', () => {
     const original = message({
       relations: [{ kind: 'Workstream', id: 'ws-id' }], provenance: { agent: 'reviewer' },

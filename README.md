@@ -350,6 +350,8 @@ Registration is attribution only, not authentication or execution authority.
   take a specific next step.
 - **completion**: completed work with a PR to review/merge, without an
   attention notification.
+- **reminder**: a one-time scheduled human action, with a required `due_at`
+  deadline in Unix seconds and a specific `recommended_action`.
 
 Keep a meaningful title and the authored Markdown in `description`, link
 detailed journal/PR provenance, and specify topic/object relations. Do not post
@@ -392,6 +394,81 @@ in-app links use `working-memory://open/agent-message/<id>`. Historical
 `working-memory://open/alert/<id>` links resolve the same canonical record.
 For the separate Agent Window only, retain the existing HTTP
 `http://127.0.0.1:7718/open/alert/<id>` alias; the bridge's allowlist is unchanged.
+
+### Reminders
+
+Create a reminder with the same registered agent and topic/workstream links as
+other messages:
+
+```json
+{
+  "agent_id": "<registered-agent-uuid>",
+  "title": "Review the rollout",
+  "description": "Check the rollout results and decide the next step.",
+  "category": "reminder",
+  "due_at": 1793507400,
+  "recommended_action": "Review the rollout results.",
+  "topics": ["existing-topic-id"]
+}
+```
+
+Replace `due_at` with the intended deadline (`Math.floor(Date.now() / 1000) + 1800`
+means 30 minutes from now). The deadline is persisted, not tied to an agent
+session or desktop timer. The control plane checks every second and catches up
+on startup; a stopped backend cannot notify until it resumes. The sweep searches
+a partial deadline index containing only live, open reminders that have not yet
+raised attention, rather than scanning retained message history. The index is
+added idempotently when opening new or existing stores. No separate Alert
+is created. Attention is server-owned: scheduled reminders have no attention;
+due open reminders require attention. Red overdue styling is display urgency,
+not a change to the reminder's informational severity.
+
+All AgentMessages (reminders, info/completion notices, requests, approvals, and
+errors) share fixed-width, horizontally scrolling cards in their linked
+topic/workstream. They are not duplicated in those documents' Recent messages,
+which retain conversation history and trusted tool confirmations. The global
+Log retains all message history, with open reminders above other messages.
+Preview cards expose all available lifecycle, Snooze, and approval decision
+actions as icon buttons with tooltips and accessible labels. Expanded details
+pair the same icons with text. Acknowledge uses a completion seal, Resolve an archive box,
+Reopen a return arrow, and Snooze a clock. Approval decisions still require a
+recorder name and do not authorize execution.
+The next lifecycle action uses a pink outline and icon with no background fill:
+Acknowledge for open messages,
+then Resolve for acknowledged messages. Resolved messages have no highlighted
+action; Reopen remains secondary.
+**Show full alert** (expand icon) opens a
+temporary detail stage below the slider; selecting another message replaces
+that stage, and **Hide full alert** dismisses it. Reminder cards show the
+requester in gray above friendly deadlines such as "Due in 8 minutes" or
+"Due 3 minutes ago"; other open messages show their relative received time instead.
+Acknowledged and resolved messages show "Acknowledged" or "Resolved" in that
+position, consistently across message categories and compact/expanded views.
+The exact timestamp remains in the tooltip. Scheduled
+reminders have a gray left border; overdue reminders have a red left border.
+Acknowledging stops
+attention until explicitly reopened. Resolving retains completed history.
+Reopening an already-due reminder immediately restores attention. None of these
+actions changes topic/workstream status.
+
+**Snooze** opens a dialog with **10 minutes**, **1 hour**, **Tomorrow**
+(9 AM local tomorrow), **Next week** (9 AM local on the next Monday), and
+**Custom**. Custom becomes a text field for phrases such as "in 45 minutes" or
+"Friday at 2pm". Chrono parses these locally without AI or network requests;
+the exact local date, time, and timezone are previewed before confirmation.
+Invalid/past times, partially understood expressions (including unsupported
+recurrence), multiple dates, and time ranges are rejected explicitly. Custom
+input must contain only the one-time date/time expression, without extra prose.
+Calendar shortcuts respect daylight-saving changes. Cancel or Escape dismisses
+the dialog without changing the reminder.
+It reschedules and reopens the same document, clears attention until due, and
+preserves authored Markdown and attribution. Agents can use
+`ws-agent-message-snooze {id, expectedResourceVersion, due_at}` with a future
+deadline, or edit `due_at` through the canonical update tool. Snooze uses the
+existing Content Update permission. Editing the deadline alone preserves
+the current lifecycle; Snooze explicitly reopens an acknowledged reminder.
+Recurring reminders and OS notifications
+are not part of this feature.
 
 ### Upgrade and compatibility
 
@@ -1291,7 +1368,10 @@ native stdio connector instead:
     "working-memory": {
       "type": "stdio",
       "command": "/Applications/Working Memory.app/Contents/MacOS/Electron",
-      "args": ["--mcp-stdio", "http://127.0.0.1:7717/mcp"]
+      "args": ["--mcp-stdio", "http://127.0.0.1:7717/mcp"],
+      "env": {
+        "ELECTRON_RUN_AS_NODE": ""
+      }
     }
   }
 }
@@ -1299,6 +1379,9 @@ native stdio connector instead:
 
 Use the installed desktop executable on the current OS. The connector runs
 headlessly, independently of the desktop's single-instance window lock. It
+must override `ELECTRON_RUN_AS_NODE` with an empty string because VS Code can
+otherwise launch Electron in Node mode, which rejects `--mcp-stdio` before
+the connector starts. It
 never reads or reuses remembered owner passwords. It requests its own
 read/write identity, keeps claim proofs private in process memory, and stores
 only its approved client credential in native-encrypted `mcp-client-sign-in`

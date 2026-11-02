@@ -17,7 +17,7 @@ import type {
   TopicType,
   Workstream,
 } from './controlPlaneClient';
-import { agentMessageBubbleForTopic, agentMessageBubbleForTopics } from './viewModels/agentMessageVms';
+import { agentMessageBubbleForTopic, agentMessageBubbleForTopics, compareAgentMessages } from './viewModels/agentMessageVms';
 
 /** The three Active-tab lifecycle sections a workstream can live in. */
 export type WorkstreamSection = 'queue' | 'progress' | 'backlog';
@@ -65,7 +65,7 @@ export interface PanelTopic {
   /** Open-alert count for the bubble (A); 0 hides it. */
   agentMessageCount?: number;
   /** Max severity among open alerts: 'alert' reddish, 'informational' default. */
-  agentMessageSeverity?: 'info' | 'warning' | 'error' | null;
+  agentMessageSeverity?: 'info' | 'warning' | 'error' | 'overdue' | null;
   /** Nested child topics — only set when non-empty. */
   children?: PanelTopic[];
 }
@@ -96,7 +96,7 @@ export interface PanelWorkstream {
   /** Open-alert count aggregated across the workstream's linked topics; 0 hides the bubble. */
   agentMessageCount?: number;
   /** Max severity among open alerts: 'alert' reddish, 'informational' default. */
-  agentMessageSeverity?: 'info' | 'warning' | 'error' | null;
+  agentMessageSeverity?: 'info' | 'warning' | 'error' | 'overdue' | null;
   actions: PanelAction[];
   /** Focused topics for this workstream, in membership order. */
   focused_topics: PanelTopic[];
@@ -132,7 +132,7 @@ export interface PanelTopicRow {
   recentEntryCount: number;
   actions?: PanelAction[];
   agentMessageCount?: number;
-  agentMessageSeverity?: 'info' | 'warning' | 'error' | null;
+  agentMessageSeverity?: 'info' | 'warning' | 'error' | 'overdue' | null;
   children?: PanelTopicRow[];
 }
 
@@ -183,6 +183,7 @@ export interface PanelAgentMessage {
   /** Lifecycle and severity are independent. */
   status: ControlPlaneAlert['status'];
   category: ControlPlaneAlert['category'];
+  dueAt?: number;
   severity: ControlPlaneAlert['severity'];
   attention: boolean;
   /** Codicon id. */
@@ -303,7 +304,7 @@ function sectionMoveActions(ws: { id: string; status: string }): PanelAction[] {
 /** An open-alert bubble (count + max severity) sourced from control-plane alerts. */
 type ControlPlaneAlertBubble = {
   count: number;
-  severity: 'info' | 'warning' | 'error' | null;
+  severity: 'info' | 'warning' | 'error' | 'overdue' | null;
 };
 
 /**
@@ -794,15 +795,12 @@ function buildDocumentRow(doc: DocumentEnvelope): PanelDocumentRow {
   };
 }
 
-/** History ordering: open, acknowledged, then resolved. */
-function alertStatusRank(status: ControlPlaneAlert['status']): number {
-  return status === 'open' ? 0 : status === 'acknowledged' ? 1 : 2;
-}
-
 /** Build one canonical agent-message row. */
 function buildAlertRow(alert: ControlPlaneAlert): PanelAlert {
   const icon =
-    alert.status === 'open' && alert.attention
+    alert.category === 'reminder'
+      ? 'history'
+      : alert.status === 'open' && alert.attention
       ? 'bell'
       : alert.status === 'open'
         ? 'info'
@@ -820,9 +818,10 @@ function buildAlertRow(alert: ControlPlaneAlert): PanelAlert {
     kind: 'agent-message',
     id: `agent-message:${alert.id}`,
     label: title,
-    description: '',
+    description: alert.due_at === undefined ? '' : `Due ${new Date(alert.due_at * 1000).toLocaleString()}`,
     status: alert.status,
     category: alert.category,
+    ...(alert.due_at !== undefined ? { dueAt: alert.due_at } : {}),
     severity: alert.severity,
     attention: alert.attention,
     icon,
@@ -832,7 +831,7 @@ function buildAlertRow(alert: ControlPlaneAlert): PanelAlert {
 }
 
 /**
- * Build message history, ordered open → acknowledged → resolved, newest-first. The
+ * Build message history with open reminders in deadline order before other open messages. The
  * empty state reflects the daemon's reachability.
  */
 export function buildAgentMessagesPanel(input: {
@@ -849,11 +848,7 @@ export function buildAgentMessagesPanel(input: {
   }
   const alerts = (input.agentMessages ?? [])
     .slice()
-    .sort(
-      (a, b) =>
-        alertStatusRank(a.status) - alertStatusRank(b.status) ||
-        b.updated_at - a.updated_at,
-    );
+    .sort(compareAgentMessages);
   return {
     tab: 'agent-messages',
     items: alerts.map(buildAlertRow),

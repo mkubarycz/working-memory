@@ -21,6 +21,7 @@
     onTogglePin: (id: string) => void;
     onSetAgentMessageStatus: (id: string, status: AgentMessageVM['status']) => void;
     onRecordDecision?: import('./types').RecordAgentMessageDecision;
+    onSnooze?: import('./types').SnoozeAgentMessage;
     attachmentBaseUrl?: string;
   }
 
@@ -35,6 +36,7 @@
     onTogglePin,
     onSetAgentMessageStatus,
     onRecordDecision,
+    onSnooze,
     attachmentBaseUrl = '',
   }: Props = $props();
 
@@ -231,7 +233,7 @@
   </div>
 </section>
 
-<AgentMessageCallouts agentMessages={ws.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {attachmentBaseUrl} />
+<AgentMessageCallouts agentMessages={ws.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {onSnooze} {attachmentBaseUrl} />
 
 {#snippet treeNode(node: TreeTopicVM)}
     {@const hasChildren = node.children.length > 0}
@@ -265,7 +267,7 @@
           {#if node.agentMessageCount > 0}
             <span
               class="alert-count"
-              class:sev-alert={node.agentMessageSeverity === 'error'}
+              class:sev-alert={node.agentMessageSeverity === 'error' || node.agentMessageSeverity === 'overdue'}
               title="{node.agentMessageCount} agent messages needing attention"
             >{node.agentMessageCount}</span>
           {/if}

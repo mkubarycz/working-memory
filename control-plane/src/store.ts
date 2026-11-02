@@ -274,6 +274,13 @@ function ensureSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources (kind);
 
+    CREATE INDEX IF NOT EXISTS idx_agent_message_pending_deadline
+      ON resources (kind, json_extract(spec, '$.due_at'), id)
+      WHERE kind = 'AgentMessage' AND deleted_at IS NULL
+        AND json_extract(spec, '$.category') = 'reminder'
+        AND json_extract(spec, '$.status') = 'open'
+        AND json_extract(spec, '$.attention') = 0;
+
     CREATE TABLE IF NOT EXISTS attachments (
       id         TEXT PRIMARY KEY,
       sha256     TEXT NOT NULL UNIQUE,
@@ -380,6 +387,13 @@ export function openStore(dbFilePath: string): Store {
       throw new Error('AgentMessage agent_name is server-owned and immutable; provide only your registered agent_id.');
     }
     parsed.agent_name = String(senderName);
+    if (parsed.category === 'reminder') {
+      if (parsed.due_at === undefined) throw new Error('Reminder AgentMessages require due_at in Unix seconds.');
+      if (!parsed.recommended_action.trim()) throw new Error('Reminder AgentMessages require a specific recommended_action.');
+      parsed.attention = parsed.status === 'open' && parsed.due_at <= nowSeconds();
+    } else if (parsed.due_at !== undefined) {
+      throw new Error('Only reminder AgentMessages may have due_at.');
+    }
     // Historical messages may retain references to deleted topics.
     const historical = !!source && source.row !== null && typeof source.row === 'object' && !Array.isArray(source.row);
     if (parsed.status !== 'open' && parsed.attention) {
@@ -859,7 +873,7 @@ export function openStore(dbFilePath: string): Store {
   function restoreDocument(input: RestoreDocumentInput): DocumentEnvelope {
     const deleted = getDocument({ id: input.id, includeDeleted: true });
     if (deleted?.kind === AGENT_KIND) validateAgent(deleted.spec, input.id);
-    if (deleted?.kind === AGENT_MESSAGE_KIND) validateMessage(deleted.spec, input.id, true);
+    const restoredSpec = deleted?.kind === AGENT_MESSAGE_KIND ? validateMessage(deleted.spec, input.id, true) : null;
     const now = nowSeconds();
 
     // BEGIN IMMEDIATE so the version bump + conditional restore are one atomic
@@ -879,11 +893,13 @@ export function openStore(dbFilePath: string): Store {
         .prepare(
           `UPDATE resources
              SET deleted_at = NULL, updated_at = ?, resource_version = ?,
-                 agent_name_key = CASE WHEN kind = 'Agent' THEN ? ELSE agent_name_key END
+                 agent_name_key = CASE WHEN kind = 'Agent' THEN ? ELSE agent_name_key END,
+                 spec = COALESCE(?, spec)
            WHERE id = ? AND deleted_at IS NOT NULL`,
         )
         .run(now, next,
           deleted?.kind === AGENT_KIND ? normalizeAgentName(String(deleted.spec.name)) : null,
+          restoredSpec ? JSON.stringify(restoredSpec) : null,
           input.id);
 
       if (Number(result.changes) === 0) {

@@ -142,6 +142,9 @@ button { cursor: pointer; }
 .message-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-entry .timeline-state { flex: 0 0 auto; }
 .attention-label { color: var(--desktop-accent-strong); font-size: 10px; font-weight: 700; }
+.overdue-reminder > .timeline-command .attention-label { color: #c42b1c; }
+.overdue-reminder > .timeline-command .timeline-dot { background: #c42b1c; }
+.reminder-list { border-bottom: 1px solid rgba(89, 85, 91, .2); padding-bottom: 8px; margin-bottom: 8px; }
 .show-in-log { display: block; margin: 4px 0 4px auto; padding: 3px 6px; border: 0; background: transparent; color: var(--desktop-accent-strong); font-size: 10px; }
 .tab-unread-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #c52e3c; }
 .chat-run:focus-visible { outline: 2px solid var(--desktop-accent-strong); outline-offset: -2px; }
