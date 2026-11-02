@@ -44,6 +44,9 @@ export function customReminderDeadline(value: string, now = Date.now()): number 
   if (results.length !== 1 || results[0].end) {
     throw new Error('Enter one date and time, not multiple dates or a time range.');
   }
+  if (results[0].index !== 0 || results[0].text.length !== text.length) {
+    throw new Error('Could not understand the entire time expression. Enter a one-time date and time, such as "Friday at 2pm".');
+  }
   const seconds = Math.floor(results[0].date().getTime() / 1000);
   if (!Number.isSafeInteger(seconds) || seconds * 1000 <= now) {
     throw new Error('Choose a future reminder deadline.');

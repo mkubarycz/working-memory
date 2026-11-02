@@ -415,7 +415,10 @@ other messages:
 Replace `due_at` with the intended deadline (`Math.floor(Date.now() / 1000) + 1800`
 means 30 minutes from now). The deadline is persisted, not tied to an agent
 session or desktop timer. The control plane checks every second and catches up
-on startup; a stopped backend cannot notify until it resumes. No separate Alert
+on startup; a stopped backend cannot notify until it resumes. The sweep searches
+a partial deadline index containing only live, open reminders that have not yet
+raised attention, rather than scanning retained message history. The index is
+added idempotently when opening new or existing stores. No separate Alert
 is created. Attention is server-owned: scheduled reminders have no attention;
 due open reminders require attention. Red overdue styling is display urgency,
 not a change to the reminder's informational severity.
@@ -453,7 +456,9 @@ actions changes topic/workstream status.
 **Custom**. Custom becomes a text field for phrases such as "in 45 minutes" or
 "Friday at 2pm". Chrono parses these locally without AI or network requests;
 the exact local date, time, and timezone are previewed before confirmation.
-Invalid/past times, multiple dates, and time ranges are rejected explicitly.
+Invalid/past times, partially understood expressions (including unsupported
+recurrence), multiple dates, and time ranges are rejected explicitly. Custom
+input must contain only the one-time date/time expression, without extra prose.
 Calendar shortcuts respect daylight-saving changes. Cancel or Escape dismisses
 the dialog without changing the reminder.
 It reschedules and reopens the same document, clears attention until due, and

@@ -49,6 +49,7 @@ describe('canonical agent message timeline', () => {
   it('parses natural-language custom times locally and rejects past, ambiguous, or missing times', () => {
     const now = new Date(2026, 10, 1, 21, 15, 20).getTime();
     expect(customReminderDeadline('in 45 minutes', now)).toBe(Math.floor(now / 1000) + 45 * 60);
+    expect(customReminderDeadline('  in 45 minutes \n', now)).toBe(Math.floor(now / 1000) + 45 * 60);
     expect(customReminderDeadline('tomorrow at 9am', now)).toBe(new Date(2026, 10, 2, 9).getTime() / 1000);
     expect(customReminderDeadline('Friday at 2pm', now)).toBe(new Date(2026, 10, 6, 14).getTime() / 1000);
     expect(customReminderDeadline('9am', now)).toBe(new Date(2026, 10, 2, 9).getTime() / 1000);
@@ -58,6 +59,19 @@ describe('canonical agent message timeline', () => {
     expect(() => customReminderDeadline('', now)).toThrow(/Enter a time/);
     expect(() => customReminderDeadline('no date here', now)).toThrow(/date and time/);
     expect(() => customReminderDeadline('x'.repeat(501), now)).toThrow(/Enter a time/);
+  });
+
+  it.each([
+    'tomorrow at 25:00',
+    'tomorrow at 09:99',
+    'every day at 9am',
+    'every Friday at 2pm',
+    'garbage tomorrow',
+    'in 45 minutes garbage',
+    'remind me in an hour',
+  ])('rejects partially understood custom snooze input: %s', (value) => {
+    const now = new Date(2026, 10, 1, 21, 15, 20).getTime();
+    expect(() => customReminderDeadline(value, now)).toThrow(/entire time expression.*one-time/);
   });
 
   it('schedules Tomorrow at 9 AM and Next week at 9 AM on the next Monday', () => {

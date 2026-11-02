@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
   'renders deadline-aware reminder placement, overdue styling, acknowledgement, Snooze and errors',
@@ -69,7 +70,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         onResolve={noop} onSetAgentMessageStatus={setStatus} onSnooze={snooze} />
     `;
     const server = await createServer({
-      configFile: false, root: new URL('..', import.meta.url).pathname,
+      configFile: false, root: fileURLToPath(new URL('..', import.meta.url)),
       cacheDir: join(directory, 'vite-cache'), optimizeDeps: { include: ['svelte', 'markdown-it', 'chrono-node'] },
       plugins: [{
         name: 'reminders-browser-fixture',
@@ -258,6 +259,15 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait(dialog + '.querySelector("#custom-snooze-preview").textContent.includes("future")');
           await enterCustom('tomorrow or Friday');
           await wait(dialog + '.querySelector("#custom-snooze-preview").textContent.includes("one date")');
+          for (const invalid of ['tomorrow at 25:00', 'every day at 9am']) {
+            await enterCustom(invalid);
+            await wait(dialog + '.querySelector("#custom-snooze-preview").textContent.includes("entire time expression")');
+            assert.equal(await evaluate(dialog + '.querySelector("input").getAttribute("aria-invalid")'), 'true');
+            assert.equal(await evaluate(dialog + '.querySelector("button[type=submit]").disabled'), true);
+            assert.equal(await evaluate(dialog + '.querySelector("time")'), null);
+            await evaluate(dialog + '.querySelector("form").requestSubmit()');
+            assert.equal(await evaluate('window.__reminderTest.calls.length'), 2);
+          }
           assert.equal(await evaluate('window.__reminderTest.calls.length'), 2);
           await enterCustom('in 45 minutes');
           await wait(dialog + '.querySelector("time")');

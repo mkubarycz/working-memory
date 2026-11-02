@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { openStore, type DocumentEnvelope, type Store } from '../src/store';
 import { loadKinds } from '../src/kinds/loader';
-import { activateDueReminders } from '../src/agentMessageReminders';
+import { activateDueReminders, DUE_REMINDERS_SQL } from '../src/agentMessageReminders';
 import { instanceToolPermissions } from '../src/instanceAuthorization';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -77,6 +77,30 @@ describe('durable AgentMessage reminders', () => {
     }
   });
 
+  it('searches only the partial pending-deadline index and keeps membership current', () => {
+    const { clock, store, create, update } = fixture();
+    const due = create({ due_at: now + 1 });
+    const future = create({ due_at: now + 60 });
+    create({ due_at: now, attention: true });
+    create({ status: 'acknowledged' });
+    create({ status: 'resolved' });
+    const deleted = create();
+    store.deleteDocument({ id: deleted.metadata.id });
+    for (let index = 0; index < 100; index++) create({ category: 'completion', due_at: undefined, status: 'resolved' });
+    const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${DUE_REMINDERS_SQL}`).all(now + 2);
+    expect(plan.map((row) => row.detail).join('\n'))
+      .toContain('SEARCH resources USING INDEX idx_agent_message_pending_deadline');
+    const pending = () => store.db.prepare(DUE_REMINDERS_SQL).all(now + 3600).map((row) => row.id).sort();
+    expect(pending()).toEqual([due.metadata.id, future.metadata.id].sort());
+    clock.mockReturnValue((now + 2) * 1000);
+    expect(activateDueReminders(store)).toBe(1);
+    expect(pending()).toEqual([future.metadata.id]);
+    const acknowledged = update(future, { status: 'acknowledged' });
+    expect(pending()).toEqual([]);
+    update(acknowledged, { status: 'open' });
+    expect(pending()).toEqual([future.metadata.id]);
+  });
+
   it('rescheduling clears attention, never fires the old deadline, and preserves identity and source', () => {
     const { clock, store, create, update } = fixture();
     const original = create({ due_at: now });
@@ -114,12 +138,16 @@ describe('durable AgentMessage reminders', () => {
     const filename = join(directory, 'store.db');
     const { clock, store, create } = fixture(filename);
     const original = create();
+    store.db.exec('DROP INDEX idx_agent_message_pending_deadline');
     store.close();
     stores.pop();
     try {
       clock.mockReturnValue((now + 60) * 1000);
       const reopened = openStore(filename);
       try {
+        expect(reopened.db.prepare(`EXPLAIN QUERY PLAN ${DUE_REMINDERS_SQL}`).all(now + 60)
+          .map((row) => row.detail).join('\n'))
+          .toContain('SEARCH resources USING INDEX idx_agent_message_pending_deadline');
         expect(activateDueReminders(reopened)).toBe(1);
         const reminder = reopened.getDocument({ id: original.metadata.id })!;
         expect(reminder.spec).toMatchObject({ due_at: now + 30, attention: true, description: body });

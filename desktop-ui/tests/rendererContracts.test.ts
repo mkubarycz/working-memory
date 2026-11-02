@@ -466,7 +466,9 @@ describe('desktop tree icon contract', () => {
     const composerIndex = app.indexOf('<div class="composer-shell">');
     const chatRailIndex = app.indexOf('<aside class="chat-rail">');
 
-    expect(recent).toContain('scopedMessageRows(runs, agentMessages, context, document)');
+    expect(recent).toContain("['topic', 'workstream'].includes(normalizeScopeKind(context?.kind ?? ''))");
+    expect(recent).toContain('scopedMessageRows(runs, previewMessages, context, document)');
+    expect(recent).toContain('agentMessages={previewMessages}');
     expect(recent).toContain('limit={expanded ? undefined : 5}');
     expect(recent).toContain('aria-label="Recent messages"');
     expect(recent).toContain('<span>Recent messages</span>');

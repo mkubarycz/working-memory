@@ -274,6 +274,13 @@ function ensureSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources (kind);
 
+    CREATE INDEX IF NOT EXISTS idx_agent_message_pending_deadline
+      ON resources (kind, json_extract(spec, '$.due_at'), id)
+      WHERE kind = 'AgentMessage' AND deleted_at IS NULL
+        AND json_extract(spec, '$.category') = 'reminder'
+        AND json_extract(spec, '$.status') = 'open'
+        AND json_extract(spec, '$.attention') = 0;
+
     CREATE TABLE IF NOT EXISTS attachments (
       id         TEXT PRIMARY KEY,
       sha256     TEXT NOT NULL UNIQUE,
