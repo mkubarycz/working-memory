@@ -37,7 +37,7 @@ export function instanceToolPermissions(name: string, args: Record<string, unkno
   if (verb === 'restore' || verb === 'delete' && args.restore === true) return required(category, 'update');
   if (['create', 'read', 'update', 'delete'].includes(verb)) return required(category, verb as PermissionOperation);
   if (['list', 'get', 'pending'].includes(verb)) return required(category, 'read');
-  if (['acknowledge', 'resolve', 'reopen', 'dismiss', 'reorder', 'close-tree', 'append', 'finalize', 'focus', 'clear-focus'].includes(verb)) {
+  if (['acknowledge', 'resolve', 'reopen', 'snooze', 'dismiss', 'reorder', 'close-tree', 'append', 'finalize', 'focus', 'clear-focus'].includes(verb)) {
     return required(category, 'update');
   }
   if (verb === 'transfer') return [...required(category, 'create'), ...required(category, 'update')];

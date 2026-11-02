@@ -1,7 +1,7 @@
 <script module lang="ts">
   import type { MessageRow } from './agentMessages';
   import type { ChatRun, ChatTarget, ChatToolRow } from './chatHistory';
-  import type { AgentMessageVM, DocumentVM, RecordAgentMessageDecision } from './documents/types';
+  import type { AgentMessageVM, DocumentVM, RecordAgentMessageDecision, SnoozeAgentMessage } from './documents/types';
   import type { UnreadResponse } from './chatUnread';
 
   export interface MessageEntryProps {
@@ -26,6 +26,7 @@
     onResolve: (confirmed: boolean, run: ChatRun) => void;
     onSetAgentMessageStatus: (id: string, status: AgentMessageVM['status']) => void;
     onRecordDecision?: RecordAgentMessageDecision;
+    onSnooze?: SnoozeAgentMessage;
   }
 </script>
 
@@ -46,7 +47,7 @@
     row, expanded = $bindable(true), latest = false, showScope = true, showInLog = false,
     attachRunIds = false, humanName, documents = [], unreadResponses, onViewed, onFocus, onRetry, runBlocked,
     onInspect, onOpen, attachmentUrl, attachmentBaseUrl = '', assistantFallback, onResolve,
-    onSetAgentMessageStatus, onRecordDecision,
+    onSetAgentMessageStatus, onRecordDecision, onSnooze,
   }: MessageEntryProps = $props();
 
   const run = $derived(row.kind === 'run' ? row.run : undefined);
@@ -69,6 +70,7 @@
   class="chat-run message-entry"
   class:latest
   class:needs-attention={attention}
+  class:overdue-reminder={attention && message?.category === 'reminder'}
   bind:open={expanded}
   id={attachRunIds && run ? chatRunDomId(run) : undefined}
   data-journal-id={run?.journalId}
@@ -82,7 +84,10 @@
     {:else}
       <span class="message-preview">{preview}</span>
     {/if}
-    {#if attention}<span class="attention-label">Needs your attention</span>{/if}
+    {#if message?.category === 'reminder' && message.dueAt !== undefined}
+      <time datetime={new Date(message.dueAt * 1000).toISOString()}>Due {new Date(message.dueAt * 1000).toLocaleString()}</time>
+    {/if}
+    {#if attention}<span class="attention-label">{message?.category === 'reminder' ? 'Reminder due' : 'Needs your attention'}</span>{/if}
     <span class="timeline-state">{status.replaceAll('_', ' ')}</span>
     {#if run}
       <UnreadBadge count={unreadResponses.some((record) => record.key === responseKey(run)) ? 1 : 0} />
@@ -95,7 +100,7 @@
           <span class="message-avatar assistant-avatar" title={message.agentName} aria-hidden="true">{humanInitials(message.agentName)}</span>
           <div class="message-content">
             <div class="message-from">{message.agentName}</div>
-            <AgentMessageCard {message} embedded onSetStatus={onSetAgentMessageStatus} {onRecordDecision} {attachmentBaseUrl} />
+            <AgentMessageCard {message} embedded onSetStatus={onSetAgentMessageStatus} {onRecordDecision} {onSnooze} {attachmentBaseUrl} />
           </div>
         </section>
       {:else if run}

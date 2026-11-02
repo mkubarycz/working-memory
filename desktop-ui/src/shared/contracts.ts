@@ -458,6 +458,7 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   togglePin(workstream: string, topic: string): Promise<DocumentVM>;
   getAgentMessages(input?: { limit?: number; offset?: number }): Promise<AgentMessageVM[]>;
   recordAgentMessageDecision(id: string, decision: AgentMessageDecisionInput): Promise<void>;
+  snoozeAgentMessage(id: string, dueAt: number): Promise<void>;
   setAgentMessageStatus(
     id: string,
     status: AgentMessageVM['status'],

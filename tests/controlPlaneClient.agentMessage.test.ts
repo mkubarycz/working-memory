@@ -32,6 +32,26 @@ const client = () => new ControlPlaneClient({ resolveUrl: () => 'http://127.0.0.
 describe('canonical AgentMessage shared client', () => {
   beforeEach(() => callTool.mockReset());
 
+  it('parses reminder deadlines and sends Snooze with an explicit version', async () => {
+    const reminder = { ...envelope, spec: { ...envelope.spec, category: 'reminder', due_at: 300 } };
+    callTool.mockResolvedValue(text(reminder));
+    expect(await client().agentMessageSnooze({ id: 'message-1', due_at: 300, expectedResourceVersion: 3 }))
+      .toMatchObject({ category: 'reminder', due_at: 300, severity: 'warning' });
+    expect(callTool).toHaveBeenCalledWith({ name: 'ws-agent-message-snooze',
+      arguments: { id: 'message-1', due_at: 300, expectedResourceVersion: 3 } });
+  });
+
+  it.each([undefined, null, '300', 0, -1, 1.5, 8_640_000_000_001])('rejects malformed reminder deadlines: %j', async (due_at) => {
+    callTool.mockResolvedValue(text({ count: 1, messages: [{ ...envelope,
+      spec: { ...envelope.spec, category: 'reminder', due_at } }] }));
+    await expect(client().agentMessageRead()).rejects.toThrow('Malformed');
+  });
+
+  it('rejects reminder deadlines on non-reminder categories', async () => {
+    callTool.mockResolvedValue(text({ count: 1, messages: [{ ...envelope, spec: { ...envelope.spec, due_at: 300 } }] }));
+    await expect(client().agentMessageRead()).rejects.toThrow('Malformed');
+  });
+
   it('preserves whitespace bodies only on imported Alert history', async () => {
     const description = ' \t\r\n ';
     const legacy_source = { migration_version: 3, row: { kind: 'Alert', spec: JSON.stringify({ description }) } };

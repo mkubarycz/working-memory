@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import { loadAllAgentMessages, mergeMessageRows, messageNeedsAttention, messagesForContext, messageStatusActions } from '../src/renderer/agentMessages';
+import { activeReminderRows, customReminderDeadline, loadAllAgentMessages, mergeMessageRows, messageNeedsAttention, messagesForContext, messageStatusActions, presetReminderDeadline, reminderTiming, snoozeDeadline } from '../src/renderer/agentMessages';
 import type { AgentMessageVM, WorkstreamVM } from '../src/renderer/documents/types';
 import type { ChatRun } from '../src/renderer/chatHistory';
 import { targetForRef, toolMode } from '../src/renderer/chatHistory';
@@ -14,6 +14,78 @@ function message(index: number, extra: Partial<AgentMessageVM> = {}): AgentMessa
 const context = { kind: 'topic', routeKind: 'topic' as const, identifier: 'topic-uuid', title: 'Topic' };
 
 describe('canonical agent message timeline', () => {
+  it('shows deadline timing at the exact second boundary and suppresses overdue styling after acknowledgement/resolution', () => {
+    const reminder = message(0, { category: 'reminder', dueAt: 1000 });
+    expect(reminderTiming(reminder, 940_000)).toEqual({ text: 'Due in 1 minute', overdue: false });
+    expect(reminderTiming(reminder, 1000_000)).toEqual({ text: 'Due now', overdue: true });
+    expect(reminderTiming(reminder, 1060_000)).toEqual({ text: 'Due 1 minute ago', overdue: true });
+    expect(reminderTiming({ ...reminder, status: 'acknowledged' }, 1060_000)).toEqual({ text: 'Acknowledged', overdue: false });
+    expect(reminderTiming({ ...reminder, status: 'resolved' }, 1060_000)).toEqual({ text: 'Resolved', overdue: false });
+    expect(reminderTiming(message(0))).toBeNull();
+    expect(() => reminderTiming({ ...reminder, dueAt: undefined })).toThrow(/deadline/);
+  });
+
+  it('keeps open reminders discoverable in deadline order without including acknowledged/resolved history', () => {
+    const rows = mergeMessageRows([], [
+      message(1, { category: 'reminder', dueAt: 2000 }),
+      message(2, { category: 'reminder', dueAt: 1000 }),
+      message(3, { category: 'reminder', dueAt: 500, status: 'acknowledged' }),
+      message(4, { category: 'reminder', dueAt: 100, status: 'resolved' }),
+      message(5),
+    ]);
+    expect(activeReminderRows(rows).map((row) => row.message.id)).toEqual(['message-2', 'message-1']);
+    expect(rows).toHaveLength(5);
+  });
+
+  it('computes preset and custom snooze deadlines in seconds and explicitly rejects invalid input', () => {
+    expect(snoozeDeadline(30, 1_000_999)).toBe(2800);
+    expect(customReminderDeadline('2026-10-31T20:00:00Z', Date.parse('2026-10-31T19:00:00Z')))
+      .toBe(Date.parse('2026-10-31T20:00:00Z') / 1000);
+    expect(() => snoozeDeadline(0)).toThrow(/positive/);
+    expect(() => customReminderDeadline('invalid')).toThrow(/date and time/);
+    expect(() => customReminderDeadline('2020-01-01T00:00:00Z')).toThrow(/future/);
+  });
+
+  it('parses natural-language custom times locally and rejects past, ambiguous, or missing times', () => {
+    const now = new Date(2026, 10, 1, 21, 15, 20).getTime();
+    expect(customReminderDeadline('in 45 minutes', now)).toBe(Math.floor(now / 1000) + 45 * 60);
+    expect(customReminderDeadline('tomorrow at 9am', now)).toBe(new Date(2026, 10, 2, 9).getTime() / 1000);
+    expect(customReminderDeadline('Friday at 2pm', now)).toBe(new Date(2026, 10, 6, 14).getTime() / 1000);
+    expect(customReminderDeadline('9am', now)).toBe(new Date(2026, 10, 2, 9).getTime() / 1000);
+    expect(() => customReminderDeadline('yesterday', now)).toThrow(/future/);
+    expect(() => customReminderDeadline('tomorrow or Friday', now)).toThrow(/one date/);
+    expect(() => customReminderDeadline('from 2pm to 3pm', now)).toThrow(/range/);
+    expect(() => customReminderDeadline('', now)).toThrow(/Enter a time/);
+    expect(() => customReminderDeadline('no date here', now)).toThrow(/date and time/);
+    expect(() => customReminderDeadline('x'.repeat(501), now)).toThrow(/Enter a time/);
+  });
+
+  it('schedules Tomorrow at 9 AM and Next week at 9 AM on the next Monday', () => {
+    const now = new Date(2026, 10, 1, 21, 15, 20, 999).getTime();
+    expect(presetReminderDeadline('10-minutes', now)).toBe(Math.floor(now / 1000) + 600);
+    expect(presetReminderDeadline('1-hour', now)).toBe(Math.floor(now / 1000) + 3600);
+    expect(presetReminderDeadline('tomorrow', now)).toBe(new Date(2026, 10, 2, 9).getTime() / 1000);
+    expect(presetReminderDeadline('next-week', now)).toBe(new Date(2026, 10, 2, 9).getTime() / 1000);
+    for (const day of [2, 3, 5, 8]) {
+      expect(presetReminderDeadline('next-week', new Date(2026, 10, day, 8).getTime()))
+        .toBe(new Date(2026, 10, 9, 9).getTime() / 1000);
+    }
+    expect(presetReminderDeadline('tomorrow', new Date(2026, 11, 31, 23).getTime()))
+      .toBe(new Date(2027, 0, 1, 9).getTime() / 1000);
+  });
+
+  it('uses local calendar time across daylight-saving changes, not fixed 24-hour days', () => {
+    vi.stubEnv('TZ', 'America/New_York');
+    try {
+      const spring = new Date(2027, 2, 13, 9).getTime();
+      const fall = new Date(2027, 10, 6, 9).getTime();
+      expect(presetReminderDeadline('tomorrow', spring) * 1000 - spring).toBe(23 * 3600_000);
+      expect(presetReminderDeadline('tomorrow', fall) * 1000 - fall).toBe(25 * 3600_000);
+      expect(presetReminderDeadline('next-week', spring)).toBe(new Date(2027, 2, 15, 9).getTime() / 1000);
+      expect(presetReminderDeadline('next-week', fall)).toBe(new Date(2027, 10, 8, 9).getTime() / 1000);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('declares the message refresh function in App script scope for startup and live-update callers', () => {
     const app = readFileSync(new URL('../src/renderer/App.svelte', import.meta.url), 'utf8');
     const script = app.slice(app.indexOf('>') + 1, app.indexOf('</script>'));

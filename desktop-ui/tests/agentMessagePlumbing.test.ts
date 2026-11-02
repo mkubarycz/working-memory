@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AgentMessage } from '../../shared/controlPlaneClient';
 import { buildAgentMessageVMs, agentMessageBubbleForTopics } from '../../shared/viewModels/agentMessageVms';
 import { buildAgentMessagesPanel } from '../../shared/panelData';
-import { listAgentMessages, recordAgentMessageDecision, updateAgentMessageStatus } from '../src/main/agentMessageLifecycle';
+import { listAgentMessages, recordAgentMessageDecision, snoozeAgentMessage, updateAgentMessageStatus } from '../src/main/agentMessageLifecycle';
 import { desktopDeepLink, parseDesktopDeepLink } from '../src/shared/deepLink';
 import { resolveDesktopResourceUri } from '../src/main/resolver';
 import { desktopToolDescriptors } from '../src/main/modelTools';
@@ -18,6 +18,17 @@ const message: AgentMessage = {
 };
 
 describe('AgentMessage desktop plumbing', () => {
+  it('validates Snooze IPC input and forwards only a reminder deadline', async () => {
+    const agentMessageSnooze = vi.fn().mockResolvedValue(message);
+    const dueAt = Math.floor(Date.now() / 1000) + 1800;
+    await snoozeAgentMessage({ agentMessageSnooze } as never, message.id, dueAt);
+    expect(agentMessageSnooze).toHaveBeenCalledWith({ id: message.id, due_at: dueAt });
+    for (const invalid of [undefined, 'tomorrow', -1, 1.5, 8_640_000_000_001]) {
+      await expect(snoozeAgentMessage({ agentMessageSnooze } as never, message.id, invalid)).rejects.toThrow(/future/);
+    }
+    expect(agentMessageSnooze).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['approved', 'rejected'])('records an attributed %s decision without changing lifecycle or executing an action', async (outcome) => {
     const agentMessageUpdate = vi.fn().mockResolvedValue(message);
     await recordAgentMessageDecision({ agentMessageUpdate } as never, message.id, { outcome, decided_by: 'Reviewer' });

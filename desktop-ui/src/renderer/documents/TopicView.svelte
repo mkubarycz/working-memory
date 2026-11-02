@@ -21,6 +21,7 @@
     onOpenWorkstream: (id: string) => void;
     onSetAgentMessageStatus: (id: string, status: AgentMessageVM['status']) => void;
     onRecordDecision?: import('./types').RecordAgentMessageDecision;
+    onSnooze?: import('./types').SnoozeAgentMessage;
     attachmentBaseUrl?: string;
     onAttachImages?: (files: File[]) => Promise<AttachmentRef[]>;
     onOpenLink?: (href: string) => void;
@@ -40,6 +41,7 @@
     onOpenWorkstream,
     onSetAgentMessageStatus,
     onRecordDecision,
+    onSnooze,
     attachmentBaseUrl = '',
     onAttachImages = async () => [],
     onOpenLink,
@@ -326,7 +328,7 @@
               {#if p.agentMessageCount > 0}
                 <span
                   class="alert-count"
-                  class:sev-alert={p.agentMessageSeverity === 'error'}
+                  class:sev-alert={p.agentMessageSeverity === 'error' || p.agentMessageSeverity === 'overdue'}
                   title="{p.agentMessageCount} agent messages needing attention"
                 >{p.agentMessageCount}</span>
               {/if}
@@ -344,7 +346,7 @@
               {#if c.agentMessageCount > 0}
                 <span
                   class="alert-count"
-                  class:sev-alert={c.agentMessageSeverity === 'error'}
+                  class:sev-alert={c.agentMessageSeverity === 'error' || c.agentMessageSeverity === 'overdue'}
                   title="{c.agentMessageCount} agent messages needing attention"
                 >{c.agentMessageCount}</span>
               {/if}
@@ -364,7 +366,7 @@
   </aside>
 </div>
 
-<AgentMessageCallouts agentMessages={topic.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {attachmentBaseUrl} />
+<AgentMessageCallouts agentMessages={topic.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {onSnooze} {attachmentBaseUrl} />
 
 <section class="body-section" aria-label="Topic body">
   <div class="tab-panel">

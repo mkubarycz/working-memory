@@ -4,7 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ControlPlaneClient } from '../../../shared/controlPlaneClient';
-import { listAgentMessages, recordAgentMessageDecision, updateAgentMessageStatus } from './agentMessageLifecycle';
+import { listAgentMessages, recordAgentMessageDecision, snoozeAgentMessage, updateAgentMessageStatus } from './agentMessageLifecycle';
 import { renderDocumentByKind } from './documentRenderers';
 import type {
   ChatContext,
@@ -1229,6 +1229,7 @@ function registerIpc(): void {
   ipcMain.handle('agent-message:set-status', async (_event, id, status) => {
     await updateAgentMessageStatus(controlPlane(), id, status);
   });
+  ipcMain.handle('agent-message:snooze', (_event, id, dueAt) => snoozeAgentMessage(controlPlane(), id, dueAt));
   ipcMain.handle('action:invoke', (_event, workstream, command, args) => invokeAction(workstream, command, args));
   ipcMain.handle('container:list', () => readContainerAppDefinitions());
   ipcMain.handle('container:run', async (_event, rawId: string) => {

@@ -119,6 +119,7 @@ const api: DesktopApi = {
   getAgentMessages: (input) => invoke('agent-message:list', input),
   recordAgentMessageDecision: (id, decision) => invoke('agent-message:record-decision', id, decision),
   setAgentMessageStatus: (id, status) => invoke('agent-message:set-status', id, status),
+  snoozeAgentMessage: (id, dueAt) => invoke('agent-message:snooze', id, dueAt),
   invokeAction: (workstream, command, args) => invoke('action:invoke', workstream, command, args),
   runContainerApp: (id) => invoke('container:run', id),
   inspectContainerApp: (id) => invoke('container:inspect', id),

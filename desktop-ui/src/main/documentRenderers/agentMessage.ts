@@ -12,6 +12,7 @@ export function renderAgentMessageDocument(env: DocumentEnvelope): string {
       `- \`agentId\`: ${asStr(spec.agent_id) ?? '—'}`,
       `- \`status\`: ${asStr(spec.status) ?? '—'}`,
       `- \`category\`: ${asStr(spec.category) ?? '—'}`,
+      ...(typeof spec.due_at === 'number' ? [`- \`dueAt\`: ${spec.due_at} (${new Date(spec.due_at * 1000).toISOString()})`] : []),
       `- \`severity\`: ${asStr(spec.severity) ?? '—'}`,
       `- \`attention\`: ${spec.attention === true}`,
       `- \`createdBy\`: ${asStr(spec.created_by) ?? '—'}`,

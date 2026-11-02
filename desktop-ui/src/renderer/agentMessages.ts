@@ -2,6 +2,8 @@ import type { AgentMessageVM, DocumentVM, WorkstreamVM } from './documents/types
 import type { ChatRun } from './chatHistory';
 import { allRunsForContext, type ScopedChatContext } from './scopedChat';
 import { normalizeScopeKind as normalizeKind } from './scopeIdentity';
+import { formatRelativeDocumentTime } from './documentDates';
+import { parse } from 'chrono-node';
 
 export type MessageRow =
   | { kind: 'run'; key: string; timestamp: number; run: ChatRun }
@@ -9,6 +11,56 @@ export type MessageRow =
 
 export function messageNeedsAttention(message: AgentMessageVM): boolean {
   return message.status === 'open' && message.attention;
+}
+
+export function reminderTiming(message: AgentMessageVM, now = Date.now()): { text: string; overdue: boolean } | null {
+  if (message.category !== 'reminder') return null;
+  if (message.dueAt === undefined || !Number.isSafeInteger(message.dueAt) || message.dueAt <= 0) {
+    throw new Error('Reminder is missing a valid deadline in Unix seconds.');
+  }
+  if (message.status !== 'open') return { text: message.status === 'acknowledged' ? 'Acknowledged' : 'Resolved', overdue: false };
+  return {
+    text: `Due ${formatRelativeDocumentTime(message.dueAt, now)}`,
+    overdue: message.dueAt * 1000 <= now,
+  };
+}
+
+export function activeReminderRows(rows: MessageRow[]): Extract<MessageRow, { kind: 'agent-message' }>[] {
+  return rows.filter((row): row is Extract<MessageRow, { kind: 'agent-message' }> =>
+    row.kind === 'agent-message' && row.message.category === 'reminder' && row.message.status === 'open')
+    .sort((a, b) => a.message.dueAt! - b.message.dueAt! || a.key.localeCompare(b.key));
+}
+
+export function snoozeDeadline(minutes: number, now = Date.now()): number {
+  if (!Number.isSafeInteger(minutes) || minutes < 1) throw new Error('Snooze duration must be a positive number of minutes.');
+  return Math.floor(now / 1000) + minutes * 60;
+}
+
+export function customReminderDeadline(value: string, now = Date.now()): number {
+  const text = value.trim();
+  if (!text || text.length > 500) throw new Error('Enter a time, such as "in 45 minutes" or "Friday at 2pm".');
+  const results = parse(text, new Date(now), { forwardDate: true });
+  if (!results.length) throw new Error('Could not understand that date and time. Try "in 45 minutes" or "Friday at 2pm".');
+  if (results.length !== 1 || results[0].end) {
+    throw new Error('Enter one date and time, not multiple dates or a time range.');
+  }
+  const seconds = Math.floor(results[0].date().getTime() / 1000);
+  if (!Number.isSafeInteger(seconds) || seconds * 1000 <= now) {
+    throw new Error('Choose a future reminder deadline.');
+  }
+  return seconds;
+}
+
+export type ReminderSnoozePreset = '10-minutes' | '1-hour' | 'tomorrow' | 'next-week';
+
+export function presetReminderDeadline(preset: ReminderSnoozePreset, now = Date.now()): number {
+  if (preset === '10-minutes') return snoozeDeadline(10, now);
+  if (preset === '1-hour') return snoozeDeadline(60, now);
+  const date = new Date(now);
+  const days = preset === 'tomorrow' ? 1 : (8 - date.getDay()) % 7 || 7;
+  date.setDate(date.getDate() + days);
+  date.setHours(9, 0, 0, 0);
+  return Math.floor(date.getTime() / 1000);
 }
 
 export function messageStatusActions(status: AgentMessageVM['status']): {

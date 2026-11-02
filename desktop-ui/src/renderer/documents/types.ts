@@ -48,7 +48,7 @@ export interface TreeTopicVM {
   /** Open agent messages requiring attention; 0 hides the badge. */
   agentMessageCount: number;
   /** Highest severity among messages requiring attention. */
-  agentMessageSeverity: 'info' | 'warning' | 'error' | null;
+  agentMessageSeverity: 'info' | 'warning' | 'error' | 'overdue' | null;
   /** Nested child topics. */
   children: TreeTopicVM[];
   /** Right-click actions ported from the rail (currently topic updates). */
@@ -92,8 +92,8 @@ export interface RelationVM {
   title: string;
   /** Number of open agent messages requiring attention. */
   agentMessageCount: number;
-  /** Highest severity among messages requiring attention. */
-  agentMessageSeverity: 'info' | 'warning' | 'error' | null;
+  /** Highest display urgency; overdue does not change persisted message severity. */
+  agentMessageSeverity: 'info' | 'warning' | 'error' | 'overdue' | null;
 }
 
 /** Canonical persisted AgentMessage, not a chat run or a tool execution request. */
@@ -107,7 +107,8 @@ export interface AgentMessageVM {
   recommendedAction: string;
   /** Acknowledgement and resolution do not authorize a tool or topic change. */
   status: 'open' | 'acknowledged' | 'resolved';
-  category: 'request' | 'approval' | 'error' | 'completion';
+  category: 'request' | 'approval' | 'error' | 'completion' | 'reminder';
+  dueAt?: number;
   severity: 'info' | 'warning' | 'error';
   attention: boolean;
   topics: string[];
@@ -129,6 +130,8 @@ export interface AgentMessageVM {
 export type RecordAgentMessageDecision = (
   id: string, outcome: 'approved' | 'rejected', decidedBy: string,
 ) => void | Promise<void>;
+
+export type SnoozeAgentMessage = (id: string, dueAt: number) => Promise<void>;
 
 /**
  * Topic-type metadata sourced from the control-plane TopicType kind. Drives the

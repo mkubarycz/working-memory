@@ -2136,6 +2136,20 @@
     }
   }
 
+  async function snoozeAgentMessage(id: string, dueAt: number): Promise<void> {
+    const generation = environmentGeneration;
+    try {
+      await window.workingMemory.snoozeAgentMessage(id, dueAt);
+      if (generation !== environmentGeneration) return;
+      await refreshAgentMessages();
+      if (generation !== environmentGeneration) return;
+      await Promise.all([refreshActive(), ...documents.map((document) => refreshOpenDocument(documentTabKey(document)))]);
+    } catch (error) {
+      if (generation === environmentGeneration) agentMessagesError = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
+  }
+
   function togglePin(topic: string): void {
     const document = activeDocument;
     if (document?.kind !== 'workstream' || !document.id) return;
@@ -2648,6 +2662,7 @@
             onTogglePin={togglePin}
             onSetAgentMessageStatus={setAgentMessageStatus}
             onRecordDecision={recordAgentMessageDecision}
+            onSnooze={snoozeAgentMessage}
             attachmentBaseUrl={selectedAttachmentBaseUrl()}
           />
         {:else if activeDocument?.kind === 'topic-create'}
@@ -2674,6 +2689,7 @@
             onOpenWorkstream={(id) => void openResource('workstream', id)}
             onSetAgentMessageStatus={setAgentMessageStatus}
             onRecordDecision={recordAgentMessageDecision}
+            onSnooze={snoozeAgentMessage}
             attachmentBaseUrl={selectedAttachmentBaseUrl()}
             onAttachImages={attachImages}
             onOpenLink={openLink}
@@ -2706,6 +2722,7 @@
         attachmentBaseUrl={selectedAttachmentBaseUrl()}
         onSetAgentMessageStatus={setAgentMessageStatus}
         onRecordDecision={recordAgentMessageDecision}
+        onSnooze={snoozeAgentMessage}
         context={scopedContext}
         bind:expanded={scopePreviewExpanded}
         loading={scopedHistoryLoading || agentMessagesLoading}
@@ -3023,7 +3040,8 @@
         {assistantFallback}
         onResolve={(confirmed, run) => void resolveConfirmation(confirmed, run)}
         onSetAgentMessageStatus={setAgentMessageStatus}
-        onRecordDecision={recordAgentMessageDecision} />
+        onRecordDecision={recordAgentMessageDecision}
+        onSnooze={snoozeAgentMessage} />
       {#if chatRuns.some((run) => run.status === 'running' || run.status === 'submitting')}
         <div class="thinking">Queries in progress…</div>
       {/if}

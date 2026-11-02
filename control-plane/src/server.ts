@@ -40,6 +40,7 @@ import { InstanceOAuth } from './instanceOAuth.js';
 import { McpSessions, SessionAdmissionError, type SessionDiagnosticsOptions } from './mcpSessions.js';
 import { IdentityError } from './instanceIdentity.js';
 import { documentPermissionCategory, instancePermissionsSchema, permits } from './instancePermissions.js';
+import { activateDueReminders, REMINDER_SWEEP_INTERVAL_MS } from './agentMessageReminders.js';
 import { authorizeInstanceTool, instanceToolPermissions } from './instanceAuthorization.js';
 import type { PermissionSelection } from './instancePermissions.js';
 import { registerInstanceTaskTools } from './instanceToolsMcp.js';
@@ -482,6 +483,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // store and own its lifecycle; when absent (tests) we own an ephemeral one.
   const providedStore = opts.store;
   const store = providedStore ?? openStore(':memory:');
+  try { activateDueReminders(store); }
+  catch (error) {
+    if (providedStore === undefined) store.close();
+    throw error;
+  }
   const hostTasks = new HostTaskBroker(store.db, opts);
   const access = new InstanceAccess(store.db, hostTasks.identity, opts.hostTaskClock);
   const sessions = new McpSessions(store.db, opts.sessionDiagnostics);
@@ -860,6 +866,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     catch (error) { console.error('[mcp-sessions] Retention cleanup failed:', error); }
   }, 60000);
   sessionCleanupTimer.unref();
+  const reminderTimer = setInterval(() => {
+    try { activateDueReminders(store); }
+    catch (error) { console.error('[agent-message-reminders] Deadline activation failed:', error); }
+  }, REMINDER_SWEEP_INTERVAL_MS);
+  reminderTimer.unref();
 
   return {
     host,
@@ -868,6 +879,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     async close(): Promise<void> {
       clearInterval(hostTaskCleanupTimer);
       clearInterval(sessionCleanupTimer);
+      clearInterval(reminderTimer);
       changeFeed.close();
       await sessions.close();
       transports.clear();

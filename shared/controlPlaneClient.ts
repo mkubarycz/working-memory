@@ -566,7 +566,7 @@ export interface AlertDeleteInput {
   restore?: boolean;
 }
 
-export type AgentMessageCategory = 'request' | 'approval' | 'error' | 'completion';
+export type AgentMessageCategory = 'request' | 'approval' | 'error' | 'completion' | 'reminder';
 export interface RegisteredAgent {
   id: string;
   name: string;
@@ -604,6 +604,8 @@ export interface AgentMessage {
   description: string;
   recommended_action: string;
   category: AgentMessageCategory;
+  /** Reminder deadline in Unix epoch seconds. */
+  due_at?: number;
   severity: AgentMessageSeverity;
   status: AgentMessageStatus;
   attention: boolean;
@@ -627,6 +629,7 @@ export interface AgentMessageCreateInput {
   title: string;
   description: string;
   category: AgentMessageCategory;
+  due_at?: number;
   recommended_action?: string;
   severity?: AgentMessageSeverity;
   status?: AgentMessageStatus;
@@ -640,6 +643,11 @@ export interface AgentMessageCreateInput {
 }
 export interface AgentMessageUpdateInput extends Partial<AgentMessageCreateInput> {
   id: string;
+  expectedResourceVersion?: number;
+}
+export interface AgentMessageSnoozeInput {
+  id: string;
+  due_at: number;
   expectedResourceVersion?: number;
 }
 export interface AgentMessageReadInput {
@@ -1851,7 +1859,11 @@ export class ControlPlaneClient {
       || !['title', 'description', 'recommended_action', 'created_by', 'agent_id', 'agent_name'].every((key) => typeof spec[key] === 'string')
       || !(spec.agent_id as string).trim() || !(spec.agent_name as string).trim()
       || !(spec.title as string).trim() || (!(spec.description as string).trim() && !preservedLegacyBody)
-      || !['request', 'approval', 'error', 'completion'].includes(spec.category as string)
+      || !['request', 'approval', 'error', 'completion', 'reminder'].includes(spec.category as string)
+      || (spec.category === 'reminder'
+        ? !Number.isSafeInteger(spec.due_at) || (spec.due_at as number) <= 0
+          || (spec.due_at as number) > 8_640_000_000_000 || !(spec.recommended_action as string).trim()
+        : spec.due_at !== undefined)
       || !['info', 'warning', 'error'].includes(spec.severity as string)
       || !['open', 'acknowledged', 'resolved'].includes(spec.status as string)
       || typeof spec.attention !== 'boolean'
@@ -1881,6 +1893,7 @@ export class ControlPlaneClient {
       description: spec.description as string,
       recommended_action: spec.recommended_action as string,
       category: spec.category as AgentMessageCategory,
+      ...(typeof spec.due_at === 'number' ? { due_at: spec.due_at } : {}),
       severity: spec.severity as AgentMessageSeverity,
       status: spec.status as AgentMessageStatus,
       attention: spec.attention,
@@ -1943,6 +1956,14 @@ export class ControlPlaneClient {
 
   async agentMessageDelete(input: AgentMessageDeleteInput): Promise<AgentMessage> {
     return this.parseAgentMessageEnvelope(parseToolText(await this.callDomainTool('ws-agent-message-delete', { ...input })));
+  }
+
+  async agentMessageSnooze(input: AgentMessageSnoozeInput): Promise<AgentMessage> {
+    const version = input.expectedResourceVersion ?? (await this.agentMessageRead({ id: input.id }))[0]?.resourceVersion;
+    if (version === undefined) throw new ControlPlaneClientError(`Unknown AgentMessage: ${input.id}`);
+    return this.parseAgentMessageEnvelope(parseToolText(await this.callDomainTool('ws-agent-message-snooze', {
+      id: input.id, due_at: input.due_at, expectedResourceVersion: version,
+    })));
   }
 
   async agentMessageRestore(input: AgentMessageDeleteInput): Promise<AgentMessage> {

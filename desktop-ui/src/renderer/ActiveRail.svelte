@@ -546,9 +546,9 @@
   }}
 />
 
-{#snippet attentionBubble(count?: number, severity?: 'info' | 'warning' | 'error' | null)}
+{#snippet attentionBubble(count?: number, severity?: 'info' | 'warning' | 'error' | 'overdue' | null)}
   {#if count && count > 0}
-    <span class="active-alert" class:severe={severity === 'error'} title="{count} agent message{count === 1 ? '' : 's'} needing attention">{count}</span>
+    <span class="active-alert" class:severe={severity === 'error' || severity === 'overdue'} title="{count} agent message{count === 1 ? '' : 's'} needing attention{severity === 'overdue' ? ', including overdue reminders' : ''}">{count}</span>
   {/if}
 {/snippet}
 

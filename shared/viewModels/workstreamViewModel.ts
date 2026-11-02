@@ -47,7 +47,7 @@ export interface WorkstreamTreeTopicViewModel {
 
   pinned: boolean;
   agentMessageCount: number;
-  agentMessageSeverity: 'info' | 'warning' | 'error' | null;
+  agentMessageSeverity: 'info' | 'warning' | 'error' | 'overdue' | null;
   children: WorkstreamTreeTopicViewModel[];
   actions: WorkstreamTreeActionViewModel[];
 }
