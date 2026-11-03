@@ -6,12 +6,39 @@ import {
   containerAppResourceMarkdown,
   parseContainerAppResourceReference,
   resourceDragLink,
+  ResourceDragPreparationCache,
   setContainerAppResourceDragData,
   setResourceDragData,
   WORKING_MEMORY_REFERENCE_MIME,
 } from '../src/renderer/resourceDrag';
 
 describe('desktop resource drag links', () => {
+  it('shares and invalidates pending context preparation without accepting stale responses', async () => {
+    const prepare = vi.fn();
+    const error = vi.fn();
+    const cache = new ResourceDragPreparationCache(prepare, error);
+    const prepared = { filename: 'context.md', filePath: '/tmp/context.md', fileUrl: 'file:///tmp/context.md' };
+    let finishOld: (value: typeof prepared) => void = () => { throw new Error('Preparation has not started.'); };
+    prepare.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+    cache.prepare('resource', 'Old title');
+    cache.prepare('resource', 'Old title');
+    expect(prepare).toHaveBeenCalledTimes(1);
+    cache.clear();
+    prepare.mockResolvedValueOnce({ ...prepared, filename: 'new.md' });
+    cache.prepare('resource', 'New title');
+    finishOld(prepared);
+    await vi.waitFor(() => expect(cache.get('resource')?.filename).toBe('new.md'));
+    cache.prepare('resource', 'New title');
+    expect(prepare).toHaveBeenCalledTimes(2);
+    cache.clear();
+    prepare.mockRejectedValueOnce(new Error('Backend unavailable'));
+    cache.prepare('resource', 'New title');
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith(expect.objectContaining({ message: 'Backend unavailable' })));
+    expect(cache.get('resource')).toBeUndefined();
+    prepare.mockResolvedValueOnce(prepared);
+    cache.prepare('resource', 'Retry');
+    await vi.waitFor(() => expect(cache.get('resource')).toEqual(prepared));
+  });
   it('converts canonical resource URIs into Markdown deep links', () => {
     expect(resourceDragLink(
       'working-memory:/topic/drag-desktop-item-links.working-memory',

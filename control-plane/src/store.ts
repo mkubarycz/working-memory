@@ -24,6 +24,7 @@ import { agentMessageSpec, persistedAgentMessageSpec, legacyToMessage, AGENT_MES
 import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec, normalizeAgentName } from './kinds/agent/spec.js';
 import { ensureHostTaskSchema } from './hostTasks.js';
 import { migrateResourceIds } from './resourceIdMigration.js';
+import { ensureDocumentSearch, registerDocumentSearchFunctions } from './documentSearch.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -350,9 +351,11 @@ export function openStore(dbFilePath: string): Store {
   db.exec('PRAGMA journal_mode = WAL');
   ensureSchema(db);
   try {
+    registerDocumentSearchFunctions(db);
     migrateAgentMessages(db);
     migrateResourceIds(db);
     ensureHostTaskSchema(db);
+    ensureDocumentSearch(db);
   }
   catch (error) { db.close(); throw error; }
 

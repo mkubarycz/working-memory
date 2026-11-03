@@ -157,8 +157,8 @@
           onchange={(event) => setChannel(event.currentTarget.value as UpdateChannel)}
         >
           <option value="off">Off — use the version bundled with this app</option>
-          <option value="canary">Canary — latest build from main</option>
-          <option value="stable">Stable — tagged releases only</option>
+          <option value="canary">Canary — newest rolling or Stable build</option>
+          <option value="stable">Stable — latest non-prerelease tag</option>
         </select>
         <span class="instances-hint">
           {#if snapshot.backendTargetError}

@@ -243,6 +243,7 @@ export interface GenericDocVM {
 
 /** The discriminated document view-model pushed from the extension host. */
 export type DocumentVM =
+  | { kind: 'search'; id: 'document-search'; title: string }
   | WorkstreamVM
   | TopicVM
   | TopicCreateDraftVM

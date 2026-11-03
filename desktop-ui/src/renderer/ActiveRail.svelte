@@ -13,7 +13,7 @@
     PanelWorkstream,
     PanelWorkstreamSection,
   } from '../../../shared/panelData';
-  import type { DesktopEnvironment, PreparedResourceDrag } from '../shared/contracts';
+  import type { DesktopEnvironment } from '../shared/contracts';
   import {
     activeContextMenuItems,
     topicIdFromOpenUri,
@@ -25,7 +25,7 @@
     type ActiveSectionBoundary,
     type ActiveSectionHeights,
   } from './activeSectionLayout';
-  import { setResourceDragData, type ActiveResourceDrag } from './resourceDrag';
+  import { ResourceDragPreparationCache, setResourceDragData, type ActiveResourceDrag } from './resourceDrag';
   import type { TopicBacklogVM } from './documents/types';
   import { backlogMoveActions } from './topicBacklog';
   import { attachTreeConnector } from './treeConnector';
@@ -47,6 +47,7 @@
     error: string;
     onRefresh: () => void;
     onSettings: () => void;
+    onSearch?: () => void;
     onCollapse: () => void;
     onOpen: (uri: string) => void;
     onToggleFocus: (workstream: string, topic: string) => void;
@@ -74,6 +75,7 @@
     onAddWorkstream,
     onMoveToNewWorkstream,
     onOpenTopicBacklog,
+    onSearch,
     onDiscoverEnvironments, onSwitchEnvironment, onManageInstances,
   }: Props = $props();
   const expanded = new SvelteSet<string>();
@@ -96,9 +98,10 @@
   let topicDropTarget = $state<string | null>(null);
   let topicReparentTarget = $state<string | null>(null);
   let dropTarget = $state<{ section: PanelWorkstreamSection['section']; index: number } | null>(null);
-  const preparedResourceDrags = new Map<string, PreparedResourceDrag>();
-  const pendingResourceDrags = new Map<string, number>();
-  let dragPreparationGeneration = 0;
+  const resourceDrags = new ResourceDragPreparationCache(
+    (openUri, label) => window.workingMemory.prepareResourceDrag(openUri, label),
+    error => console.error('Unable to prepare Working Memory drag context:', error),
+  );
   let nativeDragFilePath = $state<string | null>(null);
   let draggingWorkstreamId = $state<string | null>(null);
 
@@ -127,9 +130,7 @@
   $effect(() => {
     selectedEnvironment?.mcpUrl;
     const visibleSections = sections;
-    dragPreparationGeneration += 1;
-    preparedResourceDrags.clear();
-    pendingResourceDrags.clear();
+    resourceDrags.clear();
     for (const section of visibleSections) {
       for (const workstream of section.workstreams) {
         prepareResourceDrag(workstream.openUri, workstream.label);
@@ -371,37 +372,20 @@
     document.body.classList.remove('resizing-active-sections');
   }
 
-  function prepareTopicDragTree(topic: PanelTopic | PanelTopicRow, generation = dragPreparationGeneration): void {
-    prepareResourceDrag(topic.openUri, topic.label, generation);
-    for (const child of topic.children ?? []) prepareTopicDragTree(child, generation);
+  function prepareTopicDragTree(topic: PanelTopic | PanelTopicRow): void {
+    prepareResourceDrag(topic.openUri, topic.label);
+    for (const child of topic.children ?? []) prepareTopicDragTree(child);
   }
 
   function prepareResourceDrag(
     openUri: string,
     label: string,
-    generation = dragPreparationGeneration,
   ): void {
-    if (
-      preparedResourceDrags.has(openUri)
-      || pendingResourceDrags.get(openUri) === generation
-    ) return;
-    pendingResourceDrags.set(openUri, generation);
-    void window.workingMemory.prepareResourceDrag(openUri, label)
-      .then((prepared) => {
-        if (generation === dragPreparationGeneration) {
-          preparedResourceDrags.set(openUri, prepared);
-        }
-      })
-      .catch((error) => console.error('Unable to prepare Working Memory drag context:', error))
-      .finally(() => {
-        if (pendingResourceDrags.get(openUri) === generation) {
-          pendingResourceDrags.delete(openUri);
-        }
-      });
+    resourceDrags.prepare(openUri, label);
   }
 
   function startResourceDrag(event: DragEvent, openUri: string, label: string): void {
-    const prepared = preparedResourceDrags.get(openUri);
+    const prepared = resourceDrags.get(openUri);
     setResourceDragData(event.dataTransfer, openUri, label, prepared);
     if (!prepared) return;
     event.preventDefault();
@@ -881,6 +865,11 @@
     <button class="active-header-button" title="Restart to apply latest build" aria-label="Restart Working Memory" onclick={onRefresh}>
       <span aria-hidden="true" class="codicon codicon-refresh" class:codicon-modifier-spin={loading}></span>
     </button>
+    {#if onSearch}
+      <button class="active-header-button" title="Search documents" aria-label="Search documents" onclick={onSearch}>
+        <span aria-hidden="true" class="codicon codicon-search"></span>
+      </button>
+    {/if}
     <button
       class="active-header-button topic-backlog-button"
       title="Open backlog workstreams and topics outside active workstreams"

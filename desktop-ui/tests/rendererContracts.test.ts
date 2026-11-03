@@ -271,8 +271,8 @@ describe('desktop tree icon contract', () => {
     expect(activeRail).toContain('onResourceDragResult');
     expect(activeRail).toContain("result.status === 'failed'");
     expect(activeRail).not.toContain("result.status === 'started'");
-    expect(activeRail).toContain('dragPreparationGeneration += 1');
-    expect(activeRail).toContain('generation === dragPreparationGeneration');
+    expect(activeRail).toContain('new ResourceDragPreparationCache');
+    expect(activeRail).toContain('resourceDrags.clear()');
     expect(activeRail).toContain('ondragleave={clearExternalDragVisual}');
     expect(activeRail).toContain('onpointermove={clearCompletedNativeDrag}');
     expect(activeRail).toContain('class:dragging={draggingWorkstreamId === workstream.id}');
@@ -365,7 +365,7 @@ describe('desktop tree icon contract', () => {
     expect(rail).toContain('Every open topic belongs to an active workstream.');
     expect(app).toContain('? topicBacklogDocument(panel)');
     expect(app).toContain('treeProps={activeTreeProps}');
-    expect(app).toContain('restoreLocalDocumentTab(reference, activePanel, instanceFeatures.hostTasks)');
+    expect(app).toContain('restoreLocalDocumentTab(reference, activePanel, instanceFeatures.hostTasks, instanceFeatures.search)');
   });
 
   it('keeps selected-document context and composer in a stable center-stage row', () => {

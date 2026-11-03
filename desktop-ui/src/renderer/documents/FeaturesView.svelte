@@ -5,6 +5,7 @@
   let { onChanged }: { onChanged: (features: InstanceFeatures) => void } = $props();
   let features = $state<InstanceFeatures | null>(null);
   let enabled = $state(false);
+  let searchEnabled = $state(false);
   let busy = $state(false);
   let error = $state('');
   let pollError = $state('');
@@ -21,24 +22,29 @@
       if (!active || current !== generation) return;
       features = loaded;
       enabled = features.hostTasks;
+      searchEnabled = features.search;
       pollError = '';
       onChanged(features);
     } catch (cause) {
       if (active && current === generation) pollError = cause instanceof Error ? cause.message : String(cause);
     } finally { refreshing = false; }
   }
-  async function toggle(requested: boolean): Promise<void> {
+  async function toggle(feature: keyof InstanceFeatures, requested: boolean): Promise<void> {
     if (!active || busy || !features) return;
     busy = true;
     generation += 1;
     error = '';
     try {
-      const saved = await window.workingMemory.setInstanceFeatures({ hostTasks: requested });
+      const saved = await window.workingMemory.setInstanceFeatures({ [feature]: requested });
       if (!active) return;
       features = saved;
       onChanged(features);
     } catch (cause) { if (active) error = cause instanceof Error ? cause.message : String(cause); }
-    finally { enabled = features?.hostTasks ?? false; busy = false; }
+    finally {
+      enabled = features?.hostTasks ?? false;
+      searchEnabled = features?.search ?? false;
+      busy = false;
+    }
   }
   onMount(() => {
     active = true;
@@ -58,11 +64,20 @@
       <td>Run owner-approved scripts on this computer with controlled agent access.</td>
       <td>
         <input class="feature-switch" type="checkbox" role="switch" aria-label="Host tasks" bind:checked={enabled}
-          disabled={!features || busy} onchange={(event) => void toggle(event.currentTarget.checked)} />
+          disabled={!features || busy} onchange={(event) => void toggle('hostTasks', event.currentTarget.checked)} />
+      </td>
+    </tr>
+    <tr>
+      <th scope="row">Working Memory search <small>Experimental</small></th>
+      <td>Find and summarize documents using AI and registered apps' read-only tools.</td>
+      <td>
+        <input class="feature-switch" type="checkbox" role="switch" aria-label="Working Memory search" bind:checked={searchEnabled}
+          disabled={!features || busy} onchange={(event) => void toggle('search', event.currentTarget.checked)} />
       </td>
     </tr></tbody>
   </table>
   <p class="hint">Turning off Host tasks hides its UI and blocks new requests. Existing scripts, permissions, and history are retained.</p>
+  <p class="hint">Search is off by default. Turning it off hides Search and stops its requests; documents and workstream memberships are retained.</p>
   {#if error || pollError}<p role="alert">{error || pollError}</p>{/if}
 </section>
 

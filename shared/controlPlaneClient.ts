@@ -29,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { parseDocumentChanges, type DocumentChanges } from './documentChanges';
+import { isDocumentSearchResult, type DocumentSearchInput, type DocumentSearchResult } from './documentSearch';
 import {
   controlPlanePortFilePath,
   parsePortInfo,
@@ -38,6 +39,8 @@ import {
 /** Client identity advertised to the control-plane during the MCP handshake. */
 const CLIENT_NAME = 'working-memory-extension';
 const RETRYABLE_READ_TOOLS = new Set([
+  'wm-document-search',
+  'wm-document-query',
   'ws-workstream-read', 'ws-containerclaim-read', 'ws-topic-read', 'ws-topictype-read', 'ws-config-read',
   'ws-agent-read', 'ws-agent-message-read', 'ws-alert-read', 'ws-commandjournal-read',
 ]);
@@ -1325,6 +1328,12 @@ export class ControlPlaneClient {
     const parsed = parseToolText(result) as { workstreams?: unknown } | null;
     const list = Array.isArray(parsed?.workstreams) ? parsed!.workstreams : [];
     return list as Workstream[];
+  }
+
+  async searchDocuments(input: DocumentSearchInput): Promise<DocumentSearchResult> {
+    const result = parseToolText(await this.callDomainTool('wm-document-search', { ...input }));
+    if (!isDocumentSearchResult(result)) throw new ControlPlaneClientError('Malformed control-plane search response');
+    return result;
   }
 
   /** Create a workstream via `ws-workstream-create`. Returns the created workstream. */

@@ -72,7 +72,7 @@ it.each(['feature-disabled', 'signed-out'])('aborts an active runner when %s thr
     onSessionChanged: async (_url: string, authenticated: boolean) => { if (!authenticated) stop.stop(); },
   } as unknown as Parameters<typeof registerInstanceIdentityIpc>[0]);
   const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!(event, ...args);
-  expect(await call('instance:features')).toEqual({ hostTasks: false });
+  expect(await call('instance:features')).toEqual({ hostTasks: false, search: false });
   expect(await call('host-scripts:get')).toMatchObject({ credentialReady: true, features: { hostTasks: false }, snapshot: null });
   const input = { name: '', description: '', parameters: {}, timeoutMs: 1000, example: true };
   await expect(call('host-scripts:register', input)).rejects.toThrow('turned off');

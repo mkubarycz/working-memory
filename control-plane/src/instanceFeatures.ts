@@ -5,7 +5,13 @@ import { IdentityError } from './instanceIdentity.js';
 
 export interface InstanceFeatures {
   hostTasks: boolean;
+  search: boolean;
 }
+
+export const instanceFeatureUpdateSchema = z.object({ hostTasks: z.boolean().optional(), search: z.boolean().optional() })
+  .strict().refine(flags => flags.hostTasks !== undefined || flags.search !== undefined);
+export const instanceFeaturesSchema = z.object({ hostTasks: z.boolean(), search: z.boolean().default(false) }).strict();
+export type InstanceFeatureUpdate = z.infer<typeof instanceFeatureUpdateSchema>;
 
 export class InstanceFeatureStore {
   constructor(private readonly db: DatabaseSync) {
@@ -15,13 +21,16 @@ export class InstanceFeatureStore {
   }
 
   read(): InstanceFeatures {
-    return { hostTasks: this.db.prepare('SELECT enabled FROM instance_features WHERE feature=?').get('hostTasks')?.enabled === 1 };
+    const enabled = (feature: string) => this.db.prepare('SELECT enabled FROM instance_features WHERE feature=?').get(feature)?.enabled === 1;
+    return { hostTasks: enabled('hostTasks'), search: enabled('search') };
   }
 
   write(input: unknown): InstanceFeatures {
-    const flags = z.object({ hostTasks: z.boolean() }).strict().parse(input);
-    this.db.prepare(`INSERT INTO instance_features(feature,enabled) VALUES(?,?)
-      ON CONFLICT(feature) DO UPDATE SET enabled=excluded.enabled`).run('hostTasks', Number(flags.hostTasks));
+    const flags = instanceFeatureUpdateSchema.parse(input);
+    const current = this.read();
+    this.db.prepare(`INSERT INTO instance_features(feature,enabled) VALUES('hostTasks',?),('search',?)
+      ON CONFLICT(feature) DO UPDATE SET enabled=excluded.enabled`)
+      .run(Number(flags.hostTasks ?? current.hostTasks), Number(flags.search ?? current.search));
     return this.read();
   }
 
@@ -30,9 +39,11 @@ export class InstanceFeatureStore {
       res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       res.end(JSON.stringify(value));
     };
+    const response = (flags: InstanceFeatures) => url.pathname === '/features/v1'
+      ? { hostTasks: flags.hostTasks } : flags;
     try {
       if (req.headers.origin || url.search) throw new IdentityError(400, 'Origins and query parameters are not allowed.');
-      if (req.method === 'GET') { authorize(); send(200, this.read()); return; }
+      if (req.method === 'GET') { authorize(); send(200, response(this.read())); return; }
       if (req.method !== 'POST') { send(405, { error: 'method_not_allowed' }); return; }
       authorize();
       if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') {
@@ -50,7 +61,8 @@ export class InstanceFeatureStore {
       try { input = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { throw new IdentityError(400, 'Invalid JSON.'); }
       authorize();
-      send(200, this.write(input));
+      if (url.pathname === '/features/v1') input = z.object({ hostTasks: z.boolean() }).strict().parse(input);
+      send(200, response(this.write(input)));
     } catch (error) {
       if (error instanceof IdentityError) send(error.status, { error: error.message });
       else if (error instanceof z.ZodError) send(400, { error: 'invalid_feature_settings' });

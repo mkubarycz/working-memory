@@ -50,7 +50,8 @@ const DESKTOP_TOOL_FAMILIES = [
 ];
 
 export function desktopToolDescriptors(tools: CanonicalToolDef[]): CanonicalToolDef[] {
-  return tools.filter((tool) => DESKTOP_TOOL_FAMILIES.some((family) => tool.name.startsWith(`ws-${family}-`)));
+  return tools.filter((tool) => tool.name === 'wm-document-search'
+    || DESKTOP_TOOL_FAMILIES.some((family) => tool.name.startsWith(`ws-${family}-`)));
 }
 
 export function isDestructiveTool(name: string, args: Record<string, unknown>): boolean {

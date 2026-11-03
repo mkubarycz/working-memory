@@ -84,6 +84,15 @@ const api: DesktopApi = {
   listCopilotModels: () => invoke('config:copilot-models'),
   sendChat: (message, context, images) => invoke('chat:send', message, context, images),
   autocompleteTopic: (input) => invoke('topic:autocomplete', input),
+  searchDocuments: (query, options) => invoke('search:documents', query, options),
+  cancelDocumentSearch: requestId => invoke('search:cancel', requestId),
+  onDocumentSearchTrace: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
+    ipcRenderer.on('search:trace', handler);
+    return () => ipcRenderer.removeListener('search:trace', handler);
+  },
+  listSearchWorkstreams: () => invoke('search:workstreams'),
+  addSearchTopicToWorkstream: (topicId, workstreamId) => invoke('search:add-topic', topicId, workstreamId),
   resolveChatConfirmation: (id, confirmed, context) => invoke('chat:confirm', id, confirmed, context),
   getChatHistory: (input = {}) => invoke('chat:history', input),
   getChatJournal: (id) => invoke('chat:journal', id),

@@ -22,17 +22,19 @@ it('defaults off and persists each instance choice across database reopening', a
   const filename = join(directory, 'journal.sqlite');
   const first = openStore(filename);
   const flags = new InstanceFeatureStore(first.db);
-  expect(flags.read()).toEqual({ hostTasks: false });
+  expect(flags.read()).toEqual({ hostTasks: false, search: false });
   flags.write({ hostTasks: true });
+  expect(flags.write({ search: true })).toEqual({ hostTasks: true, search: true });
+  expect(flags.write({ hostTasks: false })).toEqual({ hostTasks: false, search: true });
   first.close();
   const reopened = openStore(filename);
   stores.push(reopened);
-  expect(new InstanceFeatureStore(reopened.db).read()).toEqual({ hostTasks: true });
+  expect(new InstanceFeatureStore(reopened.db).read()).toEqual({ hostTasks: false, search: true });
   new InstanceFeatureStore(reopened.db).write({ hostTasks: false });
   expect(() => new HostTaskBroker(reopened.db).dispatch('GET', '/admin', '')).toThrow('host_tasks_feature_disabled');
   const another = openStore(':memory:');
   stores.push(another);
-  expect(new InstanceFeatureStore(another.db).read()).toEqual({ hostTasks: false });
+  expect(new InstanceFeatureStore(another.db).read()).toEqual({ hostTasks: false, search: false });
 });
 
 it('blocks all host-task HTTP/MCP usage while off, preserves records, and requires owner auth to toggle', async () => {
@@ -48,6 +50,11 @@ it('blocks all host-task HTTP/MCP usage while off, preserves records, and requir
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   expect((await request('/features/v1')).status).toBe(401);
+  expect(await (await request('/features/v1', 'GET', undefined, owner.token)).json()).toEqual({ hostTasks: false });
+  expect(await (await request('/features/v2', 'GET', undefined, owner.token)).json()).toEqual({ hostTasks: false, search: false });
+  expect((await request('/features/v2', 'POST', { search: true })).status).toBe(401);
+  expect((await request('/features/v1', 'POST', { search: true }, owner.token)).status).toBe(400);
+  expect(await (await request('/features/v2', 'POST', { search: true }, owner.token)).json()).toEqual({ hostTasks: false, search: true });
   expect(await (await request('/features/v1', 'GET', undefined, owner.token)).json()).toEqual({ hostTasks: false });
   for (const [method, path] of [
     ['GET', '/admin'], ['GET', '/admin/scripts'], ['POST', '/admin/apps'], ['POST', '/requests'],
@@ -71,7 +78,11 @@ it('blocks all host-task HTTP/MCP usage while off, preserves records, and requir
   expect((await request('/features/v1?hostTasks=true')).status).toBe(400);
   expect((await request('/features/v1', 'POST', { hostTasks: 'true' }, owner.token)).status).toBe(400);
   expect((await request('/features/v1', 'POST', { hostTasks: true, unknown: true }, owner.token)).status).toBe(400);
-  expect((await request('/features/v1', 'POST', { hostTasks: true }, owner.token)).status).toBe(200);
+  expect((await request('/features/v1', 'POST', {}, owner.token)).status).toBe(400);
+  expect((await request('/features/v1', 'POST', { search: 'true' }, owner.token)).status).toBe(400);
+  expect((await request('/features/v1', 'POST', { search: true })).status).toBe(401);
+  expect(await (await request('/features/v1', 'POST', { hostTasks: true }, owner.token)).json()).toEqual({ hostTasks: true });
+  expect(await (await request('/features/v2', 'GET', undefined, owner.token)).json()).toEqual({ hostTasks: true, search: true });
   expect((await request('/host-tasks/v1/admin/scripts')).status).toBe(401);
   const created = await request('/host-tasks/v1/admin/scripts', 'POST', {
     name: 'Retained script', description: '', hostId: randomUUID(), source: 'module.exports = () => ({});',

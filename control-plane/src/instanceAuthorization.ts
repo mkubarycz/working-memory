@@ -5,7 +5,8 @@ import { documentPermissionCategory, permits, type PermissionCategory, type Perm
 export function authorizeInstanceTool(principal: InstancePrincipal, name: string, args: Record<string, unknown>, store: Store): boolean {
   if (principal.role === 'owner') return true;
   if (name === 'wm-ping' || name === 'wm-list-kinds') return true;
-  if (name === 'wm-document-read') {
+  if (name === 'wm-document-read' || name === 'wm-document-search' || name === 'wm-document-query') {
+    if (name !== 'wm-document-read') return principal.permissions.content.read || principal.permissions.settings.read;
     const kind = typeof args.id === 'string' ? store.getDocument({ id: args.id, includeDeleted: true })?.kind ?? args.kind : args.kind;
     if (typeof kind !== 'string') return principal.permissions.content.read || principal.permissions.settings.read;
   }
@@ -16,6 +17,7 @@ export function authorizeInstanceTool(principal: InstancePrincipal, name: string
 export function instanceToolPermissions(name: string, args: Record<string, unknown>, store: Store): PermissionSelection[] | null {
   const required = (category: PermissionCategory, operation: PermissionOperation): PermissionSelection[] => [{ category, operation }];
   if (name === 'wm-attachment-create') return required('content', 'create');
+  if (name === 'wm-document-search' || name === 'wm-document-query') return required('content', 'read');
   const generic = /^wm-document-(create|read|update|delete)$/.exec(name);
   if (generic) {
     let kind = typeof args.kind === 'string' ? args.kind : undefined;

@@ -12,12 +12,14 @@ import {
 import type { HostScriptDesktopState } from '../shared/hostTasks';
 import type { DesktopInstanceIdentity } from './instanceIdentity';
 import type { HostScriptChatService } from './hostScriptChatTools';
+import { instanceFeatureUpdateSchema, type InstanceFeatures } from '../../../control-plane/src/instanceFeatures';
 
 export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   directory: string;
   execute?: typeof executeHostScript;
   identity?: DesktopInstanceIdentity;
   onSessionChanged?: (mcpUrl: string, authenticated: boolean) => Promise<void>;
+  onFeaturesChanged?: (features: InstanceFeatures) => void;
 }) {
   let running: AbortController | null = null;
   const context = (event: Parameters<typeof assertHostTaskSender>[0]) => {
@@ -67,10 +69,11 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   deps.ipc.handle('instance:set-features', async (event, raw: unknown) => {
     const ctx = context(event);
     if (!deps.identity) throw new Error('Instance feature settings are unavailable.');
-    const flags = z.object({ hostTasks: z.boolean() }).strict().parse(raw);
+    const flags = instanceFeatureUpdateSchema.parse(raw);
     const result = await deps.identity.setFeatures(ctx.environment.mcpUrl, flags);
     if (!result.hostTasks) running?.abort();
     ctx.ensureCurrent();
+    deps.onFeaturesChanged?.(result);
     return result;
   });
   deps.ipc.handle('host-scripts:get', async (event): Promise<HostScriptDesktopState> => {

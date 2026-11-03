@@ -25,16 +25,18 @@ describe('desktop tool coverage', () => {
     await server?.close();
   });
 
-  it('projects every registered tool in the supported high-level ws families', async () => {
+  it('projects every registered high-level ws tool and read-only indexed search', async () => {
     const canonical = (await client.listTools()).tools;
     const projected = desktopToolDescriptors(canonical).map((tool) => tool.name);
     const requestedFamilies = ['workstream', 'topic', 'topictype', 'agent-message', 'agent'];
     const expected = canonical
       .map((tool) => tool.name)
-      .filter((name) => requestedFamilies.some((family) => name.startsWith(`ws-${family}-`)));
+      .filter((name) => name === 'wm-document-search'
+        || requestedFamilies.some((family) => name.startsWith(`ws-${family}-`)));
 
     expect(projected).toEqual(expected);
-    expect(new Set(projected.map((name) => `ws-${requestedFamilies.find((family) => name.startsWith(`ws-${family}-`))}`))).toEqual(new Set([
+    expect(new Set(projected.filter(name => name.startsWith('ws-'))
+      .map((name) => `ws-${requestedFamilies.find((family) => name.startsWith(`ws-${family}-`))}`))).toEqual(new Set([
       'ws-workstream',
       'ws-topic',
       'ws-topictype',
@@ -42,7 +44,7 @@ describe('desktop tool coverage', () => {
       'ws-agent',
     ]));
     expect(projected.some((name) => name.startsWith('ws-config-'))).toBe(false);
-    expect(projected.some((name) => name.startsWith('wm-document-'))).toBe(false);
+    expect(projected.filter((name) => name.startsWith('wm-document-'))).toEqual(['wm-document-search']);
     expect(projected.some((name) => name.startsWith('ws-alert-'))).toBe(false);
   });
 

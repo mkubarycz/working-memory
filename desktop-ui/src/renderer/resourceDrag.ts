@@ -17,6 +17,43 @@ export interface ResourceDragLink {
   markdown: string;
 }
 
+export class ResourceDragPreparationCache {
+  private readonly prepared = new Map<string, PreparedResourceDrag>();
+  private readonly pending = new Map<string, number>();
+  private generation = 0;
+
+  constructor(
+    private readonly prepareContext: (openUri: string, label: string) => Promise<PreparedResourceDrag>,
+    private readonly onError: (error: unknown) => void,
+  ) {}
+
+  get(openUri: string): PreparedResourceDrag | undefined {
+    return this.prepared.get(openUri);
+  }
+
+  prepare(openUri: string, label: string): void {
+    const generation = this.generation;
+    if (this.prepared.has(openUri) || this.pending.get(openUri) === generation) return;
+    this.pending.set(openUri, generation);
+    void this.prepareContext(openUri, label)
+      .then(prepared => {
+        if (generation === this.generation) this.prepared.set(openUri, prepared);
+      })
+      .catch(error => {
+        if (generation === this.generation) this.onError(error);
+      })
+      .finally(() => {
+        if (this.pending.get(openUri) === generation) this.pending.delete(openUri);
+      });
+  }
+
+  clear(): void {
+    this.generation++;
+    this.prepared.clear();
+    this.pending.clear();
+  }
+}
+
 export const WORKING_MEMORY_REFERENCE_MIME =
   'application/vnd.kubarycz.working-memory+json';
 export const CONTAINER_APP_RESOURCE_MIME =

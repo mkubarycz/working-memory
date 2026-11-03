@@ -48,7 +48,7 @@ export function releasesUrl(env: NodeJS.ProcessEnv = process.env): string {
   return DEFAULT_RELEASES_URL;
 }
 
-/** Canary is one rolling prerelease; Stable resolves through GitHub's latest full release. */
+/** Source URLs; Canary selection also checks the latest Stable manifest. */
 export function manifestUrl(channel: Exclude<UpdateChannel, 'off'>, base = DEFAULT_RELEASES_URL): string {
   return channel === 'canary'
     ? `${base}/download/${CANARY_RELEASE_TAG}/${UPDATE_MANIFEST_FILE}`
@@ -134,21 +134,32 @@ export function parseUpdateManifest(raw: unknown, expectedChannel: Exclude<Updat
 
 export type ManifestFetch = (url: string, init?: RequestInit) => Promise<Response>;
 
-/** Returns null when the channel has not published an update manifest yet. */
+/** Canary includes Stable and chooses by build publication time, not version ordering. */
 export async function fetchUpdateManifest(
   channel: Exclude<UpdateChannel, 'off'>,
   options: { fetch?: ManifestFetch; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
 ): Promise<UpdateManifest | null> {
   const request = options.fetch ?? fetch;
-  const url = manifestUrl(channel, releasesUrl(options.env));
-  const response = await request(url, {
-    cache: 'no-store',
-    headers: { Accept: 'application/json' },
-    signal: AbortSignal.timeout(options.timeoutMs ?? 20_000),
-  });
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`Unable to check for ${channel} updates (HTTP ${response.status}).`);
-  return parseUpdateManifest(await response.text(), channel);
+  const fetchChannel = async (source: Exclude<UpdateChannel, 'off'>): Promise<UpdateManifest | null> => {
+    const response = await request(manifestUrl(source, releasesUrl(options.env)), {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(options.timeoutMs ?? 20_000),
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`Unable to check for ${source} updates (HTTP ${response.status}).`);
+    return parseUpdateManifest(await response.text(), source);
+  };
+  if (channel === 'stable') return fetchChannel('stable');
+  const [canary, stable] = await Promise.all([fetchChannel('canary'), fetchChannel('stable')]);
+  if (!canary) return stable;
+  if (!stable) return canary;
+  const canaryTime = Date.parse(canary.publishedAt ?? '');
+  const stableTime = Date.parse(stable.publishedAt ?? '');
+  if (!Number.isFinite(canaryTime) || !Number.isFinite(stableTime)) {
+    throw new Error('Cannot select the newest build: the Canary and Stable manifests must have valid publication timestamps.');
+  }
+  return canaryTime > stableTime ? canary : stable;
 }
 
 export async function readUpdateSettings(file: string, defaults: UpdateSettings): Promise<UpdateSettings> {

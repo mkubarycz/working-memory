@@ -9,6 +9,7 @@ import { loadKinds } from '../src/kinds/loader';
 import { defaultInstancePermissions, type InstancePermissions } from '../src/instancePermissions';
 import { authorizeInstanceTool } from '../src/instanceAuthorization';
 import { HostTaskBroker } from '../src/hostTasks';
+import { InstanceFeatureStore } from '../src/instanceFeatures';
 import { randomUUID } from 'node:crypto';
 import { scriptTaskSchema, scriptJobSchema, scriptVersionSchema } from '../src/hostScriptPolicy';
 
@@ -46,6 +47,29 @@ const noPermissions = (): InstancePermissions => ({
   content: { create: false, read: false, update: false, delete: false },
   settings: { create: false, read: false, update: false, delete: false },
   tools: { create: false, read: false, update: false, delete: false, run: false },
+});
+
+it('searches only readable kinds before ranking/limits and rechecks permissions on every call', async () => {
+  const { access, owner, connect, store } = await fixture();
+  new InstanceFeatureStore(store.db).write({ search: true });
+  store.createDocument({ kind: 'Config', spec: { name: 'searchneedle', data: { visibleKey: 'secretValueNotSearchable' } } });
+  const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Searchneedle notes', body: 'Readable content.' } });
+  const enrollment = access.request({ label: 'Search reader', access: 'read', refresh: false }, '', 'test');
+  const permissions = noPermissions();
+  permissions.content.read = true;
+  access.setPermissions(owner!.token, enrollment.requestId, 'request', permissions);
+  access.decide(owner!.token, enrollment.requestId, true);
+  const issued = access.claim(enrollment.requestId, enrollment.requestSecret);
+  if (!('token' in issued)) throw new Error('Expected client credential');
+  const client = await connect(issued.token);
+  const search = () => client.callTool({ name: 'wm-document-search', arguments: { queries: ['searchneedle'], limit: 1 } });
+  expect(value(await search())).toMatchObject({ count: 1, results: [{ id: topic.metadata.id, kind: 'Topic' }] });
+  const settingsOnly = noPermissions();
+  settingsOnly.settings.read = true;
+  access.setPermissions(owner!.token, issued.clientId, 'client', settingsOnly);
+  expect(value(await search())).toMatchObject({ count: 1, results: [{ kind: 'Config' }] });
+  access.setPermissions(owner!.token, issued.clientId, 'client', noPermissions());
+  await expect(search()).rejects.toThrow();
 });
 
 it('queues only missing permissions on denial and approval updates the same client and live MCP session', async () => {
@@ -312,7 +336,7 @@ it('prevents a pending renewal from restoring removed permissions and keeps acce
 it('blocks every instance-MCP task operation for an authenticated owner until Host Tasks is explicitly enabled', async () => {
   const { owner, connect, store } = await fixture();
   const broker = new HostTaskBroker(store.db);
-  expect(broker.features.read()).toEqual({ hostTasks: false });
+  expect(broker.features.read()).toEqual({ hostTasks: false, search: false });
   const agent = await connect(owner!.token);
   const id = randomUUID();
   const definition = { name: 'Blocked task', description: '', hostId: randomUUID(),
@@ -332,7 +356,7 @@ it('blocks every instance-MCP task operation for an authenticated owner until Ho
   }
   expect(store.db.prepare('SELECT COUNT(*) AS count FROM host_script_tasks').get()?.count).toBe(0);
   expect(store.db.prepare('SELECT COUNT(*) AS count FROM host_script_jobs').get()?.count).toBe(0);
-  expect(broker.features.read()).toEqual({ hostTasks: false });
+  expect(broker.features.read()).toEqual({ hostTasks: false, search: false });
 });
 
 it('requires Tools Run and exact-version grants, keeps edits as drafts, and invalidates grants on publish or downgrade', async () => {

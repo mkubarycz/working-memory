@@ -107,8 +107,8 @@ export async function runDaemon(): Promise<Daemon> {
   let server: RunningServer | undefined;
 
   try {
-    store = openStore(dbPath());
     const kinds = await loadKinds();
+    store = openStore(dbPath());
     log(`registered kinds: ${kinds.length ? kinds.join(', ') : '(none)'}`);
     server = await startWithFallback(resolvePreferredPort(), store);
     writePortFile(portFilePath(), { port: server.port, pid: process.pid });
