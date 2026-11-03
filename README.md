@@ -339,7 +339,8 @@ host-controlled, read-only tool loop:
    rebuilding every document's text, and preserve version strings such as `1.5`.
    Body ranges are sliced in SQLite; `bodyOffset`, `bodyLimit`, `bodyLength` and
    `nextBodyOffset` count Unicode code points. AgentMessage evidence includes
-   scheduling, recommendations, decisions and relationships, not opaque metadata.
+   searchable scheduling, recommendations, decisions and relationships, not
+   opaque metadata. Ranked excerpts are SQL-capped at 1,200 code points.
 3. Registered container apps can be discovered without an `@mention`. Only MCP
    tools explicitly marked read-only and not destructive are exposed. Each call
    rechecks registration, endpoint, connection and tool annotations. Search
@@ -347,10 +348,13 @@ host-controlled, read-only tool loop:
 4. AI returns typed summaries, linked lists, tables, verified query counts or
    clarification suggestions. Titles/statuses come from actual sources; invented
    source IDs and unsupported counts are rejected. Narrative summaries are
-   evidence-cited, not mechanically proven factually correct.
+   always evidence-cited, even after an unrelated empty query, but not mechanically
+   proven factually correct. Empty retrievals use verified zero-count blocks.
 
 Open results to browse and return to Search without losing the request, original
 scope, results or completed retrieval trace.
+Closing the Search tab clears that session; reopen Search from another document
+to start fresh with that document's context.
 Result cards show explanations and source links, not expandable document-body
 previews; open the source to read the full document.
 Document links in result cards, tables and citations can be dragged like rail
@@ -372,7 +376,9 @@ Search is bounded to eight model turns, 24 tool calls, four discovered apps and
 bounded; incomplete pages/body chunks, truncated responses and tool failures
 are visibly marked. External apps still control their own response sizes.
 Cancel stops inference/follow-up calls and signals pending MCP catalog,
-discovery and tool requests without disconnecting shared clients.
+discovery and tool requests without disconnecting shared clients. Identical
+in-flight app handshakes are shared; cancellation stops only that caller's wait
+unless no callers remain.
 Switching environments cancels searches
 and discards stale results. Read-only activity is inspectable without storing a
 write-only CommandJournal or exposing model chain-of-thought.
@@ -381,6 +387,9 @@ This uses existing AI configuration, **not an embeddings index** or an additiona
 model service. Only retrieved evidence is supplied to the configured model,
 not the entire store; Config secrets are excluded and tool output (including
 JSON embedded in MCP text) is redacted. Sanitizer limits mark answers partial.
+Discovered tool descriptions are redacted before model registration. Schema
+defaults/examples are omitted without renaming properties or changing required
+fields; unsafe credential-valued constraints reject discovery explicitly.
 AI output is rendered as plain text, not executable Markdown/HTML.
 
 Agents can call the read-only `wm-document-search` tool with
@@ -390,14 +399,23 @@ with OR. Results include `id`, `kind`, `title`, `excerpt`, and a BM25 `score`
 (higher is better). Permission filtering happens before the result limit and is
 rechecked on each request. The desktop chat assistant receives and recommends
 this tool only when Search is enabled; otherwise it uses existing read filters.
+If feature settings are unavailable, ordinary chat logs the failure and omits
+Search after a bounded probe, without blocking its other MCP tools or changing
+the 404-only feature-version fallback.
 The existing `wm-document-read.query` substring filter remains unchanged.
 
 The control plane alone owns the derived FTS5 index. Startup backfills existing
 live resources without rewriting their source, timestamps or resource versions;
 transactional triggers keep create/update/delete/restore and rollback consistent.
+Persistent triggers only enqueue changed resource row IDs using built-in SQL.
+Connection-local triggers maintain projections on upgraded writers; older
+backends can still write without registering `wm_search_text`. Queued legacy
+changes are repaired on startup or before the next search without rewriting
+authored resources. Startup replaces earlier experimental function-dependent
+triggers, so run this backend once before rolling back an experimental database.
 Kind descriptors supply searchable text, including Config's key-only projection
 that excludes configuration values. As with all resource writes, connections must
-be opened through `openStore` so the registered search projection function is available.
+be opened through `openStore` to install the local projection function and triggers.
 
 ## VS Code MCP integration
 

@@ -44,9 +44,10 @@ export function queryDocuments(
   canReadKind: (kind: string) => boolean,
 ): { count: number; total: number; nextOffset: number | null; version: number; documents: QueryDocument[] } {
   const options = documentQuerySchema.parse(input);
-  if (listKinds().length && Number(db.prepare("SELECT value FROM store_meta WHERE key = 'document_search_version'").get()?.value ?? 0) < 2) {
+  if (listKinds().length && Number(db.prepare("SELECT value FROM store_meta WHERE key = 'document_search_version'").get()?.value ?? 0) < 3) {
     ensureDocumentSearch(db);
   }
+  refreshDocumentSearch(db);
   const version = Number(db.prepare("SELECT value FROM store_meta WHERE key = 'resource_version'").get()?.value);
   if (options.expectedVersion !== undefined && options.expectedVersion !== version) {
     throw new Error('Documents changed while paging. Restart the query from offset 0.');
@@ -75,13 +76,6 @@ export function queryDocuments(
       lifecycle, workstreams, parents, created_at, updated_at, resource_version
     FROM (SELECT id, kind,
       CAST(COALESCE(json_extract(spec, '$.title'), json_extract(spec, '$.name'), json_extract(spec, '$.label'), id) AS TEXT) AS title,
-      CASE WHEN kind = 'AgentMessage' THEN json_object(
-        'category', json_extract(spec, '$.category'), 'severity', json_extract(spec, '$.severity'),
-        'attention', json(COALESCE(spec -> '$.attention', 'null')), 'due_at', json_extract(spec, '$.due_at'),
-        'recommended_action', json_extract(spec, '$.recommended_action'), 'decision', json_extract(spec, '$.decision'),
-        'topics', json_extract(spec, '$.topics'), 'relations', json_extract(spec, '$.relations'),
-        'agent_id', json_extract(spec, '$.agent_id'), 'agent_name', json_extract(spec, '$.agent_name')
-      ) || char(10) ELSE '' END ||
       COALESCE((SELECT indexed.body FROM document_search AS indexed WHERE indexed.rowid = resources.rowid), '') AS evidence,
       json_extract(spec, '$.status') AS lifecycle,
       COALESCE(json_extract(spec, '$.workstreams'), '[]') AS workstreams,
@@ -147,41 +141,64 @@ export function ensureDocumentSearch(db: DatabaseSync): void {
         id UNINDEXED, kind UNINDEXED, title, body,
         tokenize = 'porter unicode61 remove_diacritics 2'
       );
-      CREATE TRIGGER IF NOT EXISTS document_search_insert AFTER INSERT ON resources
-      WHEN NEW.deleted_at IS NULL BEGIN
-        INSERT INTO document_search(rowid, id, kind, title, body) VALUES (
-          NEW.rowid, NEW.id, NEW.kind,
-          CAST(COALESCE(json_extract(NEW.spec, '$.title'), json_extract(NEW.spec, '$.name'), json_extract(NEW.spec, '$.label'), NEW.id) AS TEXT),
-          wm_search_text(NEW.kind, NEW.id, NEW.spec)
-        );
+      CREATE TABLE IF NOT EXISTS document_search_dirty (row_id INTEGER PRIMARY KEY);
+      DROP TRIGGER IF EXISTS document_search_insert;
+      DROP TRIGGER IF EXISTS document_search_update;
+      DROP TRIGGER IF EXISTS document_search_delete;
+      CREATE TRIGGER document_search_insert AFTER INSERT ON resources BEGIN
+        INSERT OR REPLACE INTO document_search_dirty(row_id) VALUES (NEW.rowid);
       END;
-      CREATE TRIGGER IF NOT EXISTS document_search_update AFTER UPDATE ON resources BEGIN
-        DELETE FROM document_search WHERE rowid = OLD.rowid;
+      CREATE TRIGGER document_search_update AFTER UPDATE ON resources BEGIN
+        INSERT OR REPLACE INTO document_search_dirty(row_id) SELECT OLD.rowid WHERE OLD.rowid <> NEW.rowid;
+        INSERT OR REPLACE INTO document_search_dirty(row_id) VALUES (NEW.rowid);
+      END;
+      CREATE TRIGGER document_search_delete AFTER DELETE ON resources BEGIN
+        INSERT OR REPLACE INTO document_search_dirty(row_id) VALUES (OLD.rowid);
+      END;
+      CREATE TEMP TRIGGER IF NOT EXISTS document_search_project AFTER INSERT ON main.document_search_dirty BEGIN
+        DELETE FROM document_search WHERE rowid = NEW.row_id;
         INSERT INTO document_search(rowid, id, kind, title, body)
-          SELECT NEW.rowid, NEW.id, NEW.kind,
-            CAST(COALESCE(json_extract(NEW.spec, '$.title'), json_extract(NEW.spec, '$.name'), json_extract(NEW.spec, '$.label'), NEW.id) AS TEXT),
-            wm_search_text(NEW.kind, NEW.id, NEW.spec)
-          WHERE NEW.deleted_at IS NULL;
-      END;
-      CREATE TRIGGER IF NOT EXISTS document_search_delete AFTER DELETE ON resources BEGIN
-        DELETE FROM document_search WHERE rowid = OLD.rowid;
+          SELECT rowid, id, kind,
+            CAST(COALESCE(json_extract(spec, '$.title'), json_extract(spec, '$.name'), json_extract(spec, '$.label'), id) AS TEXT),
+            wm_search_text(kind, id, spec)
+          FROM resources WHERE rowid = NEW.row_id AND deleted_at IS NULL;
+        DELETE FROM document_search_dirty WHERE row_id = NEW.row_id;
       END;
     `);
     const version = Number(db.prepare("SELECT value FROM store_meta WHERE key = 'document_search_version'").get()?.value ?? 0);
     const registered = listKinds().length > 0;
-    if (!installed || registered && version < 2) {
+    if (!installed || registered && version < 3) {
       db.exec('DELETE FROM document_search');
       db.exec(`INSERT INTO document_search(rowid, id, kind, title, body)
         SELECT rowid, id, kind, CAST(COALESCE(json_extract(spec, '$.title'), json_extract(spec, '$.name'),
           json_extract(spec, '$.label'), id) AS TEXT), wm_search_text(kind, id, spec)
         FROM resources WHERE deleted_at IS NULL`);
       if (registered) {
-        db.prepare("INSERT INTO store_meta(key, value) VALUES ('document_search_version', 2) ON CONFLICT(key) DO UPDATE SET value = 2").run();
+        db.prepare("INSERT INTO store_meta(key, value) VALUES ('document_search_version', 3) ON CONFLICT(key) DO UPDATE SET value = 3").run();
       }
     }
+    refreshDocumentSearch(db);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function refreshDocumentSearch(db: DatabaseSync): void {
+  if (!db.prepare('SELECT 1 FROM document_search_dirty LIMIT 1').get()) return;
+  db.exec('SAVEPOINT document_search_refresh');
+  try {
+    db.exec(`DELETE FROM document_search WHERE rowid IN (SELECT row_id FROM document_search_dirty);
+      INSERT INTO document_search(rowid, id, kind, title, body)
+        SELECT rowid, id, kind,
+          CAST(COALESCE(json_extract(spec, '$.title'), json_extract(spec, '$.name'), json_extract(spec, '$.label'), id) AS TEXT),
+          wm_search_text(kind, id, spec)
+        FROM resources WHERE rowid IN (SELECT row_id FROM document_search_dirty) AND deleted_at IS NULL;
+      DELETE FROM document_search_dirty;
+      RELEASE document_search_refresh;`);
+  } catch (error) {
+    db.exec('ROLLBACK TO document_search_refresh; RELEASE document_search_refresh;');
     throw error;
   }
 }
@@ -191,9 +208,10 @@ export function searchDocuments(
   input: DocumentSearchInput,
   canReadKind: (kind: string) => boolean = () => true,
 ): DocumentSearchResult {
-  if (listKinds().length && Number(db.prepare("SELECT value FROM store_meta WHERE key = 'document_search_version'").get()?.value ?? 0) < 2) {
+  if (listKinds().length && Number(db.prepare("SELECT value FROM store_meta WHERE key = 'document_search_version'").get()?.value ?? 0) < 3) {
     ensureDocumentSearch(db);
   }
+  refreshDocumentSearch(db);
   const { queries, kinds, limit } = documentSearchSchema.parse(input);
   const phrases = queries.map(query => {
     const tokens = query.match(/[\p{L}\p{N}]+/gu)?.slice(0, 40) ?? [];
@@ -204,7 +222,7 @@ export function searchDocuments(
     .map(row => row.kind).filter(kind => canReadKind(kind) && (!kinds || kinds.includes(kind)));
   if (!allowedKinds.length) return { count: 0, results: [] };
   const results = db.prepare(`SELECT id, kind, title,
-      snippet(document_search, 3, '', '', ' ... ', 48) AS excerpt,
+      substr(snippet(document_search, 3, '', '', ' ... ', 48), 1, 1200) AS excerpt,
       -bm25(document_search, 0, 0, 6, 1) AS score
     FROM document_search WHERE document_search MATCH ?
       AND kind IN (${allowedKinds.map(() => '?').join(',')})

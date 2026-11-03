@@ -1,5 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { abortable } from '../../../shared/abort';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type {
   AppMcpEndpoint,
@@ -14,6 +15,15 @@ interface Connection {
   client: AppMcpClient;
   endpoint: AppMcpEndpoint;
   connectionId: number;
+}
+
+interface PendingConnection {
+  client: AppMcpClient;
+  token: number;
+  endpoint: AppMcpEndpoint;
+  controller: AbortController;
+  waiters: number;
+  promise: Promise<AppMcpStatus>;
 }
 
 export function parseAppResourceContract(result: unknown): AppResourceContract {
@@ -65,7 +75,7 @@ export interface AppMcpServiceOptions {
 
 export class AppMcpService {
   private readonly connections = new Map<ContainerAppId, Connection>();
-  private readonly inFlight = new Map<ContainerAppId, { client: AppMcpClient; token: number }>();
+  private readonly inFlight = new Map<ContainerAppId, PendingConnection>();
   private readonly errors = new Map<ContainerAppId, string>();
   private readonly generations = new Map<ContainerAppId, number>();
   private epoch = 0;
@@ -111,14 +121,40 @@ export class AppMcpService {
     if (current && sameEndpoint(current.endpoint, normalizedEndpoint)) {
       return this.status(appId, normalizedEndpoint);
     }
+    const pending = this.inFlight.get(appId);
+    if (pending && sameEndpoint(pending.endpoint, normalizedEndpoint)) {
+      return this.waitForConnection(appId, pending, signal);
+    }
     const epoch = this.epoch;
-    await this.disconnect(appId);
-    signal?.throwIfAborted();
-    if (this.epoch !== epoch) throw new Error(`Connection to ${normalizedEndpoint.url} was cancelled.`);
+    const disconnected = this.disconnect(appId);
     const token = this.generation(appId);
     const client = this.createClient(appId);
-    this.inFlight.set(appId, { client, token });
+    const controller = new AbortController();
+    const attempt: PendingConnection = {
+      client, token, endpoint: normalizedEndpoint, controller, waiters: 0,
+      promise: this.establishConnection(appId, normalizedEndpoint, client, token, epoch, disconnected, controller.signal),
+    };
+    this.inFlight.set(appId, attempt);
+    return this.waitForConnection(appId, attempt, signal);
+  }
+
+  private async waitForConnection(appId: ContainerAppId, pending: PendingConnection, signal?: AbortSignal): Promise<AppMcpStatus> {
+    pending.waiters++;
+    try { return await abortable(pending.promise, signal); }
+    finally {
+      pending.waiters--;
+      if (!pending.waiters && signal?.aborted && this.inFlight.get(appId) === pending) pending.controller.abort(signal.reason);
+    }
+  }
+
+  private async establishConnection(
+    appId: ContainerAppId, normalizedEndpoint: AppMcpEndpoint, client: AppMcpClient, token: number,
+    epoch: number, disconnected: Promise<AppMcpStatus>, signal: AbortSignal,
+  ): Promise<AppMcpStatus> {
     try {
+      await disconnected;
+      signal.throwIfAborted();
+      if (this.epoch !== epoch) throw new Error(`Connection to ${normalizedEndpoint.url} was cancelled.`);
       await client.connect(this.createTransport(normalizedEndpoint), {
         timeout: this.timeoutMs, signal,
       });
@@ -142,7 +178,7 @@ export class AppMcpService {
       if (this.inFlight.get(appId)?.client === client) this.inFlight.delete(appId);
       await client.close().catch(() => undefined);
       const message = `Unable to connect to ${normalizedEndpoint.url}: ${errorMessage(error)}`;
-      if (this.generation(appId) === token) this.errors.set(appId, message);
+      if (this.generation(appId) === token && !signal.aborted) this.errors.set(appId, message);
       throw new Error(message);
     }
   }
@@ -154,6 +190,7 @@ export class AppMcpService {
     this.connections.delete(appId);
     this.inFlight.delete(appId);
     this.errors.delete(appId);
+    pending?.controller.abort(new Error('Application connection was disconnected.'));
     const clients = [...new Set([connection?.client, pending?.client].filter(Boolean))] as AppMcpClient[];
     const outcomes = await Promise.allSettled(clients.map((client) => client.close()));
     const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');

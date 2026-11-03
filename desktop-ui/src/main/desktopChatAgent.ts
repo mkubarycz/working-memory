@@ -11,6 +11,7 @@ import type {
   ToolCallOutcome,
 } from '../../../shared/controlPlaneClient';
 import type { ModelEndpointMode } from './config';
+import { abortable } from '../../../shared/abort';
 import type { ChatContext } from '../shared/contracts';
 import {
   appendToolResults,
@@ -209,6 +210,18 @@ const MUTATING_ACTION = /-(create|update|delete|restore|run|reorder|transfer|ack
 export const DESKTOP_MODEL_REQUEST_TIMEOUT_MS = 60_000;
 export const DESKTOP_DEFAULT_MAX_MODEL_TURNS = 24;
 export const DESKTOP_DEFAULT_TOTAL_TOOL_RUN_TIMEOUT_MS = 270_000;
+
+export async function chatToolsWithFeatures(
+  client: { listTools: () => Promise<CanonicalToolDef[]> },
+  readFeatures: (signal: AbortSignal) => Promise<{ search: boolean }>,
+  onFeatureError: (error: unknown) => void,
+): Promise<CanonicalToolDef[]> {
+  const signal = AbortSignal.timeout(2000);
+  const availability = abortable(Promise.resolve().then(() => readFeatures(signal)), signal)
+    .catch(error => { onFeatureError(error); return { search: false }; });
+  const [tools, features] = await Promise.all([client.listTools(), availability]);
+  return features.search ? tools : tools.filter(tool => tool.name !== 'wm-document-search' && tool.name !== 'wm-document-query');
+}
 
 export class DesktopChatAgent {
   private readonly pending = new Map<string, Session>();

@@ -42,6 +42,7 @@ declare const __WM_BUILD_TIMESTAMP__: string;
 import {
   DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
   DesktopChatAgent,
+  chatToolsWithFeatures,
   sanitizeForJournal,
   type DesktopAgentResult,
   type ModelHttpRequest,
@@ -381,11 +382,13 @@ function environmentState(environments = [] as DesktopEnvironmentState['environm
 
 async function availableChatTools(client: ControlPlaneClient) {
   const environment = environmentManager.currentEnvironment;
-  if (!environment || !instanceIdentity) throw new Error('Instance feature settings are unavailable.');
   const generation = containerEnvironmentGeneration;
-  const [tools, features] = await Promise.all([client.listTools(), instanceIdentity.features(environment.mcpUrl)]);
+  const tools = await chatToolsWithFeatures(client, async signal => {
+    if (!environment || !instanceIdentity) throw new Error('Instance feature settings are unavailable.');
+    return instanceIdentity.features(environment.mcpUrl, signal);
+  }, error => console.warn('[chat] Search availability could not be read; omitting Search tools:', error));
   if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed.');
-  return features.search ? tools : tools.filter(tool => tool.name !== 'wm-document-search' && tool.name !== 'wm-document-query');
+  return tools;
 }
 
 const chatAgent = new DesktopChatAgent({

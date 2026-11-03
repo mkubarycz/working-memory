@@ -22,6 +22,11 @@ export function searchContextForSession(state: SearchViewState, document: Docume
     ? state.context : searchContextForDocument(document);
 }
 
+export function searchStateAfterTabChange(state: SearchViewState, previous: DocumentVM[], next: DocumentVM[]): SearchViewState {
+  return previous.some(document => document.kind === 'search') && !next.some(document => document.kind === 'search')
+    ? createSearchViewState() : state;
+}
+
 export function searchContextForDocument(document: DocumentVM | null): SearchContext | undefined {
   if (!document?.id || ['search', 'settings', 'host-task', 'host-task-create', 'topic-backlog'].includes(document.kind)) return undefined;
   return {

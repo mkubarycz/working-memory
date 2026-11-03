@@ -42,6 +42,50 @@ function parseJson(text: string): unknown {
   catch { throw new Error('Search AI returned invalid JSON. Please retry.'); }
 }
 
+function sanitizeAppToolDescriptor(tool: CanonicalToolDef): CanonicalToolDef {
+  const sensitive = /api[-_]?key|authorization|cookie|credential|password|secret|token/i;
+  const visit = (value: unknown, credential = false, depth = 0): unknown => {
+    if (depth > 32) throw new Error('Application tool schema exceeds the nesting limit.');
+    if (Array.isArray(value)) return value.map(child => visit(child, credential, depth + 1));
+    if (typeof value === 'string' && sanitizeForJournal(value) !== value) {
+      throw new Error('Application tool has sensitive schema constraints that cannot be safely exposed.');
+    }
+    if (!value || typeof value !== 'object') return value;
+    const entries: Array<[string, unknown]> = [];
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'default' || key === 'examples') continue;
+      if (sensitive.test(key)) throw new Error('Application tool has sensitive schema metadata that cannot be safely exposed.');
+      if (credential && ['const', 'enum', 'pattern'].includes(key)) {
+        throw new Error('Application tool has credential-valued constraints that cannot be safely exposed.');
+      }
+      if (key === 'const' || key === 'enum') {
+        const sanitized = sanitizeForJournalWithMetadata(child);
+        if (sanitized.truncated || JSON.stringify(sanitized.value) !== JSON.stringify(child)) {
+          throw new Error('Application tool has sensitive or oversized literal constraints that cannot be safely exposed.');
+        }
+        entries.push([key, child]);
+        continue;
+      }
+      if (['description', 'title', '$comment'].includes(key)) entries.push([key, sanitizeForJournal(child)]);
+      else if (['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'].includes(key)
+        && child && typeof child === 'object' && !Array.isArray(child)) {
+        entries.push([key, Object.fromEntries(Object.entries(child).map(([name, schema]) =>
+          [name, visit(schema, credential || sensitive.test(name), depth + 1)]))]);
+      } else entries.push([key, visit(child, credential, depth + 1)]);
+    }
+    return Object.fromEntries(entries);
+  };
+  const schema = visit(tool.inputSchema);
+  if (schema !== undefined && (!schema || typeof schema !== 'object' || Array.isArray(schema))) {
+    throw new Error('Application tool has an invalid input schema.');
+  }
+  return {
+    ...tool,
+    ...(tool.description ? { description: String(sanitizeForJournal(tool.description)) } : {}),
+    ...(schema ? { inputSchema: Object.fromEntries(Object.entries(schema)) } : {}),
+  };
+}
+
 export function searchInstructions(context?: SearchContext): string {
   return [
     'You are a read-only query-and-answer agent for Working Memory and its registered container applications.',
@@ -66,7 +110,7 @@ export function searchInstructions(context?: SearchContext): string {
     '{"type":"count","label":"scope","value":6,"queryId":"query tool call id"};',
     '{"type":"clarification","text":"question","suggestions":["complete follow-up request"]}.',
     'Use only evidence IDs supplied in tool outputs; cite factual summaries. Table title/kind/status fields are rendered from actual source data.',
-    'Every table must include the title column so its sources are clickable. Empty-result summaries may have no citations only when a retrieval query actually returned zero.',
+    'Every table must include the title column so its sources are clickable. Every factual summary requires citations, even after an empty query. Report empty retrievals with a count of zero and the exact queryId.',
     'Counts must exactly match the cited query total. Do not call a subset "all"; explicitly set partial true and explain incomplete results.',
     'When there are no matches, say which searches failed and what remains uncertain. Ask only when ambiguity materially changes the answer.',
     `Current time: ${new Date().toISOString()}; local time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}. Date filters use epoch seconds.`,
@@ -111,7 +155,6 @@ export async function searchByIntent(query: string, dependencies: {
   const allowed = new Set(['wm-document-search', 'wm-document-query', 'list_container_apps', 'container_app_tools', 'present_search_answer']);
   const sources = new Map<string, ExplainedSearchHit>();
   const counts = new Map<string, number>();
-  const emptyQueries = new Set<string>();
   const pages = new Map<string, { total: number; version: number; ids: Set<string> }>();
   const bodyCoverage = new Map<string, { through: number; end?: number; version: number }>();
   const unreadBodies = new Set<string>();
@@ -150,7 +193,7 @@ export async function searchByIntent(query: string, dependencies: {
         };
         for (const block of answer.blocks) {
           if (block.type === 'summary') {
-            if (!block.sourceIds.length && !emptyQueries.size) throw new Error('Search AI returned a factual summary without evidence.');
+            if (!block.sourceIds.length) throw new Error('Search AI returned a factual summary without evidence.');
             for (const id of block.sourceIds) use(id, block.text);
           } else if (block.type === 'list') {
             for (const item of block.items) use(item.sourceId, item.text);
@@ -172,7 +215,7 @@ export async function searchByIntent(query: string, dependencies: {
         signal.throwIfAborted();
         if (corrections++ >= 1) throw error;
         const message = `Answer rejected: ${error instanceof Error ? error.message : String(error)}. Correct the answer by calling present_search_answer. Use only cited evidence IDs, verified counts and its exact schema. Do not invent facts or return plain prose.`;
-        if (finalCall) appendToolResults(conversation, turn, [{ call: finalCall, output: { error: message } }]);
+        if (finalCall) appendToolResults(conversation, turn, turn.calls.map(call => ({ call, output: { error: message } })));
         else if (conversation.mode === 'responses') {
           conversation.previousResponseId = turn.id;
           conversation.responseInput = [{ role: 'user', content: message }];
@@ -209,12 +252,13 @@ export async function searchByIntent(query: string, dependencies: {
         } else if (call.name === 'container_app_tools') {
           const { appId } = z.object({ appId: z.string().min(1) }).strict().parse(call.arguments);
           const discovery = await abortable(dependencies.apps.discover(appId, signal), signal);
-          for (const tool of discovery.tools) {
+          const tools = discovery.tools.map(sanitizeAppToolDescriptor);
+          for (const tool of tools) {
             if (!conversation.tools.some(candidate => candidate.name === tool.name)) conversation.tools.push(tool);
             allowed.add(tool.name);
           }
-          count = discovery.tools.length;
-          output = discovery;
+          count = tools.length;
+          output = { ...discovery, tools };
         } else if (call.name.startsWith('app__')) {
           const response = await abortable(dependencies.apps.call(call.name, call.arguments, signal), signal);
           const sanitized = sanitizeForJournalWithMetadata(response.result);
@@ -248,7 +292,6 @@ export async function searchByIntent(query: string, dependencies: {
             }
             count = outcome.result.count;
             if (count >= Number(call.arguments.limit)) appTruncated = true;
-            if (count === 0) emptyQueries.add(call.id);
             output = { ...outcome.result, evidenceIds: outcome.result.results.map(hit => hit.id) };
           } else {
             if (!isQueryResult(outcome.result)) throw new Error('Malformed document query response.');
@@ -276,7 +319,6 @@ export async function searchByIntent(query: string, dependencies: {
             }
             pages.set(key, page);
             counts.set(call.id, result.total);
-            if (result.total === 0) emptyQueries.add(call.id);
             count = result.count;
             output = { ...result, queryId: call.id, evidenceIds: result.documents.map(doc => doc.id) };
           }

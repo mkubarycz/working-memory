@@ -10,6 +10,37 @@ import {
 } from '../src/main/appMcpService';
 
 describe('app MCP endpoint security and lifecycle', () => {
+  it.each([false, true])('shares a pending handshake and cancels only the Search waiter (Search initiated=%s)', async searchInitiated => {
+    let finish!: () => void;
+    let sdkSignal: AbortSignal | undefined;
+    const client = {
+      connect: vi.fn<Client['connect']>().mockImplementation(async (_transport, options) => {
+        sdkSignal = options?.signal;
+        await new Promise<void>(resolve => { finish = resolve; });
+      }),
+      close: vi.fn<Client['close']>().mockResolvedValue(undefined),
+      listTools: vi.fn<Client['listTools']>().mockResolvedValue({ tools: [] }),
+      callTool: vi.fn<Client['callTool']>().mockResolvedValue({ content: [] }),
+    };
+    const createClient = vi.fn(() => client);
+    const service = new AppMcpService({ createClient, createTransport: () => ({} as Transport) });
+    const endpoint = { transport: 'streamable-http' as const, url: 'http://localhost:4175/mcp' };
+    const controller = new AbortController();
+    const first = service.connect('queries', endpoint, searchInitiated ? controller.signal : undefined);
+    const second = service.connect('queries', endpoint, searchInitiated ? undefined : controller.signal);
+    await vi.waitFor(() => expect(client.connect).toHaveBeenCalledOnce());
+    controller.abort(new Error('Search cancelled'));
+    await expect(searchInitiated ? first : second).rejects.toThrow('Search cancelled');
+    expect(createClient).toHaveBeenCalledOnce();
+    expect(client.close).not.toHaveBeenCalled();
+    expect(sdkSignal?.aborted).toBe(false);
+    finish();
+    expect(await (searchInitiated ? second : first)).toMatchObject({ state: 'connected' });
+    await service.connect('queries', endpoint);
+    expect(client.connect).toHaveBeenCalledOnce();
+    await service.disconnectAll();
+  });
+
   it.each(['connect', 'list', 'call'])('cancels the underlying SDK %s without disconnecting an existing shared connection', async stage => {
     let started = false;
     const hold = (signal?: AbortSignal) => new Promise<never>((_resolve, reject) => {

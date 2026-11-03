@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DesktopUpdater, MAC_BUNDLE_IDENTIFIER, macAppBundle } from '../src/main/desktopUpdater';
 import type { CommandRunner } from '../src/main/dockerContainerService';
 import {
@@ -302,8 +302,9 @@ describe('desktop updater', () => {
   });
 
   it('does not install or quit when persisting the effective channel fails', async () => {
+    let fail = true;
     const { updater, spawned, quit } = harness({
-      platform: 'win32', saveChannel: async () => { throw new Error('Settings write failed'); },
+      platform: 'win32', saveChannel: async () => { if (fail) throw new Error('Settings write failed'); },
     });
     await updater.check();
     await updater.download();
@@ -311,6 +312,49 @@ describe('desktop updater', () => {
     expect(spawned).toEqual([]);
     expect(quit.count).toBe(0);
     expect(updater.state.phase).toBe('ready');
+    fail = false;
+    await updater.install();
+    expect(spawned).toHaveLength(1);
+    expect(quit.count).toBe(1);
+  });
+
+  it('locks installation before persistence and prevents duplicate installs or channel-driven deletion', async () => {
+    let release!: () => void;
+    const { updater, spawned, quit, root } = harness({
+      platform: 'win32', saveChannel: () => new Promise<void>(resolve => { release = resolve; }),
+    });
+    await updater.check();
+    await updater.download();
+    const installer = join(root, 'downloads', '0.1.1-build.40', 'Working-Memory-0.1.1-build.40-win-x64.exe');
+    const installing = updater.install();
+    await expect(updater.install()).rejects.toThrow('operation is already running');
+    await expect(updater.setChannel('off')).rejects.toThrow('operation is already running');
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    expect(existsSync(installer)).toBe(true);
+    expect(spawned).toEqual([]);
+    release();
+    await installing;
+    expect(spawned).toHaveLength(1);
+    expect(quit.count).toBe(1);
+    await expect(updater.setChannel('off')).rejects.toThrow('operation is already running');
+  });
+
+  it('locks channel persistence before it can discard staged installer files', async () => {
+    let release!: () => void;
+    const { updater, spawned, root } = harness({
+      platform: 'darwin', saveChannel: () => new Promise<void>(resolve => { release = resolve; }),
+    });
+    await updater.check();
+    await updater.download();
+    const installer = join(root, 'Applications', '.Working Memory.app.update');
+    const changing = updater.setChannel('off');
+    await expect(updater.install()).rejects.toThrow('operation is already running');
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    expect(existsSync(installer)).toBe(true);
+    release();
+    expect((await changing).channel).toBe('off');
+    expect(existsSync(installer)).toBe(false);
+    expect(spawned).toEqual([]);
   });
   it('does not offer the older rolling build when the latest Stable is already installed', async () => {
     const { updater } = harness({

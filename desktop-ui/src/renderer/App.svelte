@@ -24,7 +24,7 @@
   import { createTopicFromDraft } from './topicCreation';
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
   import SearchView from './documents/SearchView.svelte';
-  import { createSearchViewState, searchContextForSession } from './documentSearch';
+  import { createSearchViewState, searchContextForSession, searchStateAfterTabChange } from './documentSearch';
   import { topicBacklogDocument } from './topicBacklog';
   import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
@@ -2286,6 +2286,13 @@
   }
 
   function applyDocumentTabs(next: DocumentTabsState): void {
+    const nextSearch = searchStateAfterTabChange(searchState, documents, next.tabs);
+    if (nextSearch !== searchState) {
+      if (searchState.requestId) void window.workingMemory.cancelDocumentSearch(searchState.requestId).catch(cause => {
+        liveUpdateError = `Unable to cancel search: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+      searchState = nextSearch;
+    }
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
     previewDocumentKey = next.previewKey ?? null;

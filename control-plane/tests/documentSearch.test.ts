@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { openStore, type Store } from '../src/store';
 import { loadKinds } from '../src/kinds/loader';
 import { queryDocuments, searchDocuments } from '../src/documentSearch';
@@ -19,6 +20,71 @@ function fixture(path = ':memory:') {
 }
 
 describe('indexed document search', () => {
+  it('lets legacy connections write without custom functions and repairs their queued projections', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'wm-search-rollback-'));
+    const path = join(directory, 'store.sqlite');
+    const store = openStore(path);
+    const original = store.createDocument({ kind: 'Topic', spec: { title: 'Before rollback', body: 'oldneedle' } });
+    const removed = store.createDocument({ kind: 'Topic', spec: { title: 'Removed', body: 'deleteneedle' } });
+    const legacy = new DatabaseSync(path);
+    try {
+      expect(new InstanceFeatureStore(store.db).read().search).toBe(false);
+      expect(legacy.prepare("SELECT 1 FROM pragma_function_list WHERE name = 'wm_search_text'").get()).toBeUndefined();
+      expect(legacy.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'document_search_%'")
+        .all().every(row => !String(row.sql).includes('wm_search_text'))).toBe(true);
+      legacy.prepare("UPDATE resources SET spec = json_set(spec, '$.body', 'updatedneedle') WHERE id = ?").run(original.metadata.id);
+      legacy.prepare(`INSERT INTO resources(id,kind,labels,spec,status,created_at,updated_at,deleted_at,resource_version)
+        VALUES ('legacy-created','Topic','{}',?,'{}',1,1,NULL,100)`)
+        .run(JSON.stringify({ title: 'Legacy writer', body: 'createdneedle' }));
+      legacy.prepare('DELETE FROM resources WHERE id = ?').run(removed.metadata.id);
+      expect(searchDocuments(store.db, { queries: ['oldneedle', 'deleteneedle'] }).count).toBe(0);
+      expect(searchDocuments(store.db, { queries: ['updatedneedle', 'createdneedle'] }).count).toBe(2);
+      expect(store.db.prepare('SELECT count(*) AS count FROM document_search_dirty').get()?.count).toBe(0);
+      legacy.exec("BEGIN; UPDATE resources SET spec = json_set(spec, '$.body', 'rolledbackneedle') WHERE id = 'legacy-created'; ROLLBACK;");
+      expect(searchDocuments(store.db, { queries: ['rolledbackneedle'] }).count).toBe(0);
+      legacy.prepare("UPDATE resources SET spec = json_set(spec, '$.body', 'restartneedle') WHERE id = 'legacy-created'").run();
+      const restarted = openStore(path);
+      try {
+        expect(searchDocuments(restarted.db, { queries: ['restartneedle'] }).count).toBe(1);
+        expect(searchDocuments(restarted.db, { queries: ['createdneedle'] }).count).toBe(0);
+      } finally { restarted.close(); }
+    } finally { legacy.close(); store.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('replaces experimental function-dependent triggers before allowing a legacy rollback', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'wm-search-trigger-upgrade-'));
+    const path = join(directory, 'store.sqlite');
+    const previous = openStore(path);
+    const doc = previous.createDocument({ kind: 'Topic', spec: { title: 'Upgrade', body: 'Original authored text' } });
+    previous.close();
+    const experimental = new DatabaseSync(path);
+    try {
+      experimental.exec(`DROP TRIGGER document_search_update;
+        CREATE TRIGGER document_search_update AFTER UPDATE ON resources BEGIN
+          SELECT wm_search_text(NEW.kind, NEW.id, NEW.spec);
+        END;
+        UPDATE store_meta SET value = 2 WHERE key = 'document_search_version';`);
+      expect(() => experimental.prepare("UPDATE resources SET spec = json_set(spec, '$.body', 'blocked') WHERE id = ?")
+        .run(doc.metadata.id)).toThrow('no such function');
+    } finally { experimental.close(); }
+    const upgraded = openStore(path);
+    const legacy = new DatabaseSync(path);
+    try {
+      expect(upgraded.getDocument({ id: doc.metadata.id })).toEqual(doc);
+      legacy.prepare("UPDATE resources SET spec = json_set(spec, '$.body', 'rollbackneedle') WHERE id = ?").run(doc.metadata.id);
+      expect(searchDocuments(upgraded.db, { queries: ['rollbackneedle'] }).count).toBe(1);
+    } finally { legacy.close(); upgraded.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('caps SQL excerpts even when a matching snippet contains a multi-megabyte token', () => {
+    const store = fixture();
+    store.createDocument({ kind: 'Topic', spec: { title: 'Bounded snippet', body: `needle ${'x'.repeat(2_000_000)}` } });
+    const result = searchDocuments(store.db, { queries: ['needle'] });
+    expect(result.count).toBe(1);
+    expect(Array.from(result.results[0].excerpt).length).toBeLessThanOrEqual(1200);
+    expect(JSON.stringify(result).length).toBeLessThan(2000);
+  });
+
   it('uses stored projections for literal filtering and bounded reads without reprojecting every document', () => {
     const store = fixture();
     for (let index = 0; index < 25; index++) store.createDocument({ kind: 'Topic', spec: { title: `Release WM 1.5 ${index}`, body: 'Stored evidence' } });
@@ -212,6 +278,13 @@ describe('indexed document search', () => {
     });
     expect(evidence).toContain('Authored reminder text.');
     expect(evidence).not.toContain('legacy_source');
+    expect(store.getDocument({ id: message.metadata.id })).toEqual(message);
+    store.db.prepare("UPDATE document_search SET body = 'Old prose-only projection' WHERE id = ?").run(message.metadata.id);
+    store.db.prepare("UPDATE store_meta SET value = 2 WHERE key = 'document_search_version'").run();
+    expect(queryDocuments(store.db, { kind: 'AgentMessage', query: 'release checklist' }, () => true).documents[0].id).toBe(message.metadata.id);
+    for (const phrase of ['release checklist', '1950000000', agent.metadata.id]) {
+      expect(searchDocuments(store.db, { queries: [phrase] }).results.some(hit => hit.id === message.metadata.id)).toBe(true);
+    }
     expect(store.getDocument({ id: message.metadata.id })).toEqual(message);
   });
 
