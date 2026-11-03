@@ -98,7 +98,8 @@ backup are managed outside the app.
   stopped).
 - **Backend update channel** chooses which backend version instances should
   run: **Off** uses the image bundled with the app, **Canary** follows the
-  latest `main` build, and **Stable** follows the latest tagged release.
+  newest published rolling or Stable build, and **Stable** follows the latest
+  non-prerelease tagged release.
   Canary and Stable images are pulled from
   `ghcr.io/mkubarycz/working-memory-control-plane`.
 - **Update to <version>** appears when an instance runs a different version
@@ -132,11 +133,19 @@ plane.
 ### Desktop updates
 
 **Settings > Updates** picks the desktop update channel: **Off**, **Canary**
-(the rolling `canary` release rebuilt on every push to `main`), or **Stable**
+(the newer of the rolling `canary` build and the latest Stable release), or **Stable**
 (the latest non-prerelease `vX.Y.Z` release). Installer builds default to
 Canary for `-build.N` versions and Stable for tagged versions; local
 `npm run build` builds default to Off. The app checks 15 seconds after launch
 and every six hours, then offers **Download** and **Restart and install**.
+
+Canary compares the manifests' build publication timestamps, not their version
+strings or the rolling GitHub release's original creation date. A newly tagged
+Stable build therefore also becomes the Canary target until a newer rolling
+build is published; a later rolling build can win even if its base version is
+lower. Equal timestamps prefer Stable. Both desktop and backend channels use
+this rule. Missing releases (HTTP 404) are allowed, but failed checks or invalid
+comparison timestamps are reported rather than silently selecting an older build.
 
 Each release carries an `update.json` manifest with the installer SHA-256 and
 size; downloads that do not match are discarded. On macOS the updater copies
@@ -298,6 +307,118 @@ The control plane resolves its data directory from
 `WM_CONTROL_PLANE_HOME` and otherwise uses the platform application-data
 default. The desktop app connects to the selected control-plane environment;
 it does not open SQLite directly.
+
+## AI-driven document search
+
+Search is experimental and **off by default**. The instance owner can enable
+**Working Memory search** in **Settings > Features**. The choice is persisted
+per instance. Turning it off hides/closes Search, stops active requests and
+blocks search IPC and MCP discovery/query execution without changing documents.
+Expanded flags use `/features/v2`; `/features/v1` retains its Host tasks-only
+contract for existing desktops. New desktops fall back to v1 only when v2 is
+unavailable, preserving Host tasks while leaving unsupported Search disabled.
+
+When enabled, click the magnifying glass beside Refresh in the upper-left rail to open a
+permanent **Search** tab. Describe what you want to find in natural language,
+then select **Find with AI**.
+
+Enter submits the query; Shift+Enter inserts a newline. Use the page icon in the
+textbox's upper-right corner to toggle **Multiline mode** (white when off, dark
+when on) for chat-style expanded composition: Enter inserts newlines and
+Ctrl/Cmd+Enter submits. Switching modes preserves the text.
+
+Search uses the configured **Medium / Complex** model profile and a
+host-controlled, read-only tool loop:
+
+1. AI resolves intent and scope, using the document/workstream selected when
+   opening Search. Ambiguous memberships produce a clarification.
+2. AI chooses indexed concept searches or structured document queries, follows
+   workstream membership/parent/type relationships, reads bounded body chunks,
+   and can retry different strategies. Structured filters/counts run in SQLite
+   before paging; literal queries scan stored search projections rather than
+   rebuilding every document's text, and preserve version strings such as `1.5`.
+   Body ranges are sliced in SQLite; `bodyOffset`, `bodyLimit`, `bodyLength` and
+   `nextBodyOffset` count Unicode code points. AgentMessage evidence includes
+   searchable scheduling, recommendations, decisions and relationships, not
+   opaque metadata. Ranked excerpts are SQL-capped at 1,200 code points.
+3. Registered container apps can be discovered without an `@mention`. Only MCP
+   tools explicitly marked read-only and not destructive are exposed. Each call
+   rechecks registration, endpoint, connection and tool annotations. Search
+   never starts an app, invokes a write/host task or connects to a model-provided URL.
+4. AI returns typed summaries, linked lists, tables, verified query counts or
+   clarification suggestions. Titles/statuses come from actual sources; invented
+   source IDs and unsupported counts are rejected. Narrative summaries are
+   always evidence-cited, even after an unrelated empty query, but not mechanically
+   proven factually correct. Empty structured queries and indexed searches use
+   verified zero-count blocks; nonzero indexed hit counts are not verified totals.
+
+Open results to browse and return to Search without losing the request, original
+scope, results or completed retrieval trace.
+Closing the Search tab clears that session; reopen Search from another document
+to start fresh with that document's context.
+Result cards show explanations and source links, not expandable document-body
+previews; open the source to read the full document.
+Document links in result cards, tables and citations can be dragged like rail
+items: they provide a Markdown link and, once prepared, a native Markdown
+context attachment. Topic drops onto a workstream add the topic tree without
+removing existing memberships; open workstreams can be reordered in the rail.
+Context preparation starts on hover, focus or pointer-down, not for every result.
+Topic results offer **Add to workstream**, followed by an explicit choice of an
+open workstream (Queued, In Progress or Backlog). This adds membership only:
+existing memberships, focus pins, parent links and topic status are preserved.
+The dedicated membership action checks the Search flag and open workstream
+inside the topic write transaction. Closed workstreams are excluded; concurrent
+topic edits produce a visible conflict rather than overwriting newer membership.
+Model, transport and save failures remain visible and retryable; search never
+falls back silently to an unranked full-store listing.
+
+Search is bounded to eight model turns, 24 tool calls, four discovered apps and
+90 seconds per request. Model evidence/context and app tool catalogs are
+bounded; incomplete pages/body chunks, truncated responses and tool failures
+are visibly marked. External apps still control their own response sizes.
+Cancel stops inference/follow-up calls and signals pending MCP catalog,
+discovery and tool requests without disconnecting shared clients. Identical
+in-flight app handshakes are shared; cancellation stops only that caller's wait
+unless no callers remain.
+Switching environments cancels searches
+and discards stale results. Read-only activity is inspectable without storing a
+write-only CommandJournal or exposing model chain-of-thought.
+
+This uses existing AI configuration, **not an embeddings index** or an additional
+model service. Only retrieved evidence is supplied to the configured model,
+not the entire store; Config secrets are excluded and tool output (including
+JSON embedded in MCP text) is redacted. Sanitizer limits mark answers partial.
+Discovered tool descriptions are redacted before model registration. Schema
+defaults/examples are omitted without renaming properties or changing required
+fields; unsafe credential-valued constraints reject discovery explicitly.
+References inside credential-valued schemas are rejected rather than exposing
+uninspected target constraints, including dynamic and recursive references.
+AI output is rendered as plain text, not executable Markdown/HTML.
+
+Agents can call the read-only `wm-document-search` tool with
+`{ "queries": ["authentication", "sign in"], "kinds": ["Topic"], "limit": 20 }`.
+Each phrase matches all of its stemmed words; alternative phrases are combined
+with OR. Results include `id`, `kind`, `title`, `excerpt`, and a BM25 `score`
+(higher is better). Permission filtering happens before the result limit and is
+rechecked on each request. The desktop chat assistant receives and recommends
+this tool only when Search is enabled; otherwise it uses existing read filters.
+If feature settings are unavailable, ordinary chat logs the failure and omits
+Search after a bounded probe, without blocking its other MCP tools or changing
+the 404-only feature-version fallback.
+The existing `wm-document-read.query` substring filter remains unchanged.
+
+The control plane alone owns the derived FTS5 index. Startup backfills existing
+live resources without rewriting their source, timestamps or resource versions;
+transactional triggers keep create/update/delete/restore and rollback consistent.
+Persistent triggers only enqueue changed resource row IDs using built-in SQL.
+Connection-local triggers maintain projections on upgraded writers; older
+backends can still write without registering `wm_search_text`. Queued legacy
+changes are repaired on startup or before the next search without rewriting
+authored resources. Startup replaces earlier experimental function-dependent
+triggers, so run this backend once before rolling back an experimental database.
+Kind descriptors supply searchable text, including Config's key-only projection
+that excludes configuration values. As with all resource writes, connections must
+be opened through `openStore` to install the local projection function and triggers.
 
 ## VS Code MCP integration
 

@@ -34,6 +34,7 @@ import {
 import { openStore, type Store, ConflictError, NotFoundError } from './store.js';
 import { createDocumentChangeFeed } from './documentChangeFeed.js';
 import { HostTaskBroker, HOST_TASK_CLEANUP_INTERVAL_MS, type HostTaskOptions } from './hostTasks.js';
+import { InstanceFeatureStore } from './instanceFeatures.js';
 import { AccessError, InstanceAccess, type InstancePrincipal } from './instanceAccess.js';
 import { serveInstanceAccessMcp } from './instanceAccessMcp.js';
 import { InstanceOAuth } from './instanceOAuth.js';
@@ -42,6 +43,7 @@ import { IdentityError } from './instanceIdentity.js';
 import { documentPermissionCategory, instancePermissionsSchema, permits } from './instancePermissions.js';
 import { activateDueReminders, REMINDER_SWEEP_INTERVAL_MS } from './agentMessageReminders.js';
 import { authorizeInstanceTool, instanceToolPermissions } from './instanceAuthorization.js';
+import { documentQuerySchema, documentSearchSchema, queryDocuments, searchDocuments } from './documentSearch.js';
 import type { PermissionSelection } from './instancePermissions.js';
 import { registerInstanceTaskTools } from './instanceToolsMcp.js';
 import { topicSpecWithDefaults, validateTopicReferences } from './kinds/topic/references.js';
@@ -91,6 +93,7 @@ export function createMcpServer(
   canReadKind: (kind: string) => boolean = () => true,
 ): McpServer {
   const server = new McpServer({ name, version });
+  const features = new InstanceFeatureStore(store.db);
   if (taskDispatch) registerInstanceTaskTools(server, taskDispatch);
 
   const asText = (result: unknown) => ({
@@ -360,7 +363,7 @@ export function createMcpServer(
         '`kind`). Otherwise LIST non-deleted documents newest-first: `kind` filters by kind, and ' +
         '`query` does a BASIC case-insensitive substring match over each document\'s text ' +
         '(ID, labels and spec JSON, i.e. title/body/etc.); `limit` caps how many are returned. This ' +
-        '`query` is a simple placeholder text filter, NOT full-text or agentic search. ALWAYS ' +
+        '`query` is a basic substring filter; use wm-document-search for ranked indexed discovery with agent-expanded phrases. ALWAYS ' +
         'returns { count, documents } \u2014 a by-id read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
       inputSchema: z.object({
@@ -409,6 +412,49 @@ export function createMcpServer(
       return asText({ count: documents.length, documents });
     },
   );
+
+  server.registerTool('wm-document-search', {
+    title: 'Working Memory: Search Documents',
+    description: 'Ranked indexed search across live readable documents. Use short phrases and expand intent into synonyms in queries for meaning-based discovery. Returns stable IDs, titles, evidence excerpts and BM25 relevance scores (higher is better), not the whole store. Search is read-only; results never authorize writes.',
+    inputSchema: documentSearchSchema,
+    annotations: { readOnlyHint: true },
+  }, async input => features.read().search
+    ? asText(searchDocuments(store.db, input, canReadKind))
+    : asError('Search is turned off. Enable it in Settings > Features.'));
+
+  server.registerTool('wm-document-query', {
+    title: 'Working Memory: Query Documents',
+    description: 'Read-only structured discovery and exact reads. Filter Topics by workstream membership or parent ID, lifecycle status, literal text or epoch-second update dates. Never interprets membership as a blocker/dependency. Returns readable non-Config documents, totals, nextOffset and a store version for consistent paging. Bodies are bounded; use id and nextBodyOffset to read more evidence. No SQL or code execution.',
+    inputSchema: documentQuerySchema,
+    annotations: { readOnlyHint: true },
+  }, async input => features.read().search
+    ? asText(queryDocuments(store.db, input, canReadKind))
+    : asError('Search is turned off. Enable it in Settings > Features.'));
+
+  server.registerTool('wm-search-add-topic', {
+    title: 'Search: Add Topic to Workstream',
+    description: 'Explicit Search membership action, never an AI search tool. Atomically requires Search enabled, an open target workstream and the expected topic version. Preserves existing memberships, body, parent links, focus and lifecycle.',
+    inputSchema: z.object({ id: z.string().min(1), workstreamId: z.string().min(1), expectedResourceVersion: z.number().int().nonnegative() }).strict(),
+  }, async ({ id, workstreamId, expectedResourceVersion }) => {
+    try {
+      const assertOpen = () => {
+        if (!features.read().search) throw new Error('Search is turned off. Enable it in Settings > Features.');
+        const workstream = store.getDocument({ id: workstreamId, kind: 'Workstream' });
+        if (!workstream || workstream.spec.status === 'closed') throw new Error('That workstream is no longer open. Choose another.');
+      };
+      assertOpen();
+      const topic = store.getDocument({ id, kind: 'Topic' });
+      if (!topic) throw new Error('That topic is no longer available.');
+      if (topic.metadata.resourceVersion !== expectedResourceVersion) throw new Error('Conflict: the topic changed. Refresh and retry.');
+      const current = topic.spec.workstreams ?? [];
+      if (!Array.isArray(current) || !current.every(value => typeof value === 'string')) throw new Error('The topic has invalid workstream membership.');
+      if (current.includes(workstreamId)) return asText(topic);
+      const spec = validateSpec('Topic', { ...topic.spec, workstreams: [...current, workstreamId] });
+      return asText(store.updateDocument({ id, expectedResourceVersion, spec }, assertOpen));
+    } catch (error) {
+      return asError(error instanceof Error ? error.message : String(error));
+    }
+  });
 
   // Kind plugins: every registered kind may contribute its own namespaced
   // domain API (Workstream → `ws-*`, …). Iterate the kinds that define a
@@ -709,7 +755,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       }
       return;
     }
-    if (url.pathname === '/features/v1') {
+    if (url.pathname === '/features/v1' || url.pathname === '/features/v2') {
       const principal = access.authenticate(token);
       if (principal?.role === 'client') {
         if (['GET', 'POST'].includes(req.method ?? '') && !permits(principal.permissions, 'settings', req.method === 'GET' ? 'read' : 'update')) {

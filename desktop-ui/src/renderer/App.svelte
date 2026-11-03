@@ -23,6 +23,8 @@
   import TopicCreateView from './documents/TopicCreateView.svelte';
   import { createTopicFromDraft } from './topicCreation';
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
+  import SearchView from './documents/SearchView.svelte';
+  import { createSearchViewState, searchContextForSession, searchStateAfterTabChange } from './documentSearch';
   import { topicBacklogDocument } from './topicBacklog';
   import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
@@ -98,6 +100,7 @@
     restoreLocalDocumentTab,
     serializeDocumentTabs,
     settingsDocument,
+    searchDocument,
     updateDocumentTab,
     type DocumentTabsState,
   } from './documentTabs';
@@ -152,7 +155,7 @@
   let desktopBuildInfo = $state<DesktopBuildInfo | null>(null);
   let buildInfoError = $state('');
   const desktopBuildLabel = $derived(formatDesktopBuildLabel(desktopBuildInfo, DESKTOP_BUILD_TIMESTAMP));
-  let instanceFeatures = $state<InstanceFeatures>({ hostTasks: false });
+  let instanceFeatures = $state<InstanceFeatures>({ hostTasks: false, search: false });
   let instanceConnection = $state<InstanceConnectionState | null>(null);
   let instanceConnectionError = $state('');
   let managingInstancesBeforeSignIn = $state(false);
@@ -166,6 +169,7 @@
   }
 
   let input = $state('');
+  let searchState = $state(createSearchViewState());
   let chatRuns = $state<ChatRun[]>([]);
   let agentMessages = $state<AgentMessageVM[]>([]);
   let agentMessagesLoading = $state(false);
@@ -1242,7 +1246,7 @@
     }
     for (const reference of persisted.tabs) {
       try {
-        let document = restoreLocalDocumentTab(reference, activePanel, instanceFeatures.hostTasks);
+        let document = restoreLocalDocumentTab(reference, activePanel, instanceFeatures.hostTasks, instanceFeatures.search);
         if (!document && reference.kind === 'host-task' && instanceFeatures.hostTasks) {
           document = hostTaskDocument({ id: reference.identifier, name: hostTaskNames.get(reference.identifier) ?? 'Host task' });
         } else if (!document && reference.kind === 'container-app') {
@@ -1396,13 +1400,14 @@
     pendingResource = null;
     hostTaskArguments = {};
     hostTaskDrafts = {};
-    instanceFeatures = { hostTasks: false };
+    instanceFeatures = { hostTasks: false, search: false };
     featuresError = '';
     const reset = emptyEnvironmentBoundRendererState();
     documentSaves.clear();
     documentChanges.clear();
     sharingTopic = null;
     movingToNewWorkstream = null;
+    searchState = createSearchViewState();
     deferredDocumentRefreshes.clear();
     unreadEnvironment = null;
     unreadResponses = [];
@@ -1699,6 +1704,20 @@
   function applyFeatures(features: InstanceFeatures): void {
     instanceFeatures = features;
     featuresError = '';
+    if (!features.search) {
+      if (searchState.requestId) {
+        void window.workingMemory.cancelDocumentSearch(searchState.requestId).catch(cause => {
+          featuresError = cause instanceof Error ? cause.message : String(cause);
+        });
+      }
+      let next = documentTabsState();
+      for (const document of documents.filter(document => document.kind === 'search')) {
+        next = closeDocumentTab(next, documentTabKey(document));
+      }
+      documents = next.tabs;
+      selectedDocumentKey = next.selectedKey;
+      previewDocumentKey = next.previewKey ?? null;
+    }
     if (!features.hostTasks) {
       let next = documentTabsState();
       for (const document of documents.filter(document => ['host-tasks', 'host-task', 'host-task-create'].includes(document.kind))) {
@@ -1773,6 +1792,21 @@
 
   function openInstances(): void {
     openSettings('instances');
+  }
+
+  function openSearch(): void {
+    if (!instanceFeatures.search) {
+      documentError = 'Search is turned off. Enable it in Settings > Features.';
+      return;
+    }
+    if (activeDocument?.kind !== 'search') searchState.context = searchContextForSession(searchState, activeDocument);
+    documentOpens.invalidate();
+    const next = openDocumentTab(documentTabsState(), searchDocument());
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
+    restoreDocumentSaveStatus(next.selectedKey);
+    activateHeaderTab('log');
   }
 
   async function makeInstanceCurrent(mcpUrl: string): Promise<void> {
@@ -1954,6 +1988,7 @@
     onManageInstances: openInstances,
     onRefresh: () => window.workingMemory.restartDesktop(),
     onSettings: () => openSettings(),
+    onSearch: instanceFeatures.search ? openSearch : undefined,
     onCollapse: () => (activeRailCollapsed = true),
     onOpen: openRoute,
     onToggleFocus: toggleActiveFocus,
@@ -2251,6 +2286,13 @@
   }
 
   function applyDocumentTabs(next: DocumentTabsState): void {
+    const nextSearch = searchStateAfterTabChange(searchState, documents, next.tabs);
+    if (nextSearch !== searchState) {
+      if (searchState.requestId) void window.workingMemory.cancelDocumentSearch(searchState.requestId).catch(cause => {
+        liveUpdateError = `Unable to cancel search: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+      searchState = nextSearch;
+    }
     documents = next.tabs;
     selectedDocumentKey = next.selectedKey;
     previewDocumentKey = next.previewKey ?? null;
@@ -2619,6 +2661,18 @@
               onTaskRead={updateHostTaskTitle}
               onTasksChanged={() => { hostTasksRevision++; }} />
           {/key}
+        {:else if activeDocument?.kind === 'search' && instanceFeatures.search}
+          <SearchView bind:state={searchState} bind:activeDrag={activeTreeDrag} onOpen={(kind, id) => openResource(kind, id)}
+            onOpenApp={async id => {
+              const app = containerApps.find(app => app.id === id);
+              if (!app) throw new Error('The application is no longer registered in this environment. Refresh Container apps.');
+              await openContainerAppDetail(app);
+            }}
+            onAdded={async () => {
+              await refreshActive();
+              await Promise.all(documents.filter(doc => doc.kind === 'topic' || doc.kind === 'workstream')
+                .map(doc => refreshOpenDocument(documentTabKey(doc))));
+            }} />
         {:else if activeDocument?.kind === 'settings'}
           <SettingsView
             profiles={modelProfiles}

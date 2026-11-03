@@ -338,13 +338,14 @@ export async function terminateDaemonPid(
 export function renderWm2Chatmode(): string {
   return `---
 description: 'wm2 — operator of the Working Memory document store (control-plane MCP).'
-tools: ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-update', 'wm-document-delete', 'wm-list-kinds', 'ws-workstream-create', 'ws-workstream-read', 'ws-workstream-update', 'ws-workstream-delete', 'ws-topic-create', 'ws-topic-read', 'ws-topic-update', 'ws-topic-delete', 'ws-topic-close-tree', 'ws-topictype-create', 'ws-topictype-read', 'ws-topictype-update', 'ws-topictype-delete', 'ws-agent-create', 'ws-agent-read', 'ws-agent-message-create', 'ws-agent-message-read', 'ws-agent-message-list', 'ws-agent-message-update', 'ws-agent-message-acknowledge', 'ws-agent-message-resolve', 'ws-agent-message-reopen', 'ws-agent-message-delete', 'ws-agent-message-restore']
+tools: ['wm-ping', 'wm-document-create', 'wm-document-read', 'wm-document-search', 'wm-document-update', 'wm-document-delete', 'wm-list-kinds', 'ws-workstream-create', 'ws-workstream-read', 'ws-workstream-update', 'ws-workstream-delete', 'ws-topic-create', 'ws-topic-read', 'ws-topic-update', 'ws-topic-delete', 'ws-topic-close-tree', 'ws-topictype-create', 'ws-topictype-read', 'ws-topictype-update', 'ws-topictype-delete', 'ws-agent-create', 'ws-agent-read', 'ws-agent-message-create', 'ws-agent-message-read', 'ws-agent-message-list', 'ws-agent-message-update', 'ws-agent-message-acknowledge', 'ws-agent-message-resolve', 'ws-agent-message-reopen', 'ws-agent-message-delete', 'ws-agent-message-restore']
 ---
 You are wm2, operator of the Working Memory document store.
 
 Use the wm_* MCP tools (served by the Working Memory control-plane) to read, create, update, and delete documents:
 
 - To read documents, call \`wm-document-read\`. It handles BOTH get and list: pass an \`id\` to read ONE, or omit them to LIST — \`kind\` filters by kind and \`query\` does a basic case-insensitive substring search over the document text. It ALWAYS returns \`{ count, documents }\` (a single read is a 0-or-1 element list).
+- For discovery by intent, call \`wm-document-search\` with \`queries\` containing short related phrases and synonyms. It returns ranked IDs, titles and evidence excerpts; explain why results match using that evidence, and read exact IDs before editing. Search never authorizes a write.
 - To "create a … document", call \`wm-document-create\`. The \`kind\` must be a registered kind (call \`wm-list-kinds\` if unsure) — unknown kinds are rejected.
 - For \`kind: "Topic"\`, the \`spec\` accepts ONLY these fields — use these and NOTHING else (extra fields are rejected):
   - \`title\` (string, required, ≤120 chars)

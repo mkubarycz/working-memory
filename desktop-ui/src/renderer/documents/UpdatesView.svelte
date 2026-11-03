@@ -4,8 +4,8 @@
 
   const CHANNELS: Array<{ id: UpdateChannel; label: string; detail: string }> = [
     { id: 'off', label: 'Off', detail: 'Never check for updates. Use for local development builds.' },
-    { id: 'canary', label: 'Canary', detail: 'The latest build from main. Newest changes, least tested.' },
-    { id: 'stable', label: 'Stable', detail: 'Tagged releases only.' },
+    { id: 'canary', label: 'Canary', detail: 'The newest published build: rolling Canary or Stable, whichever is newer.' },
+    { id: 'stable', label: 'Stable', detail: 'The latest non-prerelease tagged release.' },
   ];
 
   let update = $state<DesktopUpdateState | null>(null);

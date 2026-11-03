@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { HostTaskCredentialVault, hostTaskOrigin } from './hostTaskBroker';
-import type { InstanceFeatures } from '../../../control-plane/src/instanceFeatures';
+import { instanceFeaturesSchema, type InstanceFeatures, type InstanceFeatureUpdate } from '../../../control-plane/src/instanceFeatures';
 import type { InstanceConnectionState, InstanceAccessSnapshot } from '../shared/instanceIdentity';
 import type { InstancePasswordVault } from './instancePasswordVault';
 import { instancePermissionsSchema } from '../../../control-plane/src/instancePermissions';
@@ -26,6 +26,10 @@ const sessionSchema = z.object({
   identityId: z.string().uuid(), role: z.literal('owner'),
 });
 
+class InstanceHttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
 export class DesktopInstanceIdentity {
   private readonly restoring = new Map<string, Promise<boolean>>();
   private readonly restoreErrors = new Map<string, string>();
@@ -39,12 +43,12 @@ export class DesktopInstanceIdentity {
     private readonly passwords?: InstancePasswordVault,
   ) {}
 
-  private async request(mcpUrl: string, path: string, input?: object, token?: string): Promise<unknown> {
+  private async request(mcpUrl: string, path: string, input?: object, token?: string, signal?: AbortSignal): Promise<unknown> {
     const response = await this.fetcher(`${hostTaskOrigin(mcpUrl)}${path}`, {
       method: input === undefined ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-      redirect: 'error', signal: AbortSignal.timeout(10000),
+      redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000),
     });
     if (!response.ok) {
       if (response.status === 401) {
@@ -59,7 +63,7 @@ export class DesktopInstanceIdentity {
       if (path.startsWith('/identity/v1/sessions') && response.status === 404) {
         throw new Error('This instance does not support session diagnostics yet. Upgrade its backend, then refresh.');
       }
-      throw new Error(`Instance connection failed (HTTP ${response.status}). Check that this instance supports password sign-in.`);
+      throw new InstanceHttpError(response.status, `Instance connection failed (HTTP ${response.status}). Check that this instance supports password sign-in.`);
     }
     return response.json();
   }
@@ -106,18 +110,29 @@ export class DesktopInstanceIdentity {
     }
   }
 
-  async features(mcpUrl: string): Promise<InstanceFeatures> {
-    return z.object({ hostTasks: z.boolean() }).strict().parse(await this.request(mcpUrl, '/features/v1', undefined,
-      this.vault.session(hostTaskOrigin(mcpUrl)) ?? undefined));
+  async features(mcpUrl: string, signal?: AbortSignal): Promise<InstanceFeatures> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl)) ?? undefined;
+    try {
+      return instanceFeaturesSchema.parse(await this.request(mcpUrl, '/features/v2', undefined, token, signal));
+    } catch (error) {
+      if (!(error instanceof InstanceHttpError) || error.status !== 404) throw error;
+      return instanceFeaturesSchema.parse(await this.request(mcpUrl, '/features/v1', undefined, token, signal));
+    }
   }
 
-  async setFeatures(mcpUrl: string, features: InstanceFeatures): Promise<InstanceFeatures> {
+  async setFeatures(mcpUrl: string, features: InstanceFeatureUpdate): Promise<InstanceFeatures> {
     const token = this.vault.session(hostTaskOrigin(mcpUrl));
     if (!token) {
       this.onUnauthorized(mcpUrl);
       throw new Error('Sign in as the instance owner to change features.');
     }
-    return z.object({ hostTasks: z.boolean() }).strict().parse(await this.request(mcpUrl, '/features/v1', features, token));
+    try {
+      return instanceFeaturesSchema.parse(await this.request(mcpUrl, '/features/v2', features, token));
+    } catch (error) {
+      if (!(error instanceof InstanceHttpError) || error.status !== 404) throw error;
+      if (features.search !== undefined) throw new Error('This instance does not support Search. Upgrade its control plane to 1.4.0.');
+      return instanceFeaturesSchema.parse(await this.request(mcpUrl, '/features/v1', features, token));
+    }
   }
 
   async signIn(mcpUrl: string, password: unknown, setup: boolean, passwordHint = '', rememberPassword?: boolean): Promise<{ token: string; expiresAt: number }> {

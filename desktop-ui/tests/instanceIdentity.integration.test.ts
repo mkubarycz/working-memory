@@ -8,6 +8,26 @@ import { HostScriptAdminClient } from '../src/main/hostScriptClient';
 const servers: RunningServer[] = [];
 afterEach(async () => { await Promise.all(servers.splice(0).map(server => server.close())); });
 
+it('keeps Host tasks working against older backends without enabling unsupported Search', async () => {
+  const vault = new HostTaskCredentialVault({ isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn() }, process.platform, '/not-used');
+  vault.setSession('http://127.0.0.1:7717', randomBytes(32).toString('hex'), Date.now() + 60_000);
+  let hostTasks = true;
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    if (String(url).endsWith('/features/v2')) return new Response('', { status: 404 });
+    expect(String(url)).toContain('/features/v1');
+    if (init?.method === 'POST') hostTasks = JSON.parse(String(init.body)).hostTasks;
+    return Response.json({ hostTasks });
+  });
+  const identity = new DesktopInstanceIdentity(vault, async () => '', () => false, fetcher);
+  expect(await identity.features('http://127.0.0.1:7717/mcp')).toEqual({ hostTasks: true, search: false });
+  expect(await identity.setFeatures('http://127.0.0.1:7717/mcp', { hostTasks: false })).toEqual({ hostTasks: false, search: false });
+  await expect(identity.setFeatures('http://127.0.0.1:7717/mcp', { search: true })).rejects.toThrow('does not support Search');
+  const calls = fetcher.mock.calls.length;
+  fetcher.mockResolvedValueOnce(new Response('', { status: 503 }));
+  await expect(identity.features('http://127.0.0.1:7717/mcp')).rejects.toThrow('HTTP 503');
+  expect(fetcher.mock.calls.length).toBe(calls + 1);
+});
+
 it('connects without Keychain or secret files, keeps the password transient, and revokes its session on logout', async () => {
   const bootstrap = randomBytes(32).toString('hex');
   const server = await startServer({ port: 0, hostTaskAdminCredential: bootstrap });
@@ -20,9 +40,9 @@ it('connects without Keychain or secret files, keeps the password transient, and
     passwordConfigured: false, passwordHint: '', setupAvailable: true });
   const setup = await identity.signIn(mcpUrl, password, true, 'First owner reminder');
   vault.setSession(server.url, setup.token, setup.expiresAt);
-  expect(await identity.features(mcpUrl)).toEqual({ hostTasks: false });
+  expect(await identity.features(mcpUrl)).toEqual({ hostTasks: false, search: false });
   await expect(new HostScriptAdminClient(mcpUrl, setup.token).scripts()).rejects.toThrow('turned off');
-  expect(await identity.setFeatures(mcpUrl, { hostTasks: true })).toEqual({ hostTasks: true });
+  expect(await identity.setFeatures(mcpUrl, { hostTasks: true })).toEqual({ hostTasks: true, search: false });
   expect(await vault.read(server.url)).toBe(setup.token);
   expect(await new HostScriptAdminClient(mcpUrl, setup.token).scripts()).toMatchObject({ tasks: [] });
   expect(await identity.status(mcpUrl)).toEqual({ environment: server.url, authenticated: true,

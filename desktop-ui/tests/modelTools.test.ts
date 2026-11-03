@@ -16,6 +16,7 @@ const tools = [
   { name: 'ws-alert-update' },
   { name: 'ws-config-read' },
   { name: 'wm-document-read' },
+  { name: 'wm-document-search' },
 ];
 
 describe('desktop model tools', () => {
@@ -25,6 +26,7 @@ describe('desktop model tools', () => {
       'ws-topic-create',
       'ws-topictype-read',
       'ws-agent-message-update',
+      'wm-document-search',
     ]);
     expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('ws-config-read');
   });

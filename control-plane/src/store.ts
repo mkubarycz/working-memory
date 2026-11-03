@@ -24,6 +24,7 @@ import { agentMessageSpec, persistedAgentMessageSpec, legacyToMessage, AGENT_MES
 import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec, normalizeAgentName } from './kinds/agent/spec.js';
 import { ensureHostTaskSchema } from './hostTasks.js';
 import { migrateResourceIds } from './resourceIdMigration.js';
+import { ensureDocumentSearch, registerDocumentSearchFunctions } from './documentSearch.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -199,7 +200,7 @@ export interface Store {
    * `ConflictError` on a version mismatch and `NotFoundError` when no live row
    * exists.
    */
-  updateDocument(input: UpdateDocumentInput): DocumentEnvelope;
+  updateDocument(input: UpdateDocumentInput, validatePreconditions?: () => void): DocumentEnvelope;
   /** Atomically apply multiple CAS updates; any failure rolls back the entire batch. */
   updateDocuments(inputs: UpdateDocumentInput[]): DocumentEnvelope[];
   close(): void;
@@ -350,9 +351,11 @@ export function openStore(dbFilePath: string): Store {
   db.exec('PRAGMA journal_mode = WAL');
   ensureSchema(db);
   try {
+    registerDocumentSearchFunctions(db);
     migrateAgentMessages(db);
     migrateResourceIds(db);
     ensureHostTaskSchema(db);
+    ensureDocumentSearch(db);
   }
   catch (error) { db.close(); throw error; }
 
@@ -661,7 +664,7 @@ export function openStore(dbFilePath: string): Store {
     return row ? rowToEnvelope(row) : null;
   }
 
-  function updateDocument(input: UpdateDocumentInput): DocumentEnvelope {
+  function updateDocument(input: UpdateDocumentInput, validatePreconditions?: () => void): DocumentEnvelope {
     const existing = getDocument({ id: input.id });
     if (existing?.kind === AGENT_KIND) input = { ...input, spec: validateAgent(input.spec, input.id) };
     if (existing?.kind === AGENT_MESSAGE_KIND) {
@@ -677,6 +680,7 @@ export function openStore(dbFilePath: string): Store {
     // unit under the write lock (single-writer model).
     db.exec('BEGIN IMMEDIATE');
     try {
+      validatePreconditions?.();
       db.prepare(
         "UPDATE store_meta SET value = value + 1 WHERE key = 'resource_version'",
       ).run();

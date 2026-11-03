@@ -20,6 +20,7 @@ import type {
   CommandJournalStatus,
 } from '../../../shared/controlPlaneClient';
 import type { AgentMessageVM } from '../../../shared/viewModels/agentMessageVms';
+import type { SearchOptions, SearchResponse, SearchTrace, SearchWorkstream } from '../../../shared/documentSearch';
 
 export type ContainerAppId = string;
 
@@ -239,6 +240,7 @@ export function chatContextForDocument(document: ChatContextDocument | null): Ch
     document.kind === 'topic-create'
     || document.kind === 'topic-backlog'
     || document.kind === 'settings'
+    || document.kind === 'search'
     || document.kind === 'host-tasks'
     || document.kind === 'host-task-create'
   ) return undefined;
@@ -308,6 +310,7 @@ export interface PreparedResourceDrag {
   filename: string;
   filePath: string;
   fileUrl: string;
+  workstreamSection?: WorkstreamSection;
 }
 
 export interface ResourceDragResult {
@@ -316,7 +319,7 @@ export interface ResourceDragResult {
   error?: string;
 }
 
-/** Off: never download (local builds); Canary: latest main build; Stable: tagged releases. */
+/** Off: never download; Canary: newest rolling or Stable build; Stable: non-prerelease tags. */
 export type UpdateChannel = 'off' | 'canary' | 'stable';
 
 export interface DesktopUpdateState {
@@ -439,6 +442,11 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   listCopilotModels(): Promise<CopilotModels>;
   sendChat(message: string, context?: ChatContext, images?: ChatPromptImage[]): Promise<ChatResult>;
   autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAutocompleteResult>;
+  searchDocuments(query: string, options?: SearchOptions): Promise<SearchResponse>;
+  cancelDocumentSearch(requestId: string): Promise<void>;
+  onDocumentSearchTrace(listener: (event: { requestId: string; trace: SearchTrace }) => void): () => void;
+  listSearchWorkstreams(): Promise<SearchWorkstream[]>;
+  addSearchTopicToWorkstream(topicId: string, workstreamId: string): Promise<void>;
   resolveChatConfirmation(id: string, confirmed: boolean, context?: ChatContext): Promise<ChatResult>;
   getChatHistory(input?: CommandJournalHistoryInput): Promise<CommandJournalHistoryPage>;
   getChatJournal(id: string): Promise<CommandJournal | null>;

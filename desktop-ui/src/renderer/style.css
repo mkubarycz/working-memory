@@ -433,8 +433,11 @@ button { cursor: pointer; }
 .human-settings p { grid-column: 1 / -1; margin: 8px 0 0; color: #6c676b; font-size: 11px; }
 .human-initials-preview { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 5px; background: #2d292c; color: var(--desktop-accent); font-size: 13px; font-weight: 900; }
 
-.active-rail-inner { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; height: 100%; }
-.active-rail-header { position: relative; display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 8px 10px; border-bottom: 1px solid var(--desktop-active-border); background: #1f1f1f; }
+.active-rail-inner { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; height: 100%; container-type: inline-size; }
+.active-rail-header { position: relative; display: flex; align-items: center; gap: 4px; min-height: 52px; padding: 8px; border-bottom: 1px solid var(--desktop-active-border); background: #1f1f1f; }
+@container (max-width: 260px) {
+  .active-rail-header > .mark { display: none; }
+}
 .environment-selector { position: relative; min-width: 0; margin-right: auto; }
 .environment-trigger { display: grid; grid-template-columns: 16px minmax(0, 1fr) 14px; align-items: center; gap: 5px; min-width: 0; max-width: 142px; padding: 3px 4px; border: 0; border-radius: 4px; background: transparent; color: var(--desktop-active-fg); text-align: left; }
 .environment-trigger:hover { background: var(--desktop-active-hover); color: #ffffff; }

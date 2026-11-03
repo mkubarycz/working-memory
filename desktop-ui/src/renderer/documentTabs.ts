@@ -17,7 +17,11 @@ export interface PersistedDocumentTabs {
 }
 
 const MAX_PERSISTED_TABS = 50;
-const PERMANENT_TAB_KINDS = new Set(['settings', 'topic-backlog', 'container-app', 'host-task', 'host-task-create']);
+const PERMANENT_TAB_KINDS = new Set(['settings', 'search', 'topic-backlog', 'container-app', 'host-task', 'host-task-create']);
+
+export function searchDocument(): DocumentVM {
+  return { kind: 'search', id: 'document-search', title: 'Search' };
+}
 
 export function settingsDocument(): SettingsVM {
   return { kind: 'settings', id: 'desktop-settings', title: 'Settings' };
@@ -27,8 +31,10 @@ export function restoreLocalDocumentTab(
   reference: PersistedDocumentTabs['tabs'][number],
   panel: PanelData | null,
   hostTasksEnabled: boolean,
+  searchEnabled = false,
 ): DocumentVM | null {
   if (reference.kind === 'settings' && reference.identifier === 'desktop-settings') return settingsDocument();
+  if (reference.kind === 'search' && reference.identifier === 'document-search' && searchEnabled) return searchDocument();
   if (reference.kind === 'topic-backlog' && reference.identifier === 'open-topic-backlog') return topicBacklogDocument(panel);
   if (reference.kind === 'host-task-create' && reference.identifier === 'new-host-task' && hostTasksEnabled) {
     return newHostTaskDocument();
@@ -61,6 +67,7 @@ export function documentTabIcon(document: DocumentVM): string {
     case 'topic-backlog': return 'inbox';
     case 'container-app': return 'server-environment';
     case 'settings': return 'gear';
+    case 'search': return 'search';
     case 'host-task': return 'checklist';
     case 'host-task-create': return 'add';
     default: return 'file';

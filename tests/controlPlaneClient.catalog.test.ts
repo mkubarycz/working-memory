@@ -33,6 +33,7 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', async importOrigin
 }));
 
 import { ControlPlaneClient, ControlPlaneClientError } from '../shared/controlPlaneClient';
+import { abortable } from '../shared/abort';
 
 const okText = (obj: unknown) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
 const errText = (msg: string) => ({ isError: true, content: [{ type: 'text', text: msg }] });
@@ -42,6 +43,12 @@ function makeClient(resolveUrl: () => string | null = () => 'http://127.0.0.1:9/
 }
 
 describe('ControlPlaneClient catalog surface (mocked listTools/callTool)', () => {
+  it('handles a rejected operation even when its cancellation signal was already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('Search cancelled'));
+    await expect(abortable(Promise.reject(new Error('Late operation failure')), controller.signal)).rejects.toThrow('Search cancelled');
+  });
+
   beforeEach(() => {
     listToolsMock.mockReset();
     callToolMock.mockReset();
@@ -83,6 +90,50 @@ describe('ControlPlaneClient catalog surface (mocked listTools/callTool)', () =>
     await expect(makeClient().listTools()).rejects.toThrow('transport gone');
   });
 
+  it('cancels the actual tools/list request without disconnecting other callers', async () => {
+    const controller = new AbortController();
+    listToolsMock.mockImplementationOnce((_params, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    })).mockResolvedValue({ tools: [] });
+    const client = makeClient();
+    const pending = client.listTools(controller.signal);
+    await vi.waitFor(() => expect(listToolsMock).toHaveBeenCalledOnce());
+    controller.abort(new Error('Search cancelled'));
+    await expect(pending).rejects.toThrow('Search cancelled');
+    expect(listToolsMock.mock.calls[0][1].signal).toBe(controller.signal);
+    expect(clientCloseMock).not.toHaveBeenCalled();
+    await expect(client.listTools()).resolves.toEqual([]);
+    expect(connectMock).toHaveBeenCalledOnce();
+    await client.dispose();
+  });
+
+  it('cancels waiting for a shared handshake without closing it or issuing a late catalog request', async () => {
+    let connected!: () => void;
+    connectMock.mockImplementationOnce(() => new Promise<void>(resolve => { connected = resolve; }));
+    listToolsMock.mockResolvedValue({ tools: [] });
+    const client = makeClient();
+    const controller = new AbortController();
+    const pending = client.listTools(controller.signal);
+    await vi.waitFor(() => expect(connectMock).toHaveBeenCalledOnce());
+    controller.abort(new Error('Search cancelled'));
+    await expect(pending).rejects.toThrow('Search cancelled');
+    expect(clientCloseMock).not.toHaveBeenCalled();
+    connected();
+    await expect(client.listTools()).resolves.toEqual([]);
+    expect(listToolsMock).toHaveBeenCalledOnce();
+    expect(connectMock).toHaveBeenCalledOnce();
+    await client.dispose();
+  });
+
+  it('passes cancellation into typed app-registry reads and generic Search reads', async () => {
+    const client = makeClient();
+    const controller = new AbortController();
+    callToolMock.mockResolvedValueOnce(okText({ claims: [] })).mockResolvedValueOnce(okText({ total: 0, documents: [] }));
+    await client.containerClaimRead({}, controller.signal);
+    await client.callTool('wm-document-query', {}, controller.signal);
+    for (const call of callToolMock.mock.calls) expect(call[2]?.signal).toBe(controller.signal);
+    await client.dispose();
+  });
   it('callTool() forwards the name + args and parses the JSON text payload', async () => {
     callToolMock.mockResolvedValueOnce(okText({ ok: true, id: 'roadmap' }));
     const outcome = await makeClient().callTool('ws-topic-create', { title: 'Roadmap' });

@@ -140,11 +140,12 @@ export class DesktopUpdater {
   }
 
   async setChannel(channel: UpdateChannel): Promise<DesktopUpdateState> {
-    if (this.operation) throw new Error('Wait for the current update operation to finish.');
-    await this.options.saveChannel(channel);
-    this.manifest = null;
-    await this.discardPrepared();
-    this.update({ channel, phase: 'idle', available: null, progress: null, error: null });
+    await this.exclusive(async () => {
+      await this.options.saveChannel(channel);
+      this.manifest = null;
+      await this.discardPrepared();
+      this.update({ channel, phase: 'idle', available: null, progress: null, error: null });
+    });
     if (channel !== 'off' && this.current.supported) await this.check().catch(() => undefined);
     return this.state;
   }
@@ -209,18 +210,21 @@ export class DesktopUpdater {
     });
   }
 
-  async install(): Promise<void> {
-    const prepared = this.prepared;
-    if (!prepared || this.current.phase !== 'ready') throw new Error('Download the update before installing it.');
-    this.update({ phase: 'installing' });
-    if (this.platform === 'darwin') {
-      const bundle = macAppBundle(this.options.executablePath)!;
-      this.spawnDetached('/bin/sh', ['-c', MAC_SWAP_SCRIPT, 'working-memory-update', String(this.options.pid ?? process.pid), bundle, prepared.path]);
-    } else {
-      // --updated keeps existing shortcuts; --force-run relaunches after the silent install.
-      this.spawnDetached(prepared.path, ['/S', '--updated', '--force-run']);
-    }
-    this.options.quit();
+  install(): Promise<void> {
+    return this.exclusive(async () => {
+      const prepared = this.prepared;
+      if (!prepared || this.current.phase !== 'ready') throw new Error('Download the update before installing it.');
+      await this.options.saveChannel(this.current.channel);
+      this.update({ phase: 'installing' });
+      if (this.platform === 'darwin') {
+        const bundle = macAppBundle(this.options.executablePath)!;
+        this.spawnDetached('/bin/sh', ['-c', MAC_SWAP_SCRIPT, 'working-memory-update', String(this.options.pid ?? process.pid), bundle, prepared.path]);
+      } else {
+        // --updated keeps existing shortcuts; --force-run relaunches after the silent install.
+        this.spawnDetached(prepared.path, ['/S', '--updated', '--force-run']);
+      }
+      this.options.quit();
+    });
   }
 
   private unsupportedReason(): string | null {
@@ -244,8 +248,8 @@ export class DesktopUpdater {
   }
 
   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.operation) throw new Error('An update operation is already running.');
-    const running = operation();
+    if (this.operation || this.current.phase === 'installing') throw new Error('An update operation is already running.');
+    const running = Promise.resolve().then(operation);
     this.operation = running;
     try {
       return await running;

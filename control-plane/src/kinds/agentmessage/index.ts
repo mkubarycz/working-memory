@@ -16,7 +16,10 @@ const agentMessage: KindModule = {
   descriptor: {
     extends: Base,
     spec: persistedAgentMessageSpec,
-    fts: (row) => `${row.spec.title}\n${row.spec.description}`,
+    fts: (row) => `${JSON.stringify(Object.fromEntries([
+      'category', 'status', 'severity', 'attention', 'due_at', 'recommended_action', 'decision',
+      'topics', 'relations', 'agent_id', 'agent_name',
+    ].map(key => [key, row.spec[key]])))}\n${row.spec.title}\n${row.spec.description}`,
   },
   registerApi(server, store) {
     server.registerTool('ws-agent-message-create', {

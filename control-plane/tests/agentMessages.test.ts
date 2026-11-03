@@ -32,6 +32,8 @@ function legacyDatabase(rows: Array<Record<string, unknown>>) {
   const file = join(directory, 'store.db');
   openStore(file).close();
   const db = new DatabaseSync(file);
+  db.exec(`DROP TRIGGER document_search_insert; DROP TRIGGER document_search_update;
+    DROP TRIGGER document_search_delete; DROP TABLE document_search;`);
   db.exec("DELETE FROM resource_migrations; DROP INDEX idx_agent_message_dedupe");
   const insert = db.prepare(`INSERT INTO resources
     (id, kind, labels, spec, status, created_at, updated_at, deleted_at, resource_version)

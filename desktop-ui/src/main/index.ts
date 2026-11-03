@@ -36,10 +36,14 @@ import { checkConfiguredModel } from './modelHealth';
 import { LocalCopilotProvider } from './copilotProvider';
 import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
 import { parseTopicAutocomplete, topicAutocompletePrompt } from './topicAutocomplete';
+import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, searchByIntent, searchInstructions, searchOptionsSchema, SEARCH_TIMEOUT_MS } from './documentSearch';
+import { SearchAppTools } from './searchAppTools';
 declare const __WM_BUILD_TIMESTAMP__: string;
 import {
   DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
   DesktopChatAgent,
+  chatToolsWithFeatures,
+  sanitizeForJournal,
   type DesktopAgentResult,
   type ModelHttpRequest,
 } from './desktopChatAgent';
@@ -50,7 +54,7 @@ import {
   writePersistedEnvironment,
   probeInstanceIdentity,
 } from './environments';
-import { parseModelTurn } from './modelTools';
+import { createModelConversation, modelTurnRequest, parseModelTurn } from './modelTools';
 import { AppMcpService, parseAppResourceContract } from './appMcpService';
 import {
   appMentionSystemInstructions,
@@ -142,11 +146,13 @@ const appMcp = new AppMcpService();
 const copilotProvider = new LocalCopilotProvider();
 const containerOperations = new Set<AbortController>();
 let containerEnvironmentGeneration = 0;
+const searches = new Map<string, { owner: number; controller: AbortController }>();
 let registeredContainerApps: ContainerClaim[] = [];
 let dataTier: DataTierManager | null = null;
 let dataTierLaunch: Promise<void> = Promise.resolve();
 let documentChangeController: AbortController | undefined;
 let instanceVault: HostTaskCredentialVault | null = null;
+let instanceIdentity: DesktopInstanceIdentity | null = null;
 let hostScripts: ReturnType<typeof registerHostScriptIpc> | undefined;
 
 protocol.registerSchemesAsPrivileged([{
@@ -206,6 +212,7 @@ const environmentManager = new DesktopEnvironmentManager<ControlPlaneClient>({
     resolveUrl: () => mcpUrl,
     getToken: url => instanceVault?.session(hostTaskOrigin(url)) ?? null,
     onUnauthorized: instanceUnauthorized,
+    onError: error => console.error('[desktop] Control-plane connection failed:', sanitizeForJournal(error instanceof Error ? error.message : String(error))),
   }),
   probe: probeInstanceIdentity,
   readPersistedSelection: () => readPersistedEnvironment(environmentFile),
@@ -373,8 +380,19 @@ function environmentState(environments = [] as DesktopEnvironmentState['environm
   return { environments, selected: environmentManager.currentEnvironment };
 }
 
+async function availableChatTools(client: ControlPlaneClient) {
+  const environment = environmentManager.currentEnvironment;
+  const generation = containerEnvironmentGeneration;
+  const tools = await chatToolsWithFeatures(client, async signal => {
+    if (!environment || !instanceIdentity) throw new Error('Instance feature settings are unavailable.');
+    return instanceIdentity.features(environment.mcpUrl, signal);
+  }, error => console.warn('[chat] Search availability could not be read; omitting Search tools:', error));
+  if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed.');
+  return tools;
+}
+
 const chatAgent = new DesktopChatAgent({
-  listTools: () => controlPlane().listTools(),
+  listTools: () => availableChatTools(controlPlane()),
   callTool: (name, args) => controlPlane().callTool(name, args),
   callModel: requestModel,
   journal: {
@@ -385,7 +403,7 @@ const chatAgent = new DesktopChatAgent({
   resolveDependencies: () => {
     const client = controlPlane();
     return {
-      listTools: () => client.listTools(),
+      listTools: () => availableChatTools(client),
       callTool: (name, args) => client.callTool(name, args),
       journal: {
         create: (input) => client.commandJournalCreate(input),
@@ -407,6 +425,7 @@ const imageViewer = new DesktopImageViewer(
 const gracefulShutdown = createGracefulShutdown({
   resetAgent: async () => {
     documentChangeController?.abort();
+    for (const search of searches.values()) search.controller.abort(new Error('Working Memory is shutting down.'));
     await chatAgent.reset();
     await copilotProvider.stop();
     await appMcp.disconnectAll();
@@ -601,7 +620,11 @@ async function prepareResourceDrag(
     encoding: 'utf8',
     mode: 0o600,
   });
-  return { filename, filePath: file, fileUrl: pathToFileURL(file).toString() };
+  const status = result.document.spec.status;
+  const workstreamSection = result.document.kind === 'Workstream'
+    && (status === 'queue' || status === 'progress' || status === 'backlog') ? status : undefined;
+  return { filename, filePath: file, fileUrl: pathToFileURL(file).toString(),
+    ...(workstreamSection ? { workstreamSection } : {}) };
 }
 
 async function invokeAction(workstream: string, command: string, args: unknown[]): Promise<DocumentVM> {
@@ -616,37 +639,42 @@ async function invokeAction(workstream: string, command: string, args: unknown[]
   return loadResource('workstream', workstream);
 }
 
-async function requestModel(request: ModelHttpRequest): Promise<unknown> {
+async function requestModel(request: ModelHttpRequest, signal?: AbortSignal): Promise<unknown> {
   const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  signal?.throwIfAborted();
+  signal?.addEventListener('abort', abort, { once: true });
   const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
-  let response: Response;
   try {
-    response = await fetch(request.url, {
+    const response = await fetch(request.url, {
       method: 'POST',
       headers: request.headers,
       body: JSON.stringify(request.body),
       signal: controller.signal,
     });
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const body = (await response.json()) as { error?: { message?: unknown }; message?: unknown };
+        const candidate = body.error?.message ?? body.message;
+        if (typeof candidate === 'string') detail = candidate.slice(0, 300);
+      } catch {
+        if (controller.signal.aborted) throw controller.signal.reason;
+      }
+      throw new Error(`Model endpoint returned HTTP ${response.status}${detail ? `: ${detail}` : ''}. Check the endpoint, model, and API key.`);
+    }
+    return await response.json();
   } catch (error) {
+    signal?.throwIfAborted();
     if (controller.signal.aborted) {
       throw new Error(`Model request timed out after ${Math.round(request.timeoutMs / 1000)} seconds. Check the endpoint, network, and model availability.`);
     }
-    throw new Error(`Could not reach the model endpoint. Check the URL and network connection: ${error instanceof Error ? error.message : String(error)}`);
+    if (error instanceof Error && error.message.startsWith('Model endpoint returned HTTP')) throw error;
+    throw new Error(`Could not read the model response. Check the URL and network connection: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
   }
-  if (!response.ok) {
-    let detail = '';
-    try {
-      const body = (await response.json()) as { error?: { message?: unknown }; message?: unknown };
-      const candidate = body.error?.message ?? body.message;
-      if (typeof candidate === 'string') detail = candidate.slice(0, 300);
-    } catch {
-      // Status and endpoint mode still provide an actionable error.
-    }
-    throw new Error(`Model endpoint returned HTTP ${response.status}${detail ? `: ${detail}` : ''}. Check the endpoint, model, and API key.`);
-  }
-  return response.json();
 }
 
 function configuredRequest(config: StoredConfig | StoredModelProfile): { mode: ReturnType<typeof modelEndpoint>['mode']; url: string; headers: Record<string, string> } {
@@ -748,24 +776,26 @@ async function callConfiguredModel(
   }), context);
 }
 
-async function autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAutocompleteResult> {
-  const config = await readStoredConfig(configFile);
+async function completeSearchOrAutocomplete(prompt: string, config: StoredConfig): Promise<string> {
   const profile = resolveModelProfile(config, 'fast', 'simple');
   if (!profile.model.trim()) throw new Error('Configure a model for Fast / Simple requests first.');
   const request = configuredRequest(profile);
-  const prompt = topicAutocompletePrompt(input);
   const body = request.mode === 'responses'
     ? { model: profile.model, input: prompt }
     : {
         model: profile.model,
         messages: [{ role: 'user', content: prompt }],
       };
-  const text = profile.provider === 'copilot'
+  return profile.provider === 'copilot'
     ? await copilotProvider.complete(profile.model, prompt, DESKTOP_MODEL_REQUEST_TIMEOUT_MS)
     : parseModelTurn(
         request.mode,
         await requestModel({ ...request, body, timeoutMs: DESKTOP_MODEL_REQUEST_TIMEOUT_MS }),
       ).text;
+}
+
+async function autocompleteTopic(input: TopicAutocompleteInput): Promise<TopicAutocompleteResult> {
+  const text = await completeSearchOrAutocomplete(topicAutocompletePrompt(input), await readStoredConfig(configFile));
   return parseTopicAutocomplete(text, input);
 }
 
@@ -883,6 +913,7 @@ function registerIpc(): void {
     process.platform === 'win32' ? app.getPath('userData') : join(app.getPath('appData'), 'Working Memory'),
     'instance-sign-in',
   ), process.platform !== 'win32'));
+  instanceIdentity = identity;
   const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href;
   const onSessionChanged = async (mcpUrl: string, authenticated: boolean) => {
     documentChangeController?.abort();
@@ -901,6 +932,11 @@ function registerIpc(): void {
     getEnvironment: () => environmentManager.currentEnvironment,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
     vault: hostTaskVault, identity, onSessionChanged,
+    onFeaturesChanged: features => {
+      if (!features.search) {
+        for (const search of searches.values()) search.controller.abort(new Error('Search is turned off. Enable it in Settings > Features.'));
+      }
+    },
     platform: process.platform, directory: join(app.getPath('userData'), 'host-scripts'),
   });
   registerHostTaskIpc({
@@ -930,6 +966,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
     documentChangeController?.abort();
+    for (const search of searches.values()) search.controller.abort(new Error('The selected environment changed. Search again.'));
     containerEnvironmentGeneration += 1;
     registeredContainerApps = [];
     for (const operation of containerOperations) operation.abort();
@@ -1081,6 +1118,88 @@ function registerIpc(): void {
   });
   ipcMain.handle('topic:autocomplete', (_event, input: TopicAutocompleteInput) =>
     autocompleteTopic(input));
+  const requireSearchFeature = async (signal?: AbortSignal) => {
+    const generation = containerEnvironmentGeneration;
+    const environment = environmentManager.currentEnvironment;
+    if (!environment) throw new Error('Select a Working Memory environment first.');
+    const features = await identity.features(environment.mcpUrl, signal);
+    if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed. Search again.');
+    if (!features.search) throw new Error('Search is turned off. Enable it in Settings > Features.');
+  };
+  ipcMain.handle('search:cancel', (event, requestId: string) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const search = searches.get(requestId);
+    if (search && search.owner !== event.sender.id) throw new Error('This search belongs to another window.');
+    search?.controller.abort(new Error('Search cancelled.'));
+  });
+  ipcMain.handle('search:documents', async (event, query: string, options?: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    if (typeof query !== 'string' || !query.trim() || query.length > 2000) throw new Error('Enter a search request of 1 to 2000 characters.');
+    const { requestId, context } = searchOptionsSchema.parse(options ?? { requestId: crypto.randomUUID() });
+    if (searches.has(requestId) || [...searches.values()].some(search => search.owner === event.sender.id)) {
+      throw new Error('Cancel the current search before starting another.');
+    }
+    const controller = new AbortController();
+    searches.set(requestId, { owner: event.sender.id, controller });
+    const timer = setTimeout(() => controller.abort(new Error('Search timed out after 90 seconds. Narrow the request and try again.')), SEARCH_TIMEOUT_MS);
+    const generation = containerEnvironmentGeneration;
+    const assertCurrent = () => {
+      controller.signal.throwIfAborted();
+      if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed. Search again.');
+    };
+    try {
+      await requireSearchFeature(controller.signal);
+      assertCurrent();
+      const client = controlPlane();
+      const config = await readStoredConfig(configFile);
+      const profile = resolveModelProfile(config, 'medium', 'complex');
+      if (!profile.model.trim()) throw new Error('Configure a model for Medium / Complex search in Settings.');
+      const request = configuredRequest(profile);
+      const tools = readOnlySearchTools(await client.listTools(controller.signal));
+      assertCurrent();
+      const response = await searchByIntent(query, {
+        conversation: createModelConversation({ mode: request.mode, model: profile.model, tools, systemPrompt: searchInstructions(context), userMessage: query }),
+        signal: controller.signal,
+        assertEnabled: async () => { await requireSearchFeature(controller.signal); assertCurrent(); },
+        apps: new SearchAppTools({ client, mcp: appMcp, inspect: claim => dockerContainers.inspect(claim), assertCurrent }),
+        turn: async (conversation, signal) => {
+          assertCurrent();
+          return profile.provider === 'copilot'
+            ? copilotProvider.turn(conversation, DESKTOP_MODEL_REQUEST_TIMEOUT_MS, signal)
+            : parseModelTurn(request.mode, await requestModel({ ...request, body: modelTurnRequest(conversation), timeoutMs: DESKTOP_MODEL_REQUEST_TIMEOUT_MS }, signal));
+        },
+        callTool: async (name, args) => {
+          assertCurrent();
+          const result = await client.callTool(name, args, controller.signal);
+          assertCurrent();
+          return result;
+        },
+        onTrace: trace => {
+          if (!event.sender.isDestroyed()) event.sender.send('search:trace', { requestId, trace });
+        },
+      });
+      assertCurrent();
+      return response;
+    } finally {
+      clearTimeout(timer);
+      searches.delete(requestId);
+    }
+  });
+  ipcMain.handle('search:workstreams', async event => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    await requireSearchFeature();
+    return openSearchWorkstreams(controlPlane());
+  });
+  ipcMain.handle('search:add-topic', async (event, topicId: string, workstreamId: string) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const generation = containerEnvironmentGeneration;
+    await requireSearchFeature();
+    return addSearchTopicToWorkstream(controlPlane(), topicId, workstreamId, async () => {
+      if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed.');
+      await requireSearchFeature();
+      if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed.');
+    });
+  });
   ipcMain.handle('chat:confirm', async (event, id: string, confirmed: boolean, context?: ChatContext) => {
     try {
       assertHostTaskSender(event, mainWindow, rendererUrl);

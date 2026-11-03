@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DesktopUpdater, MAC_BUNDLE_IDENTIFIER, macAppBundle } from '../src/main/desktopUpdater';
 import type { CommandRunner } from '../src/main/dockerContainerService';
 import {
@@ -32,19 +32,28 @@ const SHA = createHash('sha256').update(PAYLOAD).digest('hex');
 
 /** Mirrors the manifest `.github/workflows/release.yml` writes. */
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const version = typeof overrides.version === 'string' ? overrides.version : '0.1.1-build.40';
   return {
     channel: 'canary',
-    version: '0.1.1-build.40',
+    version,
     tag: 'canary',
     commit: 'abc123',
     publishedAt: '2025-01-01T00:00:00.000Z',
     desktop: {
-      'darwin-arm64': { file: 'Working-Memory-0.1.1-build.40-mac-arm64.dmg', sha256: SHA, size: PAYLOAD.length },
-      'win32-x64': { file: 'Working-Memory-0.1.1-build.40-win-x64.exe', sha256: SHA, size: PAYLOAD.length },
+      'darwin-arm64': { file: `Working-Memory-${version}-mac-arm64.dmg`, sha256: SHA, size: PAYLOAD.length },
+      'win32-x64': { file: `Working-Memory-${version}-win-x64.exe`, sha256: SHA, size: PAYLOAD.length },
     },
-    backend: { image: 'ghcr.io/mkubarycz/working-memory-control-plane:0.1.1-build.40' },
+    backend: { image: `ghcr.io/mkubarycz/working-memory-control-plane:${version}` },
     ...overrides,
   };
+}
+
+function stableManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return manifest({
+    channel: 'stable', version: '1.3.2', tag: 'v1.3.2',
+    publishedAt: '2026-11-02T15:22:18.109Z',
+    ...overrides,
+  });
 }
 
 describe('update channels', () => {
@@ -97,6 +106,75 @@ describe('update channels', () => {
     expect(urls).toEqual(['http://127.0.0.1:9999/releases/latest/download/update.json']);
   });
 
+  it('keeps Stable restricted to its tagged release even when Canary is newer', async () => {
+    const urls: string[] = [];
+    const result = await fetchUpdateManifest('stable', {
+      fetch: async url => {
+        urls.push(url);
+        return new Response(JSON.stringify(stableManifest()));
+      },
+    });
+    expect(result).toEqual(parseUpdateManifest(stableManifest(), 'stable'));
+    expect(urls).toEqual(['https://github.com/mkubarycz/working-memory/releases/latest/download/update.json']);
+  });
+
+  it.each([
+    { description: 'newer Stable', canaryTime: '2026-11-02T14:42:23.607Z', expected: 'stable' },
+    { description: 'newer rolling build with a lower base version', canaryTime: '2026-11-02T16:00:00.000Z', expected: 'canary' },
+    { description: 'Stable when publication times tie', canaryTime: '2026-11-02T15:22:18.109Z', expected: 'stable' },
+  ] as const)('Canary selects $description for both installers and backend images', async ({ canaryTime, expected }) => {
+    const canary = manifest({ version: '1.3.1-build.106', publishedAt: canaryTime });
+    const stable = stableManifest();
+    const urls: string[] = [];
+    const result = await fetchUpdateManifest('canary', {
+      env: { WM_UPDATE_RELEASES_URL: 'https://example.test/releases/' },
+      fetch: async url => {
+        urls.push(url);
+        return new Response(JSON.stringify(url.includes('/latest/') ? stable : canary));
+      },
+    });
+    expect(result).toEqual(parseUpdateManifest(expected === 'stable' ? stable : canary, expected));
+    expect(result?.backend?.version).toBe(result?.version);
+    expect(urls).toEqual([
+      'https://example.test/releases/download/canary/update.json',
+      'https://example.test/releases/latest/download/update.json',
+    ]);
+  });
+
+  it.each([
+    { canary: null, stable: stableManifest(), expected: '1.3.2' },
+    { canary: manifest(), stable: null, expected: '0.1.1-build.40' },
+    { canary: null, stable: null, expected: undefined },
+  ])('handles missing sources without requiring both channels to exist', async ({ canary, stable, expected }) => {
+    const result = await fetchUpdateManifest('canary', {
+      fetch: async url => {
+        const source = url.includes('/latest/') ? stable : canary;
+        return source ? new Response(JSON.stringify(source)) : new Response('missing', { status: 404 });
+      },
+    });
+    expect(result?.version).toBe(expected);
+    if (!canary && !stable) expect(result).toBeNull();
+  });
+
+  it.each([null, 'not a timestamp'])('rejects an invalid comparison timestamp: %s', async publishedAt => {
+    await expect(fetchUpdateManifest('canary', {
+      fetch: async url => new Response(JSON.stringify(
+        url.includes('/latest/') ? stableManifest({ publishedAt }) : manifest(),
+      )),
+    })).rejects.toThrow('valid publication timestamps');
+  });
+
+  it.each(['canary', 'stable'])('surfaces a failed %s check instead of hiding a possibly newer build', async failed => {
+    await expect(fetchUpdateManifest('canary', {
+      fetch: async url => {
+        const source = url.includes('/latest/') ? 'stable' : 'canary';
+        return source === failed
+          ? new Response('unavailable', { status: 503 })
+          : new Response(JSON.stringify(source === 'stable' ? stableManifest() : manifest()));
+      },
+    })).rejects.toThrow(`Unable to check for ${failed} updates (HTTP 503)`);
+  });
+
   it('persists channel settings and falls back to defaults for invalid values', async () => {
     const file = join(tempRoot(), 'updates.json');
     const defaults = { desktopChannel: 'canary', backendChannel: 'canary' } as const;
@@ -115,21 +193,26 @@ interface Harness {
   spawned: Array<{ file: string; args: string[] }>;
   saved: UpdateChannel[];
   quit: { count: number };
+  requests: string[];
 }
 
 function harness(options: {
   platform: NodeJS.Platform;
   arch?: string;
   channel?: UpdateChannel;
+  currentVersion?: string;
   manifest?: Record<string, unknown>;
+  stableManifest?: Record<string, unknown>;
   payload?: Buffer;
   bundleIdentifier?: string;
+  saveChannel?: (channel: UpdateChannel) => Promise<void>;
 }): Harness {
   const root = tempRoot();
   const commands: Harness['commands'] = [];
   const spawned: Harness['spawned'] = [];
   const saved: UpdateChannel[] = [];
   const quit = { count: 0 };
+  const requests: string[] = [];
   const applications = join(root, 'Applications');
   mkdirSync(applications, { recursive: true });
   const runner: CommandRunner = {
@@ -141,9 +224,10 @@ function harness(options: {
     },
   };
   const updater = new DesktopUpdater({
-    currentVersion: '0.1.1-build.30',
+    currentVersion: options.currentVersion ?? '0.1.1-build.30',
     channel: options.channel ?? 'canary',
     saveChannel: async (channel) => {
+      await options.saveChannel?.(channel);
       saved.push(channel);
     },
     downloadDirectory: join(root, 'downloads'),
@@ -155,6 +239,12 @@ function harness(options: {
     arch: options.arch ?? (options.platform === 'darwin' ? 'arm64' : 'x64'),
     env: {},
     fetch: async (url) => {
+      requests.push(url);
+      if (url.endsWith('/latest/download/update.json')) {
+        return options.stableManifest
+          ? new Response(JSON.stringify(options.stableManifest))
+          : new Response('missing', { status: 404 });
+      }
       if (url.endsWith('/update.json')) return new Response(JSON.stringify(options.manifest ?? manifest()));
       return new Response(options.payload ?? PAYLOAD);
     },
@@ -164,7 +254,7 @@ function harness(options: {
       quit.count += 1;
     },
   });
-  return { updater, root, commands, spawned, saved, quit };
+  return { updater, root, commands, spawned, saved, quit, requests };
 }
 
 describe('desktop updater', () => {
@@ -183,6 +273,97 @@ describe('desktop updater', () => {
 
     const current = harness({ platform: 'win32', manifest: manifest({ version: '0.1.1-build.30' }) });
     expect((await current.updater.check()).phase).toBe('up-to-date');
+  });
+
+  it('downloads the newer tagged installer while staying subscribed to Canary', async () => {
+    const settingsFile = join(tempRoot(), 'updates.json');
+    const settings = await readUpdateSettings(settingsFile, {
+      desktopChannel: defaultDesktopChannel('1.3.1-build.106', false), backendChannel: 'canary',
+    });
+    const { updater, requests, root, saved } = harness({
+      platform: 'win32',
+      channel: settings.desktopChannel,
+      saveChannel: channel => writeUpdateSettings(settingsFile, { ...settings, desktopChannel: channel }),
+      manifest: manifest({ version: '1.3.1-build.106', publishedAt: '2026-11-02T14:42:23.607Z' }),
+      stableManifest: stableManifest(),
+    });
+    const state = await updater.check();
+    expect(state.channel).toBe('canary');
+    expect(state.available?.version).toBe('1.3.2');
+    expect(state.available?.releaseUrl).toBe('https://github.com/mkubarycz/working-memory/releases/tag/v1.3.2');
+    expect((await updater.download()).phase).toBe('ready');
+    expect(requests.at(-1)).toBe('https://github.com/mkubarycz/working-memory/releases/download/v1.3.2/Working-Memory-1.3.2-win-x64.exe');
+    expect(readFileSync(join(root, 'downloads', '1.3.2', 'Working-Memory-1.3.2-win-x64.exe'))).toEqual(PAYLOAD);
+    await updater.install();
+    expect(saved).toEqual(['canary']);
+    expect(await readUpdateSettings(settingsFile, { desktopChannel: 'stable', backendChannel: 'stable' })).toEqual({
+      desktopChannel: 'canary', backendChannel: 'canary',
+    });
+  });
+
+  it('does not install or quit when persisting the effective channel fails', async () => {
+    let fail = true;
+    const { updater, spawned, quit } = harness({
+      platform: 'win32', saveChannel: async () => { if (fail) throw new Error('Settings write failed'); },
+    });
+    await updater.check();
+    await updater.download();
+    await expect(updater.install()).rejects.toThrow('Settings write failed');
+    expect(spawned).toEqual([]);
+    expect(quit.count).toBe(0);
+    expect(updater.state.phase).toBe('ready');
+    fail = false;
+    await updater.install();
+    expect(spawned).toHaveLength(1);
+    expect(quit.count).toBe(1);
+  });
+
+  it('locks installation before persistence and prevents duplicate installs or channel-driven deletion', async () => {
+    let release!: () => void;
+    const { updater, spawned, quit, root } = harness({
+      platform: 'win32', saveChannel: () => new Promise<void>(resolve => { release = resolve; }),
+    });
+    await updater.check();
+    await updater.download();
+    const installer = join(root, 'downloads', '0.1.1-build.40', 'Working-Memory-0.1.1-build.40-win-x64.exe');
+    const installing = updater.install();
+    await expect(updater.install()).rejects.toThrow('operation is already running');
+    await expect(updater.setChannel('off')).rejects.toThrow('operation is already running');
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    expect(existsSync(installer)).toBe(true);
+    expect(spawned).toEqual([]);
+    release();
+    await installing;
+    expect(spawned).toHaveLength(1);
+    expect(quit.count).toBe(1);
+    await expect(updater.setChannel('off')).rejects.toThrow('operation is already running');
+  });
+
+  it('locks channel persistence before it can discard staged installer files', async () => {
+    let release!: () => void;
+    const { updater, spawned, root } = harness({
+      platform: 'darwin', saveChannel: () => new Promise<void>(resolve => { release = resolve; }),
+    });
+    await updater.check();
+    await updater.download();
+    const installer = join(root, 'Applications', '.Working Memory.app.update');
+    const changing = updater.setChannel('off');
+    await expect(updater.install()).rejects.toThrow('operation is already running');
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    expect(existsSync(installer)).toBe(true);
+    release();
+    expect((await changing).channel).toBe('off');
+    expect(existsSync(installer)).toBe(false);
+    expect(spawned).toEqual([]);
+  });
+  it('does not offer the older rolling build when the latest Stable is already installed', async () => {
+    const { updater } = harness({
+      platform: 'darwin', currentVersion: '1.3.2',
+      manifest: manifest({ version: '1.3.1-build.106', publishedAt: '2026-11-02T14:42:23.607Z' }),
+      stableManifest: stableManifest(),
+    });
+    expect((await updater.check()).phase).toBe('up-to-date');
+    expect(updater.state.available).toBeNull();
   });
 
   it('downloads, verifies, and silently runs the Windows installer before quitting', async () => {

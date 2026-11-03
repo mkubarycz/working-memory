@@ -10,6 +10,75 @@ import {
 } from '../src/main/appMcpService';
 
 describe('app MCP endpoint security and lifecycle', () => {
+  it.each([false, true])('shares a pending handshake and cancels only the Search waiter (Search initiated=%s)', async searchInitiated => {
+    let finish!: () => void;
+    let sdkSignal: AbortSignal | undefined;
+    const client = {
+      connect: vi.fn<Client['connect']>().mockImplementation(async (_transport, options) => {
+        sdkSignal = options?.signal;
+        await new Promise<void>(resolve => { finish = resolve; });
+      }),
+      close: vi.fn<Client['close']>().mockResolvedValue(undefined),
+      listTools: vi.fn<Client['listTools']>().mockResolvedValue({ tools: [] }),
+      callTool: vi.fn<Client['callTool']>().mockResolvedValue({ content: [] }),
+    };
+    const createClient = vi.fn(() => client);
+    const service = new AppMcpService({ createClient, createTransport: () => ({} as Transport) });
+    const endpoint = { transport: 'streamable-http' as const, url: 'http://localhost:4175/mcp' };
+    const controller = new AbortController();
+    const first = service.connect('queries', endpoint, searchInitiated ? controller.signal : undefined);
+    const second = service.connect('queries', endpoint, searchInitiated ? undefined : controller.signal);
+    await vi.waitFor(() => expect(client.connect).toHaveBeenCalledOnce());
+    controller.abort(new Error('Search cancelled'));
+    await expect(searchInitiated ? first : second).rejects.toThrow('Search cancelled');
+    expect(createClient).toHaveBeenCalledOnce();
+    expect(client.close).not.toHaveBeenCalled();
+    expect(sdkSignal?.aborted).toBe(false);
+    finish();
+    expect(await (searchInitiated ? second : first)).toMatchObject({ state: 'connected' });
+    await service.connect('queries', endpoint);
+    expect(client.connect).toHaveBeenCalledOnce();
+    await service.disconnectAll();
+  });
+
+  it.each(['connect', 'list', 'call'])('cancels the underlying SDK %s without disconnecting an existing shared connection', async stage => {
+    let started = false;
+    const hold = (signal?: AbortSignal) => new Promise<never>((_resolve, reject) => {
+      if (!signal) throw new Error('SDK request is missing its cancellation signal');
+      started = true;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    const client = {
+      connect: vi.fn<Client['connect']>().mockImplementation(async (_transport, options) => {
+        if (stage === 'connect') await hold(options?.signal);
+      }),
+      close: vi.fn<Client['close']>().mockResolvedValue(undefined),
+      listTools: vi.fn<Client['listTools']>().mockImplementation(async (_params, options) => {
+        if (stage === 'list') await hold(options?.signal);
+        return { tools: [] };
+      }),
+      callTool: vi.fn<Client['callTool']>().mockImplementation(async (_params, _schema, options) => {
+        if (stage === 'call') await hold(options?.signal);
+        return { content: [] };
+      }),
+    };
+    const service = new AppMcpService({ createClient: () => client, createTransport: () => ({} as Transport) });
+    const endpoint = { transport: 'streamable-http' as const, url: 'http://localhost:4175/mcp' };
+    const controller = new AbortController();
+    if (stage !== 'connect') await service.connect('queries', endpoint);
+    const pending = stage === 'connect' ? service.connect('queries', endpoint, controller.signal)
+      : stage === 'list' ? service.listToolsForRoute('queries', endpoint, controller.signal)
+        : service.callTool('queries', 'read', {}, undefined, controller.signal);
+    await vi.waitFor(() => expect(started).toBe(true));
+    controller.abort(new Error('Search cancelled'));
+    await expect(pending).rejects.toThrow('Search cancelled');
+    if (stage !== 'connect') {
+      expect(service.status('queries', endpoint).state).toBe('connected');
+      expect(client.close).not.toHaveBeenCalled();
+    }
+    await service.disconnectAll();
+  });
+
   it('validates live resource contracts returned as MCP text', () => {
     const contract = parseAppResourceContract({
       content: [{ type: 'text', text: JSON.stringify({
