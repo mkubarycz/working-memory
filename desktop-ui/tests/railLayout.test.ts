@@ -2,11 +2,20 @@ import { describe, expect, it } from 'vitest';
 import {
   RAIL_LAYOUT,
   parseStoredRailWidth,
+  parseStoredChatRailCollapsed,
   resizeRail,
   resolveRailWidths,
 } from '../src/renderer/railLayout';
 
 describe('desktop rail layout', () => {
+  it('defaults the chat rail to closed and restores both saved visibility states', () => {
+    expect(parseStoredChatRailCollapsed(null)).toBe(true);
+    expect(parseStoredChatRailCollapsed('')).toBe(true);
+    expect(parseStoredChatRailCollapsed('invalid')).toBe(true);
+    expect(parseStoredChatRailCollapsed(String(true))).toBe(true);
+    expect(parseStoredChatRailCollapsed(String(false))).toBe(false);
+  });
+
   it('validates and clamps persisted widths', () => {
     expect(parseStoredRailWidth(null, 'active')).toBe(RAIL_LAYOUT.active.default);
     expect(parseStoredRailWidth('not-a-number', 'chat')).toBe(RAIL_LAYOUT.chat.default);

@@ -5,7 +5,9 @@ import type { InstanceConnectionState, InstanceAccessSnapshot } from '../shared/
 import type { InstancePasswordVault } from './instancePasswordVault';
 import { instancePermissionsSchema } from '../../../control-plane/src/instancePermissions';
 import type { InstanceAccessAction } from '../shared/instanceIdentity';
-import { sessionPolicySchema, sessionSnapshotSchema, type SessionPolicy, type SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
+import { heapCollectionSchema, heapCollectionRequestSchema, heapReportRequestSchema, sessionPolicySchema, sessionSnapshotSchema,
+  type HeapCollection, type SessionPolicy, type SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
+import { diagnosticsSchema, type InstanceDiagnostics } from '../../../control-plane/src/diagnosticContract';
 
 const statusSchema = z.object({ passwordConfigured: z.boolean(), passwordHint: z.string().max(1000),
   authenticated: z.boolean(), scope: z.literal('instance') });
@@ -58,10 +60,15 @@ export class DesktopInstanceIdentity {
         }
         throw new Error('Incorrect password or expired session. Sign in to this instance again.');
       }
-      if (response.status === 429) throw new Error('Too many sign-in attempts. Try again in a minute.');
+      if (response.status === 429) throw new Error(path === '/identity/v1/sessions/gc'
+        ? 'Wait one minute before requesting another heap collection.' : 'Too many sign-in attempts. Try again in a minute.');
       if (response.status === 409) throw new Error('Instance setup changed. Refresh the connection and try again.');
       if (path.startsWith('/identity/v1/sessions') && response.status === 404) {
         throw new Error('This instance does not support session diagnostics yet. Upgrade its backend, then refresh.');
+      }
+      if (path === '/identity/v1/sessions/report' || path === '/identity/v1/sessions/gc') {
+        const detail = z.object({ error: z.string().min(1).max(1000) }).safeParse(await response.json());
+        throw new InstanceHttpError(response.status, detail.success ? detail.data.error : `Heap recovery failed (HTTP ${response.status}).`);
       }
       throw new InstanceHttpError(response.status, `Instance connection failed (HTTP ${response.status}). Check that this instance supports password sign-in.`);
     }
@@ -194,8 +201,42 @@ export class DesktopInstanceIdentity {
       this.onUnauthorized(mcpUrl);
       throw new Error('Sign in as the instance owner to view sessions.');
     }
+
     const cursor = before === undefined ? '' : `?before=${z.number().int().positive().max(Number.MAX_SAFE_INTEGER).parse(before)}`;
     return sessionSnapshotSchema.parse(await this.request(mcpUrl, `/identity/v1/sessions${cursor}`,
       policy === undefined ? undefined : sessionPolicySchema.parse(policy), token));
+  }
+
+  async diagnostics(mcpUrl: string): Promise<InstanceDiagnostics> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to view diagnostics.');
+    try {
+      return diagnosticsSchema.parse(await this.request(mcpUrl, '/identity/v1/diagnostics', undefined, token));
+    } catch (error) {
+      if (error instanceof InstanceHttpError && error.status === 404) {
+        throw new Error('This backend does not support Diagnostics. Upgrade it to 1.4.1 or newer.');
+      }
+      throw error;
+    }
+  }
+
+  async collectHeap(mcpUrl: string, expectedStartedAt: number, reportTopicId: string): Promise<{ collection: HeapCollection; snapshot: SessionSnapshot }> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to collect the heap.');
+    const result = await this.request(mcpUrl, '/identity/v1/sessions/gc',
+      heapCollectionRequestSchema.parse({ expectedStartedAt, reportTopicId, confirmed: true }), token);
+    if (!result || typeof result !== 'object' || !('collection' in result) || !('snapshot' in result)) {
+      throw new Error('The instance returned an invalid heap collection response.');
+    }
+    return { collection: heapCollectionSchema.parse(result.collection), snapshot: sessionSnapshotSchema.parse(result.snapshot) };
+  }
+
+  async saveHeapReport(mcpUrl: string, expectedStartedAt: number, incidentId: string): Promise<string> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to save a heap report.');
+    const result = await this.request(mcpUrl, '/identity/v1/sessions/report',
+      heapReportRequestSchema.parse({ expectedStartedAt, incidentId, confirmed: true }), token);
+    if (!result || typeof result !== 'object' || !('topicId' in result)) throw new Error('The instance returned an invalid report receipt.');
+    return z.string().uuid().parse(result.topicId);
   }
 }

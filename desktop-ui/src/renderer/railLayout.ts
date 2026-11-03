@@ -30,6 +30,10 @@ export function parseStoredRailWidth(value: string | null, side: RailSide): numb
     : limits.default;
 }
 
+export function parseStoredChatRailCollapsed(value: string | null): boolean {
+  return value !== 'false';
+}
+
 export function resolveRailWidths(
   preferred: RailWidths,
   viewportWidth: number,

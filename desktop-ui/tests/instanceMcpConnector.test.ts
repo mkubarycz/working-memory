@@ -18,7 +18,7 @@ async function fixture() {
   const store = openStore(':memory:');
   const identity = new InstanceIdentity(store.db), owner = await identity.initialize('private connector owner password');
   const access = new InstanceAccess(store.db, identity);
-  const server = await startServer({ port: 0, store });
+  let server = await startServer({ port: 0, store });
   cleanup.push(async () => { await server.close(); store.close(); });
   let saved: string | null = null;
   const credentials = {
@@ -36,7 +36,18 @@ async function fixture() {
     cleanup.push(async () => { await client.close(); await connector.close(); });
     return { connector, client };
   }
-  return { store, identity, owner, access, server, credentials, connect };
+  async function restart() {
+    const port = Number(new URL(server.url).port);
+    await server.close();
+    server = await startServer({ port, store });
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  async function sessions() {
+    const response = await fetch(`${server.url}/identity/v1/sessions`, { headers: { Authorization: `Bearer ${owner.token}` } });
+    expect(response.status).toBe(200);
+    return response.json() as Promise<{ active: unknown[] }>;
+  }
+  return { store, identity, owner, access, server, credentials, connect, restart, sessions };
 }
 
 it('exposes no data tools until human approval, then forwards topic reads/writes without exposing credentials', async () => {
@@ -67,10 +78,61 @@ it('restores the approved client across connector restarts without another appro
   await vi.waitFor(() => expect(first.connector.status().state).toBe('connected'));
   await first.client.close();
   await first.connector.close();
+  expect((await f.sessions()).active).toHaveLength(0);
   const next = await f.connect();
   await vi.waitFor(() => expect(next.connector.status().state).toBe('connected'));
   expect(f.access.snapshot(f.owner.token).clients).toHaveLength(1);
   expect(f.credentials.save).toHaveBeenCalledTimes(1);
+});
+
+it('recovers concurrent calls after a backend restart using the same approved identity', async () => {
+  const f = await fixture(), { connector, client } = await f.connect();
+  await vi.waitFor(() => expect(connector.status().requestId).toBeTruthy());
+  f.access.decide(f.owner.token, connector.status().requestId!, true);
+  await vi.waitFor(() => expect(connector.status().state).toBe('connected'));
+  await f.restart();
+  const calls = await Promise.all(Array.from({ length: 8 }, () => client.callTool({ name: 'wm-ping', arguments: {} })));
+  expect(calls.every(call => !call.isError)).toBe(true);
+  expect(connector.status().state).toBe('connected');
+  expect((await f.sessions()).active).toHaveLength(1);
+  expect(f.credentials.save).toHaveBeenCalledTimes(1);
+  expect(f.access.snapshot(f.owner.token).clients).toHaveLength(1);
+  await connector.close();
+  expect((await f.sessions()).active).toHaveLength(0);
+});
+
+it('retries a pre-dispatch stale-session write once without duplicating the document', async () => {
+  const f = await fixture(), { connector, client } = await f.connect();
+  f.store.createDocument({ kind: 'TopicType', spec: { label: 'Topic', icon: 'symbol-key' } });
+  await vi.waitFor(() => expect(connector.status().requestId).toBeTruthy());
+  f.access.decide(f.owner.token, connector.status().requestId!, true);
+  await vi.waitFor(() => expect(connector.status().state).toBe('connected'));
+  await f.restart();
+  const created = await client.callTool({ name: 'ws-topic-create', arguments: { title: 'Restart recovery write' } });
+  expect(created.isError).not.toBe(true);
+  expect(f.store.db.prepare("SELECT count(*) AS total FROM resources WHERE kind='Topic'").get()?.total).toBe(1);
+});
+
+it('does not replay a write whose response was lost after execution', async () => {
+  const f = await fixture(), { connector, client } = await f.connect();
+  f.store.createDocument({ kind: 'TopicType', spec: { label: 'Topic', icon: 'symbol-key' } });
+  await vi.waitFor(() => expect(connector.status().requestId).toBeTruthy());
+  f.access.decide(f.owner.token, connector.status().requestId!, true);
+  await vi.waitFor(() => expect(connector.status().state).toBe('connected'));
+  const realFetch = globalThis.fetch;
+  let writes = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const response = await realFetch(input, init);
+    if (typeof init?.body === 'string' && init.body.includes('"ws-topic-create"')) {
+      writes++;
+      await response.body?.cancel();
+      throw new TypeError('Response connection lost after execution');
+    }
+    return response;
+  });
+  await expect(client.callTool({ name: 'ws-topic-create', arguments: { title: 'Unknown outcome write' } })).rejects.toThrow();
+  expect(writes).toBe(1);
+  expect(f.store.db.prepare("SELECT count(*) AS total FROM resources WHERE kind='Topic'").get()?.total).toBe(1);
 });
 
 it.each(['revoked', 'expired'])('disconnects %s access and requests a fresh owner approval without deleting credential files manually', async reason => {
@@ -142,6 +204,55 @@ it('stops pending enrollment cleanly without claiming or writing credentials', a
   await connector.close();
   expect(f.credentials.save).not.toHaveBeenCalled();
   expect(f.access.snapshot(f.owner.token).clients).toHaveLength(0);
+});
+
+it('reclaims a session when closed during initial tool discovery', async () => {
+  const f = await fixture(), first = await f.connect();
+  await vi.waitFor(() => expect(first.connector.status().requestId).toBeTruthy());
+  f.access.decide(f.owner.token, first.connector.status().requestId!, true);
+  await vi.waitFor(() => expect(first.connector.status().state).toBe('connected'));
+  await first.connector.close();
+  const realFetch = globalThis.fetch;
+  let discovering = false;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if (typeof init?.body === 'string' && init.body.includes('"tools/list"')) {
+      discovering = true;
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    }
+    return realFetch(input, init);
+  });
+  const { connector } = await f.connect();
+  await vi.waitFor(() => expect(discovering).toBe(true));
+  await Promise.all([connector.close(), connector.close()]);
+  expect(connector.status().state).toBe('disconnected');
+  expect((await f.sessions()).active).toHaveLength(0);
+});
+
+it('does not request or grant new approval automatically when restart recovery rejects the saved identity', async () => {
+  const f = await fixture(), { connector, client } = await f.connect();
+  await vi.waitFor(() => expect(connector.status().requestId).toBeTruthy());
+  f.access.decide(f.owner.token, connector.status().requestId!, true);
+  await vi.waitFor(() => expect(connector.status().state).toBe('connected'));
+  const realFetch = globalThis.fetch;
+  let stale = false;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if (!stale && typeof init?.body === 'string' && init.body.includes('"wm-ping"')) {
+      stale = true;
+      f.access.revoke(f.owner.token, String(f.access.snapshot(f.owner.token).clients[0].id));
+      return new Response(JSON.stringify({ jsonrpc: '2.0', error: {
+        code: -32000, message: 'Session not found or expired. Initialize a new session.',
+      }, id: null }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    }
+    return realFetch(input, init);
+  });
+  await expect(client.callTool({ name: 'wm-ping', arguments: {} })).rejects.toThrow();
+  expect(connector.status().state).toBe('disconnected');
+  expect(f.credentials.forget).toHaveBeenCalledTimes(1);
+  expect(f.credentials.save).toHaveBeenCalledTimes(1);
+  expect(f.access.snapshot(f.owner.token).requests).toHaveLength(0);
+  expect((await client.listTools()).tools).toHaveLength(2);
 });
 
 it('fails explicitly when native encryption is unavailable without issuing access or saving plaintext', async () => {

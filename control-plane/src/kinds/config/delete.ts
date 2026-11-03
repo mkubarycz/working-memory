@@ -12,6 +12,14 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type Store, NotFoundError } from '../../store.js';
 import { asText, asError } from '../toolResult.js';
 import { CONFIG_KIND } from './config.js';
+const wsConfigDeleteInputSchema = z.object({
+        id: z.string().min(1).describe('ID of the config to delete (or restore).'),
+        restore: z
+          .boolean()
+          .optional()
+          .describe('When true, undelete a previously soft-deleted config instead of deleting.'),
+      }).strict();
+
 
 /**
  * Register the `ws-config-delete` tool on an MCP session's server. Soft-deletes
@@ -28,13 +36,7 @@ export function registerWsConfigDelete(server: McpServer, store: Store): void {
         'Soft-delete a Config by `id` (it drops out of ws-config-read). To undelete, call with ' +
         '`restore: true`. Unknown/already-deleted IDs (or already-live IDs on restore) are ' +
         'rejected. Returns { ok, id }.',
-      inputSchema: z.object({
-        id: z.string().min(1).describe('ID of the config to delete (or restore).'),
-        restore: z
-          .boolean()
-          .optional()
-          .describe('When true, undelete a previously soft-deleted config instead of deleting.'),
-      }).strict(),
+      inputSchema: wsConfigDeleteInputSchema,
     },
     async ({ id, restore }) => {
       // For restore, the target row is soft-deleted, so it must be located with

@@ -4,17 +4,7 @@ import type { Store } from '../../store.js';
 import { defaultStatus, validateSpec } from '../registry.js';
 import { asError, asText } from '../toolResult.js';
 import { ContainerClaim, CONTAINER_CLAIM_KIND } from './containerClaim.js';
-
-export function registerWsContainerClaimCreate(server: McpServer, store: Store): void {
-  server.registerTool(
-    'ws-containerclaim-create',
-    {
-      title: 'Container Claim: Create',
-      description:
-        'Declare the desire to have a container running. Persists intent only. Provide a human ' +
-        '`title`, repository/codebase reference, and optional source revision. Returns a document ID. ' +
-        'Omitting `sourceRevision` means the repository default.',
-      inputSchema: z.object({
+const wsContainerclaimCreateInputSchema = z.object({
         title: z.string().describe('Human-readable claim title (1-200 chars).'),
         repository: z.string().describe('Repository or codebase reference (1-500 chars).'),
         sourceRevision: z
@@ -29,7 +19,19 @@ export function registerWsContainerClaimCreate(server: McpServer, store: Store):
         desktop: z.record(z.string(), z.unknown()).optional().describe(
           'Optional desktop presentation: codicon icon name and embeddable boolean. Docker claims appear automatically in the desktop app catalog.',
         ),
-      }).strict(),
+      }).strict();
+
+
+export function registerWsContainerClaimCreate(server: McpServer, store: Store): void {
+  server.registerTool(
+    'ws-containerclaim-create',
+    {
+      title: 'Container Claim: Create',
+      description:
+        'Declare the desire to have a container running. Persists intent only. Provide a human ' +
+        '`title`, repository/codebase reference, and optional source revision. Returns a document ID. ' +
+        'Omitting `sourceRevision` means the repository default.',
+      inputSchema: wsContainerclaimCreateInputSchema,
     },
     async ({ title, repository, sourceRevision, runtime, mcp, application, desktop }) => {
       const specInput: Record<string, unknown> = { title, repository };

@@ -13,6 +13,17 @@ import { type Store, ConflictError, NotFoundError } from '../../store.js';
 import { validateSpec } from '../registry.js';
 import { WORKSTREAM_KIND, asText, asError } from './shared.js';
 import { Workstream } from './workstream.js';
+const wsWorkstreamUpdateInputSchema = z.object({
+        id: z.string().min(1).describe('ID of the workstream to update (required).'),
+        title: z.string().optional().describe('New title (≤120 chars).'),
+        status: z
+          .string()
+          .optional()
+          .describe("New lifecycle status: 'queue' | 'progress' | 'backlog' | 'closed'."),
+        closure: z.string().optional().describe('New closure note.'),
+        position: z.number().finite().optional().describe('Sort position within the lifecycle section.'),
+      }).strict();
+
 
 /**
  * Register the `ws-workstream-update` tool on an MCP session's server. Reads the
@@ -30,16 +41,7 @@ export function registerWsWorkstreamUpdate(server: McpServer, store: Store): voi
         '(`title`, `status`, `closure`, `position`). Reads the current document for its id + resourceVersion, ' +
         'then does a compare-and-swap write of the merged, re-validated spec. Unknown IDs and ' +
         'version conflicts are surfaced clearly. Returns the updated workstream.',
-      inputSchema: z.object({
-        id: z.string().min(1).describe('ID of the workstream to update (required).'),
-        title: z.string().optional().describe('New title (≤120 chars).'),
-        status: z
-          .string()
-          .optional()
-          .describe("New lifecycle status: 'queue' | 'progress' | 'backlog' | 'closed'."),
-        closure: z.string().optional().describe('New closure note.'),
-        position: z.number().finite().optional().describe('Sort position within the lifecycle section.'),
-      }).strict(),
+      inputSchema: wsWorkstreamUpdateInputSchema,
     },
     async ({ id, title, status, closure, position }) => {
       const existing = store.getDocument({ id, kind: WORKSTREAM_KIND });

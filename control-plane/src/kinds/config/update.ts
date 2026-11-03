@@ -13,6 +13,16 @@ import { type Store, ConflictError, NotFoundError } from '../../store.js';
 import { validateSpec } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Config, CONFIG_KIND } from './config.js';
+const wsConfigUpdateInputSchema = z.object({
+        id: z.string().min(1).describe('ID of the config to update (required).'),
+        name: z.string().optional().describe('New human label (replaces the current).'),
+        data: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe('Key-value pairs to MERGE onto the existing map. All values MUST be strings.'),
+        status: z.string().optional().describe('New authored status (replaces the current).'),
+      }).strict();
+
 
 /**
  * Register the `ws-config-update` tool on an MCP session's server. Reads the
@@ -33,15 +43,7 @@ export function registerWsConfigUpdate(server: McpServer, store: Store): void {
         '`status` REPLACE the current value when provided. Reads the current document for its id ' +
         '+ resourceVersion, then does a compare-and-swap write of the merged, re-validated spec. ' +
         'Unknown IDs and version conflicts are surfaced clearly. Returns the updated config.',
-      inputSchema: z.object({
-        id: z.string().min(1).describe('ID of the config to update (required).'),
-        name: z.string().optional().describe('New human label (replaces the current).'),
-        data: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe('Key-value pairs to MERGE onto the existing map. All values MUST be strings.'),
-        status: z.string().optional().describe('New authored status (replaces the current).'),
-      }).strict(),
+      inputSchema: wsConfigUpdateInputSchema,
     },
     async ({ id, name, data, status }) => {
       const existing = store.getDocument({ id, kind: CONFIG_KIND });

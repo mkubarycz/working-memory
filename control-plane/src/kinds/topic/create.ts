@@ -14,27 +14,7 @@ import { validateSpec, defaultStatus } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Topic, TOPIC_KIND, stringArray } from './topic.js';
 import { topicSpecWithDefaults, validateTopicReferences } from './references.js';
-
-/**
- * Register the `ws-topic-create` tool on an MCP session's server. The tool
- * speaks the legacy topic shape and is backed by generic `store` document ops
- * for kind `Topic`, with the kind's own `validateSpec` gating the write (so an
- * invalid status is rejected as kind validation, not a raw store error).
- */
-export function registerWsTopicCreate(server: McpServer, store: Store): void {
-  server.registerTool(
-    'ws-topic-create',
-    {
-      title: 'Topic: Create',
-      description:
-        'Create a Topic. Provide a `title` (required, ≤120 chars); optional `body`, ' +
-        "`status` ('open' | 'closed', default 'open'), `topicType` (TopicType document ID), `parents` " +
-        '(parent topic IDs), `workstreams` (member workstream IDs), and `focusedWorkstreams` ' +
-        '(subset of `workstreams` this topic is pinned/focused in). Topics may remain unassigned ' +
-        'when no workstream is supplied. Omitted `topicType` resolves the single live TopicType ' +
-        'with spec.label equal to "Topic"; missing or ambiguous defaults are rejected. The spec is validated ' +
-        'against the Topic kind (invalid status rejected). Returns the created topic.',
-      inputSchema: z.object({
+const wsTopicCreateInputSchema = z.object({
         title: z.string().describe('Topic title (required, 1–120 chars).'),
         body: z.string().optional().describe('Topic body (markdown).'),
         status: z
@@ -55,7 +35,29 @@ export function registerWsTopicCreate(server: McpServer, store: Store): void {
           .array(z.string())
           .optional()
           .describe('Subset of `workstreams` this topic is focused/pinned in.'),
-      }).strict(),
+      }).strict();
+
+
+/**
+ * Register the `ws-topic-create` tool on an MCP session's server. The tool
+ * speaks the legacy topic shape and is backed by generic `store` document ops
+ * for kind `Topic`, with the kind's own `validateSpec` gating the write (so an
+ * invalid status is rejected as kind validation, not a raw store error).
+ */
+export function registerWsTopicCreate(server: McpServer, store: Store): void {
+  server.registerTool(
+    'ws-topic-create',
+    {
+      title: 'Topic: Create',
+      description:
+        'Create a Topic. Provide a `title` (required, ≤120 chars); optional `body`, ' +
+        "`status` ('open' | 'closed', default 'open'), `topicType` (TopicType document ID), `parents` " +
+        '(parent topic IDs), `workstreams` (member workstream IDs), and `focusedWorkstreams` ' +
+        '(subset of `workstreams` this topic is pinned/focused in). Topics may remain unassigned ' +
+        'when no workstream is supplied. Omitted `topicType` resolves the single live TopicType ' +
+        'with spec.label equal to "Topic"; missing or ambiguous defaults are rejected. The spec is validated ' +
+        'against the Topic kind (invalid status rejected). Returns the created topic.',
+      inputSchema: wsTopicCreateInputSchema,
     },
     async ({ title, body, status, topicType, parents, workstreams, focusedWorkstreams }) => {
       const specInput: Record<string, unknown> = { title };

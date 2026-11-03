@@ -10,7 +10,7 @@ import {
   completion,
   scopeRef,
   type CommandJournalEvent,
-} from './index.js';
+} from './schema.js';
 import { CommandJournal } from './commandJournal.js';
 
 const provider = z
@@ -57,14 +57,13 @@ function mergeEntityRefs(existing: unknown, discovered: z.infer<typeof scopeRef>
   }
   return [...merged.values()];
 }
-
-export function registerWsCommandJournalOperations(server: McpServer, store: Store): void {
-  server.registerTool(
-    'ws-commandjournal-create',
-    {
-      title: 'Command Journal: Create Run',
-      description: 'Create one running CommandJournal for one submitted user request. Returns the created journal.',
-      inputSchema: z.object({
+const wsCommandjournalAppendInputSchema = z.object({
+        id: z.string().min(1),
+        expectedResourceVersion: z.number().int().nonnegative(),
+        events: z.array(commandJournalEvent).min(1).max(1_000),
+        entityRefs: z.array(scopeRef.extend({ relation: z.enum(['referenced', 'mutated']) }).strict()).max(500).optional(),
+      }).strict();
+const wsCommandjournalCreateInputSchema = z.object({
         startedAt: z.number().int().nonnegative(),
         provider,
         request: z
@@ -75,7 +74,26 @@ export function registerWsCommandJournalOperations(server: McpServer, store: Sto
           .strict(),
         primaryScope: scopeRef,
         entityRefs: z.array(scopeRef.extend({ relation: z.enum(['referenced', 'mutated']) }).strict()).max(500).optional(),
-      }).strict(),
+      }).strict();
+
+const wsCommandjournalFinalizeInputSchema = z.object({
+        id: z.string().min(1),
+        expectedResourceVersion: z.number().int().nonnegative(),
+        status: terminalStatus,
+        completedAt: z.number().int().nonnegative(),
+        completion,
+        entityRefs: z.array(scopeRef.extend({ relation: z.enum(['referenced', 'mutated']) }).strict()).max(500).optional(),
+      }).strict();
+
+
+
+export function registerWsCommandJournalOperations(server: McpServer, store: Store): void {
+  server.registerTool(
+    'ws-commandjournal-create',
+    {
+      title: 'Command Journal: Create Run',
+      description: 'Create one running CommandJournal for one submitted user request. Returns the created journal.',
+      inputSchema: wsCommandjournalCreateInputSchema,
     },
     async ({ startedAt, provider, request, primaryScope, entityRefs }) => {
       try {
@@ -106,12 +124,7 @@ export function registerWsCommandJournalOperations(server: McpServer, store: Sto
     {
       title: 'Command Journal: Append Events',
       description: 'Atomically append one or more ordered events using resourceVersion compare-and-swap. Sequences must continue canonically.',
-      inputSchema: z.object({
-        id: z.string().min(1),
-        expectedResourceVersion: z.number().int().nonnegative(),
-        events: z.array(commandJournalEvent).min(1).max(1_000),
-        entityRefs: z.array(scopeRef.extend({ relation: z.enum(['referenced', 'mutated']) }).strict()).max(500).optional(),
-      }).strict(),
+      inputSchema: wsCommandjournalAppendInputSchema,
     },
     async ({ id, expectedResourceVersion, events, entityRefs }) => {
       const existing = existingJournal(store, id);
@@ -153,14 +166,7 @@ export function registerWsCommandJournalOperations(server: McpServer, store: Sto
     {
       title: 'Command Journal: Finalize Run',
       description: 'Finalize an active CommandJournal exactly once using resourceVersion compare-and-swap.',
-      inputSchema: z.object({
-        id: z.string().min(1),
-        expectedResourceVersion: z.number().int().nonnegative(),
-        status: terminalStatus,
-        completedAt: z.number().int().nonnegative(),
-        completion,
-        entityRefs: z.array(scopeRef.extend({ relation: z.enum(['referenced', 'mutated']) }).strict()).max(500).optional(),
-      }).strict(),
+      inputSchema: wsCommandjournalFinalizeInputSchema,
     },
     async ({ id, expectedResourceVersion, status, completedAt, completion, entityRefs }) => {
       const existing = existingJournal(store, id);

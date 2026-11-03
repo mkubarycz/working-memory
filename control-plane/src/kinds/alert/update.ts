@@ -17,6 +17,20 @@ import { validateSpec } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Alert, ALERT_KIND } from './alert.js';
 import { legacyToMessage } from '../agentmessage/spec.js';
+const wsAlertUpdateInputSchema = z.object({
+        id: z.string().describe('Document id of the alert to update (required).'),
+        title: z.string().optional().describe('New title.'),
+        description: z.string().optional().describe('New description.'),
+        recommended_action: z.string().optional().describe('New recommended action.'),
+        status: z
+          .enum(['alert', 'informational', 'closed'])
+          .optional()
+          .describe("New status: 'alert' | 'informational' | 'closed'."),
+        dedupe_key: z.string().optional().describe('New dedupe key.'),
+        created_by: z.string().optional().describe('New author.'),
+        topics: z.array(z.string()).optional().describe('Replacement topic document IDs.'),
+      }).strict();
+
 
 /**
  * Register the `ws-alert-update` tool on an MCP session's server. Reads the
@@ -36,19 +50,7 @@ export function registerWsAlertUpdate(server: McpServer, store: Store): void {
         'Reads the current document for its resourceVersion, then does a compare-and-swap write of ' +
         'the merged, re-validated spec. Unknown id and version conflicts are surfaced clearly. ' +
         'Returns the updated alert.',
-      inputSchema: z.object({
-        id: z.string().describe('Document id of the alert to update (required).'),
-        title: z.string().optional().describe('New title.'),
-        description: z.string().optional().describe('New description.'),
-        recommended_action: z.string().optional().describe('New recommended action.'),
-        status: z
-          .enum(['alert', 'informational', 'closed'])
-          .optional()
-          .describe("New status: 'alert' | 'informational' | 'closed'."),
-        dedupe_key: z.string().optional().describe('New dedupe key.'),
-        created_by: z.string().optional().describe('New author.'),
-        topics: z.array(z.string()).optional().describe('Replacement topic document IDs.'),
-      }).strict(),
+      inputSchema: wsAlertUpdateInputSchema,
     },
     async ({ id, title, description, recommended_action, status, dedupe_key, created_by, topics }) => {
       const existing = store.getDocument({ id, kind: ALERT_KIND });

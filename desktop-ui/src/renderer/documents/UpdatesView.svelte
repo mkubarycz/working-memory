@@ -38,8 +38,8 @@
 
 <div class="updates">
   <p>
-    The desktop app and each data tier instance update separately. Choose the data tier channel on the
-    Instances tab.
+    The desktop app and each data tier instance update separately. Choose the backend channel on the
+    Back End subtab.
   </p>
   <fieldset class="update-channels">
     <legend>Desktop update channel</legend>

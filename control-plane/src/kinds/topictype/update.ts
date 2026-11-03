@@ -13,6 +13,14 @@ import { type Store, ConflictError, NotFoundError } from '../../store.js';
 import { validateSpec } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { TopicType, TOPIC_TYPE_KIND } from './topictype.js';
+const wsTopictypeUpdateInputSchema = z.object({
+        id: z.string().min(1).describe('ID of the topic type to update (required).'),
+        label: z.string().optional().describe('New label.'),
+        icon: z.string().optional().describe('New codicon id.'),
+        description: z.string().optional().describe('New description.'),
+        body_template: z.string().optional().describe('New body template.'),
+      }).strict();
+
 
 /**
  * Register the `ws-topictype-update` tool on an MCP session's server. Reads the
@@ -30,13 +38,7 @@ export function registerWsTopicTypeUpdate(server: McpServer, store: Store): void
         '`icon`, `description`, `body_template`). Reads the current document for its id + ' +
         'resourceVersion, then does a compare-and-swap write of the merged, re-validated spec. ' +
         'Unknown IDs and version conflicts are surfaced clearly. Returns the updated topic type.',
-      inputSchema: z.object({
-        id: z.string().min(1).describe('ID of the topic type to update (required).'),
-        label: z.string().optional().describe('New label.'),
-        icon: z.string().optional().describe('New codicon id.'),
-        description: z.string().optional().describe('New description.'),
-        body_template: z.string().optional().describe('New body template.'),
-      }).strict(),
+      inputSchema: wsTopictypeUpdateInputSchema,
     },
     async ({ id, label, icon, description, body_template }) => {
       const existing = store.getDocument({ id, kind: TOPIC_TYPE_KIND });

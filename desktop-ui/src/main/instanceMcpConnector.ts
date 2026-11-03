@@ -7,6 +7,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { z } from 'zod';
 import { hostTaskOrigin } from './hostTaskBroker';
 import type { NativeInstanceCredentialVault } from './instancePasswordVault';
+import { closeMcpSession, sessionLifecycleFetch, staleSessionRejected } from '../../../shared/mcpLifecycle';
 
 const requestSchema = z.object({
   requestId: z.string().uuid(), requestSecret: z.string().regex(/^[A-Za-z0-9_-]{43}$/), expiresAt: z.number().int(),
@@ -50,6 +51,9 @@ export class InstanceMcpConnector {
   private error = '';
   private closed = false;
   private connecting: Promise<void> | null = null;
+  private recovering: Promise<void> | null = null;
+  private closing: Promise<void> | null = null;
+  private readonly transports = new Map<Client, StreamableHTTPClientTransport>();
   private readonly abort = new AbortController();
 
   constructor(private readonly options: {
@@ -65,16 +69,30 @@ export class InstanceMcpConnector {
         void this.connect();
         return result(this.status());
       }
+      await this.recovering;
       if (!this.remote || !this.tools.some(tool => tool.name === request.params.name)) {
         return { isError: true, ...result({ ...this.status(), message: 'Owner approval is required before document access.' }) };
       }
-      try { return CallToolResultSchema.parse(await this.remote.callTool(request.params)); }
+      let remote = this.remote;
+      try {
+        let response: unknown;
+        try { response = await remote.callTool(request.params); }
+        catch (error) {
+          // These responses are rejected before tool dispatch; unknown-outcome
+          // failures must never replay a potentially completed write.
+          if (!(error instanceof StreamableHTTPError && staleSessionRejected(error))) throw error;
+          await this.recoverSession(remote);
+          if (!this.remote || !this.tools.some(tool => tool.name === request.params.name)) throw error;
+          remote = this.remote;
+          response = await remote.callTool(request.params);
+        }
+        return CallToolResultSchema.parse(response);
+      }
       catch (error) {
-        if (authenticationFailed(error)) {
-          const remote = this.remote;
+        if (authenticationFailed(error) && this.remote === remote) {
           this.remote = null;
           this.tools = [];
-          await remote.close();
+          await this.closeClient(remote);
           this.error = 'Client access expired or was revoked. Call wm-request-access for a new owner-approved connection.';
           await this.server.sendToolListChanged();
         }
@@ -84,7 +102,7 @@ export class InstanceMcpConnector {
   }
 
   status() {
-    return { instance: this.origin, state: this.remote ? 'connected' : this.pending ? 'awaiting_owner_approval' : this.connecting ? 'connecting' : 'disconnected',
+    return { instance: this.origin, state: this.remote ? 'connected' : this.pending ? 'awaiting_owner_approval' : this.connecting || this.recovering ? 'connecting' : 'disconnected',
       ...this.pending, ...(this.error ? { error: this.error } : {}),
       message: 'Approve the matching request in Working Memory > Settings > Access. Do not share owner passwords or tokens.' };
   }
@@ -96,9 +114,9 @@ export class InstanceMcpConnector {
     void this.connect();
   }
 
-  private async connect(): Promise<void> {
+  private async connect(allowEnrollment = true): Promise<void> {
     if (this.closed || this.remote || this.connecting) return this.connecting ?? undefined;
-    this.connecting = this.establish().catch(error => {
+    this.connecting = this.establish(allowEnrollment).catch(error => {
       if (!this.closed) {
         this.pending = null;
         this.error = error instanceof Error ? error.message : 'Local connector sign-in failed.';
@@ -108,27 +126,33 @@ export class InstanceMcpConnector {
     return this.connecting;
   }
 
-  private async establish(): Promise<void> {
+  private async establish(allowEnrollment: boolean): Promise<void> {
     this.error = '';
     if (!this.options.credentials.available()) {
       throw new Error('Native secure storage is unavailable. The connector will not save credentials as plaintext. Unlock your OS secure storage, then retry wm-request-access.');
     }
     const saved = await this.options.credentials.read(this.origin);
+    if (this.closed) return;
     const previous = saved ? tokenSchema.parse(JSON.parse(saved)) : null;
     if (previous && previous.expiresAt > Date.now()) {
       try { await this.connectData(previous.token); return; }
       catch (error) {
         if (!authenticationFailed(error)) throw error;
         await this.options.credentials.forget(this.origin);
+        if (!allowEnrollment) throw error;
       }
     }
+    if (!allowEnrollment) throw new Error('Client access expired or is unavailable. Call wm-request-access for new owner approval.');
     const enrollment = new Client({ name: 'working-memory-local-connector', version: '1.0.0' });
     this.enrollment = enrollment;
+    const transport = new StreamableHTTPClientTransport(new URL('/identity/v1/mcp', this.origin), {
+      fetch: sessionLifecycleFetch((input, init) => fetch(input, init), this.abort.signal),
+      ...(previous && previous.expiresAt <= Date.now()
+        ? { requestInit: { headers: { Authorization: `Bearer ${previous.token}` } } } : {}),
+    });
+    this.transports.set(enrollment, transport);
     try {
-      await enrollment.connect(new StreamableHTTPClientTransport(new URL('/identity/v1/mcp', this.origin), {
-        ...(previous && previous.expiresAt <= Date.now()
-          ? { requestInit: { headers: { Authorization: `Bearer ${previous.token}` } } } : {}),
-      }));
+      await enrollment.connect(transport);
       const request = requestSchema.parse(jsonResult(await enrollment.callTool({
         name: 'wm-identity-request-access', arguments: {
           label: 'VS Code Copilot (local connector)', access: 'write',
@@ -158,17 +182,20 @@ export class InstanceMcpConnector {
       }
       if (!this.closed) throw new Error('Approval request expired. Call wm-request-access to try again.');
     } finally {
-      await enrollment.close();
+      await this.closeClient(enrollment);
       this.enrollment = null;
     }
   }
 
   private async connectData(token: string): Promise<void> {
     const client = new Client({ name: 'working-memory-local-connector', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(this.options.mcpUrl), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      fetch: sessionLifecycleFetch((input, init) => fetch(input, init), this.abort.signal),
+    });
+    this.transports.set(client, transport);
     try {
-      await client.connect(new StreamableHTTPClientTransport(new URL(this.options.mcpUrl), {
-        requestInit: { headers: { Authorization: `Bearer ${token}` } },
-      }));
+      await client.connect(transport);
       const tools: Tool[] = [];
       let cursor: string | undefined;
       do {
@@ -176,21 +203,52 @@ export class InstanceMcpConnector {
         tools.push(...page.tools);
         cursor = page.nextCursor;
       } while (cursor);
-      if (this.closed) { await client.close(); return; }
+      if (this.closed) { await this.closeClient(client); return; }
       this.remote = client;
       this.tools = tools;
       await this.server.sendToolListChanged();
     } catch (error) {
-      await client.close();
+      if (this.remote === client) { this.remote = null; this.tools = []; }
+      await this.closeClient(client);
       throw error;
     }
   }
 
-  async close(): Promise<void> {
+  private async recoverSession(remote: Client): Promise<void> {
     if (this.closed) return;
+    if (this.recovering) return this.recovering;
+    if (this.remote !== remote) return;
+    this.remote = null;
+    this.tools = [];
+    this.recovering = (async () => {
+      await this.closeClient(remote);
+      await this.connecting;
+      await this.connect(false);
+      if (!this.remote && !this.closed) await this.server.sendToolListChanged();
+    })().finally(() => { this.recovering = null; });
+    return this.recovering;
+  }
+
+  private async closeClient(client: Client): Promise<void> {
+    await closeMcpSession(client, this.transports.get(client) ?? null, error => {
+      console.error('[working-memory-connector] Session cleanup failed:', error instanceof Error ? error.message : error);
+    });
+    this.transports.delete(client);
+  }
+
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
     this.closed = true;
     this.abort.abort();
-    await Promise.all([this.enrollment?.close(), this.remote?.close()]);
-    await this.server.close();
+    this.remote = null;
+    this.tools = [];
+    this.closing = (async () => {
+      await Promise.all([
+        ...Array.from(this.transports.keys(), client => this.closeClient(client)),
+        this.connecting, this.recovering,
+      ]);
+      await this.server.close();
+    })();
+    return this.closing;
   }
 }

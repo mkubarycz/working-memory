@@ -5,6 +5,13 @@ import { validateSpec } from '../registry.js';
 import { asError, asText } from '../toolResult.js';
 import { WORKSTREAM_KIND } from '../workstream/shared.js';
 import { Topic, TOPIC_KIND, stringArray } from './topic.js';
+const wsTopicTransferInputSchema = z.object({
+        id: z.string().min(1),
+        sourceWorkstream: z.string().min(1).optional(),
+        targetWorkstream: z.string().min(1),
+        move: z.boolean().default(false),
+      }).strict();
+
 
 export function registerWsTopicTransfer(server: McpServer, store: Store): void {
   server.registerTool(
@@ -15,12 +22,7 @@ export function registerWsTopicTransfer(server: McpServer, store: Store): void {
         'Atomically copy or move a topic and all of its descendants between workstreams. ' +
         'Copy keeps source membership; move removes it and clears source focus. ' +
         'Omit sourceWorkstream to add a tree to a workstream without removing existing memberships.',
-      inputSchema: z.object({
-        id: z.string().min(1),
-        sourceWorkstream: z.string().min(1).optional(),
-        targetWorkstream: z.string().min(1),
-        move: z.boolean().default(false),
-      }).strict(),
+      inputSchema: wsTopicTransferInputSchema,
     },
     async ({ id, sourceWorkstream, targetWorkstream, move }) => {
       if (sourceWorkstream === targetWorkstream) return asError('Source and target workstreams must differ.');

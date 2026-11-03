@@ -17,8 +17,20 @@ export const SESSION_HEAP_FRACTION = 0.6;
 export const sessionEventTypeSchema = z.enum([
   'opened', 'closed', 'idle_expired', 'client_quota', 'global_quota', 'rate_limited',
   'memory_rejected', 'initialization_failed', 'cleanup_failed', 'policy_updated', 'server_shutdown',
+  'garbage_collected', 'heap_collection_failed',
 ]);
 export type SessionEventType = z.infer<typeof sessionEventTypeSchema>;
+export const heapCollectionSchema = z.object({
+  beforeBytes: z.number(), afterBytes: z.number(), reclaimedBytes: z.number(),
+  durationMs: z.number(), idleSessionsReclaimed: z.number().int(),
+});
+export type HeapCollection = z.infer<typeof heapCollectionSchema>;
+export const heapCollectionRequestSchema = z.object({
+  expectedStartedAt: z.number(), reportTopicId: z.string().uuid(), confirmed: z.literal(true),
+}).strict();
+export const heapReportRequestSchema = z.object({
+  expectedStartedAt: z.number(), incidentId: z.string().uuid(), confirmed: z.literal(true),
+}).strict();
 // Diagnostics use epoch milliseconds, independently of document metadata timestamps.
 const sessionClientSchema = z.object({
   clientId: z.string().nullable(), clientLabel: z.string(), application: z.string(),
@@ -29,6 +41,11 @@ export const sessionSnapshotSchema = z.object({
   memory: z.object({
     heapUsedBytes: z.number(), heapLimitBytes: z.number(), admissionThresholdBytes: z.number(),
     admissionBlocked: z.boolean(),
+    gcAvailable: z.boolean().optional(),
+    rssBytes: z.number().optional(), externalBytes: z.number().optional(), arrayBufferBytes: z.number().optional(),
+    spaces: z.array(z.object({
+      name: z.string(), usedBytes: z.number(), sizeBytes: z.number(), availableBytes: z.number(),
+    })).optional(),
   }),
   active: z.array(sessionClientSchema.extend({
     id: z.string(), state: z.enum(['initializing', 'active']), createdAt: z.number(),

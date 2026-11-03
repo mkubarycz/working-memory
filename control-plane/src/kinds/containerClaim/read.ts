@@ -3,6 +3,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
 import { asText } from '../toolResult.js';
 import { ContainerClaim, CONTAINER_CLAIM_KIND } from './containerClaim.js';
+const wsContainerclaimReadInputSchema = z.object({
+        id: z.string().min(1).optional().describe('Read one claim by document ID.'),
+        query: z.string().optional().describe('Case-insensitive substring filter in list mode.'),
+        limit: z.number().int().positive().optional().describe('Maximum claims in list mode.'),
+      }).strict();
+
 
 export function registerWsContainerClaimRead(server: McpServer, store: Store): void {
   server.registerTool(
@@ -12,11 +18,7 @@ export function registerWsContainerClaimRead(server: McpServer, store: Store): v
       description:
         'Read one live ContainerClaim by `id`, or list live claims. Always returns ' +
         '`{ count, claims }`. Optional `query` matches claim text case-insensitively.',
-      inputSchema: z.object({
-        id: z.string().min(1).optional().describe('Read one claim by document ID.'),
-        query: z.string().optional().describe('Case-insensitive substring filter in list mode.'),
-        limit: z.number().int().positive().optional().describe('Maximum claims in list mode.'),
-      }).strict(),
+      inputSchema: wsContainerclaimReadInputSchema,
     },
     async ({ id, query, limit }) => {
       if (id !== undefined) {

@@ -12,6 +12,20 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
 import { WORKSTREAM_KIND, asText } from './shared.js';
 import { Workstream } from './workstream.js';
+const wsWorkstreamReadInputSchema = z.object({
+        id: z.string().min(1).optional().describe('Read ONE workstream by document ID.'),
+        query: z
+          .string()
+          .optional()
+          .describe('Case-insensitive substring filter over workstream text (list mode only).'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Max workstreams to return (list mode only).'),
+      }).strict();
+
 
 /**
  * Register the `ws-workstream-read` tool on an MCP session's server. Reads ONE
@@ -28,19 +42,7 @@ export function registerWsWorkstreamRead(server: McpServer, store: Store): void 
         '(newest-first), with an optional `query` case-insensitive substring filter and a `limit`. ' +
         'ALWAYS returns { count, workstreams } — a by-ID read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
-      inputSchema: z.object({
-        id: z.string().min(1).optional().describe('Read ONE workstream by document ID.'),
-        query: z
-          .string()
-          .optional()
-          .describe('Case-insensitive substring filter over workstream text (list mode only).'),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe('Max workstreams to return (list mode only).'),
-      }).strict(),
+      inputSchema: wsWorkstreamReadInputSchema,
     },
     async ({ id, query, limit }) => {
       // Single read: by ID. A foreign-kind ID maps to nothing (the

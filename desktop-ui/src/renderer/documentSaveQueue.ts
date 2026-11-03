@@ -12,6 +12,7 @@ interface SaveEntry<Patch extends object> {
   timer: ReturnType<typeof setTimeout> | undefined;
   chain: Promise<void>;
   active: boolean;
+  queued: boolean;
   error: unknown;
 }
 
@@ -28,9 +29,12 @@ export function createDocumentSaveQueue<Patch extends object, Result>(
 
   const flush = (key: string, entry: SaveEntry<Patch>) => {
     entry.timer = undefined;
+    if (entry.queued) return;
+    entry.queued = true;
     const operation = entry.chain
       .catch(() => undefined)
       .then(async () => {
+        entry.queued = false;
         if (!entry.active) return;
         const patch = entry.patch;
         entry.patch = {};
@@ -60,7 +64,7 @@ export function createDocumentSaveQueue<Patch extends object, Result>(
     schedule(key, patch) {
       let entry = entries.get(key);
       if (!entry) {
-        entry = { patch: {}, timer: undefined, chain: Promise.resolve(), active: true, error: undefined };
+        entry = { patch: {}, timer: undefined, chain: Promise.resolve(), active: true, queued: false, error: undefined };
         entries.set(key, entry);
       }
       Object.assign(entry.patch, patch);

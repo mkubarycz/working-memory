@@ -13,6 +13,17 @@ import type { Store } from '../../store.js';
 import { validateSpec, defaultStatus } from '../registry.js';
 import { WORKSTREAM_KIND, asText, asError } from './shared.js';
 import { Workstream } from './workstream.js';
+const wsWorkstreamCreateInputSchema = z.object({
+        title: z.string().describe('Workstream title (required, 1–120 chars).'),
+        status: z
+          .string()
+          .optional()
+          .describe(
+            "Lifecycle status: 'queue' | 'progress' | 'backlog' | 'closed' (default 'progress').",
+          ),
+        closure: z.string().optional().describe('Closure note (set when closing a workstream).'),
+      }).strict();
+
 
 /**
  * Register the `ws-workstream-create` tool on an MCP session's server. The tool
@@ -30,16 +41,7 @@ export function registerWsWorkstreamCreate(server: McpServer, store: Store): voi
         "optional lifecycle `status` ('queue' | 'progress' | 'backlog' | 'closed', default " +
         "'progress'), and an optional `closure` note. The spec is validated against the " +
         'Workstream kind (invalid status is rejected). Returns the created workstream with its document ID.',
-      inputSchema: z.object({
-        title: z.string().describe('Workstream title (required, 1–120 chars).'),
-        status: z
-          .string()
-          .optional()
-          .describe(
-            "Lifecycle status: 'queue' | 'progress' | 'backlog' | 'closed' (default 'progress').",
-          ),
-        closure: z.string().optional().describe('Closure note (set when closing a workstream).'),
-      }).strict(),
+      inputSchema: wsWorkstreamCreateInputSchema,
     },
     async ({ title, status, closure }) => {
       const specInput: Record<string, unknown> = { title };

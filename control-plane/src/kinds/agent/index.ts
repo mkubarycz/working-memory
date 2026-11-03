@@ -6,6 +6,22 @@ import { AGENT_KIND, agentSpec, normalizeAgentName } from './spec.js';
 const guidance = 'Register a named caller for AgentMessages. First use ws-agent-read with your exact name; ' +
   'if absent, use ws-agent-create. Remember the returned metadata.id and reuse it as agent_id on every message. ' +
   'Registration is attribution only, never authentication or execution authority.';
+const wsAgentReadInputSchema = z.object({
+        id: z.string().optional(), name: z.string().trim().min(1).optional(),
+        includeDeleted: z.boolean().optional(),
+      }).strict();
+
+const wsAgentUpdateInputSchema = z.object({
+        id: z.string(), expectedResourceVersion: z.number().int(),
+        spec: z.object({
+          name: agentSpec.shape.name.optional(), description: z.string().optional(),
+        }).strict(),
+      }).strict();
+
+const wsAgentDeleteInputSchema = z.object({
+        id: z.string(), expectedResourceVersion: z.number().int().optional(), restore: z.boolean().optional(),
+      }).strict();
+
 
 const agent: KindModule = {
   name: AGENT_KIND,
@@ -19,10 +35,7 @@ const agent: KindModule = {
     });
     server.registerTool('ws-agent-read', {
       title: 'Agent: Look up', description: guidance,
-      inputSchema: z.object({
-        id: z.string().optional(), name: z.string().trim().min(1).optional(),
-        includeDeleted: z.boolean().optional(),
-      }).strict(),
+      inputSchema: wsAgentReadInputSchema,
     }, async ({ id, name, includeDeleted }) => {
       const document = id ? store.getDocument({ id, includeDeleted }) : null;
       let agents = id ? (document?.kind === AGENT_KIND ? [document] : [])
@@ -35,12 +48,7 @@ const agent: KindModule = {
     });
     server.registerTool('ws-agent-update', {
       title: 'Agent: Update', description: `${guidance} Existing messages retain their send-time caller name.`,
-      inputSchema: z.object({
-        id: z.string(), expectedResourceVersion: z.number().int(),
-        spec: z.object({
-          name: agentSpec.shape.name.optional(), description: z.string().optional(),
-        }).strict(),
-      }).strict(),
+      inputSchema: wsAgentUpdateInputSchema,
     }, async ({ id, expectedResourceVersion, spec }) => {
       try {
         const existing = store.getDocument({ id });
@@ -50,9 +58,7 @@ const agent: KindModule = {
     });
     server.registerTool('ws-agent-delete', {
       title: 'Agent: Delete or restore', description: `${guidance} Referenced agents cannot be deleted; message history must retain a valid caller.`,
-      inputSchema: z.object({
-        id: z.string(), expectedResourceVersion: z.number().int().optional(), restore: z.boolean().optional(),
-      }).strict(),
+      inputSchema: wsAgentDeleteInputSchema,
     }, async ({ id, expectedResourceVersion, restore }) => {
       try {
         const existing = store.getDocument({ id, includeDeleted: restore });

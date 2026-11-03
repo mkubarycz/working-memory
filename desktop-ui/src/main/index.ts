@@ -35,6 +35,9 @@ import {
 import { checkConfiguredModel } from './modelHealth';
 import { LocalCopilotProvider } from './copilotProvider';
 import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
+import { InstanceMonitor, deliverIncident, type MonitorProbe } from './instanceMonitor';
+import { recoverHeap } from './heapRecovery';
+import { z } from 'zod';
 import { parseTopicAutocomplete, topicAutocompletePrompt } from './topicAutocomplete';
 import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, searchByIntent, searchInstructions, searchOptionsSchema, SEARCH_TIMEOUT_MS } from './documentSearch';
 import { SearchAppTools } from './searchAppTools';
@@ -133,6 +136,7 @@ const WINDOW_STATE_SAVE_DELAY_MS = 250;
 let configFile = '';
 let credentialVault: DesktopCredentialVault | null = null;
 let feedbackSender: FeedbackSender | undefined;
+let instanceMonitor: InstanceMonitor | undefined;
 let credentialMigrationError = '';
 let environmentFile = '';
 let windowStateFile = '';
@@ -915,6 +919,104 @@ function registerIpc(): void {
   ), process.platform !== 'win32'));
   instanceIdentity = identity;
   const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href;
+  const probeInstance = async (target: { mcpUrl: string }): Promise<MonitorProbe> => {
+    let dockerEvidence = '', dockerStart: string | null = null;
+    const port = Number(new URL(target.mcpUrl).port);
+    if (dataTier?.instances.some(instance => instance.port === port)) {
+      try {
+        const state = await dataTier.diagnosticState(port);
+        dockerEvidence = state.evidence;
+        dockerStart = state.startedAt;
+      } catch (error) {
+        console.error('[instance-monitor] Docker inspection failed:', error);
+        dockerEvidence = 'Docker state could not be inspected; no container crash cause is inferred.';
+      }
+    }
+    let bootId: string | null;
+    try {
+      const response = await fetch(`${new URL(target.mcpUrl).origin}/health`, { redirect: 'error', signal: AbortSignal.timeout(5000) });
+      if (!response.ok) return { healthy: false, bootId: null, diagnostics: null, evidence: `Health returned HTTP ${response.status}.\n${dockerEvidence}` };
+      const health = z.object({ ok: z.literal(true), bootId: z.string().uuid().optional() }).parse(await response.json());
+      bootId = health.bootId ?? dockerStart;
+    } catch (error) {
+      const timeout = error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name);
+      return { healthy: false, bootId: null, diagnostics: null, evidence: timeout
+        ? `Health probe exceeded its 5-second deadline.\n${dockerEvidence}` : `Health endpoint could not be reached or did not return a valid Working Memory response.\n${dockerEvidence}` };
+    }
+    try { return { healthy: true, bootId, diagnostics: await identity.diagnostics(target.mcpUrl), evidence: dockerEvidence }; }
+    catch (error) {
+      // Sign-in or an older diagnostics API is not a service outage.
+      return { healthy: true, bootId, diagnostics: null, evidence: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  try {
+    instanceMonitor = new InstanceMonitor({
+      file: join(app.getPath('userData'), 'instance-incidents.json'),
+      selected: () => environmentManager.currentEnvironment,
+      probe: probeInstance,
+      deliver: (target, incident, current) => {
+        if (!current() || environmentManager.currentEnvironment?.mcpUrl !== target.mcpUrl) {
+          throw new Error('Selected environment changed.');
+        }
+        return deliverIncident(controlPlane(), incident, current);
+      },
+    });
+    void dataTierLaunch.then(() => instanceMonitor?.start());
+  } catch (error) {
+    console.error('[instance-monitor] Unable to initialize persistent monitoring:', error);
+    dialog.showErrorBox('Instance monitoring unavailable', 'The local incident queue could not be read. Existing reports have not been overwritten.');
+  }
+  ipcMain.handle('instance:diagnostics', async event => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const target = environmentManager.currentEnvironment;
+    if (!target) throw new Error('Select a Working Memory instance first.');
+    let instance = null, error = null;
+    try { instance = await identity.diagnostics(target.mcpUrl); }
+    catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+    if (environmentManager.currentEnvironment?.mcpUrl !== target.mcpUrl) throw new Error('Selected environment changed. Refresh Diagnostics.');
+    return { instance, error: instanceMonitor ? error : 'Persistent instance monitoring is unavailable. Check desktop logs.',
+      incidents: instanceMonitor?.incidents(target.mcpUrl) ?? [] };
+  });
+  let recoveringHeap = false;
+  ipcMain.handle('instance:recover-heap', async (event, raw: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const { mcpUrl } = z.object({ mcpUrl: z.string().min(1) }).strict().parse(raw);
+    const window = mainWindow, environment = environmentManager.currentEnvironment;
+    if (!window || !environment || environment.mcpUrl !== mcpUrl) throw new Error('Selected environment changed. Review Sessions again.');
+    if (!instanceMonitor) throw new Error('The persistent incident queue is unavailable. No garbage collection was performed.');
+    if (recoveringHeap) throw new Error('A heap recovery request is already in progress.');
+    const monitor = instanceMonitor;
+    const ensureCurrent = () => {
+      assertHostTaskSender(event, mainWindow, rendererUrl);
+      if (mainWindow !== window || environmentManager.currentEnvironment?.mcpUrl !== mcpUrl) {
+        throw new Error('Selected environment changed. No garbage collection will be performed on another instance.');
+      }
+    };
+    recoveringHeap = true;
+    try {
+      return await recoverHeap({
+        ensureCurrent,
+        snapshot: () => identity.sessions(mcpUrl),
+        confirm: async snapshot => {
+          const used = (snapshot.memory.heapUsedBytes / 1048576).toFixed(1);
+          const limit = (snapshot.memory.heapLimitBytes / 1048576).toFixed(1);
+          const result = await dialog.showMessageBox(window, {
+            type: 'warning', title: 'Save heap report and collect garbage?',
+            message: `JavaScript heap: ${used} / ${limit} MiB`,
+            detail: `Selected instance: ${new URL(mcpUrl).origin}\n`
+              + 'First save a sanitized bug report in Inbox, then reclaim already-idle MCP sessions and ask V8 to collect garbage. '
+              + 'Active requests are not interrupted, and the container is not restarted. Collection can briefly pause the backend '
+              + 'and cannot free objects still retained by live sessions. Nothing will be sent through feedback automatically.',
+            buttons: ['Cancel', 'Save report and collect garbage'], defaultId: 0, cancelId: 0, noLink: true,
+          });
+          return result.response === 1;
+        },
+        saveReport: snapshot => monitor.recordMemoryReport({ mcpUrl }, snapshot,
+          incidentId => identity.saveHeapReport(mcpUrl, snapshot.startedAt, incidentId)),
+        collect: (snapshot, topicId) => identity.collectHeap(mcpUrl, snapshot.startedAt, topicId),
+      });
+    } finally { recoveringHeap = false; }
+  });
   const onSessionChanged = async (mcpUrl: string, authenticated: boolean) => {
     documentChangeController?.abort();
     if (!authenticated) hostScripts?.stop();
@@ -993,7 +1095,10 @@ function registerIpc(): void {
   ipcMain.handle('instances:upgrade', async (_event, port: number) => {
     const { target, error } = await backendTarget();
     if (!target) throw new Error(error ?? 'No backend update is available.');
-    await requireDataTier().upgrade(port, target);
+    const selected = environmentManager.currentEnvironment;
+    const resume = selected?.port === port ? instanceMonitor?.suspend(selected.mcpUrl) : undefined;
+    try { await requireDataTier().upgrade(port, target); }
+    finally { resume?.(); }
     return dataTierSnapshot();
   });
   ipcMain.handle('instances:set-channel', async (_event, channel: unknown) => {
@@ -1793,6 +1898,7 @@ if (!ownsSingleInstanceLock) {
   });
 
   app.on('before-quit', (event) => {
+    instanceMonitor?.stop();
     if (mainWindow) saveWindowState(mainWindow, true);
     void gracefulShutdown(event);
   });

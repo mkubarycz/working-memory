@@ -10,6 +10,14 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type Store, NotFoundError } from '../../store.js';
 import { WORKSTREAM_KIND, asText, asError } from './shared.js';
+const wsWorkstreamDeleteInputSchema = z.object({
+        id: z.string().min(1).describe('ID of the workstream to delete (or restore).'),
+        restore: z
+          .boolean()
+          .optional()
+          .describe('When true, undelete a previously soft-deleted workstream instead of deleting.'),
+      }).strict();
+
 
 /**
  * Register the `ws-workstream-delete` tool on an MCP session's server.
@@ -24,13 +32,7 @@ export function registerWsWorkstreamDelete(server: McpServer, store: Store): voi
         'Soft-delete a Workstream by `id` (it drops out of ws-workstream-read). To undelete, ' +
         'call with `restore: true`. Unknown/already-deleted IDs (or already-live IDs on ' +
         'restore) are rejected. Returns { ok, id }.',
-      inputSchema: z.object({
-        id: z.string().min(1).describe('ID of the workstream to delete (or restore).'),
-        restore: z
-          .boolean()
-          .optional()
-          .describe('When true, undelete a previously soft-deleted workstream instead of deleting.'),
-      }).strict(),
+      inputSchema: wsWorkstreamDeleteInputSchema,
     },
     async ({ id, restore }) => {
       // For restore, the target row is soft-deleted, so it must be located with

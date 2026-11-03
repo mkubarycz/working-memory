@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { getHeapStatistics } from 'node:v8';
+import { getHeapStatistics, getHeapSpaceStatistics } from 'node:v8';
 import type { InstancePrincipal } from './instanceAccess.js';
 import {
   DEFAULT_SESSION_POLICY, SESSION_HEAP_FRACTION, sessionPolicySchema, sessionSnapshotSchema,
   type SessionPolicy, type SessionSnapshot, type SessionEventType,
+  type HeapCollection,
 } from './sessionPolicy.js';
 
 export interface SessionDiagnosticsOptions {
   clock?: () => number;
   memory?: () => { used: number; limit: number };
+  collectGarbage?: () => void | Promise<void>;
 }
 type Client = { clientId: string | null; clientLabel: string; application: string };
 export interface ManagedSession extends Client {
@@ -37,6 +39,13 @@ export class McpSessions {
   private readonly startedAt: number;
   private policy: SessionPolicy;
   private stopped = false;
+  private readonly collector: (() => void | Promise<void>) | undefined;
+  private collecting = false;
+  private collectedAt: number | undefined;
+  private collectionCompletion: Promise<void> | undefined;
+  private finishCollection: (() => void) | undefined;
+
+  get activeCount(): number { return this.sessions.size; }
 
   constructor(private readonly db: DatabaseSync, options: SessionDiagnosticsOptions = {}) {
     this.clock = options.clock ?? Date.now;
@@ -44,6 +53,9 @@ export class McpSessions {
       used: process.memoryUsage().heapUsed, limit: getHeapStatistics().heap_size_limit,
     }));
     this.startedAt = this.clock();
+    const collector = global.gc;
+    this.collector = options.collectGarbage ?? (typeof collector === 'function'
+      ? () => collector({ type: 'major', execution: 'async' }) : undefined);
     db.exec(`
       CREATE TABLE IF NOT EXISTS mcp_session_policy (
         singleton INTEGER PRIMARY KEY CHECK(singleton=1), policy TEXT NOT NULL
@@ -186,8 +198,43 @@ export class McpSessions {
     this.sweep();
   }
 
+  async collectGarbage(expectedStartedAt: number, reportTopicId: string): Promise<HeapCollection> {
+    if (this.stopped) throw new SessionAdmissionError(503, 'The instance is shutting down.');
+    if (expectedStartedAt !== this.startedAt) throw new SessionAdmissionError(409, 'The instance restarted. Review the current heap before trying again.');
+    if (!this.collector) throw new SessionAdmissionError(501, 'Manual garbage collection is unavailable. Start the backend with --expose-gc.');
+    if (this.collecting || this.collectedAt !== undefined && this.clock() - this.collectedAt < 60000) {
+      throw new SessionAdmissionError(429, 'Wait one minute before requesting another heap collection.');
+    }
+    this.collecting = true;
+    this.collectedAt = this.clock();
+    this.collectionCompletion = new Promise(resolve => { this.finishCollection = resolve; });
+    const started = performance.now(), before = this.memoryUsage().used, active = this.sessions.size;
+    const client = { clientId: null, clientLabel: 'Instance owner', application: 'Sessions: manual recovery' };
+    try {
+      this.sweep();
+      const idleSessionsReclaimed = Math.max(0, active - this.sessions.size);
+      await Promise.all(this.closing);
+      await this.collector();
+      const after = this.memoryUsage().used;
+      const result = { beforeBytes: before, afterBytes: after, reclaimedBytes: Math.max(0, before - after),
+        durationMs: performance.now() - started, idleSessionsReclaimed };
+      this.event('garbage_collected', client, `Manual collection after report ${reportTopicId}: heap ${before} -> ${after} bytes; `
+        + `${result.idleSessionsReclaimed} idle sessions reclaimed. Active requests were not interrupted.`);
+      return result;
+    } catch (error) {
+      console.error('[mcp-sessions] Manual heap collection failed:', error);
+      this.event('heap_collection_failed', client, `Manual collection after report ${reportTopicId} failed. See backend logs.`);
+      throw error;
+    } finally {
+      this.collecting = false;
+      this.finishCollection?.();
+      this.finishCollection = undefined;
+    }
+  }
+
   snapshot(before?: number): SessionSnapshot {
     const memory = this.memoryUsage();
+    const processMemory = process.memoryUsage();
     const rows = this.db.prepare(`SELECT * FROM mcp_session_events
       WHERE last_at>=? AND sequence<? ORDER BY sequence DESC LIMIT 101`)
       .all(this.clock() - this.policy.retentionDays * 86400000, before ?? Number.MAX_SAFE_INTEGER);
@@ -195,7 +242,13 @@ export class McpSessions {
       startedAt: this.startedAt, policy: this.policy,
       memory: { heapUsedBytes: memory.used, heapLimitBytes: memory.limit,
         admissionThresholdBytes: Math.floor(memory.limit * SESSION_HEAP_FRACTION),
-        admissionBlocked: memory.used >= memory.limit * SESSION_HEAP_FRACTION },
+        admissionBlocked: memory.used >= memory.limit * SESSION_HEAP_FRACTION,
+        gcAvailable: this.collector !== undefined,
+        rssBytes: processMemory.rss, externalBytes: processMemory.external, arrayBufferBytes: processMemory.arrayBuffers,
+        spaces: getHeapSpaceStatistics().map(space => ({
+          name: space.space_name, usedBytes: space.space_used_size, sizeBytes: space.space_size,
+          availableBytes: space.space_available_size,
+        })) },
       active: Array.from(this.sessions.values(), session => ({
         id: session.id, clientId: session.clientId, clientLabel: session.clientLabel, application: session.application,
         createdAt: session.createdAt, lastActivityAt: session.lastActivityAt,
@@ -212,6 +265,7 @@ export class McpSessions {
 
   async close(): Promise<void> {
     this.stopped = true;
+    await this.collectionCompletion;
     for (const session of this.sessions.values()) this.remove(session, 'server_shutdown', 'Instance shutdown.');
     this.rates.clear();
     await Promise.all(this.closing);

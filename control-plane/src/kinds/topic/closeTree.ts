@@ -20,6 +20,14 @@ export interface TopicCloseTreeResult {
   skippedSharedCount: number;
   skippedSharedIds: string[];
 }
+const wsTopicCloseTreeInputSchema = z.object({
+        id: z.string().min(1).describe('Root topic ID. The root is always included.'),
+        includeSharedDescendants: z.boolean().default(false).describe(
+          'Close descendants that also have parents outside the closure. Default false skips them and their no-longer-exclusive descendants.',
+        ),
+        dryRun: z.boolean().default(false).describe('Return the exact close plan without writing.'),
+      }).strict();
+
 
 export function registerWsTopicCloseTree(server: McpServer, store: Store): void {
   server.registerTool(
@@ -33,13 +41,7 @@ export function registerWsTopicCloseTree(server: McpServer, store: Store): void 
         'propagates to descendants until the remaining closure is exclusively owned. Set ' +
         '`includeSharedDescendants: true` only when the user intends to close every reachable descendant. ' +
         'Dry run returns the exact deterministic plan without writing.',
-      inputSchema: z.object({
-        id: z.string().min(1).describe('Root topic ID. The root is always included.'),
-        includeSharedDescendants: z.boolean().default(false).describe(
-          'Close descendants that also have parents outside the closure. Default false skips them and their no-longer-exclusive descendants.',
-        ),
-        dryRun: z.boolean().default(false).describe('Return the exact close plan without writing.'),
-      }).strict(),
+      inputSchema: wsTopicCloseTreeInputSchema,
     },
     async ({ id, includeSharedDescendants, dryRun }) => {
       const documents = store.listDocuments({ kind: TOPIC_KIND });

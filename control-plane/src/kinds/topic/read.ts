@@ -12,6 +12,24 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
 import { asText } from '../toolResult.js';
 import { Topic, TOPIC_KIND, stringArray } from './topic.js';
+const wsTopicReadInputSchema = z.object({
+        id: z.string().min(1).optional().describe('Read ONE topic by document ID.'),
+        query: z
+          .string()
+          .optional()
+          .describe('Case-insensitive substring filter over topic text (list mode only).'),
+        workstream: z
+          .string()
+          .optional()
+          .describe('Filter to topics whose `workstreams` include this ID (list mode only).'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Max topics to return (list mode only).'),
+      }).strict();
+
 
 /**
  * Register the `ws-topic-read` tool on an MCP session's server. Reads ONE topic
@@ -29,23 +47,7 @@ export function registerWsTopicRead(server: McpServer, store: Store): void {
         '`workstream` membership filter (topics whose `workstreams` include that ID), and a ' +
         '`limit`. ALWAYS returns { count, topics } — a by-ID read yields a 0-or-1 element ' +
         'list, so callers get one uniform shape.',
-      inputSchema: z.object({
-        id: z.string().min(1).optional().describe('Read ONE topic by document ID.'),
-        query: z
-          .string()
-          .optional()
-          .describe('Case-insensitive substring filter over topic text (list mode only).'),
-        workstream: z
-          .string()
-          .optional()
-          .describe('Filter to topics whose `workstreams` include this ID (list mode only).'),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe('Max topics to return (list mode only).'),
-      }).strict(),
+      inputSchema: wsTopicReadInputSchema,
     },
     async ({ id, query, workstream, limit }) => {
       // Single read: by ID. A foreign-kind ID maps to nothing (the

@@ -1,9 +1,10 @@
 <script lang="ts" module>
-  export type SettingsTab = 'models' | 'routing' | 'human' | 'instances' | 'updates' | 'features' | 'access' | 'sessions';
+  export type SettingsTab = 'models' | 'human' | 'updates' | 'features' | 'access' | 'sessions' | 'diagnostics';
+  export type UpdatesTab = 'back-end' | 'front-end';
 </script>
 
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import type {
     EditableModelProfile,
     CopilotModels,
@@ -16,6 +17,7 @@
   import FeaturesView from './FeaturesView.svelte';
   import AccessView from './AccessView.svelte';
   import SessionsView from './SessionsView.svelte';
+  import DiagnosticsView from './DiagnosticsView.svelte';
   import type { InstanceFeatures } from '../../../../control-plane/src/instanceFeatures';
 
   interface Props {
@@ -24,14 +26,19 @@
     humanName: string;
     credentialStorage: PublicConfig['credentialStorage'];
     settingsStatus: string;
+    settingsError?: boolean;
+    profileTestStatus?: string;
+    profileTestError?: boolean;
     saving: boolean;
     testingProfileId: string | null;
     onHumanName: (value: string) => void;
     onAddProfile: () => void;
     onRemoveProfile: (id: string) => void;
     onTestProfile: (profile: EditableModelProfile & { apiKey: string }) => Promise<void>;
-    onSave: () => Promise<void>;
+    onChange: () => void;
+    onFlush: () => void;
     tab?: SettingsTab;
+    updatesTab?: UpdatesTab;
     selectedMcpUrl: string | null;
     onMakeCurrent: (mcpUrl: string) => Promise<void>;
     onInstancesChanged: () => Promise<void>;
@@ -44,14 +51,19 @@
     humanName,
     credentialStorage,
     settingsStatus,
+    settingsError = false,
+    profileTestStatus = '',
+    profileTestError = false,
     saving,
     testingProfileId,
     onHumanName,
     onAddProfile,
     onRemoveProfile,
     onTestProfile,
-    onSave,
+    onChange,
+    onFlush,
     tab = $bindable('models'),
+    updatesTab = $bindable('back-end'),
     selectedMcpUrl,
     onMakeCurrent,
     onInstancesChanged,
@@ -68,6 +80,7 @@
   let loadingCopilot = $state(false);
   let copilotStatus = $state('');
   let requestedCopilotModels = false;
+  onDestroy(() => onFlush());
 
   $effect(() => {
     if (profiles.some((profile) => profile.provider === 'copilot')) {
@@ -101,15 +114,15 @@
   </header>
   <div class="settings-tabs" role="tablist" aria-label="Settings">
     <button role="tab" aria-selected={tab === 'models'} onclick={() => (tab = 'models')}>Models</button>
-    <button role="tab" aria-selected={tab === 'routing'} onclick={() => (tab = 'routing')}>Routing matrix</button>
     <button role="tab" aria-selected={tab === 'human'} onclick={() => (tab = 'human')}>Human</button>
-    <button role="tab" aria-selected={tab === 'instances'} onclick={() => (tab = 'instances')}>Instances</button>
     <button role="tab" aria-selected={tab === 'updates'} onclick={() => (tab = 'updates')}>Updates</button>
     <button role="tab" aria-selected={tab === 'features'} onclick={() => (tab = 'features')}>Features</button>
     <button role="tab" aria-selected={tab === 'access'} onclick={() => (tab = 'access')}>Access</button>
     <button role="tab" aria-selected={tab === 'sessions'} onclick={() => (tab = 'sessions')}>Sessions</button>
+    <button role="tab" aria-selected={tab === 'diagnostics'} onclick={() => (tab = 'diagnostics')}>Diagnostics</button>
   </div>
   {#if tab === 'models'}
+    <div class="model-settings" oninput={onChange} onchange={onChange} onfocusout={onFlush}>
     <p class="settings-intro">
       Configure GitHub Copilot or OpenAI-compatible model profiles and route AI work by speed and depth.
       {credentialStorage === 'secure'
@@ -183,17 +196,17 @@
             <button
               class="remove-model"
               disabled={profiles.length <= 1 || saving || testingProfileId !== null}
-              onclick={() => onRemoveProfile(profile.id)}
+              onclick={() => { onRemoveProfile(profile.id); onChange(); }}
             >Remove</button>
           </div>
         </fieldset>
       {/each}
-      <button class="add-model" onclick={onAddProfile}>
+      <button class="add-model" onclick={() => { onAddProfile(); onChange(); }}>
         <span aria-hidden="true" class="codicon codicon-add"></span>
         Add model profile
       </button>
     </div>
-  {:else if tab === 'routing'}
+    <h2>Routing matrix</h2>
     <div class="routing-matrix">
       <div class="routing-corner">Depth / speed</div>
       {#each SPEEDS as speed}
@@ -213,23 +226,40 @@
         {/each}
       {/each}
     </div>
-  {:else if tab === 'instances'}
-    <InstancesView {selectedMcpUrl} {onMakeCurrent} {onInstancesChanged} />
+    </div>
+    {#if profileTestStatus}<p role={profileTestError ? 'alert' : 'status'}>{profileTestStatus}</p>{/if}
   {:else if tab === 'features'}
     {#key selectedMcpUrl}<FeaturesView onChanged={onFeaturesChanged} />{/key}
   {:else if tab === 'access'}
     {#key selectedMcpUrl}<AccessView />{/key}
   {:else if tab === 'sessions'}
     {#key selectedMcpUrl}<SessionsView mcpUrl={selectedMcpUrl} />{/key}
+  {:else if tab === 'diagnostics'}
+    {#key selectedMcpUrl}<DiagnosticsView />{/key}
   {:else if tab === 'updates'}
-    <UpdatesView />
+    <div class="settings-tabs settings-subtabs" role="tablist" aria-label="Updates">
+      <button id="updates-back-end-tab" role="tab" aria-selected={updatesTab === 'back-end'}
+        aria-controls="updates-back-end" onclick={() => (updatesTab = 'back-end')}>Back End</button>
+      <button id="updates-front-end-tab" role="tab" aria-selected={updatesTab === 'front-end'}
+        aria-controls="updates-front-end" onclick={() => (updatesTab = 'front-end')}>Front End</button>
+    </div>
+    {#if updatesTab === 'back-end'}
+      <div id="updates-back-end" role="tabpanel" aria-labelledby="updates-back-end-tab">
+        <InstancesView {selectedMcpUrl} {onMakeCurrent} {onInstancesChanged} />
+      </div>
+    {:else}
+      <div id="updates-front-end" role="tabpanel" aria-labelledby="updates-front-end-tab">
+        <UpdatesView />
+      </div>
+    {/if}
   {:else}
     <div class="human-settings">
       <label>
         Human name
         <input
           value={humanName}
-          oninput={(event) => onHumanName((event.currentTarget as HTMLInputElement).value)}
+          oninput={(event) => { onHumanName(event.currentTarget.value); onChange(); }}
+          onblur={onFlush}
           placeholder="Flesh Bag"
         />
       </label>
@@ -237,12 +267,7 @@
       <p>Your initials appear beside your messages in the inline chat response.</p>
     </div>
   {/if}
-  {#if tab !== 'instances' && tab !== 'updates' && tab !== 'features' && tab !== 'access' && tab !== 'sessions'}
-    <div class="settings-actions">
-      <button class="primary" disabled={saving || testingProfileId !== null} onclick={() => void onSave()}>
-        {saving ? 'Saving...' : 'Save'}
-      </button>
-      <span>{settingsStatus}</span>
-    </div>
+  {#if tab !== 'updates' && tab !== 'features' && tab !== 'access' && tab !== 'sessions' && tab !== 'diagnostics'}
+    <p class="settings-actions" role={settingsError ? 'alert' : 'status'}>{settingsStatus || 'Changes save automatically.'}</p>
   {/if}
 </section>

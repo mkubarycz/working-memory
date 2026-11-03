@@ -4,6 +4,14 @@ import type { Store, UpdateDocumentInput } from '../../store.js';
 import { validateSpec } from '../registry.js';
 import { WORKSTREAM_KIND, asError, asText } from './shared.js';
 import { Workstream } from './workstream.js';
+const wsWorkstreamReorderInputSchema = z.object({
+        updates: z.array(z.object({
+          id: z.string().min(1),
+          status: z.enum(['queue', 'progress', 'backlog']),
+          position: z.number().finite(),
+        }).strict()).min(1),
+      }).strict();
+
 
 export function registerWsWorkstreamReorder(server: McpServer, store: Store): void {
   server.registerTool(
@@ -11,13 +19,7 @@ export function registerWsWorkstreamReorder(server: McpServer, store: Store): vo
     {
       title: 'Workstream: Reorder',
       description: 'Atomically update lifecycle section and sort position for a set of workstreams.',
-      inputSchema: z.object({
-        updates: z.array(z.object({
-          id: z.string().min(1),
-          status: z.enum(['queue', 'progress', 'backlog']),
-          position: z.number().finite(),
-        }).strict()).min(1),
-      }).strict(),
+      inputSchema: wsWorkstreamReorderInputSchema,
     },
     async ({ updates }) => {
       const ids = updates.map((update) => update.id);

@@ -8,12 +8,9 @@
 export const SERVICE_NAME = 'working-memory-control-plane';
 
 /**
- * Semantic version of the control-plane service. Deliberately independent of
- * the VS Code extension's version in the repo-root package.json — this is a
- * brand-new standalone app starting at 0.1.0. Reported by `wm-ping` and
- * `GET /health`.
+ * Release identity shared by the package, health response and MCP handshake.
  */
-export const SERVICE_VERSION = '0.1.0';
+export const SERVICE_VERSION: string = require('../../package.json').version;
 
 /** Bind host. Docker sets this to `0.0.0.0`; local launches stay loopback-only. */
 export const HOST = process.env.WM_CONTROL_PLANE_HOST?.trim() || '127.0.0.1';
