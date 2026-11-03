@@ -11,7 +11,7 @@ const claim: ContainerClaim = {
 const read = { name: 'query-read', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } };
 function fixture() {
   const client = { containerClaimRead: vi.fn(async () => [claim]) };
-  const listing = { endpoint, connectionId: 1, tools: [read,
+  const listing = { endpoint, connectionId: 1, tools: [{ ...read, annotations: { ...read.annotations } },
     { ...read, name: 'write', annotations: { readOnlyHint: false } },
     { ...read, name: 'destructive', annotations: { readOnlyHint: true, destructiveHint: true } },
     { name: 'unannotated', inputSchema: read.inputSchema },
@@ -29,7 +29,7 @@ describe('search application tools', () => {
     const discovery = await f.tools.discover(claim.id);
     expect(discovery.tools.map(tool => tool.name)).toEqual(['app__queries__query-read']);
     await f.tools.call(discovery.tools[0].name, { query: 'capacity' });
-    expect(f.mcp.callTool).toHaveBeenCalledWith(claim.id, read.name, { query: 'capacity' }, expect.objectContaining({ connectionId: 1, endpoint }));
+    expect(f.mcp.callTool).toHaveBeenCalledWith(claim.id, read.name, { query: 'capacity' }, expect.objectContaining({ connectionId: 1, endpoint }), undefined);
     expect(f.mcp.listToolsForRoute).toHaveBeenCalledTimes(2);
   });
 
@@ -67,5 +67,23 @@ describe('search application tools', () => {
     });
     await expect(f.tools.discover(claim.id)).rejects.toThrow('Environment changed');
     expect(f.mcp.connect).not.toHaveBeenCalled();
+  });
+
+  it('propagates cancellation through registry discovery, connection, schema listing and execution', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    await f.tools.list(controller.signal);
+    const { tools } = await f.tools.discover(claim.id, controller.signal);
+    await f.tools.call(tools[0].name, {}, controller.signal);
+    expect(f.client.containerClaimRead).toHaveBeenCalledWith({}, controller.signal);
+    expect(f.mcp.connect).toHaveBeenCalledWith(claim.id, endpoint, controller.signal);
+    expect(f.mcp.listToolsForRoute).toHaveBeenCalledWith(claim.id, endpoint, controller.signal);
+    expect(f.mcp.callTool).toHaveBeenCalledWith(claim.id, read.name, {}, expect.any(Object), controller.signal);
+    controller.abort(new Error('Search cancelled'));
+    const reads = f.client.containerClaimRead.mock.calls.length;
+    await expect(f.tools.list(controller.signal)).rejects.toThrow('Search cancelled');
+    await expect(f.tools.discover(claim.id, controller.signal)).rejects.toThrow('Search cancelled');
+    await expect(f.tools.call(tools[0].name, {}, controller.signal)).rejects.toThrow('Search cancelled');
+    expect(f.client.containerClaimRead).toHaveBeenCalledTimes(reads);
   });
 });

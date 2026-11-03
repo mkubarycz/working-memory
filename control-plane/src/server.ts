@@ -431,6 +431,31 @@ export function createMcpServer(
     ? asText(queryDocuments(store.db, input, canReadKind))
     : asError('Search is turned off. Enable it in Settings > Features.'));
 
+  server.registerTool('wm-search-add-topic', {
+    title: 'Search: Add Topic to Workstream',
+    description: 'Explicit Search membership action, never an AI search tool. Atomically requires Search enabled, an open target workstream and the expected topic version. Preserves existing memberships, body, parent links, focus and lifecycle.',
+    inputSchema: z.object({ id: z.string().min(1), workstreamId: z.string().min(1), expectedResourceVersion: z.number().int().nonnegative() }).strict(),
+  }, async ({ id, workstreamId, expectedResourceVersion }) => {
+    try {
+      const assertOpen = () => {
+        if (!features.read().search) throw new Error('Search is turned off. Enable it in Settings > Features.');
+        const workstream = store.getDocument({ id: workstreamId, kind: 'Workstream' });
+        if (!workstream || workstream.spec.status === 'closed') throw new Error('That workstream is no longer open. Choose another.');
+      };
+      assertOpen();
+      const topic = store.getDocument({ id, kind: 'Topic' });
+      if (!topic) throw new Error('That topic is no longer available.');
+      if (topic.metadata.resourceVersion !== expectedResourceVersion) throw new Error('Conflict: the topic changed. Refresh and retry.');
+      const current = topic.spec.workstreams ?? [];
+      if (!Array.isArray(current) || !current.every(value => typeof value === 'string')) throw new Error('The topic has invalid workstream membership.');
+      if (current.includes(workstreamId)) return asText(topic);
+      const spec = validateSpec('Topic', { ...topic.spec, workstreams: [...current, workstreamId] });
+      return asText(store.updateDocument({ id, expectedResourceVersion, spec }, assertOpen));
+    } catch (error) {
+      return asError(error instanceof Error ? error.message : String(error));
+    }
+  });
+
   // Kind plugins: every registered kind may contribute its own namespaced
   // domain API (Workstream → `ws-*`, …). Iterate the kinds that define a
   // `registerApi` hook and wire their tools onto THIS session's server, so each

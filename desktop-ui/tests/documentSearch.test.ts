@@ -3,7 +3,8 @@ import { createServer } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { fileURLToPath } from 'node:url';
 import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, searchByIntent, searchInstructions } from '../src/main/documentSearch';
-import { createSearchViewState, searchContextForDocument } from '../src/renderer/documentSearch';
+import { createSearchViewState, searchContextForDocument, searchContextForSession } from '../src/renderer/documentSearch';
+import { sanitizeForJournalWithMetadata, systemPromptForContext } from '../src/main/desktopChatAgent';
 import { createModelConversation, type ParsedModelTurn } from '../src/main/modelTools';
 import { documentTabIcon, documentTabKey, openDocumentTab, restoreLocalDocumentTab, searchDocument, serializeDocumentTabs } from '../src/renderer/documentTabs';
 import { documentRefreshTarget } from '../src/renderer/documentChanges';
@@ -18,7 +19,7 @@ const ws = (id: string, status = 'progress'): Workstream => ({
   id, title: id, status, closure: null, opened_at: 1, updated_at: 1, closed_at: null, resourceVersion: 1,
 });
 const queryDoc = (id = hit.id, overrides: Partial<QueryDocument> = {}): QueryDocument => ({
-  id, kind: 'Topic', title: hit.title, body: hit.excerpt, bodyOffset: 0, nextBodyOffset: null,
+  id, kind: 'Topic', title: hit.title, body: hit.excerpt, bodyLength: hit.excerpt.length, bodyOffset: 0, nextBodyOffset: null,
   status: 'open', workstreams: ['release'], parents: [], createdAt: 1, updatedAt: 1, resourceVersion: 4, ...overrides,
 });
 const queryResult = (documents = [queryDoc()], overrides: Partial<DocumentQueryResult> = {}): DocumentQueryResult => ({
@@ -169,6 +170,19 @@ describe('agentic document search', () => {
     expect((await searchByIntent('all summaries', dependencies)).partial).toBe(true);
   });
 
+  it('tracks contiguous body coverage in code points rather than UTF-16 units', async () => {
+    const dependencies = harness([
+      call('first', 'wm-document-query', { id: hit.id, bodyLimit: 2 }),
+      call('last', 'wm-document-query', { id: hit.id, bodyOffset: 2, bodyLimit: 2 }),
+      answer([{ type: 'summary', text: 'Complete summary.', sourceIds: [hit.id] }]),
+    ]);
+    dependencies.callTool.mockResolvedValueOnce({ ok: true, result: queryResult([
+      queryDoc(hit.id, { body: 'A\u{1f600}', bodyLength: 4, nextBodyOffset: 2 }),
+    ]) }).mockResolvedValueOnce({ ok: true, result: queryResult([
+      queryDoc(hit.id, { body: 'BC', bodyLength: 4, bodyOffset: 2 }),
+    ]) });
+    expect((await searchByIntent('Summarize', dependencies)).partial).toBe(false);
+  });
   it('allows registered read-only app discovery and grounds adaptive app answers', async () => {
     const dependencies = harness([
       call('apps', 'list_container_apps', {}),
@@ -182,7 +196,76 @@ describe('agentic document search', () => {
     const result = await searchByIntent('Show me queries about capacity in azure', dependencies);
     expect(result.results[0].appId).toBe('queries');
     expect(result.results[0].excerpt).not.toContain('"secret"');
-    expect(dependencies.apps.call).toHaveBeenCalledWith('app__queries__read', { query: 'Azure capacity' });
+    expect(dependencies.apps.call).toHaveBeenCalledWith('app__queries__read', { query: 'Azure capacity' }, expect.any(AbortSignal));
+  });
+
+  it('rejects uncited facts after an empty app catalog but permits a verified empty document query', async () => {
+    await expect(searchByIntent('Summarize cases', harness([
+      call('apps', 'list_container_apps', {}),
+      answer([{ type: 'summary', text: 'All cases are resolved.', sourceIds: [] }]),
+    ]))).rejects.toThrow();
+    const dependencies = harness([
+      call('query', 'wm-document-query', {}),
+      answer([{ type: 'summary', text: 'No matching documents.', sourceIds: [] }]),
+    ]);
+    dependencies.callTool.mockResolvedValue({ ok: true, result: queryResult([]) });
+    expect((await searchByIntent('Find cases', dependencies)).blocks?.[0]).toMatchObject({ text: 'No matching documents.' });
+  });
+
+  it.each([false, true])('redacts structured application text before forwarding success/error (isError=%s)', async isError => {
+    const dependencies = harness([
+      call('tools', 'container_app_tools', { appId: 'queries' }),
+      call('read', 'app__queries__read', {}),
+      answer([{ type: 'clarification', text: 'Choose a narrower query.', suggestions: ['Search by title'] }]),
+    ]);
+    dependencies.apps.discover.mockResolvedValue({ tools: [{ name: 'app__queries__read' }] });
+    dependencies.apps.call.mockResolvedValue({ appId: 'queries', title: 'Queries', result: {
+      isError, content: [{ type: 'text', text: JSON.stringify({ nested: {
+        password: 'plain-password', apiKey: 'plain-key', access_token: 'plain-token', result: 'Safe evidence',
+      } }) }],
+    } });
+    const result = await searchByIntent('Find queries', dependencies);
+    const exposed = JSON.stringify([result, dependencies.conversation.chatMessages]);
+    for (const secret of ['plain-password', 'plain-key', 'plain-token']) expect(exposed).not.toContain(secret);
+    expect(exposed).toContain('Safe evidence');
+  });
+
+  it('marks a nested application result incomplete when sanitization drops array members', async () => {
+    const dependencies = harness([
+      call('tools', 'container_app_tools', { appId: 'queries' }),
+      call('read', 'app__queries__read', {}),
+      answer([{ type: 'summary', text: 'Partial query results.', sourceIds: ['app:queries:read'] }]),
+    ]);
+    dependencies.apps.discover.mockResolvedValue({ tools: [{ name: 'app__queries__read' }] });
+    dependencies.apps.call.mockResolvedValue({ appId: 'queries', title: 'Queries',
+      result: { nested: Array.from({ length: 1_001 }, () => 1) } });
+    expect((await searchByIntent('All queries', dependencies)).partial).toBe(true);
+    const output = dependencies.conversation.chatMessages?.find(message => message.role === 'tool' && message.tool_call_id === 'read');
+    expect(JSON.parse(String(output?.content))).toMatchObject({ truncated: true });
+  });
+
+  it('reports all sanitizer bounds and redacts malformed credential-bearing prose', () => {
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    for (const value of [
+      circular,
+      { nested: Array.from({ length: 1_001 }, () => 1) },
+      { nested: Object.fromEntries(Array.from({ length: 1_001 }, (_, index) => [`k${index}`, 1])) },
+      { nested: 'x'.repeat(32_769) },
+      { nested: JSON.stringify({ rows: Array.from({ length: 1_001 }, () => 1) }) },
+    ]) expect(sanitizeForJournalWithMetadata(value).truncated).toBe(true);
+    const sanitized = sanitizeForJournalWithMetadata({ content: [
+      { text: '{"password":"malformed-secret",' }, { text: 'Error\napiKey=prose-secret\nSafe evidence' },
+    ] });
+    expect(sanitized.truncated).toBe(false);
+    expect(JSON.stringify(sanitized.value)).not.toMatch(/malformed-secret|prose-secret/);
+    expect(JSON.stringify(sanitized.value)).toContain('Safe evidence');
+  });
+
+  it('only recommends indexed discovery when the chat catalog actually exposes it', () => {
+    expect(systemPromptForContext()).not.toContain('wm-document-search');
+    expect(systemPromptForContext()).toContain('ws-topic-read');
+    expect(systemPromptForContext(undefined, true)).toContain('wm-document-search');
   });
 
   it('blocks unlisted/mutating tools, excludes secrets, and does not turn read failures into no matches', async () => {
@@ -222,21 +305,41 @@ describe('agentic document search', () => {
     expect(searchInstructions({ workstreams: [{ id: 'one', title: 'One' }, { id: 'two', title: 'Two' }] })).toContain('ask which one');
   });
 
-  it('adds only membership with CAS, preserving other memberships and topic lifecycle', async () => {
-    const client = { wsRead: vi.fn().mockResolvedValue([ws('new')]),
-      getDocument: vi.fn().mockResolvedValue({ available: true, document: topic }),
-      updateDocument: vi.fn().mockResolvedValue({ available: true, document: topic }) };
+  it('uses the atomic membership tool with the observed topic version', async () => {
+    const client = { getDocument: vi.fn().mockResolvedValue({ available: true, document: topic }),
+      callTool: vi.fn().mockResolvedValue({ ok: true, result: topic }) };
     await addSearchTopicToWorkstream(client, topic.metadata.id, 'new');
-    expect(client.updateDocument).toHaveBeenCalledWith({
-      id: topic.metadata.id, expectedResourceVersion: 4, spec: { workstreams: ['existing', 'new'] },
+    expect(client.callTool).toHaveBeenCalledWith('wm-search-add-topic', {
+      id: topic.metadata.id, expectedResourceVersion: 4, workstreamId: 'new',
     });
-    await addSearchTopicToWorkstream(client, topic.metadata.id, 'existing');
-    expect(client.updateDocument).toHaveBeenCalledTimes(1);
-    client.wsRead.mockResolvedValue([ws('closed', 'closed')]);
-    await expect(addSearchTopicToWorkstream(client, topic.metadata.id, 'closed')).rejects.toThrow('no longer open');
-    client.wsRead.mockResolvedValue([ws('new')]);
-    client.updateDocument.mockResolvedValue({ available: false, document: null, error: 'Conflict: refresh and retry' });
+    client.callTool.mockResolvedValue({ ok: false, error: 'Conflict: refresh and retry' });
     await expect(addSearchTopicToWorkstream(client, topic.metadata.id, 'new')).rejects.toThrow('Conflict');
+  });
+
+  it('rechecks feature/environment availability after the pending topic read', async () => {
+    let enabled = true;
+    const client = {
+      getDocument: vi.fn(async () => { enabled = false; return { available: true, document: topic }; }),
+      callTool: vi.fn(),
+    };
+    await expect(addSearchTopicToWorkstream(client, topic.metadata.id, 'new', async () => {
+      if (!enabled) throw new Error('Search is turned off');
+    })).rejects.toThrow('Search is turned off');
+    expect(client.callTool).not.toHaveBeenCalled();
+  });
+
+  it('retains the original context while a prompt, active request or completed response exists', () => {
+    const document = { kind: 'container-app' as const, id: 'other', title: 'Other app', spec: [],
+      createdAt: 1, updatedAt: 1, resourceVersion: 1 };
+    const state = createSearchViewState();
+    state.context = { appId: 'original' };
+    for (const patch of [{ prompt: 'Follow-up' }, { prompt: '', loading: true },
+      { loading: false, response: { query: 'Find things', queries: [], results: [] } }]) {
+      Object.assign(state, patch);
+      expect(searchContextForSession(state, document)).toEqual({ appId: 'original' });
+    }
+    state.response = null;
+    expect(searchContextForSession(state, document)).toMatchObject({ appId: 'other' });
   });
 
   it('offers queued, in-progress and backlog workstreams but excludes closed ones', async () => {

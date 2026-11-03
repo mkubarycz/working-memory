@@ -212,6 +212,7 @@ export class DesktopUpdater {
   async install(): Promise<void> {
     const prepared = this.prepared;
     if (!prepared || this.current.phase !== 'ready') throw new Error('Download the update before installing it.');
+    await this.options.saveChannel(this.current.channel);
     this.update({ phase: 'installing' });
     if (this.platform === 'darwin') {
       const bundle = macAppBundle(this.options.executablePath)!;

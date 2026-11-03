@@ -104,7 +104,8 @@ export class AppMcpService {
     };
   }
 
-  async connect(appId: ContainerAppId, endpoint: AppMcpEndpoint): Promise<AppMcpStatus> {
+  async connect(appId: ContainerAppId, endpoint: AppMcpEndpoint, signal?: AbortSignal): Promise<AppMcpStatus> {
+    signal?.throwIfAborted();
     const normalizedEndpoint = normalizeAppMcpEndpoint(endpoint);
     const current = this.connections.get(appId);
     if (current && sameEndpoint(current.endpoint, normalizedEndpoint)) {
@@ -112,13 +113,14 @@ export class AppMcpService {
     }
     const epoch = this.epoch;
     await this.disconnect(appId);
+    signal?.throwIfAborted();
     if (this.epoch !== epoch) throw new Error(`Connection to ${normalizedEndpoint.url} was cancelled.`);
     const token = this.generation(appId);
     const client = this.createClient(appId);
     this.inFlight.set(appId, { client, token });
     try {
       await client.connect(this.createTransport(normalizedEndpoint), {
-        timeout: this.timeoutMs,
+        timeout: this.timeoutMs, signal,
       });
       if (
         this.epoch !== epoch
@@ -174,10 +176,12 @@ export class AppMcpService {
   async listToolsForRoute(
     appId: ContainerAppId,
     endpoint?: AppMcpEndpoint,
+    signal?: AbortSignal,
   ): Promise<AppMcpToolListing> {
     const expected = endpoint ? { endpoint: normalizeAppMcpEndpoint(endpoint) } : undefined;
     const connection = this.requireConnection(appId, expected);
-    const result = await connection.client.listTools({}, { timeout: this.timeoutMs });
+    signal?.throwIfAborted();
+    const result = await connection.client.listTools({}, { timeout: this.timeoutMs, signal });
     if (this.connections.get(appId) !== connection) {
       throw new Error(`The @${appId} MCP connection changed while tools were being listed.`);
     }
@@ -203,16 +207,18 @@ export class AppMcpService {
     name: string,
     args: Record<string, unknown>,
     expected?: { connectionId: number; endpoint: AppMcpEndpoint },
+    signal?: AbortSignal,
   ): Promise<unknown> {
     if (!name.trim()) throw new Error('A tool name is required.');
     if (!args || Array.isArray(args) || typeof args !== 'object') {
       throw new Error('Tool arguments must be a JSON object.');
     }
     const connection = this.requireConnection(appId, expected);
+    signal?.throwIfAborted();
     return connection.client.callTool(
       { name, arguments: args },
       undefined,
-      { timeout: this.timeoutMs },
+      { timeout: this.timeoutMs, signal },
     );
   }
 

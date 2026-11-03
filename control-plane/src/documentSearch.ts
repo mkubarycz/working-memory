@@ -17,8 +17,8 @@ export const documentQuerySchema = z.object({
   limit: z.number().int().min(1).max(20).default(10),
   offset: z.number().int().nonnegative().default(0),
   expectedVersion: z.number().int().nonnegative().optional(),
-  bodyOffset: z.number().int().nonnegative().default(0),
-  bodyLimit: z.number().int().min(1).max(12000).default(2000),
+  bodyOffset: z.number().int().nonnegative().default(0).describe('Offset in Unicode code points.'),
+  bodyLimit: z.number().int().min(1).max(12000).default(2000).describe('Maximum Unicode code points returned.'),
 }).strict().refine(input => !(input.workstream || input.parent || input.topicType) || !input.kind || input.kind === 'Topic',
   'Workstream and parent filters apply only to Topics.');
 
@@ -27,6 +27,7 @@ export interface QueryDocument {
   kind: string;
   title: string;
   body: string;
+  bodyLength: number;
   bodyOffset: number;
   nextBodyOffset: number | null;
   status: string | null;
@@ -69,23 +70,33 @@ export function queryDocuments(
   filter("EXISTS (SELECT 1 FROM document_search AS indexed WHERE indexed.rowid = resources.rowid AND instr(lower(indexed.body || '\n' || indexed.title), lower(?)) > 0)", options.query);
   const predicate = where.join(' AND ');
   const total = Number(db.prepare(`SELECT count(*) AS total FROM resources WHERE ${predicate}`).get(...args)?.total);
-  const rows = db.prepare(`SELECT id, kind,
+  const rows = db.prepare(`SELECT id, kind, title,
+      substr(evidence, ?, ?) AS body, length(evidence) AS body_length,
+      lifecycle, workstreams, parents, created_at, updated_at, resource_version
+    FROM (SELECT id, kind,
       CAST(COALESCE(json_extract(spec, '$.title'), json_extract(spec, '$.name'), json_extract(spec, '$.label'), id) AS TEXT) AS title,
-      (SELECT indexed.body FROM document_search AS indexed WHERE indexed.rowid = resources.rowid) AS body,
+      CASE WHEN kind = 'AgentMessage' THEN json_object(
+        'category', json_extract(spec, '$.category'), 'severity', json_extract(spec, '$.severity'),
+        'attention', json(COALESCE(spec -> '$.attention', 'null')), 'due_at', json_extract(spec, '$.due_at'),
+        'recommended_action', json_extract(spec, '$.recommended_action'), 'decision', json_extract(spec, '$.decision'),
+        'topics', json_extract(spec, '$.topics'), 'relations', json_extract(spec, '$.relations'),
+        'agent_id', json_extract(spec, '$.agent_id'), 'agent_name', json_extract(spec, '$.agent_name')
+      ) || char(10) ELSE '' END ||
+      COALESCE((SELECT indexed.body FROM document_search AS indexed WHERE indexed.rowid = resources.rowid), '') AS evidence,
       json_extract(spec, '$.status') AS lifecycle,
       COALESCE(json_extract(spec, '$.workstreams'), '[]') AS workstreams,
       COALESCE(json_extract(spec, '$.parents'), '[]') AS parents,
       created_at, updated_at, resource_version
-    FROM resources WHERE ${predicate}
+    FROM resources WHERE ${predicate})
     ORDER BY ${options.order === 'title' ? 'title COLLATE NOCASE, id' : 'updated_at DESC, id'}
-    LIMIT ? OFFSET ?`).all(...args, options.limit, options.offset);
+    LIMIT ? OFFSET ?`).all(options.bodyOffset + 1, options.bodyLimit, ...args, options.limit, options.offset);
   const documents = rows.map(row => {
     const body = String(row.body);
     const next = options.bodyOffset + options.bodyLimit;
     return {
       id: String(row.id), kind: String(row.kind), title: String(row.title),
-      body: body.slice(options.bodyOffset, next), bodyOffset: options.bodyOffset,
-      nextBodyOffset: next < body.length ? next : null,
+      body, bodyLength: Number(row.body_length), bodyOffset: options.bodyOffset,
+      nextBodyOffset: next < Number(row.body_length) ? next : null,
       status: typeof row.lifecycle === 'string' ? row.lifecycle : null,
       workstreams: JSON.parse(String(row.workstreams)) as string[],
       parents: JSON.parse(String(row.parents)) as string[],

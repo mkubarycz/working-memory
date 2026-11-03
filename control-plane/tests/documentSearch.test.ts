@@ -180,6 +180,83 @@ describe('indexed document search', () => {
     } finally { await client.dispose(); await server.close(); }
   });
 
+  it('slices large evidence in SQLite and pages by Unicode code points without splitting characters', () => {
+    const store = fixture();
+    const body = 'A\u{1f600}BC'.repeat(30_000);
+    const doc = store.createDocument({ kind: 'Topic', spec: { title: 'Large body', body } });
+    const prepare = vi.spyOn(store.db, 'prepare');
+    try {
+      const first = queryDocuments(store.db, { id: doc.metadata.id, bodyOffset: 11, bodyLimit: 2 }, () => true);
+      expect(first.documents[0]).toMatchObject({ body: 'A\u{1f600}', bodyLength: 120_011, nextBodyOffset: 13 });
+      const next = queryDocuments(store.db, { id: doc.metadata.id, bodyOffset: 13, bodyLimit: 2 }, () => true);
+      expect(next.documents[0]).toMatchObject({ body: 'BC', bodyOffset: 13, nextBodyOffset: 15 });
+      expect(JSON.stringify(first).length).toBeLessThan(1_000);
+      expect(prepare.mock.calls.some(([sql]) => sql.includes('substr(evidence, ?, ?) AS body'))).toBe(true);
+    } finally { prepare.mockRestore(); }
+  });
+
+  it('includes exact AgentMessage scheduling, recommendation and relationship facts without opaque metadata', () => {
+    const store = fixture();
+    const agent = store.createDocument({ kind: 'Agent', spec: { name: 'Search evidence tests' } });
+    const message = store.createDocument({ kind: 'AgentMessage', spec: {
+      agent_id: agent.metadata.id, title: 'Review release', description: 'Authored reminder text.',
+      category: 'reminder', due_at: 1_950_000_000, recommended_action: 'Review the release checklist.',
+      topics: [], relations: [],
+    } });
+    const result = queryDocuments(store.db, { id: message.metadata.id }, () => true);
+    const evidence = result.documents[0].body;
+    expect(JSON.parse(evidence.split('\n')[0])).toMatchObject({
+      category: 'reminder', due_at: 1_950_000_000, severity: 'info', attention: false,
+      recommended_action: 'Review the release checklist.', agent_id: agent.metadata.id,
+      agent_name: 'Search evidence tests', topics: [], relations: [],
+    });
+    expect(evidence).toContain('Authored reminder text.');
+    expect(evidence).not.toContain('legacy_source');
+    expect(store.getDocument({ id: message.metadata.id })).toEqual(message);
+  });
+
+  it.each(['normal', 'closed', 'disabled', 'conflict'])('enforces atomic Search membership at the write boundary: %s', async mode => {
+    const store = fixture();
+    const flags = new InstanceFeatureStore(store.db);
+    flags.write({ search: true });
+    const workstream = store.createDocument({ kind: 'Workstream', spec: { title: 'Target', status: 'progress' } });
+    const type = store.createDocument({ kind: 'TopicType', spec: { label: 'Case', icon: 'notebook', description: 'Cases' } });
+    const topic = store.createDocument({ kind: 'Topic', spec: {
+      title: 'Membership', body: 'Authored body', status: 'open', workstreams: ['existing'],
+      parents: ['parent'], focusedWorkstreams: ['existing'], topicType: type.metadata.id,
+    } });
+    const update = store.updateDocument.bind(store);
+    const spy = vi.spyOn(store, 'updateDocument').mockImplementation((input, preconditions) => {
+      if (mode === 'closed') update({ id: workstream.metadata.id, expectedResourceVersion: workstream.metadata.resourceVersion,
+        spec: { ...workstream.spec, status: 'closed' } });
+      if (mode === 'disabled') flags.write({ search: false });
+      if (mode === 'conflict') update({ id: topic.metadata.id, expectedResourceVersion: topic.metadata.resourceVersion,
+        spec: { ...topic.spec, body: 'Concurrent edit' } });
+      return update(input, preconditions);
+    });
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      const result = await client.callTool('wm-search-add-topic', {
+        id: topic.metadata.id, workstreamId: workstream.metadata.id, expectedResourceVersion: topic.metadata.resourceVersion,
+      });
+      const saved = store.getDocument({ id: topic.metadata.id })!;
+      if (mode === 'normal') {
+        expect(result.ok).toBe(true);
+        expect(saved.spec).toEqual({ ...topic.spec, workstreams: ['existing', workstream.metadata.id] });
+        const version = store.getResourceVersion();
+        expect(await client.callTool('wm-search-add-topic', { id: topic.metadata.id, workstreamId: workstream.metadata.id,
+          expectedResourceVersion: saved.metadata.resourceVersion })).toMatchObject({ ok: true });
+        expect(store.getResourceVersion()).toBe(version);
+      } else {
+        expect(result).toMatchObject({ ok: false, error: expect.stringMatching(
+          mode === 'closed' ? /no longer open/ : mode === 'disabled' ? /turned off/ : /Conflict/,
+        ) });
+        expect(saved.spec).toEqual({ ...topic.spec, ...(mode === 'conflict' ? { body: 'Concurrent edit' } : {}) });
+      }
+    } finally { spy.mockRestore(); await client.dispose(); await server.close(); }
+  });
+
   it('blocks both search tools by default and rechecks the flag on existing MCP sessions', async () => {
     const store = fixture();
     const doc = store.createDocument({ kind: 'Topic', spec: { title: 'Flag test', body: 'Retained markdown' } });

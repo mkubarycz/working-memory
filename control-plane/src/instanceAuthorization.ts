@@ -17,6 +17,7 @@ export function authorizeInstanceTool(principal: InstancePrincipal, name: string
 export function instanceToolPermissions(name: string, args: Record<string, unknown>, store: Store): PermissionSelection[] | null {
   const required = (category: PermissionCategory, operation: PermissionOperation): PermissionSelection[] => [{ category, operation }];
   if (name === 'wm-attachment-create') return required('content', 'create');
+  if (name === 'wm-search-add-topic') return [...required('content', 'read'), ...required('content', 'update')];
   if (name === 'wm-document-search' || name === 'wm-document-query') return required('content', 'read');
   const generic = /^wm-document-(create|read|update|delete)$/.exec(name);
   if (generic) {

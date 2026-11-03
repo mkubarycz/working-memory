@@ -29,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { parseDocumentChanges, type DocumentChanges } from './documentChanges';
+import { abortable } from './abort';
 import { isDocumentSearchResult, type DocumentSearchInput, type DocumentSearchResult } from './documentSearch';
 import {
   controlPlanePortFilePath,
@@ -1186,16 +1187,18 @@ export class ControlPlaneClient {
    * the request fails (also resetting the connection so the next call
    * reconnects), mirroring the typed domain methods.
    */
-  async listTools(): Promise<CanonicalToolDef[]> {
-    const client = await this.ensureConnected();
+  async listTools(signal?: AbortSignal): Promise<CanonicalToolDef[]> {
+    signal?.throwIfAborted();
+    const client = await abortable(this.ensureConnected(), signal);
     if (!client) {
       throw new ControlPlaneClientError(this.authenticationError ?? 'Control plane not running');
     }
     let res: unknown;
     try {
-      res = await this.retryStaleRead(client, connected => connected.listTools());
+      res = await abortable(this.retryStaleRead(client, connected => signal
+        ? connected.listTools({}, { signal }) : connected.listTools(), signal), signal);
     } catch (err) {
-      this.resetConnection();
+      if (!signal?.aborted) this.resetConnection();
       throw new ControlPlaneClientError(messageOf(err));
     }
     const tools = (res as { tools?: unknown }).tools;
@@ -1226,16 +1229,19 @@ export class ControlPlaneClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<ToolCallOutcome> {
-    const client = await this.ensureConnected();
+    signal?.throwIfAborted();
+    const client = await abortable(this.ensureConnected(), signal);
     if (!client) {
       return { ok: false, error: this.authenticationError ?? 'Control plane not running' };
     }
     let result: unknown;
     try {
-      result = await client.callTool({ name, arguments: args });
+      const request = { name, arguments: args };
+      result = await (signal ? client.callTool(request, undefined, { signal }) : client.callTool(request));
     } catch (err) {
-      this.resetConnection();
+      if (!signal?.aborted) this.resetConnection();
       return { ok: false, error: messageOf(err) };
     }
     if ((result as { isError?: unknown }).isError === true) {
@@ -1263,17 +1269,21 @@ export class ControlPlaneClient {
   private async callDomainTool(
     name: string,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    const client = await this.ensureConnected();
+    signal?.throwIfAborted();
+    const client = await abortable(this.ensureConnected(), signal);
     if (!client) {
       throw new ControlPlaneClientError(this.authenticationError ?? 'Control plane not running');
     }
     let result: unknown;
     try {
-      const call = (connected: Client) => connected.callTool({ name, arguments: args });
-      result = RETRYABLE_READ_TOOLS.has(name) ? await this.retryStaleRead(client, call) : await call(client);
+      const request = { name, arguments: args };
+      const call = (connected: Client) => signal
+        ? connected.callTool(request, undefined, { signal }) : connected.callTool(request);
+      result = await abortable(RETRYABLE_READ_TOOLS.has(name) ? this.retryStaleRead(client, call, signal) : call(client), signal);
     } catch (err) {
-      this.resetConnection();
+      if (!signal?.aborted) this.resetConnection();
       throw new ControlPlaneClientError(messageOf(err));
     }
     if ((result as { isError?: unknown }).isError === true) {
@@ -1282,9 +1292,10 @@ export class ControlPlaneClient {
     return result;
   }
 
-  private async retryStaleRead<T>(client: Client, read: (connected: Client) => Promise<T>): Promise<T> {
+  private async retryStaleRead<T>(client: Client, read: (connected: Client) => Promise<T>, signal?: AbortSignal): Promise<T> {
     try { return await read(client); }
     catch (error) {
+      signal?.throwIfAborted();
       const stale = this.staleConnections.has(client) || error instanceof StreamableHTTPError && (
         error.code === 404 && error.message.includes('Session not found or expired.')
         || error.code === 400 && error.message.includes('"message":"Bad Request: no valid session ID"')
@@ -1293,7 +1304,7 @@ export class ControlPlaneClient {
       this.staleConnections.add(client);
       // Another concurrent read may already have replaced this expired connection.
       if (this.client === client) this.resetConnection();
-      const connected = await this.ensureConnected();
+      const connected = await abortable(this.ensureConnected(), signal);
       if (!connected) throw error;
       return read(connected);
     }
@@ -1405,8 +1416,8 @@ export class ControlPlaneClient {
     return parsed;
   }
 
-  async containerClaimRead(input: ContainerClaimReadInput = {}): Promise<ContainerClaim[]> {
-    const result = await this.callDomainTool('ws-containerclaim-read', { ...input });
+  async containerClaimRead(input: ContainerClaimReadInput = {}, signal?: AbortSignal): Promise<ContainerClaim[]> {
+    const result = await this.callDomainTool('ws-containerclaim-read', { ...input }, signal);
     const parsed = parseToolText(result) as { claims?: unknown } | null;
     return (Array.isArray(parsed?.claims) ? parsed.claims : []) as ContainerClaim[];
   }

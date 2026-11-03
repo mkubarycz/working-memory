@@ -27,6 +27,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         let activeDrag = $state(null);
         const test = window.__searchTest = { searches: [], adds: [], opened: [], refreshes: 0, preparations: [], nativeDrags: [], dragListeners: [] };
         test.readDrag=()=>activeDrag;
+        test.browse=()=>{active='topic';};
+        test.readTrace=()=>session.trace;
         window.workingMemory = {
           onDocumentSearchTrace: () => () => {},
           cancelDocumentSearch: async () => {},
@@ -42,8 +44,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           searchDocuments: async (query,options) => {
             test.searches.push(query);
             test.options=options;
+            if(test.holdSearch) await new Promise(resolve=>{test.releaseSearch=resolve;});
             if (test.failSearch) throw new Error('Model unavailable');
-            return {query, queries:['OAuth'], blocks:test.blocks, results:test.empty ? [] : [{
+            return {query, queries:['OAuth'], blocks:test.blocks, trace:test.trace, results:test.empty ? [] : [{
               id:'topic-1', kind:'Topic', title:'OAuth connections',
               excerpt:'The connector authenticates through a handshake.',
               reason:'Explains connection reliability and authentication.', score:1,status:'open'
@@ -274,6 +277,17 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('document.querySelector("textarea").value'),'Line one\\nLine two');
           await enter(['meta']);
           await wait('window.__searchTest.searches.length==='+String(before+2));
+          await wait('!document.querySelector("textarea").disabled');
+          await evaluate('window.__searchTest.holdSearch=true;window.__searchTest.trace=[{id:"while-away",tool:"wm-document-query",arguments:{},durationMs:1,status:"success",count:1}]');
+          await enter(['meta']);
+          await wait('typeof window.__searchTest.releaseSearch==="function"');
+          await evaluate('window.__searchTest.browse()');
+          await wait('document.body.innerText.includes("Opened topic")');
+          await evaluate('window.__searchTest.releaseSearch()');
+          await wait('window.__searchTest.readTrace().length===1');
+          await click('Back to search');
+          await wait('document.querySelector("textarea")');
+          assert.equal(await evaluate('window.__searchTest.readTrace()[0].id'),'while-away');
           console.log('search-browser: intent, navigation, persistence, native dialog, errors and explicit membership passed');
           win.destroy();app.exit(0);
         }).catch(error=>{console.error(error);app.exit(1);});

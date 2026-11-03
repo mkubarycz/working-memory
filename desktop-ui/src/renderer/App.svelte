@@ -24,7 +24,7 @@
   import { createTopicFromDraft } from './topicCreation';
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
   import SearchView from './documents/SearchView.svelte';
-  import { createSearchViewState, searchContextForDocument } from './documentSearch';
+  import { createSearchViewState, searchContextForSession } from './documentSearch';
   import { topicBacklogDocument } from './topicBacklog';
   import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
@@ -1799,7 +1799,7 @@
       documentError = 'Search is turned off. Enable it in Settings > Features.';
       return;
     }
-    if (activeDocument?.kind !== 'search' && !searchState.loading) searchState.context = searchContextForDocument(activeDocument);
+    if (activeDocument?.kind !== 'search') searchState.context = searchContextForSession(searchState, activeDocument);
     documentOpens.invalidate();
     const next = openDocumentTab(documentTabsState(), searchDocument());
     documents = next.tabs;

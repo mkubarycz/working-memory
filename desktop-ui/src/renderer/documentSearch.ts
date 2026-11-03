@@ -17,6 +17,11 @@ export function createSearchViewState(): SearchViewState {
   return { prompt: '', multiline: false, response: null, loading: false, error: '', notice: '', requestId: null, trace: [] };
 }
 
+export function searchContextForSession(state: SearchViewState, document: DocumentVM | null): SearchContext | undefined {
+  return state.loading || state.prompt.trim() || state.response
+    ? state.context : searchContextForDocument(document);
+}
+
 export function searchContextForDocument(document: DocumentVM | null): SearchContext | undefined {
   if (!document?.id || ['search', 'settings', 'host-task', 'host-task-create', 'topic-backlog'].includes(document.kind)) return undefined;
   return {

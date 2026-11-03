@@ -156,7 +156,6 @@ interface ActiveRun {
 const SYSTEM_PROMPT = [
   'You are the Working Memory desktop assistant.',
   'Use the provided ws-* tools to read and maintain Working Memory. Prefer exact reads before updates.',
-  'For discovery, use wm-document-search with several short related phrases/synonyms derived from the user intent, rather than listing all topics. Explain matches using the returned excerpts; open/read exact IDs for details.',
   'When referencing a Working Memory resource in Chat, use a friendly Markdown link targeting working-memory://open/<kind>/<identifier>; URI-encode the identifier. Agent messages use kind agent-message. Only restricted Agent Window surfaces use the existing http://127.0.0.1:7718/open bridge (agent messages use its historical alert route); do not expand that bridge allowlist.',
   'Before creating AgentMessages, look up your registered caller name with ws-agent-read; if absent register with ws-agent-create. Remember and reuse the returned metadata.id as the required agent_id on every ws-agent-message-create. Use your own caller identity, not System Import. Registration is attribution only, not authentication.',
   'Use ws-agent-message-* for canonical AgentMessages. Set attention true only for a human decision or intervention; otherwise use category completion, attention false, and include the PR link when work is ready. Do not post progress chatter.',
@@ -165,18 +164,24 @@ const SYSTEM_PROMPT = [
   'When the task is complete, answer concisely. Never claim a destructive action ran unless its tool result says it ran.',
 ].join(' ');
 
-export function systemPromptForContext(context?: ChatContext): string {
-  if (!context) return SYSTEM_PROMPT;
+export function systemPromptForContext(context?: ChatContext, searchAvailable = false): string {
+  const prompt = [
+    SYSTEM_PROMPT,
+    searchAvailable
+      ? 'For discovery, use wm-document-search with several short related phrases/synonyms derived from the user intent. Explain matches using returned excerpts; read exact IDs for details.'
+      : 'For discovery, use the available ws-workstream-read and ws-topic-read filters, then read exact document IDs for details.',
+  ].join(' ');
+  if (!context) return prompt;
   const selected = `Selected document: kind=${JSON.stringify(context.kind)}, identifier=${JSON.stringify(context.identifier)}, title=${JSON.stringify(context.title)}.`;
   return [
-    SYSTEM_PROMPT,
+    prompt,
     selected,
     'Unless the user says otherwise, deictic references including "this", "it", and "current document" refer to this selected document.',
     'Use this exact kind and identifier in tool calls that act on or read the selected document; do not guess its identity from the title.',
   ].join(' ');
 }
 
-function systemPromptForInput(input: StartChatInput): string {
+function systemPromptForInput(input: StartChatInput, searchAvailable: boolean): string {
   const imageInstructions = input.images?.length
     ? [
         'The user attached images that are already stored in Working Memory.',
@@ -192,7 +197,7 @@ function systemPromptForInput(input: StartChatInput): string {
       ].join(' ')
     : undefined;
   return [
-    systemPromptForContext(input.context),
+    systemPromptForContext(input.context, searchAvailable),
     imageInstructions,
     input.appTools?.systemInstructions,
   ]
@@ -291,7 +296,7 @@ export class DesktopChatAgent {
       conversation: createModelConversation({
         mode: input.mode,
         model: input.model,
-        systemPrompt: systemPromptForInput(input),
+        systemPrompt: systemPromptForInput(input, tools.some(tool => tool.name === 'wm-document-search')),
         userMessage: input.message,
         userImages: input.images,
         tools,
@@ -973,25 +978,55 @@ function sanitizeJournalText(value: string, secrets: string[]): string {
 }
 
 export function sanitizeForJournal(value: unknown, secrets: string[] = []): unknown {
+  return sanitizeForJournalWithMetadata(value, secrets).value;
+}
+
+export function sanitizeForJournalWithMetadata(value: unknown, secrets: string[] = []): { value: unknown; truncated: boolean } {
   const sensitive = /api[-_]?key|authorization|cookie|credential|password|secret|token/i;
+  const sensitiveAssignment = /["']?(?:api[-_]?key|authorization|cookie|credential|password|secret|(?:access[-_]?)?token)["']?\s*[:=]/i;
   const seen = new WeakSet<object>();
-  const visit = (candidate: unknown): unknown => {
+  let truncated = false;
+  const visit = (candidate: unknown, depth = 0): unknown => {
+    if (depth > 32) { truncated = true; return '[depth limit]'; }
     if (candidate === null || typeof candidate === 'boolean') return candidate;
     if (typeof candidate === 'number') return Number.isFinite(candidate) ? candidate : String(candidate);
-    if (typeof candidate === 'string') return sanitizeJournalText(candidate, secrets).slice(0, 32_768);
+    if (typeof candidate === 'string') {
+      let sanitized: string;
+      if (/^\s*[{[]/.test(candidate)) {
+        if (candidate.length > 60_000) {
+          truncated = true;
+          return '[oversized structured text omitted]';
+        }
+        let parsed: unknown;
+        try { parsed = JSON.parse(candidate); } catch { /* Treat malformed structured text as untrusted prose. */ }
+        sanitized = parsed !== undefined
+          ? JSON.stringify(visit(parsed, depth + 1))
+          : candidate.split('\n').map(line => sensitiveAssignment.test(line) ? '[redacted sensitive text]' : sanitizeJournalText(line, secrets)).join('\n');
+      } else {
+        sanitized = candidate.split('\n').map(line => sensitiveAssignment.test(line) ? '[redacted sensitive text]' : sanitizeJournalText(line, secrets)).join('\n');
+      }
+      if (sanitized.length > 32_768) truncated = true;
+      return sanitized.slice(0, 32_768);
+    }
     if (typeof candidate !== 'object') return String(candidate);
-    if (seen.has(candidate)) return '[circular]';
+    if (seen.has(candidate)) { truncated = true; return '[circular]'; }
     seen.add(candidate);
-    if (Array.isArray(candidate)) return candidate.slice(0, 1_000).map(visit);
+    if (Array.isArray(candidate)) {
+      if (candidate.length > 1_000) truncated = true;
+      return candidate.slice(0, 1_000).map(child => visit(child, depth + 1));
+    }
     let sensitiveIndex = 0;
-    return Object.fromEntries(Object.entries(candidate as Record<string, unknown>).slice(0, 1_000).map(([key, child]) => [
+    const entries = Object.entries(candidate as Record<string, unknown>);
+    if (entries.length > 1_000 || entries.some(([key]) => key.length > 256)) truncated = true;
+    return Object.fromEntries(entries.slice(0, 1_000).map(([key, child]) => [
       sensitive.test(key) ? `sensitiveField${++sensitiveIndex}` : key.slice(0, 256),
-      sensitive.test(key) ? '[redacted]' : visit(child),
+      sensitive.test(key) ? '[redacted]' : visit(child, depth + 1),
     ]));
   };
   const sanitized = visit(value);
   const serialized = JSON.stringify(sanitized);
-  return serialized.length > 60_000 ? { truncated: true, preview: serialized.slice(0, 50_000) } : sanitized;
+  if (serialized.length > 60_000) return { value: { truncated: true, preview: serialized.slice(0, 50_000) }, truncated: true };
+  return { value: sanitized, truncated };
 }
 
 function sanitizeEntityRefs(refs: CommandJournalEntityRef[], secrets: string[]): CommandJournalEntityRef[] {

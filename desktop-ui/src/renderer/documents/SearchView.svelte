@@ -110,7 +110,10 @@
     session.response = null;
     try {
       const response = await window.workingMemory.searchDocuments(current.prompt, { requestId, context: current.context });
-      if (session === current && current.requestId === requestId) current.response = response;
+      if (session === current && current.requestId === requestId) {
+        current.response = response;
+        current.trace = response.trace ?? current.trace;
+      }
     }
     catch (error) {
       if (session === current && current.requestId === requestId) current.error = error instanceof Error ? error.message : String(error);

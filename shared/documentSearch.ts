@@ -83,6 +83,7 @@ export interface QueryDocument {
   kind: string;
   title: string;
   body: string;
+  bodyLength: number;
   bodyOffset: number;
   nextBodyOffset: number | null;
   status: string | null;

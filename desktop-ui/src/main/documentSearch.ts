@@ -5,8 +5,9 @@ import type {
 } from '../../../shared/documentSearch';
 import { isDocumentSearchResult } from '../../../shared/documentSearch';
 import { appendToolResults, type ModelConversation, type ParsedModelTurn } from './modelTools';
-import { sanitizeForJournal } from './desktopChatAgent';
+import { sanitizeForJournal, sanitizeForJournalWithMetadata } from './desktopChatAgent';
 import type { SearchAppTools } from './searchAppTools';
+import { abortable } from '../../../shared/abort';
 
 export const SEARCH_MAX_TURNS = 8;
 export const SEARCH_TIMEOUT_MS = 90_000;
@@ -73,15 +74,6 @@ export function searchInstructions(context?: SearchContext): string {
   ].join('\n');
 }
 
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason ?? new Error('Search cancelled.'));
-    signal.addEventListener('abort', abort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
-  });
-}
-
 function isQueryResult(value: unknown): value is DocumentQueryResult {
   if (!value || typeof value !== 'object' || !('documents' in value) || !Array.isArray(value.documents)
     || !('total' in value) || typeof value.total !== 'number' || !Number.isSafeInteger(value.total) || value.total < value.documents.length
@@ -91,7 +83,7 @@ function isQueryResult(value: unknown): value is DocumentQueryResult {
   return value.documents.every((doc: unknown) => doc && typeof doc === 'object'
     && 'id' in doc && typeof doc.id === 'string' && 'kind' in doc && typeof doc.kind === 'string'
     && SAFE_KINDS.includes(doc.kind)
-    && 'title' in doc && typeof doc.title === 'string' && 'body' in doc && typeof doc.body === 'string' && doc.body.length <= 12000
+    && 'title' in doc && typeof doc.title === 'string' && 'body' in doc && typeof doc.body === 'string' && Array.from(doc.body).length <= 12000
     && 'bodyOffset' in doc && typeof doc.bodyOffset === 'number' && Number.isSafeInteger(doc.bodyOffset) && doc.bodyOffset >= 0
     && 'resourceVersion' in doc && typeof doc.resourceVersion === 'number' && Number.isSafeInteger(doc.resourceVersion)
     && 'createdAt' in doc && typeof doc.createdAt === 'number' && Number.isFinite(doc.createdAt)
@@ -148,6 +140,7 @@ export async function searchByIntent(query: string, dependencies: {
         if (finalCall && (turn.calls.length !== 1 || finalCall.argumentError || !conversation.tools.some(tool => tool.name === finalCall.name))) {
           throw new Error('Present the answer in a separate, valid tool call after all retrieval calls have completed.');
         }
+        if (trace.length && trace.every(entry => entry.status === 'error')) throw new Error(`Search could not read any evidence: ${trace[0].error}`);
         const answer = answerSchema.parse(finalCall ? finalCall.arguments : parseJson(turn.text));
         const selected = new Map<string, ExplainedSearchHit>();
         const use = (id: string, reason: string) => {
@@ -157,7 +150,7 @@ export async function searchByIntent(query: string, dependencies: {
         };
         for (const block of answer.blocks) {
           if (block.type === 'summary') {
-            if (!block.sourceIds.length && sources.size && !emptyQueries.size) throw new Error('Search AI returned a factual summary without evidence.');
+            if (!block.sourceIds.length && !emptyQueries.size) throw new Error('Search AI returned a factual summary without evidence.');
             for (const id of block.sourceIds) use(id, block.text);
           } else if (block.type === 'list') {
             for (const item of block.items) use(item.sourceId, item.text);
@@ -171,7 +164,6 @@ export async function searchByIntent(query: string, dependencies: {
         if (!trace.length && !answer.blocks.every(block => block.type === 'clarification')) {
           throw new Error('Search AI answered without querying any data.');
         }
-        if (trace.length && trace.every(entry => entry.status === 'error')) throw new Error(`Search could not read any evidence: ${trace[0].error}`);
         const partial = answer.partial || appTruncated || trace.some(entry => entry.status === 'error') || [...pages.values()].some(page => page.ids.size < page.total)
           || [...selected.keys()].some(id => unreadBodies.has(id));
         return { query, queries: [...queries], results: [...selected.values()],
@@ -207,7 +199,7 @@ export async function searchByIntent(query: string, dependencies: {
       try {
         if (call.name === 'list_container_apps') {
           if (Object.keys(call.arguments).length) throw new Error('list_container_apps takes no arguments.');
-          const apps = await abortable(dependencies.apps.list(), signal);
+          const apps = await abortable(dependencies.apps.list(signal), signal);
           for (const app of apps) sources.set(`container-app:${app.id}`, {
             id: `container-app:${app.id}`, kind: 'ContainerApp', title: app.title, appId: app.id,
             excerpt: app.capabilities.join(', '), score: 0, reason: '',
@@ -216,7 +208,7 @@ export async function searchByIntent(query: string, dependencies: {
           output = { apps, evidence: apps.map(app => ({ ...app, sourceId: `container-app:${app.id}` })) };
         } else if (call.name === 'container_app_tools') {
           const { appId } = z.object({ appId: z.string().min(1) }).strict().parse(call.arguments);
-          const discovery = await abortable(dependencies.apps.discover(appId), signal);
+          const discovery = await abortable(dependencies.apps.discover(appId, signal), signal);
           for (const tool of discovery.tools) {
             if (!conversation.tools.some(candidate => candidate.name === tool.name)) conversation.tools.push(tool);
             allowed.add(tool.name);
@@ -224,18 +216,19 @@ export async function searchByIntent(query: string, dependencies: {
           count = discovery.tools.length;
           output = discovery;
         } else if (call.name.startsWith('app__')) {
-          const response = await abortable(dependencies.apps.call(call.name, call.arguments), signal);
+          const response = await abortable(dependencies.apps.call(call.name, call.arguments, signal), signal);
+          const sanitized = sanitizeForJournalWithMetadata(response.result);
+          const serialized = JSON.stringify(sanitized.value);
+          const truncated = sanitized.truncated || serialized.length > 32000;
+          appTruncated ||= truncated;
           if (response.result && typeof response.result === 'object' && 'isError' in response.result && response.result.isError === true) {
-            throw new Error(`Application tool ${call.name} returned an error: ${JSON.stringify(sanitizeForJournal(response.result))}`);
+            throw new Error(`Application tool ${call.name} returned an error: ${serialized}`);
           }
-          const sanitized = sanitizeForJournal(response.result);
-          const serialized = JSON.stringify(sanitized);
-          if (JSON.stringify(response.result).length > 32000) appTruncated = true;
           const id = `app:${response.appId}:${call.id}`;
           sources.set(id, { id, kind: 'ContainerApp', appId: response.appId, title: response.title,
             excerpt: serialized.slice(0, 1200), score: 0, reason: '' });
           output = { sourceId: id, appId: response.appId, result: serialized.slice(0, 32000),
-            truncated: serialized.length > 32000 };
+            truncated };
         } else {
           if (call.name === 'wm-document-search') {
             const input = z.object({
@@ -274,8 +267,9 @@ export async function searchByIntent(query: string, dependencies: {
               sources.set(doc.id, { id: doc.id, kind: doc.kind, title: doc.title, excerpt: doc.body.slice(0, 1200), status: doc.status, score: 0, reason: '' });
               const existing = bodyCoverage.get(doc.id);
               const coverage = existing?.version === doc.resourceVersion ? existing : { through: 0, version: doc.resourceVersion };
-              if (doc.bodyOffset <= coverage.through) coverage.through = Math.max(coverage.through, doc.bodyOffset + doc.body.length);
-              if (doc.nextBodyOffset === null) coverage.end = doc.bodyOffset + doc.body.length;
+              const bodyLength = Array.from(doc.body).length;
+              if (doc.bodyOffset <= coverage.through) coverage.through = Math.max(coverage.through, doc.bodyOffset + bodyLength);
+              if (doc.nextBodyOffset === null) coverage.end = doc.bodyOffset + bodyLength;
               bodyCoverage.set(doc.id, coverage);
               if (coverage.end !== undefined && coverage.through >= coverage.end) unreadBodies.delete(doc.id);
               else unreadBodies.add(doc.id);
@@ -299,7 +293,9 @@ export async function searchByIntent(query: string, dependencies: {
         ...(error ? { error } : {}), ...(count !== undefined ? { count } : {}) };
       trace.push(entry);
       dependencies.onTrace?.(entry);
-      output = sanitizeForJournal(output);
+      const sanitizedOutput = sanitizeForJournalWithMetadata(output);
+      output = sanitizedOutput.value;
+      appTruncated ||= sanitizedOutput.truncated;
       const serialized = JSON.stringify(output);
       if (serialized.length > 40000) {
         appTruncated = true;
@@ -334,27 +330,22 @@ export async function openSearchWorkstreams(client: Pick<ControlPlaneClient, 'ws
 }
 
 export async function addSearchTopicToWorkstream(
-  client: Pick<ControlPlaneClient, 'wsRead' | 'getDocument' | 'updateDocument'>,
+  client: Pick<ControlPlaneClient, 'getDocument' | 'callTool'>,
   topicId: string,
   workstreamId: string,
+  assertEnabled?: () => Promise<void>,
 ): Promise<void> {
   if (typeof topicId !== 'string' || !topicId.trim() || typeof workstreamId !== 'string' || !workstreamId.trim()) {
     throw new Error('Select a topic and an open workstream.');
   }
-  const [workstream] = await client.wsRead({ id: workstreamId });
-  if (!workstream || workstream.status === 'closed') throw new Error('That workstream is no longer open. Choose another.');
   const read = await client.getDocument({ id: topicId, kind: 'Topic' });
   if (!read.available || !read.document) throw new Error(read.error ?? 'That topic is no longer available.');
-  const current = read.document.spec.workstreams ?? [];
-  if (!Array.isArray(current) || !current.every((id: unknown): id is string => typeof id === 'string')) {
-    throw new Error('The topic has invalid workstream membership.');
-  }
-  if (current.includes(workstreamId)) return;
-  const saved = await client.updateDocument({
+  await assertEnabled?.();
+  const saved = await client.callTool('wm-search-add-topic', {
     id: topicId, expectedResourceVersion: read.document.metadata.resourceVersion,
-    spec: { workstreams: [...current, workstreamId] },
+    workstreamId,
   });
-  if (!saved.available || !saved.document) {
+  if (!saved.ok) {
     throw new Error(saved.error ?? 'Could not add the topic. It may have changed; retry with the latest version.');
   }
 }

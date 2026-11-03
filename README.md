@@ -337,6 +337,9 @@ host-controlled, read-only tool loop:
    and can retry different strategies. Structured filters/counts run in SQLite
    before paging; literal queries scan stored search projections rather than
    rebuilding every document's text, and preserve version strings such as `1.5`.
+   Body ranges are sliced in SQLite; `bodyOffset`, `bodyLimit`, `bodyLength` and
+   `nextBodyOffset` count Unicode code points. AgentMessage evidence includes
+   scheduling, recommendations, decisions and relationships, not opaque metadata.
 3. Registered container apps can be discovered without an `@mention`. Only MCP
    tools explicitly marked read-only and not destructive are exposed. Each call
    rechecks registration, endpoint, connection and tool annotations. Search
@@ -346,7 +349,8 @@ host-controlled, read-only tool loop:
    source IDs and unsupported counts are rejected. Narrative summaries are
    evidence-cited, not mechanically proven factually correct.
 
-Open results to browse and return to Search without losing the request or results.
+Open results to browse and return to Search without losing the request, original
+scope, results or completed retrieval trace.
 Result cards show explanations and source links, not expandable document-body
 previews; open the source to read the full document.
 Document links in result cards, tables and citations can be dragged like rail
@@ -357,7 +361,8 @@ Context preparation starts on hover, focus or pointer-down, not for every result
 Topic results offer **Add to workstream**, followed by an explicit choice of an
 open workstream (Queued, In Progress or Backlog). This adds membership only:
 existing memberships, focus pins, parent links and topic status are preserved.
-Closed workstreams are excluded and checked again before saving; concurrent
+The dedicated membership action checks the Search flag and open workstream
+inside the topic write transaction. Closed workstreams are excluded; concurrent
 topic edits produce a visible conflict rather than overwriting newer membership.
 Model, transport and save failures remain visible and retryable; search never
 falls back silently to an unranked full-store listing.
@@ -366,13 +371,16 @@ Search is bounded to eight model turns, 24 tool calls, four discovered apps and
 90 seconds per request. Model evidence/context and app tool catalogs are
 bounded; incomplete pages/body chunks, truncated responses and tool failures
 are visibly marked. External apps still control their own response sizes.
-Cancel stops inference/follow-up calls; switching environments cancels searches
+Cancel stops inference/follow-up calls and signals pending MCP catalog,
+discovery and tool requests without disconnecting shared clients.
+Switching environments cancels searches
 and discards stale results. Read-only activity is inspectable without storing a
 write-only CommandJournal or exposing model chain-of-thought.
 
 This uses existing AI configuration, **not an embeddings index** or an additional
 model service. Only retrieved evidence is supplied to the configured model,
-not the entire store; Config secrets are excluded and tool output is redacted.
+not the entire store; Config secrets are excluded and tool output (including
+JSON embedded in MCP text) is redacted. Sanitizer limits mark answers partial.
 AI output is rendered as plain text, not executable Markdown/HTML.
 
 Agents can call the read-only `wm-document-search` tool with
@@ -380,7 +388,8 @@ Agents can call the read-only `wm-document-search` tool with
 Each phrase matches all of its stemmed words; alternative phrases are combined
 with OR. Results include `id`, `kind`, `title`, `excerpt`, and a BM25 `score`
 (higher is better). Permission filtering happens before the result limit and is
-rechecked on each request. The desktop chat assistant also receives this tool.
+rechecked on each request. The desktop chat assistant receives and recommends
+this tool only when Search is enabled; otherwise it uses existing read filters.
 The existing `wm-document-read.query` substring filter remains unchanged.
 
 The control plane alone owns the derived FTS5 index. Startup backfills existing

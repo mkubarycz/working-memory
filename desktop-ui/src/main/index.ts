@@ -151,6 +151,7 @@ let dataTier: DataTierManager | null = null;
 let dataTierLaunch: Promise<void> = Promise.resolve();
 let documentChangeController: AbortController | undefined;
 let instanceVault: HostTaskCredentialVault | null = null;
+let instanceIdentity: DesktopInstanceIdentity | null = null;
 let hostScripts: ReturnType<typeof registerHostScriptIpc> | undefined;
 
 protocol.registerSchemesAsPrivileged([{
@@ -378,8 +379,17 @@ function environmentState(environments = [] as DesktopEnvironmentState['environm
   return { environments, selected: environmentManager.currentEnvironment };
 }
 
+async function availableChatTools(client: ControlPlaneClient) {
+  const environment = environmentManager.currentEnvironment;
+  if (!environment || !instanceIdentity) throw new Error('Instance feature settings are unavailable.');
+  const generation = containerEnvironmentGeneration;
+  const [tools, features] = await Promise.all([client.listTools(), instanceIdentity.features(environment.mcpUrl)]);
+  if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed.');
+  return features.search ? tools : tools.filter(tool => tool.name !== 'wm-document-search' && tool.name !== 'wm-document-query');
+}
+
 const chatAgent = new DesktopChatAgent({
-  listTools: () => controlPlane().listTools(),
+  listTools: () => availableChatTools(controlPlane()),
   callTool: (name, args) => controlPlane().callTool(name, args),
   callModel: requestModel,
   journal: {
@@ -390,7 +400,7 @@ const chatAgent = new DesktopChatAgent({
   resolveDependencies: () => {
     const client = controlPlane();
     return {
-      listTools: () => client.listTools(),
+      listTools: () => availableChatTools(client),
       callTool: (name, args) => client.callTool(name, args),
       journal: {
         create: (input) => client.commandJournalCreate(input),
@@ -900,6 +910,7 @@ function registerIpc(): void {
     process.platform === 'win32' ? app.getPath('userData') : join(app.getPath('appData'), 'Working Memory'),
     'instance-sign-in',
   ), process.platform !== 'win32'));
+  instanceIdentity = identity;
   const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href;
   const onSessionChanged = async (mcpUrl: string, authenticated: boolean) => {
     documentChangeController?.abort();
@@ -1141,7 +1152,7 @@ function registerIpc(): void {
       const profile = resolveModelProfile(config, 'medium', 'complex');
       if (!profile.model.trim()) throw new Error('Configure a model for Medium / Complex search in Settings.');
       const request = configuredRequest(profile);
-      const tools = readOnlySearchTools(await client.listTools());
+      const tools = readOnlySearchTools(await client.listTools(controller.signal));
       assertCurrent();
       const response = await searchByIntent(query, {
         conversation: createModelConversation({ mode: request.mode, model: profile.model, tools, systemPrompt: searchInstructions(context), userMessage: query }),
@@ -1156,7 +1167,7 @@ function registerIpc(): void {
         },
         callTool: async (name, args) => {
           assertCurrent();
-          const result = await client.callTool(name, args);
+          const result = await client.callTool(name, args, controller.signal);
           assertCurrent();
           return result;
         },
@@ -1178,8 +1189,13 @@ function registerIpc(): void {
   });
   ipcMain.handle('search:add-topic', async (event, topicId: string, workstreamId: string) => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
+    const generation = containerEnvironmentGeneration;
     await requireSearchFeature();
-    return addSearchTopicToWorkstream(controlPlane(), topicId, workstreamId);
+    return addSearchTopicToWorkstream(controlPlane(), topicId, workstreamId, async () => {
+      if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed.');
+      await requireSearchFeature();
+      if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed.');
+    });
   });
   ipcMain.handle('chat:confirm', async (event, id: string, confirmed: boolean, context?: ChatContext) => {
     try {

@@ -205,6 +205,7 @@ function harness(options: {
   stableManifest?: Record<string, unknown>;
   payload?: Buffer;
   bundleIdentifier?: string;
+  saveChannel?: (channel: UpdateChannel) => Promise<void>;
 }): Harness {
   const root = tempRoot();
   const commands: Harness['commands'] = [];
@@ -226,6 +227,7 @@ function harness(options: {
     currentVersion: options.currentVersion ?? '0.1.1-build.30',
     channel: options.channel ?? 'canary',
     saveChannel: async (channel) => {
+      await options.saveChannel?.(channel);
       saved.push(channel);
     },
     downloadDirectory: join(root, 'downloads'),
@@ -274,8 +276,14 @@ describe('desktop updater', () => {
   });
 
   it('downloads the newer tagged installer while staying subscribed to Canary', async () => {
-    const { updater, requests, root } = harness({
+    const settingsFile = join(tempRoot(), 'updates.json');
+    const settings = await readUpdateSettings(settingsFile, {
+      desktopChannel: defaultDesktopChannel('1.3.1-build.106', false), backendChannel: 'canary',
+    });
+    const { updater, requests, root, saved } = harness({
       platform: 'win32',
+      channel: settings.desktopChannel,
+      saveChannel: channel => writeUpdateSettings(settingsFile, { ...settings, desktopChannel: channel }),
       manifest: manifest({ version: '1.3.1-build.106', publishedAt: '2026-11-02T14:42:23.607Z' }),
       stableManifest: stableManifest(),
     });
@@ -286,8 +294,24 @@ describe('desktop updater', () => {
     expect((await updater.download()).phase).toBe('ready');
     expect(requests.at(-1)).toBe('https://github.com/mkubarycz/working-memory/releases/download/v1.3.2/Working-Memory-1.3.2-win-x64.exe');
     expect(readFileSync(join(root, 'downloads', '1.3.2', 'Working-Memory-1.3.2-win-x64.exe'))).toEqual(PAYLOAD);
+    await updater.install();
+    expect(saved).toEqual(['canary']);
+    expect(await readUpdateSettings(settingsFile, { desktopChannel: 'stable', backendChannel: 'stable' })).toEqual({
+      desktopChannel: 'canary', backendChannel: 'canary',
+    });
   });
 
+  it('does not install or quit when persisting the effective channel fails', async () => {
+    const { updater, spawned, quit } = harness({
+      platform: 'win32', saveChannel: async () => { throw new Error('Settings write failed'); },
+    });
+    await updater.check();
+    await updater.download();
+    await expect(updater.install()).rejects.toThrow('Settings write failed');
+    expect(spawned).toEqual([]);
+    expect(quit.count).toBe(0);
+    expect(updater.state.phase).toBe('ready');
+  });
   it('does not offer the older rolling build when the latest Stable is already installed', async () => {
     const { updater } = harness({
       platform: 'darwin', currentVersion: '1.3.2',

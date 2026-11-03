@@ -28,9 +28,10 @@ export class SearchAppTools {
     assertCurrent: () => void;
   }) {}
 
-  async list(): Promise<SearchAppInfo[]> {
+  async list(signal?: AbortSignal): Promise<SearchAppInfo[]> {
+    signal?.throwIfAborted();
     this.dependencies.assertCurrent();
-    const claims = await this.dependencies.client.containerClaimRead();
+    const claims = await this.dependencies.client.containerClaimRead({}, signal);
     this.dependencies.assertCurrent();
     return containerAppDefinitions(claims).map(app => ({
       id: app.id, title: app.displayName,
@@ -39,16 +40,18 @@ export class SearchAppTools {
     }));
   }
 
-  async discover(id: string): Promise<SearchAppDiscovery> {
+  async discover(id: string, signal?: AbortSignal): Promise<SearchAppDiscovery> {
+    signal?.throwIfAborted();
     if (!this.opened.has(id) && this.opened.size >= 4) throw new Error('Search can inspect at most four registered apps per request.');
-    const claim = await this.claim(id);
+    const claim = await this.claim(id, signal);
     if (!claim.mcp) throw new Error(`Registered app ${id} does not advertise MCP.`);
     const status = await this.dependencies.inspect(claim);
     this.dependencies.assertCurrent();
     if (!status.ready) throw new Error(`Registered app ${id} is not ready (${status.state}).${status.error ? ` ${status.error}` : ''}`);
-    await this.dependencies.mcp.connect(id, claim.mcp);
+    signal?.throwIfAborted();
+    await this.dependencies.mcp.connect(id, claim.mcp, signal);
     this.dependencies.assertCurrent();
-    const listing = await this.dependencies.mcp.listToolsForRoute(id, claim.mcp);
+    const listing = await this.dependencies.mcp.listToolsForRoute(id, claim.mcp, signal);
     this.dependencies.assertCurrent();
     const tools = listing.tools.filter(tool => tool.annotations?.readOnlyHint === true && tool.annotations.destructiveHint !== true);
     if (tools.length > 48 || JSON.stringify(tools).length > 48000) {
@@ -63,27 +66,28 @@ export class SearchAppTools {
       tools: namespaced.tools };
   }
 
-  async call(name: string, args: Record<string, unknown>): Promise<{ appId: string; title: string; result: unknown }> {
+  async call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ appId: string; title: string; result: unknown }> {
+    signal?.throwIfAborted();
     const route = this.routes.get(name);
     if (!route || route.annotations?.readOnlyHint !== true || route.annotations.destructiveHint === true) {
       throw new Error('Search cannot execute unlisted or mutating application tools.');
     }
-    const claim = await this.claim(route.appId);
+    const claim = await this.claim(route.appId, signal);
     if (!claim.mcp || normalizeAppMcpEndpoint(claim.mcp).url !== route.endpoint.url) throw new Error('The registered application endpoint changed. Search again.');
-    const listing = await this.dependencies.mcp.listToolsForRoute(route.appId, claim.mcp);
+    const listing = await this.dependencies.mcp.listToolsForRoute(route.appId, claim.mcp, signal);
     this.dependencies.assertCurrent();
     const tool = listing.tools.find(candidate => candidate.name === route.originalToolName);
     if (listing.connectionId !== route.connectionId || tool?.annotations?.readOnlyHint !== true || tool.annotations.destructiveHint === true) {
       throw new Error('The application tool changed or is no longer read-only. Search again.');
     }
-    const result = await this.dependencies.mcp.callTool(route.appId, route.originalToolName, args, route);
+    const result = await this.dependencies.mcp.callTool(route.appId, route.originalToolName, args, route, signal);
     this.dependencies.assertCurrent();
     return { appId: route.appId, title: route.appDisplayName, result };
   }
 
-  private async claim(id: string): Promise<ContainerClaim> {
+  private async claim(id: string, signal?: AbortSignal): Promise<ContainerClaim> {
     this.dependencies.assertCurrent();
-    const [claim] = await this.dependencies.client.containerClaimRead({ id });
+    const [claim] = await this.dependencies.client.containerClaimRead({ id }, signal);
     this.dependencies.assertCurrent();
     if (!claim?.runtime || claim.id !== id) throw new Error(`Application ${id} is not a registered container app.`);
     return claim;
