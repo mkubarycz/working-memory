@@ -349,7 +349,8 @@ host-controlled, read-only tool loop:
    clarification suggestions. Titles/statuses come from actual sources; invented
    source IDs and unsupported counts are rejected. Narrative summaries are
    always evidence-cited, even after an unrelated empty query, but not mechanically
-   proven factually correct. Empty retrievals use verified zero-count blocks.
+   proven factually correct. Empty structured queries and indexed searches use
+   verified zero-count blocks; nonzero indexed hit counts are not verified totals.
 
 Open results to browse and return to Search without losing the request, original
 scope, results or completed retrieval trace.
@@ -390,6 +391,8 @@ JSON embedded in MCP text) is redacted. Sanitizer limits mark answers partial.
 Discovered tool descriptions are redacted before model registration. Schema
 defaults/examples are omitted without renaming properties or changing required
 fields; unsafe credential-valued constraints reject discovery explicitly.
+References inside credential-valued schemas are rejected rather than exposing
+uninspected target constraints, including dynamic and recursive references.
 AI output is rendered as plain text, not executable Markdown/HTML.
 
 Agents can call the read-only `wm-document-search` tool with

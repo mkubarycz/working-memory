@@ -221,6 +221,28 @@ describe('agentic document search', () => {
     await expect(searchByIntent('Are all cases resolved?', dependencies)).rejects.toThrow('without evidence');
   });
 
+  it('accepts a verified zero count from an empty indexed search and exposes its query ID', async () => {
+    const dependencies = harness([
+      call('empty-index', 'wm-document-search', { queries: ['does not exist'] }),
+      answer([{ type: 'count', label: 'Matching documents', value: 0, queryId: 'empty-index' }]),
+    ]);
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 0, results: [] } });
+    const response = await searchByIntent('Find a missing topic', dependencies);
+    expect(response.blocks).toEqual([{ type: 'count', label: 'Matching documents', value: 0, queryId: 'empty-index' }]);
+    expect(response.partial).toBe(false);
+    const output = dependencies.conversation.chatMessages?.find(message => message.role === 'tool');
+    expect(JSON.parse(String(output?.content))).toMatchObject({ count: 0, queryId: 'empty-index' });
+  });
+
+  it.each([1, 20])('does not verify a nonzero indexed hit count with limit %s as a total', async limit => {
+    const dependencies = harness([
+      call('limited-index', 'wm-document-search', { queries: ['OAuth'], limit }),
+      answer([{ type: 'count', label: 'All matches', value: 1, queryId: 'limited-index' }]),
+    ]);
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 1, results: [hit] } });
+    await expect(searchByIntent('Count all matches', dependencies)).rejects.toThrow('count');
+  });
+
   it.each(['chat-completions', 'responses'] as const)('answers every rejected mixed-turn call in %s mode', async mode => {
     const mixed = call('final', 'present_search_answer', { blocks: [{ type: 'clarification', text: 'Which scope?', suggestions: [] }] });
     const extra = call('extra', 'wm-document-query', {});
@@ -270,6 +292,33 @@ describe('agentic document search', () => {
     await expect(searchByIntent('Find capacity', dependencies)).rejects.toThrow('credential-valued constraints');
     expect(JSON.stringify(dependencies.conversation)).not.toContain('constraint-secret');
     expect(dependencies.conversation.tools.some(tool => tool.name === 'app__queries__read')).toBe(false);
+  });
+
+  it.each(['$ref', '$dynamicRef', '$recursiveRef'])('rejects uninspected credential schema %s targets before model registration', async reference => {
+    const dependencies = harness([
+      call('tools', 'container_app_tools', { appId: 'queries' }),
+      answer([{ type: 'clarification', text: 'Choose another app.', suggestions: [] }]),
+    ]);
+    dependencies.apps.discover.mockResolvedValue({ tools: [{
+      name: 'app__queries__read', inputSchema: { type: 'object',
+        $defs: { Auth: { const: 'referenced-secret' } },
+        properties: { apiKey: { allOf: [{ [reference]: reference === '$recursiveRef' ? '#' : '#/$defs/Auth' }] } } },
+    }] });
+    await expect(searchByIntent('Find capacity', dependencies)).rejects.toThrow('credential-valued schema references');
+    expect(JSON.stringify(dependencies.conversation)).not.toContain('referenced-secret');
+    expect(dependencies.conversation.tools.some(tool => tool.name === 'app__queries__read')).toBe(false);
+  });
+
+  it('retains noncredential schema references and their validation constraints', async () => {
+    const dependencies = harness([
+      call('tools', 'container_app_tools', { appId: 'queries' }),
+      answer([{ type: 'clarification', text: 'Choose a query.', suggestions: [] }]),
+    ]);
+    const inputSchema = { type: 'object', $defs: { Query: { type: 'string', minLength: 1 } },
+      properties: { query: { $ref: '#/$defs/Query' } }, required: ['query'] };
+    dependencies.apps.discover.mockResolvedValue({ tools: [{ name: 'app__queries__read', inputSchema }] });
+    await searchByIntent('Find capacity', dependencies);
+    expect(dependencies.conversation.tools.find(tool => tool.name === 'app__queries__read')?.inputSchema).toEqual(inputSchema);
   });
 
   it('keeps ordinary chat tools usable when feature reads fail or time out, with a visible diagnostic', async () => {

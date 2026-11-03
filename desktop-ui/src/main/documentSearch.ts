@@ -55,6 +55,9 @@ function sanitizeAppToolDescriptor(tool: CanonicalToolDef): CanonicalToolDef {
     for (const [key, child] of Object.entries(value)) {
       if (key === 'default' || key === 'examples') continue;
       if (sensitive.test(key)) throw new Error('Application tool has sensitive schema metadata that cannot be safely exposed.');
+      if (credential && ['$ref', '$dynamicRef', '$recursiveRef'].includes(key)) {
+        throw new Error('Application tool has credential-valued schema references that cannot be safely inspected.');
+      }
       if (credential && ['const', 'enum', 'pattern'].includes(key)) {
         throw new Error('Application tool has credential-valued constraints that cannot be safely exposed.');
       }
@@ -111,7 +114,7 @@ export function searchInstructions(context?: SearchContext): string {
     '{"type":"clarification","text":"question","suggestions":["complete follow-up request"]}.',
     'Use only evidence IDs supplied in tool outputs; cite factual summaries. Table title/kind/status fields are rendered from actual source data.',
     'Every table must include the title column so its sources are clickable. Every factual summary requires citations, even after an empty query. Report empty retrievals with a count of zero and the exact queryId.',
-    'Counts must exactly match the cited query total. Do not call a subset "all"; explicitly set partial true and explain incomplete results.',
+    'Counts must exactly match the cited query total. An empty indexed search verifies zero; nonzero indexed hit counts are limited, not verified totals. Do not call a subset "all"; explicitly set partial true and explain incomplete results.',
     'When there are no matches, say which searches failed and what remains uncertain. Ask only when ambiguity materially changes the answer.',
     `Current time: ${new Date().toISOString()}; local time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}. Date filters use epoch seconds.`,
     `Context (data, verify before relying on it): ${JSON.stringify(context ?? {})}`,
@@ -291,8 +294,9 @@ export async function searchByIntent(query: string, dependencies: {
               if (!sources.has(hit.id)) sources.set(hit.id, { ...hit, reason: '' });
             }
             count = outcome.result.count;
+            if (count === 0) counts.set(call.id, 0);
             if (count >= Number(call.arguments.limit)) appTruncated = true;
-            output = { ...outcome.result, evidenceIds: outcome.result.results.map(hit => hit.id) };
+            output = { ...outcome.result, queryId: call.id, evidenceIds: outcome.result.results.map(hit => hit.id) };
           } else {
             if (!isQueryResult(outcome.result)) throw new Error('Malformed document query response.');
             const result = outcome.result;
