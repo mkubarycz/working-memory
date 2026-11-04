@@ -232,6 +232,12 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert(sourceMode.endsWith(' after'));
           assert(sourceMode.includes('](' + url + ')'));
           assert.equal(await evaluate("document.querySelector('.editor textarea').selectionStart"), sourceMode.length - ' after'.length);
+          window.webContents.undo();
+          await wait("window.__markdownTest.body() === 'Before SELECT after'");
+          assert.equal(await evaluate("document.querySelector('.editor textarea').value"), 'Before SELECT after');
+          window.webContents.redo();
+          await wait('window.__markdownTest.body() === ' + JSON.stringify(sourceMode));
+          assert.equal(await evaluate("document.querySelector('.editor textarea').value"), sourceMode);
           assert.equal(await paste('.editor textarea', '', '**raw Markdown**'), false);
           assert.equal(await evaluate('window.__markdownTest.body()'), sourceMode);
           assert.equal(await evaluate("document.querySelectorAll('.readonly .cm-editor, .readonly textarea').length"), 0);

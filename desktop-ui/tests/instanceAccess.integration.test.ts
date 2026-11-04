@@ -85,13 +85,23 @@ it('serializes policy saves across view lifetimes and continues after a failed s
     const first = save(61);
     await running;
     const second = save(62);
+    const reading = f.call('instance:sessions');
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(sessions).toHaveBeenCalledTimes(1);
     release();
     await Promise.all([first, second]);
-    expect(sessionSnapshotSchema.parse(await f.call('instance:sessions')).policy.idleMinutes).toBe(62);
+    const snapshot = sessionSnapshotSchema.parse(await reading);
+    expect(snapshot.policy.idleMinutes).toBe(62);
+    await f.call('instance:session-policy', { mcpUrl: f.environment.mcpUrl,
+      policy: { ...snapshot.policy, retentionDays: 11 } });
+    expect(sessionSnapshotSchema.parse(await f.call('instance:sessions')).policy).toMatchObject({
+      idleMinutes: 62, retentionDays: 11,
+    });
     sessions.mockRejectedValueOnce(new Error('test policy save failure'));
-    await expect(save(63)).rejects.toThrow('test policy save failure');
+    const failure = expect(save(63)).rejects.toThrow('test policy save failure');
+    const afterFailure = f.call('instance:sessions');
+    await failure;
+    expect(sessionSnapshotSchema.parse(await afterFailure).policy.idleMinutes).toBe(62);
     await save(64);
     expect(sessionSnapshotSchema.parse(await f.call('instance:sessions')).policy.idleMinutes).toBe(64);
   } finally { release(); sessions.mockRestore(); }
@@ -114,10 +124,12 @@ it('rejects queued policy writes if the selected instance changes before they st
     const first = f.call('instance:session-policy', { mcpUrl, policy: { ...DEFAULT_SESSION_POLICY, idleMinutes: 61 } });
     await running;
     const second = f.call('instance:session-policy', { mcpUrl, policy: { ...DEFAULT_SESSION_POLICY, idleMinutes: 62 } });
-    const results = Promise.allSettled([first, second]);
+    const reading = f.call('instance:sessions');
+    const results = Promise.allSettled([first, second, reading]);
     f.environment.mcpUrl = 'http://127.0.0.1:9999/mcp';
     release();
     expect(await results).toMatchObject([
+      { status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('selected instance changed') }) },
       { status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('selected instance changed') }) },
       { status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('selected instance changed') }) },
     ]);

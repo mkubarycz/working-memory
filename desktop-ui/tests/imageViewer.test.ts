@@ -20,6 +20,48 @@ async function fixture(fetchImage: (request: Request) => Promise<Response> = asy
 }
 
 describe('system image viewer', () => {
+  it('aborts and drains a pending first download before shutdown cleanup', async () => {
+    let release!: (response: Response) => void;
+    const { root, viewer, fetchImage, openPath } = await fixture(async () => new Promise<Response>(resolve => { release = resolve; }));
+    const opening = viewer.open(source);
+    const rejected = expect(opening).rejects.toMatchObject({ name: 'AbortError' });
+    let disposed = false;
+    const stopping = viewer.dispose().then(() => { disposed = true; });
+    try {
+      expect(fetchImage.mock.calls[0][0].signal.aborted).toBe(true);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(disposed).toBe(false);
+      release(new Response(png));
+      await rejected;
+      await stopping;
+      expect(openPath).not.toHaveBeenCalled();
+      expect(await readdir(root)).toEqual([]);
+      await expect(viewer.open(source)).rejects.toThrow('shutting down');
+      expect(fetchImage).toHaveBeenCalledOnce();
+    } finally { release(new Response(png)); await stopping; }
+  });
+
+  it('waits for an already-started system viewer operation before deleting its files', async () => {
+    const { root, viewer, openPath } = await fixture();
+    let release!: (result: string) => void;
+    openPath.mockImplementationOnce(async () => new Promise<string>(resolve => { release = resolve; }));
+    const opening = viewer.open(source);
+    await vi.waitFor(() => { expect(openPath).toHaveBeenCalledOnce(); });
+    const path = openPath.mock.calls[0][0];
+    let disposed = false;
+    const stopping = viewer.dispose().then(() => { disposed = true; });
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(disposed).toBe(false);
+      expect(await readFile(path)).toEqual(png);
+      release('');
+      await opening;
+      await stopping;
+      expect(await readdir(root)).toEqual([]);
+      await viewer.dispose();
+    } finally { release(''); await stopping; }
+  });
+
   it('writes a private raster image, opens the default viewer, and cleans temporary files on disposal', async () => {
     const { root, viewer, openPath, fetchImage } = await fixture();
     await viewer.open(source);
