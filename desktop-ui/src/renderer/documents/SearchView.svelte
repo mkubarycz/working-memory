@@ -59,9 +59,9 @@
       session.error = 'Unable to drag this Working Memory link.';
       return;
     }
-    ownedDrag = hit.kind === 'Topic' ? { kind: 'topic', id: hit.id, sourceWorkstream: '' }
+    ownedDrag = hit.kind === 'Topic' ? { kind: 'topic', id: hit.id, sourceWorkstream: '', ...(prepared ? { native: true } : {}) }
       : hit.kind === 'Workstream' && prepared?.workstreamSection
-        ? { kind: 'workstream', id: hit.id, section: prepared.workstreamSection } : null;
+        ? { kind: 'workstream', id: hit.id, section: prepared.workstreamSection, native: true } : null;
     if (ownedDrag) {
       activeDrag = ownedDrag;
       ownedDrag = activeDrag;

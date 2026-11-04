@@ -25,13 +25,13 @@ describe('desktop tool coverage', () => {
     await server?.close();
   });
 
-  it('projects every registered high-level ws tool and read-only indexed search', async () => {
+  it('projects every registered high-level ws tool and read-only document discovery', async () => {
     const canonical = (await client.listTools()).tools;
     const projected = desktopToolDescriptors(canonical).map((tool) => tool.name);
     const requestedFamilies = ['workstream', 'topic', 'topictype', 'agent-message', 'agent'];
     const expected = canonical
       .map((tool) => tool.name)
-      .filter((name) => name === 'wm-document-search'
+      .filter((name) => name === 'wm-document-search' || name === 'wm-document-query'
         || requestedFamilies.some((family) => name.startsWith(`ws-${family}-`)));
 
     expect(projected).toEqual(expected);
@@ -44,7 +44,7 @@ describe('desktop tool coverage', () => {
       'ws-agent',
     ]));
     expect(projected.some((name) => name.startsWith('ws-config-'))).toBe(false);
-    expect(projected.filter((name) => name.startsWith('wm-document-'))).toEqual(['wm-document-search']);
+    expect(projected.filter((name) => name.startsWith('wm-document-'))).toEqual(['wm-document-search', 'wm-document-query']);
     expect(projected.some((name) => name.startsWith('ws-alert-'))).toBe(false);
   });
 

@@ -87,6 +87,118 @@ function deferred<T>() {
 }
 
 describe('DesktopChatAgent', () => {
+  it.each([
+    'ws-topic-close-tree',
+    'ws-agent-message-snooze',
+    'app__project__change-set-commit',
+    'app__project__save_snapshot',
+  ])('invalidates reads after %s without losing successful mutation deduplication', async mutation => {
+    const read = { name: 'ws-topic-read', inputSchema: { type: 'object', properties: {} } };
+    const update = { name: 'ws-topic-update', inputSchema: { type: 'object', properties: {} } };
+    const write = { name: mutation, inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: false } };
+    const sequence = [read.name, mutation, read.name, update.name, mutation, read.name];
+    let revision = 0, turn = 0;
+    const reads: number[] = [];
+    const callTool = vi.fn(async (name: string) => {
+      if (name === read.name) reads.push(revision);
+      else revision++;
+      return { ok: true, result: { revision } };
+    });
+    const journal = journalHarness();
+    const agent = new DesktopChatAgent({
+      ...options(vi.fn(), callTool, journal),
+      listTools: async () => [read, update, ...(mutation.startsWith('ws-') ? [write] : [])],
+    });
+    const result = await agent.start({
+      mode: 'chat-completions', url: 'copilot://local', model: 'test', headers: {}, message: 'Apply the approved changes.',
+      appTools: { tools: mutation.startsWith('app__') ? [write] : [], callTool, systemInstructions: '' },
+      modelTurn: async () => {
+        const name = sequence[turn++];
+        return { text: name ? '' : 'Verified.', calls: name ? [{ id: `step-${turn}`, name, arguments: {} }] : [] };
+      },
+    });
+    expect(result.status).toBe('succeeded');
+    expect(callTool.mock.calls.filter(([name]) => name === mutation)).toHaveLength(1);
+    expect(reads).toEqual([0, 1, 2]);
+    expect(journal.current()?.completion?.mutated).toBe(true);
+  });
+
+  it('keeps cached reads and mutation state intact for an annotated application read', async () => {
+    const read = { name: 'ws-topic-read' };
+    const inspect = { name: 'app__project__inspect', annotations: { readOnlyHint: true } };
+    const sequence = [read.name, inspect.name, read.name];
+    const callTool = vi.fn(async () => ({ ok: true, result: {} }));
+    const journal = journalHarness();
+    const agent = new DesktopChatAgent({ ...options(vi.fn(), callTool, journal), listTools: async () => [read] });
+    const result = await agent.start({
+      mode: 'chat-completions', url: 'copilot://local', model: 'test', headers: {}, message: 'Inspect the project.',
+      appTools: { tools: [inspect], callTool, systemInstructions: '' },
+      modelTurn: async () => {
+        const name = sequence.shift();
+        return { text: '', calls: name ? [{ id: `step-${sequence.length}`, name, arguments: {} }] : [] };
+      },
+    });
+    expect(result.status).toBe('succeeded');
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(journal.current()?.completion?.mutated).toBe(false);
+  });
+
+  it('discovers case references, updates the source topic, and verifies with an uncached read', async () => {
+    let body = '# October MBR\n\nCase 2610260040006956\n\nKeep these notes.';
+    const updated = body.replace('2610260040006956', '[2610260040006956](working-memory://open/topic/case-topic)');
+    const topicTools = [
+      { name: 'ws-topic-read', inputSchema: { type: 'object', properties: { id: { type: 'string' } } } },
+      { name: 'wm-document-query', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } },
+      { name: 'ws-topic-update', inputSchema: { type: 'object', properties: { id: { type: 'string' }, body: { type: 'string' } } } },
+    ];
+    const turns = [
+      [{ name: 'ws-topic-read', arguments: { id: 'mbr' } }],
+      [{ name: 'wm-document-query', arguments: { query: '2610260040006956' } }],
+      [{ name: 'ws-topic-read', arguments: { id: 'case-topic' } }],
+      [{ name: 'ws-topic-update', arguments: { id: 'mbr', body: updated } }],
+      [{ name: 'ws-topic-read', arguments: { id: 'mbr' } }],
+    ];
+    const modelTurn = vi.fn(async conversation => {
+      expect(conversation.tools.map(tool => tool.name)).toContain('wm-document-query');
+      expect(conversation.systemPrompt).toContain('do not assume "document" or a case number requires a separate case-document kind');
+      const calls = turns.shift();
+      if (!calls) {
+        expect(conversation.chatMessages.at(-1).content).toContain(JSON.stringify(updated).slice(1, -1));
+        return { text: 'Linked the case and verified the saved MBR.', calls: [] };
+      }
+      return { text: '', calls: calls.map((call, index) => ({ id: `step-${turns.length}-${index}`, ...call })) };
+    });
+    const callTool = vi.fn(async (name: string, args: Record<string, unknown>) => {
+      if (name === 'ws-topic-update') {
+        expect(args.id).toBe('mbr');
+        body = String(args.body);
+        return { ok: true, result: { id: 'mbr', body } };
+      }
+      if (name === 'wm-document-query') return {
+        ok: true, result: { documents: [{ id: 'case-topic', kind: 'Topic', title: '2610260040006956 - VPOST No GPU A10' }] },
+      };
+      return { ok: true, result: { count: 1, topics: [{
+        id: args.id, title: args.id === 'mbr' ? 'October MBR' : '2610260040006956 - VPOST No GPU A10',
+        body: args.id === 'mbr' ? body : 'Details for case 2610260040006956',
+      }] } };
+    });
+    const journal = schemaValidatingJournalHarness();
+    const agent = new DesktopChatAgent({
+      ...options(vi.fn(), callTool, journal), listTools: async () => topicTools,
+    });
+    const result = await agent.start({
+      mode: 'chat-completions', url: 'copilot://local', model: 'test', headers: {},
+      message: 'For each of the cases listed in this mbr, add a link to their associated working memory document.',
+      context: { kind: 'Topic', routeKind: 'topic', identifier: 'mbr', title: 'October MBR' },
+      modelTurn,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(body).toBe(updated);
+    expect(callTool.mock.calls.filter(([name, args]) => name === 'ws-topic-read' && args.id === 'mbr')).toHaveLength(2);
+    expect(journal.current()?.completion?.mutated).toBe(true);
+    expect(journal.current()?.events.filter(event => event.type === 'tool_result').every(event => event.status === 'success')).toBe(true);
+  });
+
   it('routes two pending topic confirmations to their original journals and tool clients', async () => {
     const proposal = (id: string) => ({ choices: [{ message: { content: null, tool_calls: [
       { id: id, function: { name: 'ws-topic-delete', arguments: JSON.stringify({ id }) } },

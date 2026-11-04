@@ -89,10 +89,12 @@ import {
 } from './resolver';
 import {
   parseDesktopDeepLink,
+  parseDesktopResourceLink,
   WORKING_MEMORY_PROTOCOL,
   type DesktopDeepLinkTarget,
 } from '../shared/deepLink';
 import { DesktopLinkBridge } from './linkBridge';
+import { spellingMenuItems, watchSpellingDictionaryFailures } from './editorContextMenu';
 import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
 import { InstancePasswordVault, NativeInstanceCredentialVault } from './instancePasswordVault';
@@ -978,6 +980,24 @@ function registerIpc(): void {
       incidents: instanceMonitor?.incidents(target.mcpUrl) ?? [] };
   });
   let recoveringHeap = false;
+  ipcMain.handle('instance:tool-queue', async event => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const target = environmentManager.currentEnvironment;
+    if (!target) throw new Error('Select a Working Memory instance first.');
+    let snapshot = null, error = null;
+    try { snapshot = await identity.toolQueue(target.mcpUrl); }
+    catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+    if (environmentManager.currentEnvironment?.mcpUrl !== target.mcpUrl) throw new Error('Selected environment changed. Refresh Queue.');
+    return { endpoint: target.mcpUrl, snapshot, error };
+  });
+  ipcMain.handle('instance:queued-request', async (event, raw: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const { requestId, mcpUrl } = z.object({ requestId: z.string().uuid(), mcpUrl: z.string().min(1) }).strict().parse(raw);
+    if (environmentManager.currentEnvironment?.mcpUrl !== mcpUrl) throw new Error('Selected environment changed. Refresh Queue.');
+    const result = await identity.queuedRequest(mcpUrl, requestId);
+    if (environmentManager.currentEnvironment?.mcpUrl !== mcpUrl) throw new Error('Selected environment changed. Refresh Queue.');
+    return result;
+  });
   ipcMain.handle('instance:recover-heap', async (event, raw: unknown) => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
     const { mcpUrl } = z.object({ mcpUrl: z.string().min(1) }).strict().parse(raw);
@@ -1588,7 +1608,7 @@ function saveWindowState(window: BrowserWindow, immediately = false): void {
 }
 
 function followDesktopResourceLink(rawUrl: string): boolean {
-  const target = parseDesktopDeepLink(rawUrl);
+  const target = parseDesktopResourceLink(rawUrl);
   if (!target) return false;
   void openDeepLink(target).catch(error => {
     console.error('[desktop] Container app resource link failed:', error);
@@ -1616,10 +1636,20 @@ async function createWindow(): Promise<BrowserWindow> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      spellcheck: true,
     },
   });
+  watchSpellingDictionaryFailures(window.webContents, languageCode => {
+    console.error(`[desktop] Unable to download the ${languageCode} spelling dictionary. Check the network connection.`);
+  });
   window.webContents.on('context-menu', (_event, params) => {
-    if (params.frame !== window.webContents.mainFrame || params.mediaType !== 'image') return;
+    if (params.frame !== window.webContents.mainFrame) return;
+    const spellingItems = spellingMenuItems(params, window.webContents);
+    if (spellingItems.length && params.mediaType !== 'image') {
+      Menu.buildFromTemplate(spellingItems).popup({ window });
+      return;
+    }
+    if (params.mediaType !== 'image') return;
     Menu.buildFromTemplate([{
       label: 'Open Image in Default Viewer',
       enabled: params.hasImageContents,

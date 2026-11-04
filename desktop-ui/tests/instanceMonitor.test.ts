@@ -85,17 +85,29 @@ it('does not confuse successful health probes, transient failures, environment c
 });
 
 it('deduplicates memory episodes and throttles event-loop incident reports at exact thresholds', async () => {
-  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp', requestId = randomUUID(), bootId = randomUUID();
   const diagnostics: InstanceDiagnostics = {
-    bootId: randomUUID(), version: '1.4.1', startedAt: 1793733600000, observedAt: 1793733600000,
+    bootId, version: '1.4.1', startedAt: 1793733600000, observedAt: 1793733600000,
     runtime: { heapUsedBytes: 600, heapLimitBytes: 1000, rssBytes: 900, admissionBlocked: true,
       eventLoopMaxMs: 1000, activeRequests: 0, activeSessions: 2 },
     minutes: [], callers: [], events: [{ sequence: 1, at: 1793733600000, code: 'event_loop_stall',
       requestId: null, route: '/runtime', status: 0, durationMs: 1000, count: 1 }],
+    samples: [{ at: 1793733600000, bootId, heapUsedBytes: 600, heapLimitBytes: 1000, rssBytes: 900,
+      externalBytes: 10, arrayBufferBytes: 1, cpuPercent: 25, eventLoopMaxMs: 1000,
+      gcCount: 2, gcDurationMs: 10, queueDepth: 1, runningTools: 0, operations: [] }],
+    workQueue: { limits: { running: 4, waiting: 16, waitMs: 5000 }, memoryBlocked: true, running: 0, waiting: 1,
+      items: [{ requestId, operation: 'wm-document-query', caller: 'owner', queuedAt: 1793733599000 }],
+      events: [{ sequence: 1, at: 1793733600000, requestId, operation: 'wm-document-query', caller: 'owner',
+        event: 'completed', waiting: 1, running: 0, waitMs: 0, runMs: 1100 }] },
   };
   f.result({ diagnostics });
   await f.monitor.tick(); await f.monitor.tick();
   expect(f.monitor.incidents(url).map(incident => incident.kind).sort()).toEqual(['event_loop_stall', 'memory_pressure']);
+  for (const incident of f.monitor.incidents(url)) {
+    expect(incident.evidence).toContain('CPU 25.0%, GC 2/10.0 ms');
+    expect(incident.evidence).toContain('wm-document-query, waiting 1000 ms');
+    expect(incident.evidence).toContain('wm-document-query completed, wait 0 ms, run 1100 ms');
+  }
   f.advance();
   diagnostics.events[0].at += 10000;
   await f.monitor.tick();
@@ -112,6 +124,23 @@ it('preserves a corrupt incident queue instead of overwriting reports', () => {
   writeFileSync(f.file, 'corrupt local queue');
   expect(() => new InstanceMonitor(f.options)).toThrow();
   expect(readFileSync(f.file, 'utf8')).toBe('corrupt local queue');
+});
+
+it('includes normalized routes in pre-outage evidence so historical long polls are identifiable', async () => {
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  f.result({ diagnostics: {
+    bootId: randomUUID(), version: '1.4.1', startedAt: 1793733600000, observedAt: 1793733600000,
+    runtime: { heapUsedBytes: 100, heapLimitBytes: 1000, rssBytes: 200, admissionBlocked: false,
+      eventLoopMaxMs: 20, activeRequests: 1, activeSessions: 2 },
+    minutes: [], callers: [], events: [{ sequence: 1, at: 1793733600000, code: 'slow_request',
+      requestId: null, route: '/changes', status: 200, durationMs: 25000, count: 2 }],
+  } });
+  await f.monitor.tick();
+  f.result({ healthy: false });
+  for (let index = 0; index < 3; index++) { f.advance(); await f.monitor.tick(); }
+  expect(f.monitor.incidents(url)).toEqual([
+    expect.objectContaining({ kind: 'outage', evidence: expect.stringContaining('slow_request /changes: HTTP 200, 25000 ms, count 2') }),
+  ]);
 });
 
 it('creates one open Inbox Bug topic and deduplicates an ambiguous successful write', async () => {

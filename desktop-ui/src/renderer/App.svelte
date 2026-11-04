@@ -16,6 +16,7 @@
   import InstancesView from './documents/InstancesView.svelte';
   import type { InstanceConnectionState } from '../shared/instanceIdentity';
   import { instanceAttachmentBaseUrl } from '../shared/instanceAttachments';
+  import { parseDesktopResourceLink } from '../shared/deepLink';
   import type { ScriptTask, HostScriptDraft } from '../shared/hostTasks';
   import ContainerAppList from './ContainerAppList.svelte';
   import WorkstreamView from './documents/WorkstreamView.svelte';
@@ -2250,31 +2251,20 @@
   }
 
   function openLink(rawUrl: string): void {
+    const resource = parseDesktopResourceLink(rawUrl);
+    if (resource) {
+      void openResource(resource.kind, resource.identifier);
+      return;
+    }
     try {
       const url = new URL(rawUrl);
-      if (url.protocol === 'vscode:' && url.hostname === 'kubarycz.working-memory') {
-        const match = url.pathname.match(/^\/open\/(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)$/);
-        if (match) void openResource(match[1] as DesktopResourceKind, decodeURIComponent(match[2]));
-        return;
-      }
-      if (url.protocol === 'working-memory:') {
-        const native = url.hostname === 'open'
-          ? url.pathname.match(/^\/(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)$/)
-          : null;
-        if (native) {
-          void openResource(native[1] as DesktopResourceKind, decodeURIComponent(native[2]));
-          return;
-        }
-        openRoute(url.pathname);
-        return;
-      }
       if (url.protocol === 'http:' || url.protocol === 'https:') {
         void window.workingMemory.openExternal(url.toString()).catch((error) => {
           documentError = error instanceof Error ? error.message : String(error);
         });
-      }
-    } catch {
-      openRoute(rawUrl);
+      } else documentError = 'This link is not a supported Working Memory or web URL.';
+    } catch (error) {
+      documentError = `Unable to open link: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 

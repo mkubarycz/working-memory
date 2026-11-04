@@ -110,7 +110,7 @@ it('terminates with the original session identity after the credential source ch
   expect(errors).toHaveLength(0);
 });
 
-it.each(['quota', 'heap'])('keeps established requests and health responsive during %s rejection bursts', async reason => {
+it.each(['quota', 'heap'])('keeps protocol requests and health responsive during %s rejection bursts', async reason => {
   let blocked = false;
   const server = await startServer({ port: 0, sessionDiagnostics: {
     memory: () => ({ used: blocked ? 70 : 10, limit: 100 }),
@@ -121,9 +121,12 @@ it.each(['quota', 'heap'])('keeps established requests and health responsive dur
     body: JSON.stringify({ idleMinutes: 60, maxPerClient: 1, maxTotal: 1, handshakesPerMinute: 1000, retentionDays: 10 }),
   });
   expect(policy.status).toBe(200);
-  const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
-  cleanup.push(() => client.dispose());
-  expect((await client.listDocuments()).available).toBe(true);
+  const client = new Client({ name: 'rejection-burst-probes', version: '1' });
+  const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+  await client.connect(transport);
+  cleanup.push(() => closeMcpSession(client, transport, error => console.error('MCP probe cleanup failed:', error)));
+  const read = () => client.callTool({ name: 'wm-document-read', arguments: {} });
+  expect((await read()).isError).not.toBe(true);
   if (reason === 'heap') {
     await ownerFetch(`${server.url}/identity/v1/sessions`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -131,6 +134,8 @@ it.each(['quota', 'heap'])('keeps established requests and health responsive dur
     });
     blocked = true;
   }
+  let toolFinished = false;
+  const queuedRead = reason === 'heap' ? read().then(result => { toolFinished = true; return result; }) : null;
   const start = performance.now();
   const rejections = Array.from({ length: 50 }, async () => {
     const response = await ownerFetch(`${server.url}/mcp`, {
@@ -145,14 +150,23 @@ it.each(['quota', 'heap'])('keeps established requests and health responsive dur
   });
   const probes = Array.from({ length: 10 }, async () => {
     const probeStart = performance.now();
-    const [documents, health] = await Promise.all([client.listDocuments(), globalThis.fetch(`${server.url}/health`)]);
-    expect(documents.available).toBe(true);
+    const [protocol, health] = await Promise.all([client.ping(), globalThis.fetch(`${server.url}/health`)]);
+    expect(protocol).toEqual({});
     expect(health.status).toBe(200);
     await health.body?.cancel();
     expect(performance.now() - probeStart).toBeLessThan(1000);
   });
   await Promise.all([...rejections, ...probes]);
   expect(performance.now() - start).toBeLessThan(2000);
+  if (queuedRead) {
+    expect(toolFinished).toBe(false);
+    const queue = await (await ownerFetch(`${server.url}/identity/v1/tool-queue`)).json();
+    expect(queue.waiting).toBe(1);
+    blocked = false;
+    expect((await queuedRead).isError).not.toBe(true);
+  } else {
+    expect((await read()).isError).not.toBe(true);
+  }
   const snapshot = await (await ownerFetch(`${server.url}/identity/v1/sessions`)).json();
   expect(snapshot.active).toHaveLength(1);
   expect(snapshot.events.find((event: { type: string }) => event.type === (reason === 'heap' ? 'memory_rejected' : 'client_quota'))?.count).toBe(50);

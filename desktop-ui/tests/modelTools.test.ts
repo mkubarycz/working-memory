@@ -4,6 +4,7 @@ import {
   createModelConversation,
   desktopToolDescriptors,
   isDestructiveTool,
+  isReadOnlyTool,
   modelTurnRequest,
   parseModelTurn,
 } from '../src/main/modelTools';
@@ -17,9 +18,23 @@ const tools = [
   { name: 'ws-config-read' },
   { name: 'wm-document-read' },
   { name: 'wm-document-search' },
+  { name: 'wm-document-query' },
+  { name: 'wm-document-update' },
+  { name: 'wm-document-delete' },
 ];
 
 describe('desktop model tools', () => {
+  it('classifies only known reads or explicitly read-only non-destructive tools as reads', () => {
+    expect(isReadOnlyTool({ name: 'ws-topic-read' })).toBe(true);
+    expect(isReadOnlyTool({ name: 'wm-document-query' })).toBe(true);
+    expect(isReadOnlyTool({ name: 'ws-topic-close-tree' })).toBe(false);
+    expect(isReadOnlyTool({ name: 'ws-agent-message-snooze' })).toBe(false);
+    expect(isReadOnlyTool({ name: 'app__project__change-set-commit' })).toBe(false);
+    expect(isReadOnlyTool({ name: 'app__project__inspect', annotations: { readOnlyHint: true } })).toBe(true);
+    expect(isReadOnlyTool({ name: 'ws-topic-read', annotations: { readOnlyHint: false } })).toBe(false);
+    expect(isReadOnlyTool({ name: 'app__project__inspect', annotations: { readOnlyHint: true, destructiveHint: true } })).toBe(false);
+  });
+
   it('projects the supported high-level ws suite from canonical descriptors', () => {
     expect(desktopToolDescriptors(tools).map((tool) => tool.name)).toEqual([
       'ws-workstream-read',
@@ -27,8 +42,12 @@ describe('desktop model tools', () => {
       'ws-topictype-read',
       'ws-agent-message-update',
       'wm-document-search',
+      'wm-document-query',
     ]);
     expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('ws-config-read');
+    expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('wm-document-read');
+    expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('wm-document-update');
+    expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('wm-document-delete');
   });
 
   it('classifies deletes as destructive', () => {

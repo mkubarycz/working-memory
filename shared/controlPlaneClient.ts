@@ -846,6 +846,7 @@ export interface CanonicalToolDef {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
 }
 
 /**
@@ -1202,7 +1203,9 @@ export class ControlPlaneClient {
     }
     return tools
       .map((t) => {
-        const tool = t as { name?: unknown; description?: unknown; inputSchema?: unknown };
+        const tool = t as { name?: unknown; description?: unknown; inputSchema?: unknown; annotations?: unknown };
+        const annotations = tool.annotations && typeof tool.annotations === 'object'
+          ? tool.annotations as Record<string, unknown> : undefined;
         return {
           name: typeof tool.name === 'string' ? tool.name : '',
           description: typeof tool.description === 'string' ? tool.description : undefined,
@@ -1210,6 +1213,10 @@ export class ControlPlaneClient {
             tool.inputSchema && typeof tool.inputSchema === 'object'
               ? (tool.inputSchema as Record<string, unknown>)
               : undefined,
+          ...(annotations ? { annotations: {
+            ...(typeof annotations.readOnlyHint === 'boolean' ? { readOnlyHint: annotations.readOnlyHint } : {}),
+            ...(typeof annotations.destructiveHint === 'boolean' ? { destructiveHint: annotations.destructiveHint } : {}),
+          } } : {}),
         };
       })
       .filter((t) => t.name.length > 0);

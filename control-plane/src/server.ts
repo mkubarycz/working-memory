@@ -19,9 +19,10 @@
 
 import * as http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { CancelledNotificationSchema, isInitializeRequest, isJSONRPCRequest, type RequestId } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   DEFAULT_PORT,
@@ -44,6 +45,7 @@ import { createHeapReport, createInstanceIncidentReport, HeapReportError } from 
 import { incidentReportRequestSchema } from './diagnosticContract.js';
 import { IdentityError } from './instanceIdentity.js';
 import { diagnosticRoute, HttpDiagnostics } from './diagnostics.js';
+import { ToolQueue, ToolQueueError, type ToolExecutionOutcome } from './toolQueue.js';
 import { documentPermissionCategory, instancePermissionsSchema, permits } from './instancePermissions.js';
 import { activateDueReminders, REMINDER_SWEEP_INTERVAL_MS } from './agentMessageReminders.js';
 import { authorizeInstanceTool, instanceToolPermissions } from './instanceAuthorization.js';
@@ -59,6 +61,8 @@ import {
   specFields,
   listKindApis,
 } from './kinds/registry.js';
+
+const toolExecution = new AsyncLocalStorage<{ failed: boolean }>();
 
 export interface StartServerOptions extends HostTaskOptions {
   sessionDiagnostics?: SessionDiagnosticsOptions;
@@ -149,6 +153,9 @@ const wmDocumentReadInputSchema = z.object({
 
 const wmSearchAddTopicInputSchema = z.object({ id: z.string().min(1), workstreamId: z.string().min(1), expectedResourceVersion: z.number().int().nonnegative() }).strict();
 const wmPingInputSchema = z.object({});
+const mcpToolCallSchema = z.object({
+  params: z.object({ name: z.string(), arguments: z.record(z.string(), z.unknown()).default({}) }),
+});
 
 const wmListKindsInputSchema = z.object({});
 const wmAttachmentCreateInputSchema = z.object({
@@ -562,7 +569,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const hostTasks = new HostTaskBroker(store.db, opts);
   const access = new InstanceAccess(store.db, hostTasks.identity, opts.hostTaskClock);
   const sessions = new McpSessions(store.db, opts.sessionDiagnostics);
-  const diagnostics = new HttpDiagnostics(store.db, version);
+  const toolQueue = new ToolQueue(store.db, () => sessions.memoryBlocked, opts.sessionDiagnostics?.clock);
+  const diagnostics = new HttpDiagnostics(store.db, version, Date.now, toolQueue);
   let oauth: InstanceOAuth;
   const ownsStore = providedStore === undefined;
   const changeFeed = createDocumentChangeFeed(store);
@@ -571,6 +579,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // session id. Supports multiple concurrent clients, each with its own MCP
   // session and connected McpServer instance.
   const transports = new Map<string, StreamableHTTPServerTransport>();
+  const waitingToolCalls = new Map<string, Map<RequestId, Set<AbortController>>>();
 
   function denyPermission(req: http.IncomingMessage, res: http.ServerResponse, required: PermissionSelection[] | null): void {
     try {
@@ -628,7 +637,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       }
       principal = current;
       if (principal.role === 'client' && body && typeof body === 'object' && 'method' in body && body.method === 'tools/call') {
-        const call = z.object({ params: z.object({ name: z.string(), arguments: z.record(z.string(), z.unknown()).default({}) }) }).safeParse(body);
+        const call = mcpToolCallSchema.safeParse(body);
         if (!call.success || !authorizeInstanceTool(principal, call.data.params.name, call.data.params.arguments, store)) {
           denyPermission(req, res, call.success ? instanceToolPermissions(call.data.params.name, call.data.params.arguments, store) : null);
           return;
@@ -636,7 +645,68 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       }
       const existing = sessionId ? transports.get(sessionId) : undefined;
       if (session && existing) {
-        await existing.handleRequest(req, res, body);
+        if (body && typeof body === 'object' && 'method' in body && body.method === 'notifications/cancelled') {
+          const cancellation = CancelledNotificationSchema.safeParse(body);
+          if (cancellation.success && cancellation.data.params.requestId !== undefined) {
+            const controllers = waitingToolCalls.get(session.protocolId)?.get(cancellation.data.params.requestId);
+            for (const controller of controllers ?? []) controller.abort();
+          }
+        }
+        const dispatch = async (): Promise<ToolExecutionOutcome> => {
+          const current = access.authenticate(req.headers.authorization?.slice(7) ?? '');
+          if (!current) { endJson(res, 401, { error: 'Client access expired or was revoked.' }); return 'not_executed'; }
+          if (current.role === 'client' && body && typeof body === 'object' && 'method' in body && body.method === 'tools/call') {
+            const call = mcpToolCallSchema.safeParse(body);
+            if (!call.success || !authorizeInstanceTool(current, call.data.params.name, call.data.params.arguments, store)) {
+              denyPermission(req, res, call.success ? instanceToolPermissions(call.data.params.name, call.data.params.arguments, store) : null);
+              return 'not_executed';
+            }
+          }
+          const outcome = { failed: false };
+          await toolExecution.run(outcome, () => existing.handleRequest(req, res, body));
+          return outcome.failed ? 'failed' : 'completed';
+        };
+        if (body && typeof body === 'object' && 'method' in body && body.method === 'tools/call') {
+          const call = mcpToolCallSchema.safeParse(body);
+          const name = call.success ? call.data.params.name : '';
+          const operation = name === 'wm-ping' || name === 'wm-list-kinds' || instanceToolPermissions(name, {}, store) !== null
+            ? name : 'unknown-tool';
+          const controller = new AbortController();
+          const requestId = isJSONRPCRequest(body) ? body.id : undefined;
+          const sessionCalls = waitingToolCalls.get(session.protocolId) ?? new Map<RequestId, Set<AbortController>>();
+          const controllers = requestId === undefined ? undefined : sessionCalls.get(requestId) ?? new Set<AbortController>();
+          if (requestId !== undefined && controllers) {
+            controllers.add(controller);
+            sessionCalls.set(requestId, controllers);
+            waitingToolCalls.set(session.protocolId, sessionCalls);
+          }
+          const releaseWaitingCall = () => {
+            if (requestId === undefined || !controllers?.delete(controller)) return;
+            if (!controllers.size) sessionCalls.delete(requestId);
+            if (!sessionCalls.size) waitingToolCalls.delete(session.protocolId);
+          };
+          const cancel = () => controller.abort();
+          res.once('close', cancel);
+          try {
+            await toolQueue.run({
+              requestId: String(res.getHeader('X-Request-Id')), operation,
+              caller: principal.role === 'owner' ? 'owner' : `client:${principal.clientId}`,
+            }, body, controller.signal, () => {
+              releaseWaitingCall();
+              return dispatch();
+            }, outcome => outcome);
+          } catch (error) {
+            if (!(error instanceof ToolQueueError)) throw error;
+            if (!res.destroyed) {
+              res.setHeader('Retry-After', '1');
+              endJson(res, 503, { jsonrpc: '2.0', id: 'id' in body ? body.id : null,
+                error: { code: -32000, message: error.message, data: { executed: false, reason: error.code } } });
+            }
+          } finally {
+            releaseWaitingCall();
+            res.removeListener('close', cancel);
+          }
+        } else await dispatch();
         return;
       }
 
@@ -660,6 +730,12 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             sessions.initialized(managed);
           },
         });
+        const send = transport.send.bind(transport);
+        transport.send = async (message, options) => {
+          const outcome = toolExecution.getStore();
+          if (outcome && ('error' in message || 'result' in message && message.result.isError === true)) outcome.failed = true;
+          await send(message, options);
+        };
         transport.onclose = () => {
           if (transport.sessionId) {
             transports.delete(transport.sessionId);
@@ -745,6 +821,23 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       if (!hostTasks.identity.authenticate(token)) { endJson(res, 401, { error: 'Sign in as the instance owner to view diagnostics.' }); return; }
       if (req.method !== 'GET') { endJson(res, 405, { error: 'Diagnostics accepts GET only.' }); return; }
       endJson(res, 200, diagnostics.snapshot(sessions.activeCount));
+      return;
+    }
+    if (url.pathname === '/identity/v1/tool-queue' || url.pathname.startsWith('/identity/v1/tool-queue/')) {
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.headers.origin || url.search) { endJson(res, 400, { error: 'Use the trusted desktop connection without query parameters.' }); return; }
+      if (!hostTasks.identity.authenticate(token)) { endJson(res, 401, { error: 'Sign in as the instance owner to view the tool queue.' }); return; }
+      if (req.method !== 'GET') { endJson(res, 405, { error: 'Queue inspection accepts GET only.' }); return; }
+      if (url.pathname === '/identity/v1/tool-queue') {
+        endJson(res, 200, { bootId: diagnostics.bootId, ...toolQueue.state(), events: toolQueue.events(),
+          history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing }) => ({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing })) });
+      } else {
+        const id = z.string().uuid().safeParse(url.pathname.slice('/identity/v1/tool-queue/'.length));
+        if (!id.success) { endJson(res, 400, { error: 'A valid queued request ID is required.' }); return; }
+        const body = toolQueue.inspect(id.data);
+        if (body === undefined) { endJson(res, 404, { error: 'This request is no longer waiting in the queue.' }); return; }
+        endJson(res, 200, { requestId: id.data, body });
+      }
       return;
     }
     if (url.pathname === '/identity/v1/incidents') {
@@ -999,6 +1092,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       });
     });
   } catch (error) {
+    toolQueue.close();
     diagnostics.close();
     changeFeed.close();
     await sessions.close();
@@ -1030,6 +1124,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     port: boundPort,
     url: `http://${host}:${boundPort}`,
     async close(): Promise<void> {
+      toolQueue.close();
       clearInterval(hostTaskCleanupTimer);
       clearInterval(sessionCleanupTimer);
       clearInterval(reminderTimer);

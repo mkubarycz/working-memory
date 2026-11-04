@@ -50,12 +50,18 @@ const DESKTOP_TOOL_FAMILIES = [
 ];
 
 export function desktopToolDescriptors(tools: CanonicalToolDef[]): CanonicalToolDef[] {
-  return tools.filter((tool) => tool.name === 'wm-document-search'
+  return tools.filter((tool) => ['wm-document-search', 'wm-document-query'].includes(tool.name)
     || DESKTOP_TOOL_FAMILIES.some((family) => tool.name.startsWith(`ws-${family}-`)));
 }
 
 export function isDestructiveTool(name: string, args: Record<string, unknown>): boolean {
   return /-delete$/.test(name) && args.restore !== true;
+}
+
+export function isReadOnlyTool(tool: CanonicalToolDef): boolean {
+  if (tool.annotations?.destructiveHint === true) return false;
+  if (tool.annotations?.readOnlyHint !== undefined) return tool.annotations.readOnlyHint;
+  return /^(wm-document-(read|query|search)|ws-(workstream|topic|topictype|agent|agent-message)-(read|list))$/.test(tool.name);
 }
 
 export function createModelConversation(

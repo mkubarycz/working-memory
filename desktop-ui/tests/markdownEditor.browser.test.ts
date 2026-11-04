@@ -30,10 +30,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         import { EditorView } from '@codemirror/view';
         import { undo, redo } from '@codemirror/commands';
         import { activateLivePreview } from '/src/renderer/documents/liveMarkdownPreview';
+        import { parseDesktopResourceLink } from '/src/shared/deepLink';
         import TopicView from '/src/renderer/documents/TopicView.svelte';
         import '/src/renderer/style.css';
         let topic = $state(${JSON.stringify(topic)});
-        const fixture = window.__markdownTest = { saves: [], opens: [], attachments: [], imageOpens: [] };
+        const fixture = window.__markdownTest = { saves: [], opens: [], routes: [], attachments: [], imageOpens: [] };
         fixture.body = () => topic.body;
         fixture.reset = body => { topic = { ...topic, body }; };
         fixture.editor = () => EditorView.findFromDOM(document.querySelector('.editor .cm-editor'));
@@ -55,7 +56,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         <TopicView {topic} saveState="idle" onSaveTopic={save}
           attachmentBaseUrl={window.location.origin}
           onOpenTopic={() => {}} onOpenWorkstream={() => {}} onSetAgentMessageStatus={() => {}}
-          onOpenLink={href => fixture.opens.push(href)} onAttachImages={attach} />
+          onOpenLink={href => { fixture.opens.push(href); fixture.routes.push(parseDesktopResourceLink(href)); }} onAttachImages={attach} />
       </div>
       <div class="readonly">
         <TopicView topic={readonly} saveState="idle" onSaveTopic={() => {}}
@@ -166,6 +167,29 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.deepEqual(await evaluate('window.__markdownTest.opens'), [url]);
           assert.equal(await evaluate('window.__markdownTest.saves.length'), 0);
           assert.equal(await evaluate('window.__markdownTest.body()'), url + '\\n\\nTail');
+          assert.equal(await evaluate("document.querySelector('.cm-content').spellcheck"), true);
+
+          for (const href of [
+            'http://127.0.0.1:7718/open/topic/case-id',
+            'working-memory://open/topic/case-id',
+          ]) {
+            const body = 'Case [2610260040006956](' + href + ')\\n\\nTail';
+            await reset(body);
+            await wait('document.querySelector(".cm-live-link-target")?.title === ' + JSON.stringify(href));
+            const saves = await evaluate('window.__markdownTest.saves.length');
+            const count = await evaluate('window.__markdownTest.opens.length');
+            const point = await evaluate(\`(() => {
+              const rect = document.querySelector('.cm-live-link-target').getBoundingClientRect();
+              return { x: Math.round(rect.left + 12), y: Math.round(rect.top + rect.height / 2) };
+            })()\`);
+            window.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+            window.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+            await wait('window.__markdownTest.opens.length === ' + (count + 1));
+            assert.deepEqual(await evaluate('window.__markdownTest.routes.at(-1)'), { kind: 'topic', identifier: 'case-id' });
+            assert.equal(await evaluate('window.__markdownTest.body()'), body);
+            assert.equal(await evaluate('window.__markdownTest.saves.length'), saves);
+            assert.equal(await evaluate('document.querySelector(".readonly a").getAttribute("href")'), href);
+          }
 
           await reset('Before SELECT after\\n\\nTail');
           await evaluate('window.__markdownTest.select(7, 13)');

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, vi } from 'vitest';
 import { startServer, type RunningServer } from './authenticatedFixture';
 import { clearKinds } from '../control-plane/src/kinds/registry';
 import { loadKinds } from '../control-plane/src/kinds/loader';
@@ -49,6 +49,22 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
   afterEach(async () => {
     await server?.close();
     server = null;
+  });
+
+  it('preserves read-only and destructive annotations in the canonical tool catalog', async () => {
+    server = await startServer({ port: 0 });
+    const listing = vi.spyOn(Client.prototype, 'listTools').mockResolvedValueOnce({
+      tools: [{
+        name: 'ws-topic-read', inputSchema: { type: 'object' },
+        annotations: { readOnlyHint: true, destructiveHint: false },
+      }],
+    });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server!.url}/mcp` });
+    try {
+      expect(await client.listTools()).toMatchObject([{
+        name: 'ws-topic-read', annotations: { readOnlyHint: true, destructiveHint: false },
+      }]);
+    } finally { listing.mockRestore(); await client.dispose(); }
   });
 
   it('round-trips list + get through the real MCP client/transport', async () => {

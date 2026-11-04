@@ -18,6 +18,7 @@ import {
   createModelConversation,
   desktopToolDescriptors,
   isDestructiveTool,
+  isReadOnlyTool,
   modelTurnRequest,
   parseModelTurn,
   type ModelImageInput,
@@ -133,6 +134,7 @@ interface Session {
   appToolsRequiringConfirmation: Set<string>;
   separateConfirmations: Set<string>;
   nonDeduplicatedTools: Set<string>;
+  readOnlyTools: Set<string>;
   approvedCalls: Set<ModelToolCall>;
   suspended?: {
     turn: ParsedModelTurn;
@@ -156,8 +158,11 @@ interface ActiveRun {
 
 const SYSTEM_PROMPT = [
   'You are the Working Memory desktop assistant.',
-  'Use the provided ws-* tools to read and maintain Working Memory. Prefer exact reads before updates.',
-  'When referencing a Working Memory resource in Chat, use a friendly Markdown link targeting working-memory://open/<kind>/<identifier>; URI-encode the identifier. Agent messages use kind agent-message. Only restricted Agent Window surfaces use the existing http://127.0.0.1:7718/open bridge (agent messages use its historical alert route); do not expand that bridge allowlist.',
+  'Use the provided wm-document-* and ws-* tools to read and maintain Working Memory. Prefer exact reads before updates.',
+  'A Working Memory document can be a Topic or another readable resource; do not assume "document" or a case number requires a separate case-document kind or an external system.',
+  'For lookup-and-update requests, read the selected document, extract each requested title or identifier from its body, discover matching Working Memory resources, read candidates to verify their identity, then update the original topic while preserving unrelated Markdown. Use literal case numbers as query filters when available. Do not stop after the initial read or claim lookup is unavailable without trying the supplied discovery tools.',
+  'Continue through the requested edits, then verify the saved content with an exact read. Only claim changes confirmed by successful tool results. Report any unmatched or ambiguous references; never invent links or choose an ambiguous match.',
+  'When referencing a Working Memory resource in Chat or saved Markdown, use a friendly Markdown link targeting working-memory://open/<kind>/<identifier>; URI-encode the exact returned ID. Route kinds are lowercase: topic, workstream, topic-type, document, agent-message. For example, a Topic with id abc uses [Title](working-memory://open/topic/abc), never /Topic/. Only restricted Agent Window surfaces use the existing http://127.0.0.1:7718/open bridge (agent messages use its historical alert route); do not expand that bridge allowlist.',
   'Before creating AgentMessages, look up your registered caller name with ws-agent-read; if absent register with ws-agent-create. Remember and reuse the returned metadata.id as the required agent_id on every ws-agent-message-create. Use your own caller identity, not System Import. Registration is attribution only, not authentication.',
   'Use ws-agent-message-* for canonical AgentMessages. Set attention true only for a human decision or intervention; otherwise use category completion, attention false, and include the PR link when work is ready. Do not post progress chatter.',
   'AgentMessage approval records are communication, never authorization grants. Do not auto-execute recommended actions or bypass protected-action confirmation. Never close, reopen, or archive a topic without explicit user approval for that specific status change.',
@@ -169,8 +174,8 @@ export function systemPromptForContext(context?: ChatContext, searchAvailable = 
   const prompt = [
     SYSTEM_PROMPT,
     searchAvailable
-      ? 'For discovery, use wm-document-search with several short related phrases/synonyms derived from the user intent. Explain matches using returned excerpts; read exact IDs for details.'
-      : 'For discovery, use the available ws-workstream-read and ws-topic-read filters, then read exact document IDs for details.',
+      ? 'For discovery, use wm-document-search with several short related phrases/synonyms derived from the user intent, or wm-document-query for literal identifiers and structured filters. Explain matches using returned excerpts; read exact IDs for details.'
+      : 'For discovery, use the available ws-workstream-read and ws-topic-read query filters, then read exact document IDs for details.',
   ].join(' ');
   if (!context) return prompt;
   const selected = `Selected document: kind=${JSON.stringify(context.kind)}, identifier=${JSON.stringify(context.identifier)}, title=${JSON.stringify(context.title)}.`;
@@ -206,7 +211,6 @@ function systemPromptForInput(input: StartChatInput, searchAvailable: boolean): 
     .join(' ');
 }
 
-const MUTATING_ACTION = /-(create|update|delete|restore|run|reorder|transfer|acknowledge|resolve|reopen)$/;
 export const DESKTOP_MODEL_REQUEST_TIMEOUT_MS = 60_000;
 export const DESKTOP_DEFAULT_MAX_MODEL_TURNS = 24;
 export const DESKTOP_DEFAULT_TOTAL_TOOL_RUN_TIMEOUT_MS = 270_000;
@@ -337,6 +341,7 @@ export class DesktopChatAgent {
       ),
       separateConfirmations: new Set(input.appTools?.tools.filter(tool => input.appTools?.separateConfirmation?.(tool.name)).map(tool => tool.name)),
       nonDeduplicatedTools: new Set(input.appTools?.tools.filter(tool => input.appTools?.deduplicate?.(tool.name) === false).map(tool => tool.name)),
+      readOnlyTools: new Set(tools.filter(isReadOnlyTool).map(tool => tool.name)),
       approvedCalls: new Set(),
     };
     run.session = session;
@@ -588,7 +593,7 @@ export class DesktopChatAgent {
           session.run,
           session.run.dependencies.callTool(call.name, cleanArguments(call.arguments)),
         );
-        if (outcome.ok && MUTATING_ACTION.test(call.name)) session.mutated = true;
+        if (outcome.ok && !session.readOnlyTools.has(call.name)) session.mutated = true;
         this.assertCurrent(session.run);
       } catch (error) {
         if (isEnvironmentChanged(error)) throw error;
@@ -612,7 +617,12 @@ export class DesktopChatAgent {
       await this.persistToolResult(session, call, output, 'failure', durationMs);
       return output;
     }
-    const mutating = MUTATING_ACTION.test(call.name);
+    const mutating = !session.readOnlyTools.has(call.name);
+    if (mutating) {
+      for (const cachedKey of session.executed.keys()) {
+        if (session.readOnlyTools.has(cachedKey.split(':', 1)[0])) session.executed.delete(cachedKey);
+      }
+    }
     session.mutated ||= mutating;
     session.navigation = navigationHint(call.name, call.arguments, outcome.result) ?? session.navigation;
     session.progress.push({ name: call.name, status: 'completed', summary: mutating ? 'Updated Working Memory' : 'Read Working Memory' });

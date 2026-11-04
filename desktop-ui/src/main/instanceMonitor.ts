@@ -170,11 +170,22 @@ export class InstanceMonitor {
             + `heap used: ${diagnostics.runtime.heapUsedBytes}; heap limit: ${diagnostics.runtime.heapLimitBytes}; `
             + `RSS: ${diagnostics.runtime.rssBytes}; event-loop max: ${Math.round(diagnostics.runtime.eventLoopMaxMs)} ms; `
             + `active requests: ${diagnostics.runtime.activeRequests}; active sessions: ${diagnostics.runtime.activeSessions}.\n`
-            + diagnostics.events.slice(0, 5).map(event => `${event.code}: HTTP ${event.status}, ${Math.round(event.durationMs)} ms, count ${event.count}`).join('\n');
+            + diagnostics.events.slice(0, 5).map(event => `${event.code} ${event.route}: HTTP ${event.status}, ${Math.round(event.durationMs)} ms, count ${event.count}`).join('\n');
+          if (diagnostics.samples?.length) state.lastEvidence += '\n\nRecent runtime samples:\n'
+            + diagnostics.samples.slice(0, 6).map(sample => `${new Date(sample.at).toISOString()}: heap ${sample.heapUsedBytes}, `
+              + `RSS ${sample.rssBytes}, CPU ${sample.cpuPercent.toFixed(1)}%, GC ${sample.gcCount}/${sample.gcDurationMs.toFixed(1)} ms, `
+              + `loop ${Math.round(sample.eventLoopMaxMs)} ms, queue ${sample.queueDepth}, running ${sample.runningTools}`).join('\n');
+          if (diagnostics.workQueue) state.lastEvidence += '\n\nCurrent tool queue:\n'
+            + `${diagnostics.workQueue.waiting} waiting, ${diagnostics.workQueue.running} running; memory blocked: ${diagnostics.workQueue.memoryBlocked}.\n`
+            + diagnostics.workQueue.items.slice(0, 5).map(item => `${item.requestId}: ${item.operation}, `
+              + `${item.startedAt === undefined ? 'waiting' : 'running'} ${Math.max(0, diagnostics.observedAt - (item.startedAt ?? item.queuedAt))} ms`).join('\n')
+            + '\nRecent tool activity:\n' + diagnostics.workQueue.events.slice(0, 5).map(event =>
+              `${new Date(event.at).toISOString()}: ${event.requestId} ${event.operation} ${event.event}, wait ${Math.round(event.waitMs)} ms, run ${Math.round(event.runMs)} ms`).join('\n');
           if (diagnostics.runtime.admissionBlocked && !state.memoryBlocked) {
             add('memory_pressure', `JavaScript heap usage reached the 60% session-admission cutoff.\n\n`
               + `Heap used: ${diagnostics.runtime.heapUsedBytes} bytes; heap limit: ${diagnostics.runtime.heapLimitBytes} bytes; `
-              + `RSS: ${diagnostics.runtime.rssBytes} bytes; active sessions: ${diagnostics.runtime.activeSessions}; version: ${diagnostics.version}.`);
+              + `RSS: ${diagnostics.runtime.rssBytes} bytes; active sessions: ${diagnostics.runtime.activeSessions}; version: ${diagnostics.version}.\n\n`
+              + state.lastEvidence);
           }
           state.memoryBlocked = diagnostics.runtime.admissionBlocked;
           const stall = diagnostics.events.find(event => event.code === 'event_loop_stall' && event.at > state.stallAt
@@ -182,7 +193,7 @@ export class InstanceMonitor {
           if (stall) {
             if (state.stallAt < this.clock() - 300000) add('event_loop_stall',
               `The backend measured event-loop delay of ${Math.round(stall.durationMs)} ms (threshold: 1000 ms). `
-              + 'This can explain stalled health checks but does not identify the allocation or scheduling cause.');
+              + 'This can explain stalled health checks but does not identify the allocation or scheduling cause.\n\n' + state.lastEvidence);
             state.stallAt = stall.at;
           }
         }
