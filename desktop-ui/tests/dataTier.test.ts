@@ -12,6 +12,7 @@ import {
   dockerEnvironment,
 } from '../src/main/dataTier';
 import { CommandExecutionError, type CommandRunner } from '../src/main/dockerContainerService';
+import { localDockerRunner } from './fixtures/localContainerRunner';
 
 const windows = {
   platform: 'win32' as const,
@@ -100,19 +101,19 @@ describe('data tier launcher', () => {
     ]);
   });
 
-  it('reports a missing Docker Desktop install with download guidance', async () => {
+  it('reports a missing selected CLI with Retry guidance', async () => {
     const manager = new DataTierManager({
       ...windows, buildContext: 'ctx', stateDirectory: stateDirectory(), version: '1', fileExists: () => false,
     });
     await expect(manager.create()).rejects.toMatchObject({ code: 'docker-missing' });
-    await expect(manager.create()).rejects.toThrow('docker.com');
-    await expect(manager.list()).resolves.toMatchObject({ dockerError: 'Docker Desktop is not installed.', instances: [] });
+    await expect(manager.create()).rejects.toThrow('Retry');
+    await expect(manager.list()).resolves.toMatchObject({ dockerError: expect.stringContaining('not installed'), instances: [] });
   });
 
-  it('starts Docker Desktop before creating the first instance', async () => {
+  it('creates the first instance using an already running provider', async () => {
     const docker = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe';
     const desktop = 'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe';
-    let dockerReady = false;
+    let dockerReady = true;
     let healthy = false;
     const calls: string[][] = [];
     const runner: CommandRunner = {
@@ -123,10 +124,9 @@ describe('data tier launcher', () => {
         return { stdout: '', stderr: '' };
       }),
     };
-    const launchDetached = vi.fn(() => { dockerReady = true; });
     const directory = stateDirectory();
     const manager = new DataTierManager({
-      ...windows, buildContext: 'C:\\ctx', stateDirectory: directory, version: '2.0.0', runner, launchDetached,
+      ...windows, buildContext: 'C:\\ctx', stateDirectory: directory, version: '2.0.0', runner: localDockerRunner(runner),
       healthy: async () => healthy, fileExists: (candidate) => candidate === docker || candidate === desktop,
       portAvailable: async () => true, sleep: async () => {}, now: () => new Date('2026-10-16T12:00:00Z'),
     });
@@ -135,18 +135,19 @@ describe('data tier launcher', () => {
       name: 'Working Memory',
       createdAt: '2026-10-16T12:00:00.000Z',
       image: 'working-memory-control-plane:2.0.0',
+      provider: 'docker', connection: 'desktop-linux (unix:///local/docker.sock)',
     });
-    expect(launchDetached).toHaveBeenCalledWith(desktop, []);
     const composeFile = join(directory, 'instances', '7717', 'compose.yaml');
     expect(calls).toContainEqual(['load', '--input', join('C:\\ctx', 'image.tar')]);
     expect(calls.findIndex((args) => args[0] === 'load')).toBeLessThan(calls.findIndex((args) => args[0] === 'compose'));
-    expect(calls.filter((args) => args[0] === 'compose')).toEqual([['compose', '--file', composeFile, 'up', '--detach', '--wait', '--no-build', '--pull', 'never']]);
+    expect(calls.filter((args) => args[0] === 'compose')).toEqual([['compose', '--file', composeFile, 'up', '--detach', '--no-build']]);
     expect(JSON.parse(readFileSync(composeFile, 'utf8'))).toMatchObject({
       name: 'working-memory',
       services: { 'control-plane': { image: 'working-memory-control-plane:2.0.0' } },
     });
     expect(JSON.parse(readFileSync(join(directory, 'instances.json'), 'utf8'))).toEqual({
-      instances: [{ port: 7717, name: 'Working Memory', createdAt: '2026-10-16T12:00:00.000Z', image: 'working-memory-control-plane:2.0.0' }],
+      instances: [{ port: 7717, name: 'Working Memory', createdAt: '2026-10-16T12:00:00.000Z', image: 'working-memory-control-plane:2.0.0',
+        provider: 'docker', connection: 'desktop-linux (unix:///local/docker.sock)' }],
     });
   });
 
@@ -162,7 +163,7 @@ describe('data tier launcher', () => {
     };
     const manager = new DataTierManager({
       ...windows, buildContext: 'C:\\resources\\data-tier', stateDirectory: stateDirectory(), version: '1',
-      runner, healthy: async () => true, portAvailable: async () => true,
+      runner: localDockerRunner(runner), healthy: async () => true, portAvailable: async () => true,
       fileExists: (candidate) => candidate.endsWith('docker.exe'),
     });
     await expect(manager.create()).rejects.toThrow('archive is corrupt');
@@ -182,7 +183,7 @@ describe('data tier launcher', () => {
     };
     const directory = stateDirectory();
     const manager = new DataTierManager({
-      ...mac, buildContext: '/ctx', stateDirectory: directory, version: '1', runner,
+      ...mac, buildContext: '/ctx', stateDirectory: directory, version: '1', runner: localDockerRunner(runner),
       healthy: async () => false, fileExists: (candidate) => candidate === '/usr/local/bin/docker',
       portAvailable: async () => true, homedir: stateDirectory(),
     });
@@ -232,7 +233,8 @@ describe('data tier launcher', () => {
         }),
       };
       const manager = new DataTierManager({
-        ...mac, buildContext: '/ctx', stateDirectory: directory, version, runner,
+        ...mac, buildContext: '/ctx', stateDirectory: directory, version, runner: localDockerRunner(runner),
+        dataExists: (path) => options.instances?.some(instance => path.includes(`WorkingMemory-${instance.port}/`)) ?? false,
         healthy: async (url) => {
           const port = Number(new URL(url).port);
           return containers.get(dataTierInstanceNames(port).container)?.state === 'running';
@@ -287,15 +289,17 @@ describe('data tier launcher', () => {
 
     it('reports Docker Desktop not running without starting it', async () => {
       const runner: CommandRunner = { run: vi.fn(async () => { throw new CommandExecutionError('down'); }) };
-      const launchDetached = vi.fn();
       const directory = stateDirectory();
       writeFileSync(join(directory, 'instances.json'), JSON.stringify({ instances: [{ port: 7720, name: 'Work' }] }));
       const snapshot = await new DataTierManager({
-        ...mac, buildContext: '/ctx', stateDirectory: directory, version: '2.0.0', runner, launchDetached,
+        ...mac, buildContext: '/ctx', stateDirectory: directory, version: '2.0.0', runner: localDockerRunner(runner),
         fileExists: (candidate) => candidate === docker,
       }).list();
-      expect(snapshot).toMatchObject({ dockerError: 'Docker Desktop is not running.', instances: [{ port: 7720, state: 'unknown' }] });
-      expect(launchDetached).not.toHaveBeenCalled();
+      expect(snapshot).toMatchObject({ dockerError: expect.stringContaining('unavailable'), instances: [{ port: 7720, state: 'unknown' }] });
+      await expect(new DataTierManager({
+        ...mac, buildContext: '/ctx', stateDirectory: directory, version: '2.0.0', runner: localDockerRunner(runner),
+        fileExists: (candidate) => candidate === docker,
+      }).start(7720)).rejects.toThrow('Start the selected provider');
     });
 
     it('starts, stops, upgrades, and renames managed instances', async () => {

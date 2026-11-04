@@ -42,7 +42,7 @@ describe('Docker command executable discovery', () => {
   it('reports a missing CLI explicitly without attempting to spawn it', async () => {
     vi.mocked(accessSync).mockImplementation(() => { throw new Error('not found'); });
     await expect(new ExecFileCommandRunner().run('docker', ['info'], { timeoutMs: 1000, env: { PATH: guiPath } }))
-      .rejects.toMatchObject({ code: 'ENOENT', message: expect.stringContaining('Install Docker Desktop') });
+      .rejects.toMatchObject({ code: 'ENOENT', message: expect.stringContaining('Install the selected provider') });
     expect(execFile).not.toHaveBeenCalled();
   });
 

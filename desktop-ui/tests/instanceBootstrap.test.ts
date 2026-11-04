@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
 import { DataTierManager, dataTierInstanceNames } from '../src/main/dataTier';
+import { localDockerRunner } from './fixtures/localContainerRunner';
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -33,7 +34,7 @@ it.each(['darwin', 'win32'] as const)('retrieves bootstrap through verified Dock
   const manager = new DataTierManager({
     platform, homedir: '/Users/test', env: { PATH: '/usr/bin', LOCALAPPDATA: '/unused' },
     buildContext: '/unused', stateDirectory: directory, version: '1.2.0',
-    runner: { run }, fileExists: () => true,
+    runner: localDockerRunner({ run }), fileExists: () => true,
   });
   expect(await manager.bootstrapCredential(7719)).toBe(token);
   expect(run.mock.calls.some(([, args]) => args[0] === 'exec' && args[1] === names.container)).toBe(true);

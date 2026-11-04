@@ -381,9 +381,9 @@ button { cursor: pointer; }
 .settings > header h1 { margin-top: 0; }
 .settings-host .instances { max-width: none; }
 .settings-intro, .instances > p:first-child, .updates > p:first-child { margin: 0 0 18px; color: #6c676b; line-height: 1.5; }
-.settings .backend-channel, .update-channels { margin: 0 0 18px; }
-.backend-channel select { max-width: 360px; padding: 7px; border: 1px solid #aaa5a9; border-radius: 3px; background: #ffffff; color: #292629; }
-.backend-channel .instances-hint { margin: 0; font-weight: 400; }
+.settings .backend-channel, .settings .container-provider, .update-channels { margin: 0 0 18px; }
+.backend-channel select, .container-provider select { max-width: 360px; padding: 7px; border: 1px solid #aaa5a9; border-radius: 3px; background: #ffffff; color: #292629; }
+.backend-channel .instances-hint, .container-provider .instances-hint { margin: 0; font-weight: 400; }
 .update-channels { display: grid; gap: 10px; padding: 14px; border: 1px solid #cbc7ca; border-radius: 6px; }
 .update-channels legend { padding: 0 6px; color: var(--desktop-accent-strong); font-weight: 800; }
 .settings .update-channels label { display: flex; align-items: baseline; gap: 10px; margin: 0; font-weight: 400; color: #4b474a; }

@@ -1,8 +1,7 @@
-import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir as systemHomedir } from 'node:os';
-import { join, win32 } from 'node:path';
+import { join } from 'node:path';
 import { z } from 'zod';
 import {
   DEFAULT_CONTROL_PLANE_SERVICE_PORT,
@@ -14,7 +13,9 @@ import {
   type CommandRunner,
 } from './dockerContainerService';
 import { parseBackendImage } from './updateChannels';
-import { defaultFileExists, dockerCliPath, dockerEnvironment, type DockerHost as DataTierHost } from './dockerCli';
+import { defaultFileExists, type DockerHost as DataTierHost } from './dockerCli';
+import { ContainerProviderAdapter, type ContainerProvider } from './containerProvider';
+import { checkContainerOwnership } from './containerOwnership';
 import type {
   BackendUpdateTarget,
   DataTierInstanceState,
@@ -31,16 +32,16 @@ export const DATA_TIER_PROJECT = 'working-memory';
 export const DATA_TIER_SERVICE = 'control-plane';
 export const DATA_TIER_CONTAINER = 'working-memory-control-plane';
 export const DATA_TIER_VOLUME = 'working-memory-data';
-export const DOCKER_DESKTOP_URL = 'https://www.docker.com/products/docker-desktop/';
 
 export interface DataTierOptions extends Partial<DataTierHost> {
+  provider?: ContainerProvider;
   /** Directory containing the prebuilt control-plane image archive. */
   buildContext: string;
   /** Writable directory for instance state and generated Compose files. */
   stateDirectory: string;
   version: string;
   runner?: CommandRunner;
-  launchDetached?: (file: string, args: string[]) => void;
+  dataExists?: (path: string) => boolean;
   healthy?: (url: string) => Promise<boolean>;
   sleep?: (ms: number) => Promise<void>;
   fileExists?: (path: string) => boolean;
@@ -51,7 +52,6 @@ export interface DataTierOptions extends Partial<DataTierHost> {
 
 export interface DataTierTimeouts {
   info: number;
-  dockerStart: number;
   composeUp: number;
   command: number;
   health: number;
@@ -60,7 +60,6 @@ export interface DataTierTimeouts {
 
 const DEFAULT_TIMEOUTS: DataTierTimeouts = {
   info: 15_000,
-  dockerStart: 120_000,
   composeUp: 15 * 60_000,
   command: 60_000,
   health: 120_000,
@@ -68,7 +67,7 @@ const DEFAULT_TIMEOUTS: DataTierTimeouts = {
 };
 
 export class DataTierError extends Error {
-  constructor(message: string, readonly code: 'docker-missing' | 'docker-unavailable' | 'start-failed' | 'unhealthy' | 'not-found' | 'not-running') {
+  constructor(message: string, readonly code: 'docker-missing' | 'docker-unavailable' | 'start-failed' | 'unhealthy' | 'not-found' | 'not-running' | 'provider-conflict') {
     super(message);
     this.name = 'DataTierError';
   }
@@ -117,7 +116,7 @@ export function dataTierHostDirectory(host: DataTierHost, port = DEFAULT_CONTROL
 
 /**
  * Compose definition for one installed data-tier instance. Windows keeps SQLite in a
- * Docker volume because WAL locking is unreliable on Windows bind mounts; macOS and
+ * provider-owned volume because WAL locking is unreliable on Windows bind mounts; macOS and
  * Linux use the host application-data directory so existing stores are reused.
  */
 export function dataTierCompose(
@@ -149,7 +148,7 @@ export function dataTierCompose(
         volumes: [dataMount],
       },
     },
-    ...(host.platform === 'win32' ? { volumes: { [names.volume]: { name: names.volume } } } : {}),
+    ...(host.platform === 'win32' ? { volumes: { [names.volume]: { name: names.volume, external: true } } } : {}),
   };
 }
 
@@ -180,6 +179,8 @@ export function parseManagedInstances(raw: string): ManagedDataTierInstance[] {
         name,
         createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : '',
         ...(image ? { image } : {}),
+        ...(candidate.provider === 'docker' || candidate.provider === 'podman' ? { provider: candidate.provider } : {}),
+        ...(typeof candidate.connection === 'string' ? { connection: candidate.connection } : {}),
       });
     }
     return [...byPort.values()].sort((left, right) => left.port - right.port);
@@ -214,12 +215,6 @@ async function defaultHealthy(url: string): Promise<boolean> {
   }
 }
 
-function defaultLaunchDetached(file: string, args: string[]): void {
-  const child = spawn(file, args, { detached: true, stdio: 'ignore', windowsHide: true });
-  child.on('error', (error) => console.error('[data-tier] Unable to start Docker Desktop:', error));
-  child.unref();
-}
-
 function commandDetail(error: unknown): string {
   if (error instanceof CommandExecutionError && error.stderr.trim()) {
     return error.stderr.trim().split(/\r?\n/).slice(-6).join('\n');
@@ -242,7 +237,7 @@ function imageVersion(image: string): string | null {
 
 function containerState(dockerState: string, status: string): DataTierInstanceState {
   if (dockerState !== 'running') return 'stopped';
-  if (status.includes('(health: starting)')) return 'starting';
+  if (status.includes('(health: starting)') || status.includes('(starting)')) return 'starting';
   if (status.includes('(unhealthy)')) return 'unhealthy';
   return 'running';
 }
@@ -257,16 +252,15 @@ function fileId(name: string): string {
 }
 
 /**
- * Creates and operates the Docker data-tier instances this desktop install manages.
+ * Creates and operates the local data-tier instances this desktop install manages.
  * Operations run one at a time so Compose never races itself over shared state.
  */
 export class DataTierManager {
+  private readonly provider: ContainerProviderAdapter;
   private readonly host: DataTierHost;
   private readonly runner: CommandRunner;
-  private readonly launchDetached: (file: string, args: string[]) => void;
   private readonly healthy: (url: string) => Promise<boolean>;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly fileExists: (path: string) => boolean;
   private readonly portAvailable: (port: number) => Promise<boolean>;
   private readonly now: () => Date;
   private readonly timeouts: DataTierTimeouts;
@@ -279,11 +273,15 @@ export class DataTierManager {
       env: options.env ?? process.env,
       homedir: options.homedir ?? systemHomedir(),
     };
-    this.runner = options.runner ?? new ExecFileCommandRunner();
-    this.launchDetached = options.launchDetached ?? defaultLaunchDetached;
+    this.provider = new ContainerProviderAdapter({
+      provider: options.provider, host: this.host,
+      runner: options.runner ?? new ExecFileCommandRunner(),
+      fileExists: options.fileExists ?? defaultFileExists(this.host.platform),
+    });
+    this.runner = { run: (connection, args, runOptions) =>
+      this.provider.run(connection, args, runOptions ?? { timeoutMs: this.timeouts.command }) };
     this.healthy = options.healthy ?? defaultHealthy;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    this.fileExists = options.fileExists ?? defaultFileExists(this.host.platform);
     this.portAvailable = options.portAvailable ?? defaultPortAvailable;
     this.now = options.now ?? (() => new Date());
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
@@ -294,7 +292,23 @@ export class DataTierManager {
   }
 
   get instances(): ManagedDataTierInstance[] {
-    return readManagedInstances(this.options.stateDirectory);
+    try {
+      const raw = readFileSync(join(this.options.stateDirectory, DATA_TIER_STATE_FILE), 'utf8');
+      z.object({ instances: z.array(z.object({
+        port: z.number().int().min(1).max(65535),
+        provider: z.enum(['docker', 'podman']).optional(),
+        connection: z.string().min(1).optional(),
+        image: z.string().refine(image => isBundledImage(image) || !!parseBackendImage(image)).optional(),
+      })).refine(instances => new Set(instances.map(instance => instance.port)).size === instances.length) }).parse(JSON.parse(raw));
+      return parseManagedInstances(raw);
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [];
+      throw new Error(`Managed instance registration is unreadable. Restore it before retrying; no replacement database will be created.\n${commandDetail(error)}`);
+    }
+  }
+
+  async whenIdle(): Promise<void> {
+    await this.queue;
   }
 
   /** The image bundled with this installer build. */
@@ -306,7 +320,7 @@ export class DataTierManager {
     const instance = this.require(port), names = dataTierInstanceNames(port);
     const { docker, env } = await this.docker();
     const raw = await this.runner.run(docker, ['inspect', names.container], { timeoutMs: this.timeouts.command, env });
-    const parsed: unknown = JSON.parse(raw.stdout);
+    const parsed = this.provider.inspect(raw.stdout, instance.image ?? this.bundledTarget.image);
     const schema = z.array(z.object({
       Config: z.object({
         Image: z.string(),
@@ -356,47 +370,40 @@ export class DataTierManager {
     const instances = this.instances;
     // Self-hosted servers come from environment discovery, which the manager does not own.
     const base = { appVersion: this.options.version, selfHosted: [] };
-    const docker = dockerCliPath(this.host, this.fileExists);
-    if (!docker) {
-      return { ...base, dockerError: 'Docker Desktop is not installed.', instances: instances.map((instance) => this.status(instance, target)) };
-    }
-    const env = dockerEnvironment(this.host, docker);
     let containers: Map<string, { state: string; status: string; image: string }>;
+    let dependencyError: string | null = null;
     try {
+      const { docker, env } = await this.docker();
       containers = await this.containers(docker, env);
-    } catch {
-      return { ...base, dockerError: 'Docker Desktop is not running.', instances: instances.map((instance) => this.status(instance, target)) };
+      try {
+        await this.provider.requireCompose(docker, { timeoutMs: this.timeouts.info, env });
+      } catch (error) {
+        dependencyError = commandDetail(error);
+      }
+    } catch (error) {
+      return { ...base, dockerError: commandDetail(error), instances: instances.map((instance) => this.status(instance, target)) };
     }
     return {
       ...base,
-      dockerError: null,
+      dockerError: dependencyError,
       instances: instances.map((instance) => {
         const container = containers.get(dataTierInstanceNames(instance.port).container);
         return this.status(
           instance,
           target,
           container ? containerState(container.state, container.status) : 'missing',
-          container ? imageVersion(container.image) : null,
+          container ? imageVersion(this.provider.imageReference(container.image)) : null,
         );
       }),
     };
   }
 
-  /** Creates a managed instance on 7717 when free, otherwise the next free port from 7719. */
+  /** Sanitized crash and health evidence for a registered container. */
   async diagnosticState(port: number): Promise<{ startedAt: string; evidence: string }> {
     this.require(port);
-    const docker = dockerCliPath(this.host, this.fileExists);
-    if (!docker) throw new DataTierError('Docker CLI is unavailable for container diagnostics.', 'docker-missing');
-    const format = '{"Image":{{json .Image}},"RestartCount":{{.RestartCount}},"Config":{"Image":{{json .Config.Image}}},'
-      + '"State":{"Status":{{json .State.Status}},"OOMKilled":{{.State.OOMKilled}},"ExitCode":{{.State.ExitCode}},'
-      + '"StartedAt":{{json .State.StartedAt}},"FinishedAt":{{json .State.FinishedAt}}'
-      + '{{if .State.Health}},"Health":{"Status":{{json .State.Health.Status}},"FailingStreak":{{.State.Health.FailingStreak}},'
-      + '"Log":[{{range $i,$log := .State.Health.Log}}{{if $i}},{{end}}'
-      + '{"Start":{{json $log.Start}},"End":{{json $log.End}},"ExitCode":{{$log.ExitCode}}}{{end}}]}{{end}}}}';
+    const { docker, env } = await this.docker();
     const result = await this.runner.run(docker, ['container', 'inspect',
-      '--format', format, dataTierInstanceNames(port).container], {
-      env: dockerEnvironment(this.host, docker), timeoutMs: 5000,
-    });
+      dataTierInstanceNames(port).container], { env, timeoutMs: 5000 });
     const schema = z.object({
       Image: z.string(), RestartCount: z.number().int(),
       Config: z.object({ Image: z.string() }),
@@ -405,13 +412,13 @@ export class DataTierManager {
         StartedAt: z.string(), FinishedAt: z.string(),
         Health: z.object({
           Status: z.string(), FailingStreak: z.number().int(),
-          Log: z.array(z.object({ Start: z.string(), End: z.string(), ExitCode: z.number().int() })),
-        }).optional(),
+          Log: z.array(z.object({ Start: z.string(), End: z.string(), ExitCode: z.number().int() })).nullable(),
+        }).nullish(),
       }),
     });
-    const value = schema.parse(JSON.parse(result.stdout));
+    const [value] = z.array(schema).length(1).parse(this.provider.inspect(result.stdout));
     return { startedAt: value.State.StartedAt,
-      evidence: `Docker image: ${value.Config.Image}; image ID: ${value.Image}; state: ${value.State.Status}; `
+      evidence: `${this.provider.label} image: ${value.Config.Image}; image ID: ${value.Image}; state: ${value.State.Status}; `
         + `OOM killed: ${value.State.OOMKilled}; exit code: ${value.State.ExitCode}; restart count: ${value.RestartCount}; `
         + `started: ${value.State.StartedAt}; finished: ${value.State.FinishedAt}; `
         + `health: ${value.State.Health?.Status ?? 'not configured'}; failing streak: ${value.State.Health?.FailingStreak ?? 0}.\n`
@@ -423,14 +430,16 @@ export class DataTierManager {
     return this.serialize(async () => {
       const { docker, env } = await this.docker();
       const port = await this.choosePort(docker, env);
+      this.ownership(docker, true);
       const instance = {
         port,
         name: name?.trim().slice(0, 80) || defaultInstanceName(port),
         createdAt: this.now().toISOString(),
         image: this.bundledTarget.image,
+        provider: this.provider.provider,
+        connection: this.provider.identity(docker),
       };
-      await this.composeUp(docker, env, port, instance.image);
-      this.writeInstances([...this.instances, instance]);
+      await this.composeUp(docker, env, port, instance.image, instance);
       return instance;
     });
   }
@@ -469,12 +478,6 @@ export class DataTierManager {
       const image = target.version === this.options.version ? this.bundledTarget.image : target.image;
       const { docker, env } = await this.docker();
       await this.composeUp(docker, env, port, image);
-      const instances = this.instances;
-      const updated = instances.find((candidate) => candidate.port === port);
-      if (updated) {
-        updated.image = image;
-        this.writeInstances(instances);
-      }
     });
   }
 
@@ -520,6 +523,7 @@ export class DataTierManager {
    * managed instance, or creates the default one on a fresh install.
    */
   async ensureAvailable(preferredPort?: number): Promise<string> {
+    this.assertProviderRegistrations();
     const instances = this.instances;
     const target = instances.find((instance) => instance.port === preferredPort) ?? instances[0];
     if (!target) return mcpUrl((await this.create()).port);
@@ -556,16 +560,32 @@ export class DataTierManager {
   }
 
   private async docker(): Promise<{ docker: string; env: NodeJS.ProcessEnv }> {
-    const docker = dockerCliPath(this.host, this.fileExists);
-    if (!docker) {
-      throw new DataTierError(
-        `Working Memory stores its data with Docker Desktop, which was not found. Install Docker Desktop (${DOCKER_DESKTOP_URL}), start it, then retry.`,
-        'docker-missing',
-      );
+    this.assertProviderRegistrations();
+    try {
+      const docker = await this.provider.resolve();
+      this.ownership(docker);
+      if (this.instances.some(instance => instance.connection && instance.connection !== this.provider.identity(docker))) {
+        throw new DataTierError('The selected connection differs from the engine that owns these instances. Restore the original local connection; data will not be replaced or migrated.', 'provider-conflict');
+      }
+
+      return { docker, env: this.host.env };
+    } catch (error) {
+      if (error instanceof DataTierError) throw error;
+      const missing = error instanceof Error && 'code' in error && error.code === 'ENOENT';
+      throw new DataTierError(`${this.provider.label} is ${missing ? 'not installed' : 'unavailable'}. Start the selected provider and ensure Compose is installed, then Retry.\n${commandDetail(error)}`, missing ? 'docker-missing' : 'docker-unavailable');
     }
-    const env = dockerEnvironment(this.host, docker);
-    await this.waitForDocker(docker, env);
-    return { docker, env };
+  }
+
+  private assertProviderRegistrations(): void {
+    if (this.instances.some(instance => (instance.provider ?? 'docker') !== this.provider.provider)) {
+      throw new DataTierError('Existing instances belong to another container provider. Select their original provider to manage them. Changing providers does not migrate data or create replacement databases.', 'provider-conflict');
+    }
+  }
+
+  private ownership(connection: string, reserve = false): void {
+    checkContainerOwnership(join(this.options.stateDirectory, 'ownership'), 'data-tier', {
+      provider: this.provider.provider, connection: this.provider.identity(connection),
+    }, reserve);
   }
 
   private async containers(
@@ -588,10 +608,17 @@ export class DataTierManager {
   private async choosePort(docker: string, env: NodeJS.ProcessEnv): Promise<number> {
     const managed = new Set(this.instances.map((instance) => instance.port));
     const containers = await this.containers(docker, env);
+    const volumes = this.host.platform === 'win32'
+      ? new Set((await this.run(docker, env, ['volume', 'ls', '--format', '{{.Name}}'],
+        'start-failed', 'Unable to check existing data volumes.')).trim().split(/\r?\n/))
+      : new Set<string>();
     const candidates = [DEFAULT_CONTROL_PLANE_SERVICE_PORT];
     for (let port = DATA_TIER_INSTANCE_PORT_FIRST; port <= DATA_TIER_INSTANCE_PORT_LAST; port += 1) candidates.push(port);
     for (const port of candidates) {
-      if (managed.has(port) || containers.has(dataTierInstanceNames(port).container)) continue;
+      const names = dataTierInstanceNames(port);
+      if (managed.has(port) || containers.has(names.container) || volumes.has(names.volume)) continue;
+      if (this.host.platform !== 'win32'
+        && (this.options.dataExists ?? existsSync)(join(dataTierHostDirectory(this.host, port), 'journal.sqlite'))) continue;
       if (await this.portAvailable(port)) return port;
     }
     throw new DataTierError(
@@ -600,7 +627,21 @@ export class DataTierManager {
     );
   }
 
-  private async composeUp(docker: string, env: NodeJS.ProcessEnv, port: number, image: string): Promise<void> {
+  private async composeUp(docker: string, env: NodeJS.ProcessEnv, port: number, image: string, registration?: ManagedDataTierInstance): Promise<void> {
+    await this.provider.requireCompose(docker, { timeoutMs: this.timeouts.info, env });
+    this.ownership(docker, true);
+    const existing = this.instances.find(instance => instance.port === port);
+    if (existing) {
+      if (this.host.platform === 'win32') {
+        await this.run(docker, env, ['volume', 'inspect', dataTierInstanceNames(port).volume],
+          'provider-conflict', 'The existing data volume is unavailable. Refusing to create an empty replacement database.');
+      } else if (!(this.options.dataExists ?? existsSync)(join(dataTierHostDirectory(this.host, port), 'journal.sqlite'))) {
+        throw new DataTierError('The existing database is unavailable. Restore its original data directory before retrying; no empty replacement will be created.', 'provider-conflict');
+      }
+    } else if (this.host.platform === 'win32') {
+      await this.run(docker, env, ['volume', 'create', dataTierInstanceNames(port).volume],
+        'start-failed', 'Unable to create the new instance data volume.');
+    }
     if (isBundledImage(image)) {
       if (!this.bundledImageLoaded) {
         try {
@@ -622,12 +663,17 @@ export class DataTierManager {
     }
     const composeFile = this.writeComposeFile(port, image);
     try {
-      await this.runner.run(docker, ['compose', '--file', composeFile, 'up', '--detach', '--wait', '--no-build', '--pull', 'never'], {
-        timeoutMs: this.timeouts.composeUp,
-        env,
-      });
+      await this.provider.composeUp(docker, composeFile, { timeoutMs: this.timeouts.composeUp, env });
     } catch (error) {
-      throw new DataTierError(`Unable to start the Working Memory data tier with Docker Compose.\n${commandDetail(error)}`, 'start-failed');
+      throw new DataTierError(`Unable to start the Working Memory data tier with ${this.provider.label} Compose.\n${commandDetail(error)}`, 'start-failed');
+    }
+    // Persist the deployed image before health polling so an unhealthy upgrade
+    // cannot revert to the installer image after the desktop restarts.
+    const instances = this.instances;
+    const deployed = registration ?? instances.find(instance => instance.port === port);
+    if (deployed) {
+      deployed.image = image;
+      this.writeInstances([...instances.filter(instance => instance.port !== port), deployed]);
     }
     await this.waitHealthy(port);
   }
@@ -637,7 +683,7 @@ export class DataTierManager {
     while (!(await this.healthy(healthUrl(port)))) {
       if (Date.now() >= deadline) {
         throw new DataTierError(
-          `The Working Memory data tier container started but ${healthUrl(port)} is not healthy. Check "docker logs ${dataTierInstanceNames(port).container}".`,
+          `The Working Memory data tier container started but ${healthUrl(port)} is not healthy. Check "${this.provider.provider} logs ${dataTierInstanceNames(port).container}".`,
           'unhealthy',
         );
       }
@@ -667,41 +713,6 @@ export class DataTierManager {
       `${JSON.stringify({ instances: sorted }, null, 2)}\n`,
       { mode: 0o600 },
     );
-  }
-
-  private async dockerReady(docker: string, env: NodeJS.ProcessEnv): Promise<boolean> {
-    try {
-      await this.runner.run(docker, ['info', '--format', '{{json .ServerVersion}}'], { timeoutMs: this.timeouts.info, env });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async waitForDocker(docker: string, env: NodeJS.ProcessEnv): Promise<void> {
-    if (await this.dockerReady(docker, env)) return;
-    this.startDockerDesktop();
-    const deadline = Date.now() + this.timeouts.dockerStart;
-    while (Date.now() < deadline) {
-      await this.sleep(this.timeouts.poll);
-      if (await this.dockerReady(docker, env)) return;
-    }
-    throw new DataTierError(
-      'Docker Desktop is installed but not running. Start Docker Desktop, wait until it reports that the engine is running, then retry.',
-      'docker-unavailable',
-    );
-  }
-
-  private startDockerDesktop(): void {
-    if (this.host.platform === 'darwin') {
-      this.launchDetached('/usr/bin/open', ['-g', '-a', 'Docker']);
-      return;
-    }
-    if (this.host.platform === 'win32') {
-      const programFiles = this.host.env.ProgramFiles || 'C:\\Program Files';
-      const desktop = win32.join(programFiles, 'Docker', 'Docker', 'Docker Desktop.exe');
-      if (this.fileExists(desktop)) this.launchDetached(desktop, []);
-    }
   }
 
   /** Writes the instance's Compose file; macOS/Linux also create its bind-mounted data folder. */

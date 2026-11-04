@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dockerCliPath, dockerEnvironment } from './dockerCli';
+import { ContainerProviderAdapter, type ContainerProvider } from './containerProvider';
+import { checkContainerOwnership } from './containerOwnership';
 import type {
   ContainerClaim,
   ContainerClaimCreateInput,
@@ -49,6 +51,8 @@ export type DockerErrorCode =
   | 'readiness_timeout';
 
 export interface DockerContainerServiceOptions {
+  provider?: ContainerProvider;
+  stateDirectory?: string;
   runner?: CommandRunner;
   readiness?: (url: string) => Promise<boolean>;
   retries?: number;
@@ -77,7 +81,6 @@ const DEFAULT_TIMEOUTS: DockerOperationTimeouts = {
   stop: 30_000,
   remove: 30_000,
 };
-const LOCAL_CONTEXTS = ['desktop-linux', 'orbstack', 'default'];
 
 interface DockerInspect {
   Image?: string;
@@ -101,22 +104,23 @@ export class CommandExecutionError extends Error {
 
 export class CommandTimeoutError extends CommandExecutionError {
   constructor(readonly timeoutMs: number) {
-    super(`Docker command timed out after ${timeoutMs}ms.`, 'ETIMEDOUT');
+    super(`Container command timed out after ${timeoutMs}ms.`, 'ETIMEDOUT');
   }
 }
 
 export class ExecFileCommandRunner implements CommandRunner {
   run(file: string, args: string[], options: CommandRunOptions): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
-      if (file === 'docker' || file === 'docker.exe') {
+      if (['docker', 'docker.exe', 'podman', 'podman.exe'].includes(file)) {
+        const provider = file.startsWith('podman') ? 'podman' : 'docker';
         const host = { platform: process.platform, env: options.env ?? process.env, homedir: homedir() };
-        const executable = dockerCliPath(host);
+        const executable = dockerCliPath(host, undefined, provider);
         if (!executable) {
-          reject(new CommandExecutionError('Docker CLI was not found. Install Docker Desktop or enable its command-line tools, then retry.', 'ENOENT'));
+          reject(new CommandExecutionError(`${provider} CLI was not found. Install the selected provider and enable its command-line tools, then Retry.`, 'ENOENT'));
           return;
         }
         file = executable;
-        options = { ...options, env: dockerEnvironment(host, executable) };
+        options = { ...options, env: dockerEnvironment(host, executable, provider) };
       }
       execFile(file, args, {
         encoding: 'utf8',
@@ -142,6 +146,7 @@ export class ExecFileCommandRunner implements CommandRunner {
 }
 
 export class DockerContainerService {
+  private readonly provider: ContainerProviderAdapter;
   private readonly runner: CommandRunner;
   private readonly readiness: (url: string) => Promise<boolean>;
   private readonly retries: number;
@@ -150,7 +155,7 @@ export class DockerContainerService {
   private readonly env: NodeJS.ProcessEnv;
   private readonly timeouts: DockerOperationTimeouts;
 
-  constructor(options: DockerContainerServiceOptions = {}) {
+  constructor(private readonly options: DockerContainerServiceOptions = {}) {
     this.runner = options.runner ?? new ExecFileCommandRunner();
     this.readiness = options.readiness ?? defaultReadiness;
     this.retries = options.retries ?? 30;
@@ -158,6 +163,11 @@ export class DockerContainerService {
     this.configuredContext = options.dockerContext;
     this.env = options.env ?? process.env;
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
+    this.provider = new ContainerProviderAdapter({
+      provider: options.provider, runner: this.runner,
+      host: { platform: process.platform, homedir: homedir(), env: this.env },
+      dockerContext: this.configuredContext,
+    });
   }
 
   async ensure(
@@ -187,7 +197,7 @@ export class DockerContainerService {
 
   async launch(claim: ContainerClaim, signal?: AbortSignal): Promise<ContainerLaunchResult> {
     if (!claim.runtime || claim.runtime.type !== 'docker') {
-      return { status: 'error', code: 'claim_error', message: 'ContainerClaim has no Docker runtime specification.' };
+      return { status: 'error', code: 'claim_error', message: 'ContainerClaim has no container runtime specification.' };
     }
 
     const runtime = claim.runtime;
@@ -199,11 +209,12 @@ export class DockerContainerService {
     let context: string;
     try {
       context = await this.resolveDockerContext(signal);
+      this.ownership(context, claim.id, true);
     } catch (error) {
       const missing = error instanceof CommandExecutionError && error.code === 'ENOENT';
       return failure(
         missing ? 'docker_missing' : 'docker_unavailable',
-        missing ? 'Docker CLI is not installed or is not on PATH.' : 'No safe local Docker context is available.',
+        missing ? `${this.provider.label} CLI is not installed or is not on PATH.` : `No safe local ${this.provider.label} connection is available. Start the selected provider, then Retry.`,
         error,
       );
     }
@@ -214,7 +225,7 @@ export class DockerContainerService {
         '-t', runtime.imageName, '-f', runtime.dockerfile, runtime.buildContext,
       ], this.timeouts.build, signal);
     } catch (error) {
-      return failure('build_failed', 'Docker image build failed.', error);
+      return failure('build_failed', `${this.provider.label} image build failed.`, error);
     }
 
     let imageId: string;
@@ -224,7 +235,7 @@ export class DockerContainerService {
       ], this.timeouts.inspect, signal)).stdout.trim();
       if (!imageId) throw new Error('Docker returned an empty image id.');
     } catch (error) {
-      return failure('build_failed', 'Built Docker image could not be inspected.', error);
+      return failure('build_failed', `Built ${this.provider.label} image could not be inspected.`, error);
     }
 
     let current: DockerInspect | null = null;
@@ -235,11 +246,11 @@ export class DockerContainerService {
         this.timeouts.inspect,
         signal,
       );
-      const parsed = JSON.parse(result.stdout) as DockerInspect[];
+      const parsed = this.provider.inspect(result.stdout, runtime.imageName) as DockerInspect[];
       current = parsed[0] ?? null;
     } catch (error) {
       if (!isMissingContainer(error)) {
-        return failure('start_failed', 'Existing Docker container could not be inspected.', error);
+        return failure('start_failed', 'Existing container could not be inspected.', error);
       }
     }
 
@@ -264,14 +275,14 @@ export class DockerContainerService {
         await this.runContainer(context, runtime, claim.id, signal);
         action = 'recreated';
       } catch (error) {
-        return failure('start_failed', 'Managed Docker container could not be recreated.', error);
+        return failure('start_failed', 'Managed container could not be recreated.', error);
       }
     } else if (!current) {
       try {
         await this.runContainer(context, runtime, claim.id, signal);
         action = 'created';
       } catch (error) {
-        return failure('start_failed', 'Docker container could not be started.', error);
+        return failure('start_failed', 'Container could not be started.', error);
       }
     } else if (!current.State?.Running) {
       try {
@@ -283,7 +294,7 @@ export class DockerContainerService {
         );
         action = 'started';
       } catch (error) {
-        return failure('start_failed', 'Existing managed Docker container could not be started.', error);
+        return failure('start_failed', 'Existing managed container could not be started.', error);
       }
     } else {
       action = 'reused';
@@ -308,7 +319,7 @@ export class DockerContainerService {
 
   async inspect(desired: ContainerClaimCreateInput & { id: string }, signal?: AbortSignal): Promise<ContainerAppStatus> {
     const runtime = desired.runtime;
-    if (!runtime || runtime.type !== 'docker') return appStatus(desired, null, 'error', false, 'Status failed', 'ContainerClaim has no Docker runtime specification.');
+    if (!runtime || runtime.type !== 'docker') return appStatus(desired, null, 'error', false, 'Status failed', 'ContainerClaim has no container runtime specification.');
     try {
       runtimePorts(runtime);
     } catch (error) {
@@ -317,13 +328,14 @@ export class DockerContainerService {
     let context: string;
     try {
       context = await this.resolveDockerContext(signal);
+      this.ownership(context, desired.id);
     } catch (error) {
       return appStatus(desired, null, 'error', false, 'Status failed', errorDetail(error));
     }
     let current: DockerInspect;
     try {
       const result = await this.docker(context, ['container', 'inspect', runtime.containerName], this.timeouts.inspect, signal);
-      current = (JSON.parse(result.stdout) as DockerInspect[])[0] ?? {};
+      current = (this.provider.inspect(result.stdout, runtime.imageName) as DockerInspect[])[0] ?? {};
     } catch (error) {
       if (isMissingContainer(error)) return appStatus(desired, context, 'missing', false, 'Status refreshed', null);
       return appStatus(desired, context, 'error', false, 'Status failed', errorDetail(error));
@@ -394,6 +406,19 @@ export class DockerContainerService {
     signal?: AbortSignal,
   ): Promise<void> {
     validateVolumes(runtime.volumes);
+    for (const volume of runtime.volumes ?? []) {
+      if (this.options.stateDirectory) {
+        const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
+        const resource = `volume:${volume.name}`;
+        const exists = checkContainerOwnership(this.options.stateDirectory, resource, owner);
+        if (exists) {
+          await this.docker(context, ['volume', 'inspect', volume.name], this.timeouts.inspect, signal);
+        } else {
+          await this.docker(context, ['volume', 'create', volume.name], this.timeouts.start, signal);
+          checkContainerOwnership(this.options.stateDirectory, resource, owner, true);
+        }
+      }
+    }
     const volumeArgs = (runtime.volumes ?? []).flatMap((volume) => [
       '--mount', `type=volume,source=${volume.name},destination=${volume.mountPath}`,
     ]);
@@ -414,51 +439,18 @@ export class DockerContainerService {
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<CommandResult> {
-    return this.runner.run('docker', ['--context', context, ...args], { timeoutMs, signal, env: this.env });
+    return this.provider.run(context, args, { timeoutMs, signal });
   }
 
   private async resolveDockerContext(signal?: AbortSignal): Promise<string> {
-    const configured = this.configuredContext
-      ?? this.env.WORKING_MEMORY_DOCKER_CONTEXT
-      ?? this.env.DOCKER_CONTEXT;
-    const candidates = configured ? [configured] : LOCAL_CONTEXTS;
-    const checked: string[] = [];
-    for (const context of candidates) {
-      try {
-        const inspected = await this.docker(
-          context,
-          ['context', 'inspect', context, '--format', '{{json .Endpoints.docker.Host}}'],
-          this.timeouts.context,
-          signal,
-        );
-        const endpoint = parseDockerEndpoint(inspected.stdout);
-        const local = endpoint?.startsWith('unix://')
-          || /^npipe:\/\/\/\/\.\/pipe\/[a-zA-Z0-9_.-]+$/.test(endpoint ?? '');
-        if (!local) {
-          const detail = endpoint || 'unknown endpoint';
-          if (configured) {
-            throw new Error(`Configured Docker context "${context}" is not local (${detail}).`);
-          }
-          checked.push(`${context} (${detail})`);
-          continue;
-        }
-        await this.docker(
-          context,
-          ['info', '--format', '{{json .ServerVersion}}'],
-          this.timeouts.info,
-          signal,
-        );
-        return context;
-      } catch (error) {
-        if (error instanceof CommandTimeoutError
-          || (error instanceof CommandExecutionError && error.code === 'ENOENT')) throw error;
-        if (configured) {
-          throw new Error(`Configured Docker context "${context}" is unavailable. ${errorDetail(error)}`);
-        }
-        checked.push(`${context} (${errorDetail(error)})`);
-      }
-    }
-    throw new Error(`Checked ${checked.join(', ') || 'no contexts'}; none had a healthy local Unix socket or Windows named pipe.`);
+    return this.provider.resolve(signal);
+  }
+
+  private ownership(connection: string, claim: string, reserve = false): void {
+    if (!this.options.stateDirectory) return;
+    checkContainerOwnership(this.options.stateDirectory, claim, {
+      provider: this.provider.provider, connection: this.provider.identity(connection),
+    }, reserve);
   }
 }
 
@@ -468,7 +460,7 @@ function containerMatches(
   runtime: DockerRuntimeSpec,
   imageId: string,
 ): boolean {
-  return inspect.Image === imageId
+  return inspect.Image?.replace(/^sha256:/, '') === imageId.replace(/^sha256:/, '')
     && inspect.Config?.Image === runtime.imageName
     && inspect.Config?.Labels?.[MANAGED_LABEL] === 'true'
     && inspect.Config?.Labels?.[CLAIM_LABEL] === id
@@ -579,17 +571,6 @@ function isMissingContainer(error: unknown): boolean {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function parseDockerEndpoint(stdout: string): string | null {
-  const value = stdout.trim();
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return typeof parsed === 'string' ? parsed : null;
-  } catch {
-    return value;
-  }
 }
 
 function errorDetail(error: unknown): string {

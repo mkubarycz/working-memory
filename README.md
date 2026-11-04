@@ -69,19 +69,39 @@ standalone installers built by `.github/workflows/release.yml`:
 Both installers register the `working-memory://` URL scheme so chat links from
 VS Code and other apps open the desktop UI.
 
-**Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+**Prerequisite:** a running local Docker or Podman installation with Compose support.
+Docker Desktop is supported; Podman Desktop is not required.
 Installers only install the app; the data tier is managed from inside it.
 
 On launch, Working Memory connects to a running data tier if one is
 reachable (for example an existing `working-memory-control-plane` on
-`127.0.0.1:7717`). Otherwise it starts Docker Desktop (if needed), loads the
+`127.0.0.1:7717`). Otherwise it checks the selected provider, loads the
 prebuilt control-plane image bundled in the installer, and starts its default
-instance with `docker compose`, creating it on a fresh install. Loading the
+instance with Compose, creating it on a fresh install. Loading the
 image can take a few minutes. No npm downloads, local image builds, registry
 login, or backend registry access are needed on the installed computer.
 CI builds Linux ARM64 images for Mac installers and Linux x64 images for
 Windows installers. Local `npm run build` / packaging builds the image using
 Docker first; CI supplies it via `WM_DATA_TIER_IMAGE_ARCHIVE`.
+
+Choose **Docker** (the default) or **Podman** under **Settings > Updates > Back End >
+Container provider**, or in the startup dependency dialog. The selection applies to
+both managed backends and Container Apps. Executables, safe local connections, and
+Compose invocation are resolved internally; there is no fallback to another engine.
+Working Memory never launches Docker Desktop or starts a Podman machine. Install and
+start the selected provider yourself, then use **Retry** if its CLI, engine, or Compose
+support is unavailable. Podman requires an installed external Compose implementation
+(`podman compose version` must work); both Docker Compose and podman-compose are supported.
+Native Linux Podman and local Podman-machine connections are supported; remote TCP/SSH
+engines are rejected. Docker continues to use local Unix-socket/named-pipe contexts.
+
+Changing provider is **not a database migration**. Existing registrations belong to
+their original engine/connection (legacy registrations belong to Docker). The app
+refuses to manage those registrations through another engine, recreate missing
+registered data, or switch an environment's existing stateful Container Apps to
+another provider. Return to the original provider to manage that data. New Windows
+instances explicitly create engine-owned volumes; Compose treats them as external
+and cannot silently create replacement volumes. No provider action deletes volumes.
 
 Open **environment menu > Manage instances…** (or **Settings > Updates > Back End**) to
 manage the data-tier instances the app created. Reachable Working Memory servers the app did not
@@ -116,10 +136,20 @@ Managed instances are recorded in the app's `data-tier/instances.json`
 
 - macOS: `~/Library/Application Support/WorkingMemory` (bind mount); other
   ports use `WorkingMemory-<port>`.
-- Windows: the Docker volume `working-memory-data` (SQLite WAL is unreliable
+- Windows: the selected engine's volume `working-memory-data` (SQLite WAL is unreliable
   on Windows bind mounts); other ports use `working-memory-data-<port>`.
 
 Set `WM_DATA_TIER_AUTOSTART=0` to disable automatic data-tier startup.
+This controls backend containers only, never provider startup.
+
+Podman support is intended for canary feedback before Stable 1.7. Automated provider
+fixtures cover lifecycle, upgrade persistence, Container Apps, ownership refusal and
+diagnostic normalization. These tests are not evidence of real Windows/Podman
+validation. Before release, exercise fresh install, provider restart, backend upgrade,
+stateful Container Apps, owner bootstrap and crash/health diagnostics on Windows with
+a real Podman machine and both Compose implementations. Installer-image preparation
+and CI still use Docker; this is developer/release tooling, not an installed-app
+Docker dependency.
 
 Builds are not code-signed or notarized yet. On macOS, use **System Settings >
 Privacy & Security > Open Anyway** (or `xattr -dr com.apple.quarantine

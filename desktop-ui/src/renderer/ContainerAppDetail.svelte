@@ -47,7 +47,7 @@
     ['Dockerfile', status.dockerfile],
     ['Image', status.image],
     ['Container', status.containerName],
-    ['Docker context', status.dockerContext ?? 'Unavailable'],
+    ['Container connection', status.dockerContext ?? 'Unavailable'],
     ['State / health', status.state],
     ['Ports', `${status.hostPort} → ${status.containerPort}`],
     ['URL', status.url],
