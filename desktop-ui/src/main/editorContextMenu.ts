@@ -1,5 +1,20 @@
 import type { ContextMenuParams, MenuItemConstructorOptions, WebContents } from 'electron';
 
+export function watchSpellingDictionaryFailures(
+  contents: {
+    session: {
+      on(event: 'spellcheck-dictionary-download-failure', listener: (event: Electron.Event, language: string) => void): unknown;
+      removeListener(event: 'spellcheck-dictionary-download-failure', listener: (event: Electron.Event, language: string) => void): unknown;
+    };
+    once(event: 'destroyed', listener: () => void): unknown;
+  },
+  report: (language: string) => void,
+): void {
+  const failure = (_event: Electron.Event, language: string) => report(language);
+  contents.session.on('spellcheck-dictionary-download-failure', failure);
+  contents.once('destroyed', () => contents.session.removeListener('spellcheck-dictionary-download-failure', failure));
+}
+
 export function spellingMenuItems(
   params: Pick<ContextMenuParams, 'isEditable' | 'misspelledWord' | 'dictionarySuggestions'>,
   contents: Pick<WebContents, 'replaceMisspelling'> & {

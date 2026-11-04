@@ -1664,7 +1664,10 @@ between samples so short bursts are not lost when the queue drains quickly.
 Processed items/second uses a separate right axis and a rolling ten-second rate.
 The rolling one-minute wait/processing averages are weighted by calls finishing
 in that minute, including failed executions but excluding work rejected or cancelled
-before execution. No finished calls means no average, rather than a fabricated zero.
+before execution. Tool-level errors (`isError: true`) are failed executions, not
+successful completions. Calls denied by the post-wait authorization check remain
+not executed, preserve HTTP 401/403, and do not enter processing aggregates.
+No finished calls means no average, rather than a fabricated zero.
 These metrics use independent per-second count/timing aggregates (at most 61 rows),
 not the truncated lifecycle log, so bursts beyond the log limit are still counted.
 Windows have one-second resolution; older history without processing metrics leaves gaps.
@@ -1684,6 +1687,7 @@ not a guarantee against a single operation exhausting memory or blocking the
 event loop. It does not force GC, restart processes, or interrupt running writes.
 
 Queue lifecycle logging retains at most 2,000 content-free events for 24 hours.
+Periodic state sampling and event reads expire old events even while the instance is idle.
 `GET /identity/v1/tool-queue` is owner-only and returns queue metadata, history and
 events. Clicking a waiting request uses owner-only
 `GET /identity/v1/tool-queue/<request-id>` to inspect the exact JSON request body

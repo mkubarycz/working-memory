@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 export const TOOL_QUEUE_LIMITS = { running: 4, waiting: 16, waitMs: 5000 } as const;
+export type ToolExecutionOutcome = 'completed' | 'failed' | 'not_executed';
 export interface QueuedTool {
   requestId: string;
   operation: string;
@@ -52,8 +53,9 @@ export class ToolQueue {
   private record(item: QueuedTool, event: string): void {
     try {
       const now = this.clock();
-      const waitMs = Math.max(0, (item.startedAt ?? now) - item.queuedAt);
-      const runMs = item.startedAt === undefined ? 0 : Math.max(0, now - item.startedAt);
+      const startedAt = event === 'not_executed' ? undefined : item.startedAt;
+      const waitMs = Math.max(0, (startedAt ?? now) - item.queuedAt);
+      const runMs = startedAt === undefined ? 0 : Math.max(0, now - startedAt);
       this.db.prepare(`INSERT INTO instance_tool_queue_events
         (at,request_id,operation,caller,event,waiting,running,wait_ms,run_ms) VALUES(?,?,?,?,?,?,?,?,?)`)
         .run(now, item.requestId, item.operation, item.caller, event, this.waiting.length, this.running.size,
@@ -103,7 +105,7 @@ export class ToolQueue {
   }
 
   run<T>(metadata: Omit<QueuedTool, 'queuedAt' | 'startedAt'>, payload: unknown, signal: AbortSignal,
-    action: () => Promise<T>): Promise<T> {
+    action: () => Promise<T>, outcome: (value: T) => ToolExecutionOutcome = () => 'completed'): Promise<T> {
     const queuedAt = this.clock();
     if (this.stopped || signal.aborted || this.waiting.length >= TOOL_QUEUE_LIMITS.waiting) {
       const code = this.stopped ? 'shutdown' : signal.aborted ? 'cancelled' : 'full';
@@ -122,10 +124,10 @@ export class ToolQueue {
             this.record(item, event);
             this.pump();
           };
-          void Promise.resolve().then(action).then(
-            value => { finish('completed'); resolve(value); },
-            error => { finish('failed'); reject(error); },
-          );
+          void Promise.resolve().then(action).then(value => {
+            finish(outcome(value));
+            resolve(value);
+          }).catch(error => { finish('failed'); reject(error); });
         },
       };
       this.waiting.push(item);
@@ -169,6 +171,8 @@ export class ToolQueue {
   }
 
   state() {
+    this.prune();
+    this.pruneProcessing(this.clock());
     return {
       observedAt: this.clock(), limits: TOOL_QUEUE_LIMITS, memoryBlocked: this.memoryBlocked(),
       processing: this.processing(),
@@ -180,6 +184,7 @@ export class ToolQueue {
   }
 
   events() {
+    this.prune();
     return this.db.prepare('SELECT * FROM instance_tool_queue_events ORDER BY sequence DESC LIMIT 100').all().map(row => ({
       sequence: Number(row.sequence), at: Number(row.at), requestId: String(row.request_id),
       operation: String(row.operation), caller: String(row.caller), event: String(row.event),

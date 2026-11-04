@@ -58,6 +58,12 @@ export function isDestructiveTool(name: string, args: Record<string, unknown>): 
   return /-delete$/.test(name) && args.restore !== true;
 }
 
+export function isReadOnlyTool(tool: CanonicalToolDef): boolean {
+  if (tool.annotations?.destructiveHint === true) return false;
+  if (tool.annotations?.readOnlyHint !== undefined) return tool.annotations.readOnlyHint;
+  return /^(wm-document-(read|query|search)|ws-(workstream|topic|topictype|agent|agent-message)-(read|list))$/.test(tool.name);
+}
+
 export function createModelConversation(
   input: Omit<ModelConversation, 'chatMessages' | 'responseInput'> & {
     userImages?: ModelImageInput[];

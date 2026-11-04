@@ -43,7 +43,7 @@ it('shows live elapsed timings even when live requests have no recent lifecycle 
   ]);
 });
 
-it.each(['full', 'expired', 'cancelled', 'shutdown'])('preserves %s as not executed instead of a successful completion', outcome => {
+it.each(['full', 'expired', 'cancelled', 'shutdown', 'not_executed'])('preserves %s as not executed instead of a successful completion', outcome => {
   const [row] = toolQueueRequests({
     events: [event({ event: outcome, runMs: 0 })], items: [], observedAt: 9000,
   });

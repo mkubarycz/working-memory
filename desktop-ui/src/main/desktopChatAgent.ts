@@ -18,6 +18,7 @@ import {
   createModelConversation,
   desktopToolDescriptors,
   isDestructiveTool,
+  isReadOnlyTool,
   modelTurnRequest,
   parseModelTurn,
   type ModelImageInput,
@@ -133,6 +134,7 @@ interface Session {
   appToolsRequiringConfirmation: Set<string>;
   separateConfirmations: Set<string>;
   nonDeduplicatedTools: Set<string>;
+  readOnlyTools: Set<string>;
   approvedCalls: Set<ModelToolCall>;
   suspended?: {
     turn: ParsedModelTurn;
@@ -209,7 +211,6 @@ function systemPromptForInput(input: StartChatInput, searchAvailable: boolean): 
     .join(' ');
 }
 
-const MUTATING_ACTION = /-(create|update|delete|restore|run|reorder|transfer|acknowledge|resolve|reopen)$/;
 export const DESKTOP_MODEL_REQUEST_TIMEOUT_MS = 60_000;
 export const DESKTOP_DEFAULT_MAX_MODEL_TURNS = 24;
 export const DESKTOP_DEFAULT_TOTAL_TOOL_RUN_TIMEOUT_MS = 270_000;
@@ -340,6 +341,7 @@ export class DesktopChatAgent {
       ),
       separateConfirmations: new Set(input.appTools?.tools.filter(tool => input.appTools?.separateConfirmation?.(tool.name)).map(tool => tool.name)),
       nonDeduplicatedTools: new Set(input.appTools?.tools.filter(tool => input.appTools?.deduplicate?.(tool.name) === false).map(tool => tool.name)),
+      readOnlyTools: new Set(tools.filter(isReadOnlyTool).map(tool => tool.name)),
       approvedCalls: new Set(),
     };
     run.session = session;
@@ -591,7 +593,7 @@ export class DesktopChatAgent {
           session.run,
           session.run.dependencies.callTool(call.name, cleanArguments(call.arguments)),
         );
-        if (outcome.ok && MUTATING_ACTION.test(call.name)) session.mutated = true;
+        if (outcome.ok && !session.readOnlyTools.has(call.name)) session.mutated = true;
         this.assertCurrent(session.run);
       } catch (error) {
         if (isEnvironmentChanged(error)) throw error;
@@ -615,10 +617,10 @@ export class DesktopChatAgent {
       await this.persistToolResult(session, call, output, 'failure', durationMs);
       return output;
     }
-    const mutating = MUTATING_ACTION.test(call.name);
+    const mutating = !session.readOnlyTools.has(call.name);
     if (mutating) {
       for (const cachedKey of session.executed.keys()) {
-        if (!MUTATING_ACTION.test(cachedKey.split(':', 1)[0])) session.executed.delete(cachedKey);
+        if (session.readOnlyTools.has(cachedKey.split(':', 1)[0])) session.executed.delete(cachedKey);
       }
     }
     session.mutated ||= mutating;

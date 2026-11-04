@@ -310,7 +310,61 @@ it('reauthenticates queued calls before dispatch so revocation cannot be bypasse
   f.access.revoke(f.owner.token, clientId);
   f.memory(599);
   await rejected;
+  const queue = await (await f.request('/identity/v1/tool-queue')).json();
+  expect(queue.events[0]).toMatchObject({ event: 'not_executed', operation: 'wm-ping', runMs: 0 });
+  expect(queue.processing.processedLastMinute).toBe(0);
   expect((await f.request('/health')).status).toBe(200);
+});
+
+it('preserves queued permission-denial HTTP status and excludes the unexecuted write from throughput', async () => {
+  const f = await fixture(), issued = f.enroll(), { client } = await f.connect(issued.token);
+  const principal = f.access.authenticate(issued.token);
+  if (!principal?.clientId) throw new Error('Expected client credential.');
+  f.memory(600);
+  const pending = client.callTool({ name: 'ws-topic-create', arguments: { title: 'DENIED_QUEUED_TITLE' } });
+  const rejected = expect(pending).rejects.toMatchObject({ code: 403 });
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
+  f.access.setPermissions(f.owner.token, principal.clientId, 'client', {
+    ...principal.permissions, content: { ...principal.permissions.content, create: false },
+  });
+  f.memory(599);
+  await rejected;
+  const queue = await (await f.request('/identity/v1/tool-queue')).json();
+  expect(queue.events[0]).toMatchObject({ event: 'not_executed', operation: 'ws-topic-create', runMs: 0 });
+  expect(queue.processing.processedLastMinute).toBe(0);
+  expect(f.store.listDocuments({ kind: 'Topic' })).toEqual([]);
+});
+
+it('tracks concurrent tool errors separately from successful HTTP responses and other calls', async () => {
+  const f = await fixture(), kind = getKind('Topic');
+  if (!kind) throw new Error('Topic kind is not loaded');
+  const original = kind.registerApi;
+  kind.registerApi = (server, store) => {
+    original?.(server, store);
+    server.registerTool('test-tool-error', { inputSchema: {} }, async () => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return { isError: true, content: [{ type: 'text', text: 'PRIVATE_ERROR_CONTENT' }] };
+    });
+  };
+  try {
+    const { client } = await f.connect();
+    const [failure, success, missing] = await Promise.all([
+      client.callTool({ name: 'test-tool-error', arguments: {} }),
+      client.callTool({ name: 'wm-ping', arguments: {} }),
+      client.callTool({ name: 'missing-tool', arguments: {} }),
+    ]);
+    expect(failure.isError).toBe(true);
+    expect(success.isError).not.toBe(true);
+    expect(missing.isError).toBe(true);
+    const queue = await (await f.request('/identity/v1/tool-queue')).json();
+    expect(queue.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'failed', operation: 'unknown-tool' }),
+      expect.objectContaining({ event: 'completed', operation: 'wm-ping' }),
+    ]));
+    expect(queue.events.filter((event: { event: string }) => event.event === 'failed')).toHaveLength(2);
+    expect(queue.processing.processedLastMinute).toBe(3);
+    expect(JSON.stringify(queue.events)).not.toContain('PRIVATE_ERROR_CONTENT');
+  } finally { kind.registerApi = original; }
 });
 
 it('removes a disconnected HTTP call from the queue without executing its mutation', async () => {

@@ -19,6 +19,7 @@
 
 import * as http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -44,7 +45,7 @@ import { createHeapReport, createInstanceIncidentReport, HeapReportError } from 
 import { incidentReportRequestSchema } from './diagnosticContract.js';
 import { IdentityError } from './instanceIdentity.js';
 import { diagnosticRoute, HttpDiagnostics } from './diagnostics.js';
-import { ToolQueue, ToolQueueError } from './toolQueue.js';
+import { ToolQueue, ToolQueueError, type ToolExecutionOutcome } from './toolQueue.js';
 import { documentPermissionCategory, instancePermissionsSchema, permits } from './instancePermissions.js';
 import { activateDueReminders, REMINDER_SWEEP_INTERVAL_MS } from './agentMessageReminders.js';
 import { authorizeInstanceTool, instanceToolPermissions } from './instanceAuthorization.js';
@@ -60,6 +61,8 @@ import {
   specFields,
   listKindApis,
 } from './kinds/registry.js';
+
+const toolExecution = new AsyncLocalStorage<{ failed: boolean }>();
 
 export interface StartServerOptions extends HostTaskOptions {
   sessionDiagnostics?: SessionDiagnosticsOptions;
@@ -641,17 +644,19 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       }
       const existing = sessionId ? transports.get(sessionId) : undefined;
       if (session && existing) {
-        const dispatch = async () => {
+        const dispatch = async (): Promise<ToolExecutionOutcome> => {
           const current = access.authenticate(req.headers.authorization?.slice(7) ?? '');
-          if (!current) { endJson(res, 401, { error: 'Client access expired or was revoked.' }); return; }
+          if (!current) { endJson(res, 401, { error: 'Client access expired or was revoked.' }); return 'not_executed'; }
           if (current.role === 'client' && body && typeof body === 'object' && 'method' in body && body.method === 'tools/call') {
             const call = mcpToolCallSchema.safeParse(body);
             if (!call.success || !authorizeInstanceTool(current, call.data.params.name, call.data.params.arguments, store)) {
               denyPermission(req, res, call.success ? instanceToolPermissions(call.data.params.name, call.data.params.arguments, store) : null);
-              return;
+              return 'not_executed';
             }
           }
-          await existing.handleRequest(req, res, body);
+          const outcome = { failed: false };
+          await toolExecution.run(outcome, () => existing.handleRequest(req, res, body));
+          return outcome.failed ? 'failed' : 'completed';
         };
         if (body && typeof body === 'object' && 'method' in body && body.method === 'tools/call') {
           const call = mcpToolCallSchema.safeParse(body);
@@ -665,7 +670,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             await toolQueue.run({
               requestId: String(res.getHeader('X-Request-Id')), operation,
               caller: principal.role === 'owner' ? 'owner' : `client:${principal.clientId}`,
-            }, body, controller.signal, dispatch);
+            }, body, controller.signal, dispatch, outcome => outcome);
           } catch (error) {
             if (!(error instanceof ToolQueueError)) throw error;
             if (!res.destroyed) {
@@ -698,6 +703,12 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             sessions.initialized(managed);
           },
         });
+        const send = transport.send.bind(transport);
+        transport.send = async (message, options) => {
+          const outcome = toolExecution.getStore();
+          if (outcome && ('error' in message || 'result' in message && message.result.isError === true)) outcome.failed = true;
+          await send(message, options);
+        };
         transport.onclose = () => {
           if (transport.sessionId) {
             transports.delete(transport.sessionId);

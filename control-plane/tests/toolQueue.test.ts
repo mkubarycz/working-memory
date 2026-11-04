@@ -125,6 +125,43 @@ it('caps lifecycle persistence at 2000 rows and expires events after 24 hours', 
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it.each(['state', 'events'] as const)('expires idle lifecycle records through %s without another tool call', async sample => {
+  const f = fixture();
+  await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
+  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(3);
+  await vi.advanceTimersByTimeAsync(86400001);
+  f.queue[sample]();
+  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(0);
+  expect(f.queue.events()).toEqual([]);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it('records explicit tool failures and excludes pre-execution denials from processing metrics', async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.block(true);
+  const denied = f.queue.run(f.metadata(), {}, signal, async () => 'not_executed' as const, outcome => outcome);
+  await vi.advanceTimersByTimeAsync(1000);
+  f.block(false);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(await denied).toBe('not_executed');
+  expect(f.queue.events()[0]).toMatchObject({ event: 'not_executed', waitMs: 1100, runMs: 0 });
+  expect(f.queue.processing()).toEqual({
+    processedPerSecond: 0, processedLastMinute: 0, averageWaitMs: null, averageRunMs: null,
+  });
+  expect(await f.queue.run(f.metadata(), {}, signal, async () => ({ isError: true }),
+    result => result.isError ? 'failed' : 'completed')).toEqual({ isError: true });
+  expect(f.queue.events()[0].event).toBe('failed');
+  expect(f.queue.processing()).toMatchObject({ processedPerSecond: 0.1, processedLastMinute: 1 });
+});
+
+it('rejects outcome-classification errors and releases the running slot', async () => {
+  const f = fixture();
+  await expect(f.queue.run(f.metadata(), {}, new AbortController().signal, async () => 'done',
+    () => { throw new Error('Invalid execution outcome'); })).rejects.toThrow('Invalid execution outcome');
+  expect(f.queue.state().running).toBe(0);
+  expect(f.queue.events()[0].event).toBe('failed');
+});
+
 it('measures completed and failed work, excludes unfinished/rejected calls, and expires rolling windows', async () => {
   const f = fixture();
   f.block(true);

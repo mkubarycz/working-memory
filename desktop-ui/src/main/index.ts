@@ -94,7 +94,7 @@ import {
   type DesktopDeepLinkTarget,
 } from '../shared/deepLink';
 import { DesktopLinkBridge } from './linkBridge';
-import { spellingMenuItems } from './editorContextMenu';
+import { spellingMenuItems, watchSpellingDictionaryFailures } from './editorContextMenu';
 import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
 import { InstancePasswordVault, NativeInstanceCredentialVault } from './instancePasswordVault';
@@ -1639,6 +1639,9 @@ async function createWindow(): Promise<BrowserWindow> {
       spellcheck: true,
     },
   });
+  watchSpellingDictionaryFailures(window.webContents, languageCode => {
+    console.error(`[desktop] Unable to download the ${languageCode} spelling dictionary. Check the network connection.`);
+  });
   window.webContents.on('context-menu', (_event, params) => {
     if (params.frame !== window.webContents.mainFrame) return;
     const spellingItems = spellingMenuItems(params, window.webContents);
@@ -1654,14 +1657,6 @@ async function createWindow(): Promise<BrowserWindow> {
         void imageViewer.open(params.srcURL).catch(error => {
           console.error('[desktop] Unable to open image:', error);
           dialog.showErrorBox('Unable to open image', error instanceof Error ? error.message : String(error));
-        });
-        const dictionarySession = window.webContents.session;
-        const dictionaryDownloadFailure = (_event: Electron.Event, languageCode: string) => {
-          console.error(`[desktop] Unable to download the ${languageCode} spelling dictionary. Check the network connection.`);
-        };
-        dictionarySession.on('spellcheck-dictionary-download-failure', dictionaryDownloadFailure);
-        window.webContents.once('destroyed', () => {
-          dictionarySession.removeListener('spellcheck-dictionary-download-failure', dictionaryDownloadFailure);
         });
       },
     }]).popup({ window });

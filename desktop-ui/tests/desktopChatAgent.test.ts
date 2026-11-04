@@ -87,6 +87,62 @@ function deferred<T>() {
 }
 
 describe('DesktopChatAgent', () => {
+  it.each([
+    'ws-topic-close-tree',
+    'ws-agent-message-snooze',
+    'app__project__change-set-commit',
+    'app__project__save_snapshot',
+  ])('invalidates reads after %s without losing successful mutation deduplication', async mutation => {
+    const read = { name: 'ws-topic-read', inputSchema: { type: 'object', properties: {} } };
+    const update = { name: 'ws-topic-update', inputSchema: { type: 'object', properties: {} } };
+    const write = { name: mutation, inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: false } };
+    const sequence = [read.name, mutation, read.name, update.name, mutation, read.name];
+    let revision = 0, turn = 0;
+    const reads: number[] = [];
+    const callTool = vi.fn(async (name: string) => {
+      if (name === read.name) reads.push(revision);
+      else revision++;
+      return { ok: true, result: { revision } };
+    });
+    const journal = journalHarness();
+    const agent = new DesktopChatAgent({
+      ...options(vi.fn(), callTool, journal),
+      listTools: async () => [read, update, ...(mutation.startsWith('ws-') ? [write] : [])],
+    });
+    const result = await agent.start({
+      mode: 'chat-completions', url: 'copilot://local', model: 'test', headers: {}, message: 'Apply the approved changes.',
+      appTools: { tools: mutation.startsWith('app__') ? [write] : [], callTool, systemInstructions: '' },
+      modelTurn: async () => {
+        const name = sequence[turn++];
+        return { text: name ? '' : 'Verified.', calls: name ? [{ id: `step-${turn}`, name, arguments: {} }] : [] };
+      },
+    });
+    expect(result.status).toBe('succeeded');
+    expect(callTool.mock.calls.filter(([name]) => name === mutation)).toHaveLength(1);
+    expect(reads).toEqual([0, 1, 2]);
+    expect(journal.current()?.completion?.mutated).toBe(true);
+  });
+
+  it('keeps cached reads and mutation state intact for an annotated application read', async () => {
+    const read = { name: 'ws-topic-read' };
+    const inspect = { name: 'app__project__inspect', annotations: { readOnlyHint: true } };
+    const sequence = [read.name, inspect.name, read.name];
+    const callTool = vi.fn(async () => ({ ok: true, result: {} }));
+    const journal = journalHarness();
+    const agent = new DesktopChatAgent({ ...options(vi.fn(), callTool, journal), listTools: async () => [read] });
+    const result = await agent.start({
+      mode: 'chat-completions', url: 'copilot://local', model: 'test', headers: {}, message: 'Inspect the project.',
+      appTools: { tools: [inspect], callTool, systemInstructions: '' },
+      modelTurn: async () => {
+        const name = sequence.shift();
+        return { text: '', calls: name ? [{ id: `step-${sequence.length}`, name, arguments: {} }] : [] };
+      },
+    });
+    expect(result.status).toBe('succeeded');
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(journal.current()?.completion?.mutated).toBe(false);
+  });
+
   it('discovers case references, updates the source topic, and verifies with an uncached read', async () => {
     let body = '# October MBR\n\nCase 2610260040006956\n\nKeep these notes.';
     const updated = body.replace('2610260040006956', '[2610260040006956](working-memory://open/topic/case-topic)');

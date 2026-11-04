@@ -202,6 +202,7 @@ export function namespaceAppTools(
         name: modelName,
         description: `Container App "${app.displayName}" (@${app.id}) MCP tool "${tool.name}". ${tool.description ?? ''}`.trim(),
         inputSchema: tool.inputSchema,
+        ...(tool.annotations ? { annotations: tool.annotations } : {}),
       });
     }
   }

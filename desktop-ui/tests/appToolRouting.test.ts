@@ -95,6 +95,7 @@ describe('Container App chat routing', () => {
       ] },
     ]);
     expect([...first.routes.keys()]).toEqual([...second.routes.keys()]);
+    expect(first.tools.find(tool => tool.name === 'app__sunset-chess__player-list')?.annotations).toEqual({ readOnlyHint: true });
     expect(new Set(first.routes.keys()).size).toBe(3);
     for (const name of first.routes.keys()) {
       expect(name).toMatch(/^[A-Za-z0-9_-]+$/);

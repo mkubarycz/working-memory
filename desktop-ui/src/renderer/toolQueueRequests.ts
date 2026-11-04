@@ -4,6 +4,7 @@ const outcomes: Record<string, string> = {
   completed: 'Completed', failed: 'Failed',
   full: 'Full (not executed)', expired: 'Expired (not executed)',
   cancelled: 'Cancelled (not executed)', shutdown: 'Shutdown (not executed)',
+  not_executed: 'Denied (not executed)',
 };
 
 interface QueueRequest {
