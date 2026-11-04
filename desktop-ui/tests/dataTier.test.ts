@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ import {
   dataTierCompose,
   DataTierError,
   dataTierInstanceNames,
+  dataTierHostDirectory,
   DataTierManager,
   parseManagedInstances,
   dockerCliPath,
@@ -59,7 +60,7 @@ describe('data tier launcher', () => {
     expect(JSON.stringify(win)).not.toContain('"build"');
     expect(dataTierCompose(mac, '1.2.3')).toMatchObject({
       services: { 'control-plane': {
-        volumes: [{ type: 'bind', source: '/Users/me/Library/Application Support/WorkingMemory', target: '/data' }],
+        volumes: [{ type: 'bind', source: '/Users/me/Library/Application Support/WorkingMemory', target: '/data', bind: { create_host_path: false } }],
       } },
     });
   });
@@ -207,9 +208,17 @@ describe('data tier launcher', () => {
       instances?: Array<{ port: number; name: string }>;
     } = {}) {
       const directory = options.directory ?? stateDirectory();
+      const testHost = { ...mac, homedir: directory };
       const version = options.version ?? '2.0.0';
       if (options.instances) {
-        writeFileSync(join(directory, 'instances.json'), JSON.stringify({ instances: options.instances }));
+        writeFileSync(join(directory, 'instances.json'), JSON.stringify({ instances: options.instances.map(instance => ({
+          ...instance, provider: 'docker', connection: 'desktop-linux (unix:///local/docker.sock)',
+        })) }));
+        for (const instance of options.instances) {
+          const data = dataTierHostDirectory(testHost, instance.port);
+          mkdirSync(data, { recursive: true });
+          writeFileSync(join(data, 'journal.sqlite'), 'test database');
+        }
       }
       const containers = new Map(Object.entries(options.containers ?? {}));
       const calls: string[][] = [];
@@ -233,8 +242,7 @@ describe('data tier launcher', () => {
         }),
       };
       const manager = new DataTierManager({
-        ...mac, buildContext: '/ctx', stateDirectory: directory, version, runner: localDockerRunner(runner),
-        dataExists: (path) => options.instances?.some(instance => path.includes(`WorkingMemory-${instance.port}/`)) ?? false,
+        ...testHost, buildContext: '/ctx', stateDirectory: directory, version, runner: localDockerRunner(runner),
         healthy: async (url) => {
           const port = Number(new URL(url).port);
           return containers.get(dataTierInstanceNames(port).container)?.state === 'running';
@@ -245,12 +253,6 @@ describe('data tier launcher', () => {
         sleep: async () => {},
         now: () => new Date(2026, 9, 16, 9, 5, 7),
       });
-      // Keep tests away from the real macOS application-data folder.
-      (manager as unknown as { writeComposeFile: (port: number, image: string) => string }).writeComposeFile = (port, image) => {
-        const file = join(directory, `compose-${port}.yaml`);
-        writeFileSync(file, JSON.stringify(dataTierCompose(mac, image, port)));
-        return file;
-      };
       return { directory, manager, calls, containers };
     }
 

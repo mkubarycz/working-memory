@@ -59,6 +59,7 @@ export interface DockerContainerServiceOptions {
   retryDelayMs?: number;
   dockerContext?: string;
   env?: NodeJS.ProcessEnv;
+  confirmStorageCreation?: (claim: ContainerClaim, provider: ContainerProvider) => Promise<boolean>;
   timeouts?: Partial<DockerOperationTimeouts>;
 }
 
@@ -217,16 +218,11 @@ export class DockerContainerService {
       context = await this.resolveDockerContext(signal);
       const owned = this.ownership(context, claim.id);
       if (this.options.stateDirectory && runtime.volumes?.length && !owned
-        && !newlyCreated && this.provider.provider !== 'docker') {
+        && !newlyCreated && this.provider.provider !== 'docker' && !this.options.confirmStorageCreation) {
         throw new Error('Stateful Container App ownership is unverified. Legacy apps belong to Docker; restore their original provider instead of creating replacement volumes.');
       }
       if (newlyCreated && this.options.stateDirectory) {
-        validateVolumes(runtime.volumes);
-        const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
-        for (const volume of runtime.volumes ?? []) {
-          checkContainerOwnership(this.options.stateDirectory, `pending-volume:${claim.id}:${volume.name}`, owner, true);
-        }
-        this.ownership(context, claim.id, true);
+        this.reserveStorage(context, claim);
       }
     } catch (error) {
       const missing = error instanceof CommandExecutionError && error.code === 'ENOENT';
@@ -273,6 +269,17 @@ export class DockerContainerService {
     }
 
     try {
+      if (this.options.stateDirectory && runtime.volumes?.length && !current
+        && !newlyCreated && !this.ownership(context, claim.id) && this.options.confirmStorageCreation) {
+        await this.verifyNewStorage(context, runtime, signal);
+        if (!await this.options.confirmStorageCreation(claim, this.provider.provider)) {
+          throw new Error('New storage initialization was cancelled. No data volumes were created.');
+        }
+        signal?.throwIfAborted();
+        await this.verifyNewStorage(context, runtime, signal);
+        this.reserveStorage(context, claim);
+        newlyCreated = true;
+      }
       await this.prepareOwnership(context, runtime, claim.id, current, newlyCreated, signal);
     } catch (error) {
       return failure('container_conflict', 'Container App data ownership could not be verified.', error);
@@ -491,6 +498,36 @@ export class DockerContainerService {
       checkContainerOwnership(directory, resource, owner, true);
     }
     this.ownership(context, id, true);
+  }
+
+  private reserveStorage(context: string, claim: ContainerClaim): void {
+    const directory = this.options.stateDirectory;
+    if (!directory) return;
+    validateVolumes(claim.runtime?.volumes);
+    const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
+    for (const volume of claim.runtime?.volumes ?? []) {
+      checkContainerOwnership(directory, `pending-volume:${claim.id}:${volume.name}`, owner, true);
+    }
+    this.ownership(context, claim.id, true);
+  }
+
+  private async verifyNewStorage(context: string, runtime: DockerRuntimeSpec, signal?: AbortSignal): Promise<void> {
+    validateVolumes(runtime.volumes);
+    for (const volume of runtime.volumes ?? []) {
+      if (this.options.stateDirectory && checkContainerOwnership(this.options.stateDirectory, `volume:${volume.name}`, {
+        provider: this.provider.provider, connection: this.provider.identity(context),
+      })) {
+        throw new Error(`Storage ownership for "${volume.name}" is already recorded. Restore its original container and volume instead of initializing new storage.`);
+      }
+      try {
+        await this.docker(context, ['volume', 'inspect', volume.name], this.timeouts.inspect, signal);
+      } catch (error) {
+        if (error instanceof CommandExecutionError && error.code !== 'ENOENT'
+          && /no such (volume|object)|volume .* not found/i.test(error.stderr || error.message)) continue;
+        throw error;
+      }
+      throw new Error(`Volume "${volume.name}" already exists without verified ownership. Restore its original managed container instead of initializing new storage.`);
+    }
   }
 
   private docker(

@@ -8,7 +8,7 @@ import { assertContainerProviderForClaims, checkContainerOwnership, readContaine
 import { dockerCliPath, dockerEnvironment } from '../src/main/dockerCli';
 import { readContainerProvider, writeContainerProvider } from '../src/main/containerProviderSettings';
 import { CommandExecutionError, DockerContainerService, MANAGED_LABEL, CLAIM_LABEL, type CommandRunner } from '../src/main/dockerContainerService';
-import { DataTierManager } from '../src/main/dataTier';
+import { DataTierManager, dataTierHostDirectory, dataTierInstanceNames } from '../src/main/dataTier';
 import type { ContainerClaim } from '../../shared/controlPlaneClient';
 import { localDockerRunner } from './fixtures/localContainerRunner';
 
@@ -201,6 +201,17 @@ describe('provider settings and storage ownership', () => {
 });
 
 describe('Podman data tier lifecycle (mocked Windows)', () => {
+  function legacyContainer(port: number) {
+    const names = dataTierInstanceNames(port);
+    return {
+      Config: { Image: 'working-memory-control-plane:1.6.0', Labels: {
+        'com.docker.compose.project': names.project, 'com.docker.compose.service': 'control-plane',
+      } },
+      Mounts: [{ Type: 'volume', Name: names.volume, Source: '/engine/volume', Destination: '/data' }],
+      NetworkSettings: { Ports: { [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(port) }] } },
+    };
+  }
+
   function backend() {
     const dir = directory();
     let up = false;
@@ -359,6 +370,7 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     const runner: CommandRunner = { run: vi.fn(async (_file, args) => {
       const command = args.slice(2);
       if (command[0] === 'context') return { stdout: JSON.stringify(endpoint), stderr: '' };
+      if (command[0] === 'inspect') return { stdout: JSON.stringify([legacyContainer(7717)]), stderr: '' };
       if (command[0] === 'ps') return { stdout: 'working-memory-control-plane\texited\tExited\tworking-memory-control-plane:1.7.0', stderr: '' };
       if (command[0] === 'start' || command[0] === 'stop') mutations.push(command);
       return { stdout: '', stderr: '' };
@@ -369,10 +381,58 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     });
     await manager()[operation](7717);
     expect(manager().instances[0]).toMatchObject({ provider: 'docker', connection: 'desktop-linux (unix:///original.sock)' });
+    expect(manager().instances[0].image).toBe('working-memory-control-plane:1.6.0');
     endpoint = 'unix:///other.sock';
     await expect(manager()[operation](7717)).rejects.toThrow('another container provider or connection');
     expect(mutations).toHaveLength(1);
   });
+
+  it.each(['missing-container', 'image', 'labels', 'mount', 'port', 'storage', 'second-instance'])(
+    'does not adopt any legacy registration from an unverified engine (%s), even after listing',
+    async fault => {
+      const dir = directory();
+      const registrations = JSON.stringify({ instances: [7717, 7719].map(port => ({ port, name: `Legacy ${port}` })) });
+      writeFileSync(join(dir, 'instances.json'), registrations);
+      let repaired = false;
+      const calls: string[][] = [];
+      const runner: CommandRunner = { run: vi.fn(async (_file, args) => {
+        const command = args.slice(2);
+        calls.push(command);
+        if (command[0] === 'context') return { stdout: JSON.stringify(repaired ? 'unix:///original.sock' : 'unix:///other.sock'), stderr: '' };
+        if (command[0] === 'inspect') {
+          const port = command[1].endsWith('-7719') ? 7719 : 7717;
+          if (!repaired && (fault === 'missing-container' || (fault === 'second-instance' && port === 7719))) {
+            throw new CommandExecutionError('No such container', 1);
+          }
+          const container = legacyContainer(port);
+          if (!repaired) {
+            if (fault === 'image') container.Config.Image = 'unrelated:latest';
+            if (fault === 'labels') container.Config.Labels['com.docker.compose.project'] = 'other';
+            if (fault === 'mount') container.Mounts[0].Name = 'other';
+            if (fault === 'port') container.NetworkSettings.Ports[`${port}/tcp`][0].HostIp = '0.0.0.0';
+          }
+          return { stdout: JSON.stringify([container]), stderr: '' };
+        }
+        if (!repaired && fault === 'storage' && command[0] === 'volume') throw new CommandExecutionError('No such volume', 1);
+        return { stdout: '', stderr: '' };
+      }) };
+      const manager = () => new DataTierManager({
+        ...host, buildContext: dir, stateDirectory: dir, version: '1.7.0', runner,
+        fileExists: path => path.endsWith('docker.exe'), healthy: async () => true,
+      });
+      await manager().list();
+      expect(calls.some(args => args[0] === 'inspect')).toBe(false);
+      expect(readFileSync(join(dir, 'instances.json'), 'utf8')).toBe(registrations);
+      expect(readContainerOwnership(join(dir, 'ownership'), 'data-tier')).toBeUndefined();
+      await expect(manager().stop(7717)).rejects.toThrow('ownership could not be verified');
+      expect(readFileSync(join(dir, 'instances.json'), 'utf8')).toBe(registrations);
+      expect(readContainerOwnership(join(dir, 'ownership'), 'data-tier')).toBeUndefined();
+      expect(calls.some(args => ['start', 'stop', 'load', 'compose'].includes(args[0]) && args[1] !== 'version')).toBe(false);
+      repaired = true;
+      await manager().stop(7717);
+      expect(manager().instances.every(instance => instance.connection === 'desktop-linux (unix:///original.sock)')).toBe(true);
+    },
+  );
 
   it.each([
     ['(starting)', 'starting'], ['(health: starting)', 'starting'], ['(unhealthy)', 'unhealthy'],
@@ -441,6 +501,66 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
   });
 });
 
+describe('pending bind storage recovery', () => {
+  function backend(platform: 'darwin' | 'linux', initialize: boolean) {
+    const dir = directory();
+    const testHost = { platform, homedir: dir, env: { PATH: '/usr/bin' } };
+    const data = dataTierHostDirectory(testHost);
+    const database = join(data, 'journal.sqlite');
+    let failing = true;
+    const calls: string[][] = [];
+    const runner = localDockerRunner({ run: vi.fn(async (_file, args) => {
+      calls.push(args);
+      if (args[0] === 'compose') {
+        if (initialize || !failing) writeFileSync(database, 'initialized data');
+        if (failing) throw new CommandExecutionError('partial Compose failure', 1);
+      }
+      return { stdout: '', stderr: '' };
+    }) });
+    const manager = () => new DataTierManager({
+      ...testHost, buildContext: dir, stateDirectory: dir, version: '1.7.0', runner,
+      fileExists: path => path.endsWith('/docker'), healthy: async () => true, portAvailable: async () => true,
+    });
+    return { dir, data, database, calls, manager, recover: () => { failing = false; } };
+  }
+
+  it.each(['darwin', 'linux'] as const)('retries an uninitialized reservation without allocating new storage on %s', async platform => {
+    const fixture = backend(platform, false);
+    await expect(fixture.manager().create()).rejects.toThrow('partial Compose failure');
+    expect(JSON.parse(readFileSync(join(fixture.dir, 'pending-instance.json'), 'utf8'))).toMatchObject({
+      storageReady: true, databaseInitialized: false,
+    });
+    fixture.recover();
+    expect(await fixture.manager().create()).toMatchObject({ port: 7717 });
+    expect(readFileSync(fixture.database, 'utf8')).toBe('initialized data');
+  });
+
+  it.each(['darwin', 'linux'] as const)('recovers initialized pending data after a failed Compose call on %s', async platform => {
+    const fixture = backend(platform, true);
+    await expect(fixture.manager().create()).rejects.toThrow('partial Compose failure');
+    expect(JSON.parse(readFileSync(join(fixture.dir, 'pending-instance.json'), 'utf8'))).toMatchObject({
+      storageReady: true, databaseInitialized: true,
+    });
+    fixture.recover();
+    expect(await fixture.manager().create()).toMatchObject({ port: 7717 });
+    expect(fixture.manager().instances).toHaveLength(1);
+  });
+
+  it.each([
+    ['darwin', 'database'], ['darwin', 'directory'], ['linux', 'database'], ['linux', 'directory'],
+  ] as const)('refuses lost pending %s bind %s after partial initialization', async (platform, lost) => {
+    const fixture = backend(platform, true);
+    await expect(fixture.manager().create()).rejects.toThrow('partial Compose failure');
+    rmSync(lost === 'database' ? fixture.database : fixture.data, { recursive: lost === 'directory' });
+    fixture.calls.length = 0;
+    fixture.recover();
+    await expect(fixture.manager().create()).rejects.toThrow('no empty replacement will be created');
+    expect(fixture.calls.some(args => args[0] === 'load' || args[0] === 'compose')).toBe(false);
+    expect(existsSync(fixture.database)).toBe(false);
+    expect(fixture.manager().instances).toEqual([]);
+  });
+});
+
 describe('Podman Container Apps', () => {
   const claim: ContainerClaim = {
     id: 'test-app', title: 'Test app', repository: '/repo', created_at: 1, updated_at: 1, resourceVersion: 1,
@@ -448,6 +568,58 @@ describe('Podman Container Apps', () => {
       imageName: 'team/test-app:local', containerName: 'test-app', hostPort: 4173, containerPort: 80, entryPath: '/', healthPath: '/',
       volumes: [{ name: 'test-app-data', mountPath: '/data' }] },
   };
+
+  it.each(['docker', 'podman'] as const)('initializes storage through desktop launch on %s only after trusted confirmation', async provider => {
+    const dir = directory();
+    let volumePresent = false;
+    const calls: string[][] = [];
+    const handler: CommandRunner = { run: vi.fn(async (_file, args) => {
+      calls.push(args);
+      if (args[0] === 'container' && args[1] === 'inspect') throw new CommandExecutionError('No such container', 1);
+      if (args[0] === 'volume' && args[1] === 'inspect' && !volumePresent) throw new CommandExecutionError('No such volume', 1);
+      if (args[0] === 'volume' && args[1] === 'create') volumePresent = true;
+      return { stdout: args[0] === 'image' ? 'abc' : '', stderr: '' };
+    }) };
+    const runner = provider === 'docker' ? localDockerRunner(handler) : podmanRunner(args => handler.run(provider, args));
+    const confirmStorageCreation = vi.fn(async () => true);
+    const service = () => new DockerContainerService({
+      provider, stateDirectory: dir, runner, confirmStorageCreation, readiness: async () => true,
+    });
+    expect(await service().launch(claim)).toMatchObject({ status: 'ready', action: 'created' });
+    expect(confirmStorageCreation).toHaveBeenCalledWith(claim, provider);
+    expect(readContainerOwnership(dir, 'volume:test-app-data')).toMatchObject({ provider });
+    expect(await service().launch(claim)).toMatchObject({ status: 'ready', action: 'created' });
+    expect(confirmStorageCreation).toHaveBeenCalledTimes(1);
+    expect(calls.filter(args => args[0] === 'volume' && args[1] === 'create')).toHaveLength(1);
+    volumePresent = false;
+    expect(await service().launch(claim)).toMatchObject({ status: 'error', message: expect.stringContaining('No such volume') });
+    expect(confirmStorageCreation).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['cancel', 'existing-volume', 'recorded-volume', 'abort'] as const)('does not provision unverified desktop storage on %s', async outcome => {
+    const dir = directory();
+    if (outcome === 'recorded-volume') {
+      checkContainerOwnership(dir, 'volume:test-app-data', { provider: 'docker', connection: 'original' }, true);
+    }
+    const controller = new AbortController();
+    const calls: string[][] = [];
+    const runner = podmanRunner(async args => {
+      calls.push(args);
+      if (args[0] === 'container') throw new CommandExecutionError('No such container', 1);
+      if (args[0] === 'volume' && outcome !== 'existing-volume') throw new CommandExecutionError('No such volume', 1);
+      return { stdout: args[0] === 'image' ? 'abc' : '', stderr: '' };
+    });
+    const confirmStorageCreation = vi.fn(async () => {
+      if (outcome === 'abort') controller.abort();
+      return outcome !== 'cancel';
+    });
+    const service = new DockerContainerService({ provider: 'podman', stateDirectory: dir, runner, confirmStorageCreation });
+    expect(await service.launch(claim, controller.signal)).toMatchObject({ status: 'error', code: 'container_conflict' });
+    expect(readContainerOwnership(dir, claim.id)).toBeUndefined();
+    expect(readContainerOwnership(dir, 'pending-volume:test-app:test-app-data')).toBeUndefined();
+    expect(calls.some(args => args[1] === 'create' || args[1] === 'run')).toBe(false);
+    expect(confirmStorageCreation).toHaveBeenCalledTimes(['existing-volume', 'recorded-volume'].includes(outcome) ? 0 : 1);
+  });
 
   it('builds/runs/inspects/stops owned apps and refuses engine switches and unsafe inspections', async () => {
     let present = false;

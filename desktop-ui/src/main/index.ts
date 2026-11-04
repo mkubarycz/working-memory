@@ -317,6 +317,18 @@ function createContainerService(): DockerContainerService {
   return new DockerContainerService({
     provider: containerProvider,
     stateDirectory: join(app.getPath('userData'), 'container-app-ownership'),
+    confirmStorageCreation: async (claim, provider) => {
+      const { response } = await dialog.showMessageBox({
+        type: 'warning',
+        title: 'Initialize new Container App storage?',
+        message: `Create empty data volumes for "${claim.title}" on ${provider === 'docker' ? 'Docker' : 'Podman'}?`,
+        detail: 'No managed container or verified storage ownership was found. Continue only if this app has never stored data. If it has existing data on another engine or connection, cancel and restore that original provider instead. This does not migrate data.',
+        buttons: ['Cancel', 'Initialize new storage'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      return response === 1;
+    },
   });
 }
 

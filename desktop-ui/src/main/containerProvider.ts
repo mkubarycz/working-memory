@@ -53,7 +53,9 @@ export class ContainerProviderAdapter {
     if (!file) {
       throw Object.assign(new Error(`${this.label} CLI was not found. Install ${this.label} and its Compose support, then Retry.`), { code: 'ENOENT' });
     }
-    const env = dockerEnvironment(host, file, this.provider);
+    const env = this.options.fileExists
+      ? dockerEnvironment(host, file, this.provider)
+      : { ...host.env };
     // Explicit connection arguments must also govern external Compose helpers.
     delete env.DOCKER_HOST;
     delete env.DOCKER_CONTEXT;

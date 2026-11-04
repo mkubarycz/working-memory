@@ -102,14 +102,19 @@ registered data, or switch an environment's existing stateful Container Apps to
 another provider. Return to the original provider to manage that data. New Windows
 instances explicitly create engine-owned volumes; Compose treats them as external
 and cannot silently create replacement volumes. No provider action deletes volumes.
-Legacy backend registrations are pinned to their verified local connection on first
-use. Failed new-instance provisioning keeps a per-port reservation so Retry reuses
+Legacy backend registrations are pinned only after their container image, Compose
+labels, data mount, loopback port and existing storage are verified; listing alone
+does not adopt them. Failed new-instance provisioning keeps a per-port reservation so Retry reuses
 the same storage, including after desktop restart; a missing Compose dependency does
-not reserve an engine. Stateful legacy Container Apps must be adopted from their
+not reserve an engine. Pending bind storage also records initialization and refuses
+to recreate a lost data directory or a database known to have been initialized.
+Stateful legacy Container Apps must be adopted from their
 verified Docker container and existing volumes, never inferred as new Podman storage.
-Returning to a recorded app's original provider is allowed. Only newly created
-claims in the desktop's claim-creation flow may initialize new stateful storage;
-unverified existing claims require their original container and volumes to be restored.
+Returning to a recorded app's original provider is allowed. On a stateful app's first
+desktop Run, a native confirmation can explicitly initialize new empty storage if no
+container, ownership record or existing volume is found. Cancel is the default:
+only confirm for an app that has never stored data, not to recover a legacy app.
+An existing unverified volume or recorded owner is never overridden by this action.
 
 Open **environment menu > Manage instances…** (or **Settings > Updates > Back End**) to
 manage the data-tier instances the app created. Reachable Working Memory servers the app did not

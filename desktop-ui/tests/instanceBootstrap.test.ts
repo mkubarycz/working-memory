@@ -28,13 +28,14 @@ it.each(['darwin', 'win32'] as const)('retrieves bootstrap through verified Dock
   const run = vi.fn(async (_file: string, args: string[]) => {
     if (args[0] === 'info') return { stdout: '"1"', stderr: '' };
     if (args[0] === 'inspect') return { stdout: JSON.stringify([container]), stderr: '' };
+    if (args[0] === 'volume' && args[1] === 'inspect') return { stdout: '[]', stderr: '' };
     if (args[0] === 'exec') return { stdout: token, stderr: '' };
     throw new Error(`Unexpected Docker operation: ${args[0]}`);
   });
   const manager = new DataTierManager({
     platform, homedir: '/Users/test', env: { PATH: '/usr/bin', LOCALAPPDATA: '/unused' },
     buildContext: '/unused', stateDirectory: directory, version: '1.2.0',
-    runner: localDockerRunner({ run }), fileExists: () => true,
+    runner: localDockerRunner({ run }), fileExists: () => true, dataExists: () => true,
   });
   expect(await manager.bootstrapCredential(7719)).toBe(token);
   expect(run.mock.calls.some(([, args]) => args[0] === 'exec' && args[1] === names.container)).toBe(true);

@@ -86,6 +86,7 @@ const pendingInstanceSchema = z.object({
     provider: z.enum(['docker', 'podman']), connection: z.string().min(1),
   }),
   storageReady: z.boolean(),
+  databaseInitialized: z.boolean().optional(),
 });
 type PendingInstance = z.infer<typeof pendingInstanceSchema>;
 
@@ -139,7 +140,7 @@ export function dataTierCompose(
   const names = dataTierInstanceNames(port);
   const dataMount = host.platform === 'win32'
     ? { type: 'volume', source: names.volume, target: '/data' }
-    : { type: 'bind', source: dataTierHostDirectory(host, port), target: '/data' };
+    : { type: 'bind', source: dataTierHostDirectory(host, port), target: '/data', bind: { create_host_path: false } };
   return {
     name: names.project,
     services: {
@@ -327,10 +328,31 @@ export class DataTierManager {
   }
 
   async bootstrapCredential(port: number): Promise<string> {
-    const instance = this.require(port), names = dataTierInstanceNames(port);
+    this.require(port);
     const { docker, env } = await this.docker();
+    const instance = this.require(port), names = dataTierInstanceNames(port);
+    await this.verifyInstanceContainer(docker, env, instance);
+    const script = "const fs=require('node:fs'); const p=process.env.WM_HOST_TASK_ADMIN_TOKEN_FILE||'/data/run/instance-bootstrap.secret';"
+      + "const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);"
+      + "try{const s=fs.fstatSync(fd);if(!s.isFile()||s.uid!==process.getuid()||(s.mode&63)!==0||s.size<32||s.size>4096)throw Error('Unsafe owner setup file');"
+      + "process.stdout.write(fs.readFileSync(fd,'utf8').trim());}finally{fs.closeSync(fd);}";
+    const result = await this.runner.run(docker, ['exec', names.container, 'node', '-e', script], {
+      timeoutMs: this.timeouts.command, env,
+    });
+    const token = result.stdout.trim();
+    if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error('Owner setup is unavailable. Upgrade this managed instance and retry.');
+    return token;
+  }
+
+  private async verifyInstanceContainer(
+    docker: string,
+    env: NodeJS.ProcessEnv,
+    instance: ManagedDataTierInstance,
+    legacy = false,
+  ): Promise<string> {
+    const { port } = instance, names = dataTierInstanceNames(port);
     const raw = await this.runner.run(docker, ['inspect', names.container], { timeoutMs: this.timeouts.command, env });
-    const parsed = this.provider.inspect(raw.stdout, instance.image ?? this.bundledTarget.image);
+    const parsed = this.provider.inspect(raw.stdout, instance.image ?? (legacy ? undefined : this.bundledTarget.image));
     const schema = z.array(z.object({
       Config: z.object({
         Image: z.string(),
@@ -353,23 +375,16 @@ export class DataTierManager {
     const expectedMount = this.host.platform === 'win32'
       ? mount[0]?.Type === 'volume' && mount[0]?.Name === names.volume
       : mount[0]?.Type === 'bind' && mount[0]?.Source === dataTierHostDirectory(this.host, port);
-    if (container.Config.Image !== (instance.image ?? this.bundledTarget.image)
+    if ((legacy && !instance.image
+      ? imageVersion(container.Config.Image) === null
+      : container.Config.Image !== (instance.image ?? this.bundledTarget.image))
       || container.Config.Labels['com.docker.compose.project'] !== names.project
       || container.Config.Labels['com.docker.compose.service'] !== DATA_TIER_SERVICE
       || mount.length !== 1 || !expectedMount || binding?.length !== 1
       || binding[0].HostIp !== '127.0.0.1' || binding[0].HostPort !== String(port)) {
       throw new Error('Owner setup refused: this container does not match the managed instance image, labels, data mount, and loopback port. Repair its registration before retrying.');
     }
-    const script = "const fs=require('node:fs'); const p=process.env.WM_HOST_TASK_ADMIN_TOKEN_FILE||'/data/run/instance-bootstrap.secret';"
-      + "const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);"
-      + "try{const s=fs.fstatSync(fd);if(!s.isFile()||s.uid!==process.getuid()||(s.mode&63)!==0||s.size<32||s.size>4096)throw Error('Unsafe owner setup file');"
-      + "process.stdout.write(fs.readFileSync(fd,'utf8').trim());}finally{fs.closeSync(fd);}";
-    const result = await this.runner.run(docker, ['exec', names.container, 'node', '-e', script], {
-      timeoutMs: this.timeouts.command, env,
-    });
-    const token = result.stdout.trim();
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error('Owner setup is unavailable. Upgrade this managed instance and retry.');
-    return token;
+    return container.Config.Image;
   }
 
   /**
@@ -383,7 +398,7 @@ export class DataTierManager {
     let containers: Map<string, { state: string; status: string; image: string }>;
     let dependencyError: string | null = null;
     try {
-      const { docker, env } = await this.docker();
+      const { docker, env } = await this.docker(false);
       containers = await this.containers(docker, env);
       try {
         await this.provider.requireCompose(docker, { timeoutMs: this.timeouts.info, env });
@@ -411,7 +426,7 @@ export class DataTierManager {
   /** Sanitized crash and health evidence for a registered container. */
   async diagnosticState(port: number): Promise<{ startedAt: string; evidence: string }> {
     this.require(port);
-    const { docker, env } = await this.docker();
+    const { docker, env } = await this.docker(false);
     const result = await this.runner.run(docker, ['container', 'inspect',
       dataTierInstanceNames(port).container], { env, timeoutMs: 5000 });
     const schema = z.object({
@@ -570,7 +585,7 @@ export class DataTierManager {
     return instance;
   }
 
-  private async docker(): Promise<{ docker: string; env: NodeJS.ProcessEnv }> {
+  private async docker(adoptLegacy = true): Promise<{ docker: string; env: NodeJS.ProcessEnv }> {
     this.assertProviderRegistrations();
     try {
       const docker = await this.provider.resolve();
@@ -582,12 +597,29 @@ export class DataTierManager {
         .some(instance => instance.connection && instance.connection !== connection)) {
         throw new DataTierError('The selected connection differs from the engine that owns these instances. Restore the original local connection; data will not be replaced or migrated.', 'provider-conflict');
       }
-      if (instances.length) {
+      if (adoptLegacy && instances.length) {
+        const adopted: ManagedDataTierInstance[] = [];
+        for (const instance of instances) {
+          if (instance.connection && instance.provider) {
+            adopted.push(instance);
+            continue;
+          }
+          try {
+            const image = await this.verifyInstanceContainer(docker, this.host.env, instance, true);
+            if (this.host.platform === 'win32') {
+              await this.run(docker, this.host.env, ['volume', 'inspect', dataTierInstanceNames(instance.port).volume],
+                'provider-conflict', 'The legacy instance data volume is unavailable.');
+            } else if (!(this.options.dataExists ?? existsSync)(join(dataTierHostDirectory(this.host, instance.port), 'journal.sqlite'))) {
+              throw new Error('The legacy instance database is unavailable.');
+            }
+            adopted.push({ ...instance, image, provider: this.provider.provider, connection });
+          } catch (error) {
+            throw new DataTierError(`Legacy instance ownership could not be verified. Restore its original container and storage, then Retry; ownership was not changed.\n${commandDetail(error)}`, 'provider-conflict');
+          }
+        }
         this.ownership(docker, true);
         if (instances.some(instance => !instance.connection || !instance.provider)) {
-          this.writeInstances(instances.map(instance => ({
-            ...instance, provider: this.provider.provider, connection,
-          })));
+          this.writeInstances(adopted);
         }
       }
       return { docker, env: this.host.env };
@@ -657,19 +689,33 @@ export class DataTierManager {
     const existing = this.instances.find(instance => instance.port === port);
     let pending = this.pendingInstance();
     if (registration && !pending) {
-      pending = pendingInstanceSchema.parse({ instance: registration, storageReady: false });
+      pending = pendingInstanceSchema.parse({ instance: registration, storageReady: false, databaseInitialized: false });
+      this.writePendingInstance(pending);
+    }
+    const database = join(dataTierHostDirectory(this.host, port), 'journal.sqlite');
+    const dataExists = this.options.dataExists ?? existsSync;
+    if (this.host.platform !== 'win32' && pending?.instance.port === port
+      && !pending.databaseInitialized && dataExists(database)) {
+      pending.databaseInitialized = true;
       this.writePendingInstance(pending);
     }
     if (existing || pending?.storageReady) {
       if (this.host.platform === 'win32') {
         await this.run(docker, env, ['volume', 'inspect', dataTierInstanceNames(port).volume],
           'provider-conflict', 'The existing data volume is unavailable. Refusing to create an empty replacement database.');
-      } else if (existing && !(this.options.dataExists ?? existsSync)(join(dataTierHostDirectory(this.host, port), 'journal.sqlite'))) {
+      } else if ((existing || pending?.databaseInitialized)
+        ? !dataExists(database) : !dataExists(dataTierHostDirectory(this.host, port))) {
         throw new DataTierError('The existing database is unavailable. Restore its original data directory before retrying; no empty replacement will be created.', 'provider-conflict');
       }
     } else if (this.host.platform === 'win32') {
       await this.run(docker, env, ['volume', 'create', dataTierInstanceNames(port).volume],
         'start-failed', 'Unable to create the new instance data volume.');
+      if (pending) {
+        pending.storageReady = true;
+        this.writePendingInstance(pending);
+      }
+    } else {
+      mkdirSync(dataTierHostDirectory(this.host, port), { recursive: true });
       if (pending) {
         pending.storageReady = true;
         this.writePendingInstance(pending);
@@ -699,6 +745,12 @@ export class DataTierManager {
       await this.provider.composeUp(docker, composeFile, { timeoutMs: this.timeouts.composeUp, env });
     } catch (error) {
       throw new DataTierError(`Unable to start the Working Memory data tier with ${this.provider.label} Compose.\n${commandDetail(error)}`, 'start-failed');
+    } finally {
+      if (this.host.platform !== 'win32' && pending?.instance.port === port
+        && !pending.databaseInitialized && dataExists(database)) {
+        pending.databaseInitialized = true;
+        this.writePendingInstance(pending);
+      }
     }
     // Persist the deployed image before health polling so an unhealthy upgrade
     // cannot revert to the installer image after the desktop restarts.
@@ -763,9 +815,8 @@ export class DataTierManager {
     writeFileSync(join(this.options.stateDirectory, PENDING_INSTANCE_FILE), `${JSON.stringify(pending)}\n`, { mode: 0o600 });
   }
 
-  /** Writes the instance's Compose file; macOS/Linux also create its bind-mounted data folder. */
+  /** Writes the instance's Compose file after its storage has been prepared. */
   protected writeComposeFile(port: number, image: string): string {
-    if (this.host.platform !== 'win32') mkdirSync(dataTierHostDirectory(this.host, port), { recursive: true });
     const directory = join(this.options.stateDirectory, 'instances', String(port));
     mkdirSync(directory, { recursive: true });
     const composeFile = join(directory, 'compose.yaml');
