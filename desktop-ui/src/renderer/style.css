@@ -362,6 +362,8 @@ button { cursor: pointer; }
 .settings-tabs button { padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #6c676b; font-weight: 700; }
 .settings-tabs button[aria-selected="true"] { border-bottom-color: var(--desktop-accent-strong); color: var(--desktop-accent-strong); }
 .settings-tabs button:focus-visible { outline: 2px solid var(--desktop-accent); outline-offset: -2px; }
+.settings-subtabs { margin-top: 0; }
+.settings-subtabs button { padding: 6px 10px; font-size: 13px; font-weight: 600; }
 .model-profile-list { display: grid; gap: 12px; }
 .model-profile { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; padding: 14px; border: 1px solid #cbc7ca; border-radius: 6px; }
 .model-profile legend { padding: 0 6px; color: var(--desktop-accent-strong); font-weight: 800; }

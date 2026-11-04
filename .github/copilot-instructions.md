@@ -38,6 +38,12 @@ restarting a running process.
 - The control plane is the only SQLite owner. The desktop app uses the typed
   client in `shared/controlPlaneClient.ts`.
 - SQLite uses Node 22's built-in `node:sqlite`.
+- Define MCP tool input schemas once at module scope, not inside per-session
+  registration functions. Share validation schemas while keeping handlers and
+  authorization session-local; duplicated schema graphs retain substantial
+  heap in abandoned sessions. Keep shared schemas independent of registration
+  modules to avoid circular initialization. See
+  [heap analysis and recovery](../README.md#heap-analysis-and-confirmed-recovery-141).
 - Schema migrations are append-only. Table rebuilds with cascading children
   must follow `schema/005_safe_topic_rebuild_template.sql`.
 - Persist Markdown as source. Rendering and editor decorations must not rewrite

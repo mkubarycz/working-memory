@@ -5,6 +5,21 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = resolve(import.meta.dirname, '../..');
 
 describe('desktop tree icon contract', () => {
+  it('does not replace unfinished settings text with normalized autosave receipts', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const receipt = app.slice(app.indexOf('onSaved: (_key, config)'), app.indexOf('function queueSettingsSave'));
+    expect(receipt).not.toContain('loadConfig(config)');
+    expect(receipt).not.toMatch(/humanName\s*=/);
+    expect(receipt).toContain('{ ...profile, hasApiKey: saved.hasApiKey, apiKey:');
+  });
+  it('restores chat rail visibility before persisting changes and starts collapsed without a preference', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    expect(app).toContain('let chatRailCollapsed = $state(true)');
+    expect(app).toContain('chatRailCollapsed = parseStoredChatRailCollapsed(localStorage.getItem(RAIL_STORAGE_KEYS.chatCollapsed))');
+    expect(app).toMatch(/if \(chatRailRestored\) \{\s*localStorage\.setItem\(RAIL_STORAGE_KEYS\.chatCollapsed, String\(chatRailCollapsed\)\)/);
+    expect(app).toMatch(/chatRailCollapsed = parseStoredChatRailCollapsed[^;]+;\s*chatRailRestored = true/);
+  });
+
   it('does not require a source topic-type lookup to prepare feedback', () => {
     const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
     expect(main).not.toContain('client.topicTypeRead({ id: topic.topicType })');
@@ -207,7 +222,15 @@ describe('desktop tree icon contract', () => {
     const main = readFileSync(resolve(repoRoot, 'desktop-ui/src/main/index.ts'), 'utf8');
 
     expect(settings).toContain('>Models</button>');
-    expect(settings).toContain('>Routing matrix</button>');
+    expect(settings).not.toContain('>Instances</button>');
+    expect(settings).toContain('>Back End</button>');
+    expect(settings).toContain('>Front End</button>');
+    expect(app).toContain("updatesTab = 'back-end';\n    openSettings('updates');");
+    expect(app).toContain('bind:updatesTab');
+    expect(settings).not.toContain('>Routing matrix</button>');
+    expect(settings).toContain('<h2>Routing matrix</h2>');
+    expect(settings).not.toContain('>Save</button>');
+    expect(app).toContain("settingsSaves.schedule('settings', settingsInput())");
     expect(settings).toContain('>Human</button>');
     expect(settings).toContain('placeholder="Flesh Bag"');
     expect(settings).toContain('Add model profile');

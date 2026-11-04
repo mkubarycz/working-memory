@@ -23,4 +23,4 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.WM_CONTROL_PLANE_PORT || 7717) + '/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
 
-CMD ["node", "--experimental-sqlite", "out/control-plane/index.js"]
+CMD ["node", "--expose-gc", "--experimental-sqlite", "out/control-plane/index.js"]

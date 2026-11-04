@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 import { openStore, type DocumentEnvelope } from '../src/store';
@@ -23,6 +23,20 @@ async function connect() {
   return { store, client, type, call, create };
 }
 describe('generic ID-only document tools', () => {
+  it('applies kind-scoped limits in SQLite without parsing bodies outside the requested page', async () => {
+    const { call, create } = await connect();
+    await create('UNSELECTED_BODY_SENTINEL');
+    const newest = await create('Newest');
+    const parse = JSON.parse;
+    const spy = vi.spyOn(JSON, 'parse').mockImplementation((value, reviver) => {
+      if (value.includes('UNSELECTED_BODY_SENTINEL')) throw new Error('Unselected document was materialized');
+      return parse(value, reviver);
+    });
+    try {
+      const read = json<{ documents: DocumentEnvelope[] }>(await call('wm-document-read', { kind: 'Topic', limit: 1 }));
+      expect(read.documents.map(doc => doc.metadata.id)).toEqual([newest.metadata.id]);
+    } finally { spy.mockRestore(); }
+  });
   it('creates ID-only envelopes and returns a uniform list/single read shape with kind filtering', async () => {
     const { client, type, call, create } = await connect();
     const created = await create('Demo');

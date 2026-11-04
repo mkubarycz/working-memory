@@ -16,7 +16,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
     if (typeof executable !== 'string') throw new Error('Electron executable is unavailable.');
     const directory = await mkdtemp(join(tmpdir(), 'working-memory-sessions-browser-'));
     const fixture = `
-      import { mount, unmount } from 'svelte';
+      import { mount, unmount, tick } from 'svelte';
       import Settings from '/src/renderer/documents/SettingsView.svelte';
       import '/src/renderer/style.css';
       const event = sequence => ({ sequence, type: 'rate_limited', clientId: 'client', clientLabel: 'Feedback',
@@ -27,16 +27,56 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           startedAt: Date.now(),
           policy: { idleMinutes: 60, maxPerClient: 100, maxTotal: 500, handshakesPerMinute: 1000, retentionDays: 10 },
           memory: { heapUsedBytes: 128 * 1048576, heapLimitBytes: 512 * 1048576,
-            admissionThresholdBytes: 307.2 * 1048576, admissionBlocked: false },
+            admissionThresholdBytes: 307.2 * 1048576, admissionBlocked: false, gcAvailable: true,
+            spaces: [
+              { name: 'old_space', usedBytes: 96 * 1048576, sizeBytes: 128 * 1048576, availableBytes: 32 * 1048576 },
+              { name: 'new_space', usedBytes: 24 * 1048576, sizeBytes: 32 * 1048576, availableBytes: 8 * 1048576 },
+              { name: 'code_space', usedBytes: 8 * 1048576, sizeBytes: 8 * 1048576, availableBytes: 0 },
+            ] },
           active: [{ id: 'diagnostic-id', clientId: 'client', clientLabel: 'Feedback', application: 'working-memory-feedback',
             state: 'active', createdAt: Date.now(), lastActivityAt: Date.now(), requests: 3, activeRequests: 1 }],
           events: [event(200)], nextCursor: 200,
         },
         calls: [], saves: [], failRead: false, failSave: false, pause: false, release: null,
         pauseSave: false, releaseSave: null, inFlight: 0, maxInFlight: 0,
+        recoveryCalls: [], recoveryOutcome: 'cancelled',
+      };
+      state.now = Date.now();
+      Date.now = () => state.now;
+      const intervals = new Map();
+      let timerId = 0;
+      window.setInterval = (callback, delay) => {
+        const id = ++timerId;
+        intervals.set(id, { callback, delay, next: state.now + delay });
+        return id;
+      };
+      window.clearInterval = id => intervals.delete(id);
+      state.advance = async milliseconds => {
+        const end = state.now + milliseconds;
+        while (true) {
+          const due = [...intervals.values()].filter(timer => timer.next <= end)
+            .sort((a, b) => a.next - b.next)[0];
+          if (!due) break;
+          state.now = due.next;
+          due.next += due.delay;
+          due.callback();
+          await tick();
+        }
+        state.now = end;
+        await tick();
       };
       let policySave = Promise.resolve();
       window.workingMemory = {
+        async recoverInstanceHeap(url) {
+          state.recoveryCalls.push(url);
+          if (state.recoveryOutcome === 'cancelled') return { status: 'cancelled' };
+          const snapshot = structuredClone(state.snapshot);
+          snapshot.memory.heapUsedBytes = 100 * 1048576;
+          snapshot.memory.admissionBlocked = false;
+          return { status: 'collected', topicId: 'heap-report-id', snapshot,
+            collection: { beforeBytes: 128 * 1048576, afterBytes: 100 * 1048576,
+              reclaimedBytes: 28 * 1048576, durationMs: 12, idleSessionsReclaimed: 0 } };
+        },
         async getSessionDiagnostics(cursor) {
           state.calls.push(cursor ?? 'latest');
           if (state.failRead) { state.failRead = false; throw new Error('Session refresh failed'); }
@@ -72,7 +112,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         component = mount(Settings, { target, props: {
           profiles: [], routing: {}, humanName: 'Test', credentialStorage: 'secure', settingsStatus: '',
           saving: false, testingProfileId: null, onHumanName() {}, onAddProfile() {}, onRemoveProfile() {},
-          async onTestProfile() {}, async onSave() {}, selectedMcpUrl: url, async onMakeCurrent() {},
+          async onTestProfile() {}, onChange() {}, onFlush() {}, selectedMcpUrl: url, async onMakeCurrent() {},
           async onInstancesChanged() {}, onFeaturesChanged() {}, tab: 'sessions',
         } });
       };
@@ -131,19 +171,32 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("document.querySelectorAll('.session-limits input').length"), 5);
           assert.equal(await evaluate(button('Save limits') + ' === undefined'), true);
           assert.equal(await evaluate("document.querySelector('button[type=submit]') === null"), true);
+          assert.equal(await evaluate(button('Refresh') + ' === undefined'), true);
+          assert.equal(await evaluate("document.querySelector('.refresh-age').textContent.trim()"), 'Last refreshed 0s ago');
+          const initialReads = await evaluate("window.__sessionsTest.calls.length");
+          await evaluate("window.__sessionsTest.advance(10000)");
+          assert.equal(await evaluate("document.querySelector('.refresh-age').textContent.trim()"), 'Last refreshed 10s ago');
+          await evaluate("window.__sessionsTest.advance(4999)");
+          assert.equal(await evaluate("window.__sessionsTest.calls.length"), initialReads);
+          await evaluate("window.__sessionsTest.advance(1)");
+          await wait("window.__sessionsTest.calls.length === " + (initialReads + 1)
+            + " && document.querySelector('.refresh-age').textContent.trim() === 'Last refreshed 0s ago'");
           assert.equal(await evaluate("document.querySelector('[aria-label=\\"Session event log\\"] tbody').textContent.includes('15')"), true);
-          await evaluate("window.__sessionsTest.pause = true; " + button('Refresh') + ".click()");
+          await evaluate("window.__sessionsTest.pause = true; window.__sessionsTest.advance(15000)");
           await wait("typeof window.__sessionsTest.release === 'function'");
+          const pausedReads = await evaluate("window.__sessionsTest.calls.length");
+          await evaluate("window.__sessionsTest.advance(30000)");
+          assert.equal(await evaluate("window.__sessionsTest.calls.length"), pausedReads);
           for (const value of [71, 72, 75]) await setIdle(value);
           await wait("document.querySelector('[role=status]')?.textContent === 'Saved automatically.'");
           await evaluate("window.__sessionsTest.release()");
-          await wait("document.querySelector('input').value === '75' && !" + button('Refresh') + ".disabled");
+          await wait("document.querySelector('input').value === '75' && !document.querySelector('.refresh-age').textContent.includes('Refreshing')");
           assert.equal(await evaluate("window.__sessionsTest.saves[0].idleMinutes"), 75);
           assert.equal(await evaluate("window.__sessionsTest.saves.length"), 1);
           await setIdle(0);
           await wait("document.querySelector('[role=alert]')?.textContent.includes('whole numbers')");
-          await evaluate(button('Refresh') + '.click()');
-          await wait("!" + button('Refresh') + ".disabled");
+          await evaluate("window.__sessionsTest.advance(15000)");
+          await wait("!document.querySelector('.refresh-age').textContent.includes('Refreshing')");
           await new Promise(resolve => setTimeout(resolve, 600));
           assert.equal(await evaluate("document.querySelector('input').value"), '0');
           assert.equal(await evaluate("window.__sessionsTest.saves.length"), 1);
@@ -178,6 +231,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await setIdle(88);
           await evaluate("document.querySelector('input').dispatchEvent(new FocusEvent('blur')); " + button('Models') + ".click()");
           await wait("!document.querySelector('.session-settings')");
+          const hiddenReads = await evaluate("window.__sessionsTest.calls.length");
+          await evaluate("window.__sessionsTest.advance(30000)");
+          assert.equal(await evaluate("window.__sessionsTest.calls.length"), hiddenReads);
           await evaluate("window.__sessionsTest.releaseSave()");
           await wait("window.__sessionsTest.snapshot.policy.idleMinutes === 88");
           assert.deepEqual(await evaluate("window.__sessionsTest.saves.slice(-2).map(policy => policy.idleMinutes)"), [87, 88]);
@@ -198,13 +254,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate(button('Load older events') + '.click()');
           await wait("document.querySelectorAll('[aria-label=\\"Session event log\\"] tbody tr').length === 2");
           assert.equal(await evaluate("window.__sessionsTest.calls.includes(200)"), true);
-          assert.equal(await evaluate("document.body.innerText.includes('History is paused')"), true);
-          await evaluate("window.__sessionsTest.failRead = true; " + button('Refresh') + ".click()");
+          assert.equal(await evaluate("document.body.innerText.includes('Loaded older events remain visible')"), true);
+          await evaluate("window.__sessionsTest.failRead = true; window.__sessionsTest.advance(15000)");
           await wait("document.querySelector('[role=alert]')?.textContent === 'Session refresh failed'");
-          await evaluate(button('Refresh') + '.click()');
-          await wait("!document.querySelector('[role=alert]') && document.querySelectorAll('[aria-label=\\"Session event log\\"] tbody tr').length === 1");
-          await evaluate("window.__sessionsTest.pause = true; " + button('Refresh') + ".click()");
-          await wait("typeof window.__sessionsTest.release === 'function' && " + button('Refreshing...') + "?.disabled");
+          assert.equal(await evaluate("document.querySelector('.refresh-age').textContent.trim()"), 'Last refreshed 15s ago');
+          await evaluate(\`window.__sessionsTest.snapshot.events = [
+            { ...window.__sessionsTest.snapshot.events[0], sequence: 201, count: 20 },
+            { ...window.__sessionsTest.snapshot.events[0], count: 16 },
+          ]; window.__sessionsTest.advance(15000);\`);
+          await wait("!document.querySelector('[role=alert]') && document.querySelectorAll('[aria-label=\\"Session event log\\"] tbody tr').length === 3");
+          assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Session event log\\"] tbody tr')).map(row => row.children[3].textContent)"), ['20', '16', '15']);
+          assert.equal(await evaluate("document.querySelector('.refresh-age').textContent.trim()"), 'Last refreshed 0s ago');
+          await evaluate("window.__sessionsTest.pause = true; window.__sessionsTest.advance(15000)");
+          await wait("typeof window.__sessionsTest.release === 'function' && document.querySelector('.refresh-age').textContent.includes('Refreshing')");
           const savesBeforeSwitch = await evaluate("window.__sessionsTest.saves.length");
           await setIdle(90);
           await evaluate(\`window.__sessionsTest.snapshot.policy.idleMinutes = 22;
@@ -217,6 +279,17 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("document.querySelector('input').value"), '22');
           assert.equal(await evaluate("window.__sessionsTest.saves.length"), savesBeforeSwitch);
           assert.equal(await evaluate("document.body.innerText.includes('New sessions are currently paused')"), true);
+          assert.equal(await evaluate("document.querySelector('.session-memory').classList.contains('blocked')"), true);
+          assert.equal(await evaluate("document.querySelector('[aria-label=\\"V8 heap allocation categories\\"]').children.length"), 3);
+          assert.equal(await evaluate("document.body.innerText.includes('Long-lived objects (old space): 96.0 MiB')"), true);
+          await evaluate(button('Save bug report and collect garbage') + '.click()');
+          await wait("document.querySelector('[role=status]')?.textContent.includes('Cancelled')");
+          assert.equal(await evaluate("window.__sessionsTest.recoveryCalls[0]"), 'http://127.0.0.1:7719/mcp');
+          assert.equal(await evaluate("document.querySelector('.session-memory').classList.contains('blocked')"), true);
+          await evaluate("window.__sessionsTest.recoveryOutcome = 'collected'; " + button('Save bug report and collect garbage') + '.click()');
+          await wait("document.querySelector('[role=status]')?.textContent.includes('Collected 28.0 MiB')");
+          assert.equal(await evaluate("document.querySelector('.session-memory').classList.contains('blocked')"), false);
+          assert.equal(await evaluate("document.querySelector('.session-memory a').getAttribute('href')"), 'working-memory://open/topic/heap-report-id');
           for (const width of [620, 1000]) {
             window.setSize(width, 900);
             const layout = await evaluate("({ scroll: document.documentElement.scrollWidth, viewport: window.innerWidth })");

@@ -83,7 +83,7 @@ CI builds Linux ARM64 images for Mac installers and Linux x64 images for
 Windows installers. Local `npm run build` / packaging builds the image using
 Docker first; CI supplies it via `WM_DATA_TIER_IMAGE_ARCHIVE`.
 
-Open **environment menu > Manage instances…** (or **Settings > Instances**) to
+Open **environment menu > Manage instances…** (or **Settings > Updates > Back End**) to
 manage the data-tier instances the app created. Reachable Working Memory servers the app did not
 create (for example one started from this repo's `compose.yaml`) are listed as
 **Self-hosted**: you can make them current, but start, stop, upgrade, and
@@ -132,7 +132,9 @@ plane.
 
 ### Desktop updates
 
-**Settings > Updates** picks the desktop update channel: **Off**, **Canary**
+**Settings > Updates** combines instance/backend management under **Back End**
+and desktop updates under **Front End**. **Settings > Updates > Front End**
+picks the desktop update channel: **Off**, **Canary**
 (the newer of the rolling `canary` build and the latest Stable release), or **Stable**
 (the latest non-prerelease `vX.Y.Z` release). Installer builds default to
 Canary for `-build.N` versions and Stable for tagged versions; local
@@ -227,7 +229,10 @@ To dogfood Copilot:
    If loading fails, the error is displayed with **Retry loading models**.
    Retrying starts a fresh connection after a sign-in failure. A failed refresh
    preserves the loaded model list, selected model, and routing.
-5. Assign that profile in **Routing matrix** and save. Chat currently uses
+5. Assign that profile in the **Routing matrix** section of **Settings > Models**.
+   Model profiles, routing and Human settings save automatically after a short pause
+   or when leaving a field/view. Saving and validation errors are shown; incomplete
+   profiles must be completed before the configuration can be saved. Chat currently uses
    **Complex / medium**; topic title/type autocomplete uses **Simple / fast**.
    Assign all nine cells to Copilot to replace Azure for all configured routes.
 
@@ -677,6 +682,10 @@ strip, including after resizing the stage or closing neighboring tabs. Empty
 new-topic forms use the same available document width as populated topics;
 typing does not change the form's width.
 
+The right-hand Chat rail starts collapsed when no preference has been saved.
+Its open/closed state is remembered locally across desktop restarts, alongside
+the rail widths. Explicit chat actions can still open it when needed.
+
 In topic **Live** view, labeled Markdown links display only their label, not
 their destination, optional title, or reference suffix. A plain click on a
 rendered link opens it without entering editing. Editing its line reveals the
@@ -773,7 +782,7 @@ local edits are preserved rather than overwritten. Reconnecting beyond the
 bounded replay window triggers a full refresh.
 
 Live updates require the 1.1.1 control-plane image as well as the desktop update.
-Upgrade an existing data-tier instance through **Settings > Instances** to use
+Upgrade an existing data-tier instance through **Settings > Updates > Back End** to use
 the new endpoint. Selecting an older backend shows an explicit upgrade warning;
 it does not silently fall back to continuous document polling. Changing
 environments cancels the previous watch and ignores stale notifications.
@@ -1517,6 +1526,10 @@ If the server rejects an expired or revoked credential, the connector removes
 the data tools and reports disconnection. Calling `wm-request-access` requests
 a new owner approval; restarting also recovers from a rejected saved credential
 without manually deleting credential files.
+After a backend restart or session expiry, the native connector reinitializes
+with its still-valid approved credential. Concurrent calls share recovery.
+It retries a call once only after an explicit pre-dispatch stale-session
+rejection; it never replays a write after an unknown transport failure.
 Denial/expiry/storage failures are explicit; call `wm-request-access` to retry.
 No token is returned to Copilot or placed in MCP configuration. The connector
 must not be reused as another container's identity.
@@ -1581,8 +1594,9 @@ with configurable day-based retention and paginated history, not a row-count
 cap. Repeated rejection events from the same client are aggregated per minute.
 If cleanup and its audit insert both fail, both failures are reported in the
 backend logs without leaving an unhandled cleanup rejection.
-The view refreshes every five seconds; loading older events pauses the log
-until Refresh, while active sessions continue updating. Older backends must be
+The view refreshes every 15 seconds while the Sessions tab is open and shows
+the time since the last successful refresh. Polling stops when the tab closes.
+Loaded older events remain visible alongside the latest events. Older backends must be
 upgraded before this tab is available.
 
 Trusted owner clients use `GET /identity/v1/sessions` (optional `before` event
@@ -1593,6 +1607,126 @@ a recognized stale-session read once; generic tool calls and writes are never
 automatically replayed. Short-lived MCP consumers should send session DELETE
 (`transport.terminateSession()`) before `client.close()` to reclaim resources
 immediately instead of waiting for idle cleanup.
+The desktop client and native connector do this on reset and shutdown, with a
+two-second DELETE timeout and observable cleanup failures. Shutdown cancels
+active requests without cancelling the separate session-termination request.
+
+#### Instance monitoring and automatic incident reports (1.4.1)
+
+**Settings -> Diagnostics** shows owner-only HTTP transactions per minute,
+caller categories (owner, approved client ID, unauthenticated), normalized
+routes, status codes, request durations, V8 heap/RSS, event-loop delay and
+active request/session counts. `GET /identity/v1/diagnostics` is restricted to
+trusted owner requests; older backends show an explicit upgrade message.
+Health and MCP advertise the package release version. Health also returns a
+process boot ID so a restart is distinguishable from an unavailable endpoint.
+
+Every HTTP response has a server-generated `X-Request-Id`. HTTP errors and
+requests taking at least three seconds are persisted, along with admission
+rejections, sampled heap pressure at the 60% admission threshold, event-loop
+delays of at least one second, and unclean backend restarts. Repeated events
+are grouped by route/status/minute, retaining the latest request ID and maximum
+duration. Telemetry is retained for seven days, capped at 10,000 minute/caller
+buckets and 1,000 events; the view shows the latest hour and 100 events.
+Long-lived SSE requests remain in-flight until closed, so their duration is not
+a measure of handshake latency. HTTP 401 can be normal OAuth negotiation;
+the log does not interpret it as an authentication defect.
+Caller identity is captured when a request arrives, so logout or credential
+expiry before completion does not relabel an authenticated transaction.
+
+Upgrade the frontend and backend together for 1.4.1: the new garbage-collection
+event values are not accepted by older desktop session-response validators.
+
+While the desktop runs, it checks **only the selected environment**, with a
+five-second health deadline and ten seconds between monitoring attempts.
+Three consecutive failures generate an outage report, not a claim of a crash.
+Changed boot IDs confirm process restarts. For managed instances, Docker state,
+image identity, OOM/exit information and the last five health-check timings
+are included without health-check output or container environment variables.
+The desktop also reports heap admission pressure and event-loop stalls, with
+deduplication/cooldowns. App-initiated upgrades are excluded from monitoring.
+
+Reports are atomically queued in the desktop user profile and survive desktop
+and backend restarts. Once the same selected backend is reachable and signed
+in, queued reports become Topics in a workstream named **Inbox**, creating that
+workstream if absent. A uniquely named **Bug** topic type is used when available,
+otherwise the normal Topic default applies. Duplicate or closed Inbox
+workstreams produce a visible delivery error; monitoring never reopens or
+closes a workstream/topic. An incident label prevents duplicate topics after an
+ambiguous write outcome. Completed local report history is capped at 100;
+undelivered reports are retained. Review in Inbox and use **Send feedback**
+manually when ready; reports are never transmitted automatically.
+Automatic delivery uses owner-only `POST /identity/v1/incidents`, with a
+server-side incident-label/ID lookup rather than loading Topic bodies or
+opening an MCP session. Delivery has a ten-second deadline and runs separately
+from health probes and confirmed manual heap-report creation. In-flight probes
+from before an intentional upgrade are discarded even after monitoring resumes.
+
+Kind-scoped, unfiltered `wm-document-read` pages apply their limit and offset in
+SQLite before parsing documents. A health check requesting one Topic therefore
+does not allocate the entire Topic catalog.
+
+Diagnostics exclude credentials, protocol session IDs, document contents,
+request bodies, arbitrary paths/query strings, and raw logs. This supplies
+evidence for investigating memory/reconnect stalls; it does not claim to fix
+or establish the allocation source in the reported 7719 incident. No heap
+profiles are captured automatically because they can contain private content.
+
+#### Heap analysis and confirmed recovery (1.4.1)
+
+**Settings -> Sessions** colorizes heap pressure: green below 50%, amber at
+50%, and high/blocked at the existing 60% admission cutoff. Labels provide the
+same information without relying on color. A stacked allocation-category chart
+shows V8 old/young objects, large objects, compiled code and trusted storage.
+These categories are not per-client ownership measurements. RSS and external
+allocations are reported separately; array buffers are a subset of external
+memory, not an additional total.
+
+**Save bug report and collect garbage** opens a trusted native confirmation
+dialog. Cancel is the default. After approval, a sanitized report is queued
+locally and saved in the selected instance's Inbox before any collection is
+requested. Report creation uses an owner-only HTTP endpoint and requires no new
+MCP session, so the heap admission cutoff does not prevent saving the report.
+Then the backend reclaims only already-idle sessions, waits for their cleanup,
+and requests asynchronous major V8 garbage collection. Active requests and
+live sessions are preserved; no container restart occurs. The result reports
+before/after heap bytes, elapsed time and reclaimed idle sessions, with a
+persistent Sessions audit event and a link to the saved report.
+
+Garbage collection is never automatic. The bundled Docker entry point enables
+`--expose-gc`; other launchers must explicitly opt in to expose manual
+collection. The desktop disables recovery when unsupported. Owner HTTP
+requests use `POST /identity/v1/sessions/report` followed by
+`POST /identity/v1/sessions/gc`, with explicit confirmation and the observed
+server start time. Collection also requires the saved incident Topic ID,
+rejects untrusted browser requests and approved-client credentials, and is
+rate-limited to one attempt per minute. Report failures or a changed instance
+prevent collection. Collection failures retain the report and are shown as
+failures, never as successful recovery.
+
+MCP tool validation schemas are shared across servers, while tool handlers and
+authorization remain session-local. This reduces the retained cost of
+abandoned-but-not-yet-idle MCP sessions rather than relying on GC to release
+live objects. CommandJournal schemas live in an independent schema module to
+avoid circular initialization when registrations reuse them.
+
+For reproducible local analysis with **synthetic in-memory data only**:
+
+```bash
+npm run compile
+npm run test:mcp-heap -- /absolute/path/to/diagnostic-output
+```
+
+The harness exercises 1,000 clean reconnects with tool discovery and ping,
+100 client-close-without-DELETE sessions followed by idle expiry, and 100
+unauthenticated OAuth challenges. It captures post-GC heap/RSS samples and
+local `.heapprofile` allocation sampling, including a checkpoint while
+abandoned sessions are still retained. Budgets are at most 1 MiB incremental
+retained heap per abandoned session, at most 20% heap growth over warmed-up
+clean reconnects, and local connection/discovery/ping p95 below one second.
+These budgets detect the reproduced duplicated-schema retention; they do
+not establish the cause of every production timeout. Raw profiles are never
+attached to Inbox reports or feedback automatically.
 
 #### Other agents and containers: identity MCP enrollment
 

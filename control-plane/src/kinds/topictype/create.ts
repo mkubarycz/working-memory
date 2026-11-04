@@ -13,6 +13,16 @@ import type { Store } from '../../store.js';
 import { validateSpec, defaultStatus } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { TopicType, TOPIC_TYPE_KIND } from './topictype.js';
+const wsTopictypeCreateInputSchema = z.object({
+        label: z.string().describe('Human-readable singular label (required).'),
+        icon: z.string().describe('VS Code codicon id (required).'),
+        description: z.string().describe('One-sentence semantics (required).'),
+        body_template: z
+          .string()
+          .optional()
+          .describe('Markdown body scaffold for topics of this type (default empty).'),
+      }).strict();
+
 
 /**
  * Register the `ws-topictype-create` tool on an MCP session's server. The tool
@@ -29,15 +39,7 @@ export function registerWsTopicTypeCreate(server: McpServer, store: Store): void
         'a `label` (required), an `icon` (required, a codicon id), a ' +
         '`description` (required), and an optional `body_template` (markdown scaffold, default ' +
         'empty). The spec is validated against the TopicType kind. Returns the created topic type.',
-      inputSchema: z.object({
-        label: z.string().describe('Human-readable singular label (required).'),
-        icon: z.string().describe('VS Code codicon id (required).'),
-        description: z.string().describe('One-sentence semantics (required).'),
-        body_template: z
-          .string()
-          .optional()
-          .describe('Markdown body scaffold for topics of this type (default empty).'),
-      }).strict(),
+      inputSchema: wsTopictypeCreateInputSchema,
     },
     async ({ label, icon, description, body_template }) => {
       const specInput: Record<string, unknown> = { label, icon, description };

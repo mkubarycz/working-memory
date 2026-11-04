@@ -383,6 +383,42 @@ export class DataTierManager {
   }
 
   /** Creates a managed instance on 7717 when free, otherwise the next free port from 7719. */
+  async diagnosticState(port: number): Promise<{ startedAt: string; evidence: string }> {
+    this.require(port);
+    const docker = dockerCliPath(this.host, this.fileExists);
+    if (!docker) throw new DataTierError('Docker CLI is unavailable for container diagnostics.', 'docker-missing');
+    const format = '{"Image":{{json .Image}},"RestartCount":{{.RestartCount}},"Config":{"Image":{{json .Config.Image}}},'
+      + '"State":{"Status":{{json .State.Status}},"OOMKilled":{{.State.OOMKilled}},"ExitCode":{{.State.ExitCode}},'
+      + '"StartedAt":{{json .State.StartedAt}},"FinishedAt":{{json .State.FinishedAt}}'
+      + '{{if .State.Health}},"Health":{"Status":{{json .State.Health.Status}},"FailingStreak":{{.State.Health.FailingStreak}},'
+      + '"Log":[{{range $i,$log := .State.Health.Log}}{{if $i}},{{end}}'
+      + '{"Start":{{json $log.Start}},"End":{{json $log.End}},"ExitCode":{{$log.ExitCode}}}{{end}}]}{{end}}}}';
+    const result = await this.runner.run(docker, ['container', 'inspect',
+      '--format', format, dataTierInstanceNames(port).container], {
+      env: dockerEnvironment(this.host, docker), timeoutMs: 5000,
+    });
+    const schema = z.object({
+      Image: z.string(), RestartCount: z.number().int(),
+      Config: z.object({ Image: z.string() }),
+      State: z.object({
+        Status: z.string(), OOMKilled: z.boolean(), ExitCode: z.number().int(),
+        StartedAt: z.string(), FinishedAt: z.string(),
+        Health: z.object({
+          Status: z.string(), FailingStreak: z.number().int(),
+          Log: z.array(z.object({ Start: z.string(), End: z.string(), ExitCode: z.number().int() })),
+        }).optional(),
+      }),
+    });
+    const value = schema.parse(JSON.parse(result.stdout));
+    return { startedAt: value.State.StartedAt,
+      evidence: `Docker image: ${value.Config.Image}; image ID: ${value.Image}; state: ${value.State.Status}; `
+        + `OOM killed: ${value.State.OOMKilled}; exit code: ${value.State.ExitCode}; restart count: ${value.RestartCount}; `
+        + `started: ${value.State.StartedAt}; finished: ${value.State.FinishedAt}; `
+        + `health: ${value.State.Health?.Status ?? 'not configured'}; failing streak: ${value.State.Health?.FailingStreak ?? 0}.\n`
+        + (value.State.Health?.Log ?? []).slice(-5).map(check =>
+          `Health check ${check.Start} to ${check.End}: exit ${check.ExitCode}`).join('\n') };
+  }
+
   create(name?: string): Promise<ManagedDataTierInstance> {
     return this.serialize(async () => {
       const { docker, env } = await this.docker();

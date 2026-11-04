@@ -14,6 +14,8 @@ const api: DesktopApi = {
   getInstanceAccess: () => invoke('instance:access'),
   reviewInstanceAccess: (input) => invoke('instance:review-access', input),
   getSessionDiagnostics: (before) => invoke('instance:sessions', before),
+  getInstanceDiagnostics: () => invoke('instance:diagnostics'),
+  recoverInstanceHeap: (mcpUrl) => invoke('instance:recover-heap', { mcpUrl }),
   updateSessionPolicy: (policy, mcpUrl) => invoke('instance:session-policy', { policy, mcpUrl }),
   onInstanceAuthenticationChanged: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);

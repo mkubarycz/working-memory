@@ -71,6 +71,29 @@ describe('document save queue', () => {
     expect(save).toHaveBeenCalledTimes(2);
   });
 
+  it('coalesces repeated debounce flushes behind one in-flight save without empty writes', async () => {
+    vi.useFakeTimers();
+    let finishFirst: (() => void) | undefined;
+    const onSaved = vi.fn();
+    const save = vi.fn((_key: string, patch: { title?: string }) => save.mock.calls.length === 1
+      ? new Promise<{ title?: string }>(resolve => { finishFirst = () => resolve(patch); })
+      : Promise.resolve(patch));
+    const queue = createDocumentSaveQueue({ delayMs: 350, save, onSaved });
+    queue.schedule('settings', { title: 'First' });
+    await vi.advanceTimersByTimeAsync(350);
+    queue.schedule('settings', { title: 'Second' });
+    await vi.advanceTimersByTimeAsync(350);
+    queue.schedule('settings', { title: 'Third' });
+    await vi.advanceTimersByTimeAsync(350);
+
+    finishFirst?.();
+    await queue.flushAll();
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenLastCalledWith('settings', { title: 'Third' });
+    expect(onSaved).toHaveBeenCalledExactlyOnceWith('settings', { title: 'Third' });
+  });
+
   it('rejects a flush and preserves failed intent for a later retry', async () => {
     vi.useFakeTimers();
     const save = vi.fn()

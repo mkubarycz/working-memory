@@ -1,7 +1,7 @@
 {
   "name": "working-memory",
   "description": "Standalone Working Memory desktop app and control plane.",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "repository": {
     "type": "git",
@@ -25,6 +25,7 @@
     "watch": "tsc -p . -w",
     "test": "vitest run",
     "test:standalone-template": "bash scripts/test-standalone-template.sh",
+    "test:mcp-heap": "node --expose-gc scripts/test-mcp-heap.mjs",
     "test:watch": "vitest"
   },
   "devDependencies": {

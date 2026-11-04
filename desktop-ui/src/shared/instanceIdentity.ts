@@ -1,5 +1,10 @@
 import type { InstancePermissions } from '../../../control-plane/src/instancePermissions';
-import type { SessionPolicy, SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
+import type { HeapCollection, SessionPolicy, SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
+import type { DesktopDiagnostics } from '../../../control-plane/src/diagnosticContract';
+export type HeapRecoveryResult =
+  | { status: 'cancelled' }
+  | { status: 'collected'; topicId: string; collection: HeapCollection; snapshot: SessionSnapshot }
+  | { status: 'failed'; topicId: string; error: string };
 export type { InstancePermissions };
 export type InstanceAccessAction =
   | { id: string; action: 'approve' | 'deny' | 'revoke' }
@@ -35,6 +40,8 @@ export interface InstanceIdentityApi {
   getInstanceAccess(): Promise<InstanceAccessSnapshot>;
   reviewInstanceAccess(input: InstanceAccessAction): Promise<InstanceAccessSnapshot>;
   getSessionDiagnostics(before?: number): Promise<SessionSnapshot>;
+  getInstanceDiagnostics(): Promise<DesktopDiagnostics>;
+  recoverInstanceHeap(mcpUrl: string): Promise<HeapRecoveryResult>;
   updateSessionPolicy(policy: SessionPolicy, mcpUrl: string): Promise<SessionSnapshot>;
   onInstanceAuthenticationChanged(listener: (event: { mcpUrl: string; authenticated: boolean }) => void): () => void;
 }

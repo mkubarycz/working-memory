@@ -12,6 +12,20 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
 import { asText } from '../toolResult.js';
 import { Config, CONFIG_KIND } from './config.js';
+const wsConfigReadInputSchema = z.object({
+        id: z.string().optional().describe('Read ONE config by document id (uuid).'),
+        query: z
+          .string()
+          .optional()
+          .describe('Case-insensitive substring filter over config text (list mode only).'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Max configs to return (list mode only).'),
+      }).strict();
+
 
 /**
  * Register the `ws-config-read` tool on an MCP session's server. Reads ONE
@@ -28,19 +42,7 @@ export function registerWsConfigRead(server: McpServer, store: Store): void {
         '(newest-first), with an optional `query` case-insensitive substring filter and a `limit`. ' +
         'ALWAYS returns { count, configs } — a by-ID read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
-      inputSchema: z.object({
-        id: z.string().optional().describe('Read ONE config by document id (uuid).'),
-        query: z
-          .string()
-          .optional()
-          .describe('Case-insensitive substring filter over config text (list mode only).'),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe('Max configs to return (list mode only).'),
-      }).strict(),
+      inputSchema: wsConfigReadInputSchema,
     },
     async ({ id, query, limit }) => {
       // Single read: by ID. A foreign-kind ID maps to nothing (the

@@ -12,6 +12,20 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
 import { asText, asError } from '../toolResult.js';
 import { Alert, ALERT_KIND } from './alert.js';
+const wsAlertReadInputSchema = z.object({
+        id: z.string().optional().describe('Read ONE alert by document id (uuid).'),
+        query: z
+          .string()
+          .optional()
+          .describe('Case-insensitive substring filter over alert text (list mode only).'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Max alerts to return (list mode only).'),
+      }).strict();
+
 
 /**
  * Register the `ws-alert-read` tool on an MCP session's server. Reads ONE alert
@@ -30,19 +44,7 @@ export function registerWsAlertRead(server: McpServer, store: Store): void {
         'shape. Deprecated adapter: list responses additionally report incompatibleMessageIds and warnings ' +
         'for canonical categories/lifecycles that cannot be represented, without hiding the incompatibility or failing compatible entries. ' +
         'An incompatible by-id read is an explicit error. Resolved request/completion history projects to closed without changing canonical category.',
-      inputSchema: z.object({
-        id: z.string().optional().describe('Read ONE alert by document id (uuid).'),
-        query: z
-          .string()
-          .optional()
-          .describe('Case-insensitive substring filter over alert text (list mode only).'),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe('Max alerts to return (list mode only).'),
-      }).strict(),
+      inputSchema: wsAlertReadInputSchema,
     },
     async ({ id, query, limit }) => {
       // Single read: by id (foreign-kind id maps to nothing — the id lookup is

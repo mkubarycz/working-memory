@@ -26,7 +26,7 @@
   import SearchView from './documents/SearchView.svelte';
   import { createSearchViewState, searchContextForSession, searchStateAfterTabChange } from './documentSearch';
   import { topicBacklogDocument } from './topicBacklog';
-  import SettingsView, { type SettingsTab } from './documents/SettingsView.svelte';
+  import SettingsView, { type SettingsTab, type UpdatesTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
     AgentMessageVM,
@@ -109,7 +109,7 @@
   import type { DocumentChanges } from '../../../shared/documentChanges';
   import { collectUnreadResponses, parseUnreadResponses, responseKey, unreadResponseCount, type UnreadResponse } from './chatUnread';
   import { focusChatRunTarget } from './chatRunFocus';
-  import { RAIL_LAYOUT, parseStoredRailWidth, resizeRail, resolveRailWidths } from './railLayout';
+  import { RAIL_LAYOUT, parseStoredRailWidth, parseStoredChatRailCollapsed, resizeRail, resolveRailWidths } from './railLayout';
   import { planWorkstreamReorder } from './workstreamReorder';
   import { topicTransferRefreshTargets, type TopicDragSource, type TopicTransferRequest } from './topicTransfer';
   import type { ActiveResourceDrag } from './resourceDrag';
@@ -223,6 +223,9 @@
   let modelRouting = $state<ModelRouting>({} as ModelRouting);
   let humanName = $state('Flesh Bag');
   let settingsStatus = $state('');
+  let settingsError = $state(false);
+  let profileTestStatus = $state('');
+  let profileTestError = $state(false);
   let saving = $state(false);
   let testingProfileId = $state<string | null>(null);
   let environments = $state<DesktopEnvironment[]>([]);
@@ -246,7 +249,8 @@
   let activeLoading = $state(false);
   let activeError = $state('');
   let activeRailCollapsed = $state(false);
-  let chatRailCollapsed = $state(false);
+  let chatRailCollapsed = $state(true);
+  let chatRailRestored = $state(false);
   let activeRailWidth = $state(RAIL_LAYOUT.active.default);
   let chatRailWidth = $state(RAIL_LAYOUT.chat.default);
   let viewportWidth = $state(1280);
@@ -913,7 +917,14 @@
   const RAIL_STORAGE_KEYS = {
     active: 'working-memory.desktop.active-rail-width',
     chat: 'working-memory.desktop.chat-rail-width',
+    chatCollapsed: 'working-memory.desktop.chat-rail-collapsed',
   } as const;
+
+  $effect(() => {
+    if (chatRailRestored) {
+      localStorage.setItem(RAIL_STORAGE_KEYS.chatCollapsed, String(chatRailCollapsed));
+    }
+  });
   const DOCUMENT_TABS_STORAGE_PREFIX = 'working-memory.desktop.document-tabs:v1:';
   const RESTORABLE_DOCUMENT_KINDS = new Set<DesktopResourceKind>([
     'workstream',
@@ -1125,6 +1136,8 @@
       .catch(cause => { buildInfoError = cause instanceof Error ? cause.message : String(cause); });
     activeRailWidth = parseStoredRailWidth(localStorage.getItem(RAIL_STORAGE_KEYS.active), 'active');
     chatRailWidth = parseStoredRailWidth(localStorage.getItem(RAIL_STORAGE_KEYS.chat), 'chat');
+    chatRailCollapsed = parseStoredChatRailCollapsed(localStorage.getItem(RAIL_STORAGE_KEYS.chatCollapsed));
+    chatRailRestored = true;
     viewportWidth = window.innerWidth;
     const handleResize = () => { viewportWidth = window.innerWidth; };
     window.addEventListener('resize', handleResize);
@@ -1670,36 +1683,68 @@
     };
   }
 
-  async function saveSettings(): Promise<void> {
-    if (saving || testingProfileId) return;
-    saving = true;
-    settingsStatus = 'Saving…';
-    try {
-      loadConfig(await window.workingMemory.saveConfig(settingsInput()));
-      settingsStatus = 'Saved';
-    } catch (error) {
-      settingsStatus = error instanceof Error ? error.message : String(error);
-    } finally {
-      saving = false;
-    }
+  const settingsSaves = createDocumentSaveQueue<ReturnType<typeof settingsInput>, PublicConfig>({
+    delayMs: 400,
+    save: async (_key, input) => {
+      if (!input.profiles || !input.routing || input.humanName === undefined) {
+        throw new Error('Settings changes are incomplete.');
+      }
+      try {
+        return await window.workingMemory.saveConfig({
+          profiles: input.profiles, routing: input.routing, humanName: input.humanName,
+        });
+      } finally { saving = false; }
+    },
+    onPending: () => { settingsError = false; settingsStatus = 'Waiting to save...'; },
+    onSaving: () => { saving = true; settingsError = false; settingsStatus = 'Saving...'; },
+    onSaved: (_key, config) => {
+      endpoint = config.endpoint;
+      credentialStorage = config.credentialStorage;
+      modelProfiles = modelProfiles.map(profile => {
+        const saved = config.profiles.find(candidate => candidate.id === profile.id);
+        return saved ? { ...profile, hasApiKey: saved.hasApiKey, apiKey: '' } : profile;
+      });
+      settingsStatus = 'Saved automatically.';
+    },
+    onError: (_key, error) => {
+      settingsError = true;
+      settingsStatus = `Not saved: ${error instanceof Error ? error.message : String(error)}`;
+    },
+  });
+
+  function queueSettingsSave(): void {
+    settingsSaves.schedule('settings', settingsInput());
+  }
+
+  function flushSettings(): void {
+    if (settingsError) queueSettingsSave();
+    void settingsSaves.flushAll().catch(error => {
+      settingsError = true;
+      settingsStatus = `Not saved: ${error instanceof Error ? error.message : String(error)}`;
+      console.warn('[settings] Changes were not saved:', error);
+    });
   }
 
   async function testModelProfile(profile: EditableModelProfile & { apiKey: string }): Promise<void> {
     if (saving || testingProfileId) return;
     testingProfileId = profile.id;
-    settingsStatus = `Testing ${profile.name || profile.model}…`;
+    profileTestError = false;
+    profileTestStatus = `Testing ${profile.name || profile.model}…`;
     try {
       const result = await window.workingMemory.testModelProfile(modelProfileInput(profile));
       observeOpenAi(result.ok ? 'healthy' : 'degraded', result.message);
-      settingsStatus = result.message;
+      profileTestError = !result.ok;
+      profileTestStatus = result.message;
     } catch (error) {
-      settingsStatus = error instanceof Error ? error.message : String(error);
+      profileTestError = true;
+      profileTestStatus = error instanceof Error ? error.message : String(error);
     } finally {
       testingProfileId = null;
     }
   }
 
   let settingsTab = $state<SettingsTab>('models');
+  let updatesTab = $state<UpdatesTab>('back-end');
 
   function applyFeatures(features: InstanceFeatures): void {
     instanceFeatures = features;
@@ -1791,7 +1836,8 @@
   }
 
   function openInstances(): void {
-    openSettings('instances');
+    updatesTab = 'back-end';
+    openSettings('updates');
   }
 
   function openSearch(): void {
@@ -2679,6 +2725,9 @@
             routing={modelRouting}
             {credentialStorage}
             {settingsStatus}
+            {settingsError}
+            {profileTestStatus}
+            {profileTestError}
             {saving}
             {testingProfileId}
             {humanName}
@@ -2686,8 +2735,10 @@
             onAddProfile={addModelProfile}
             onRemoveProfile={removeModelProfile}
             onTestProfile={testModelProfile}
-            onSave={saveSettings}
+            onChange={queueSettingsSave}
+            onFlush={flushSettings}
             bind:tab={settingsTab}
+            bind:updatesTab
             selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
             onMakeCurrent={makeInstanceCurrent}
             onInstancesChanged={() => discoverEnvironments()}

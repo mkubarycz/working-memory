@@ -39,7 +39,11 @@ import { AccessError, InstanceAccess, type InstancePrincipal } from './instanceA
 import { serveInstanceAccessMcp } from './instanceAccessMcp.js';
 import { InstanceOAuth } from './instanceOAuth.js';
 import { McpSessions, SessionAdmissionError, type SessionDiagnosticsOptions } from './mcpSessions.js';
+import { heapCollectionRequestSchema, heapReportRequestSchema } from './sessionPolicy.js';
+import { createHeapReport, createInstanceIncidentReport, HeapReportError } from './heapReports.js';
+import { incidentReportRequestSchema } from './diagnosticContract.js';
 import { IdentityError } from './instanceIdentity.js';
+import { diagnosticRoute, HttpDiagnostics } from './diagnostics.js';
 import { documentPermissionCategory, instancePermissionsSchema, permits } from './instancePermissions.js';
 import { activateDueReminders, REMINDER_SWEEP_INTERVAL_MS } from './agentMessageReminders.js';
 import { authorizeInstanceTool, instanceToolPermissions } from './instanceAuthorization.js';
@@ -77,6 +81,85 @@ export interface RunningServer {
   readonly url: string;
   close(): Promise<void>;
 }
+const wmDocumentCreateInputSchema = z.object({
+        kind: z.string().describe('The document kind. Must be registered (see wm-list-kinds), e.g. "Topic".'),
+        labels: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe('Optional string→string labels.'),
+        spec: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("Optional desired-state object; must match the kind's spec schema (unknown fields rejected)."),
+      }).strict();
+
+const wmDocumentUpdateInputSchema = z.object({
+        id: z.string().describe('The id (uuid) of the document to update.'),
+        expectedResourceVersion: z
+          .number()
+          .int()
+          .describe('The resourceVersion you read via wm-document-read (CAS guard).'),
+        spec: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe(
+            'Partial spec fields to merge onto the current spec; the merged spec must match the ' +
+              "kind's schema (unknown fields rejected). Send a field explicitly to clear it (e.g. parents: []).",
+          ),
+        labels: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe('Optional new labels; replaces the whole labels object if provided.'),
+      }).strict();
+
+const wmDocumentDeleteInputSchema = z.object({
+        id: z.string().describe('The id (uuid) of the document to delete (or restore).'),
+        restore: z
+          .boolean()
+          .optional()
+          .describe('When true, undelete a previously soft-deleted document instead of deleting.'),
+        expectedResourceVersion: z
+          .number()
+          .int()
+          .optional()
+          .describe('Optional CAS guard for deletes: the resourceVersion you read via wm-document-read.'),
+      }).strict();
+
+const wmDocumentReadInputSchema = z.object({
+        id: z.string().optional().describe('Read a single document by id (uuid).'),
+        kind: z.string().optional().describe('Kind filter for an ID lookup or a list, e.g. "Topic".'),
+        includeDeleted: z
+          .boolean()
+          .optional()
+          .describe(
+            'When true, reads and lists also return soft-deleted documents, including historical Alert aliases of canonical AgentMessages.',
+          ),
+        query: z
+          .string()
+          .optional()
+          .describe('Basic case-insensitive substring filter over document text (list mode only).'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Max number of documents to return (list mode only).'),
+        offset: z.number().int().nonnegative().optional().describe('Number of matching documents to skip (list mode only). Restart paging after document changes.'),
+      }).strict();
+
+const wmSearchAddTopicInputSchema = z.object({ id: z.string().min(1), workstreamId: z.string().min(1), expectedResourceVersion: z.number().int().nonnegative() }).strict();
+const wmPingInputSchema = z.object({});
+
+const wmListKindsInputSchema = z.object({});
+const wmAttachmentCreateInputSchema = z.object({
+      filename: z.string().trim().min(1).max(255),
+      mimeType: z.string().refine(value => IMAGE_MIME_TYPES.has(value), 'Unsupported image type.'),
+      data: z.string().min(4).max(Math.ceil(700 * 1024 / 3) * 4)
+        .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+    });
+
+
+
 
 /**
  * Build a fresh MCP server wired to `store`, registering the smoke tool
@@ -108,12 +191,7 @@ export function createMcpServer(
   server.registerTool('wm-attachment-create', {
     title: 'Working Memory: Upload Image',
     description: 'Store an image attachment (up to 700 KiB via MCP). Provide filename, mimeType and canonical base64 data. Returns an ID and a portable wm-attachment:<id> reference for Markdown. Requires Content Create.',
-    inputSchema: {
-      filename: z.string().trim().min(1).max(255),
-      mimeType: z.string().refine(value => IMAGE_MIME_TYPES.has(value), 'Unsupported image type.'),
-      data: z.string().min(4).max(Math.ceil(700 * 1024 / 3) * 4)
-        .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
-    },
+    inputSchema: wmAttachmentCreateInputSchema,
   }, async ({ filename, mimeType, data }) => {
     const bytes = Buffer.from(data, 'base64');
     if (!bytes.length || bytes.length > 700 * 1024 || bytes.toString('base64') !== data) {
@@ -130,7 +208,7 @@ export function createMcpServer(
       title: 'Working Memory: Ping',
       description:
         'Liveness/handshake probe for the Working Memory control-plane. Returns { ok: true, version }.',
-      inputSchema: {},
+      inputSchema: wmPingInputSchema,
     },
     async () => ({
       content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, version }) }],
@@ -150,17 +228,7 @@ export function createMcpServer(
         'requires a `title`, ≤120 chars). Resources are identified only by their immutable object IDs. The parsed spec ' +
         '(defaults applied) is what gets ' +
         'persisted. Returns the created document envelope.',
-      inputSchema: z.object({
-        kind: z.string().describe('The document kind. Must be registered (see wm-list-kinds), e.g. "Topic".'),
-        labels: z
-          .record(z.string(), z.string())
-          .optional()
-          .describe('Optional string→string labels.'),
-        spec: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Optional desired-state object; must match the kind's spec schema (unknown fields rejected)."),
-      }).strict(),
+      inputSchema: wmDocumentCreateInputSchema,
     },
     async ({ kind, labels, spec }) => {
       // The kind MUST be registered — no freeform escape hatch. Rejection lives
@@ -204,24 +272,7 @@ export function createMcpServer(
         'returned — re-fetch with `wm-document-read`, re-apply, and retry. The controller-owned ' +
         'envelope `status` is not editable here. Returns the updated document envelope (with a ' +
         'bumped `updatedAt` and `resourceVersion`).',
-      inputSchema: z.object({
-        id: z.string().describe('The id (uuid) of the document to update.'),
-        expectedResourceVersion: z
-          .number()
-          .int()
-          .describe('The resourceVersion you read via wm-document-read (CAS guard).'),
-        spec: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe(
-            'Partial spec fields to merge onto the current spec; the merged spec must match the ' +
-              "kind's schema (unknown fields rejected). Send a field explicitly to clear it (e.g. parents: []).",
-          ),
-        labels: z
-          .record(z.string(), z.string())
-          .optional()
-          .describe('Optional new labels; replaces the whole labels object if provided.'),
-      }).strict(),
+      inputSchema: wmDocumentUpdateInputSchema,
     },
     async ({ id, expectedResourceVersion, spec, labels }) => {
       // Require at least one editable field so a no-op patch is an explicit error.
@@ -295,18 +346,7 @@ export function createMcpServer(
         'changed since you read it); when omitted the current live row is deleted ' +
         'unconditionally. Unknown or already-deleted ids (or already-live ids on restore) are ' +
         'rejected. Returns the affected document envelope.',
-      inputSchema: z.object({
-        id: z.string().describe('The id (uuid) of the document to delete (or restore).'),
-        restore: z
-          .boolean()
-          .optional()
-          .describe('When true, undelete a previously soft-deleted document instead of deleting.'),
-        expectedResourceVersion: z
-          .number()
-          .int()
-          .optional()
-          .describe('Optional CAS guard for deletes: the resourceVersion you read via wm-document-read.'),
-      }).strict(),
+      inputSchema: wmDocumentDeleteInputSchema,
     },
     async ({ id, restore, expectedResourceVersion }) => {
       // No spec validation here, so unregistered-kind documents remain manageable.
@@ -346,7 +386,7 @@ export function createMcpServer(
         'wm-document-create; unknown kinds are rejected. Returns { count, kinds } where each ' +
         'entry is { name, specFields } — `specFields` are the allowed top-level `spec` field ' +
         'names (the spec is strict, so anything else is rejected).',
-      inputSchema: {},
+      inputSchema: wmListKindsInputSchema,
     },
     async () => {
       const kinds = listKinds().map((name) => ({ name, specFields: specFields(name) }));
@@ -366,27 +406,7 @@ export function createMcpServer(
         '`query` is a basic substring filter; use wm-document-search for ranked indexed discovery with agent-expanded phrases. ALWAYS ' +
         'returns { count, documents } \u2014 a by-id read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
-      inputSchema: z.object({
-        id: z.string().optional().describe('Read a single document by id (uuid).'),
-        kind: z.string().optional().describe('Kind filter for an ID lookup or a list, e.g. "Topic".'),
-        includeDeleted: z
-          .boolean()
-          .optional()
-          .describe(
-            'When true, reads and lists also return soft-deleted documents, including historical Alert aliases of canonical AgentMessages.',
-          ),
-        query: z
-          .string()
-          .optional()
-          .describe('Basic case-insensitive substring filter over document text (list mode only).'),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe('Max number of documents to return (list mode only).'),
-        offset: z.number().int().nonnegative().optional().describe('Number of matching documents to skip (list mode only). Restart paging after document changes.'),
-      }).strict(),
+      inputSchema: wmDocumentReadInputSchema,
     },
     async ({ id, kind, includeDeleted, query, limit, offset = 0 }) => {
       // Single-document read by ID (optionally kind-scoped). Return
@@ -397,9 +417,14 @@ export function createMcpServer(
         return asText({ count: documents.length, documents });
       }
       // List mode: non-deleted docs, newest-first, optional kind + query + limit.
+      if (kind && !canReadKind(kind === 'Alert' ? 'AgentMessage' : kind)) {
+        return asText({ count: 0, documents: [] });
+      }
+      const bounded = !!kind && (query === undefined || query.trim() === '');
+      const paging = bounded ? { limit, offset } : {};
       let documents = kind === 'Alert' || kind === 'AgentMessage'
-        ? store.listDocumentsByCreation({ kind, includeDeleted }).map(({ document }) => document)
-        : store.listDocuments({ kind, includeDeleted });
+        ? store.listDocumentsByCreation({ kind, includeDeleted, ...paging }).map(({ document }) => document)
+        : store.listDocuments({ kind, includeDeleted, ...paging });
       documents = documents.filter(doc => canReadKind(doc.kind));
       if (query !== undefined && query.trim() !== '') {
         // Basic placeholder search: case-insensitive substring over the whole
@@ -408,7 +433,7 @@ export function createMcpServer(
         const needle = query.toLowerCase();
         documents = documents.filter((doc) => JSON.stringify(doc).toLowerCase().includes(needle));
       }
-      documents = documents.slice(offset, limit === undefined ? undefined : offset + limit);
+      if (!bounded) documents = documents.slice(offset, limit === undefined ? undefined : offset + limit);
       return asText({ count: documents.length, documents });
     },
   );
@@ -434,7 +459,7 @@ export function createMcpServer(
   server.registerTool('wm-search-add-topic', {
     title: 'Search: Add Topic to Workstream',
     description: 'Explicit Search membership action, never an AI search tool. Atomically requires Search enabled, an open target workstream and the expected topic version. Preserves existing memberships, body, parent links, focus and lifecycle.',
-    inputSchema: z.object({ id: z.string().min(1), workstreamId: z.string().min(1), expectedResourceVersion: z.number().int().nonnegative() }).strict(),
+    inputSchema: wmSearchAddTopicInputSchema,
   }, async ({ id, workstreamId, expectedResourceVersion }) => {
     try {
       const assertOpen = () => {
@@ -537,6 +562,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const hostTasks = new HostTaskBroker(store.db, opts);
   const access = new InstanceAccess(store.db, hostTasks.identity, opts.hostTaskClock);
   const sessions = new McpSessions(store.db, opts.sessionDiagnostics);
+  const diagnostics = new HttpDiagnostics(store.db, version);
   let oauth: InstanceOAuth;
   const ownsStore = providedStore === undefined;
   const changeFeed = createDocumentChangeFeed(store);
@@ -620,6 +646,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           managed = sessions.admit(principal, body.params.clientInfo.name);
         } catch (error) {
           if (!(error instanceof SessionAdmissionError)) throw error;
+          diagnostics.event('mcp_admission_rejected', String(res.getHeader('X-Request-Id')), '/mcp', error.status, 0, true);
           res.setHeader('Retry-After', String(error.retryAfter));
           endJson(res, error.status, { jsonrpc: '2.0', error: { code: -32000, message: error.message },
             id: 'id' in body && (typeof body.id === 'number' || typeof body.id === 'string') ? body.id : null });
@@ -713,6 +740,71 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       await hostTasks.handle(req, res, setup);
       return;
     }
+    if (url.pathname === '/identity/v1/diagnostics') {
+      if (req.headers.origin || url.search) { endJson(res, 400, { error: 'Use the trusted desktop connection without query parameters.' }); return; }
+      if (!hostTasks.identity.authenticate(token)) { endJson(res, 401, { error: 'Sign in as the instance owner to view diagnostics.' }); return; }
+      if (req.method !== 'GET') { endJson(res, 405, { error: 'Diagnostics accepts GET only.' }); return; }
+      endJson(res, 200, diagnostics.snapshot(sessions.activeCount));
+      return;
+    }
+    if (url.pathname === '/identity/v1/incidents') {
+      try {
+        if (req.headers.origin || url.search) throw new AccessError(400, 'Use the trusted desktop connection without query parameters.');
+        if (!hostTasks.identity.authenticate(token)) throw new AccessError(401, 'Sign in as the instance owner to save an incident report.');
+        if (req.method !== 'POST') throw new AccessError(405, 'Incident report creation accepts POST only.');
+        if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new AccessError(415, 'JSON required.');
+        const incident = incidentReportRequestSchema.parse(await readJsonBody(req));
+        endJson(res, 200, { topicId: createInstanceIncidentReport(store, incident) });
+      } catch (error) {
+        if (error instanceof HeapReportError) endJson(res, 400, { error: error.message });
+        else if (error instanceof AccessError) endJson(res, error.status, { error: error.message });
+        else if (error instanceof z.ZodError || error instanceof SyntaxError) {
+          endJson(res, 400, { error: 'A valid bounded incident report is required.' });
+        } else throw error;
+      }
+      return;
+    }
+    if (url.pathname === '/identity/v1/sessions/report') {
+      try {
+        if (req.headers.origin || url.search) throw new AccessError(400, 'Use the trusted desktop connection without query parameters.');
+        if (!hostTasks.identity.authenticate(token)) throw new AccessError(401, 'Sign in as the instance owner to save a heap report.');
+        if (req.method !== 'POST') throw new AccessError(405, 'Heap report creation accepts POST only.');
+        if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new AccessError(415, 'JSON required.');
+        const input = heapReportRequestSchema.parse(await readJsonBody(req));
+        const snapshot = sessions.snapshot();
+        if (input.expectedStartedAt !== snapshot.startedAt) throw new AccessError(409, 'The instance restarted. Review the current heap.');
+        const topicId = createHeapReport(store, snapshot, input.incidentId);
+        endJson(res, 200, { topicId });
+      } catch (error) {
+        if (error instanceof HeapReportError) endJson(res, 400, { error: error.message });
+        else if (error instanceof AccessError) endJson(res, error.status, { error: error.message });
+        else if (error instanceof z.ZodError || error instanceof SyntaxError) {
+          endJson(res, 400, { error: 'Explicit confirmation, incident ID and the observed server start time are required.' });
+        } else throw error;
+      }
+      return;
+    }
+    if (url.pathname === '/identity/v1/sessions/gc') {
+      try {
+        if (req.headers.origin || url.search) throw new AccessError(400, 'Use the trusted desktop connection without query parameters.');
+        if (!hostTasks.identity.authenticate(token)) throw new AccessError(401, 'Sign in as the instance owner to collect the heap.');
+        if (req.method !== 'POST') throw new AccessError(405, 'Manual heap collection accepts POST only.');
+        if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new AccessError(415, 'JSON required.');
+        const input = heapCollectionRequestSchema.parse(await readJsonBody(req));
+        const report = store.getDocument({ kind: 'Topic', id: input.reportTopicId });
+        if (!report?.metadata.labels['wm.incident']) throw new AccessError(400, 'Save an incident report before collecting the heap.');
+        const collection = await sessions.collectGarbage(input.expectedStartedAt, input.reportTopicId);
+        endJson(res, 200, { collection, snapshot: sessions.snapshot() });
+      } catch (error) {
+        if (error instanceof AccessError || error instanceof SessionAdmissionError) {
+          if (error instanceof SessionAdmissionError && error.status === 429) res.setHeader('Retry-After', '60');
+          endJson(res, error.status, { error: error.message });
+        } else if (error instanceof z.ZodError || error instanceof SyntaxError) {
+          endJson(res, 400, { error: 'Explicit confirmation, saved report ID and the observed server start time are required.' });
+        } else throw error;
+      }
+      return;
+    }
     if (url.pathname === '/identity/v1/sessions') {
       try {
         if (req.headers.origin) throw new AccessError(400, 'Use the trusted desktop connection.');
@@ -784,7 +876,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       return;
     }
     if (req.method === 'GET' && url.pathname === HEALTH_PATH) {
-      endJson(res, 200, { ok: true, version, uptime: (Date.now() - startedAt) / 1000 });
+      endJson(res, 200, { ok: true, version, bootId: diagnostics.bootId, startedAt, uptime: (Date.now() - startedAt) / 1000 });
       return;
     }
     const principal = access.authenticate(token);
@@ -881,8 +973,15 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   }
 
   const httpServer = http.createServer((req, res) => {
+    diagnostics.track(req, res, () => {
+      const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+      const principal = access.authenticate(token);
+      return principal?.role === 'owner' ? 'owner' : principal?.clientId ? `client:${principal.clientId}` : 'unauthenticated';
+    });
     void handleRequest(req, res).catch(() => {
       console.error('[control-plane] HTTP request failed.');
+      try { diagnostics.event('http_handler_failed', String(res.getHeader('X-Request-Id')), diagnosticRoute(req.url ?? '/'), 500, 0, true); }
+      catch (error) { console.error('[diagnostics] Unable to record HTTP handler failure:', error); }
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' });
       }
@@ -890,14 +989,22 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     });
   });
 
-  await new Promise<void>((resolve, reject) => {
-    const onError = (err: Error): void => reject(err);
-    httpServer.once('error', onError);
-    httpServer.listen(port, host, () => {
-      httpServer.removeListener('error', onError);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error): void => reject(err);
+      httpServer.once('error', onError);
+      httpServer.listen(port, host, () => {
+        httpServer.removeListener('error', onError);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    diagnostics.close();
+    changeFeed.close();
+    await sessions.close();
+    if (ownsStore) store.close();
+    throw error;
+  }
 
   const address = httpServer.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
@@ -931,6 +1038,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       transports.clear();
       return new Promise<void>((resolve, reject) => {
         httpServer.close((err) => {
+          diagnostics.close();
           // Only close a store we own; an injected store is the caller's to close.
           if (ownsStore) {
             try {

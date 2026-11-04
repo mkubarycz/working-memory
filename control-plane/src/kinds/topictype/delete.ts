@@ -12,6 +12,14 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type Store, NotFoundError } from '../../store.js';
 import { asText, asError } from '../toolResult.js';
 import { TOPIC_TYPE_KIND } from './topictype.js';
+const wsTopictypeDeleteInputSchema = z.object({
+        id: z.string().min(1).describe('ID of the topic type to delete (or restore).'),
+        restore: z
+          .boolean()
+          .optional()
+          .describe('When true, undelete a previously soft-deleted topic type instead of deleting.'),
+      }).strict();
+
 
 /**
  * Register the `ws-topictype-delete` tool on an MCP session's server.
@@ -26,13 +34,7 @@ export function registerWsTopicTypeDelete(server: McpServer, store: Store): void
         'Soft-delete a TopicType by `id` (it drops out of ws-topictype-read). To undelete, call ' +
         'with `restore: true`. Unknown/already-deleted IDs (or already-live IDs on restore) ' +
         'are rejected. Returns { ok, id }.',
-      inputSchema: z.object({
-        id: z.string().min(1).describe('ID of the topic type to delete (or restore).'),
-        restore: z
-          .boolean()
-          .optional()
-          .describe('When true, undelete a previously soft-deleted topic type instead of deleting.'),
-      }).strict(),
+      inputSchema: wsTopictypeDeleteInputSchema,
     },
     async ({ id, restore }) => {
       // For restore, the target row is soft-deleted, so it must be located with

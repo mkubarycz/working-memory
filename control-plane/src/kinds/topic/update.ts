@@ -49,6 +49,23 @@ function validateParents(store: Store, id: string, parents: string[]): string | 
   };
   return hasCycle(id) ? `Cannot reparent "${id}": the parent change would create a cycle.` : null;
 }
+const wsTopicUpdateInputSchema = z.object({
+        id: z.string().min(1).describe('ID of the topic to update (required).'),
+        title: z.string().optional().describe('New title (≤120 chars).'),
+        body: z.string().optional().describe('New body.'),
+        status: z.string().optional().describe("New status: 'open' | 'closed'."),
+        topicType: z.string().optional().describe('New topic type.'),
+        parents: z.array(z.string()).optional().describe('Replacement parent topic IDs.'),
+        workstreams: z
+          .array(z.string())
+          .optional()
+          .describe('Replacement member workstream IDs.'),
+        focusedWorkstreams: z
+          .array(z.string())
+          .optional()
+          .describe('Replacement focused-in workstream IDs (subset of `workstreams`).'),
+      }).strict();
+
 
 /**
  * Register the `ws-topic-update` tool on an MCP session's server. Reads the
@@ -68,22 +85,7 @@ export function registerWsTopicUpdate(server: McpServer, store: Store): void {
         'the merged, re-validated spec. Unknown IDs and version conflicts are surfaced clearly. ' +
         'Returns the updated topic. To close a topic together with children/descendants, use the ' +
         'single atomic ws-topic-close-tree tool instead of issuing many update calls.',
-      inputSchema: z.object({
-        id: z.string().min(1).describe('ID of the topic to update (required).'),
-        title: z.string().optional().describe('New title (≤120 chars).'),
-        body: z.string().optional().describe('New body.'),
-        status: z.string().optional().describe("New status: 'open' | 'closed'."),
-        topicType: z.string().optional().describe('New topic type.'),
-        parents: z.array(z.string()).optional().describe('Replacement parent topic IDs.'),
-        workstreams: z
-          .array(z.string())
-          .optional()
-          .describe('Replacement member workstream IDs.'),
-        focusedWorkstreams: z
-          .array(z.string())
-          .optional()
-          .describe('Replacement focused-in workstream IDs (subset of `workstreams`).'),
-      }).strict(),
+      inputSchema: wsTopicUpdateInputSchema,
     },
     async ({ id, title, body, status, topicType, parents, workstreams, focusedWorkstreams }) => {
       const existing = store.getDocument({ id, kind: TOPIC_KIND });

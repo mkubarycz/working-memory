@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CreationOrderedDocument, DocumentEnvelope, Store } from '../../store.js';
 import { asError, asText } from '../toolResult.js';
-import { COMMAND_JOURNAL_KIND, type CommandJournalEvent, type CommandJournalSpec } from './index.js';
+import { COMMAND_JOURNAL_KIND, type CommandJournalEvent, type CommandJournalSpec } from './schema.js';
 import { CommandJournal } from './commandJournal.js';
 
 const DEFAULT_LIMIT = 50;
@@ -149,6 +149,14 @@ function summarize(document: DocumentEnvelope) {
     eventSummaries: eventSummaries(spec.events),
   };
 }
+const wsCommandjournalReadInputSchema = z.object({
+        id: z.string().min(1).optional().describe('Read one full journal for inspection.'),
+        limit: z.number().int().min(1).max(MAX_LIMIT).optional(),
+        cursor: z.string().min(1).optional(),
+        primaryScope: refFilter.optional(),
+        entityRef: entityRefFilter.optional(),
+      }).strict();
+
 
 export function registerWsCommandJournalRead(server: McpServer, store: Store): void {
   server.registerTool(
@@ -157,13 +165,7 @@ export function registerWsCommandJournalRead(server: McpServer, store: Store): v
       title: 'Command Journal: Read History',
       description:
         'Read one full CommandJournal by id, or page global history newest-first. List cursors are opaque and ordered by immutable createdAt then id; renderers may reverse loaded results for chronological display.',
-      inputSchema: z.object({
-        id: z.string().min(1).optional().describe('Read one full journal for inspection.'),
-        limit: z.number().int().min(1).max(MAX_LIMIT).optional(),
-        cursor: z.string().min(1).optional(),
-        primaryScope: refFilter.optional(),
-        entityRef: entityRefFilter.optional(),
-      }).strict(),
+      inputSchema: wsCommandjournalReadInputSchema,
     },
     async ({ id, limit, cursor, primaryScope, entityRef }) => {
       if (id !== undefined) {

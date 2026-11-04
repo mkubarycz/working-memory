@@ -4,16 +4,7 @@ import { ConflictError, NotFoundError, type Store } from '../../store.js';
 import { validateSpec } from '../registry.js';
 import { asError, asText } from '../toolResult.js';
 import { ContainerClaim, CONTAINER_CLAIM_KIND } from './containerClaim.js';
-
-export function registerWsContainerClaimUpdate(server: McpServer, store: Store): void {
-  server.registerTool(
-    'ws-containerclaim-update',
-    {
-      title: 'Container Claim: Update',
-      description:
-        'Update the authored intent of a live ContainerClaim by `id`. Pass only `title`, ' +
-        '`repository`, `sourceRevision`, runtime, MCP, application, or desktop metadata.',
-      inputSchema: z.object({
+const wsContainerclaimUpdateInputSchema = z.object({
         id: z.string().min(1).describe('ID of the live claim to update.'),
         title: z.string().optional().describe('Replacement human-readable title.'),
         repository: z.string().optional().describe('Replacement repository/codebase reference.'),
@@ -26,7 +17,18 @@ export function registerWsContainerClaimUpdate(server: McpServer, store: Store):
         mcp: z.record(z.string(), z.unknown()).nullable().optional(),
         application: z.record(z.string(), z.unknown()).nullable().optional(),
         desktop: z.record(z.string(), z.unknown()).nullable().optional(),
-      }).strict(),
+      }).strict();
+
+
+export function registerWsContainerClaimUpdate(server: McpServer, store: Store): void {
+  server.registerTool(
+    'ws-containerclaim-update',
+    {
+      title: 'Container Claim: Update',
+      description:
+        'Update the authored intent of a live ContainerClaim by `id`. Pass only `title`, ' +
+        '`repository`, `sourceRevision`, runtime, MCP, application, or desktop metadata.',
+      inputSchema: wsContainerclaimUpdateInputSchema,
     },
     async ({ id, ...input }) => {
       const existing = store.getDocument({ id, kind: CONTAINER_CLAIM_KIND });

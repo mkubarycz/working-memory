@@ -12,6 +12,20 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Store } from '../../store.js';
 import { asText } from '../toolResult.js';
 import { TopicType, TOPIC_TYPE_KIND } from './topictype.js';
+const wsTopictypeReadInputSchema = z.object({
+        id: z.string().min(1).optional().describe('Read ONE topic type by document ID.'),
+        query: z
+          .string()
+          .optional()
+          .describe('Case-insensitive substring filter over topic-type text (list mode only).'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Max topic types to return (list mode only).'),
+      }).strict();
+
 
 /**
  * Register the `ws-topictype-read` tool on an MCP session's server. Reads ONE
@@ -28,19 +42,7 @@ export function registerWsTopicTypeRead(server: McpServer, store: Store): void {
         '(newest-first), with an optional `query` case-insensitive substring filter and a `limit`. ' +
         'ALWAYS returns { count, topicTypes } — a by-ID read yields a 0-or-1 element list, so ' +
         'callers get one uniform shape.',
-      inputSchema: z.object({
-        id: z.string().min(1).optional().describe('Read ONE topic type by document ID.'),
-        query: z
-          .string()
-          .optional()
-          .describe('Case-insensitive substring filter over topic-type text (list mode only).'),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe('Max topic types to return (list mode only).'),
-      }).strict(),
+      inputSchema: wsTopictypeReadInputSchema,
     },
     async ({ id, query, limit }) => {
       // Single read: by ID. A foreign-kind ID maps to nothing (the

@@ -28,6 +28,7 @@ import * as os from 'node:os';
 import { readFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { closeMcpSession, sessionLifecycleFetch, staleSessionRejected } from './mcpLifecycle';
 import { parseDocumentChanges, type DocumentChanges } from './documentChanges';
 import { abortable } from './abort';
 import { isDocumentSearchResult, type DocumentSearchInput, type DocumentSearchResult } from './documentSearch';
@@ -958,21 +959,6 @@ function defaultResolveUrl(allowEnvOverride: boolean): string | null {
 }
 
 /**
- * Declines the SDK's standalone GET SSE notification stream (405) so it never
- * opens — we don't use notifications, and its socket is what rejected undici's
- * uncatchable `TypeError: terminated`. POST/DELETE fall through to real `fetch`.
- */
-const sseDecliningFetch = (url: string | URL, init?: RequestInit): Promise<Response> => {
-  const method = (init?.method ?? 'GET').toUpperCase();
-  if (method === 'GET') {
-    return Promise.resolve(
-      new Response(null, { status: 405, statusText: 'SSE notification stream disabled by client' }),
-    );
-  }
-  return fetch(url, init);
-};
-
-/**
  * Lazy-singleton MCP client for the control-plane. Connects on first use and
  * reuses the session across calls; a failed call drops the client so the next
  * one reconnects (handling daemon restarts / dropped connections).
@@ -1001,6 +987,7 @@ export class ControlPlaneClient {
   }
   private readonly resolveUrl: () => string | null;
   private readonly onError: (err: unknown) => void;
+  private readonly onCleanupError: (err: unknown) => void;
   private readonly getToken: (mcpUrl: string) => string | null;
   private readonly onUnauthorized: (mcpUrl: string, rejectedToken: string | null) => void;
   private authenticationError: string | null = null;
@@ -1010,11 +997,16 @@ export class ControlPlaneClient {
   /** In-flight connect, so concurrent calls share one handshake. */
   private connecting: Promise<Client | null> | null = null;
   private disposed = false;
+  private disposing: Promise<void> | null = null;
+  private readonly closing = new Set<Promise<void>>();
 
   constructor(options: ControlPlaneClientOptions = {}) {
     this.resolveUrl =
       options.resolveUrl ?? (() => defaultResolveUrl(options.allowEnvOverride ?? false));
     this.onError = options.onError ?? (() => {});
+    this.onCleanupError = options.onError ?? (error => {
+      console.error('[working-memory-client] Session cleanup failed:', messageOf(error));
+    });
     this.getToken = options.getToken ?? (() => {
       let token = process.env.WM_INSTANCE_TOKEN?.trim();
       if (process.env.WM_INSTANCE_TOKEN_FILE) {
@@ -1030,12 +1022,15 @@ export class ControlPlaneClient {
   async fetch(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
     const mcpUrl = this.resolveUrl();
     if (!mcpUrl) throw new Error('Select a Working Memory instance first.');
+    return this.fetchWithToken(mcpUrl, input, init, this.getToken(mcpUrl));
+  }
+
+  private async fetchWithToken(mcpUrl: string, input: Parameters<typeof fetch>[0], init: RequestInit, token: string | null): Promise<Response> {
     const url = input instanceof Request ? new URL(input.url) : new URL(input), origin = new URL(mcpUrl).origin;
     if (url.origin !== origin || url.username || url.password || url.hash) {
       throw new Error('Refusing to send instance credentials outside the selected instance.');
     }
     const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
-    const token = this.getToken(mcpUrl);
     if (token) headers.set('Authorization', `Bearer ${token}`);
     const response = await fetch(input, { ...init, headers, redirect: 'error' });
     if (response.status === 401) {
@@ -1047,8 +1042,8 @@ export class ControlPlaneClient {
     return response;
   }
 
-  /** List documents via `wm-document-read` (list mode), optionally filtered by `kind`. */
-  async listDocuments(kind?: string): Promise<ListDocumentsResult> {
+  /** List documents via `wm-document-read` (list mode), optionally filtered and bounded. */
+  async listDocuments(kind?: string, filter: { query?: string; limit?: number } = {}): Promise<ListDocumentsResult> {
     const client = await this.ensureConnected();
     if (!client) {
       return { available: false, documents: [], error: this.authenticationError ?? 'Control plane not running' };
@@ -1056,7 +1051,7 @@ export class ControlPlaneClient {
     try {
       const result = await this.retryStaleRead(client, connected => connected.callTool({
         name: 'wm-document-read',
-        arguments: kind ? { kind } : {},
+        arguments: { ...(kind ? { kind } : {}), ...filter },
       }));
       const parsed = parseToolText(result) as { documents?: unknown } | null;
       const documents = Array.isArray(parsed?.documents)
@@ -1296,10 +1291,7 @@ export class ControlPlaneClient {
     try { return await read(client); }
     catch (error) {
       signal?.throwIfAborted();
-      const stale = this.staleConnections.has(client) || error instanceof StreamableHTTPError && (
-        error.code === 404 && error.message.includes('Session not found or expired.')
-        || error.code === 400 && error.message.includes('"message":"Bad Request: no valid session ID"')
-      );
+      const stale = this.staleConnections.has(client) || error instanceof StreamableHTTPError && staleSessionRejected(error);
       if (!stale || this.disposed) throw error;
       this.staleConnections.add(client);
       // Another concurrent read may already have replaced this expired connection.
@@ -2203,25 +2195,18 @@ export class ControlPlaneClient {
   }
 
   /** Close the client + transport and release the singleton. */
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    if (this.disposing) return this.disposing;
     this.disposed = true;
     this.lifetime.abort();
     const client = this.client;
     const transport = this.transport;
     this.client = null;
     this.transport = null;
-    this.connecting = null;
-    // Abort the transport's in-flight streams SYNCHRONOUSLY (transport.close()
-    // aborts before its first await) so a control-plane kill that follows can't
-    // RST an open SSE/HTTP stream — the source of the unhandled undici
-    // "TypeError: terminated". An aborted stream surfaces as an intentional
-    // AbortError the SDK does not try to reconnect.
-    try {
-      void transport?.close();
-    } catch {
-      // ignore
-    }
-    await closeQuietly(client, transport);
+    this.disposing = Promise.all([
+      this.connecting, this.closeConnection(client, transport), ...this.closing,
+    ]).then(() => {});
+    return this.disposing;
   }
 
   /**
@@ -2254,15 +2239,13 @@ export class ControlPlaneClient {
     const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
     let transport: StreamableHTTPClientTransport;
     try {
-      // Pass a fetch that 405s the standalone GET SSE stream so it never opens —
-      // eliminating the undici "TypeError: terminated" unhandled rejection on
-      // daemon restart/shutdown. See {@link sseDecliningFetch}.
+      const token = this.getToken(url);
       transport = new StreamableHTTPClientTransport(new URL(url), {
-        fetch: (input, init) => (init?.method ?? 'GET').toUpperCase() === 'GET'
-          ? sseDecliningFetch(input, init)
-          : this.fetch(input, init),
+        fetch: sessionLifecycleFetch((input, init) => this.fetchWithToken(url, input, init ?? {}, token), this.lifetime.signal),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof InstanceAuthenticationError) this.authenticationError = error.message;
+      this.onError(error);
       return null;
     }
     // Route SDK transport/protocol errors to the injected sink. The SDK keeps a
@@ -2279,11 +2262,11 @@ export class ControlPlaneClient {
     } catch (error) {
       if (error instanceof InstanceAuthenticationError) this.authenticationError = error.message;
       this.onError(error);
-      await closeQuietly(client, transport);
+      await this.closeConnection(client, transport);
       return null;
     }
     if (this.disposed) {
-      await closeQuietly(client, transport);
+      await this.closeConnection(client, transport);
       return null;
     }
     this.client = client;
@@ -2297,23 +2280,13 @@ export class ControlPlaneClient {
     const transport = this.transport;
     this.client = null;
     this.transport = null;
-    void closeQuietly(client, transport);
+    void this.closeConnection(client, transport);
   }
-}
 
-/** Close a client + transport, swallowing any teardown errors. */
-async function closeQuietly(
-  client: Client | null,
-  transport: StreamableHTTPClientTransport | null,
-): Promise<void> {
-  try {
-    await client?.close();
-  } catch {
-    // ignore
-  }
-  try {
-    await transport?.close();
-  } catch {
-    // ignore
+  private closeConnection(client: Client | null, transport: StreamableHTTPClientTransport | null): Promise<void> {
+    const completion = closeMcpSession(client, transport, this.onCleanupError);
+    this.closing.add(completion);
+    void completion.finally(() => { this.closing.delete(completion); });
+    return completion;
   }
 }

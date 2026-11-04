@@ -58,6 +58,8 @@ export interface CreateDocumentInput {
 export interface ListDocumentsInput {
   kind?: string;
   includeDeleted?: boolean;
+  limit?: number;
+  offset?: number;
 }
 
 export interface CreationOrderedDocument {
@@ -610,16 +612,16 @@ export function openStore(dbFilePath: string): Store {
             .prepare(
               `SELECT * FROM resources
                WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'} AND kind = ?
-               ORDER BY updated_at DESC, rowid DESC`,
+               ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?`,
             )
-            .all(input.kind)
+            .all(input.kind, input.limit ?? -1, input.offset ?? 0)
         : db
             .prepare(
               `SELECT * FROM resources
                WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'}
-               ORDER BY updated_at DESC, rowid DESC`,
+               ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?`,
             )
-            .all()
+            .all(input.limit ?? -1, input.offset ?? 0)
     ) as unknown as ResourceRow[];
     return rows.map(rowToEnvelope);
   }
@@ -634,16 +636,16 @@ export function openStore(dbFilePath: string): Store {
             .prepare(
               `SELECT *, rowid AS creation_sequence FROM resources
                WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'} AND kind = ?
-               ORDER BY created_at DESC, rowid DESC`,
+               ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
             )
-            .all(input.kind)
+            .all(input.kind, input.limit ?? -1, input.offset ?? 0)
         : db
             .prepare(
               `SELECT *, rowid AS creation_sequence FROM resources
                WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'}
-               ORDER BY created_at DESC, rowid DESC`,
+               ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
             )
-            .all()
+            .all(input.limit ?? -1, input.offset ?? 0)
     ) as unknown as CreationOrderedResourceRow[];
     return rows.map((row) => ({
       document: rowToEnvelope(row),

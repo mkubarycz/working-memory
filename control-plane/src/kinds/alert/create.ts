@@ -13,6 +13,19 @@ import type { Store } from '../../store.js';
 import { validateSpec, defaultStatus } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Alert, ALERT_KIND } from './alert.js';
+const wsAlertCreateInputSchema = z.object({
+        title: z.string().optional().describe('Short friendly title (default empty).'),
+        description: z.string().describe('The alert body/message (required).'),
+        recommended_action: z.string().optional().describe('Suggested next step (default empty).'),
+        status: z
+          .enum(['alert', 'informational', 'closed'])
+          .optional()
+          .describe("Lifecycle status: 'alert' | 'informational' | 'closed' (default 'alert')."),
+        dedupe_key: z.string().optional().describe('Optional recurrence/dedupe key.'),
+        created_by: z.string().optional().describe("Who raised it (default 'system')."),
+        topics: z.array(z.string()).optional().describe('Topic document IDs the alert references.'),
+      }).strict();
+
 
 /**
  * Register the `ws-alert-create` tool on an MCP session's server. The tool
@@ -33,18 +46,7 @@ export function registerWsAlertCreate(server: McpServer, store: Store): void {
         "'closed', default 'alert'), `dedupe_key` (recurrence key), `created_by` (default " +
         "'system'), and `topics` (topic document ID references). The spec is validated against the Alert " +
         'kind. Returns the created alert.',
-      inputSchema: z.object({
-        title: z.string().optional().describe('Short friendly title (default empty).'),
-        description: z.string().describe('The alert body/message (required).'),
-        recommended_action: z.string().optional().describe('Suggested next step (default empty).'),
-        status: z
-          .enum(['alert', 'informational', 'closed'])
-          .optional()
-          .describe("Lifecycle status: 'alert' | 'informational' | 'closed' (default 'alert')."),
-        dedupe_key: z.string().optional().describe('Optional recurrence/dedupe key.'),
-        created_by: z.string().optional().describe("Who raised it (default 'system')."),
-        topics: z.array(z.string()).optional().describe('Topic document IDs the alert references.'),
-      }).strict(),
+      inputSchema: wsAlertCreateInputSchema,
     },
     async ({ title, description, recommended_action, status, dedupe_key, created_by, topics }) => {
       const specInput: Record<string, unknown> = { description };

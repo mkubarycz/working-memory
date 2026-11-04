@@ -13,6 +13,14 @@ import type { Store } from '../../store.js';
 import { validateSpec, defaultStatus } from '../registry.js';
 import { asText, asError } from '../toolResult.js';
 import { Config, CONFIG_KIND } from './config.js';
+const wsConfigCreateInputSchema = z.object({
+        name: z.string().optional().describe('Human-readable label (optional).'),
+        data: z
+          .record(z.string(), z.unknown())
+          .describe('The key-value pairs (required, may be empty). All values MUST be strings.'),
+        status: z.string().optional().describe('Authored free-form status (optional).'),
+      }).strict();
+
 
 /**
  * Register the `ws-config-create` tool on an MCP session's server. The tool
@@ -31,13 +39,7 @@ export function registerWsConfigCreate(server: McpServer, store: Store): void {
         '(human label), the required `data` (an object of string→string pairs; may be empty), ' +
         'and an optional `status` (authored free-form). Every `data` value MUST be a string. The ' +
         'spec is validated against the Config kind. Returns the created config.',
-      inputSchema: z.object({
-        name: z.string().optional().describe('Human-readable label (optional).'),
-        data: z
-          .record(z.string(), z.unknown())
-          .describe('The key-value pairs (required, may be empty). All values MUST be strings.'),
-        status: z.string().optional().describe('Authored free-form status (optional).'),
-      }).strict(),
+      inputSchema: wsConfigCreateInputSchema,
     },
     async ({ name, data, status }) => {
       const specInput: Record<string, unknown> = { data };

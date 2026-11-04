@@ -8,6 +8,7 @@ import { sessionPolicySchema } from '../../../control-plane/src/sessionPolicy';
 export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
   identity: DesktopInstanceIdentity;
   onSessionChanged: (mcpUrl: string, authenticated: boolean) => Promise<void>;
+  beforeSessionChanged?: (mcpUrl: string) => Promise<void>;
 }): void {
   let policySave: Promise<unknown> = Promise.resolve();
   const context = (event: Parameters<typeof assertHostTaskSender>[0]) => {
@@ -47,6 +48,8 @@ export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
       ctx.ensureCurrent();
       if (approved.response !== 1) return;
     }
+    await deps.beforeSessionChanged?.(ctx.environment.mcpUrl);
+    ctx.ensureCurrent();
     const session = await deps.identity.signIn(ctx.environment.mcpUrl, input.password, input.setup, input.passwordHint, input.rememberPassword);
     ctx.ensureCurrent();
     deps.vault.setSession(hostTaskOrigin(ctx.environment.mcpUrl), session.token, session.expiresAt);
@@ -54,6 +57,8 @@ export function registerInstanceIdentityIpc(deps: HostTaskIpcDependencies & {
   });
   deps.ipc.handle('instance:sign-out', async event => {
     const ctx = context(event);
+    await deps.beforeSessionChanged?.(ctx.environment.mcpUrl);
+    ctx.ensureCurrent();
     await deps.identity.signOut(ctx.environment.mcpUrl);
     ctx.ensureCurrent();
     await deps.onSessionChanged(ctx.environment.mcpUrl, false);

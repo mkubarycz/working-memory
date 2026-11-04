@@ -1,5 +1,5 @@
 import type { DocumentEnvelope } from '../../store.js';
-import type { CommandJournalSpec } from './index.js';
+import type { CommandJournalSpec } from './schema.js';
 
 export interface ICommandJournal extends CommandJournalSpec {
   id: string;
