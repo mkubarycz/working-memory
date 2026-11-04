@@ -1022,12 +1022,15 @@ export class ControlPlaneClient {
   async fetch(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
     const mcpUrl = this.resolveUrl();
     if (!mcpUrl) throw new Error('Select a Working Memory instance first.');
+    return this.fetchWithToken(mcpUrl, input, init, this.getToken(mcpUrl));
+  }
+
+  private async fetchWithToken(mcpUrl: string, input: Parameters<typeof fetch>[0], init: RequestInit, token: string | null): Promise<Response> {
     const url = input instanceof Request ? new URL(input.url) : new URL(input), origin = new URL(mcpUrl).origin;
     if (url.origin !== origin || url.username || url.password || url.hash) {
       throw new Error('Refusing to send instance credentials outside the selected instance.');
     }
     const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
-    const token = this.getToken(mcpUrl);
     if (token) headers.set('Authorization', `Bearer ${token}`);
     const response = await fetch(input, { ...init, headers, redirect: 'error' });
     if (response.status === 401) {
@@ -2236,10 +2239,13 @@ export class ControlPlaneClient {
     const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
     let transport: StreamableHTTPClientTransport;
     try {
+      const token = this.getToken(url);
       transport = new StreamableHTTPClientTransport(new URL(url), {
-        fetch: sessionLifecycleFetch((input, init) => this.fetch(input, init), this.lifetime.signal),
+        fetch: sessionLifecycleFetch((input, init) => this.fetchWithToken(url, input, init ?? {}, token), this.lifetime.signal),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof InstanceAuthenticationError) this.authenticationError = error.message;
+      this.onError(error);
       return null;
     }
     // Route SDK transport/protocol errors to the injected sink. The SDK keeps a

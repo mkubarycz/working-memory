@@ -4,6 +4,8 @@ import { loadKinds } from '../control-plane/src/kinds/loader';
 import { ControlPlaneClient, startServer, fetch as ownerFetch, StreamableHTTPClientTransport } from './authenticatedFixture';
 import { closeMcpSession, sessionLifecycleFetch, SESSION_TERMINATION_TIMEOUT_MS, staleSessionRejected } from '../shared/mcpLifecycle';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { InstanceIdentity } from '../control-plane/src/instanceIdentity';
+import { openStore } from '../control-plane/src/store';
 
 const cleanup: Array<() => Promise<void>> = [];
 beforeAll(async () => { await loadKinds(); });
@@ -86,6 +88,26 @@ it('only recognizes explicit pre-dispatch stale-session responses', () => {
   expect(staleSessionRejected(new StreamableHTTPError(404, 'Document not found'))).toBe(false);
   expect(staleSessionRejected(new StreamableHTTPError(503, 'Unavailable'))).toBe(false);
   expect(staleSessionRejected(new TypeError('fetch failed'))).toBe(false);
+});
+
+it('terminates with the original session identity after the credential source changes', async () => {
+  const store = openStore(':memory:');
+  const identity = new InstanceIdentity(store.db);
+  const password = 'test-only instance owner password';
+  let token = (await identity.initialize(password)).token;
+  const server = await startServer({ port: 0, store });
+  cleanup.push(async () => { await server.close(); store.close(); });
+  const errors: unknown[] = [];
+  const client = new ControlPlaneClient({
+    resolveUrl: () => `${server.url}/mcp`, getToken: () => token, onError: error => errors.push(error),
+  });
+  cleanup.push(() => client.dispose());
+  expect((await client.listDocuments()).available).toBe(true);
+  token = (await identity.login({ password })).token;
+  await client.dispose();
+  const snapshot = await (await ownerFetch(`${server.url}/identity/v1/sessions`)).json();
+  expect(snapshot.active).toHaveLength(0);
+  expect(errors).toHaveLength(0);
 });
 
 it.each(['quota', 'heap'])('keeps established requests and health responsive during %s rejection bursts', async reason => {

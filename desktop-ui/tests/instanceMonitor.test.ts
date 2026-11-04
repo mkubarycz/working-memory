@@ -10,10 +10,13 @@ import { openStore } from '../../control-plane/src/store';
 import { InstanceIdentity } from '../../control-plane/src/instanceIdentity';
 import { loadKinds } from '../../control-plane/src/kinds/loader';
 import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { DesktopInstanceIdentity } from '../src/main/instanceIdentity';
+import { HostTaskCredentialVault } from '../src/main/hostTaskBroker';
+import { sessionSnapshotSchema } from '../../control-plane/src/sessionPolicy';
 
 const cleanup: Array<() => Promise<void> | void> = [];
 beforeAll(() => loadKinds());
-afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice(0).reverse()) await close(); });
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); for (const close of cleanup.splice(0).reverse()) await close(); });
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'wm-monitor-test-'));
@@ -50,9 +53,9 @@ it('requires three failures, persists one outage across app restarts, and retrie
   f.deliver.mockRejectedValueOnce(new Error('Owner sign-in required'));
   vi.spyOn(console, 'error').mockImplementation(() => {});
   await restarted.tick();
-  expect(restarted.incidents(url)[0]).toMatchObject({ kind: 'restart', topicId: null, deliveryError: 'Owner sign-in required' });
+  await vi.waitFor(() => expect(restarted.incidents(url)[0]).toMatchObject({ kind: 'restart', topicId: null, deliveryError: 'Owner sign-in required' }));
   await restarted.tick();
-  expect(restarted.incidents(url)[0].topicId).not.toBeNull();
+  await vi.waitFor(() => expect(restarted.incidents(url)[0].topicId).not.toBeNull());
   expect(f.deliver).toHaveBeenCalledTimes(2);
   expect(JSON.parse(readFileSync(f.file, 'utf8')).incidents).toHaveLength(1);
 });
@@ -116,12 +119,20 @@ it('creates one open Inbox Bug topic and deduplicates an ambiguous successful wr
   const owner = await new InstanceIdentity(store.db).initialize('private inbox test password');
   const server = await startServer({ port: 0, store });
   const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp`, getToken: () => owner.token });
+  const vault = new HostTaskCredentialVault({
+    isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn(),
+  }, process.platform, '/not-used');
+  vault.setSession(server.url, owner.token, owner.expiresAt);
+  const identity = new DesktopInstanceIdentity(vault, async () => '', () => false);
   cleanup.push(() => store.close(), () => server.close(), () => client.dispose());
   const bug = await client.topicTypeCreate({ label: 'Bug', icon: 'bug', description: 'Crash reports' });
   const incident: InstanceIncident = { id: randomUUID(), environment: `${server.url}/mcp`,
     at: Date.now(), kind: 'outage', evidence: 'Three probes failed.', topicId: null, deliveryError: null };
-  const id = await deliverIncident(client, incident, () => true);
-  expect(await deliverIncident(client, incident, () => true)).toBe(id);
+  const list = vi.spyOn(store, 'listDocuments').mockImplementation(() => { throw new Error('Unbounded document materialization'); });
+  const id = await deliverIncident(identity, incident, () => true);
+  expect(await deliverIncident(identity, incident, () => true)).toBe(id);
+  expect(list).not.toHaveBeenCalled();
+  list.mockRestore();
   expect(await client.wsRead()).toEqual([expect.objectContaining({ title: 'Inbox', status: 'progress' })]);
   expect(await client.topicRead()).toEqual([expect.objectContaining({ id, topicType: bug.id, status: 'open' })]);
   const topics = await client.listDocuments('Topic');
@@ -129,8 +140,50 @@ it('creates one open Inbox Bug topic and deduplicates an ambiguous successful wr
   expect(topics.documents[0].spec.body).toContain('Send feedback when ready');
   const [inbox] = await client.wsRead();
   await client.wsUpdate({ id: inbox.id, status: 'closed', closure: 'User closed Inbox' });
-  await expect(deliverIncident(client, { ...incident, id: randomUUID() }, () => true)).rejects.toThrow('Inbox is closed');
+  await expect(deliverIncident(identity, { ...incident, id: randomUUID() }, () => true)).rejects.toThrow('Inbox is closed');
   expect((await client.wsRead())[0].status).toBe('closed');
-  await expect(deliverIncident(client, { ...incident, id: randomUUID() }, () => false)).rejects.toThrow('Selected environment changed');
+  await expect(deliverIncident(identity, { ...incident, id: randomUUID() }, () => false)).rejects.toThrow('Selected environment changed');
   expect(await client.topicRead()).toHaveLength(1);
+});
+
+it('rejects pre-upgrade probe results even if the upgrade resumes before the probe completes', async () => {
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  await f.monitor.tick();
+  let release!: (probe: MonitorProbe) => void;
+  f.probe.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const pending = f.monitor.tick();
+  const resume = f.monitor.suspend(url);
+  resume();
+  release({ healthy: true, bootId: 'old-boot', diagnostics: null, evidence: '' });
+  await pending;
+  f.result({ bootId: randomUUID() });
+  await f.monitor.tick();
+  expect(f.monitor.incidents(url)).toHaveLength(0);
+});
+
+it('continues probing and saves manual reports while delivery stalls, with a bounded delivery deadline', async () => {
+  vi.useFakeTimers();
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  f.result({ healthy: false });
+  await f.monitor.tick(); await f.monitor.tick(); await f.monitor.tick();
+  f.result({ healthy: true });
+  f.deliver.mockImplementationOnce(() => new Promise(() => {}));
+  await f.monitor.tick();
+  const calls = f.probe.mock.calls.length;
+  await f.monitor.tick();
+  expect(f.probe).toHaveBeenCalledTimes(calls + 1);
+  const snapshot = sessionSnapshotSchema.parse({
+    startedAt: 123, policy: { idleMinutes: 60, maxPerClient: 100, maxTotal: 500, handshakesPerMinute: 1000, retentionDays: 10 },
+    memory: { heapUsedBytes: 600, heapLimitBytes: 1000, admissionThresholdBytes: 600, admissionBlocked: true },
+    active: [], events: [], nextCursor: null,
+  });
+  const save = vi.fn(async () => randomUUID());
+  expect(await f.monitor.recordMemoryReport({ mcpUrl: url }, snapshot, save)).toBeTruthy();
+  expect(save).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(f.monitor.incidents(url)[0].deliveryError).toContain('10-second deadline');
+  await f.monitor.tick();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.monitor.incidents(url)[0].topicId).not.toBeNull();
 });

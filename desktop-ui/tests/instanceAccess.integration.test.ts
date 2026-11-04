@@ -33,14 +33,37 @@ async function fixture() {
   const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
   const dialog = { showMessageBox: vi.fn().mockResolvedValue({ response: 0 }), showOpenDialog: vi.fn(), showSaveDialog: vi.fn() };
   const changed = vi.fn().mockResolvedValue(undefined);
+  const before = vi.fn<(mcpUrl: string) => Promise<void>>().mockResolvedValue(undefined);
   registerInstanceIdentityIpc({
     ipc: { handle: (channel, handler) => { handlers.set(channel, handler); } },
     dialog, vault, identity, getWindow: () => window, getEnvironment: () => environment,
-    rendererUrl, platform: process.platform, onSessionChanged: changed,
+    rendererUrl, platform: process.platform, onSessionChanged: changed, beforeSessionChanged: before,
   } as unknown as Parameters<typeof registerInstanceIdentityIpc>[0]);
   const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!(event, ...args);
-  return { store, server, vault, identity, unauthorized, environment, event, handlers, dialog, changed, call };
+  return { store, server, vault, identity, unauthorized, environment, event, handlers, dialog, changed, before, call };
 }
+
+it('closes the old MCP session before sign-in replacement and before logout revokes its credential', async () => {
+  const f = await fixture();
+  f.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+  const password = 'my private owner password';
+  await f.call('instance:sign-in', { password, setup: true });
+  let client = new ControlPlaneClient({
+    resolveUrl: () => f.environment.mcpUrl, getToken: () => f.vault.session(f.server.url),
+  });
+  cleanup.push(() => client.dispose());
+  f.before.mockImplementation(() => client.dispose());
+  expect((await client.listDocuments()).available).toBe(true);
+  await f.call('instance:sign-in', { password, setup: false });
+  expect(sessionSnapshotSchema.parse(await f.call('instance:sessions')).active).toHaveLength(0);
+  client = new ControlPlaneClient({
+    resolveUrl: () => f.environment.mcpUrl, getToken: () => f.vault.session(f.server.url),
+  });
+  expect((await client.listDocuments()).available).toBe(true);
+  await f.call('instance:sign-out');
+  expect(f.store.db.prepare("SELECT COUNT(*) AS count FROM mcp_session_events WHERE type='closed'").get()?.count).toBe(2);
+  expect(f.vault.session(f.server.url)).toBeNull();
+});
 
 it('reads and saves owner session diagnostics through trusted, environment-bound IPC', async () => {
   const f = await fixture();

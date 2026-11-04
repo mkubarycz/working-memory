@@ -65,6 +65,32 @@ it('saves an idempotent Inbox report without new MCP admission, then collects ga
   expect(f.collect).toHaveBeenCalledTimes(1);
 });
 
+it('delivers automatic incidents at the heap cutoff using only a label/ID lookup, not all topic bodies', async () => {
+  const f = await fixture();
+  const unrelated = f.store.createDocument({
+    kind: 'Topic', spec: validateSpec('Topic', {
+      title: 'Large unrelated document', body: 'private unrelated body '.repeat(10000),
+      topicType: f.store.listDocuments({ kind: 'TopicType' })[0].metadata.id,
+    }), status: defaultStatus('Topic'),
+  });
+  const list = vi.spyOn(f.store, 'listDocuments').mockImplementation(() => { throw new Error('Unbounded list'); });
+  const get = vi.spyOn(f.store, 'getDocument');
+  const incident = { id: randomUUID(), at: Date.now(), environment: `${f.server.url}/mcp`,
+    kind: 'memory_pressure', evidence: 'Synthetic heap safety cutoff.' };
+  const response = await f.request('/identity/v1/incidents', incident);
+  expect(response.status).toBe(200);
+  const { topicId } = await response.json();
+  expect(await (await f.request('/identity/v1/incidents', incident)).json()).toEqual({ topicId });
+  expect(list).not.toHaveBeenCalled();
+  expect(get.mock.calls.some(([input]) => input.id === unrelated.metadata.id)).toBe(false);
+  expect(f.collect).not.toHaveBeenCalled();
+  expect((await f.request('/identity/v1/incidents', incident, f.issued.token)).status).toBe(401);
+  expect((await f.request('/identity/v1/incidents', incident, f.owner.token, { Origin: 'https://untrusted.invalid' })).status).toBe(400);
+  expect((await f.request('/identity/v1/incidents?extra=1', incident)).status).toBe(400);
+  expect((await f.request('/identity/v1/incidents')).status).toBe(405);
+  expect((await f.request('/identity/v1/incidents', { ...incident, evidence: 'x'.repeat(20001) })).status).toBe(400);
+});
+
 it('requires trusted owner confirmation, a saved report and the same server start time', async () => {
   const f = await fixture(), path = '/identity/v1/sessions/report';
   expect((await f.request(path, f.report, '')).status).toBe(401);

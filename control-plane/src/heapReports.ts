@@ -2,10 +2,11 @@ import type { Store } from './store.js';
 import { defaultStatus, validateSpec } from './kinds/registry.js';
 import { validateTopicReferences } from './kinds/topic/references.js';
 import type { SessionSnapshot } from './sessionPolicy.js';
+import type { InstanceIncident } from './diagnosticContract.js';
 
 export class HeapReportError extends Error {}
 
-export function createHeapReport(store: Store, snapshot: SessionSnapshot, incidentId: string): string {
+function saveIncidentReport(store: Store, incidentId: string, title: string, body: string): string {
   const existing = store.db.prepare(`SELECT id FROM resources WHERE kind='Topic' AND deleted_at IS NULL
     AND json_extract(labels, '$."wm.incident"')=? LIMIT 1`).get(incidentId);
   if (existing) return String(existing.id);
@@ -24,6 +25,26 @@ export function createHeapReport(store: Store, snapshot: SessionSnapshot, incide
   const inbox = current ?? store.createDocument({
     kind: 'Workstream', spec: validateSpec('Workstream', { title: 'Inbox' }), status: defaultStatus('Workstream'),
   });
+  const spec = validateSpec('Topic', { title, body, topicType: type, workstreams: [inbox.metadata.id] });
+  validateTopicReferences(store, spec);
+  return store.createDocument({ kind: 'Topic', labels: { 'wm.incident': incidentId },
+    spec, status: defaultStatus('Topic') }).metadata.id;
+}
+
+export function createInstanceIncidentReport(
+  store: Store,
+  incident: Pick<InstanceIncident, 'id' | 'at' | 'environment' | 'kind' | 'evidence'>,
+): string {
+  const body = `# Automatically detected instance incident\n\nIncident ID: ${incident.id}\n\n`
+    + `Detected: ${new Date(incident.at).toISOString()}\n\nEnvironment: ${incident.environment}\n\nClassification: ${incident.kind}\n\n`
+    + `## Sanitized evidence\n\n${incident.evidence}\n\n`
+    + 'This report records symptoms, not a proven root cause. No credentials, document content, request bodies or raw logs were collected. '
+    + 'Review in Inbox; use Send feedback when ready. No topic lifecycle decisions were made automatically.';
+  return saveIncidentReport(store, incident.id,
+    `Instance ${incident.kind.replaceAll('_', ' ')}: ${new Date(incident.at).toISOString()}`, body);
+}
+
+export function createHeapReport(store: Store, snapshot: SessionSnapshot, incidentId: string): string {
   const memory = snapshot.memory;
   const body = `# Heap pressure diagnostic report\n\nIncident ID: ${incidentId}\n\n`
     + `Captured before user-confirmed garbage collection. Server started: ${new Date(snapshot.startedAt).toISOString()}.\n\n`
@@ -37,9 +58,5 @@ export function createHeapReport(store: Store, snapshot: SessionSnapshot, incide
     + 'This report does not assert that collection succeeded. See the Sessions event log for its outcome.\n\n'
     + 'No credentials, document contents, request bodies or raw heap snapshots were collected. '
     + 'Review in Inbox and use Send feedback manually when ready.';
-  const spec = validateSpec('Topic', { title: `Heap pressure: ${new Date().toISOString()}`, body,
-    topicType: type, workstreams: [inbox.metadata.id] });
-  validateTopicReferences(store, spec);
-  return store.createDocument({ kind: 'Topic', labels: { 'wm.incident': incidentId },
-    spec, status: defaultStatus('Topic') }).metadata.id;
+  return saveIncidentReport(store, incidentId, `Heap pressure: ${new Date().toISOString()}`, body);
 }

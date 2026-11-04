@@ -69,6 +69,7 @@ export class HttpDiagnostics {
 
   track(req: IncomingMessage, res: ServerResponse, caller: () => string): void {
     const start = this.clock(), requestId = randomUUID(), route = diagnosticRoute(req.url ?? '/');
+    const identity = caller();
     res.setHeader('X-Request-Id', requestId);
     this.activeRequests += 1;
     let done = false;
@@ -78,7 +79,7 @@ export class HttpDiagnostics {
       this.activeRequests -= 1;
       const duration = Math.max(0, this.clock() - start), status = res.writableFinished ? res.statusCode : 499;
       try {
-        const at = Math.floor(start / 60000) * 60000, identity = caller();
+        const at = Math.floor(start / 60000) * 60000;
         const inserted = this.db.prepare('INSERT OR IGNORE INTO instance_http_minutes VALUES(?,?,?,?,1,?,?)')
           .run(at, identity, route, status, duration, duration);
         if (inserted.changes) {

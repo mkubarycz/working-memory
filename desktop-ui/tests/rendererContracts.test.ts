@@ -5,6 +5,13 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = resolve(import.meta.dirname, '../..');
 
 describe('desktop tree icon contract', () => {
+  it('does not replace unfinished settings text with normalized autosave receipts', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const receipt = app.slice(app.indexOf('onSaved: (_key, config)'), app.indexOf('function queueSettingsSave'));
+    expect(receipt).not.toContain('loadConfig(config)');
+    expect(receipt).not.toMatch(/humanName\s*=/);
+    expect(receipt).toContain('{ ...profile, hasApiKey: saved.hasApiKey, apiKey:');
+  });
   it('restores chat rail visibility before persisting changes and starts collapsed without a preference', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
     expect(app).toContain('let chatRailCollapsed = $state(true)');

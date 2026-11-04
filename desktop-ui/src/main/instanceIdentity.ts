@@ -7,7 +7,7 @@ import { instancePermissionsSchema } from '../../../control-plane/src/instancePe
 import type { InstanceAccessAction } from '../shared/instanceIdentity';
 import { heapCollectionSchema, heapCollectionRequestSchema, heapReportRequestSchema, sessionPolicySchema, sessionSnapshotSchema,
   type HeapCollection, type SessionPolicy, type SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
-import { diagnosticsSchema, type InstanceDiagnostics } from '../../../control-plane/src/diagnosticContract';
+import { diagnosticsSchema, incidentReportRequestSchema, type InstanceDiagnostics, type InstanceIncident } from '../../../control-plane/src/diagnosticContract';
 
 const statusSchema = z.object({ passwordConfigured: z.boolean(), passwordHint: z.string().max(1000),
   authenticated: z.boolean(), scope: z.literal('instance') });
@@ -66,7 +66,7 @@ export class DesktopInstanceIdentity {
       if (path.startsWith('/identity/v1/sessions') && response.status === 404) {
         throw new Error('This instance does not support session diagnostics yet. Upgrade its backend, then refresh.');
       }
-      if (path === '/identity/v1/sessions/report' || path === '/identity/v1/sessions/gc') {
+      if (path === '/identity/v1/sessions/report' || path === '/identity/v1/sessions/gc' || path === '/identity/v1/incidents') {
         const detail = z.object({ error: z.string().min(1).max(1000) }).safeParse(await response.json());
         throw new InstanceHttpError(response.status, detail.success ? detail.data.error : `Heap recovery failed (HTTP ${response.status}).`);
       }
@@ -216,8 +216,18 @@ export class DesktopInstanceIdentity {
       if (error instanceof InstanceHttpError && error.status === 404) {
         throw new Error('This backend does not support Diagnostics. Upgrade it to 1.4.1 or newer.');
       }
+
       throw error;
     }
+  }
+
+  async saveIncidentReport(mcpUrl: string, incident: InstanceIncident, signal?: AbortSignal): Promise<string> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to save an incident report.');
+    const { id, environment, at, kind, evidence } = incident;
+    const result = await this.request(mcpUrl, '/identity/v1/incidents',
+      incidentReportRequestSchema.parse({ id, environment, at, kind, evidence }), token, signal);
+    return z.object({ topicId: z.string().uuid() }).parse(result).topicId;
   }
 
   async collectHeap(mcpUrl: string, expectedStartedAt: number, reportTopicId: string): Promise<{ collection: HeapCollection; snapshot: SessionSnapshot }> {

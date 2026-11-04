@@ -51,16 +51,17 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
               throw new Error('Every model profile needs a name and model.');
             }
             state.stored = structuredClone(input);
-            return { ...input, profiles: input.profiles.map(({ apiKey, ...profile }) => ({
-              ...profile, hasApiKey: Boolean(apiKey || profile.hasApiKey),
+            return { ...input, humanName: input.humanName.trim() || 'Flesh Bag', profiles: input.profiles.map(({ apiKey, ...profile }) => ({
+              ...profile, name: profile.name.trim(), hasApiKey: Boolean(apiKey || profile.hasApiKey),
             })) };
           } finally { state.saving = false; state.inFlight--; }
         },
         onPending() { state.settingsError = false; state.settingsStatus = 'Waiting to save...'; },
         onSaving() { state.settingsError = false; state.settingsStatus = 'Saving...'; },
         onSaved(_key, result) {
-          state.profiles = result.profiles.map(profile => ({ ...profile, apiKey: '' }));
-          state.routing = { ...result.routing }; state.humanName = result.humanName;
+          state.profiles = state.profiles.map(profile => ({
+            ...profile, hasApiKey: result.profiles.find(saved => saved.id === profile.id).hasApiKey, apiKey: '',
+          }));
           state.settingsStatus = 'Saved automatically.';
         },
         onError(_key, error) { state.settingsError = true; state.settingsStatus = 'Not saved: ' + error.message; },
@@ -177,10 +178,15 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           const edit = (selector, value) => evaluate("(() => { const input = " + selector + "; input.value = "
             + JSON.stringify(value) + "; input.dispatchEvent(new Event('input', { bubbles: true })); })()");
           const button = text => "Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === " + JSON.stringify(text) + ")";
+          await edit(field(1, 0), 'QA ');
+          await wait("document.querySelector('.settings-actions').textContent === 'Saved automatically.'");
+          assert.equal(await evaluate(field(1, 0) + '.value'), 'QA ');
+          await edit(field(1, 0), 'QA Human');
+          await wait("document.querySelector('.settings-actions').textContent === 'Saved automatically.'");
           for (const name of ['Foundry A', 'Foundry B', 'Foundry C']) await edit(field(1, 0), name);
           await evaluate("(() => { const route = document.querySelector('.routing-matrix select'); route.value = 'foundry'; route.dispatchEvent(new Event('change', { bubbles: true })); })()");
           await wait("window.__modelsTest.stored?.profiles[1].name === 'Foundry C' && document.querySelector('.settings-actions').textContent === 'Saved automatically.'");
-          assert.equal(await evaluate("window.__modelsTest.saves"), 2);
+          assert.equal(await evaluate("window.__modelsTest.saves"), 4);
           assert.equal(await evaluate("window.__modelsTest.stored.routing['simple:slow']"), 'foundry');
           await evaluate("window.__modelsTest.pauseSave = true");
           await edit(field(1, 0), 'Pending');
@@ -190,10 +196,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await edit(field(1, 0), 'Newest');
           await new Promise(resolve => setTimeout(resolve, 600));
           assert.equal(await evaluate(field(1, 0) + '.value'), 'Newest');
-          assert.equal(await evaluate("window.__modelsTest.saves"), 3);
+          assert.equal(await evaluate("window.__modelsTest.saves"), 5);
           await evaluate("window.__modelsTest.releaseSave()");
           await wait("window.__modelsTest.stored.profiles[1].name === 'Newest' && document.querySelector('.settings-actions').textContent === 'Saved automatically.'");
-          assert.equal(await evaluate("window.__modelsTest.saves"), 4);
+          assert.equal(await evaluate("window.__modelsTest.saves"), 6);
           assert.equal(await evaluate("window.__modelsTest.maxInFlight"), 1);
           assert.equal(await evaluate(field(1, 0) + '.value'), 'Newest');
           await evaluate("window.__modelsTest.failSave = true");
@@ -216,6 +222,12 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("window.__modelsTest.stored.profiles.length === 2 && document.querySelector('.settings-actions').textContent === 'Saved automatically.'");
           assert.equal(await evaluate("window.__modelsTest.stored.routing['simple:slow']"), 'copilot');
           await evaluate(button('Human') + '.click()');
+          await edit("document.querySelector('input[placeholder=\\"Flesh Bag\\"]')", 'QA ');
+          await wait("document.querySelector('.settings-actions').textContent === 'Saved automatically.'");
+          assert.equal(await evaluate("document.querySelector('input[placeholder=\\"Flesh Bag\\"]').value"), 'QA ');
+          await edit("document.querySelector('input[placeholder=\\"Flesh Bag\\"]')", '');
+          await wait("document.querySelector('.settings-actions').textContent === 'Saved automatically.'");
+          assert.equal(await evaluate("document.querySelector('input[placeholder=\\"Flesh Bag\\"]').value"), '');
           await edit("document.querySelector('input[placeholder=\\"Flesh Bag\\"]')", 'QA Human');
           await wait("window.__modelsTest.stored.humanName === 'QA Human' && document.querySelector('.settings-actions').textContent === 'Saved automatically.'");
           assert.equal(await evaluate(button('Save') + ' === undefined'), true);

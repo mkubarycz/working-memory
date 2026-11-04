@@ -954,11 +954,11 @@ function registerIpc(): void {
       file: join(app.getPath('userData'), 'instance-incidents.json'),
       selected: () => environmentManager.currentEnvironment,
       probe: probeInstance,
-      deliver: (target, incident, current) => {
+      deliver: (target, incident, current, signal) => {
         if (!current() || environmentManager.currentEnvironment?.mcpUrl !== target.mcpUrl) {
           throw new Error('Selected environment changed.');
         }
-        return deliverIncident(controlPlane(), incident, current);
+        return deliverIncident(identity, incident, current, signal);
       },
     });
     void dataTierLaunch.then(() => instanceMonitor?.start());
@@ -1028,6 +1028,7 @@ function registerIpc(): void {
     getEnvironment: () => environmentManager.currentEnvironment,
     rendererUrl, vault: hostTaskVault, identity, platform: process.platform,
     onSessionChanged,
+    beforeSessionChanged: () => environmentManager.resetClient(),
   });
   hostScripts = registerHostScriptIpc({
     ipc: ipcMain, dialog, getWindow: () => mainWindow,

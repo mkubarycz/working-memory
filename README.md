@@ -1631,6 +1631,11 @@ buckets and 1,000 events; the view shows the latest hour and 100 events.
 Long-lived SSE requests remain in-flight until closed, so their duration is not
 a measure of handshake latency. HTTP 401 can be normal OAuth negotiation;
 the log does not interpret it as an authentication defect.
+Caller identity is captured when a request arrives, so logout or credential
+expiry before completion does not relabel an authenticated transaction.
+
+Upgrade the frontend and backend together for 1.4.1: the new garbage-collection
+event values are not accepted by older desktop session-response validators.
 
 While the desktop runs, it checks **only the selected environment**, with a
 five-second health deadline and ten seconds between monitoring attempts.
@@ -1651,6 +1656,15 @@ closes a workstream/topic. An incident label prevents duplicate topics after an
 ambiguous write outcome. Completed local report history is capped at 100;
 undelivered reports are retained. Review in Inbox and use **Send feedback**
 manually when ready; reports are never transmitted automatically.
+Automatic delivery uses owner-only `POST /identity/v1/incidents`, with a
+server-side incident-label/ID lookup rather than loading Topic bodies or
+opening an MCP session. Delivery has a ten-second deadline and runs separately
+from health probes and confirmed manual heap-report creation. In-flight probes
+from before an intentional upgrade are discarded even after monitoring resumes.
+
+Kind-scoped, unfiltered `wm-document-read` pages apply their limit and offset in
+SQLite before parsing documents. A health check requesting one Topic therefore
+does not allocate the entire Topic catalog.
 
 Diagnostics exclude credentials, protocol session IDs, document contents,
 request bodies, arbitrary paths/query strings, and raw logs. This supplies

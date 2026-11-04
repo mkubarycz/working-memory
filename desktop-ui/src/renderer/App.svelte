@@ -1697,7 +1697,15 @@
     },
     onPending: () => { settingsError = false; settingsStatus = 'Waiting to save...'; },
     onSaving: () => { saving = true; settingsError = false; settingsStatus = 'Saving...'; },
-    onSaved: (_key, config) => { loadConfig(config); settingsStatus = 'Saved automatically.'; },
+    onSaved: (_key, config) => {
+      endpoint = config.endpoint;
+      credentialStorage = config.credentialStorage;
+      modelProfiles = modelProfiles.map(profile => {
+        const saved = config.profiles.find(candidate => candidate.id === profile.id);
+        return saved ? { ...profile, hasApiKey: saved.hasApiKey, apiKey: '' } : profile;
+      });
+      settingsStatus = 'Saved automatically.';
+    },
     onError: (_key, error) => {
       settingsError = true;
       settingsStatus = `Not saved: ${error instanceof Error ? error.message : String(error)}`;

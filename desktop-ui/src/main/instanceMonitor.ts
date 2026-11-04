@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { monitorStateSchema, type MonitorState, type InstanceIncident, type InstanceDiagnostics } from '../../../control-plane/src/diagnosticContract';
-import type { ControlPlaneClient } from '../../../shared/controlPlaneClient';
+import type { DesktopInstanceIdentity } from './instanceIdentity';
 import type { SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
 
 export interface MonitorTarget { mcpUrl: string }
@@ -16,44 +16,21 @@ interface MonitorOptions {
   file: string;
   selected: () => MonitorTarget | null;
   probe: (target: MonitorTarget) => Promise<MonitorProbe>;
-  deliver: (target: MonitorTarget, incident: InstanceIncident, current: () => boolean) => Promise<string>;
+  deliver: (target: MonitorTarget, incident: InstanceIncident, current: () => boolean, signal: AbortSignal) => Promise<string>;
   clock?: () => number;
 }
 
 export async function deliverIncident(
-  client: Pick<ControlPlaneClient, 'listDocuments' | 'wsRead' | 'wsCreate' | 'topicTypeRead' | 'createDocument'>,
+  identity: Pick<DesktopInstanceIdentity, 'saveIncidentReport'>,
   incident: InstanceIncident,
   current: () => boolean,
+  signal?: AbortSignal,
 ): Promise<string> {
   const check = () => { if (!current()) throw new Error('Selected environment changed; report remains queued for its original instance.'); };
   check();
-  const topics = await client.listDocuments('Topic', { query: incident.id, limit: 2 });
-  if (!topics.available) throw new Error(topics.error ?? 'Unable to check existing incident reports.');
-  const existing = topics.documents.find(doc => doc.metadata.labels['wm.incident'] === incident.id);
-  if (existing) return existing.metadata.id;
+  const topicId = await identity.saveIncidentReport(incident.environment, incident, signal);
   check();
-  const streams = (await client.wsRead()).filter(stream => stream.title === 'Inbox');
-  if (streams.length > 1) throw new Error('Multiple Inbox workstreams exist. Rename the duplicate before retrying delivery.');
-  if (streams[0]?.status === 'closed') throw new Error('Inbox is closed. Reopen it yourself or rename it before retrying delivery.');
-  check();
-  const inbox = streams[0] ?? await client.wsCreate({ title: 'Inbox' });
-  check();
-  const types = (await client.topicTypeRead()).filter(type => type.label.toLowerCase() === 'bug');
-  if (types.length > 1) throw new Error('Multiple Bug topic types exist. Resolve the ambiguity before retrying delivery.');
-  check();
-  const body = `# Automatically detected instance incident\n\n`
-    + `Incident ID: ${incident.id}\n\nDetected: ${new Date(incident.at).toISOString()}\n\n`
-    + `Environment: ${incident.environment}\n\nClassification: ${incident.kind}\n\n`
-    + `## Sanitized evidence\n\n${incident.evidence}\n\n`
-    + 'This report records symptoms, not a proven root cause. No credentials, document content, request bodies or raw logs were collected. '
-    + 'Review in Inbox; use Send feedback when ready. No topic lifecycle decisions were made automatically.';
-  const result = await client.createDocument({
-    kind: 'Topic', labels: { 'wm.incident': incident.id },
-    spec: { title: `Instance ${incident.kind.replaceAll('_', ' ')}: ${new Date(incident.at).toISOString()}`,
-      body, workstreams: [inbox.id], ...(types[0] ? { topicType: types[0].id } : {}) },
-  });
-  if (!result.available || !result.document) throw new Error(result.error ?? 'Unable to save incident report.');
-  return result.document.metadata.id;
+  return topicId;
 }
 
 export class InstanceMonitor {
@@ -62,17 +39,12 @@ export class InstanceMonitor {
   private busy = false;
   private stopped = false;
   private readonly clock: () => number;
-  private readonly suspended = new Set<string>();
-  private operation: Promise<unknown> = Promise.resolve();
+  private readonly suspended = new Map<string, number>();
+  private readonly generations = new Map<string, number>();
+  private readonly manualReports = new Set<string>();
+  private delivery: { controller: AbortController; environment: string } | null = null;
 
-  private serialize<T>(action: () => Promise<T>): Promise<T> {
-    const pending = this.operation.then(action, action);
-    this.operation = pending;
-    return pending;
-  }
-
-  recordMemoryReport(target: MonitorTarget, snapshot: SessionSnapshot, saveReport: (incidentId: string) => Promise<string>): Promise<string> {
-    return this.serialize(async () => {
+  async recordMemoryReport(target: MonitorTarget, snapshot: SessionSnapshot, saveReport: (incidentId: string) => Promise<string>): Promise<string> {
       const current = () => !this.stopped && this.options.selected()?.mcpUrl === target.mcpUrl;
       if (!current()) throw new Error('Selected environment changed. No heap report was saved to another instance.');
       const memory = snapshot.memory;
@@ -87,6 +59,7 @@ export class InstanceMonitor {
           + '\n\nGarbage collection does not release live objects. Idle cleanup never interrupts active requests.',
       };
       this.state.incidents.push(incident);
+      this.manualReports.add(incident.id);
       this.save();
       try {
         if (!current()) throw new Error('Selected environment changed before saving the heap report.');
@@ -97,8 +70,9 @@ export class InstanceMonitor {
         incident.deliveryError = error instanceof Error ? error.message : String(error);
         this.save();
         throw error;
+      } finally {
+        this.manualReports.delete(incident.id);
       }
-    });
   }
 
   constructor(private readonly options: MonitorOptions) {
@@ -115,8 +89,15 @@ export class InstanceMonitor {
   }
 
   suspend(mcpUrl: string): () => void {
-    this.suspended.add(mcpUrl);
+    this.generations.set(mcpUrl, (this.generations.get(mcpUrl) ?? 0) + 1);
+    this.suspended.set(mcpUrl, (this.suspended.get(mcpUrl) ?? 0) + 1);
+    if (this.delivery?.environment === mcpUrl) this.delivery.controller.abort();
+    let resumed = false;
     return () => {
+      if (resumed) return;
+      resumed = true;
+      const remaining = this.suspended.get(mcpUrl)! - 1;
+      if (remaining > 0) { this.suspended.set(mcpUrl, remaining); return; }
       this.suspended.delete(mcpUrl);
       delete this.state.environments[mcpUrl];
       this.save();
@@ -131,7 +112,7 @@ export class InstanceMonitor {
     };
     void poll();
   }
-  stop(): void { this.stopped = true; clearTimeout(this.timer); }
+  stop(): void { this.stopped = true; clearTimeout(this.timer); this.delivery?.controller.abort(); }
 
   private save(): void {
     // Keep all undelivered incidents; bound completed history without losing queued reports.
@@ -142,13 +123,15 @@ export class InstanceMonitor {
     renameSync(`${this.options.file}.tmp`, this.options.file);
   }
 
-  tick(): Promise<void> { return this.serialize(() => this.tickOnce()); }
+  tick(): Promise<void> { return this.tickOnce(); }
 
   private async tickOnce(): Promise<void> {
     const target = this.options.selected();
     if (this.busy || this.stopped || !target || this.suspended.has(target.mcpUrl)) return;
     this.busy = true;
-    const current = () => !this.stopped && this.options.selected()?.mcpUrl === target.mcpUrl && !this.suspended.has(target.mcpUrl);
+    const generation = this.generations.get(target.mcpUrl);
+    const current = () => !this.stopped && this.options.selected()?.mcpUrl === target.mcpUrl
+      && !this.suspended.has(target.mcpUrl) && this.generations.get(target.mcpUrl) === generation;
     try {
       const probe = await this.options.probe(target);
       if (!current()) return;
@@ -205,19 +188,40 @@ export class InstanceMonitor {
         }
       }
       this.save();
-      if (probe.healthy) {
-        for (const incident of this.state.incidents.filter(item => item.environment === target.mcpUrl && !item.topicId)) {
-          if (!current()) break;
-          try {
-            incident.topicId = await this.options.deliver(target, { ...incident }, current);
-            incident.deliveryError = null;
-          } catch (error) {
-            incident.deliveryError = error instanceof Error ? error.message : String(error);
-            console.error('[instance-monitor] Inbox delivery failed:', error);
-          }
-          this.save();
-        }
-      }
+      if (probe.healthy) this.deliverNext(target, current);
     } finally { this.busy = false; }
+  }
+
+  private deliverNext(target: MonitorTarget, current: () => boolean): void {
+    if (this.delivery || !current()) return;
+    const incident = this.state.incidents.find(item => item.environment === target.mcpUrl
+      && !item.topicId && !this.manualReports.has(item.id));
+    if (!incident) return;
+    const controller = new AbortController();
+    const delivery = this.delivery = { controller, environment: target.mcpUrl };
+    const timer = setTimeout(() => controller.abort(new Error('Incident delivery exceeded its 10-second deadline.')), 10000);
+    let onAbort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(controller.signal.reason);
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+    });
+    void (async () => {
+      try {
+        const topicId = await Promise.race([
+          this.options.deliver(target, { ...incident }, current, controller.signal), cancelled,
+        ]);
+        if (current()) { incident.topicId = topicId; incident.deliveryError = null; }
+      } catch (error) {
+        if (current()) {
+          incident.deliveryError = error instanceof Error ? error.message : String(error);
+          console.error('[instance-monitor] Inbox delivery failed:', error);
+        }
+      } finally {
+        clearTimeout(timer);
+        if (onAbort) controller.signal.removeEventListener('abort', onAbort);
+        if (this.delivery === delivery) this.delivery = null;
+        this.save();
+      }
+    })().catch(error => console.error('[instance-monitor] Delivery state could not be saved:', error));
   }
 }

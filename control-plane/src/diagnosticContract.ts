@@ -27,6 +27,13 @@ export const incidentSchema = z.object({
   evidence: z.string(), topicId: z.string().nullable(), deliveryError: z.string().nullable(),
 });
 export type InstanceIncident = z.infer<typeof incidentSchema>;
+export const incidentReportRequestSchema = incidentSchema.pick({
+  id: true, environment: true, at: true, kind: true, evidence: true,
+}).extend({
+  environment: z.string().url().max(2048),
+  at: z.number().nonnegative(),
+  evidence: z.string().max(20000),
+}).strict();
 export const monitorStateSchema = z.object({
   environments: z.record(z.string(), z.object({
     bootId: z.string().nullable(), failures: z.number().int(), outageId: z.string().nullable(),

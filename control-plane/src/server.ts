@@ -40,7 +40,8 @@ import { serveInstanceAccessMcp } from './instanceAccessMcp.js';
 import { InstanceOAuth } from './instanceOAuth.js';
 import { McpSessions, SessionAdmissionError, type SessionDiagnosticsOptions } from './mcpSessions.js';
 import { heapCollectionRequestSchema, heapReportRequestSchema } from './sessionPolicy.js';
-import { createHeapReport, HeapReportError } from './heapReports.js';
+import { createHeapReport, createInstanceIncidentReport, HeapReportError } from './heapReports.js';
+import { incidentReportRequestSchema } from './diagnosticContract.js';
 import { IdentityError } from './instanceIdentity.js';
 import { diagnosticRoute, HttpDiagnostics } from './diagnostics.js';
 import { documentPermissionCategory, instancePermissionsSchema, permits } from './instancePermissions.js';
@@ -416,9 +417,14 @@ export function createMcpServer(
         return asText({ count: documents.length, documents });
       }
       // List mode: non-deleted docs, newest-first, optional kind + query + limit.
+      if (kind && !canReadKind(kind === 'Alert' ? 'AgentMessage' : kind)) {
+        return asText({ count: 0, documents: [] });
+      }
+      const bounded = !!kind && (query === undefined || query.trim() === '');
+      const paging = bounded ? { limit, offset } : {};
       let documents = kind === 'Alert' || kind === 'AgentMessage'
-        ? store.listDocumentsByCreation({ kind, includeDeleted }).map(({ document }) => document)
-        : store.listDocuments({ kind, includeDeleted });
+        ? store.listDocumentsByCreation({ kind, includeDeleted, ...paging }).map(({ document }) => document)
+        : store.listDocuments({ kind, includeDeleted, ...paging });
       documents = documents.filter(doc => canReadKind(doc.kind));
       if (query !== undefined && query.trim() !== '') {
         // Basic placeholder search: case-insensitive substring over the whole
@@ -427,7 +433,7 @@ export function createMcpServer(
         const needle = query.toLowerCase();
         documents = documents.filter((doc) => JSON.stringify(doc).toLowerCase().includes(needle));
       }
-      documents = documents.slice(offset, limit === undefined ? undefined : offset + limit);
+      if (!bounded) documents = documents.slice(offset, limit === undefined ? undefined : offset + limit);
       return asText({ count: documents.length, documents });
     },
   );
@@ -739,6 +745,23 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       if (!hostTasks.identity.authenticate(token)) { endJson(res, 401, { error: 'Sign in as the instance owner to view diagnostics.' }); return; }
       if (req.method !== 'GET') { endJson(res, 405, { error: 'Diagnostics accepts GET only.' }); return; }
       endJson(res, 200, diagnostics.snapshot(sessions.activeCount));
+      return;
+    }
+    if (url.pathname === '/identity/v1/incidents') {
+      try {
+        if (req.headers.origin || url.search) throw new AccessError(400, 'Use the trusted desktop connection without query parameters.');
+        if (!hostTasks.identity.authenticate(token)) throw new AccessError(401, 'Sign in as the instance owner to save an incident report.');
+        if (req.method !== 'POST') throw new AccessError(405, 'Incident report creation accepts POST only.');
+        if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new AccessError(415, 'JSON required.');
+        const incident = incidentReportRequestSchema.parse(await readJsonBody(req));
+        endJson(res, 200, { topicId: createInstanceIncidentReport(store, incident) });
+      } catch (error) {
+        if (error instanceof HeapReportError) endJson(res, 400, { error: error.message });
+        else if (error instanceof AccessError) endJson(res, error.status, { error: error.message });
+        else if (error instanceof z.ZodError || error instanceof SyntaxError) {
+          endJson(res, 400, { error: 'A valid bounded incident report is required.' });
+        } else throw error;
+      }
       return;
     }
     if (url.pathname === '/identity/v1/sessions/report') {

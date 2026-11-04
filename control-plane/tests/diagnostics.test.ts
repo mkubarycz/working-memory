@@ -87,3 +87,19 @@ it('normalizes user-controlled routes and distinguishes clean from unclean resta
   expect(fourth.snapshot(0).events).toHaveLength(0);
   fourth.close();
 });
+
+it('retains the authenticated caller when logout revokes the token before the response finishes', async () => {
+  const store = openStore(':memory:');
+  const identity = new InstanceIdentity(store.db);
+  const owner = await identity.initialize('private logout diagnostics password');
+  const server = await startServer({ port: 0, store });
+  cleanup.push(() => store.close(), () => server.close());
+  const response = await fetch(`${server.url}/identity/v1/logout`, {
+    method: 'POST', headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': 'application/json' }, body: '{}',
+  });
+  expect(response.status).toBe(200);
+  await response.body?.cancel();
+  expect(identity.authenticate(owner.token)).toBe(false);
+  expect(store.db.prepare("SELECT caller,count FROM instance_http_minutes WHERE route='/identity/v1/*' AND status=200").get())
+    .toMatchObject({ caller: 'owner', count: 1 });
+});
