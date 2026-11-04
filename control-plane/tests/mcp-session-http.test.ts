@@ -31,6 +31,11 @@ async function fixture() {
     return fetch(new URL(path, server.url), { ...init, headers });
   };
   const snapshot = async () => sessionSnapshotSchema.parse(await (await request('/identity/v1/sessions')).json());
+  const postMcp = (sessionId: string, body: unknown) => request('/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-session-id': sessionId },
+    body: JSON.stringify(body),
+  });
   const policy = (patch: Partial<typeof DEFAULT_SESSION_POLICY>) => request('/identity/v1/sessions', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ ...DEFAULT_SESSION_POLICY, ...patch }),
@@ -58,7 +63,7 @@ async function fixture() {
     cleanup.push(() => client.dispose());
     return client;
   };
-  return { store, owner, access, server, request, snapshot, policy, enroll, connect, data,
+  return { store, owner, access, server, request, postMcp, snapshot, policy, enroll, connect, data,
     advance: (ms: number) => { now += ms; }, memory: (bytes: number) => { used = bytes; } };
 }
 
@@ -365,6 +370,57 @@ it('tracks concurrent tool errors separately from successful HTTP responses and 
     expect(queue.processing.processedLastMinute).toBe(3);
     expect(JSON.stringify(queue.events)).not.toContain('PRIVATE_ERROR_CONTENT');
   } finally { kind.registerApi = original; }
+});
+
+it.each([0, 'queued-write'])('cancels queued mutation %s through the protocol without closing its HTTP connection', async requestId => {
+  const f = await fixture(), { transport, client } = await f.connect();
+  f.memory(600);
+  const pending = f.postMcp(transport.sessionId!, {
+    jsonrpc: '2.0', id: requestId, method: 'tools/call',
+    params: { name: 'ws-workstream-create', arguments: { title: 'NEVER_EXECUTED_PROTOCOL_CANCEL' } },
+  });
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
+  const cancelled = await f.postMcp(transport.sessionId!, {
+    jsonrpc: '2.0', method: 'notifications/cancelled',
+    params: { requestId, reason: 'PRIVATE_CANCELLATION_REASON' },
+  });
+  expect(cancelled.status).toBe(202);
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(0));
+  const response = await pending;
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({
+    id: requestId, error: { data: { executed: false, reason: 'cancelled' } },
+  });
+  f.memory(599);
+  await client.callTool({ name: 'wm-ping', arguments: {} });
+  expect(f.store.listDocuments({ kind: 'Workstream' })).toEqual([]);
+  const queue = await (await f.request('/identity/v1/tool-queue')).json();
+  expect(queue.events).toEqual(expect.arrayContaining([
+    expect.objectContaining({ event: 'cancelled', operation: 'ws-workstream-create' }),
+  ]));
+  expect(JSON.stringify(queue.events)).not.toContain('PRIVATE_CANCELLATION_REASON');
+});
+
+it('matches cancellation by session and typed JSON-RPC ID, not another waiting mutation', async () => {
+  const f = await fixture(), first = await f.connect(), second = await f.connect();
+  const write = (sessionId: string, id: number | string, title: string) => f.postMcp(sessionId, {
+    jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'ws-workstream-create', arguments: { title } },
+  });
+  f.memory(600);
+  const cancelled = write(first.transport.sessionId!, 7, 'Cancelled');
+  const otherId = write(first.transport.sessionId!, '7', 'Same session, string ID');
+  const otherSession = write(second.transport.sessionId!, 7, 'Other session, number ID');
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(3));
+  expect((await f.postMcp(first.transport.sessionId!, {
+    jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 7 },
+  })).status).toBe(202);
+  expect((await cancelled).status).toBe(503);
+  expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(2);
+  f.memory(599);
+  const responses = await Promise.all([otherId, otherSession]);
+  expect(responses.map(response => response.status)).toEqual([200, 200]);
+  expect(f.store.listDocuments({ kind: 'Workstream' }).map(document => document.spec.title).sort())
+    .toEqual(['Other session, number ID', 'Same session, string ID']);
 });
 
 it('removes a disconnected HTTP call from the queue without executing its mutation', async () => {

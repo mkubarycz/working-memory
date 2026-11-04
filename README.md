@@ -1680,8 +1680,10 @@ MCP tool calls, including those on already-connected sessions, use a bounded FIF
 queue: four running, at most sixteen waiting, and a five-second maximum wait.
 Dispatch pauses at the existing 60% V8 heap cutoff. Already-started calls may
 finish; full or expired queues return HTTP 503 with `executed: false`, never run
-later, and are not automatically replayed. Disconnects cancel waiting calls;
-session cleanup, protocol traffic, health and owner diagnostics bypass the tool
+later, and are not automatically replayed. Disconnects and MCP
+`notifications/cancelled` cancel waiting calls; protocol cancellation matches the
+session and exact JSON-RPC request ID, even when the request's HTTP connection stays open.
+Session cleanup, protocol traffic, health and owner diagnostics bypass the tool
 queue. Authorization is checked again after waiting. This is overload protection,
 not a guarantee against a single operation exhausting memory or blocking the
 event loop. It does not force GC, restart processes, or interrupt running writes.

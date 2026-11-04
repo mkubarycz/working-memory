@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { CancelledNotificationSchema, isInitializeRequest, isJSONRPCRequest, type RequestId } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   DEFAULT_PORT,
@@ -579,6 +579,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // session id. Supports multiple concurrent clients, each with its own MCP
   // session and connected McpServer instance.
   const transports = new Map<string, StreamableHTTPServerTransport>();
+  const waitingToolCalls = new Map<string, Map<RequestId, Set<AbortController>>>();
 
   function denyPermission(req: http.IncomingMessage, res: http.ServerResponse, required: PermissionSelection[] | null): void {
     try {
@@ -644,6 +645,13 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       }
       const existing = sessionId ? transports.get(sessionId) : undefined;
       if (session && existing) {
+        if (body && typeof body === 'object' && 'method' in body && body.method === 'notifications/cancelled') {
+          const cancellation = CancelledNotificationSchema.safeParse(body);
+          if (cancellation.success && cancellation.data.params.requestId !== undefined) {
+            const controllers = waitingToolCalls.get(session.protocolId)?.get(cancellation.data.params.requestId);
+            for (const controller of controllers ?? []) controller.abort();
+          }
+        }
         const dispatch = async (): Promise<ToolExecutionOutcome> => {
           const current = access.authenticate(req.headers.authorization?.slice(7) ?? '');
           if (!current) { endJson(res, 401, { error: 'Client access expired or was revoked.' }); return 'not_executed'; }
@@ -664,13 +672,29 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           const operation = name === 'wm-ping' || name === 'wm-list-kinds' || instanceToolPermissions(name, {}, store) !== null
             ? name : 'unknown-tool';
           const controller = new AbortController();
+          const requestId = isJSONRPCRequest(body) ? body.id : undefined;
+          const sessionCalls = waitingToolCalls.get(session.protocolId) ?? new Map<RequestId, Set<AbortController>>();
+          const controllers = requestId === undefined ? undefined : sessionCalls.get(requestId) ?? new Set<AbortController>();
+          if (requestId !== undefined && controllers) {
+            controllers.add(controller);
+            sessionCalls.set(requestId, controllers);
+            waitingToolCalls.set(session.protocolId, sessionCalls);
+          }
+          const releaseWaitingCall = () => {
+            if (requestId === undefined || !controllers?.delete(controller)) return;
+            if (!controllers.size) sessionCalls.delete(requestId);
+            if (!sessionCalls.size) waitingToolCalls.delete(session.protocolId);
+          };
           const cancel = () => controller.abort();
           res.once('close', cancel);
           try {
             await toolQueue.run({
               requestId: String(res.getHeader('X-Request-Id')), operation,
               caller: principal.role === 'owner' ? 'owner' : `client:${principal.clientId}`,
-            }, body, controller.signal, dispatch, outcome => outcome);
+            }, body, controller.signal, () => {
+              releaseWaitingCall();
+              return dispatch();
+            }, outcome => outcome);
           } catch (error) {
             if (!(error instanceof ToolQueueError)) throw error;
             if (!res.destroyed) {
@@ -678,7 +702,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
               endJson(res, 503, { jsonrpc: '2.0', id: 'id' in body ? body.id : null,
                 error: { code: -32000, message: error.message, data: { executed: false, reason: error.code } } });
             }
-          } finally { res.removeListener('close', cancel); }
+          } finally {
+            releaseWaitingCall();
+            res.removeListener('close', cancel);
+          }
         } else await dispatch();
         return;
       }
