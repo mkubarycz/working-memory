@@ -6,6 +6,7 @@ import {
   containerAppResourceMarkdown,
   parseContainerAppResourceReference,
   resourceDragLink,
+  resourceDropEffect,
   ResourceDragPreparationCache,
   setContainerAppResourceDragData,
   setResourceDragData,
@@ -13,6 +14,12 @@ import {
 } from '../src/renderer/resourceDrag';
 
 describe('desktop resource drag links', () => {
+  it('accepts native copy-only drags without changing the intended internal move', () => {
+    expect(resourceDropEffect({ kind: 'workstream', id: 'one', section: 'progress', native: true }, 'move')).toBe('copy');
+    expect(resourceDropEffect({ kind: 'topic', id: 'one', sourceWorkstream: 'source', native: true }, 'move')).toBe('copy');
+    expect(resourceDropEffect({ kind: 'workstream', id: 'one', section: 'progress' }, 'move')).toBe('move');
+    expect(resourceDropEffect({ kind: 'topic', id: 'one', sourceWorkstream: 'source' }, 'copy')).toBe('copy');
+  });
   it('shares and invalidates pending context preparation without accepting stale responses', async () => {
     const prepare = vi.fn();
     const error = vi.fn();

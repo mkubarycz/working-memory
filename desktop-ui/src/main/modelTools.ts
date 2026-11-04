@@ -50,7 +50,7 @@ const DESKTOP_TOOL_FAMILIES = [
 ];
 
 export function desktopToolDescriptors(tools: CanonicalToolDef[]): CanonicalToolDef[] {
-  return tools.filter((tool) => tool.name === 'wm-document-search'
+  return tools.filter((tool) => ['wm-document-search', 'wm-document-query'].includes(tool.name)
     || DESKTOP_TOOL_FAMILIES.some((family) => tool.name.startsWith(`ws-${family}-`)));
 }
 

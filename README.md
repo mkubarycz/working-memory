@@ -694,6 +694,15 @@ URLs and `www.` addresses are clickable too and continue to display their URL.
 URLs inside code, image destinations, and link definitions are not standalone
 click targets.
 
+Working Memory links, including existing `http://127.0.0.1:7718/open/...`
+links, open directly in the current app and selected environment without a
+browser round trip. External web links still open in the default browser.
+
+Live Markdown text uses native spell checking. Right-click a misspelled word
+to choose a correction or **Add to Dictionary**; ordinary cut/copy/paste actions
+remain available. Windows and Linux download Chromium spelling dictionaries, so
+initial dictionary setup requires network access.
+
 Pasting rich text into **Live** or **Source** converts clipboard HTML to authored
 Markdown, preserving hyperlinks (including their display text), headings, basic
 emphasis, lists, and code. Plain-text/Markdown paste remains unchanged. Image-file
@@ -727,6 +736,8 @@ resources also carry the same Markdown/context-file references for editors and
 other apps. Unassigned topic trees can be added to a workstream without removing
 any existing memberships; this requires a backend supporting source-free
 `ws-topic-transfer`.
+Internal moves and external Markdown-file exports use the same drag gesture,
+including on Windows; no extra modifier or separate handle is required.
 The shared tree uses light cards and menus on the backlog page while retaining
 the dark rail palette. Move buttons wrap below titles when the page is narrow.
 
@@ -867,6 +878,12 @@ the Log for global conversations.
 Chat requests and write confirmations are scoped to their originating
 conversation. You can switch to another topic and submit a query while the
 first is still running; a background completion does not select its document.
+For lookup-and-update requests, the assistant uses case numbers or titles from
+the current topic to find matching Working Memory topics, verifies the matches,
+and saves links without replacing unrelated content. Literal topic queries work
+with Search disabled; enabling Search also exposes indexed and structured
+document discovery. Successful writes invalidate cached reads so a verification
+read sees the newly saved content.
 The Log is a live chronological timeline, with a timestamped command dot and
 nested tool activity, confirmation, and response for each query.
 The Log and Recent messages share the same message component and timeline
@@ -1621,15 +1638,89 @@ trusted owner requests; older backends show an explicit upgrade message.
 Health and MCP advertise the package release version. Health also returns a
 process boot ID so a restart is distinguishable from an unavailable endpoint.
 
+Diagnostics has **Queue**, **HTTP**, **Runtime**, and **Automatic incident reports**
+subtabs. HTTP shows transactions, errors,
+average duration and maximum duration as time series, independently scaled to
+0-100% of each series' visible-window peak. Raw peaks remain in the legend and
+original values in point tooltips; gaps in sampling break the traces. The error
+log sits below the graph, with the current caller/route/status breakdown in an
+expandable non-tabular summary. Automatic incident reports has its own subtab,
+including reports queued while the backend is unavailable.
+Diagnostics navigation uses pink, keyboard-accessible secondary tabs under the
+main Settings tabs. There are no manual refresh buttons: only the selected,
+visible diagnostics view polls. Polling stops while the window is hidden and
+resumes immediately when visible again; inactive subtabs do not background poll.
+A shared Refresh selector defaults to 15 seconds and offers 2, 5, 15, 30 and 60
+seconds; changing it applies to the selected diagnostics view without overlapping requests.
+Queue shows only the selected environment: a **Queue Processing**
+chart with 10-second samples (latest 30 minutes), the live waiting/running list,
+and a request log grouped by request ID from the latest 100 lifecycle events.
+Each log row shows queue-entry time, total duration, request ID, tool, wait time,
+runtime and status; live timings are elapsed so far. Finished timings remain
+available even if earlier lifecycle events have left the window. An unfinished
+request no longer in the live list has an unavailable outcome, not a fabricated
+completion time. Hover a request ID for its caller. The chart also shows the peak depth
+between samples so short bursts are not lost when the queue drains quickly.
+Processed items/second uses a separate right axis and a rolling ten-second rate.
+The rolling one-minute wait/processing averages are weighted by calls finishing
+in that minute, including failed executions but excluding work rejected or cancelled
+before execution. No finished calls means no average, rather than a fabricated zero.
+These metrics use independent per-second count/timing aggregates (at most 61 rows),
+not the truncated lifecycle log, so bursts beyond the log limit are still counted.
+Windows have one-second resolution; older history without processing metrics leaves gaps.
+Desktop drag-context preparation follows actual panel/environment changes, not
+unrelated health or feature refreshes; a status refresh must not re-read every
+draggable document. The separately deployed Feedback container may also issue a
+small document read for its backend-aware health check.
+
+MCP tool calls, including those on already-connected sessions, use a bounded FIFO
+queue: four running, at most sixteen waiting, and a five-second maximum wait.
+Dispatch pauses at the existing 60% V8 heap cutoff. Already-started calls may
+finish; full or expired queues return HTTP 503 with `executed: false`, never run
+later, and are not automatically replayed. Disconnects cancel waiting calls;
+session cleanup, protocol traffic, health and owner diagnostics bypass the tool
+queue. Authorization is checked again after waiting. This is overload protection,
+not a guarantee against a single operation exhausting memory or blocking the
+event loop. It does not force GC, restart processes, or interrupt running writes.
+
+Queue lifecycle logging retains at most 2,000 content-free events for 24 hours.
+`GET /identity/v1/tool-queue` is owner-only and returns queue metadata, history and
+events. Clicking a waiting request uses owner-only
+`GET /identity/v1/tool-queue/<request-id>` to inspect the exact JSON request body
+that will be dispatched, **in memory only**. This explicitly separate live
+inspector does not include HTTP authorization headers, does not persist payloads,
+uses `Cache-Control: no-store`, and becomes unavailable when dispatch starts or
+the request leaves the queue. The desktop clears inspected data on queue exit,
+environment changes, errors, or closing the Queue tab.
+
+Runtime history records heap/limit/RSS, external/array-buffer memory, process CPU,
+observed GC count/duration, event-loop delay, queue depth, and up to eight active
+operation identities/timings every ten seconds. CPU 100% means one logical core.
+Samples are persisted for at most 24 hours / 8,640 rows and survive restarts;
+Runtime shows the latest ten minutes as independently peak-normalized traces for
+heap, RSS, external memory, CPU, event-loop delay, GC count/duration and waiting/running
+tools, with raw peaks in the legend and original values in point tooltips. Missing
+samples and backend restarts break the traces rather than implying continuity.
+Automatic incident evidence includes recent
+runtime samples and current queue activity. Sampling cannot run during a blocked
+event loop, so external health and Docker evidence remain necessary.
+
 Every HTTP response has a server-generated `X-Request-Id`. HTTP errors and
-requests taking at least three seconds are persisted, along with admission
+ordinary requests taking at least three seconds are persisted, along with admission
 rejections, sampled heap pressure at the 60% admission threshold, event-loop
 delays of at least one second, and unclean backend restarts. Repeated events
 are grouped by route/status/minute, retaining the latest request ID and maximum
 duration. Telemetry is retained for seven days, capped at 10,000 minute/caller
 buckets and 1,000 events; the view shows the latest hour and 100 events.
-Long-lived SSE requests remain in-flight until closed, so their duration is not
-a measure of handshake latency. HTTP 401 can be normal OAuth negotiation;
+Successful `GET /changes` long polls normally wait up to 25 seconds; they are
+flagged as slow only at 28 seconds or longer. Successful MCP notification-stream
+GETs are not flagged for their connection lifetime. Both still count as HTTP
+transactions with their actual elapsed durations, so aggregate durations include
+intentional waiting and are not a measure of processing or handshake latency.
+Errors, including HTTP 499 client cancellations, remain visible; historical
+events are not rewritten or deleted by this change. Incident evidence includes
+each event's normalized route to distinguish long polls from ordinary work.
+HTTP 401 can be normal OAuth negotiation;
 the log does not interpret it as an authentication defect.
 Caller identity is captured when a request arrives, so logout or credential
 expiry before completion does not relabel an authenticated transaction.
@@ -1666,7 +1757,7 @@ Kind-scoped, unfiltered `wm-document-read` pages apply their limit and offset in
 SQLite before parsing documents. A health check requesting one Topic therefore
 does not allocate the entire Topic catalog.
 
-Diagnostics exclude credentials, protocol session IDs, document contents,
+Persisted diagnostics exclude credentials, protocol session IDs, document contents,
 request bodies, arbitrary paths/query strings, and raw logs. This supplies
 evidence for investigating memory/reconnect stalls; it does not claim to fix
 or establish the allocation source in the reported 7719 incident. No heap

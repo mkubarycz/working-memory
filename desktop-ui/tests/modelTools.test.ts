@@ -17,6 +17,9 @@ const tools = [
   { name: 'ws-config-read' },
   { name: 'wm-document-read' },
   { name: 'wm-document-search' },
+  { name: 'wm-document-query' },
+  { name: 'wm-document-update' },
+  { name: 'wm-document-delete' },
 ];
 
 describe('desktop model tools', () => {
@@ -27,8 +30,12 @@ describe('desktop model tools', () => {
       'ws-topictype-read',
       'ws-agent-message-update',
       'wm-document-search',
+      'wm-document-query',
     ]);
     expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('ws-config-read');
+    expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('wm-document-read');
+    expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('wm-document-update');
+    expect(desktopToolDescriptors(tools).map((tool) => tool.name)).not.toContain('wm-document-delete');
   });
 
   it('classifies deletes as destructive', () => {

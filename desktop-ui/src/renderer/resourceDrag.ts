@@ -5,9 +5,18 @@ import type {
 import type { WorkstreamSection } from '../../../shared/panelData';
 import type { TopicDragSource } from './topicTransfer';
 
-export type ActiveResourceDrag =
+export type ActiveResourceDrag = (
   | ({ kind: 'topic' } & TopicDragSource)
-  | { kind: 'workstream'; id: string; section: WorkstreamSection };
+  | { kind: 'workstream'; id: string; section: WorkstreamSection }
+) & { native?: boolean };
+
+export function resourceDropEffect(
+  drag: ActiveResourceDrag | null,
+  intended: 'copy' | 'move',
+): 'copy' | 'move' {
+  // Electron's Windows native file source allows copy/link, not move.
+  return drag?.native ? 'copy' : intended;
+}
 
 const RESOURCE_URI_RE =
   /^working-memory:\/(?:\/)?(workstream|topic|document|agent-message|alert|topic-type)\/([^/]+)\.working-memory$/;

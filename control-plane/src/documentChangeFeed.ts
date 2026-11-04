@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DocumentChange, Store } from './store.js';
 
+export const DOCUMENT_CHANGE_POLL_TIMEOUT_MS = 25_000;
+
 interface DocumentChanges {
   resourceVersion: number;
   reset: boolean;
@@ -60,7 +62,7 @@ export function createDocumentChangeFeed(store: Store) {
       }
       waiting.add(respond);
       res.once('close', cleanup);
-      timer = setTimeout(respond, 25_000);
+      timer = setTimeout(respond, DOCUMENT_CHANGE_POLL_TIMEOUT_MS);
       timer.unref();
     },
     close(): void {

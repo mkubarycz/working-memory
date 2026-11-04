@@ -46,6 +46,10 @@ export class McpSessions {
   private finishCollection: (() => void) | undefined;
 
   get activeCount(): number { return this.sessions.size; }
+  get memoryBlocked(): boolean {
+    const memory = this.memoryUsage();
+    return memory.used >= memory.limit * SESSION_HEAP_FRACTION;
+  }
 
   constructor(private readonly db: DatabaseSync, options: SessionDiagnosticsOptions = {}) {
     this.clock = options.clock ?? Date.now;
@@ -111,8 +115,7 @@ export class McpSessions {
     const owned = Array.from(this.sessions.values()).filter(session => session.quotaKey === quotaKey).length;
     if (owned >= this.policy.maxPerClient) reject('client_quota', 429, 'This client reached its active-session limit.');
     if (this.sessions.size >= this.policy.maxTotal) reject('global_quota', 503, 'The instance reached its active-session limit.');
-    const memory = this.memoryUsage();
-    if (memory.used >= memory.limit * SESSION_HEAP_FRACTION) {
+    if (this.memoryBlocked) {
       reject('memory_rejected', 503, 'New sessions are paused: JavaScript heap usage reached the 60% safety cutoff.');
     }
     const session: ManagedSession = {

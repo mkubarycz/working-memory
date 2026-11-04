@@ -252,7 +252,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate('document.querySelector(".citations a").dispatchEvent(new PointerEvent("pointerenter"))');
           await delay(20);
           const citationDrag=await drag('.citations a');
-          assert.deepEqual(citationDrag.active,{kind:'workstream',id:'workstream-1',section:'progress'});
+          assert.deepEqual(citationDrag.active,{kind:'workstream',id:'workstream-1',section:'progress',native:true});
           assert.equal(citationDrag.markdown,'[Connection reliability](http://127.0.0.1:7718/open/workstream/workstream-1)');
           await evaluate('window.__searchTest.dragListeners.forEach(listener=>listener({filePath:"/tmp/search-context.md",status:"failed",error:"Native failure"}))');
           assert.equal(await evaluate('window.__searchTest.readDrag()'),null);

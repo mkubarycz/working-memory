@@ -1,5 +1,7 @@
-import { afterEach, beforeAll, expect, it } from 'vitest';
+import { afterEach, beforeAll, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { createServer } from 'node:http';
 import { InstanceIdentity } from '../src/instanceIdentity';
 import { InstanceAccess } from '../src/instanceAccess';
 import { startServer } from '../src/server';
@@ -8,10 +10,100 @@ import { diagnosticRoute, HttpDiagnostics } from '../src/diagnostics';
 import { openStore } from '../src/store';
 import { loadKinds } from '../src/kinds/loader';
 import { SERVICE_VERSION } from '../src/config';
+import { DOCUMENT_CHANGE_POLL_TIMEOUT_MS } from '../src/documentChangeFeed';
+import { ToolQueue } from '../src/toolQueue';
 
 const cleanup: Array<() => Promise<void> | void> = [];
 beforeAll(() => loadKinds());
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.useRealTimers(); });
+
+it('records runtime and operation trends without request arguments, and accepts legacy diagnostics without the new fields', async () => {
+  const db = new DatabaseSync(':memory:'), controller = new AbortController();
+  const queue = new ToolQueue(db, () => true);
+  const diagnostics = new HttpDiagnostics(db, '1.4.1', Date.now, queue);
+  cleanup.push(() => db.close(), () => diagnostics.close(), () => queue.close());
+  const pending = queue.run({ requestId: randomUUID(), operation: 'wm-document-query', caller: 'owner' },
+    { query: 'PRIVATE_QUERY', body: 'PRIVATE_DOCUMENT', token: 'PRIVATE_TOKEN' }, controller.signal, async () => {});
+  const cancelled = expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+  diagnostics.sample();
+  const snapshot = diagnostics.snapshot(1);
+  expect(snapshot.samples?.[0]).toMatchObject({ queueDepth: 1, runningTools: 0,
+    processing: { processedPerSecond: 0, processedLastMinute: 0, averageWaitMs: null, averageRunMs: null },
+    operations: [expect.objectContaining({ operation: 'wm-document-query' })] });
+  expect(snapshot.samples?.[0].cpuPercent).toBeGreaterThanOrEqual(0);
+  expect(snapshot.samples?.[0].gcCount).toBeGreaterThanOrEqual(0);
+  expect(snapshot.samples?.[0].rssBytes).toBeGreaterThan(0);
+  for (const value of ['PRIVATE_QUERY', 'PRIVATE_DOCUMENT', 'PRIVATE_TOKEN']) {
+    expect(JSON.stringify(snapshot)).not.toContain(value);
+    expect(JSON.stringify(db.prepare('SELECT * FROM instance_runtime_samples').all())).not.toContain(value);
+    expect(JSON.stringify(db.prepare('SELECT * FROM instance_tool_queue_events').all())).not.toContain(value);
+    expect(JSON.stringify(db.prepare('SELECT * FROM instance_tool_queue_seconds').all())).not.toContain(value);
+  }
+  const { samples, workQueue, ...legacy } = snapshot;
+  expect(diagnosticsSchema.parse(legacy).samples).toBeUndefined();
+  expect(samples).toHaveLength(2);
+  expect(workQueue?.waiting).toBe(1);
+  expect(workQueue?.processing?.processedLastMinute).toBe(0);
+  controller.abort();
+  await cancelled;
+});
+
+it('bounds persistent runtime history to 24 hours and 8640 samples across restarts', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-11-04T18:00:00Z'));
+  const db = new DatabaseSync(':memory:'), diagnostics = new HttpDiagnostics(db, '1.4.1');
+  cleanup.push(() => db.close());
+  const data = JSON.stringify(diagnostics.history()[0]);
+  db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<8650)
+    INSERT INTO instance_runtime_samples(at,data) SELECT ?,? FROM n`).run(Date.now(), data);
+  db.prepare('INSERT INTO instance_runtime_samples(at,data) VALUES(?,?)').run(Date.now() - 86400001, data);
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(db.prepare('SELECT COUNT(*) AS count FROM instance_runtime_samples').get()?.count).toBe(8640);
+  expect(db.prepare('SELECT COUNT(*) AS count FROM instance_runtime_samples WHERE at<?').get(Date.now() - 86400000)?.count).toBe(0);
+  expect(diagnostics.history()).toHaveLength(60);
+  diagnostics.close();
+  const restarted = new HttpDiagnostics(db, '1.4.1');
+  cleanup.push(() => restarted.close());
+  expect(db.prepare('SELECT COUNT(*) AS count FROM instance_runtime_samples').get()?.count).toBe(8640);
+  expect(restarted.history()[0].bootId).toBe(restarted.bootId);
+  expect(restarted.history().some(sample => sample.bootId === diagnostics.bootId)).toBe(true);
+});
+
+it.each([
+  { method: 'GET', path: '/changes?since=1', duration: DOCUMENT_CHANGE_POLL_TIMEOUT_MS, status: 200, contentType: 'application/json', code: null },
+  { method: 'GET', path: '/changes', duration: DOCUMENT_CHANGE_POLL_TIMEOUT_MS + 2999, status: 200, contentType: 'application/json', code: null },
+  { method: 'GET', path: '/changes', duration: DOCUMENT_CHANGE_POLL_TIMEOUT_MS + 3000, status: 200, contentType: 'application/json', code: 'slow_request' },
+  { method: 'GET', path: '/changes', duration: 25000, status: 503, contentType: 'application/json', code: 'http_error' },
+  { method: 'GET', path: '/changes', duration: 23000, status: 499, contentType: 'application/json', code: 'http_error' },
+  { method: 'POST', path: '/changes', duration: 3000, status: 200, contentType: 'application/json', code: 'slow_request' },
+  { method: 'GET', path: '/mcp', duration: 60000, status: 200, contentType: 'text/event-stream; charset=utf-8', code: null },
+  { method: 'GET', path: '/mcp', duration: 60000, status: 503, contentType: 'text/event-stream', code: 'http_error' },
+  { method: 'GET', path: '/mcp', duration: 3000, status: 200, contentType: 'application/json', code: 'slow_request' },
+  { method: 'POST', path: '/mcp', duration: 3000, status: 200, contentType: 'text/event-stream', code: 'slow_request' },
+  { method: 'GET', path: '/health', duration: 2999, status: 200, contentType: 'application/json', code: null },
+  { method: 'GET', path: '/health', duration: 3000, status: 200, contentType: 'application/json', code: 'slow_request' },
+])('classifies $method $path after $duration ms with HTTP $status as $code', async ({ method, path, duration, status, contentType, code }) => {
+  const db = new DatabaseSync(':memory:');
+  let now = 1793733600000;
+  const diagnostics = new HttpDiagnostics(db, '1.4.1', () => now);
+  const server = createServer((req, res) => {
+    diagnostics.track(req, res, () => 'owner');
+    now += duration;
+    res.writeHead(status, { 'content-type': contentType });
+    res.end('done');
+  });
+  cleanup.push(() => db.close(), () => diagnostics.close(),
+    () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Test server did not bind a TCP port.');
+  await (await fetch(`http://127.0.0.1:${address.port}${path}`, { method })).text();
+  const snapshot = diagnostics.snapshot(0);
+  expect(snapshot.events.map(event => event.code)).toEqual(code ? [code] : []);
+  expect(snapshot.minutes).toMatchObject([{ transactions: 1, maxMs: duration }]);
+  expect(snapshot.runtime.activeRequests).toBe(0);
+  expect(db.prepare('SELECT count,max_ms FROM instance_http_minutes').get()).toMatchObject({ count: 1, max_ms: duration });
+});
 
 it('records top-level HTTP transactions and correlations without credentials, bodies or arbitrary URLs', async () => {
   const store = openStore(':memory:');

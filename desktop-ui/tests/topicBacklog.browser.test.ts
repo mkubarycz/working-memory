@@ -51,7 +51,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           preparations: [], nativeDrags: [], dragListeners: [], finish: null,
         };
         let panel = $state(${JSON.stringify(panel)});
+        let features = $state({ search: false });
         let drag = $state(null);
+        fixture.heartbeat = () => { features = { search: false }; };
         window.workingMemory = {
           prepareResourceDrag: (uri, label) => new Promise(resolve => fixture.preparations.push(() => resolve({
             filePath: '/tmp/test-context.md', fileUrl: 'file:///tmp/test-context.md', filename: 'test-context.md',
@@ -61,6 +63,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         };
         const treeProps = $derived({
           data: panel, loading: false, error: '', environments: [], selectedEnvironment: null,
+          onSearch: features.search ? () => {} : undefined,
           environmentLoading: false, environmentError: '',
           async onDiscoverEnvironments() {}, async onSwitchEnvironment() {}, onManageInstances() {},
           onRefresh() {}, onSettings() {}, onCollapse() {}, onOpenTopicBacklog() {}, onAddWorkstream() {},
@@ -175,12 +178,16 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
               const to = document.querySelector(\${JSON.stringify(target)});
               if (!from || !to) throw new Error('Missing drag endpoint');
               const dataTransfer = new DataTransfer();
+              let requestedEffect = 'none';
+              Object.defineProperty(dataTransfer, 'dropEffect', {
+                get: () => requestedEffect, set: value => { requestedEffect = value; },
+              });
               from.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }));
               const over = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer, metaKey: \${metaKey} });
               to.dispatchEvent(over);
               to.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer, metaKey: \${metaKey} }));
               from.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer }));
-              return { accepted: over.defaultPrevented, markdown: dataTransfer.getData('text/markdown'),
+              return { accepted: over.defaultPrevented, effect: dataTransfer.dropEffect, markdown: dataTransfer.getData('text/markdown'),
                 reference: JSON.parse(dataTransfer.getData('application/vnd.kubarycz.working-memory+json')) };
             })()\`);
           }
@@ -238,8 +245,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate("document.querySelector('.backlog .workstream-open .active-label').textContent = 'inbox'; document.querySelector('.backlog').style.width = '850px'");
           await evaluate("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row .active-open')[2].click()");
           assert.equal(await evaluate("window.__backlogTest.opens.at(-1)"), 'working-memory:/topic/grandchild.working-memory');
+          const beforePanelRefresh = await evaluate("window.__backlogTest.preparations.length");
           await evaluate("window.__backlogTest.refresh()");
           await wait("document.querySelector('.backlog [aria-label=\\"Collapse parent refreshed\\"]')");
+          assert.ok(await evaluate("window.__backlogTest.preparations.length") > beforePanelRefresh,
+            'A changed panel must still invalidate and refresh prepared document context');
           assert.equal(await evaluate("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row').length"), 3);
           const source = '.backlog [data-workstream=inbox] .active-row .active-open';
           const queue = '.rail [data-workstream=queued] .active-card-header';
@@ -293,6 +303,20 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("!document.querySelector('.active-context-menu')");
           await evaluate("window.__backlogTest.preparations.forEach(resolve => resolve())");
           await new Promise(resolve => setTimeout(resolve, 50));
+          const preparedCount = await evaluate("window.__backlogTest.preparations.length");
+          await evaluate("window.__backlogTest.heartbeat()");
+          await new Promise(resolve => setTimeout(resolve, 50));
+          assert.equal(await evaluate("window.__backlogTest.preparations.length"), preparedCount,
+            'An unchanged feature/health refresh must not re-read every document for drag preparation');
+          for (const target of ['.rail .section-progress .active-section-content', '.backlog .backlog-workstreams']) {
+            const result = await drag('.rail [data-workstream=active] .workstream-open', target);
+            assert.equal(result.accepted, true, 'Prepared native workstream must accept an internal drop');
+            assert.equal(result.effect, 'copy', 'Windows native source permits copy/link, not move');
+            assert.equal(await evaluate('window.__backlogTest.reorders.at(-1).id'), 'active');
+          }
+          const nativeTransfer = await drag(source, queue, true);
+          assert.equal(nativeTransfer.effect, 'copy');
+          assert.equal(await evaluate('window.__backlogTest.transfers.at(-1).move'), true, 'Native transport copy must preserve the logical move');
           await evaluate(\`{
             const event = new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() });
             document.querySelector('\${source}').dispatchEvent(event);

@@ -25,7 +25,7 @@
     type ActiveSectionBoundary,
     type ActiveSectionHeights,
   } from './activeSectionLayout';
-  import { ResourceDragPreparationCache, setResourceDragData, type ActiveResourceDrag } from './resourceDrag';
+  import { ResourceDragPreparationCache, resourceDropEffect, setResourceDragData, type ActiveResourceDrag } from './resourceDrag';
   import type { TopicBacklogVM } from './documents/types';
   import { backlogMoveActions } from './topicBacklog';
   import { attachTreeConnector } from './treeConnector';
@@ -105,8 +105,10 @@
   let nativeDragFilePath = $state<string | null>(null);
   let draggingWorkstreamId = $state<string | null>(null);
 
+  const panelData = $derived(data);
+  const dragEnvironment = $derived(selectedEnvironment?.mcpUrl);
   const sections = $derived(
-    (data?.items.filter((item): item is PanelWorkstreamSection => item.kind === 'workstream-section')) ?? [],
+    (panelData?.items.filter((item): item is PanelWorkstreamSection => item.kind === 'workstream-section')) ?? [],
   );
   const railSections = $derived(sections.filter(section => section.section !== 'backlog'));
   const backlogWorkstreams = $derived(sections.find(section => section.section === 'backlog')?.workstreams ?? []);
@@ -128,7 +130,7 @@
   });
 
   $effect(() => {
-    selectedEnvironment?.mcpUrl;
+    dragEnvironment;
     const visibleSections = sections;
     resourceDrags.clear();
     for (const section of visibleSections) {
@@ -139,7 +141,7 @@
           for (const topic of group.children) prepareTopicDragTree(topic);
         }
       }
-      for (const topic of data?.topicBacklog ?? []) prepareTopicDragTree(topic);
+      for (const topic of panelData?.topicBacklog ?? []) prepareTopicDragTree(topic);
     }
   });
 
@@ -389,6 +391,7 @@
     setResourceDragData(event.dataTransfer, openUri, label, prepared);
     if (!prepared) return;
     event.preventDefault();
+    if (activeDrag) activeDrag = { ...activeDrag, native: true };
     nativeDragFilePath = prepared.filePath;
     window.workingMemory.startResourceDrag(prepared);
   }
@@ -419,7 +422,7 @@
     event.preventDefault();
     event.stopPropagation();
     topicReparentTarget = parent ?? 'root';
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(topicDrag, 'move');
   }
 
   function dropTopicOnParent(event: DragEvent, parent: string | null): void {
@@ -472,7 +475,7 @@
     event.preventDefault();
     event.stopPropagation();
     topicDropTarget = targetWorkstream;
-    if (event.dataTransfer) event.dataTransfer.dropEffect = event.metaKey ? 'move' : 'copy';
+    if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(topicDrag, event.metaKey ? 'move' : 'copy');
   }
 
   function dropTopic(event: DragEvent, targetWorkstream: string): void {
@@ -490,7 +493,7 @@
   ): void {
     if (!workstreamDrag) return;
     event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(workstreamDrag, 'move');
     const boundaries = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('.active-card')]
       .map((card) => {
         const bounds = card.querySelector<HTMLElement>('.active-card-header')?.getBoundingClientRect()

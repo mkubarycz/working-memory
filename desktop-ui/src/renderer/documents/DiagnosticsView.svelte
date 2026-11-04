@@ -1,7 +1,19 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import type { DesktopDiagnostics } from '../../../../control-plane/src/diagnosticContract';
+  import QueueDiagnostics from './QueueDiagnostics.svelte';
+  import { httpDiagnosticsChart } from '../httpDiagnosticsChart';
+  import { runtimeDiagnosticsChart } from '../runtimeDiagnosticsChart';
+  import DiagnosticsTimeSeries from './DiagnosticsTimeSeries.svelte';
+  import { startVisiblePolling } from '../visiblePolling';
 
+  const tabs = [
+    { id: 'queue', label: 'Queue' }, { id: 'http', label: 'HTTP' },
+    { id: 'runtime', label: 'Runtime' }, { id: 'incidents', label: 'Automatic incident reports' },
+  ] as const;
+  let tab = $state<'queue' | 'http' | 'runtime' | 'incidents'>('queue');
+  let mounted = $state(false);
+  let refreshIntervalMs = $state(15000);
   let snapshot = $state<DesktopDiagnostics | null>(null);
   let error = $state('');
   let busy = $state(false);
@@ -13,48 +25,78 @@
     busy = true;
     try {
       const result = await window.workingMemory.getInstanceDiagnostics();
-      if (active) { snapshot = result; error = ''; }
+      if (active && !document.hidden && tab !== 'queue') { snapshot = result; error = ''; }
     } catch (cause) {
-      if (active) error = cause instanceof Error ? cause.message : String(cause);
+      if (active && !document.hidden && tab !== 'queue') error = cause instanceof Error ? cause.message : String(cause);
     } finally { busy = false; }
   }
   onMount(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), 10000);
-    return () => { active = false; clearInterval(timer); };
+    mounted = true;
+    return () => { active = false; };
   });
+  $effect(() => {
+    if (!mounted || tab === 'queue') return;
+    const interval = refreshIntervalMs;
+    return untrack(() => startVisiblePolling(refresh, interval));
+  });
+  function navigateTabs(event: KeyboardEvent): void {
+    const index = tabs.findIndex(item => item.id === tab);
+    const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+      : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
+    if (next === null) return;
+    event.preventDefault();
+    tab = tabs[next].id;
+    if (event.currentTarget instanceof HTMLElement) {
+      event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`#diagnostics-tab-${tab}`)?.focus();
+    }
+  }
 </script>
 
 <section class="diagnostics">
+  <div class="settings-tabs settings-subtabs diagnostics-tabs" role="tablist" aria-label="Diagnostics sections">
+    {#each tabs as item (item.id)}
+      <button id={`diagnostics-tab-${item.id}`} role="tab" aria-selected={tab === item.id}
+        aria-controls={`diagnostics-panel-${item.id}`} tabindex={tab === item.id ? 0 : -1}
+        onkeydown={navigateTabs} onclick={() => { tab = item.id; }}>{item.label}</button>
+    {/each}
+  </div>
+  <div id={`diagnostics-panel-${tab}`} role="tabpanel" aria-labelledby={`diagnostics-tab-${tab}`}>
   <h2>Instance diagnostics</h2>
-  <p>Only the selected environment is monitored while the desktop is running. Reports are queued locally during outages and
-    saved as topics in Inbox when the instance is reachable and signed in. Review there before sending feedback.</p>
-  <p>No credentials, document content, request bodies, query strings or raw logs are collected.</p>
-  <button disabled={busy} onclick={() => void refresh()}>Refresh</button>
+  <label class="refresh-control">Refresh
+    <select aria-label="Refresh interval" bind:value={refreshIntervalMs}>
+      <option value={2000}>2 seconds</option>
+      <option value={5000}>5 seconds</option>
+      <option value={15000}>15 seconds</option>
+      <option value={30000}>30 seconds</option>
+      <option value={60000}>1 minute</option>
+    </select>
+  </label>
+  {#if tab === 'queue'}
+    <QueueDiagnostics {refreshIntervalMs} />
+  {:else}
+  <p>Persisted telemetry excludes credentials, document content, request bodies, query strings and raw logs.</p>
   {#if error || snapshot?.error}<p role="alert">{error || snapshot?.error}</p>{/if}
-  {#if snapshot?.instance}
+  {#if snapshot?.instance && tab === 'runtime'}
     {@const instance = snapshot.instance}
     <h3>Runtime</h3>
     <p>Backend {instance.version} &middot; Started {date(instance.startedAt)}</p>
     <p>Heap {mib(instance.runtime.heapUsedBytes)} / {mib(instance.runtime.heapLimitBytes)} &middot;
       RSS {mib(instance.runtime.rssBytes)} &middot; Event-loop max {instance.runtime.eventLoopMaxMs.toFixed(0)} ms</p>
     <p>{instance.runtime.activeSessions} active MCP sessions &middot; {instance.runtime.activeRequests} in-flight HTTP requests</p>
-    {#if instance.runtime.admissionBlocked}<p role="alert">New MCP sessions blocked by the 60% heap safety cutoff.</p>{/if}
-    <h3>HTTP transactions per minute</h3>
-    <table>
-      <thead><tr><th>Minute</th><th>Transactions</th><th>Errors</th><th>Average ms</th><th>Max ms</th></tr></thead>
-      <tbody>{#each instance.minutes as minute (minute.at)}
-        <tr><td>{date(minute.at)}</td><td>{minute.transactions}</td><td>{minute.errors}</td>
-          <td>{minute.averageMs.toFixed(0)}</td><td>{minute.maxMs.toFixed(0)}</td></tr>
-      {/each}</tbody>
-    </table>
-    <h3>Callers, routes and status codes (last minute)</h3>
-    <table>
-      <thead><tr><th>Caller</th><th>Route</th><th>HTTP status</th><th>Transactions</th></tr></thead>
-      <tbody>{#each instance.callers as caller}
-        <tr><td>{caller.caller}</td><td>{caller.route}</td><td>{caller.status}</td><td>{caller.transactions}</td></tr>
-      {/each}</tbody>
-    </table>
+    {#if instance.runtime.admissionBlocked}<p role="alert">New MCP sessions and queued tool dispatch blocked by the 60% heap safety cutoff.</p>{/if}
+    <h3>Runtime history</h3>
+    <p>CPU 100% is one logical core. GC is observed, never forced. Gaps and backend restarts break the traces.</p>
+    <DiagnosticsTimeSeries chart={runtimeDiagnosticsChart(instance.samples)} label="Normalized runtime time series"
+      description="Memory, CPU, event-loop delay, garbage collection and tool activity, independently normalized to each series' peak"
+      emptyMessage="No runtime samples are available for this environment." />
+  {:else if snapshot?.instance && tab === 'http'}
+    {@const instance = snapshot.instance}
+    <h3>HTTP time series</h3>
+    <p>Observed {date(instance.observedAt)}. Minute buckets may be incomplete; durations include long-poll and stream waiting.</p>
+    <DiagnosticsTimeSeries chart={httpDiagnosticsChart(instance.minutes)} label="Normalized HTTP time series"
+      description="Transactions, errors, average and maximum duration, independently normalized to each series' peak"
+      emptyMessage="No HTTP samples are available for this environment." />
     <h3>Persistent instance error log</h3>
     <p>Newest 100 events; repeated errors are grouped by minute. Request ID identifies the latest occurrence in each group.</p>
     <table>
@@ -64,8 +106,18 @@
           <td>{event.durationMs.toFixed(0)}</td><td>{event.count}</td><td>{event.requestId ?? '-'}</td></tr>
       {/each}</tbody>
     </table>
+    <details>
+      <summary>Current callers, routes and status codes (last minute)</summary>
+      <p>This is a current breakdown, not a time series.</p>
+      <ul>{#each instance.callers as caller}
+        <li>{caller.caller} &middot; {caller.route} &middot; HTTP {caller.status} &middot; {caller.transactions} transactions</li>
+      {:else}<li>No caller activity in the last minute.</li>{/each}</ul>
+    </details>
   {/if}
+  {#if tab === 'incidents'}
   <h3>Automatic incident reports</h3>
+  <p>Only the selected environment is monitored while the desktop is running. Reports are queued locally during outages and
+    saved as topics in Inbox when the instance is reachable and signed in. Review there before sending feedback.</p>
   {#each snapshot?.incidents ?? [] as incident (incident.id)}
     <article>
       <strong>{incident.kind.replaceAll('_', ' ')} &middot; {date(incident.at)}</strong>
@@ -75,6 +127,9 @@
       {:else}<p>Queued for Inbox. {incident.deliveryError ?? 'Waiting for the selected backend to recover.'}</p>{/if}
     </article>
   {:else}<p>No incidents recorded for this environment.</p>{/each}
+  {/if}
+  {/if}
+  </div>
 </section>
 
 <style>
@@ -82,4 +137,6 @@
   table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
   th, td { text-align: left; padding: 6px; border-bottom: 1px solid var(--border-color, #444); overflow-wrap: anywhere; }
   article { padding: 12px 0; border-bottom: 1px solid var(--border-color, #444); }
+  .diagnostics-tabs button { color: var(--desktop-accent-strong, #ad1b63); }
+  .refresh-control { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 </style>

@@ -7,7 +7,8 @@ import { instancePermissionsSchema } from '../../../control-plane/src/instancePe
 import type { InstanceAccessAction } from '../shared/instanceIdentity';
 import { heapCollectionSchema, heapCollectionRequestSchema, heapReportRequestSchema, sessionPolicySchema, sessionSnapshotSchema,
   type HeapCollection, type SessionPolicy, type SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
-import { diagnosticsSchema, incidentReportRequestSchema, type InstanceDiagnostics, type InstanceIncident } from '../../../control-plane/src/diagnosticContract';
+import { diagnosticsSchema, incidentReportRequestSchema, toolQueueSnapshotSchema, queuedRequestSchema,
+  type InstanceDiagnostics, type InstanceIncident, type ToolQueueSnapshot } from '../../../control-plane/src/diagnosticContract';
 
 const statusSchema = z.object({ passwordConfigured: z.boolean(), passwordHint: z.string().max(1000),
   authenticated: z.boolean(), scope: z.literal('instance') });
@@ -228,6 +229,24 @@ export class DesktopInstanceIdentity {
     const result = await this.request(mcpUrl, '/identity/v1/incidents',
       incidentReportRequestSchema.parse({ id, environment, at, kind, evidence }), token, signal);
     return z.object({ topicId: z.string().uuid() }).parse(result).topicId;
+  }
+
+  async toolQueue(mcpUrl: string): Promise<ToolQueueSnapshot> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to view the tool queue.');
+    try {
+      return toolQueueSnapshotSchema.parse(await this.request(mcpUrl, '/identity/v1/tool-queue', undefined, token));
+    } catch (error) {
+      if (error instanceof InstanceHttpError && error.status === 404) throw new Error('This backend does not support queue diagnostics. Upgrade it first.');
+      throw error;
+    }
+  }
+
+  async queuedRequest(mcpUrl: string, requestId: string): Promise<{ requestId: string; body: unknown }> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to inspect a queued request.');
+    const id = z.string().uuid().parse(requestId);
+    return queuedRequestSchema.parse(await this.request(mcpUrl, `/identity/v1/tool-queue/${id}`, undefined, token));
   }
 
   async collectHeap(mcpUrl: string, expectedStartedAt: number, reportTopicId: string): Promise<{ collection: HeapCollection; snapshot: SessionSnapshot }> {

@@ -202,7 +202,7 @@ it('binds sessions to their credential and handles explicit termination without 
   }
 });
 
-it('enforces count and heap admission limits on real handshakes while keeping current sessions usable', async () => {
+it('enforces handshake limits and queues existing-session tools under pressure while diagnostics stay available', async () => {
   const f = await fixture();
   await f.policy({ maxPerClient: 1, maxTotal: 2 });
   const first = await f.connect();
@@ -211,8 +211,12 @@ it('enforces count and heap admission limits on real handshakes while keeping cu
   f.memory(600);
   await expect(f.connect(issued.token)).rejects.toMatchObject({ code: 503 });
   expect((await f.snapshot()).events[0].type).toBe('memory_rejected');
-  expect((await first.client.callTool({ name: 'wm-ping', arguments: {} })).isError).not.toBe(true);
+  const pending = first.client.callTool({ name: 'wm-ping', arguments: {} });
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
+  expect((await f.request('/health')).status).toBe(200);
+  expect((await f.request('/identity/v1/diagnostics')).status).toBe(200);
   f.memory(599);
+  expect((await pending).isError).not.toBe(true);
   await f.connect(issued.token);
   await expect(f.connect(f.enroll().token)).rejects.toMatchObject({ code: 503 });
   expect((await f.snapshot()).events[0].type).toBe('global_quota');
@@ -234,6 +238,99 @@ it('recovers the first document, catalog, and AgentMessage read after expiry wit
     if (!Array.isArray(result)) expect(result.available).toBe(true);
     expect((await f.snapshot()).active).toHaveLength(1);
   }
+});
+
+it('provides an owner-only live payload inspector while persisting only bounded, content-free queue events', async () => {
+  const f = await fixture(), kind = getKind('Topic');
+  if (!kind) throw new Error('Topic kind is not loaded');
+  const original = kind.registerApi;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const calls: Promise<unknown>[] = [];
+  kind.registerApi = (server, store) => {
+    original?.(server, store);
+    server.registerTool('test-wait', { inputSchema: {} }, async () => {
+      await gate;
+      return { content: [{ type: 'text', text: 'completed' }] };
+    });
+  };
+  try {
+    const { client } = await f.connect(), issued = f.enroll();
+    for (let index = 0; index < 5; index++) calls.push(client.callTool({ name: 'test-wait', arguments: { private: 'PRIVATE_QUEUED_CONTENT' } }));
+    await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
+    const queueResponse = await f.request('/identity/v1/tool-queue');
+    expect(queueResponse.headers.get('cache-control')).toBe('no-store');
+    const snapshot = await queueResponse.json();
+    expect(snapshot).toMatchObject({ running: 4, waiting: 1 });
+    expect(JSON.stringify(snapshot)).not.toContain('PRIVATE_QUEUED_CONTENT');
+    const item = snapshot.items.find((item: { startedAt?: number }) => item.startedAt === undefined);
+    const path = `/identity/v1/tool-queue/${item.requestId}`;
+    expect((await f.request(path, {}, '')).status).toBe(401);
+    expect((await f.request(path, {}, issued.token)).status).toBe(401);
+    expect((await f.request(path, { headers: { origin: 'http://untrusted.invalid' } })).status).toBe(400);
+    expect((await f.request(`${path}?token=secret`)).status).toBe(400);
+    expect((await f.request(path, { method: 'POST' })).status).toBe(405);
+    const inspected = await f.request(path);
+    expect(inspected.headers.get('cache-control')).toBe('no-store');
+    expect(await inspected.json()).toMatchObject({ requestId: item.requestId,
+      body: { method: 'tools/call', params: { arguments: { private: 'PRIVATE_QUEUED_CONTENT' } } } });
+    release();
+    await Promise.all(calls);
+    expect((await f.request(path)).status).toBe(404);
+    const log = f.store.db.prepare('SELECT * FROM instance_tool_queue_events').all();
+    expect(log.filter(event => event.event === 'completed')).toHaveLength(5);
+    expect(JSON.stringify(log)).not.toContain('PRIVATE_QUEUED_CONTENT');
+  } finally { release(); await Promise.allSettled(calls); kind.registerApi = original; }
+});
+
+it('never dispatches an expired queued mutation, even when headroom returns after a delayed event loop', async () => {
+  const f = await fixture(), { client } = await f.connect();
+  f.memory(600);
+  const pending = client.callTool({ name: 'ws-topic-create', arguments: { title: 'NEVER_EXECUTED_TITLE' } });
+  const rejected = expect(pending).rejects.toMatchObject({ code: 503 });
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
+  f.advance(5000);
+  f.memory(599);
+  await client.callTool({ name: 'wm-ping', arguments: {} });
+  await rejected;
+  expect(await client.callTool({ name: 'ws-topic-read', arguments: { query: 'NEVER_EXECUTED_TITLE' } }))
+    .toMatchObject({ content: [{ type: 'text', text: expect.stringMatching(/"count"\s*:\s*0/) }] });
+  expect((await (await f.request('/identity/v1/tool-queue')).json()).events)
+    .toEqual(expect.arrayContaining([expect.objectContaining({ event: 'expired', operation: 'ws-topic-create' })]));
+});
+
+it('reauthenticates queued calls before dispatch so revocation cannot be bypassed by waiting', async () => {
+  const f = await fixture(), issued = f.enroll(), { client } = await f.connect(issued.token);
+  const clientId = f.access.authenticate(issued.token)?.clientId;
+  if (!clientId) throw new Error('Expected client credential.');
+  f.memory(600);
+  const pending = client.callTool({ name: 'wm-ping', arguments: {} });
+  const rejected = expect(pending).rejects.toMatchObject({ code: 401 });
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
+  f.access.revoke(f.owner.token, clientId);
+  f.memory(599);
+  await rejected;
+  expect((await f.request('/health')).status).toBe(200);
+});
+
+it('removes a disconnected HTTP call from the queue without executing its mutation', async () => {
+  const f = await fixture(), { transport, client } = await f.connect(), controller = new AbortController();
+  f.memory(600);
+  const pending = f.request('/mcp', {
+    method: 'POST', signal: controller.signal,
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream',
+      'mcp-session-id': transport.sessionId! },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 123, method: 'tools/call',
+      params: { name: 'ws-topic-create', arguments: { title: 'CANCELLED_QUEUED_TITLE' } } }),
+  });
+  const cancelled = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
+  controller.abort();
+  await cancelled;
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(0));
+  f.memory(599);
+  expect(await client.callTool({ name: 'ws-topic-read', arguments: { query: 'CANCELLED_QUEUED_TITLE' } }))
+    .toMatchObject({ content: [{ type: 'text', text: expect.stringMatching(/"count"\s*:\s*0/) }] });
 });
 
 it('never replays generic calls or typed and document writes after expiration', async () => {

@@ -291,6 +291,12 @@ describe('local Copilot provider', () => {
       text: 'Read the topic.', calls: [],
     });
     expect(sdk.session.sendAndWait.mock.calls[1][0].prompt).toContain('\\"title\\":\\"Test\\"');
+    const transcript = JSON.parse(sdk.session.sendAndWait.mock.calls[1][0].prompt).transcript;
+    expect(JSON.parse(transcript[1].content)).toEqual({
+      text: '', calls: [{ name: 'ws-topic-read', arguments: { id: 'test' } }],
+    });
+    expect(transcript[2]).toMatchObject({ role: 'host', callId: turn.calls[0].id });
+    expect(sdk.session.sendAndWait.mock.calls[1][0].prompt).not.toContain('tool_calls');
     expect(sdk.client.createSession).toHaveBeenCalledTimes(2);
     expect(sdk.client.deleteSession).toHaveBeenCalledTimes(2);
   });
@@ -306,6 +312,34 @@ describe('local Copilot provider', () => {
       attachments: [{ type: 'blob', mimeType: 'image/png', data: 'aGVsbG8=', displayName: 'Image 1' }],
     }), 1000);
     expect(sdk.session.sendAndWait.mock.calls[0][0].prompt).not.toContain('aGVsbG8=');
+  });
+
+  it('requests one format correction without executing malformed proposals or resetting the deadline', async () => {
+    sdk.session.sendAndWait
+      .mockResolvedValueOnce({ data: { content: '<invoke name="ws-topic-read">test</invoke>' } })
+      .mockResolvedValueOnce({ data: { content: '{"text":"","calls":[{"name":"ws-topic-read","arguments":{"id":"test"}}]}' } });
+    const provider = new LocalCopilotProvider();
+    const conversation = createModelConversation({
+      mode: 'chat-completions', model: 'auto', systemPrompt: 'Working Memory rules',
+      userMessage: 'Read test', tools,
+    });
+    const turn = await provider.turn(conversation, 1000, new AbortController().signal);
+    expect(turn.calls[0]).toMatchObject({ name: 'ws-topic-read', arguments: { id: 'test' } });
+    expect(sdk.session.sendAndWait).toHaveBeenCalledTimes(2);
+    const retry = JSON.parse(sdk.session.sendAndWait.mock.calls[1][0].prompt);
+    expect(retry.correction).toContain('no proposed action was executed');
+    expect(sdk.session.sendAndWait.mock.calls[1][1]).toBeLessThanOrEqual(1000);
+    expect(sdk.client.deleteSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails explicitly when the single format correction is invalid too', async () => {
+    sdk.session.sendAndWait.mockResolvedValue({ data: { content: 'not JSON' } });
+    const conversation = createModelConversation({
+      mode: 'chat-completions', model: 'auto', systemPrompt: 'rules', userMessage: 'Read', tools,
+    });
+    await expect(new LocalCopilotProvider().turn(conversation, 1000, new AbortController().signal))
+      .rejects.toThrow('invalid model-turn JSON');
+    expect(sdk.session.sendAndWait).toHaveBeenCalledTimes(2);
   });
 });
 
