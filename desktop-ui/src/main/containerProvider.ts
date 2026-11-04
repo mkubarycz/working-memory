@@ -154,8 +154,8 @@ export class ContainerProviderAdapter {
 
   imageReference(image: string, expectedImage?: string): string {
     const unqualified = image.startsWith('localhost/') ? image.slice('localhost/'.length) : image;
-    return this.provider === 'podman' && !unqualified.includes('/')
-      && (!expectedImage || unqualified === expectedImage) ? unqualified : image;
+    return this.provider === 'podman'
+      && (expectedImage ? unqualified === expectedImage : !unqualified.includes('/')) ? unqualified : image;
   }
 
   inspect(raw: string, expectedImage?: string): unknown {

@@ -1,10 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ContainerProviderAdapter } from '../src/main/containerProvider';
-import { checkContainerOwnership } from '../src/main/containerOwnership';
+import { assertContainerProviderForClaims, checkContainerOwnership, readContainerOwnership } from '../src/main/containerOwnership';
 import { dockerCliPath, dockerEnvironment } from '../src/main/dockerCli';
 import { readContainerProvider, writeContainerProvider } from '../src/main/containerProviderSettings';
 import { CommandExecutionError, DockerContainerService, MANAGED_LABEL, CLAIM_LABEL, type CommandRunner } from '../src/main/dockerContainerService';
@@ -152,6 +152,14 @@ describe('shared container provider adapter', () => {
     }]);
     expect(adapter.inspect(JSON.stringify([original]), 'other:1.7.0')).toMatchObject([{ Config: original.Config }]);
   });
+
+  it('normalizes an exact expected namespaced image, but never guesses a registry or namespace', () => {
+    const adapter = new ContainerProviderAdapter({ provider: 'podman', host, runner: podmanRunner() });
+    expect(adapter.imageReference('localhost/team/app:local', 'team/app:local')).toBe('team/app:local');
+    expect(adapter.imageReference('localhost/team/app:local')).toBe('localhost/team/app:local');
+    expect(adapter.imageReference('localhost/team/app:local', 'other/app:local')).toBe('localhost/team/app:local');
+    expect(adapter.imageReference('registry.example/team/app:local', 'team/app:local')).toBe('registry.example/team/app:local');
+  });
 });
 
 describe('provider settings and storage ownership', () => {
@@ -176,6 +184,19 @@ describe('provider settings and storage ownership', () => {
     expect(checkContainerOwnership(dir, 'app', owner)).toBe(true);
     expect(() => checkContainerOwnership(dir, 'app', { ...owner, provider: 'podman' }, true)).toThrow('another container provider');
     expect(() => checkContainerOwnership(dir, 'app', { ...owner, connection: 'other' })).toThrow('another container provider');
+  });
+
+  it('allows returning to a stateful app owner across environments, including legacy Docker apps', () => {
+    const dir = directory();
+    const claims = [{ id: 'legacy', runtime: { type: 'docker' as const, buildContext: '/repo', dockerfile: '/repo/Dockerfile',
+      imageName: 'app:local', containerName: 'app', hostPort: 4173, containerPort: 80, entryPath: '/', healthPath: '/',
+      volumes: [{ name: 'data', mountPath: '/data' }] } }];
+    expect(() => assertContainerProviderForClaims(dir, 'podman', [])).not.toThrow();
+    expect(() => assertContainerProviderForClaims(dir, 'podman', claims)).toThrow('original provider');
+    expect(() => assertContainerProviderForClaims(dir, 'docker', claims)).not.toThrow();
+    checkContainerOwnership(dir, 'legacy', { provider: 'podman', connection: 'local-machine' }, true);
+    expect(() => assertContainerProviderForClaims(dir, 'podman', claims)).not.toThrow();
+    expect(() => assertContainerProviderForClaims(dir, 'docker', claims)).toThrow('original provider');
   });
 });
 
@@ -263,7 +284,94 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     await expect(manager.create()).rejects.toThrow('then Retry');
     expect(calls.some(args => args[0] === 'load' || (args[0] === 'volume' && args[1] === 'create'))).toBe(false);
     expect(manager.instances).toEqual([]);
+    expect(readContainerOwnership(join(dir, 'ownership'), 'data-tier')).toBeUndefined();
+    expect(existsSync(join(dir, 'pending-instance.json'))).toBe(false);
     expect(await manager.list()).toMatchObject({ dockerError: expect.stringContaining('Compose is missing or unavailable') });
+  });
+
+  it('allows choosing Podman after Docker fails its Compose dependency check on a fresh install', async () => {
+    const fixture = backend();
+    const runner = localDockerRunner({ run: vi.fn(async (_file, args) => {
+      if (args[0] === 'compose') throw new CommandExecutionError('Compose missing', 1);
+      return { stdout: '', stderr: '' };
+    }) });
+    const dockerRunner: CommandRunner = { run(file, args, options) {
+      if (args.includes('compose')) return Promise.reject(new CommandExecutionError('Compose missing', 1));
+      return runner.run(file, args, options);
+    } };
+    const manager = new DataTierManager({
+      ...host, buildContext: fixture.dir, stateDirectory: fixture.dir, version: '1.7.0',
+      runner: dockerRunner, fileExists: path => path.endsWith('docker.exe'), portAvailable: async () => true,
+    });
+    await expect(manager.create()).rejects.toThrow('Compose is missing');
+    expect(readContainerOwnership(join(fixture.dir, 'ownership'), 'data-tier')).toBeUndefined();
+    expect(await fixture.manager().create()).toMatchObject({ port: 7717, provider: 'podman' });
+  });
+
+  it.each(['load', 'compose'])('reuses the same pending Windows volume and port after %s fails, even after desktop restart', async failure => {
+    const fixture = backend();
+    let failing = true;
+    const runner: CommandRunner = { run(file, args, options) {
+      if (failing && (failure === 'load' ? args.includes('load') : args.includes('up'))) {
+        return Promise.reject(new CommandExecutionError('temporary failure', 1));
+      }
+      return fixture.runner.run(file, args, options);
+    } };
+    const manager = () => new DataTierManager({
+      ...host, provider: 'podman', buildContext: fixture.dir, stateDirectory: fixture.dir, version: '1.7.0',
+      runner, fileExists: path => path.endsWith('podman.exe'), portAvailable: async () => true,
+      healthy: async () => true,
+    });
+    await expect(manager().create('Recover me')).rejects.toThrow('temporary failure');
+    await expect(manager().create('Do not allocate another port')).rejects.toThrow('temporary failure');
+    expect(JSON.parse(readFileSync(join(fixture.dir, 'pending-instance.json'), 'utf8'))).toMatchObject({
+      instance: { port: 7717, name: 'Recover me' }, storageReady: true,
+    });
+    failing = false;
+    expect(await manager().create()).toMatchObject({ port: 7717, name: 'Recover me' });
+    expect(fixture.calls.filter(args => args[0] === 'volume' && args[1] === 'create')).toEqual([['volume', 'create', 'working-memory-data']]);
+    expect(existsSync(join(fixture.dir, 'pending-instance.json'))).toBe(false);
+    expect(manager().instances).toHaveLength(1);
+  });
+
+  it('refuses to replace a lost pending volume after an image-load failure', async () => {
+    const fixture = backend();
+    const runner: CommandRunner = { run(file, args, options) {
+      if (args.includes('load')) return Promise.reject(new CommandExecutionError('archive failure', 1));
+      return fixture.runner.run(file, args, options);
+    } };
+    const manager = () => new DataTierManager({
+      ...host, provider: 'podman', buildContext: fixture.dir, stateDirectory: fixture.dir, version: '1.7.0',
+      runner, fileExists: path => path.endsWith('podman.exe'), portAvailable: async () => true,
+    });
+    await expect(manager().create()).rejects.toThrow('archive failure');
+    fixture.loseVolume();
+    fixture.calls.length = 0;
+    await expect(manager().create()).rejects.toThrow('Refusing to create an empty replacement');
+    expect(fixture.calls.some(args => args[1] === 'create')).toBe(false);
+  });
+
+  it.each(['start', 'stop'] as const)('pins legacy data-tier connections on %s and refuses later context changes', async operation => {
+    const dir = directory();
+    writeFileSync(join(dir, 'instances.json'), JSON.stringify({ instances: [{ port: 7717, name: 'Legacy' }] }));
+    let endpoint = 'unix:///original.sock';
+    const mutations: string[][] = [];
+    const runner: CommandRunner = { run: vi.fn(async (_file, args) => {
+      const command = args.slice(2);
+      if (command[0] === 'context') return { stdout: JSON.stringify(endpoint), stderr: '' };
+      if (command[0] === 'ps') return { stdout: 'working-memory-control-plane\texited\tExited\tworking-memory-control-plane:1.7.0', stderr: '' };
+      if (command[0] === 'start' || command[0] === 'stop') mutations.push(command);
+      return { stdout: '', stderr: '' };
+    }) };
+    const manager = () => new DataTierManager({
+      ...host, buildContext: dir, stateDirectory: dir, version: '1.7.0', runner,
+      fileExists: path => path.endsWith('docker.exe'), healthy: async () => true,
+    });
+    await manager()[operation](7717);
+    expect(manager().instances[0]).toMatchObject({ provider: 'docker', connection: 'desktop-linux (unix:///original.sock)' });
+    endpoint = 'unix:///other.sock';
+    await expect(manager()[operation](7717)).rejects.toThrow('another container provider or connection');
+    expect(mutations).toHaveLength(1);
   });
 
   it.each([
@@ -337,7 +445,7 @@ describe('Podman Container Apps', () => {
   const claim: ContainerClaim = {
     id: 'test-app', title: 'Test app', repository: '/repo', created_at: 1, updated_at: 1, resourceVersion: 1,
     runtime: { type: 'docker', buildContext: '/repo', dockerfile: '/repo/Dockerfile',
-      imageName: 'test-app:local', containerName: 'test-app', hostPort: 4173, containerPort: 80, entryPath: '/', healthPath: '/',
+      imageName: 'team/test-app:local', containerName: 'test-app', hostPort: 4173, containerPort: 80, entryPath: '/', healthPath: '/',
       volumes: [{ name: 'test-app-data', mountPath: '/data' }] },
   };
 
@@ -346,7 +454,7 @@ describe('Podman Container Apps', () => {
     const calls: string[][] = [];
     const inspected = {
       Image: 'sha256:abc', State: { Running: true, Healthcheck: { Status: 'healthy' } },
-      Config: { Image: 'localhost/test-app:local', Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: claim.id } },
+      Config: { Image: 'localhost/team/test-app:local', Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: claim.id } },
       HostConfig: { PortBindings: { '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '4173' }] } },
       Mounts: [{ Name: 'test-app-data', Type: 'volume', Destination: '/data' }],
     };
@@ -362,7 +470,11 @@ describe('Podman Container Apps', () => {
     });
     const stateDirectory = directory();
     const service = new DockerContainerService({ provider: 'podman', stateDirectory, runner, readiness: async () => true });
-    expect(await service.launch(claim)).toMatchObject({ status: 'ready', action: 'created' });
+    expect(await service.ensure({
+      containerClaimRead: async () => [],
+      containerClaimCreate: async () => claim,
+      containerClaimUpdate: async () => claim,
+    }, claim)).toMatchObject({ status: 'ready', action: 'created' });
     expect(await service.launch(claim)).toMatchObject({ status: 'ready', action: 'reused' });
     expect(await service.inspect(claim)).toMatchObject({ ready: true, state: 'healthy' });
     expect(await service.stop(claim)).toMatchObject({ status: 'stopped' });
@@ -376,5 +488,86 @@ describe('Podman Container Apps', () => {
     expect(await service.launch(claim)).toMatchObject({ status: 'error', code: 'container_conflict' });
     expect(calls.some(args => args.includes('--context'))).toBe(false);
     expect(calls).toContainEqual(['volume', 'create', 'test-app-data']);
+  });
+
+  it('refuses unverified legacy stateful claims on Podman after changing environments, before reserving ownership or creating data', async () => {
+    const dir = directory();
+    const runner = podmanRunner();
+    const service = new DockerContainerService({ provider: 'podman', stateDirectory: dir, runner });
+    expect(await service.launch(claim)).toMatchObject({
+      status: 'error', message: expect.stringContaining('Legacy apps belong to Docker'),
+    });
+    expect(readContainerOwnership(dir, claim.id)).toBeUndefined();
+    expect(readContainerOwnership(dir, 'volume:test-app-data')).toBeUndefined();
+    expect(vi.mocked(runner.run).mock.calls.some(([, args]) => args.includes('build')
+      || args.includes('run') || args.includes('create'))).toBe(false);
+  });
+
+  it.each(['reuse', 'start', 'inspect', 'stop'])('adopts legacy Docker app and volume ownership during %s, then refuses lost storage', async operation => {
+    const dir = directory();
+    let containerPresent = true;
+    let volumePresent = true;
+    const calls: string[][] = [];
+    const inspected = {
+      Image: 'sha256:abc', State: { Running: operation !== 'start' },
+      Config: { Image: claim.runtime!.imageName, Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: claim.id } },
+      HostConfig: { PortBindings: { '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '4173' }] } },
+      Mounts: [{ Name: 'test-app-data', Type: 'volume', Destination: '/data' }],
+    };
+    const runner = localDockerRunner({ run: vi.fn(async (_file, args) => {
+      calls.push(args);
+      if (args[0] === 'container' && args[1] === 'inspect') {
+        if (!containerPresent) throw new CommandExecutionError('No such container', 1);
+        return { stdout: JSON.stringify([inspected]), stderr: '' };
+      }
+      if (args[0] === 'volume' && args[1] === 'inspect' && !volumePresent) throw new CommandExecutionError('No such volume', 1);
+      return { stdout: args[0] === 'image' ? 'abc' : '', stderr: '' };
+    }) });
+    const manager = () => new DockerContainerService({ stateDirectory: dir, runner, readiness: async () => true });
+    if (operation === 'inspect') expect(await manager().inspect(claim)).toMatchObject({ state: 'healthy' });
+    else if (operation === 'stop') expect(await manager().stop(claim)).toMatchObject({ status: 'stopped' });
+    else expect(await manager().launch(claim)).toMatchObject({ status: 'ready', action: operation === 'reuse' ? 'reused' : 'started' });
+    expect(readContainerOwnership(dir, claim.id)).toMatchObject({ provider: 'docker' });
+    expect(readContainerOwnership(dir, 'volume:test-app-data')).toMatchObject({ provider: 'docker' });
+    containerPresent = false;
+    volumePresent = false;
+    calls.length = 0;
+    expect(await manager().launch(claim)).toMatchObject({ status: 'error', message: expect.stringContaining('No such volume') });
+    expect(calls.some(args => args[1] === 'create' || args[1] === 'run' || args[1] === 'rm')).toBe(false);
+  });
+
+  it('refuses to manufacture storage for a claim adopted before volume ownership was recorded', async () => {
+    const dir = directory();
+    checkContainerOwnership(dir, claim.id, { provider: 'docker', connection: 'desktop-linux (unix:///local/docker.sock)' }, true);
+    const calls: string[][] = [];
+    const runner = localDockerRunner({ run: vi.fn(async (_file, args) => {
+      calls.push(args);
+      if (args[0] === 'container') throw new CommandExecutionError('No such container', 1);
+      return { stdout: args[0] === 'image' ? 'abc' : '', stderr: '' };
+    }) });
+    const service = new DockerContainerService({ stateDirectory: dir, runner });
+    expect(await service.launch(claim)).toMatchObject({ status: 'error', message: expect.stringContaining('empty replacement volume') });
+    expect(calls.some(args => args[1] === 'create' || args[1] === 'run')).toBe(false);
+  });
+
+  it('retains explicit new-claim provisioning intent across a build failure and retry', async () => {
+    const dir = directory();
+    let failing = true;
+    const calls: string[][] = [];
+    const runner = podmanRunner(async args => {
+      calls.push(args);
+      if (args[0] === 'build' && failing) throw new CommandExecutionError('temporary build failure', 1);
+      if (args[0] === 'container' && args[1] === 'inspect') throw new CommandExecutionError('No such container', 1);
+      return { stdout: args[0] === 'image' ? 'abc' : '', stderr: '' };
+    });
+    const service = () => new DockerContainerService({ stateDirectory: dir, provider: 'podman', runner, readiness: async () => true });
+    expect(await service().ensure({
+      containerClaimRead: async () => [],
+      containerClaimCreate: async () => claim,
+      containerClaimUpdate: async () => claim,
+    }, claim)).toMatchObject({ status: 'error', code: 'build_failed' });
+    failing = false;
+    expect(await service().launch(claim)).toMatchObject({ status: 'ready', action: 'created' });
+    expect(calls.filter(args => args[0] === 'volume' && args[1] === 'create')).toEqual([['volume', 'create', 'test-app-data']]);
   });
 });

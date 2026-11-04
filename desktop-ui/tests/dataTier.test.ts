@@ -314,7 +314,8 @@ describe('data tier launcher', () => {
       await manager.upgrade(7720);
       expect(containers.get('working-memory-control-plane-7720')?.image).toBe('working-memory-control-plane:2.0.0');
       await expect(manager.rename(7720, '  Renamed ')).resolves.toMatchObject({ name: 'Renamed' });
-      expect(manager.instances).toEqual([{ port: 7720, name: 'Renamed', createdAt: '', image: 'working-memory-control-plane:2.0.0' }]);
+      expect(manager.instances).toEqual([{ port: 7720, name: 'Renamed', createdAt: '', image: 'working-memory-control-plane:2.0.0',
+        provider: 'docker', connection: 'desktop-linux (unix:///local/docker.sock)' }]);
       await expect(manager.rename(7720, '   ')).rejects.toThrow('name is required');
       await expect(manager.start(7799)).rejects.toMatchObject({ code: 'not-found' });
     });

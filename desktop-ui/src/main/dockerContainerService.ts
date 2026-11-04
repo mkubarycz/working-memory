@@ -176,6 +176,7 @@ export class DockerContainerService {
     signal?: AbortSignal,
   ): Promise<ContainerLaunchResult> {
     let claim: ContainerClaim;
+    let newlyCreated = false;
     try {
       const existing = desired.id
         ? (await claimClient.containerClaimRead({ id: desired.id }))[0]
@@ -185,6 +186,7 @@ export class DockerContainerService {
           )
           : undefined;
       const { id: _id, ...createInput } = desired;
+      newlyCreated = !existing;
       claim = existing
         ? await this.updateClaimIfNeeded(claimClient, existing, desired)
         : await claimClient.containerClaimCreate(createInput);
@@ -192,10 +194,14 @@ export class DockerContainerService {
       return failure('claim_error', `Unable to ensure the ${desired.title} ContainerClaim.`, error);
     }
 
-    return this.launch(claim, signal);
+    return this.launchClaim(claim, signal, newlyCreated);
   }
 
   async launch(claim: ContainerClaim, signal?: AbortSignal): Promise<ContainerLaunchResult> {
+    return this.launchClaim(claim, signal);
+  }
+
+  private async launchClaim(claim: ContainerClaim, signal?: AbortSignal, newlyCreated = false): Promise<ContainerLaunchResult> {
     if (!claim.runtime || claim.runtime.type !== 'docker') {
       return { status: 'error', code: 'claim_error', message: 'ContainerClaim has no container runtime specification.' };
     }
@@ -209,7 +215,19 @@ export class DockerContainerService {
     let context: string;
     try {
       context = await this.resolveDockerContext(signal);
-      this.ownership(context, claim.id, true);
+      const owned = this.ownership(context, claim.id);
+      if (this.options.stateDirectory && runtime.volumes?.length && !owned
+        && !newlyCreated && this.provider.provider !== 'docker') {
+        throw new Error('Stateful Container App ownership is unverified. Legacy apps belong to Docker; restore their original provider instead of creating replacement volumes.');
+      }
+      if (newlyCreated && this.options.stateDirectory) {
+        validateVolumes(runtime.volumes);
+        const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
+        for (const volume of runtime.volumes ?? []) {
+          checkContainerOwnership(this.options.stateDirectory, `pending-volume:${claim.id}:${volume.name}`, owner, true);
+        }
+        this.ownership(context, claim.id, true);
+      }
     } catch (error) {
       const missing = error instanceof CommandExecutionError && error.code === 'ENOENT';
       return failure(
@@ -252,6 +270,12 @@ export class DockerContainerService {
       if (!isMissingContainer(error)) {
         return failure('start_failed', 'Existing container could not be inspected.', error);
       }
+    }
+
+    try {
+      await this.prepareOwnership(context, runtime, claim.id, current, newlyCreated, signal);
+    } catch (error) {
+      return failure('container_conflict', 'Container App data ownership could not be verified.', error);
     }
 
     let action: 'created' | 'started' | 'recreated' | 'reused';
@@ -343,6 +367,11 @@ export class DockerContainerService {
     if (!containerOwnedByClaim(current, desired.id, runtime)) {
       return appStatus(desired, context, 'error', false, 'Status refused', `Container "${runtime.containerName}" is not the exact managed container for this claim.`);
     }
+    try {
+      await this.prepareOwnership(context, runtime, desired.id, current, false, signal);
+    } catch (error) {
+      return appStatus(desired, context, 'error', false, 'Status refused', errorDetail(error));
+    }
     if (!current.State?.Running) return appStatus(desired, context, 'stopped', false, 'Status refreshed', null);
     const health = current.State.Health?.Status;
     let ready = false;
@@ -411,12 +440,8 @@ export class DockerContainerService {
         const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
         const resource = `volume:${volume.name}`;
         const exists = checkContainerOwnership(this.options.stateDirectory, resource, owner);
-        if (exists) {
-          await this.docker(context, ['volume', 'inspect', volume.name], this.timeouts.inspect, signal);
-        } else {
-          await this.docker(context, ['volume', 'create', volume.name], this.timeouts.start, signal);
-          checkContainerOwnership(this.options.stateDirectory, resource, owner, true);
-        }
+        if (!exists) throw new Error(`Storage ownership for volume "${volume.name}" has not been verified.`);
+        await this.docker(context, ['volume', 'inspect', volume.name], this.timeouts.inspect, signal);
       }
     }
     const volumeArgs = (runtime.volumes ?? []).flatMap((volume) => [
@@ -433,6 +458,41 @@ export class DockerContainerService {
     ], this.timeouts.start, signal);
   }
 
+  private async prepareOwnership(
+    context: string,
+    runtime: DockerRuntimeSpec,
+    id: string,
+    current: DockerInspect | null,
+    newlyCreated: boolean,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const directory = this.options.stateDirectory;
+    if (!directory) return;
+    validateVolumes(runtime.volumes);
+    const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
+    const owned = this.ownership(context, id);
+    const verified = current !== null && containerOwnedByClaim(current, id, runtime);
+    if (runtime.volumes?.length && !owned && !newlyCreated
+      && (this.provider.provider !== 'docker' || !verified)) {
+      throw new Error('Stateful Container App ownership is unverified. Restore the original Docker container and data volumes before adopting this legacy claim.');
+    }
+    for (const volume of runtime.volumes ?? []) {
+      const resource = `volume:${volume.name}`;
+      const recorded = checkContainerOwnership(directory, resource, owner);
+      const provisioning = checkContainerOwnership(directory, `pending-volume:${id}:${volume.name}`, owner);
+      if (!recorded && !verified && !provisioning) {
+        throw new Error(`Existing storage for "${volume.name}" is unverified. Refusing to create an empty replacement volume.`);
+      }
+      if (!recorded && provisioning) {
+        await this.docker(context, ['volume', 'create', volume.name], this.timeouts.start, signal);
+      } else {
+        await this.docker(context, ['volume', 'inspect', volume.name], this.timeouts.inspect, signal);
+      }
+      checkContainerOwnership(directory, resource, owner, true);
+    }
+    this.ownership(context, id, true);
+  }
+
   private docker(
     context: string,
     args: string[],
@@ -446,9 +506,9 @@ export class DockerContainerService {
     return this.provider.resolve(signal);
   }
 
-  private ownership(connection: string, claim: string, reserve = false): void {
-    if (!this.options.stateDirectory) return;
-    checkContainerOwnership(this.options.stateDirectory, claim, {
+  private ownership(connection: string, claim: string, reserve = false): boolean {
+    if (!this.options.stateDirectory) return false;
+    return checkContainerOwnership(this.options.stateDirectory, claim, {
       provider: this.provider.provider, connection: this.provider.identity(connection),
     }, reserve);
   }

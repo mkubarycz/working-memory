@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir as systemHomedir } from 'node:os';
 import { join } from 'node:path';
@@ -78,6 +78,16 @@ export const DATA_TIER_INSTANCE_PORT_FIRST = 7719;
 export const DATA_TIER_INSTANCE_PORT_LAST = 7799;
 export const DATA_TIER_STATE_FILE = 'instances.json';
 const IMAGE_REPOSITORY = 'working-memory-control-plane';
+const PENDING_INSTANCE_FILE = 'pending-instance.json';
+const pendingInstanceSchema = z.object({
+  instance: z.object({
+    port: z.number().int().min(1).max(65535), name: z.string(), createdAt: z.string(),
+    image: z.string().refine(image => isBundledImage(image) || !!parseBackendImage(image)),
+    provider: z.enum(['docker', 'podman']), connection: z.string().min(1),
+  }),
+  storageReady: z.boolean(),
+});
+type PendingInstance = z.infer<typeof pendingInstanceSchema>;
 
 /** Local tag of the image archive bundled with an installer build. */
 export function bundledImage(version: string): string {
@@ -429,9 +439,10 @@ export class DataTierManager {
   create(name?: string): Promise<ManagedDataTierInstance> {
     return this.serialize(async () => {
       const { docker, env } = await this.docker();
-      const port = await this.choosePort(docker, env);
-      this.ownership(docker, true);
-      const instance = {
+      await this.provider.requireCompose(docker, { timeoutMs: this.timeouts.info, env });
+      const pending = this.pendingInstance();
+      const port = pending?.instance.port ?? await this.choosePort(docker, env);
+      const instance = pending?.instance ?? {
         port,
         name: name?.trim().slice(0, 80) || defaultInstanceName(port),
         createdAt: this.now().toISOString(),
@@ -564,10 +575,21 @@ export class DataTierManager {
     try {
       const docker = await this.provider.resolve();
       this.ownership(docker);
-      if (this.instances.some(instance => instance.connection && instance.connection !== this.provider.identity(docker))) {
+      const instances = this.instances;
+      const connection = this.provider.identity(docker);
+      const pending = this.pendingInstance();
+      if ([...instances, ...(pending ? [pending.instance] : [])]
+        .some(instance => instance.connection && instance.connection !== connection)) {
         throw new DataTierError('The selected connection differs from the engine that owns these instances. Restore the original local connection; data will not be replaced or migrated.', 'provider-conflict');
       }
-
+      if (instances.length) {
+        this.ownership(docker, true);
+        if (instances.some(instance => !instance.connection || !instance.provider)) {
+          this.writeInstances(instances.map(instance => ({
+            ...instance, provider: this.provider.provider, connection,
+          })));
+        }
+      }
       return { docker, env: this.host.env };
     } catch (error) {
       if (error instanceof DataTierError) throw error;
@@ -577,7 +599,9 @@ export class DataTierManager {
   }
 
   private assertProviderRegistrations(): void {
-    if (this.instances.some(instance => (instance.provider ?? 'docker') !== this.provider.provider)) {
+    const pending = this.pendingInstance();
+    if ([...this.instances, ...(pending ? [pending.instance] : [])]
+      .some(instance => (instance.provider ?? 'docker') !== this.provider.provider)) {
       throw new DataTierError('Existing instances belong to another container provider. Select their original provider to manage them. Changing providers does not migrate data or create replacement databases.', 'provider-conflict');
     }
   }
@@ -631,16 +655,25 @@ export class DataTierManager {
     await this.provider.requireCompose(docker, { timeoutMs: this.timeouts.info, env });
     this.ownership(docker, true);
     const existing = this.instances.find(instance => instance.port === port);
-    if (existing) {
+    let pending = this.pendingInstance();
+    if (registration && !pending) {
+      pending = pendingInstanceSchema.parse({ instance: registration, storageReady: false });
+      this.writePendingInstance(pending);
+    }
+    if (existing || pending?.storageReady) {
       if (this.host.platform === 'win32') {
         await this.run(docker, env, ['volume', 'inspect', dataTierInstanceNames(port).volume],
           'provider-conflict', 'The existing data volume is unavailable. Refusing to create an empty replacement database.');
-      } else if (!(this.options.dataExists ?? existsSync)(join(dataTierHostDirectory(this.host, port), 'journal.sqlite'))) {
+      } else if (existing && !(this.options.dataExists ?? existsSync)(join(dataTierHostDirectory(this.host, port), 'journal.sqlite'))) {
         throw new DataTierError('The existing database is unavailable. Restore its original data directory before retrying; no empty replacement will be created.', 'provider-conflict');
       }
     } else if (this.host.platform === 'win32') {
       await this.run(docker, env, ['volume', 'create', dataTierInstanceNames(port).volume],
         'start-failed', 'Unable to create the new instance data volume.');
+      if (pending) {
+        pending.storageReady = true;
+        this.writePendingInstance(pending);
+      }
     }
     if (isBundledImage(image)) {
       if (!this.bundledImageLoaded) {
@@ -674,6 +707,7 @@ export class DataTierManager {
     if (deployed) {
       deployed.image = image;
       this.writeInstances([...instances.filter(instance => instance.port !== port), deployed]);
+      if (pending?.instance.port === port) unlinkSync(join(this.options.stateDirectory, PENDING_INSTANCE_FILE));
     }
     await this.waitHealthy(port);
   }
@@ -713,6 +747,20 @@ export class DataTierManager {
       `${JSON.stringify({ instances: sorted }, null, 2)}\n`,
       { mode: 0o600 },
     );
+  }
+
+  private pendingInstance(): PendingInstance | undefined {
+    try {
+      return pendingInstanceSchema.parse(JSON.parse(readFileSync(join(this.options.stateDirectory, PENDING_INSTANCE_FILE), 'utf8')));
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
+      throw new Error(`Pending instance registration is unreadable. Restore it before retrying; no replacement storage will be created.\n${commandDetail(error)}`);
+    }
+  }
+
+  private writePendingInstance(pending: PendingInstance): void {
+    mkdirSync(this.options.stateDirectory, { recursive: true });
+    writeFileSync(join(this.options.stateDirectory, PENDING_INSTANCE_FILE), `${JSON.stringify(pending)}\n`, { mode: 0o600 });
   }
 
   /** Writes the instance's Compose file; macOS/Linux also create its bind-mounted data folder. */

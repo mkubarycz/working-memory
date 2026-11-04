@@ -129,6 +129,8 @@ import {
   type DataTierInstancesSnapshot,
 } from './dataTier';
 import { readContainerProvider, writeContainerProvider } from './containerProviderSettings';
+import { assertContainerProviderForClaims } from './containerOwnership';
+import { parseContainerProvider } from './containerProvider';
 
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
 const STABLE_DESKTOP_EXECUTABLE = '/Applications/Working Memory.app/Contents/MacOS/Electron';
@@ -319,16 +321,15 @@ function createContainerService(): DockerContainerService {
 }
 
 async function changeContainerProvider(value: unknown): Promise<void> {
-  if (value === containerProvider) return;
+  const requested = parseContainerProvider(value);
+  if (requested === containerProvider) return;
   if (containerProviderChanging || containerOperations.size) throw new Error('Wait for container operations to finish before changing provider.');
   containerProviderChanging = true;
   try {
     await dataTier?.whenIdle();
     if (environmentManager.currentEnvironment) {
       const claims = await controlPlane().containerClaimRead();
-      if (claims.some(claim => claim.runtime?.volumes?.length)) {
-        throw new Error('This environment has Container Apps with engine-owned data volumes. Keep their original provider; changing provider would not migrate those volumes.');
-      }
+      assertContainerProviderForClaims(join(app.getPath('userData'), 'container-app-ownership'), requested, claims);
     }
     await appMcp.disconnectAll();
     const selected = await writeContainerProvider(join(app.getPath('userData'), 'container-provider.json'), value);
