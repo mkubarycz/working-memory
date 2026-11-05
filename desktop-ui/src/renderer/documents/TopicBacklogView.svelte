@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ComponentProps } from 'svelte';
+  import type { SvelteSet } from 'svelte/reactivity';
   import ActiveRail from '../ActiveRail.svelte';
   import type { ActiveResourceDrag } from '../resourceDrag';
   import type { TopicBacklogVM } from './types';
@@ -7,10 +8,11 @@
   interface Props {
     backlog: TopicBacklogVM;
     treeProps: ComponentProps<typeof ActiveRail>;
+    expanded?: SvelteSet<string>;
     activeDrag?: ActiveResourceDrag | null;
   }
 
-  let { backlog, treeProps, activeDrag = $bindable(null) }: Props = $props();
+  let { backlog, treeProps, expanded, activeDrag = $bindable(null) }: Props = $props();
 </script>
 
 <header class="backlog-head">
@@ -22,7 +24,7 @@
   <span class="backlog-count">{backlog.workstreams.length + backlog.topics.length}</span>
 </header>
 
-<ActiveRail {...treeProps} {backlog} bind:activeDrag />
+<ActiveRail {...treeProps} {backlog} {expanded} bind:activeDrag />
 
 <style>
   .backlog-head {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import ActiveRail from './ActiveRail.svelte';
   import BrainMark from './BrainMark.svelte';
   import UnreadBadge from './UnreadBadge.svelte';
@@ -196,6 +197,10 @@
   let activeChatContexts = $state<string[]>([]);
   const deferredDocumentRefreshes = new Set<string>();
   let documents = $state<DocumentVM[]>([]);
+  const backlogExpanded = new SvelteSet<string>();
+  $effect(() => {
+    if (!documents.some(document => document.kind === 'topic-backlog')) backlogExpanded.clear();
+  });
   let selectedDocumentKey = $state<string | null>(null);
   let previewDocumentKey = $state<string | null>(null);
   const documentOpens = createDocumentOpenGuard();
@@ -1432,6 +1437,7 @@
     documentSaveErrors = {};
     input = reset.input;
     documents = reset.documents;
+    backlogExpanded.clear();
     selectedDocumentKey = null;
     previewDocumentKey = null;
     documentOpens.invalidate();
@@ -2770,6 +2776,7 @@
         {:else if activeDocument?.kind === 'topic-backlog'}
           <TopicBacklogView
             backlog={activeDocument}
+            expanded={backlogExpanded}
             treeProps={activeTreeProps}
             bind:activeDrag={activeTreeDrag}
           />

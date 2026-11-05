@@ -771,7 +771,9 @@ backlog workstream stay grouped under that workstream rather than appearing twic
 Expand a backlog workstream to browse its topic tree, including nested child
 topics, or click its title to open it. **Send to Queue** and **Send to In Progress**
 move the workstream directly from the backlog page. The page refreshes as
-membership and status change.
+membership and status change. Expanded workstreams and topic nodes stay expanded
+when switching document tabs or refreshing the backlog. Closing the Backlog tab or
+switching environments clears that view's expansion state.
 
 Backlog nodes use the same tree interactions as the left rail: right-click for
 context-sensitive topic/workstream actions, drag between workstreams to copy a

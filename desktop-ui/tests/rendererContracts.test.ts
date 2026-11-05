@@ -382,7 +382,7 @@ describe('desktop tree icon contract', () => {
     expect(rail).toContain('backlogWorkstreams.length + (data?.topicBacklog?.length ?? 0)');
     expect(styles).toMatch(/\.active-sections\s*{[^}]*grid-template-rows:\s*minmax\(76px, auto\) minmax\(120px, 1fr\);/s);
     expect(rail.indexOf('{#each backlog.workstreams')).toBeLessThan(rail.indexOf('{#each backlog.topics'));
-    expect(view).toContain('<ActiveRail {...treeProps} {backlog} bind:activeDrag />');
+    expect(view).toContain('<ActiveRail {...treeProps} {backlog} {expanded} bind:activeDrag />');
     expect(rail).toContain("unreadResponseCount(unreadResponses, 'workstream', workstream.id");
     expect(rail).toContain('No workstreams are on the backlog.');
     expect(rail).toContain('Every open topic belongs to an active workstream.');
@@ -476,6 +476,19 @@ describe('desktop tree icon contract', () => {
     expect(topic).toContain('onInput={updateBody.bind(null, topic, onSaveTopic)}');
     expect(topic).toContain('const target = topic;');
     expect(topic).toContain('const save = onSaveTopic;');
+  });
+
+  it('owns backlog expansion outside keyed document views and resets it at tab/environment boundaries', () => {
+    const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
+    const backlog = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/documents/TopicBacklogView.svelte'), 'utf8');
+    const rail = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/ActiveRail.svelte'), 'utf8');
+    expect(app).toContain('const backlogExpanded = new SvelteSet<string>()');
+    expect(app).toContain('expanded={backlogExpanded}');
+    expect(app).toContain("if (!documents.some(document => document.kind === 'topic-backlog')) backlogExpanded.clear()");
+    const reset = app.slice(app.indexOf('function resetEnvironmentState()'), app.indexOf('async function switchEnvironment('));
+    expect(reset).toContain('backlogExpanded.clear()');
+    expect(backlog).toContain('<ActiveRail {...treeProps} {backlog} {expanded}');
+    expect(rail).toContain('expanded = new SvelteSet<string>()');
   });
 
   it('shows five recent current-scope rows or all expanded exchanges and targets stable history elements', () => {
