@@ -208,6 +208,8 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
         'com.docker.compose.project': names.project, 'com.docker.compose.service': 'control-plane',
       } },
       Mounts: [{ Type: 'volume', Name: names.volume, Source: '/engine/volume', Destination: '/data' }],
+      State: { Running: true },
+      HostConfig: { PortBindings: { [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(port) }] } },
       NetworkSettings: { Ports: { [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(port) }] } },
     };
   }
@@ -362,15 +364,20 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     expect(fixture.calls.some(args => args[1] === 'create')).toBe(false);
   });
 
-  it.each(['start', 'stop'] as const)('pins legacy data-tier connections on %s and refuses later context changes', async operation => {
+  it.each(['start', 'stop'] as const)('adopts exited legacy instances with only configured bindings on %s and refuses later context changes', async operation => {
     const dir = directory();
-    writeFileSync(join(dir, 'instances.json'), JSON.stringify({ instances: [{ port: 7717, name: 'Legacy' }] }));
+    writeFileSync(join(dir, 'instances.json'), JSON.stringify({ instances: [7717, 7719].map(port => ({ port, name: `Legacy ${port}` })) }));
     let endpoint = 'unix:///original.sock';
     const mutations: string[][] = [];
     const runner: CommandRunner = { run: vi.fn(async (_file, args) => {
       const command = args.slice(2);
       if (command[0] === 'context') return { stdout: JSON.stringify(endpoint), stderr: '' };
-      if (command[0] === 'inspect') return { stdout: JSON.stringify([legacyContainer(7717)]), stderr: '' };
+      if (command[0] === 'inspect') {
+        const container = legacyContainer(command[1].endsWith('-7719') ? 7719 : 7717);
+        container.State.Running = false;
+        container.NetworkSettings.Ports = {};
+        return { stdout: JSON.stringify([container]), stderr: '' };
+      }
       if (command[0] === 'ps') return { stdout: 'working-memory-control-plane\texited\tExited\tworking-memory-control-plane:1.7.0', stderr: '' };
       if (command[0] === 'start' || command[0] === 'stop') mutations.push(command);
       return { stdout: '', stderr: '' };
@@ -381,10 +388,38 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     });
     await manager()[operation](7717);
     expect(manager().instances[0]).toMatchObject({ provider: 'docker', connection: 'desktop-linux (unix:///original.sock)' });
+    expect(manager().instances.every(instance => instance.connection === 'desktop-linux (unix:///original.sock)')).toBe(true);
     expect(manager().instances[0].image).toBe('working-memory-control-plane:1.6.0');
     endpoint = 'unix:///other.sock';
     await expect(manager()[operation](7717)).rejects.toThrow('another container provider or connection');
     expect(mutations).toHaveLength(1);
+  });
+
+  it.each(['missing', 'public', 'wrong-port', 'multiple'] as const)('refuses unsafe configured bindings on an exited legacy instance: %s', async fault => {
+    const dir = directory();
+    const registrations = JSON.stringify({ instances: [{ port: 7717, name: 'Legacy' }] });
+    writeFileSync(join(dir, 'instances.json'), registrations);
+    const container = legacyContainer(7717);
+    container.State.Running = false;
+    container.NetworkSettings.Ports = {};
+    const binding = container.HostConfig.PortBindings['7717/tcp'];
+    if (fault === 'missing') container.HostConfig.PortBindings = {};
+    if (fault === 'public') binding[0].HostIp = '0.0.0.0';
+    if (fault === 'wrong-port') binding[0].HostPort = '7719';
+    if (fault === 'multiple') binding.push({ HostIp: '0.0.0.0', HostPort: '7717' });
+    const calls: string[][] = [];
+    const runner = localDockerRunner({ run: vi.fn(async (_file, args) => {
+      calls.push(args);
+      return { stdout: args[0] === 'inspect' ? JSON.stringify([container]) : '', stderr: '' };
+    }) });
+    const manager = new DataTierManager({
+      ...host, buildContext: dir, stateDirectory: dir, version: '1.7.0', runner,
+      fileExists: path => path.endsWith('docker.exe'), healthy: async () => true,
+    });
+    await expect(manager.start(7717)).rejects.toThrow('ownership could not be verified');
+    expect(readFileSync(join(dir, 'instances.json'), 'utf8')).toBe(registrations);
+    expect(readContainerOwnership(join(dir, 'ownership'), 'data-tier')).toBeUndefined();
+    expect(calls.some(args => ['start', 'stop', 'compose', 'exec'].includes(args[0]))).toBe(false);
   });
 
   it.each(['missing-container', 'image', 'labels', 'mount', 'port', 'storage', 'second-instance'])(

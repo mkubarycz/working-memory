@@ -353,6 +353,8 @@ export class DataTierManager {
     const { port } = instance, names = dataTierInstanceNames(port);
     const raw = await this.runner.run(docker, ['inspect', names.container], { timeoutMs: this.timeouts.command, env });
     const parsed = this.provider.inspect(raw.stdout, instance.image ?? (legacy ? undefined : this.bundledTarget.image));
+    const portBindings = z.record(z.string(),
+      z.array(z.object({ HostIp: z.string(), HostPort: z.string() })).nullable());
     const schema = z.array(z.object({
       Config: z.object({
         Image: z.string(),
@@ -362,16 +364,15 @@ export class DataTierManager {
         Destination: z.string(), Source: z.string(),
         Type: z.string(), Name: z.string().optional(),
       })),
-      NetworkSettings: z.object({
-        Ports: z.record(z.string(),
-          z.array(z.object({
-            HostIp: z.string(), HostPort: z.string(),
-          })).nullable()),
-      }),
+      State: z.object({ Running: z.boolean() }).optional(),
+      HostConfig: z.object({ PortBindings: portBindings.nullish() }).optional(),
+      NetworkSettings: z.object({ Ports: portBindings }),
     })).length(1);
     const [container] = schema.parse(parsed);
     const mount = container.Mounts.filter(mount => mount.Destination === '/data');
-    const binding = container.NetworkSettings.Ports[`${port}/tcp`];
+    const bindings = legacy && container.State?.Running === false
+      ? container.HostConfig?.PortBindings : container.NetworkSettings.Ports;
+    const binding = bindings?.[`${port}/tcp`];
     const expectedMount = this.host.platform === 'win32'
       ? mount[0]?.Type === 'volume' && mount[0]?.Name === names.volume
       : mount[0]?.Type === 'bind' && mount[0]?.Source === dataTierHostDirectory(this.host, port);

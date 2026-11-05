@@ -18,11 +18,16 @@ it.each(['darwin', 'win32'] as const)('retrieves bootstrap through verified Dock
   const mount = platform === 'win32'
     ? { Type: 'volume', Name: names.volume, Source: '/var/lib/docker/volumes/test', Destination: '/data' }
     : { Type: 'bind', Source: '/Users/test/Library/Application Support/WorkingMemory-7719', Destination: '/data' };
+  const liveBindings: Record<string, Array<{ HostIp: string; HostPort: string }>> = {
+    '7719/tcp': [{ HostIp: '127.0.0.1', HostPort: '7719' }],
+  };
   const container = {
     Config: { Image: 'working-memory-control-plane:1.2.0', Labels: {
       'com.docker.compose.project': names.project, 'com.docker.compose.service': 'control-plane',
     } },
-    Mounts: [mount], NetworkSettings: { Ports: { '7719/tcp': [{ HostIp: '127.0.0.1', HostPort: '7719' }] } },
+    State: { Running: true },
+    HostConfig: { PortBindings: { '7719/tcp': [{ HostIp: '127.0.0.1', HostPort: '7719' }] } },
+    Mounts: [mount], NetworkSettings: { Ports: liveBindings },
   };
   const token = 't'.repeat(43);
   const run = vi.fn(async (_file: string, args: string[]) => {
@@ -40,6 +45,11 @@ it.each(['darwin', 'win32'] as const)('retrieves bootstrap through verified Dock
   expect(await manager.bootstrapCredential(7719)).toBe(token);
   expect(run.mock.calls.some(([, args]) => args[0] === 'exec' && args[1] === names.container)).toBe(true);
   container.NetworkSettings.Ports['7719/tcp'][0].HostIp = '0.0.0.0';
+  run.mockClear();
+  await expect(manager.bootstrapCredential(7719)).rejects.toThrow('does not match');
+  expect(run.mock.calls.some(([, args]) => args[0] === 'exec')).toBe(false);
+  container.State.Running = false;
+  delete container.NetworkSettings.Ports['7719/tcp'];
   run.mockClear();
   await expect(manager.bootstrapCredential(7719)).rejects.toThrow('does not match');
   expect(run.mock.calls.some(([, args]) => args[0] === 'exec')).toBe(false);

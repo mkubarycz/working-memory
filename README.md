@@ -104,7 +104,9 @@ instances explicitly create engine-owned volumes; Compose treats them as externa
 and cannot silently create replacement volumes. No provider action deletes volumes.
 Legacy backend registrations are pinned only after their container image, Compose
 labels, data mount, loopback port and existing storage are verified; listing alone
-does not adopt them. Failed new-instance provisioning keeps a per-port reservation so Retry reuses
+does not adopt them. Stopped legacy containers are checked against configured port
+bindings; running containers and owner setup still require live loopback bindings.
+Failed new-instance provisioning keeps a per-port reservation so Retry reuses
 the same storage, including after desktop restart; a missing Compose dependency does
 not reserve an engine. Pending bind storage also records initialization and refuses
 to recreate a lost data directory or a database known to have been initialized.
