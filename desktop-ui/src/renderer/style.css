@@ -290,6 +290,10 @@ button { cursor: pointer; }
 .camera-preview, .camera-review { display: block; width: 100%; max-height: min(65vh, 560px); object-fit: contain; background: #181718; }
 .camera-error { margin: 0; color: #91251f; font-size: 12px; }
 .main { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; min-width: 0; min-height: 0; overflow: hidden; background: #faf9f7; }
+.main.connection-interrupted { grid-template-rows: auto minmax(0, 1fr) auto auto; }
+.instance-connection-notice { display: grid; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--vscode-input-border); background: var(--vscode-editorWidget-background); font-size: 12px; overflow-wrap: anywhere; }
+.instance-connection-notice summary { cursor: pointer; }
+.instance-connection-notice button { margin-right: 6px; }
 .live-update-error { position: absolute; top: 0; right: 0; left: 0; z-index: 4; }
 .backend-status { display: inline-flex; align-items: center; gap: 5px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #777; }

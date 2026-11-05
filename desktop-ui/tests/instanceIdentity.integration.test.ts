@@ -6,7 +6,52 @@ import { HostTaskCredentialVault } from '../src/main/hostTaskBroker';
 import { HostScriptAdminClient } from '../src/main/hostScriptClient';
 
 const servers: RunningServer[] = [];
-afterEach(async () => { await Promise.all(servers.splice(0).map(server => server.close())); });
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(servers.splice(0).map(server => server.close()));
+});
+
+it('explains identity timeouts without clearing the session, then accepts recovery or authoritative revocation', async () => {
+  const origin = 'http://127.0.0.1:7717', token = randomBytes(32).toString('hex');
+  const vault = new HostTaskCredentialVault({ isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn() }, process.platform, '/not-used');
+  vault.setSession(origin, token, Date.now() + 60_000);
+  const timeout = AbortSignal.abort(new DOMException('Timed out', 'TimeoutError'));
+  const timer = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(timeout);
+  const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+    init?.signal?.throwIfAborted();
+    return Response.json({ passwordConfigured: true, passwordHint: '', authenticated: true, scope: 'instance' });
+  });
+  const unauthorized = vi.fn();
+  const identity = new DesktopInstanceIdentity(vault, async () => '', () => false, fetcher, unauthorized);
+  await expect(identity.status(`${origin}/mcp`)).rejects.toThrow('timed out after 10 seconds (GET /identity/v1/status)');
+  expect(timer).toHaveBeenCalledWith(10_000);
+  expect(vault.session(origin)).toBe(token);
+  expect(unauthorized).not.toHaveBeenCalled();
+  expect((await identity.status(`${origin}/mcp`)).authenticated).toBe(true);
+  fetcher.mockResolvedValueOnce(Response.json({ passwordConfigured: true, passwordHint: '', authenticated: false, scope: 'instance' }));
+  expect((await identity.status(`${origin}/mcp`)).authenticated).toBe(false);
+  expect(vault.session(origin)).toBeNull();
+  expect(unauthorized).toHaveBeenCalledWith(`${origin}/mcp`);
+});
+
+it('preserves caller cancellation and still clears a rejected owner session on HTTP 401', async () => {
+  const origin = 'http://127.0.0.1:7717', token = randomBytes(32).toString('hex');
+  const vault = new HostTaskCredentialVault({ isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn() }, process.platform, '/not-used');
+  vault.setSession(origin, token, Date.now() + 60_000);
+  const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+    init?.signal?.throwIfAborted();
+    return new Response('', { status: 401 });
+  });
+  const unauthorized = vi.fn();
+  const identity = new DesktopInstanceIdentity(vault, async () => '', () => false, fetcher, unauthorized);
+  const cancellation = new Error('Instance changed');
+  await expect(identity.features(`${origin}/mcp`, AbortSignal.abort(cancellation))).rejects.toBe(cancellation);
+  expect(vault.session(origin)).toBe(token);
+  expect(unauthorized).not.toHaveBeenCalled();
+  await expect(identity.status(`${origin}/mcp`)).rejects.toThrow('expired session');
+  expect(vault.session(origin)).toBeNull();
+  expect(unauthorized).toHaveBeenCalledWith(`${origin}/mcp`);
+});
 
 it('keeps Host tasks working against older backends without enabling unsupported Search', async () => {
   const vault = new HostTaskCredentialVault({ isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn() }, process.platform, '/not-used');

@@ -160,6 +160,9 @@
   let instanceFeatures = $state<InstanceFeatures>({ hostTasks: false, search: false });
   let instanceConnection = $state<InstanceConnectionState | null>(null);
   let instanceConnectionError = $state('');
+  let instanceConnectionRefresh: Promise<boolean> | null = null;
+  let instanceAuthenticationGeneration = 0;
+  let instanceConnectionPoll: Promise<void> | null = null;
   let managingInstancesBeforeSignIn = $state(false);
   let pendingAccessRequests = $state(0);
   let pendingResource: { kind: DesktopResourceKind; identifier: string } | null = null;
@@ -1158,17 +1161,15 @@
     );
     const stopListeningForAuthentication = window.workingMemory.onInstanceAuthenticationChanged(event => {
       if (event.mcpUrl !== selectedEnvironment?.mcpUrl || event.authenticated) return;
+      instanceAuthenticationGeneration += 1;
       if (instanceConnection) instanceConnection = { ...instanceConnection, authenticated: false };
+      instanceConnectionError = '';
       pendingAccessRequests = 0;
     });
     const stopListeningForChanges = window.workingMemory.onDocumentChanges(handleDocumentChanges);
     const backendHealthPoll = window.setInterval(() => {
       void refreshBackendHealth();
-      if (instanceConnection?.authenticated) {
-        void refreshInstanceConnection();
-        void refreshFeatures();
-        void refreshAccessRequests();
-      }
+      void pollInstanceConnection();
     }, 30_000);
     return () => {
       stopListeningForDeepLinks();
@@ -1189,22 +1190,59 @@
     await loadAuthenticatedWorkspace();
   }
 
-  async function refreshInstanceConnection(): Promise<boolean> {
+  function refreshInstanceConnection(): Promise<boolean> {
+    if (instanceConnectionRefresh) return instanceConnectionRefresh;
     const generation = environmentGeneration, mcpUrl = selectedEnvironment?.mcpUrl;
-    instanceConnectionError = '';
-    if (!mcpUrl) { instanceConnection = null; return false; }
-    try {
-      const state = await window.workingMemory.getInstanceIdentity();
-      if (generation !== environmentGeneration || selectedEnvironment?.mcpUrl !== mcpUrl) return false;
-      instanceConnection = state;
-      return state.authenticated;
-    } catch (cause) {
-      if (generation === environmentGeneration) {
-        instanceConnection = null;
-        instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+    const authenticationGeneration = instanceAuthenticationGeneration;
+    if (!mcpUrl) { instanceConnection = null; return Promise.resolve(false); }
+    const pending = (async () => {
+      try {
+        const state = await window.workingMemory.getInstanceIdentity();
+        if (generation !== environmentGeneration || selectedEnvironment?.mcpUrl !== mcpUrl) return false;
+        if (state.authenticated && authenticationGeneration !== instanceAuthenticationGeneration) return false;
+        instanceConnection = state;
+        instanceConnectionError = '';
+        return state.authenticated;
+      } catch (cause) {
+        if (generation === environmentGeneration && selectedEnvironment?.mcpUrl === mcpUrl
+          && authenticationGeneration === instanceAuthenticationGeneration) {
+          instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+        }
+        return false;
       }
-      return false;
-    }
+    })();
+    instanceConnectionRefresh = pending;
+    void pending.finally(() => {
+      if (instanceConnectionRefresh === pending) instanceConnectionRefresh = null;
+    });
+    return pending;
+  }
+
+  function pollInstanceConnection(): Promise<void> {
+    if (instanceConnectionPoll) return instanceConnectionPoll;
+    if (environmentLoading || !selectedEnvironment || instanceConnectionRefresh) return Promise.resolve();
+    if (!instanceConnection?.authenticated && !instanceConnectionError) return Promise.resolve();
+    const generation = environmentGeneration;
+    const wasAuthenticated = instanceConnection?.authenticated;
+    const pending = (async () => {
+      try {
+        if (!await refreshInstanceConnection() || generation !== environmentGeneration) return;
+        if (!wasAuthenticated) await loadAuthenticatedWorkspace();
+        else {
+          await Promise.all([refreshFeatures(), refreshAccessRequests()]);
+          if (liveUpdateError && generation === environmentGeneration) await startDocumentChanges();
+        }
+      } catch (cause) {
+        if (generation === environmentGeneration) {
+          instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+        }
+      }
+    })();
+    instanceConnectionPoll = pending;
+    void pending.finally(() => {
+      if (instanceConnectionPoll === pending) instanceConnectionPoll = null;
+    });
+    return pending;
   }
 
   async function refreshAccessRequests(): Promise<void> {
@@ -1222,6 +1260,8 @@
   }
 
   async function connectedToInstance(): Promise<void> {
+    instanceAuthenticationGeneration += 1;
+    instanceConnectionRefresh = null;
     if (!await refreshInstanceConnection()) return;
     managingInstancesBeforeSignIn = false;
     await documentSaves.flushAll();
@@ -1413,6 +1453,9 @@
   }
 
   function resetEnvironmentState(): void {
+    instanceAuthenticationGeneration += 1;
+    instanceConnectionRefresh = null;
+    instanceConnectionPoll = null;
     instanceConnection = null;
     instanceConnectionError = '';
     pendingAccessRequests = 0;
@@ -2533,8 +2576,19 @@
     onkeydown={(event) => resizeRailWithKeyboard('active', event)}
   ></div>
 
-  <main class="main">
-    {#if liveUpdateError}
+  <main class="main" class:connection-interrupted={!!instanceConnectionError}>
+    {#if instanceConnectionError}
+      <div class="instance-connection-notice" role="status">
+        <strong>Reconnecting to Working Memory</strong>
+        <span>Your workspace is still open. Retrying automatically every 30 seconds. Changes may not save until the connection recovers.</span>
+        <details><summary>Connection details</summary>{instanceConnectionError}</details>
+        <div>
+          <button onclick={() => void pollInstanceConnection()}>Retry connection</button>
+          <button onclick={() => openSettings('diagnostics')}>Diagnostics</button>
+        </div>
+      </div>
+    {/if}
+    {#if liveUpdateError && !instanceConnectionError}
       <div class="document-error live-update-error" role="alert">Live updates: {liveUpdateError}
         <button onclick={() => void startDocumentChanges()}>Retry</button>
       </div>
@@ -3269,7 +3323,7 @@
       AI: {openAiHealth.state}
     </span>
     {#if featuresError}<span role="alert">Features: {featuresError}</span>{/if}
-    {#if instanceConnectionError}<span role="alert">Connection: {instanceConnectionError}</span>{/if}
+    {#if instanceConnectionError}<span>Connection: reconnecting</span>{/if}
     {#if pendingAccessRequests}
       <button onclick={() => openSettings('access')}>{pendingAccessRequests} access request{pendingAccessRequests === 1 ? '' : 's'} - Review</button>
     {/if}

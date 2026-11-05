@@ -47,12 +47,22 @@ export class DesktopInstanceIdentity {
   ) {}
 
   private async request(mcpUrl: string, path: string, input?: object, token?: string, signal?: AbortSignal): Promise<unknown> {
-    const response = await this.fetcher(`${hostTaskOrigin(mcpUrl)}${path}`, {
-      method: input === undefined ? 'GET' : 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-      redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000),
-    });
+    const timeout = AbortSignal.timeout(10000);
+    let response: Response;
+    try {
+      response = await this.fetcher(`${hostTaskOrigin(mcpUrl)}${path}`, {
+        method: input === undefined ? 'GET' : 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+        redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      });
+    } catch (cause) {
+      if (timeout.aborted && !signal?.aborted) {
+        throw new Error(`Instance request timed out after 10 seconds (${input === undefined ? 'GET' : 'POST'} ${path}). `
+          + 'The backend did not respond in time; this does not mean your session expired.', { cause });
+      }
+      throw cause;
+    }
     if (!response.ok) {
       if (response.status === 401) {
         if (token && this.vault.session(hostTaskOrigin(mcpUrl)) === token) {

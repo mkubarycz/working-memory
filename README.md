@@ -1493,6 +1493,14 @@ public password hint. Otherwise it prompts for sign-in. Expiry, revocation, or
 sign-out returns to that same connection screen. **Manage instances** remains
 available before sign-in to start, create, or upgrade a managed instance.
 
+Identity checks run every 30 seconds. A timeout or connection failure keeps an
+already-open workspace and its drafts visible, shows a **Reconnecting** notice
+with request details, **Retry connection**, and **Diagnostics**, and retries
+automatically. Failed checks never grant a new authenticated session; the backend
+continues enforcing authorization on every request. Explicit authentication
+rejection still returns to sign-in. A failed initial connection also retries
+automatically and loads the workspace only after identity is confirmed.
+
 `/mcp`, `/attachments`, and `/changes` require a valid bearer token on every
 request. MCP sessions are bound to the credential that initialized them; a
 different credential cannot resume the session. Delayed change responses
