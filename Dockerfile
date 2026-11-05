@@ -16,6 +16,10 @@ ENV NODE_ENV=production \
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+ARG WM_BUILD_VERSION
+RUN if [ -n "$WM_BUILD_VERSION" ]; then \
+      node -e 'const fs = require("node:fs"); const file = "package.json"; const pkg = JSON.parse(fs.readFileSync(file, "utf8")); pkg.version = process.argv[1]; fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");' "$WM_BUILD_VERSION"; \
+    fi
 COPY --from=build /app/out/control-plane ./out/control-plane
 
 EXPOSE 7717

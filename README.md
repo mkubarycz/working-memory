@@ -1232,15 +1232,36 @@ Rules:
 
 VSIX releases are retired. `.github/workflows/release.yml` builds the macOS
 DMG and Windows NSIS installer on every pull request and push to `main`
-and keeps them as workflow-run artifacts (version
-`<desktop-ui version>-build.<run number>`). Pushes to `main` also push the
+and keeps them as workflow-run artifacts. **Git tags are the release-version
+authority**, not package manifests or mutable PR labels:
+
+- A `vX.Y.Z` tag builds exactly `X.Y.Z` and publishes a Stable release.
+- A `vX.Y.Z-rc.N` tag builds that exact prerelease and publishes to Canary.
+- Untagged PR, main and manual builds use the highest Stable `vX.Y.Z` tag
+  reachable from the checked-out commit, increment its patch, then append
+  `-build.<workflow run number>`. After `v1.7.0`, these are `1.7.1-build.N`.
+  This is a development identifier, not a promise that the next release is a
+  patch: tag `v1.8.0` or `v2.0.0` when releasing minor or major changes.
+- Full history and tags are required. Missing release history, invalid tags
+  and tags older than the reachable Stable version fail the build; there is
+  no fallback to a stale source-package version or manual version override.
+- The pipeline uses one resolved version for Electron metadata, backend image
+  tags and health/MCP identity, bundled images, and `update.json`. The offline
+  backend smoke test checks the reported version as well as health.
+- Published version tags and release assets must not be moved or replaced.
+  Correct a published release with a new version. Only the rolling `canary`
+  tag/assets are mutable. A source change to package versions is not needed.
+
+Pushes to `main` also push the
 backend image to GHCR and replace the rolling `canary` prerelease (installers
-plus `update.json`). Push a `v<version>` tag (for example `v0.90.0`) to build
+plus `update.json`). Push a `v<version>` tag (for example `v1.7.0`) to build
 that version and publish a GitHub Release; plain `vX.Y.Z` tags are full
 releases that the Stable channel follows, and suffixed versions such as
-`v1.0.0-rc.1` are prereleases. The app's footer shows the build time. Build
+`v1.0.0-rc.1` are prereleases. The app's footer shows the packaged version. Build
 installers locally with `npm run package:mac --prefix desktop-ui` or
 `npm run package:win --prefix desktop-ui` (output: `desktop-ui/release/`).
+Local development builds do not publish releases; their source-package metadata
+is not the release-version authority.
 
 The GHCR package `working-memory-control-plane` must be public so installed
 apps can pull it without logging in. After the first push from `main`, set it
