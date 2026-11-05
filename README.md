@@ -94,6 +94,8 @@ support is unavailable. Podman requires an installed external Compose implementa
 (`podman compose version` must work); both Docker Compose and podman-compose are supported.
 Native Linux Podman and local Podman-machine connections are supported; remote TCP/SSH
 engines are rejected. Docker continues to use local Unix-socket/named-pipe contexts.
+Without an explicit context override, Docker uses the CLI's active context, including
+local providers such as Colima; unavailable or remote contexts do not trigger fallback.
 
 Changing provider is **not a database migration**. Existing registrations belong to
 their original engine/connection (legacy registrations belong to Docker). The app
@@ -102,6 +104,8 @@ registered data, or switch an environment's existing stateful Container Apps to
 another provider. Return to the original provider to manage that data. New Windows
 instances explicitly create engine-owned volumes; Compose treats them as external
 and cannot silently create replacement volumes. No provider action deletes volumes.
+Starting a stopped registered backend validates its existing database or volume before
+the engine start command, just as recreation through Compose does.
 Legacy backend registrations are pinned only after their container image, Compose
 labels, data mount, loopback port and existing storage are verified; listing alone
 does not adopt them. Stopped legacy containers are checked against configured port
@@ -861,9 +865,9 @@ only after an HTTP readiness check succeeds. Docker must already be installed
 and running; the launcher uses only a validated local Unix socket or Windows
 named pipe (`npipe:////./pipe/...`). Remote TCP, SSH, and named-pipe hosts are
 not permitted. The launcher reports missing CLI, daemon, timeout, build, ownership-conflict,
-startup, and readiness failures without removing unrelated containers. Set
-`WORKING_MEMORY_DOCKER_CONTEXT` to prefer a context; otherwise the launcher
-checks `desktop-linux`, `orbstack`, and `default`. Configure local source paths
+startup, and readiness failures without removing unrelated containers.
+`WORKING_MEMORY_DOCKER_CONTEXT` (or `DOCKER_CONTEXT`) overrides the CLI's active
+context; an unavailable or remote target never falls back to another context. Configure local source paths
 in the claim's repository and runtime; no app-specific environment variable is
 required. `sourceRevision` records intent; the launcher does not check out or
 switch the repository's branch.

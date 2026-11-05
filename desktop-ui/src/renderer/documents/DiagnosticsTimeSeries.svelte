@@ -35,7 +35,7 @@
       });
       if (syncGroup) { instance.group = syncGroup; runtime.connect(syncGroup); }
       update();
-      resize = new ResizeObserver(() => { if (element.clientWidth) instance?.resize(); });
+      resize = new ResizeObserver(() => { if (element.clientWidth) instance?.resize({ width: element.clientWidth }); });
       resize.observe(element);
     } catch (cause) {
       instance?.dispose();

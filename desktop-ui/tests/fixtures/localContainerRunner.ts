@@ -3,6 +3,9 @@ import type { CommandRunner } from '../../src/main/dockerContainerService';
 export function localDockerRunner(runner: CommandRunner): CommandRunner {
   return {
     run(file, args, options) {
+      if (args[0] === 'context' && args[1] === 'show') {
+        return Promise.resolve({ stdout: 'desktop-linux\n', stderr: '' });
+      }
       if (args[0] !== '--context') throw new Error('Expected an explicitly selected Docker context.');
       const command = args.slice(2);
       if (command[0] === 'context') {

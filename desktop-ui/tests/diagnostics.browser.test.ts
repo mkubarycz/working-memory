@@ -166,6 +166,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Tool request history').getOption().series.map(series => series.data[0][1])"), [3, 7]);
           assert.deepEqual(await evaluate("['Queue processing history', 'Tool request history'].map(label => { const chart = window.__diagnosticsTest.chart(label); return chart.convertToPixel({xAxisIndex: 0}, chart.getOption().xAxis[0].min); })"),
             [64, 64], 'Both plots must start at the same horizontal pixel');
+          const originalWidth = await evaluate("window.__diagnosticsTest.chart('Queue processing history').getWidth()");
+          window.setSize(650, 1000);
+          await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() < " + originalWidth);
+          const matchesContainer = "['Queue processing history', 'Tool request history'].every(label => { const element = document.querySelector('.diagnostics-time-series[aria-label=\\"' + label + '\\"] .diagnostics-chart'); return window.__diagnosticsTest.chart(label).getWidth() === element.clientWidth && Number(element.querySelector('svg').getAttribute('width')) === element.clientWidth; })";
+          await wait(matchesContainer);
+          const windowWidth = await evaluate("window.__diagnosticsTest.chart('Queue processing history').getWidth()");
+          await evaluate("document.querySelector('main').style.width = '420px'");
+          await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() < " + windowWidth);
+          await wait(matchesContainer);
+          await evaluate("document.querySelector('main').style.width = ''");
+          window.setSize(1200, 1600);
+          await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() === " + originalWidth);
+          await wait(matchesContainer);
           await evaluate("window.__diagnosticsTest.chart('Queue processing history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
           await wait("document.body.innerText.includes('Average queue depth: 1.5 waiting')");
           await evaluate("window.__diagnosticsTest.chart('Tool request history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");

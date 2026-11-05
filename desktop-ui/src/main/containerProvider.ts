@@ -100,7 +100,8 @@ export class ContainerProviderAdapter {
         key = `${selected.Name} (${selected.URI})`;
         identity = key;
         if (machine) {
-          const name = selected.Name.replace(/-root$/, '');
+          const name = uri.username === 'root' && uri.pathname === '/run/podman/podman.sock'
+            ? selected.Name.replace(/-root$/, '') : selected.Name;
           const inspected = await this.raw(['machine', 'inspect', name], options);
           const [vm] = z.array(z.object({
             Name: z.string(), Created: z.string().min(1), State: z.string(),
@@ -121,24 +122,20 @@ export class ContainerProviderAdapter {
     }
     const configured = this.options.dockerContext
       ?? this.options.host.env.WORKING_MEMORY_DOCKER_CONTEXT ?? this.options.host.env.DOCKER_CONTEXT;
-    const errors: string[] = [];
-    for (const context of configured ? [configured] : ['desktop-linux', 'orbstack', 'default']) {
-      try {
-        const args = ['--context', context];
-        const result = await this.raw([...args, 'context', 'inspect', context, '--format', '{{json .Endpoints.docker.Host}}'], options);
-        const endpoint = z.string().parse(JSON.parse(result.stdout));
-        if (!localSocket(endpoint)) throw new Error(`Docker context "${context}" is not local (${endpoint}).`);
-        this.connections.set(context, { args, env, identity: `${context} (${endpoint})` });
-        await this.run(context, ['info', '--format', '{{json .ServerVersion}}'], options);
-        return context;
-      } catch (error) {
-        if (signal?.aborted || (error instanceof Error && 'code' in error
-          && ['ENOENT', 'ETIMEDOUT', 'ABORT_ERR'].includes(String(error.code)))) throw error;
-        errors.push(`${context}: ${detail(error)}`);
-        if (configured) break;
-      }
+    try {
+      const context = configured ?? z.string().trim().min(1).parse((await this.raw(['context', 'show'], options)).stdout);
+      const args = ['--context', context];
+      const result = await this.raw([...args, 'context', 'inspect', context, '--format', '{{json .Endpoints.docker.Host}}'], options);
+      const endpoint = z.string().parse(JSON.parse(result.stdout));
+      if (!localSocket(endpoint)) throw new Error(`Docker context "${context}" is not local (${endpoint}).`);
+      this.connections.set(context, { args, env, identity: `${context} (${endpoint})` });
+      await this.run(context, ['info', '--format', '{{json .ServerVersion}}'], options);
+      return context;
+    } catch (error) {
+      if (signal?.aborted || (error instanceof Error && 'code' in error
+        && ['ENOENT', 'ETIMEDOUT', 'ABORT_ERR'].includes(String(error.code)))) throw error;
+      throw new Error(`Docker is unavailable. Start the selected local provider, then Retry. ${detail(error)}`);
     }
-    throw new Error(`Docker is unavailable. Start the selected local provider, then Retry. ${errors.join('; ')}`);
   }
 
   run(connection: string, args: string[], options: CommandRunOptions): Promise<CommandResult> {

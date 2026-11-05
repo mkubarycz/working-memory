@@ -49,6 +49,7 @@ function localRunner(
   return {
     run: vi.fn(async (_file, args, options) => {
       calls.push(args);
+      if (args[0] === 'context' && args[1] === 'show') return { stdout: 'desktop-linux\n', stderr: '' };
       const command = args.slice(2);
       if (command[0] === 'context') return { stdout: `${JSON.stringify(endpoint)}\n`, stderr: '' };
       if (command[0] === 'info') return { stdout: '"27.0.0"\n', stderr: '' };
@@ -224,7 +225,8 @@ describe('DockerContainerService', () => {
     await expect(service.launch(claim())).resolves.toMatchObject({ status: 'ready', action: 'created' });
     await expect(service.inspect(desired)).resolves.toMatchObject({ state: 'healthy', ready: true });
     await expect(service.stop(desired)).resolves.toMatchObject({ status: 'stopped' });
-    expect(calls.every((args) => args[0] === '--context' && args[1] === (context ?? 'desktop-linux'))).toBe(true);
+    expect(calls.filter(args => args[0] !== 'context').every((args) => args[0] === '--context' && args[1] === (context ?? 'desktop-linux'))).toBe(true);
+    expect(calls.some(args => args[0] === 'context' && args[1] === 'show')).toBe(context === undefined);
     expect(calls.some((args) => args[2] === 'info')).toBe(true);
     expect(calls.some((args) => args[2] === 'build')).toBe(true);
     expect(calls.some((args) => args[2] === 'container' && args[3] === 'run')).toBe(true);
@@ -248,11 +250,12 @@ describe('DockerContainerService', () => {
     expect(vi.mocked(runner.run).mock.calls.every(([, args]) => args[1] === 'desktop-linux')).toBe(true);
   });
 
-  it('finds the healthy default Windows pipe when Docker Desktop context is unavailable', async () => {
+  it('uses the active default Windows pipe rather than probing unrelated contexts', async () => {
     const calls: string[][] = [];
     const runner: CommandRunner = {
       run: vi.fn(async (_file, args) => {
         calls.push(args);
+        if (args[0] === 'context' && args[1] === 'show') return { stdout: 'default\n', stderr: '' };
         if (args[2] === 'context') {
           if (args[1] === 'orbstack') throw new CommandExecutionError('context not found', 1);
           return { stdout: JSON.stringify(`npipe:////./pipe/${args[1] === 'default' ? 'docker_engine' : 'dockerDesktopLinuxEngine'}`), stderr: '' };
@@ -266,7 +269,23 @@ describe('DockerContainerService', () => {
     };
     await expect(new DockerContainerService({ runner, env: {} }).inspect(desired))
       .resolves.toMatchObject({ state: 'missing', dockerContext: 'default' });
-    expect(calls.filter((args) => args[2] === 'info').map((args) => args[1])).toEqual(['desktop-linux', 'default']);
+    expect(calls.filter((args) => args[2] === 'info').map((args) => args[1])).toEqual(['default']);
+    expect(calls.some(args => args.includes('desktop-linux') || args.includes('orbstack'))).toBe(false);
+  });
+
+  it('does not fall back when the active Docker context is unavailable', async () => {
+    const runner: CommandRunner = { run: vi.fn(async (_file, args) => {
+      if (args[0] === 'context') return { stdout: 'colima\n', stderr: '' };
+      if (args[2] === 'context') return { stdout: '"unix:///colima/docker.sock"', stderr: '' };
+      throw new CommandExecutionError('Colima is stopped', 1);
+    }) };
+    await expect(new DockerContainerService({ runner, env: {} }).inspect(desired))
+      .resolves.toMatchObject({ state: 'error', dockerContext: null });
+    expect(vi.mocked(runner.run).mock.calls.map(([, args]) => args)).toEqual([
+      ['context', 'show'],
+      ['--context', 'colima', 'context', 'inspect', 'colima', '--format', '{{json .Endpoints.docker.Host}}'],
+      ['--context', 'colima', 'info', '--format', '{{json .ServerVersion}}'],
+    ]);
   });
 
   it.each([

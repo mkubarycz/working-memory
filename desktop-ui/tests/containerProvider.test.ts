@@ -96,6 +96,45 @@ describe('shared container provider adapter', () => {
     expect(vi.mocked(runner.run).mock.calls.some(([, args]) => args.includes('start'))).toBe(false);
   });
 
+  it.each([
+    { name: 'dev-root', rootful: false, machine: 'dev-root' },
+    { name: 'dev-root-root', rootful: true, machine: 'dev-root' },
+    { name: 'podman-machine-default-root', rootful: true, machine: 'podman-machine-default' },
+  ])('resolves $name without confusing a rootless machine suffix with a rootful connection', async ({ name, rootful, machine }) => {
+    const selected = { ...connection, Name: name, URI: rootful
+      ? 'ssh://root@127.0.0.1:53298/run/podman/podman.sock' : connection.URI };
+    const runner: CommandRunner = { run: vi.fn(async (_file, args) => {
+      if (args[0] === 'system') return { stdout: JSON.stringify([selected]), stderr: '' };
+      if (args[0] === 'machine') return { stdout: JSON.stringify([{ ...vm, Name: machine }]), stderr: '' };
+      expect(args.slice(0, 2)).toEqual(['--connection', name]);
+      return { stdout: '{}', stderr: '' };
+    }) };
+    const adapter = new ContainerProviderAdapter({ provider: 'podman', host, runner });
+    expect(adapter.identity(await adapter.resolve())).toContain(`${machine} (${vm.Created}`);
+    expect(runner.run).toHaveBeenCalledWith('podman', ['machine', 'inspect', machine], expect.anything());
+  });
+
+  it.each(['unix:///colima/docker.sock', 'ssh://remote.example', 'tcp://127.0.0.1:2375'])(
+    'honors the active Docker context but still rejects unsafe endpoints: %s',
+    async endpoint => {
+      const runner: CommandRunner = { run: vi.fn(async (_file, args) => {
+        if (args[0] === 'context') return { stdout: 'colima\n', stderr: '' };
+        expect(args.slice(0, 2)).toEqual(['--context', 'colima']);
+        return { stdout: JSON.stringify(endpoint), stderr: '' };
+      }) };
+      const adapter = new ContainerProviderAdapter({ host, runner });
+      if (endpoint.startsWith('unix:')) {
+        const selected = await adapter.resolve();
+        expect(selected).toBe('colima');
+        expect(adapter.identity(selected)).toBe(`colima (${endpoint})`);
+      } else {
+        await expect(adapter.resolve()).rejects.toThrow('not local');
+      }
+      expect(runner.run).toHaveBeenCalledWith('docker', ['context', 'show'], expect.anything());
+      expect(vi.mocked(runner.run).mock.calls.some(([, args]) => args.includes('desktop-linux') || args.includes('orbstack'))).toBe(false);
+    },
+  );
+
   it('uses native local Linux Podman only when no default remote connection is selected', async () => {
     const runner: CommandRunner = { run: vi.fn(async (_file, args) => ({
       stdout: args[0] === 'system' ? '[]' : '{}', stderr: '',
@@ -379,6 +418,7 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     let endpoint = 'unix:///original.sock';
     const mutations: string[][] = [];
     const runner: CommandRunner = { run: vi.fn(async (_file, args) => {
+      if (args[0] === 'context' && args[1] === 'show') return { stdout: 'desktop-linux', stderr: '' };
       const command = args.slice(2);
       if (command[0] === 'context') return { stdout: JSON.stringify(endpoint), stderr: '' };
       if (command[0] === 'inspect') {
@@ -440,6 +480,7 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
       let repaired = false;
       const calls: string[][] = [];
       const runner: CommandRunner = { run: vi.fn(async (_file, args) => {
+        if (args[0] === 'context' && args[1] === 'show') return { stdout: 'desktop-linux', stderr: '' };
         const command = args.slice(2);
         calls.push(command);
         if (command[0] === 'context') return { stdout: JSON.stringify(repaired ? 'unix:///original.sock' : 'unix:///other.sock'), stderr: '' };

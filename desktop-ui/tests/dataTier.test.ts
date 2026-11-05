@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -202,13 +202,14 @@ describe('data tier launcher', () => {
 
     function harness(options: {
       directory?: string;
+      platform?: 'darwin' | 'linux';
       version?: string;
       busyPorts?: number[];
       containers?: Record<string, FakeContainer>;
       instances?: Array<{ port: number; name: string }>;
     } = {}) {
       const directory = options.directory ?? stateDirectory();
-      const testHost = { ...mac, homedir: directory };
+      const testHost = { ...mac, platform: options.platform ?? mac.platform, homedir: directory };
       const version = options.version ?? '2.0.0';
       if (options.instances) {
         writeFileSync(join(directory, 'instances.json'), JSON.stringify({ instances: options.instances.map(instance => ({
@@ -320,6 +321,23 @@ describe('data tier launcher', () => {
         provider: 'docker', connection: 'desktop-linux (unix:///local/docker.sock)' }]);
       await expect(manager.rename(7720, '   ')).rejects.toThrow('name is required');
       await expect(manager.start(7799)).rejects.toMatchObject({ code: 'not-found' });
+    });
+
+    it.each(['darwin', 'linux'] as const)('refuses direct and automatic starts after an established %s database is lost', async platform => {
+      const { directory, manager, calls } = harness({
+        platform, instances: [{ port: 7720, name: 'Work' }],
+        containers: { 'working-memory-control-plane-7720': { state: 'exited', status: 'Exited (0)', image: 'working-memory-control-plane:2.0.0' } },
+      });
+      const database = join(dataTierHostDirectory({ ...mac, platform, homedir: directory }, 7720), 'journal.sqlite');
+      const registration = readFileSync(join(directory, 'instances.json'), 'utf8');
+      unlinkSync(database);
+      await expect(manager.start(7720)).rejects.toThrow('no empty replacement will be created');
+      await expect(manager.ensureAvailable(7720)).rejects.toThrow('no empty replacement will be created');
+      expect(calls.some(args => ['start', 'compose', 'load', 'pull'].includes(args[0]))).toBe(false);
+      expect(readFileSync(join(directory, 'instances.json'), 'utf8')).toBe(registration);
+      writeFileSync(database, 'restored original database');
+      await manager.start(7720);
+      expect(calls.filter(args => args[0] === 'start')).toEqual([['start', 'working-memory-control-plane-7720']]);
     });
 
     it('pulls channel backend images from GHCR and reports updates against the channel target', async () => {

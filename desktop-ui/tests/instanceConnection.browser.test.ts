@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
   'recovers the actual workspace after identity failures without losing drafts or bypassing authentication',
@@ -111,7 +112,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       mount(App, { target: document.body });
     `;
     const server = await createServer({
-      configFile: false, root: new URL('..', import.meta.url).pathname,
+      configFile: false, root: fileURLToPath(new URL('..', import.meta.url)),
       cacheDir: join(directory, 'vite-cache'),
       optimizeDeps: { include: [
         'svelte', '@codemirror/commands', '@codemirror/lang-markdown', '@codemirror/language',

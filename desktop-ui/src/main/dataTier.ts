@@ -485,6 +485,7 @@ export class DataTierManager {
         return;
       }
       if (container.state !== 'running') {
+        await this.verifyInstanceStorage(docker, env, port);
         await this.run(docker, env, ['start', dataTierInstanceNames(port).container], 'start-failed', 'Unable to start the Working Memory instance.');
       }
       await this.waitHealthy(port);
@@ -688,6 +689,18 @@ export class DataTierManager {
     );
   }
 
+  private async verifyInstanceStorage(docker: string, env: NodeJS.ProcessEnv, port: number, databaseInitialized = true): Promise<void> {
+    if (this.host.platform === 'win32') {
+      await this.run(docker, env, ['volume', 'inspect', dataTierInstanceNames(port).volume],
+        'provider-conflict', 'The existing data volume is unavailable. Refusing to create an empty replacement database.');
+    } else {
+      const directory = dataTierHostDirectory(this.host, port);
+      if (!(this.options.dataExists ?? existsSync)(databaseInitialized ? join(directory, 'journal.sqlite') : directory)) {
+        throw new DataTierError('The existing database is unavailable. Restore its original data directory before retrying; no empty replacement will be created.', 'provider-conflict');
+      }
+    }
+  }
+
   private async composeUp(docker: string, env: NodeJS.ProcessEnv, port: number, image: string, registration?: ManagedDataTierInstance): Promise<void> {
     await this.provider.requireCompose(docker, { timeoutMs: this.timeouts.info, env });
     this.ownership(docker, true);
@@ -705,13 +718,7 @@ export class DataTierManager {
       this.writePendingInstance(pending);
     }
     if (existing || pending?.storageReady) {
-      if (this.host.platform === 'win32') {
-        await this.run(docker, env, ['volume', 'inspect', dataTierInstanceNames(port).volume],
-          'provider-conflict', 'The existing data volume is unavailable. Refusing to create an empty replacement database.');
-      } else if ((existing || pending?.databaseInitialized)
-        ? !dataExists(database) : !dataExists(dataTierHostDirectory(this.host, port))) {
-        throw new DataTierError('The existing database is unavailable. Restore its original data directory before retrying; no empty replacement will be created.', 'provider-conflict');
-      }
+      await this.verifyInstanceStorage(docker, env, port, !!existing || !!pending?.databaseInitialized);
     } else if (this.host.platform === 'win32') {
       await this.run(docker, env, ['volume', 'create', dataTierInstanceNames(port).volume],
         'start-failed', 'Unable to create the new instance data volume.');
