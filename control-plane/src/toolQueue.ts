@@ -28,6 +28,7 @@ export class ToolQueue {
   private ticker: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
   private peakDepth = 0;
+  private readonly requestsByTool = new Map<string, number>();
   private lastProcessingPruneSecond: number | undefined;
 
   constructor(private readonly db: DatabaseSync, private readonly memoryBlocked: () => boolean,
@@ -106,6 +107,7 @@ export class ToolQueue {
 
   run<T>(metadata: Omit<QueuedTool, 'queuedAt' | 'startedAt'>, payload: unknown, signal: AbortSignal,
     action: () => Promise<T>, outcome: (value: T) => ToolExecutionOutcome = () => 'completed'): Promise<T> {
+    this.requestsByTool.set(metadata.operation, (this.requestsByTool.get(metadata.operation) ?? 0) + 1);
     const queuedAt = this.clock();
     if (this.stopped || signal.aborted || this.waiting.length >= TOOL_QUEUE_LIMITS.waiting) {
       const code = this.stopped ? 'shutdown' : signal.aborted ? 'cancelled' : 'full';
@@ -176,6 +178,7 @@ export class ToolQueue {
     return {
       observedAt: this.clock(), limits: TOOL_QUEUE_LIMITS, memoryBlocked: this.memoryBlocked(),
       processing: this.processing(),
+      requestsByTool: Object.fromEntries(this.requestsByTool),
       running: this.running.size, waiting: this.waiting.length,
       items: [...this.running.values(), ...this.waiting.map(({ requestId, operation, caller, queuedAt }) => ({
         requestId, operation, caller, queuedAt,

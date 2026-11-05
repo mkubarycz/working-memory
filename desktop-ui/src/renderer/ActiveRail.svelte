@@ -36,6 +36,7 @@
 
   interface Props {
     backlog?: TopicBacklogVM;
+    expanded?: SvelteSet<string>;
     activeDrag?: ActiveResourceDrag | null;
     unreadResponses?: UnreadResponse[];
     environments: DesktopEnvironment[];
@@ -66,6 +67,7 @@
 
   let {
     backlog,
+    expanded = new SvelteSet<string>(),
     activeDrag = $bindable(null),
     unreadResponses = [],
     environments, selectedEnvironment, environmentLoading, environmentError,
@@ -78,7 +80,6 @@
     onSearch,
     onDiscoverEnvironments, onSwitchEnvironment, onManageInstances,
   }: Props = $props();
-  const expanded = new SvelteSet<string>();
   let seeded = $state(false);
   let menu = $state<{
     x: number;

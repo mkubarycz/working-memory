@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dockerCliPath, dockerEnvironment } from './dockerCli';
+import { ContainerProviderAdapter, type ContainerProvider } from './containerProvider';
+import { checkContainerOwnership } from './containerOwnership';
 import type {
   ContainerClaim,
   ContainerClaimCreateInput,
@@ -49,12 +51,15 @@ export type DockerErrorCode =
   | 'readiness_timeout';
 
 export interface DockerContainerServiceOptions {
+  provider?: ContainerProvider;
+  stateDirectory?: string;
   runner?: CommandRunner;
   readiness?: (url: string) => Promise<boolean>;
   retries?: number;
   retryDelayMs?: number;
   dockerContext?: string;
   env?: NodeJS.ProcessEnv;
+  confirmStorageCreation?: (claim: ContainerClaim, provider: ContainerProvider) => Promise<boolean>;
   timeouts?: Partial<DockerOperationTimeouts>;
 }
 
@@ -77,7 +82,6 @@ const DEFAULT_TIMEOUTS: DockerOperationTimeouts = {
   stop: 30_000,
   remove: 30_000,
 };
-const LOCAL_CONTEXTS = ['desktop-linux', 'orbstack', 'default'];
 
 interface DockerInspect {
   Image?: string;
@@ -101,22 +105,23 @@ export class CommandExecutionError extends Error {
 
 export class CommandTimeoutError extends CommandExecutionError {
   constructor(readonly timeoutMs: number) {
-    super(`Docker command timed out after ${timeoutMs}ms.`, 'ETIMEDOUT');
+    super(`Container command timed out after ${timeoutMs}ms.`, 'ETIMEDOUT');
   }
 }
 
 export class ExecFileCommandRunner implements CommandRunner {
   run(file: string, args: string[], options: CommandRunOptions): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
-      if (file === 'docker' || file === 'docker.exe') {
+      if (['docker', 'docker.exe', 'podman', 'podman.exe'].includes(file)) {
+        const provider = file.startsWith('podman') ? 'podman' : 'docker';
         const host = { platform: process.platform, env: options.env ?? process.env, homedir: homedir() };
-        const executable = dockerCliPath(host);
+        const executable = dockerCliPath(host, undefined, provider);
         if (!executable) {
-          reject(new CommandExecutionError('Docker CLI was not found. Install Docker Desktop or enable its command-line tools, then retry.', 'ENOENT'));
+          reject(new CommandExecutionError(`${provider} CLI was not found. Install the selected provider and enable its command-line tools, then Retry.`, 'ENOENT'));
           return;
         }
         file = executable;
-        options = { ...options, env: dockerEnvironment(host, executable) };
+        options = { ...options, env: dockerEnvironment(host, executable, provider) };
       }
       execFile(file, args, {
         encoding: 'utf8',
@@ -142,6 +147,7 @@ export class ExecFileCommandRunner implements CommandRunner {
 }
 
 export class DockerContainerService {
+  private readonly provider: ContainerProviderAdapter;
   private readonly runner: CommandRunner;
   private readonly readiness: (url: string) => Promise<boolean>;
   private readonly retries: number;
@@ -150,7 +156,7 @@ export class DockerContainerService {
   private readonly env: NodeJS.ProcessEnv;
   private readonly timeouts: DockerOperationTimeouts;
 
-  constructor(options: DockerContainerServiceOptions = {}) {
+  constructor(private readonly options: DockerContainerServiceOptions = {}) {
     this.runner = options.runner ?? new ExecFileCommandRunner();
     this.readiness = options.readiness ?? defaultReadiness;
     this.retries = options.retries ?? 30;
@@ -158,6 +164,11 @@ export class DockerContainerService {
     this.configuredContext = options.dockerContext;
     this.env = options.env ?? process.env;
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
+    this.provider = new ContainerProviderAdapter({
+      provider: options.provider, runner: this.runner,
+      host: { platform: process.platform, homedir: homedir(), env: this.env },
+      dockerContext: this.configuredContext,
+    });
   }
 
   async ensure(
@@ -166,6 +177,7 @@ export class DockerContainerService {
     signal?: AbortSignal,
   ): Promise<ContainerLaunchResult> {
     let claim: ContainerClaim;
+    let newlyCreated = false;
     try {
       const existing = desired.id
         ? (await claimClient.containerClaimRead({ id: desired.id }))[0]
@@ -175,6 +187,7 @@ export class DockerContainerService {
           )
           : undefined;
       const { id: _id, ...createInput } = desired;
+      newlyCreated = !existing;
       claim = existing
         ? await this.updateClaimIfNeeded(claimClient, existing, desired)
         : await claimClient.containerClaimCreate(createInput);
@@ -182,12 +195,16 @@ export class DockerContainerService {
       return failure('claim_error', `Unable to ensure the ${desired.title} ContainerClaim.`, error);
     }
 
-    return this.launch(claim, signal);
+    return this.launchClaim(claim, signal, newlyCreated);
   }
 
   async launch(claim: ContainerClaim, signal?: AbortSignal): Promise<ContainerLaunchResult> {
+    return this.launchClaim(claim, signal);
+  }
+
+  private async launchClaim(claim: ContainerClaim, signal?: AbortSignal, newlyCreated = false): Promise<ContainerLaunchResult> {
     if (!claim.runtime || claim.runtime.type !== 'docker') {
-      return { status: 'error', code: 'claim_error', message: 'ContainerClaim has no Docker runtime specification.' };
+      return { status: 'error', code: 'claim_error', message: 'ContainerClaim has no container runtime specification.' };
     }
 
     const runtime = claim.runtime;
@@ -199,11 +216,19 @@ export class DockerContainerService {
     let context: string;
     try {
       context = await this.resolveDockerContext(signal);
+      const owned = this.ownership(context, claim.id);
+      if (this.options.stateDirectory && runtime.volumes?.length && !owned
+        && !newlyCreated && this.provider.provider !== 'docker' && !this.options.confirmStorageCreation) {
+        throw new Error('Stateful Container App ownership is unverified. Legacy apps belong to Docker; restore their original provider instead of creating replacement volumes.');
+      }
+      if (newlyCreated && this.options.stateDirectory) {
+        this.reserveStorage(context, claim);
+      }
     } catch (error) {
       const missing = error instanceof CommandExecutionError && error.code === 'ENOENT';
       return failure(
         missing ? 'docker_missing' : 'docker_unavailable',
-        missing ? 'Docker CLI is not installed or is not on PATH.' : 'No safe local Docker context is available.',
+        missing ? `${this.provider.label} CLI is not installed or is not on PATH.` : `No safe local ${this.provider.label} connection is available. Start the selected provider, then Retry.`,
         error,
       );
     }
@@ -214,7 +239,7 @@ export class DockerContainerService {
         '-t', runtime.imageName, '-f', runtime.dockerfile, runtime.buildContext,
       ], this.timeouts.build, signal);
     } catch (error) {
-      return failure('build_failed', 'Docker image build failed.', error);
+      return failure('build_failed', `${this.provider.label} image build failed.`, error);
     }
 
     let imageId: string;
@@ -224,7 +249,7 @@ export class DockerContainerService {
       ], this.timeouts.inspect, signal)).stdout.trim();
       if (!imageId) throw new Error('Docker returned an empty image id.');
     } catch (error) {
-      return failure('build_failed', 'Built Docker image could not be inspected.', error);
+      return failure('build_failed', `Built ${this.provider.label} image could not be inspected.`, error);
     }
 
     let current: DockerInspect | null = null;
@@ -235,12 +260,29 @@ export class DockerContainerService {
         this.timeouts.inspect,
         signal,
       );
-      const parsed = JSON.parse(result.stdout) as DockerInspect[];
+      const parsed = this.provider.inspect(result.stdout, runtime.imageName) as DockerInspect[];
       current = parsed[0] ?? null;
     } catch (error) {
       if (!isMissingContainer(error)) {
-        return failure('start_failed', 'Existing Docker container could not be inspected.', error);
+        return failure('start_failed', 'Existing container could not be inspected.', error);
       }
+    }
+
+    try {
+      if (this.options.stateDirectory && runtime.volumes?.length && !current
+        && !newlyCreated && !this.ownership(context, claim.id) && this.options.confirmStorageCreation) {
+        await this.verifyNewStorage(context, runtime, signal);
+        if (!await this.options.confirmStorageCreation(claim, this.provider.provider)) {
+          throw new Error('New storage initialization was cancelled. No data volumes were created.');
+        }
+        signal?.throwIfAborted();
+        await this.verifyNewStorage(context, runtime, signal);
+        this.reserveStorage(context, claim);
+        newlyCreated = true;
+      }
+      await this.prepareOwnership(context, runtime, claim.id, current, newlyCreated, signal);
+    } catch (error) {
+      return failure('container_conflict', 'Container App data ownership could not be verified.', error);
     }
 
     let action: 'created' | 'started' | 'recreated' | 'reused';
@@ -264,14 +306,14 @@ export class DockerContainerService {
         await this.runContainer(context, runtime, claim.id, signal);
         action = 'recreated';
       } catch (error) {
-        return failure('start_failed', 'Managed Docker container could not be recreated.', error);
+        return failure('start_failed', 'Managed container could not be recreated.', error);
       }
     } else if (!current) {
       try {
         await this.runContainer(context, runtime, claim.id, signal);
         action = 'created';
       } catch (error) {
-        return failure('start_failed', 'Docker container could not be started.', error);
+        return failure('start_failed', 'Container could not be started.', error);
       }
     } else if (!current.State?.Running) {
       try {
@@ -283,7 +325,7 @@ export class DockerContainerService {
         );
         action = 'started';
       } catch (error) {
-        return failure('start_failed', 'Existing managed Docker container could not be started.', error);
+        return failure('start_failed', 'Existing managed container could not be started.', error);
       }
     } else {
       action = 'reused';
@@ -308,7 +350,7 @@ export class DockerContainerService {
 
   async inspect(desired: ContainerClaimCreateInput & { id: string }, signal?: AbortSignal): Promise<ContainerAppStatus> {
     const runtime = desired.runtime;
-    if (!runtime || runtime.type !== 'docker') return appStatus(desired, null, 'error', false, 'Status failed', 'ContainerClaim has no Docker runtime specification.');
+    if (!runtime || runtime.type !== 'docker') return appStatus(desired, null, 'error', false, 'Status failed', 'ContainerClaim has no container runtime specification.');
     try {
       runtimePorts(runtime);
     } catch (error) {
@@ -317,19 +359,25 @@ export class DockerContainerService {
     let context: string;
     try {
       context = await this.resolveDockerContext(signal);
+      this.ownership(context, desired.id);
     } catch (error) {
       return appStatus(desired, null, 'error', false, 'Status failed', errorDetail(error));
     }
     let current: DockerInspect;
     try {
       const result = await this.docker(context, ['container', 'inspect', runtime.containerName], this.timeouts.inspect, signal);
-      current = (JSON.parse(result.stdout) as DockerInspect[])[0] ?? {};
+      current = (this.provider.inspect(result.stdout, runtime.imageName) as DockerInspect[])[0] ?? {};
     } catch (error) {
       if (isMissingContainer(error)) return appStatus(desired, context, 'missing', false, 'Status refreshed', null);
       return appStatus(desired, context, 'error', false, 'Status failed', errorDetail(error));
     }
     if (!containerOwnedByClaim(current, desired.id, runtime)) {
       return appStatus(desired, context, 'error', false, 'Status refused', `Container "${runtime.containerName}" is not the exact managed container for this claim.`);
+    }
+    try {
+      await this.prepareOwnership(context, runtime, desired.id, current, false, signal);
+    } catch (error) {
+      return appStatus(desired, context, 'error', false, 'Status refused', errorDetail(error));
     }
     if (!current.State?.Running) return appStatus(desired, context, 'stopped', false, 'Status refreshed', null);
     const health = current.State.Health?.Status;
@@ -394,6 +442,15 @@ export class DockerContainerService {
     signal?: AbortSignal,
   ): Promise<void> {
     validateVolumes(runtime.volumes);
+    for (const volume of runtime.volumes ?? []) {
+      if (this.options.stateDirectory) {
+        const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
+        const resource = `volume:${volume.name}`;
+        const exists = checkContainerOwnership(this.options.stateDirectory, resource, owner);
+        if (!exists) throw new Error(`Storage ownership for volume "${volume.name}" has not been verified.`);
+        await this.docker(context, ['volume', 'inspect', volume.name], this.timeouts.inspect, signal);
+      }
+    }
     const volumeArgs = (runtime.volumes ?? []).flatMap((volume) => [
       '--mount', `type=volume,source=${volume.name},destination=${volume.mountPath}`,
     ]);
@@ -408,57 +465,89 @@ export class DockerContainerService {
     ], this.timeouts.start, signal);
   }
 
+  private async prepareOwnership(
+    context: string,
+    runtime: DockerRuntimeSpec,
+    id: string,
+    current: DockerInspect | null,
+    newlyCreated: boolean,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const directory = this.options.stateDirectory;
+    if (!directory) return;
+    validateVolumes(runtime.volumes);
+    const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
+    const owned = this.ownership(context, id);
+    const verified = current !== null && containerOwnedByClaim(current, id, runtime);
+    if (runtime.volumes?.length && !owned && !newlyCreated
+      && (this.provider.provider !== 'docker' || !verified)) {
+      throw new Error('Stateful Container App ownership is unverified. Restore the original Docker container and data volumes before adopting this legacy claim.');
+    }
+    for (const volume of runtime.volumes ?? []) {
+      const resource = `volume:${volume.name}`;
+      const recorded = checkContainerOwnership(directory, resource, owner);
+      const provisioning = checkContainerOwnership(directory, `pending-volume:${id}:${volume.name}`, owner);
+      if (!recorded && !verified && !provisioning) {
+        throw new Error(`Existing storage for "${volume.name}" is unverified. Refusing to create an empty replacement volume.`);
+      }
+      if (!recorded && provisioning) {
+        await this.docker(context, ['volume', 'create', volume.name], this.timeouts.start, signal);
+      } else {
+        await this.docker(context, ['volume', 'inspect', volume.name], this.timeouts.inspect, signal);
+      }
+      checkContainerOwnership(directory, resource, owner, true);
+    }
+    this.ownership(context, id, true);
+  }
+
+  private reserveStorage(context: string, claim: ContainerClaim): void {
+    const directory = this.options.stateDirectory;
+    if (!directory) return;
+    validateVolumes(claim.runtime?.volumes);
+    const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
+    for (const volume of claim.runtime?.volumes ?? []) {
+      checkContainerOwnership(directory, `pending-volume:${claim.id}:${volume.name}`, owner, true);
+    }
+    this.ownership(context, claim.id, true);
+  }
+
+  private async verifyNewStorage(context: string, runtime: DockerRuntimeSpec, signal?: AbortSignal): Promise<void> {
+    validateVolumes(runtime.volumes);
+    for (const volume of runtime.volumes ?? []) {
+      if (this.options.stateDirectory && checkContainerOwnership(this.options.stateDirectory, `volume:${volume.name}`, {
+        provider: this.provider.provider, connection: this.provider.identity(context),
+      })) {
+        throw new Error(`Storage ownership for "${volume.name}" is already recorded. Restore its original container and volume instead of initializing new storage.`);
+      }
+      try {
+        await this.docker(context, ['volume', 'inspect', volume.name], this.timeouts.inspect, signal);
+      } catch (error) {
+        if (error instanceof CommandExecutionError && error.code !== 'ENOENT'
+          && /no such (volume|object)|volume .* not found/i.test(error.stderr || error.message)) continue;
+        throw error;
+      }
+      throw new Error(`Volume "${volume.name}" already exists without verified ownership. Restore its original managed container instead of initializing new storage.`);
+    }
+  }
+
   private docker(
     context: string,
     args: string[],
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<CommandResult> {
-    return this.runner.run('docker', ['--context', context, ...args], { timeoutMs, signal, env: this.env });
+    return this.provider.run(context, args, { timeoutMs, signal });
   }
 
   private async resolveDockerContext(signal?: AbortSignal): Promise<string> {
-    const configured = this.configuredContext
-      ?? this.env.WORKING_MEMORY_DOCKER_CONTEXT
-      ?? this.env.DOCKER_CONTEXT;
-    const candidates = configured ? [configured] : LOCAL_CONTEXTS;
-    const checked: string[] = [];
-    for (const context of candidates) {
-      try {
-        const inspected = await this.docker(
-          context,
-          ['context', 'inspect', context, '--format', '{{json .Endpoints.docker.Host}}'],
-          this.timeouts.context,
-          signal,
-        );
-        const endpoint = parseDockerEndpoint(inspected.stdout);
-        const local = endpoint?.startsWith('unix://')
-          || /^npipe:\/\/\/\/\.\/pipe\/[a-zA-Z0-9_.-]+$/.test(endpoint ?? '');
-        if (!local) {
-          const detail = endpoint || 'unknown endpoint';
-          if (configured) {
-            throw new Error(`Configured Docker context "${context}" is not local (${detail}).`);
-          }
-          checked.push(`${context} (${detail})`);
-          continue;
-        }
-        await this.docker(
-          context,
-          ['info', '--format', '{{json .ServerVersion}}'],
-          this.timeouts.info,
-          signal,
-        );
-        return context;
-      } catch (error) {
-        if (error instanceof CommandTimeoutError
-          || (error instanceof CommandExecutionError && error.code === 'ENOENT')) throw error;
-        if (configured) {
-          throw new Error(`Configured Docker context "${context}" is unavailable. ${errorDetail(error)}`);
-        }
-        checked.push(`${context} (${errorDetail(error)})`);
-      }
-    }
-    throw new Error(`Checked ${checked.join(', ') || 'no contexts'}; none had a healthy local Unix socket or Windows named pipe.`);
+    return this.provider.resolve(signal);
+  }
+
+  private ownership(connection: string, claim: string, reserve = false): boolean {
+    if (!this.options.stateDirectory) return false;
+    return checkContainerOwnership(this.options.stateDirectory, claim, {
+      provider: this.provider.provider, connection: this.provider.identity(connection),
+    }, reserve);
   }
 }
 
@@ -468,7 +557,7 @@ function containerMatches(
   runtime: DockerRuntimeSpec,
   imageId: string,
 ): boolean {
-  return inspect.Image === imageId
+  return inspect.Image?.replace(/^sha256:/, '') === imageId.replace(/^sha256:/, '')
     && inspect.Config?.Image === runtime.imageName
     && inspect.Config?.Labels?.[MANAGED_LABEL] === 'true'
     && inspect.Config?.Labels?.[CLAIM_LABEL] === id
@@ -579,17 +668,6 @@ function isMissingContainer(error: unknown): boolean {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function parseDockerEndpoint(stdout: string): string | null {
-  const value = stdout.trim();
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return typeof parsed === 'string' ? parsed : null;
-  } catch {
-    return value;
-  }
 }
 
 function errorDetail(error: unknown): string {

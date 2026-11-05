@@ -1,7 +1,6 @@
 import type { InstanceDiagnostics } from '../../../control-plane/src/diagnosticContract';
 import { normalizedDiagnosticsChart } from './diagnosticsChart';
 
-export { DIAGNOSTICS_CHART_BOUNDS as HTTP_CHART_BOUNDS } from './diagnosticsChart';
 const metrics = [
   { key: 'transactions', label: 'Transactions', unit: '/min', color: '#6ea8fe', dash: '' },
   { key: 'errors', label: 'Errors', unit: '/min', color: '#f08080', dash: '4 3' },

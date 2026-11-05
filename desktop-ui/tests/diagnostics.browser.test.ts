@@ -17,9 +17,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
     const directory = await mkdtemp(join(tmpdir(), 'wm-diagnostics-browser-'));
     const fixture = `
       import { mount } from 'svelte';
+      import { getInstanceByDom } from 'echarts/core';
       import '/src/renderer/style.css';
       import Settings from '/src/renderer/documents/SettingsView.svelte';
       const minute = Math.floor(Date.now() / 60000) * 60000;
+      const queueAt = minute + 30000;
       const instance = {
         version: '1.4.1', startedAt: Date.now(), observedAt: Date.now(),
         runtime: { heapUsedBytes: 60 * 1048576, heapLimitBytes: 100 * 1048576, rssBytes: 80 * 1048576,
@@ -45,7 +47,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       const requestId = '00000000-0000-4000-8000-000000000001';
       const completedId = '00000000-0000-4000-8000-000000000003';
       const completedAt = Date.now() - 1000;
-      const state = window.__diagnosticsTest = { offline: false, calls: 0, queueCalls: 0, inspections: 0, queueGone: false, hidden: true, noRuntimeSamples: false };
+      const state = window.__diagnosticsTest = { offline: false, calls: 0, queueCalls: 0, inspections: 0, queueGone: false, hidden: true, noRuntimeSamples: false, noToolHistory: false };
+      state.chart = label => getInstanceByDom(document.querySelector('.diagnostics-time-series[aria-label="' + label + '"] .diagnostics-chart'));
       Object.defineProperty(document, 'hidden', { get: () => state.hidden });
       window.__setDiagnosticsVisible = visible => {
         state.hidden = !visible;
@@ -55,12 +58,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         async getToolQueue() {
           state.queueCalls++;
           return { endpoint: 'http://127.0.0.1:7719/mcp', error: null, snapshot: {
-            bootId: '00000000-0000-4000-8000-000000000002', observedAt: Date.now(),
+            bootId: '00000000-0000-4000-8000-000000000002', observedAt: queueAt,
             limits: { running: 4, waiting: 16, waitMs: 5000 }, memoryBlocked: true,
             processing: { processedPerSecond: 2.5, processedLastMinute: 30, averageWaitMs: 12.5, averageRunMs: 40 },
+            requestsByTool: state.noToolHistory ? undefined : { 'wm-document-query': 13, 'wm-document-read': 12 },
             running: 0, waiting: state.queueGone ? 0 : 1,
             items: state.queueGone ? [] : [{ requestId, operation: 'wm-document-query', caller: 'owner', queuedAt: Date.now() - 1500 }],
-            history: [{ at: Date.now() - 10000, bootId: '00000000-0000-4000-8000-000000000002', queueDepth: 2,
+            history: [{ at: queueAt - 10000, bootId: '00000000-0000-4000-8000-000000000002', queueDepth: 2, peakQueueDepth: 6,
+              requestsByTool: state.noToolHistory ? undefined : { 'wm-document-query': 10, 'wm-document-read': 5 },
               processing: { processedPerSecond: 1.25, processedLastMinute: 20, averageWaitMs: 10, averageRunMs: 30 } }],
             events: [
               { sequence: 5, at: Date.now(), requestId, operation: 'wm-document-query', caller: 'owner',
@@ -97,7 +102,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
     `;
     const server = await createServer({
       configFile: false, root: fileURLToPath(new URL('..', import.meta.url)), cacheDir: join(directory, 'vite-cache'),
-      resolve: { dedupe: ['svelte', 'zod'] }, optimizeDeps: { include: ['svelte', 'zod'] },
+      resolve: { dedupe: ['svelte', 'zod', 'echarts'] },
+      optimizeDeps: { include: ['svelte', 'zod', 'echarts/core', 'echarts/charts', 'echarts/components', 'echarts/renderers'] },
       plugins: [svelte(), {
         name: 'diagnostics-fixture',
         resolveId: id => id === '/diagnostics-fixture.js' ? '\0diagnostics-fixture' : undefined,
@@ -123,8 +129,13 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         const assert = require('node:assert/strict');
         app.setPath('userData', ${JSON.stringify(join(directory, 'profile'))});
         app.whenReady().then(async () => {
-          const window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true } });
-          const evaluate = code => window.webContents.executeJavaScript(code);
+          const window = new BrowserWindow({ show: false, width: 1200, height: 1600, webPreferences: { contextIsolation: true } });
+          window.webContents.on('console-message', event => { if (event.level === 'error') console.error(event.message); });
+          const evaluate = async code => {
+            try { return await window.webContents.executeJavaScript(code); }
+            catch (error) { throw new Error('Evaluating ' + code + ': ' + error.message
+              + '\\n' + await window.webContents.executeJavaScript('document.body.innerText')); }
+          };
           async function wait(code) {
             const deadline = Date.now() + 7000;
             while (Date.now() < deadline) {
@@ -144,7 +155,41 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.ok((await evaluate('document.body.innerText')).includes('Queue Processing'));
           assert.ok((await evaluate('document.body.innerText')).includes('Average wait (1 min): 12.5 ms'));
           assert.ok((await evaluate('document.body.innerText')).includes('Average processing (1 min): 40 ms'));
-          assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[data-series=processedPerSecond] circle')).map(c => Number(c.getAttribute('cy')))"), [80, 20]);
+          await wait("window.__diagnosticsTest.chart('Queue processing history')?.getOption().series.length === 3");
+          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().series[2].data.map(point => point[1])"), [100]);
+          assert.equal(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].max - window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].min"), 60000);
+          await wait("window.__diagnosticsTest.chart('Tool request history')?.getOption().series.length === 2");
+          if (process.env.WM_DIAGNOSTICS_SCREENSHOT) {
+            require('node:fs').writeFileSync(process.env.WM_DIAGNOSTICS_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
+          }
+          assert.equal((await evaluate('document.body.innerText')).includes('Live requests'), false);
+          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Tool request history').getOption().series.map(series => series.data[0][1])"), [3, 7]);
+          assert.deepEqual(await evaluate("['Queue processing history', 'Tool request history'].map(label => { const chart = window.__diagnosticsTest.chart(label); return chart.convertToPixel({xAxisIndex: 0}, chart.getOption().xAxis[0].min); })"),
+            [64, 64], 'Both plots must start at the same horizontal pixel');
+          const originalWidth = await evaluate("window.__diagnosticsTest.chart('Queue processing history').getWidth()");
+          window.setSize(650, 1000);
+          await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() < " + originalWidth);
+          const matchesContainer = "['Queue processing history', 'Tool request history'].every(label => { const element = document.querySelector('.diagnostics-time-series[aria-label=\\"' + label + '\\"] .diagnostics-chart'); return window.__diagnosticsTest.chart(label).getWidth() === element.clientWidth && Number(element.querySelector('svg').getAttribute('width')) === element.clientWidth; })";
+          await wait(matchesContainer);
+          const windowWidth = await evaluate("window.__diagnosticsTest.chart('Queue processing history').getWidth()");
+          await evaluate("document.querySelector('main').style.width = '420px'");
+          await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() < " + windowWidth);
+          await wait(matchesContainer);
+          await evaluate("document.querySelector('main').style.width = ''");
+          window.setSize(1200, 1600);
+          await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() === " + originalWidth);
+          await wait(matchesContainer);
+          await evaluate("window.__diagnosticsTest.chart('Queue processing history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
+          await wait("document.body.innerText.includes('Average queue depth: 1.5 waiting')");
+          await evaluate("window.__diagnosticsTest.chart('Tool request history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
+          await wait("document.body.innerText.includes('wm-document-query: 3 requests')");
+          await evaluate("document.querySelector('[aria-label=\\"Tool request history\\"] .chart-legend button').click()");
+          await wait("window.__diagnosticsTest.chart('Tool request history').getOption().series.length === 1");
+          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Tool request history\\"] .chart-legend button').getAttribute('aria-pressed')"), 'true');
+          await evaluate("document.querySelector('[aria-label=\\"Tool request history\\"] .chart-legend button').click()");
+          await wait("window.__diagnosticsTest.chart('Tool request history').getOption().series.length === 2");
+          await evaluate("document.querySelector('[aria-label=\\"Queue processing history\\"] .chart-legend button').click()");
+          await wait("window.__diagnosticsTest.chart('Queue processing history').getOption().series.length === 1");
           const defaultCalls = await evaluate("window.__diagnosticsTest.queueCalls");
           await new Promise(resolve => setTimeout(resolve, 2200));
           assert.equal(await evaluate("window.__diagnosticsTest.queueCalls"), defaultCalls);
@@ -153,6 +198,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           const fastCalls = await evaluate("window.__diagnosticsTest.queueCalls");
           await new Promise(resolve => setTimeout(resolve, 2200));
           assert.ok(await evaluate("window.__diagnosticsTest.queueCalls") > fastCalls);
+          assert.equal(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().series.length"), 1, 'Selection must survive refresh');
+          await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Queue processing history\\"] .chart-legend button')).find(button => button.textContent === 'Show all').click()");
+          await wait("window.__diagnosticsTest.chart('Queue processing history').getOption().series.length === 3");
           assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Queue request log\\"] th')).map(c => c.textContent)"),
             ['Time', 'Duration ms', 'Request ID', 'Tool', 'Wait time ms', 'Runtime ms', 'Status']);
           assert.equal(await evaluate("document.querySelectorAll('[aria-label=\\"Queue request log\\"] tbody tr').length"), 2);
@@ -174,24 +222,21 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate("document.querySelector('#diagnostics-tab-http').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))");
           await wait("document.body.innerText.includes('1 waiting / 16')");
           assert.equal(await evaluate("document.activeElement.id"), 'diagnostics-tab-queue');
-          assert.ok(await evaluate("document.querySelector('svg[aria-label=\\"Queue processing history\\"] polyline').getAttribute('points').split(' ').length >= 2"));
           assert.equal((await evaluate('document.body.innerText')).includes('PRIVATE_LIVE_QUERY'), false);
-          await evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '00000000-0000-4000-8000-000000000001').click()");
-          await wait("document.querySelector('pre')?.textContent.includes('PRIVATE_LIVE_QUERY')");
-          assert.equal(await evaluate("window.__diagnosticsTest.inspections"), 1);
-          const raw = JSON.parse(await evaluate("document.querySelector('pre').textContent"));
-          assert.equal(raw.params.arguments.query, 'PRIVATE_LIVE_QUERY');
+          assert.equal(await evaluate("window.__diagnosticsTest.inspections"), 0);
           await evaluate("window.__diagnosticsTest.queueGone = true; window.__setDiagnosticsVisible(false)");
           const hiddenQueueCalls = await evaluate("window.__diagnosticsTest.queueCalls");
           await new Promise(resolve => setTimeout(resolve, 2200));
           assert.equal(await evaluate("window.__diagnosticsTest.queueCalls"), hiddenQueueCalls);
           await evaluate("window.__setDiagnosticsVisible(true)");
-          await wait("document.body.innerText.includes('No tool calls waiting or running.')");
+          await wait("document.body.innerText.includes('0 waiting / 16')");
+          await evaluate("window.__diagnosticsTest.chart('Queue processing history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
+          await wait("document.body.innerText.includes('Average queue depth: 1 waiting')");
           assert.equal((await evaluate('document.body.innerText')).includes('PRIVATE_LIVE_QUERY'), false);
           assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Diagnostics sections\\"] button')).map(b => b.textContent.trim())"),
             ['Queue', 'HTTP', 'Runtime', 'Automatic incident reports']);
           await evaluate("document.querySelector('#diagnostics-tab-runtime').click()");
-          await wait("Boolean(document.querySelector('svg[aria-label=\\"Normalized runtime time series\\"]'))");
+          await wait("window.__diagnosticsTest.chart('Normalized runtime time series')?.getOption().series.length === 9");
           assert.equal(await evaluate("document.querySelector('[aria-label=\\"Refresh interval\\"]').value"), '2000');
           const inactiveQueueCalls = await evaluate("window.__diagnosticsTest.queueCalls");
           assert.equal(await evaluate("document.querySelector('[role=tab][aria-selected=true]').textContent"), 'Diagnostics');
@@ -202,27 +247,32 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           }
           assert.equal(runtimeText.includes('correlated-request-id'), false);
           assert.equal(runtimeText.includes('Three health probes failed.'), false);
-          assert.equal(await evaluate("document.querySelectorAll('svg[aria-label=\\"Normalized runtime time series\\"] [data-series]').length"), 9);
-          assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[data-series=heapUsedBytes] circle')).map(c => Number(c.getAttribute('cy')))"), [104, 24]);
-          assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[data-series=cpuPercent] circle')).map(c => Number(c.getAttribute('cy')))"), [24, 144]);
-          assert.ok(await evaluate("document.querySelector('[data-series=heapUsedBytes] title').textContent.includes('Heap 50 MiB')"));
-          for (const value of ['peak 100 MiB', 'peak 80 %', 'peak 4 /sample', 'peak 8 tools']) {
+          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Normalized runtime time series').getOption().series[0].data.map(point => point[1])"), [100]);
+          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Normalized runtime time series').getOption().series[3].data.map(point => point[1])"), [100]);
+          await evaluate("document.querySelector('[aria-label=\\"Normalized runtime time series\\"] .chart-legend button').click()");
+          await wait("window.__diagnosticsTest.chart('Normalized runtime time series').getOption().series.length === 1");
+          await evaluate("document.querySelector('[aria-label=\\"Normalized runtime time series\\"] .chart-legend button').click()");
+          await wait("window.__diagnosticsTest.chart('Normalized runtime time series').getOption().series.length === 9");
+          for (const value of ['peak 75 MiB', 'peak 50 %', 'peak 6 /min', 'peak 6 tools']) {
             assert.ok(runtimeText.includes(value), value + ' missing');
           }
           await evaluate("window.__diagnosticsTest.noRuntimeSamples = true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
           await wait("document.body.innerText.includes('No runtime samples are available for this environment.')");
-          assert.equal(await evaluate("document.querySelectorAll('svg, table').length"), 0);
+          assert.equal(await evaluate("document.querySelector('.diagnostics-chart').style.display"), 'none');
           await evaluate("window.__diagnosticsTest.noRuntimeSamples = false");
           await evaluate("Array.from(document.querySelectorAll('[role=tab]')).find(b => b.textContent.trim() === 'HTTP').click()");
           await wait("document.body.innerText.includes('correlated-request-id')");
-          assert.equal(await evaluate("document.querySelectorAll('svg[aria-label=\\"Normalized HTTP time series\\"] [data-series]').length"), 4);
-          assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[data-series=transactions] circle')).map(c => Number(c.getAttribute('cy')))"), [104, 24]);
-          assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[data-series=errors] circle')).map(c => Number(c.getAttribute('cy')))"), [184, 24]);
-          const pointTitles = await evaluate("Array.from(document.querySelectorAll('[data-series=transactions] title')).map(t => t.textContent)");
-          assert.ok(pointTitles.some(text => text.includes('Transactions 42 /min')), JSON.stringify(pointTitles));
+          await wait("window.__diagnosticsTest.chart('Normalized HTTP time series')?.getOption().series.length === 4");
+          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Normalized HTTP time series').getOption().series[0].data.map(point => point[1])"), [50, 100]);
+          await evaluate("window.__diagnosticsTest.chart('Normalized HTTP time series').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:1})");
+          await wait("document.body.innerText.includes('Transactions: 42 /min')");
+          await evaluate("document.querySelector('[aria-label=\\"Normalized HTTP time series\\"] .chart-legend button').click()");
+          await wait("window.__diagnosticsTest.chart('Normalized HTTP time series').getOption().series.length === 1");
+          await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Normalized HTTP time series\\"] .chart-legend button')).find(button => button.textContent === 'Show all').click()");
+          await wait("window.__diagnosticsTest.chart('Normalized HTTP time series').getOption().series.length === 4");
           assert.equal(await evaluate("document.querySelectorAll('table').length"), 1);
           assert.equal(await evaluate("document.querySelector('table th').textContent"), 'Time');
-          assert.ok(await evaluate("Boolean(document.querySelector('svg[aria-label=\\"Normalized HTTP time series\\"]').compareDocumentPosition(document.querySelector('table')) & Node.DOCUMENT_POSITION_FOLLOWING)"));
+          assert.ok(await evaluate("Boolean(document.querySelector('.diagnostics-chart').compareDocumentPosition(document.querySelector('table')) & Node.DOCUMENT_POSITION_FOLLOWING)"));
           await evaluate("document.querySelector('details').open = true");
           const httpText = await evaluate('document.body.innerText');
           const maximum = await evaluate("(3500).toLocaleString()");
@@ -247,7 +297,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.ok((await evaluate('document.body.innerText')).includes('Waiting for recovery'));
           assert.equal(await evaluate("window.__diagnosticsTest.queueCalls"), inactiveQueueCalls);
           await evaluate("Array.from(document.querySelectorAll('[role=tab]')).find(b => b.textContent.trim() === 'Queue').click()");
-          await wait("document.body.innerText.includes('No tool calls waiting or running.')");
+          await wait("document.body.innerText.includes('0 waiting / 16')");
+          await evaluate("window.__diagnosticsTest.noToolHistory = true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.body.innerText.includes('Tool-request history is unavailable on this backend.')");
           await evaluate("Array.from(document.querySelectorAll('[role=tab]')).find(b => b.textContent.trim() === 'Models').click()");
           await wait("document.body.innerText.includes('Routing matrix')");
           const stoppedCounts = await evaluate("[window.__diagnosticsTest.calls, window.__diagnosticsTest.queueCalls]");

@@ -26,7 +26,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         const probe = window.__updatesTest = {
           backendReads: 0, backendChannels: [], operations: [], changes: 0,
           frontendReads: 0, frontendChannels: [], frontendActions: [],
-          subscriptions: 0, unsubscriptions: 0, listener: null,
+          subscriptions: 0, unsubscriptions: 0, listener: null, provider: 'docker', providerChanges: [],
         };
         const backend = {
           appVersion: '1.4.1', backendChannel: 'off',
@@ -50,6 +50,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           probe.listener?.(structuredClone(frontend));
         };
         window.workingMemory = {
+          async getContainerProvider() { return probe.provider; },
+          async setContainerProvider(provider) {
+            probe.providerChanges.push(provider); probe.provider = provider;
+            backend.dockerError = provider === 'podman' ? 'Podman is unavailable. Start it, then Retry.' : null;
+          },
           async listInstances() { probe.backendReads++; return structuredClone(backend); },
           async setBackendUpdateChannel(channel) {
             probe.backendChannels.push(channel); backend.backendChannel = channel;
@@ -145,6 +150,12 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate(button('Update to 1.4.2') + '.click()');
           await wait("window.__updatesTest.operations.includes('upgrade:7719') && " + button('Update to 1.4.2') + " === undefined");
           assert.equal(await evaluate("window.__updatesTest.changes"), 3);
+          await evaluate("(() => { const provider = document.querySelector('.container-provider select'); provider.value = 'podman'; provider.dispatchEvent(new Event('change', { bubbles: true })); })()");
+          await wait("window.__updatesTest.providerChanges[0] === 'podman' && " + button('Retry') + "?.disabled === false");
+          assert.equal(await evaluate("document.querySelector('.instances-note[role=alert]').textContent.includes('Podman is unavailable')"), true);
+          await evaluate(button('Retry') + '.click()');
+          await wait("!document.querySelector('.container-provider select').disabled");
+          assert.equal(await evaluate("document.querySelector('.container-provider select').value"), 'podman');
           await evaluate(button('Front End') + '.click()');
           await wait("document.querySelector('.update-channels') && window.__updatesTest.frontendReads === 1");
           assert.equal(await evaluate("document.querySelector('.instances') === null"), true);
@@ -168,6 +179,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.querySelector('.instances') && window.__updatesTest.unsubscriptions === 2");
           assert.equal(await evaluate("document.querySelector('[aria-label=Updates] [aria-selected=true]').textContent"), 'Back End');
           assert.equal(await evaluate("document.querySelector('.backend-channel select').value"), 'canary');
+          assert.equal(await evaluate("document.querySelector('.container-provider select').value"), 'podman');
           assert.equal(await evaluate("window.__updatesTest.subscriptions"), 2);
           console.log('updates-settings-browser: subtabs, actions, selection and subscriptions passed');
           window.destroy(); app.exit(0);

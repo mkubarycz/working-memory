@@ -830,7 +830,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       if (req.method !== 'GET') { endJson(res, 405, { error: 'Queue inspection accepts GET only.' }); return; }
       if (url.pathname === '/identity/v1/tool-queue') {
         endJson(res, 200, { bootId: diagnostics.bootId, ...toolQueue.state(), events: toolQueue.events(),
-          history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing }) => ({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing })) });
+          history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool }) => ({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool })) });
       } else {
         const id = z.string().uuid().safeParse(url.pathname.slice('/identity/v1/tool-queue/'.length));
         if (!id.success) { endJson(res, 400, { error: 'A valid queued request ID is required.' }); return; }

@@ -16,6 +16,7 @@ export const runtimeSampleSchema = z.object({
   queueDepth: z.number().int(), runningTools: z.number().int(),
   peakQueueDepth: z.number().int().optional(),
   processing: queueProcessingSchema.optional(),
+  requestsByTool: z.record(z.string(), z.number().int().nonnegative()).optional(),
   operations: z.array(z.object({
     requestId: z.string().uuid(), operation: z.string(), caller: z.string(),
     queuedAt: z.number(), startedAt: z.number().optional(),
@@ -30,13 +31,14 @@ export const toolQueueSnapshotSchema = z.object({
   limits: z.object({ running: z.number().int(), waiting: z.number().int(), waitMs: z.number() }),
   memoryBlocked: z.boolean(), running: z.number().int(), waiting: z.number().int(),
   processing: queueProcessingSchema.optional(),
+  requestsByTool: z.record(z.string(), z.number().int().nonnegative()).optional(),
   items: z.array(queuedToolSchema),
   events: z.array(z.object({
     sequence: z.number().int(), at: z.number(), requestId: z.string().uuid(),
     operation: z.string(), caller: z.string(), event: z.string(),
     waiting: z.number().int(), running: z.number().int(), waitMs: z.number(), runMs: z.number(),
   })),
-  history: z.array(runtimeSampleSchema.pick({ at: true, bootId: true, queueDepth: true, peakQueueDepth: true, runningTools: true, processing: true })),
+  history: z.array(runtimeSampleSchema.pick({ at: true, bootId: true, queueDepth: true, peakQueueDepth: true, runningTools: true, processing: true, requestsByTool: true })),
 });
 export type ToolQueueSnapshot = z.infer<typeof toolQueueSnapshotSchema>;
 export interface DesktopToolQueue {

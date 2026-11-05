@@ -1,6 +1,5 @@
 import { expect, it } from 'vitest';
 import type { InstanceDiagnostics } from '../../control-plane/src/diagnosticContract';
-import { DIAGNOSTICS_CHART_BOUNDS } from '../src/renderer/diagnosticsChart';
 import { runtimeDiagnosticsChart } from '../src/renderer/runtimeDiagnosticsChart';
 
 type Sample = NonNullable<InstanceDiagnostics['samples']>[number];
@@ -18,28 +17,31 @@ it('normalizes all nine former table metrics independently and retains memory in
       externalBytes: 40 * 1048576, cpuPercent: 80, eventLoopMaxMs: 40,
       gcCount: 4, gcDurationMs: 20, queueDepth: 8, runningTools: 4 }),
     sample(0),
+    sample(60000),
   ];
   const chart = runtimeDiagnosticsChart(samples);
-  expect(chart.series.map(series => series.peak)).toEqual([100, 200, 40, 80, 40, 4, 20, 8, 4]);
-  expect(chart.series.map(series => series.points.map(point => point.normalized)))
-    .toEqual(Array.from({ length: 9 }, () => [50, 100]));
+  expect(chart.series.map(series => series.peak)).toEqual([75, 150, 30, 60, 40, 6, 30, 6, 3]);
+  expect(chart.series.map(series => series.points.map(point => point.value))).toEqual([
+    [75, 50], [150, 100], [30, 20], [60, 40], [40, 20], [6, 2], [30, 10], [6, 4], [3, 2],
+  ]);
+  for (const series of chart.series) {
+    expect(series.points[0].normalized).toBe(100);
+    expect(series.points[1].normalized).toBeCloseTo((series.points[1].value ?? 0) / series.peak * 100);
+  }
   expect(chart.series[0]).toMatchObject({ label: 'Heap', unit: 'MiB' });
-  expect(chart.series[0].points.map(point => point.value)).toEqual([50, 100]);
-  expect(samples.map(item => item.at)).toEqual([10000, 0]);
+  expect(chart.series[0].points.map(point => point.value)).toEqual([75, 50]);
+  expect(samples.map(item => item.at)).toEqual([10000, 0, 60000]);
 });
 
 it('allows sampling jitter but breaks traces across missing samples and backend restarts', () => {
   const chart = runtimeDiagnosticsChart([
-    sample(0), sample(10010), sample(20000), sample(40000),
-    sample(50000, { bootId: '00000000-0000-4000-8000-000000000002' }),
+    sample(50000), sample(60010), sample(70000), sample(180000),
+    sample(240000, { bootId: '00000000-0000-4000-8000-000000000002' }),
   ]);
   for (const series of chart.series) {
-    expect(series.path.match(/[ML]/g)).toEqual(['M', 'L', 'L', 'M', 'M']);
+    expect(series.points.map(point => point.breakBefore)).toEqual([true, false, true, true]);
   }
-  expect(chart.series[0].points[1].x).toBeCloseTo(
-    DIAGNOSTICS_CHART_BOUNDS.left
-      + (DIAGNOSTICS_CHART_BOUNDS.right - DIAGNOSTICS_CHART_BOUNDS.left) * 10010 / 50000,
-  );
+  expect(chart.series[0].points[1].at).toBe(90000);
 });
 
 it('keeps zero-valued metrics on the baseline with finite coordinates', () => {
@@ -49,8 +51,7 @@ it('keeps zero-valued metrics on the baseline with finite coordinates', () => {
   })]);
   for (const series of chart.series) {
     expect(series.peak).toBe(0);
-    expect(series.points[0]).toMatchObject({ normalized: 0, y: DIAGNOSTICS_CHART_BOUNDS.bottom });
-    expect(series.path).not.toMatch(/NaN|Infinity/);
+    expect(series.points[0]).toMatchObject({ normalized: 0, value: 0 });
   }
 });
 
@@ -58,10 +59,10 @@ it('handles empty or legacy history and isolated samples explicitly', () => {
   for (const samples of [undefined, []]) {
     const chart = runtimeDiagnosticsChart(samples);
     expect(chart.hasData).toBe(false);
-    expect(chart.series.every(series => series.path === '' && series.points.length === 0)).toBe(true);
+    expect(chart.series.every(series => series.points.length === 0)).toBe(true);
   }
   const chart = runtimeDiagnosticsChart([sample(123000)]);
   expect(chart.hasData).toBe(true);
-  expect(chart.end - chart.start).toBe(10000);
-  expect(chart.series[0].points[0].x).toBe(DIAGNOSTICS_CHART_BOUNDS.left);
+  expect(chart).toMatchObject({ start: 120000, end: 180000 });
+  expect(chart.series[0].points[0].at).toBe(150000);
 });

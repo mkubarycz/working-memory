@@ -17,18 +17,21 @@ function pathDirectories(host: DockerHost): string[] {
 }
 
 /** Install locations that GUI-launched apps often lack on PATH. */
-function extraDockerDirectories(host: DockerHost): string[] {
+function extraDockerDirectories(host: DockerHost, provider: 'docker' | 'podman' = 'docker'): string[] {
   const path = pathFor(host.platform);
   if (host.platform === 'win32') {
     const programFiles = host.env.ProgramFiles || 'C:\\Program Files';
-    return [path.join(programFiles, 'Docker', 'Docker', 'resources', 'bin')];
+    return provider === 'podman'
+      ? [path.join(programFiles, 'RedHat', 'Podman')]
+      : [path.join(programFiles, 'Docker', 'Docker', 'resources', 'bin')];
   }
   if (host.platform === 'darwin') {
     return [
       '/usr/local/bin',
       '/opt/homebrew/bin',
-      path.join(host.homedir, '.docker', 'bin'),
-      '/Applications/Docker.app/Contents/Resources/bin',
+      ...(provider === 'podman'
+        ? ['/opt/podman/bin', path.join(host.homedir, '.local', 'bin')]
+        : [path.join(host.homedir, '.docker', 'bin'), '/Applications/Docker.app/Contents/Resources/bin']),
     ];
   }
   return ['/usr/local/bin', '/usr/bin'];
@@ -48,21 +51,22 @@ export function defaultFileExists(platform: NodeJS.Platform): (candidate: string
 export function dockerCliPath(
   host: DockerHost,
   fileExists: (path: string) => boolean = defaultFileExists(host.platform),
+  provider: 'docker' | 'podman' = 'docker',
 ): string | undefined {
   const path = pathFor(host.platform);
-  const executable = host.platform === 'win32' ? 'docker.exe' : 'docker';
-  return [...pathDirectories(host), ...extraDockerDirectories(host)]
+  const executable = host.platform === 'win32' ? `${provider}.exe` : provider;
+  return [...pathDirectories(host), ...extraDockerDirectories(host, provider)]
     .map((directory) => path.join(directory, executable))
     .find(fileExists);
 }
 
 /** Child environment that can find Docker's Compose plugin and credential helpers. */
-export function dockerEnvironment(host: DockerHost, dockerPath: string): NodeJS.ProcessEnv {
+export function dockerEnvironment(host: DockerHost, dockerPath: string, provider: 'docker' | 'podman' = 'docker'): NodeJS.ProcessEnv {
   const path = pathFor(host.platform);
   const separator = host.platform === 'win32' ? ';' : ':';
   const directories = [...new Set([
     path.dirname(dockerPath),
-    ...extraDockerDirectories(host),
+    ...extraDockerDirectories(host, provider),
     ...pathDirectories(host),
   ])];
   const { Path: _windowsPath, ...env } = host.env;

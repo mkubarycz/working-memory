@@ -28,6 +28,7 @@ it('records runtime and operation trends without request arguments, and accepts 
   diagnostics.sample();
   const snapshot = diagnostics.snapshot(1);
   expect(snapshot.samples?.[0]).toMatchObject({ queueDepth: 1, runningTools: 0,
+    requestsByTool: { 'wm-document-query': 1 },
     processing: { processedPerSecond: 0, processedLastMinute: 0, averageWaitMs: null, averageRunMs: null },
     operations: [expect.objectContaining({ operation: 'wm-document-query' })] });
   expect(snapshot.samples?.[0].cpuPercent).toBeGreaterThanOrEqual(0);

@@ -1,49 +1,94 @@
 <script lang="ts">
-  import { DIAGNOSTICS_CHART_BOUNDS as bounds, type normalizedDiagnosticsChart } from '../diagnosticsChart';
+  import { onMount } from 'svelte';
+  import type { EChartsType } from 'echarts/core';
+  import type { DiagnosticsChartData } from '../diagnosticsChart';
 
-  let { chart, label, description, emptyMessage }: {
-    chart: ReturnType<typeof normalizedDiagnosticsChart>;
+  let { chart, label, description, emptyMessage, stacked = false, syncGroup }: {
+    chart: DiagnosticsChartData;
     label: string;
     description: string;
     emptyMessage: string;
+    stacked?: boolean;
+    syncGroup?: string;
   } = $props();
+  let element: HTMLDivElement;
+  let instance: EChartsType | undefined;
+  let runtime: typeof import('../diagnosticsECharts') | undefined;
+  let chartError = $state('');
+  let active = false;
+  let loading = false;
+  let resize: ResizeObserver | undefined;
+  let selected = $state<string | null>(null);
+  function update(): void {
+    const data = chart, selection = selected, bars = stacked;
+    if (instance && runtime) instance.setOption(runtime.diagnosticsChartOption(data, selection, bars), { notMerge: true });
+  }
+  async function initialize(): Promise<void> {
+    if (loading || instance) return;
+    loading = true;
+    chartError = '';
+    try {
+      runtime = await import('../diagnosticsECharts');
+      if (!active) return;
+      instance = runtime.init(element, undefined, {
+        renderer: 'svg', width: element.parentElement?.clientWidth || 800, height: 260,
+      });
+      if (syncGroup) { instance.group = syncGroup; runtime.connect(syncGroup); }
+      update();
+      resize = new ResizeObserver(() => { if (element.clientWidth) instance?.resize({ width: element.clientWidth }); });
+      resize.observe(element);
+    } catch (cause) {
+      instance?.dispose();
+      instance = undefined;
+      if (active) chartError = cause instanceof Error ? cause.message : String(cause);
+    } finally { loading = false; }
+  }
+  onMount(() => {
+    active = true;
+    void initialize();
+    return () => {
+      active = false;
+      resize?.disconnect();
+      if (syncGroup) runtime?.disconnect(syncGroup);
+      instance?.dispose();
+      instance = undefined;
+    };
+  });
+  $effect(() => {
+    if (selected !== null && !chart.series.some(series => series.key === selected)) selected = null;
+    update();
+  });
 </script>
 
-<p>Each series is scaled independently to 0-100% of its peak in this window. Compare patterns, not absolute magnitudes.
-  The legend shows raw peaks; hover a point for its original value.</p>
-{#if chart.hasData}
-  <svg viewBox="0 0 800 230" role="img" aria-label={label} class="diagnostics-chart">
-    <title>{description}</title>
-    {#each [0, 25, 50, 75, 100] as percent}
-      {@const y = bounds.bottom - percent / 100 * (bounds.bottom - bounds.top)}
-      <path d={`M${bounds.left},${y}H${bounds.right}`} class="chart-grid" />
-      <text x="40" {y} text-anchor="end" dominant-baseline="middle">{percent}%</text>
-    {/each}
-    {#each chart.series as series (series.key)}
-      <g data-series={series.key}>
-        <path d={series.path} fill="none" stroke={series.color} stroke-width="2" stroke-dasharray={series.dash} />
-        {#each series.points as point (point.at)}
-          <circle cx={point.x} cy={point.y} r="3" fill={series.color}>
-            <title>{`${new Date(point.at).toLocaleString()}: ${series.label} ${point.value.toLocaleString()} ${series.unit} (${point.normalized.toFixed(1)}% of peak)`}</title>
-          </circle>
-        {/each}
-      </g>
-    {/each}
-    <text x={bounds.left} y="210">{new Date(chart.start).toLocaleTimeString()}</text>
-    <text x={bounds.right} y="210" text-anchor="end">{new Date(chart.end).toLocaleTimeString()}</text>
-  </svg>
-  <ul class="chart-legend">
-    {#each chart.series as series (series.key)}
-      <li style={`border-left: 3px solid ${series.color}`}><strong>{series.label}</strong>
-        &middot; peak {series.peak.toLocaleString()} {series.unit}</li>
-    {/each}
-  </ul>
-{:else}<p>{emptyMessage}</p>{/if}
+<section class="diagnostics-time-series" aria-label={label}>
+  <p>{description}</p>
+  {#if chartError}<p role="alert">Chart unavailable: {chartError}
+    <button onclick={() => void initialize()}>Retry chart</button></p>{/if}
+  {#if !stacked}
+    <p>Each series has its own scale: 0-100% of its peak in this window, without smoothing.
+      Compare patterns, not absolute magnitudes. Hover for original values.</p>
+  {/if}
+  <div bind:this={element} class="diagnostics-chart" role="img" aria-label={label}
+    style:display={chart.hasData ? undefined : 'none'}></div>
+  {#if chart.hasData}
+    <ul class="chart-legend">
+      {#each chart.series as series (series.key)}
+        <li>
+          <button style:border-left={`3px solid ${series.color}`} aria-pressed={selected === series.key}
+            title="Show only this series; click again to show all"
+            onclick={() => { selected = selected === series.key ? null : series.key; }}>
+            <strong>{series.label}</strong> · peak {series.peak.toLocaleString()} {series.unit}
+          </button>
+        </li>
+      {/each}
+      <li><button disabled={selected === null} onclick={() => { selected = null; }}>Show all</button></li>
+    </ul>
+  {:else}<p role="status">{emptyMessage}</p>{/if}
+</section>
 
 <style>
-  .diagnostics-chart { display: block; width: 100%; max-height: 300px; color: var(--text-secondary, #aaa); font-size: 12px; }
-  .diagnostics-chart text { fill: currentColor; }
-  .chart-grid { fill: none; stroke: currentColor; opacity: 0.2; }
-  .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 0; list-style: none; }
-  .chart-legend li { padding-left: 8px; }
+  .diagnostics-chart { width: 100%; height: 260px; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; list-style: none; }
+  .chart-legend button { padding: 4px 8px; color: inherit; background: transparent; border: 1px solid var(--vscode-input-border); text-align: left; }
+  .chart-legend button[aria-pressed="true"] { background: var(--desktop-accent-soft); outline: 1px solid var(--desktop-accent-strong); }
 </style>

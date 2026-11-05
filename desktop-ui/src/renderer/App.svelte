@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import ActiveRail from './ActiveRail.svelte';
   import BrainMark from './BrainMark.svelte';
   import UnreadBadge from './UnreadBadge.svelte';
@@ -118,7 +119,6 @@
   import type { RailSide, RailWidths } from './railLayout';
   import {
     emptyEnvironmentBoundRendererState,
-    reloadEnvironmentBoundData,
     type SelectedTool,
   } from './environmentState';
   import {
@@ -159,6 +159,9 @@
   let instanceFeatures = $state<InstanceFeatures>({ hostTasks: false, search: false });
   let instanceConnection = $state<InstanceConnectionState | null>(null);
   let instanceConnectionError = $state('');
+  let instanceConnectionRefresh: Promise<boolean> | null = null;
+  let instanceAuthenticationGeneration = 0;
+  let instanceConnectionPoll: Promise<void> | null = null;
   let managingInstancesBeforeSignIn = $state(false);
   let pendingAccessRequests = $state(0);
   let pendingResource: { kind: DesktopResourceKind; identifier: string } | null = null;
@@ -196,6 +199,10 @@
   let activeChatContexts = $state<string[]>([]);
   const deferredDocumentRefreshes = new Set<string>();
   let documents = $state<DocumentVM[]>([]);
+  const backlogExpanded = new SvelteSet<string>();
+  $effect(() => {
+    if (!documents.some(document => document.kind === 'topic-backlog')) backlogExpanded.clear();
+  });
   let selectedDocumentKey = $state<string | null>(null);
   let previewDocumentKey = $state<string | null>(null);
   const documentOpens = createDocumentOpenGuard();
@@ -1153,17 +1160,15 @@
     );
     const stopListeningForAuthentication = window.workingMemory.onInstanceAuthenticationChanged(event => {
       if (event.mcpUrl !== selectedEnvironment?.mcpUrl || event.authenticated) return;
+      instanceAuthenticationGeneration += 1;
       if (instanceConnection) instanceConnection = { ...instanceConnection, authenticated: false };
+      instanceConnectionError = '';
       pendingAccessRequests = 0;
     });
     const stopListeningForChanges = window.workingMemory.onDocumentChanges(handleDocumentChanges);
     const backendHealthPoll = window.setInterval(() => {
       void refreshBackendHealth();
-      if (instanceConnection?.authenticated) {
-        void refreshInstanceConnection();
-        void refreshFeatures();
-        void refreshAccessRequests();
-      }
+      void pollInstanceConnection();
     }, 30_000);
     return () => {
       stopListeningForDeepLinks();
@@ -1184,22 +1189,63 @@
     await loadAuthenticatedWorkspace();
   }
 
-  async function refreshInstanceConnection(): Promise<boolean> {
+  function refreshInstanceConnection(): Promise<boolean> {
+    if (instanceConnectionRefresh) return instanceConnectionRefresh;
     const generation = environmentGeneration, mcpUrl = selectedEnvironment?.mcpUrl;
-    instanceConnectionError = '';
-    if (!mcpUrl) { instanceConnection = null; return false; }
-    try {
-      const state = await window.workingMemory.getInstanceIdentity();
-      if (generation !== environmentGeneration || selectedEnvironment?.mcpUrl !== mcpUrl) return false;
-      instanceConnection = state;
-      return state.authenticated;
-    } catch (cause) {
-      if (generation === environmentGeneration) {
-        instanceConnection = null;
-        instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+    const authenticationGeneration = instanceAuthenticationGeneration;
+    if (!mcpUrl) { instanceConnection = null; return Promise.resolve(false); }
+    const pending = (async () => {
+      try {
+        const state = await window.workingMemory.getInstanceIdentity();
+        if (generation !== environmentGeneration || selectedEnvironment?.mcpUrl !== mcpUrl) return false;
+        if (state.authenticated && authenticationGeneration !== instanceAuthenticationGeneration) return false;
+        instanceConnection = state;
+        instanceConnectionError = '';
+        return state.authenticated;
+      } catch (cause) {
+        if (generation === environmentGeneration && selectedEnvironment?.mcpUrl === mcpUrl
+          && authenticationGeneration === instanceAuthenticationGeneration) {
+          instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+        }
+        return false;
       }
-      return false;
-    }
+    })();
+    instanceConnectionRefresh = pending;
+    void pending.finally(() => {
+      if (instanceConnectionRefresh === pending) instanceConnectionRefresh = null;
+    });
+    return pending;
+  }
+
+  function pollInstanceConnection(): Promise<void> {
+    if (instanceConnectionPoll) return instanceConnectionPoll;
+    if (environmentLoading || instanceConnectionRefresh) return Promise.resolve();
+    if (selectedEnvironment && !instanceConnection?.authenticated && !instanceConnectionError) return Promise.resolve();
+    const generation = environmentGeneration;
+    const wasAuthenticated = instanceConnection?.authenticated;
+    const pending = (async () => {
+      try {
+        if (!selectedEnvironment) {
+          await discoverEnvironments(true);
+          if (generation !== environmentGeneration || !selectedEnvironment) return;
+        }
+        if (!await refreshInstanceConnection() || generation !== environmentGeneration) return;
+        if (!wasAuthenticated) await loadAuthenticatedWorkspace();
+        else {
+          await Promise.all([refreshFeatures(), refreshAccessRequests()]);
+          if (liveUpdateError && generation === environmentGeneration) await startDocumentChanges();
+        }
+      } catch (cause) {
+        if (generation === environmentGeneration) {
+          instanceConnectionError = cause instanceof Error ? cause.message : String(cause);
+        }
+      }
+    })();
+    instanceConnectionPoll = pending;
+    void pending.finally(() => {
+      if (instanceConnectionPoll === pending) instanceConnectionPoll = null;
+    });
+    return pending;
   }
 
   async function refreshAccessRequests(): Promise<void> {
@@ -1217,23 +1263,33 @@
   }
 
   async function connectedToInstance(): Promise<void> {
+    instanceAuthenticationGeneration += 1;
+    instanceConnectionRefresh = null;
     if (!await refreshInstanceConnection()) return;
     managingInstancesBeforeSignIn = false;
     await documentSaves.flushAll();
     await loadAuthenticatedWorkspace();
-    if (pendingResource) {
+  }
+
+  async function loadAuthenticatedWorkspace(): Promise<void> {
+    const generation = environmentGeneration, authenticationGeneration = instanceAuthenticationGeneration;
+    const isCurrent = () => generation === environmentGeneration
+      && authenticationGeneration === instanceAuthenticationGeneration && instanceConnection?.authenticated;
+    if (!isCurrent()) return;
+    input = readComposerDraft(localStorage, selectedEnvironment?.id);
+    restoreUnreadResponses();
+    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps(), refreshFeatures()]);
+    if (!isCurrent()) return;
+    await refreshAccessRequests();
+    if (!isCurrent()) return;
+    if (!documentTabsPersistenceReady) await restoreDocumentTabs();
+    if (!isCurrent()) return;
+    await startDocumentChanges();
+    if (isCurrent() && pendingResource) {
       const resource = pendingResource;
       pendingResource = null;
       await openResource(resource.kind, resource.identifier);
     }
-  }
-
-  async function loadAuthenticatedWorkspace(): Promise<void> {
-    restoreUnreadResponses();
-    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps(), refreshFeatures()]);
-    await refreshAccessRequests();
-    if (!documentTabsPersistenceReady) await restoreDocumentTabs();
-    await startDocumentChanges();
   }
 
   async function restoreDocumentTabs(): Promise<void> {
@@ -1395,19 +1451,25 @@
   }
 
   async function discoverEnvironments(restoreDraft = false): Promise<void> {
+    const generation = environmentGeneration;
     environmentLoading = true;
     environmentError = '';
     try {
-      applyEnvironmentState(await window.workingMemory.discoverEnvironments());
+      const state = await window.workingMemory.discoverEnvironments();
+      if (generation !== environmentGeneration) return;
+      applyEnvironmentState(state);
       if (restoreDraft) input = readComposerDraft(localStorage, selectedEnvironment?.id);
     } catch (error) {
-      environmentError = error instanceof Error ? error.message : String(error);
+      if (generation === environmentGeneration) environmentError = error instanceof Error ? error.message : String(error);
     } finally {
-      environmentLoading = false;
+      if (generation === environmentGeneration) environmentLoading = false;
     }
   }
 
   function resetEnvironmentState(): void {
+    instanceAuthenticationGeneration += 1;
+    instanceConnectionRefresh = null;
+    instanceConnectionPoll = null;
     instanceConnection = null;
     instanceConnectionError = '';
     pendingAccessRequests = 0;
@@ -1432,6 +1494,7 @@
     documentSaveErrors = {};
     input = reset.input;
     documents = reset.documents;
+    backlogExpanded.clear();
     selectedDocumentKey = null;
     previewDocumentKey = null;
     documentOpens.invalidate();
@@ -1476,15 +1539,7 @@
       const state = await window.workingMemory.switchEnvironment(mcpUrl);
       applyEnvironmentState(state);
       if (!await refreshInstanceConnection()) return;
-      restoreUnreadResponses();
-      input = readComposerDraft(localStorage, selectedEnvironment?.id);
-      await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
-      await refreshAgentMessages();
-      await loadContainerApps();
-      await refreshFeatures();
-      await restoreDocumentTabs();
-      await refreshBackendHealth();
-      await startDocumentChanges();
+      await loadAuthenticatedWorkspace();
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -2527,8 +2582,19 @@
     onkeydown={(event) => resizeRailWithKeyboard('active', event)}
   ></div>
 
-  <main class="main">
-    {#if liveUpdateError}
+  <main class="main" class:connection-interrupted={!!instanceConnectionError}>
+    {#if instanceConnectionError}
+      <div class="instance-connection-notice" role="status">
+        <strong>Reconnecting to Working Memory</strong>
+        <span>Your workspace is still open. Retrying automatically every 30 seconds. Changes may not save until the connection recovers.</span>
+        <details><summary>Connection details</summary>{instanceConnectionError}</details>
+        <div>
+          <button onclick={() => void pollInstanceConnection()}>Retry connection</button>
+          <button onclick={() => openSettings('diagnostics')}>Diagnostics</button>
+        </div>
+      </div>
+    {/if}
+    {#if liveUpdateError && !instanceConnectionError}
       <div class="document-error live-update-error" role="alert">Live updates: {liveUpdateError}
         <button onclick={() => void startDocumentChanges()}>Retry</button>
       </div>
@@ -2770,6 +2836,7 @@
         {:else if activeDocument?.kind === 'topic-backlog'}
           <TopicBacklogView
             backlog={activeDocument}
+            expanded={backlogExpanded}
             treeProps={activeTreeProps}
             bind:activeDrag={activeTreeDrag}
           />
@@ -3262,7 +3329,7 @@
       AI: {openAiHealth.state}
     </span>
     {#if featuresError}<span role="alert">Features: {featuresError}</span>{/if}
-    {#if instanceConnectionError}<span role="alert">Connection: {instanceConnectionError}</span>{/if}
+    {#if instanceConnectionError}<span>Connection: reconnecting</span>{/if}
     {#if pendingAccessRequests}
       <button onclick={() => openSettings('access')}>{pendingAccessRequests} access request{pendingAccessRequests === 1 ? '' : 's'} - Review</button>
     {/if}

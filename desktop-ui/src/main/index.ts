@@ -123,13 +123,14 @@ import {
 import { loadPromptImages } from './promptImages';
 import { decodeQrPayloads } from './qrDecoder';
 import {
-  DataTierError,
   DataTierManager,
-  DOCKER_DESKTOP_URL,
   readManagedInstances,
   dataTierHostDirectory,
   type DataTierInstancesSnapshot,
 } from './dataTier';
+import { readContainerProvider, writeContainerProvider } from './containerProviderSettings';
+import { assertContainerProviderForClaims } from './containerOwnership';
+import { parseContainerProvider } from './containerProvider';
 
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
 const STABLE_DESKTOP_EXECUTABLE = '/Applications/Working Memory.app/Contents/MacOS/Electron';
@@ -147,7 +148,9 @@ let mainWindowCreation: Promise<BrowserWindow> | null = null;
 let windowStateSaveTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingDeepLink: DesktopDeepLinkTarget | null = null;
 let desktopLinkBridge: DesktopLinkBridge | null = null;
-const dockerContainers = new DockerContainerService();
+let containerProvider: 'docker' | 'podman' = 'docker';
+let containerProviderChanging = false;
+let dockerContainers = new DockerContainerService();
 const appMcp = new AppMcpService();
 const copilotProvider = new LocalCopilotProvider();
 const containerOperations = new Set<AbortController>();
@@ -310,6 +313,48 @@ function requireDesktopUpdater(): DesktopUpdater {
   return desktopUpdater;
 }
 
+function createContainerService(): DockerContainerService {
+  return new DockerContainerService({
+    provider: containerProvider,
+    stateDirectory: join(app.getPath('userData'), 'container-app-ownership'),
+    confirmStorageCreation: async (claim, provider) => {
+      const { response } = await dialog.showMessageBox({
+        type: 'warning',
+        title: 'Initialize new Container App storage?',
+        message: `Create empty data volumes for "${claim.title}" on ${provider === 'docker' ? 'Docker' : 'Podman'}?`,
+        detail: 'No managed container or verified storage ownership was found. Continue only if this app has never stored data. If it has existing data on another engine or connection, cancel and restore that original provider instead. This does not migrate data.',
+        buttons: ['Cancel', 'Initialize new storage'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      return response === 1;
+    },
+  });
+}
+
+async function changeContainerProvider(value: unknown): Promise<void> {
+  const requested = parseContainerProvider(value);
+  if (requested === containerProvider) return;
+  if (containerProviderChanging || containerOperations.size) throw new Error('Wait for container operations to finish before changing provider.');
+  containerProviderChanging = true;
+  try {
+    await dataTier?.whenIdle();
+    if (environmentManager.currentEnvironment) {
+      const claims = await controlPlane().containerClaimRead();
+      assertContainerProviderForClaims(join(app.getPath('userData'), 'container-app-ownership'), requested, claims);
+    }
+    await appMcp.disconnectAll();
+    const selected = await writeContainerProvider(join(app.getPath('userData'), 'container-provider.json'), value);
+    containerProvider = selected;
+    containerEnvironmentGeneration += 1;
+    for (const search of searches.values()) search.controller.abort(new Error('The container provider changed. Search again.'));
+    dockerContainers = createContainerService();
+    dataTier = createDataTierManager();
+  } finally {
+    containerProviderChanging = false;
+  }
+}
+
 function createDataTierManager(): DataTierManager | null {
   const buildContext = join(process.resourcesPath, 'data-tier');
   if (!existsSync(join(buildContext, 'image.tar'))) return null;
@@ -317,6 +362,7 @@ function createDataTierManager(): DataTierManager | null {
     buildContext,
     stateDirectory: dataTierStateDirectory(),
     version: app.getVersion(),
+    provider: containerProvider,
   });
 }
 
@@ -339,8 +385,7 @@ async function startDataTierOnLaunch(): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[desktop] Unable to start the data tier:', error);
-    const dockerMissing = error instanceof DataTierError && error.code === 'docker-missing';
-    const buttons = dockerMissing ? ['Download Docker Desktop', 'Close'] : ['Retry', 'Close'];
+    const buttons = ['Retry', 'Choose container provider', 'Continue'];
     const { response } = await dialog.showMessageBox({
       type: 'warning',
       title: 'Working Memory data tier unavailable',
@@ -348,11 +393,28 @@ async function startDataTierOnLaunch(): Promise<void> {
       detail: message,
       buttons,
       defaultId: 0,
-      cancelId: 1,
+      cancelId: 2,
     });
-    if (response !== 0) return;
-    if (dockerMissing) void shell.openExternal(DOCKER_DESKTOP_URL);
-    else await startDataTierOnLaunch();
+    if (response === 1) {
+      const selected = await dialog.showMessageBox({
+        type: 'question', title: 'Container provider',
+        message: 'Select the installed container provider.',
+        detail: 'Start it and install its Compose support before retrying. Changing providers does not migrate existing data.',
+        buttons: ['Docker', 'Podman', 'Cancel'], cancelId: 2,
+        defaultId: containerProvider === 'docker' ? 0 : 1,
+      });
+      if (selected.response === 2) return;
+      try {
+        await changeContainerProvider(selected.response === 0 ? 'docker' : 'podman');
+      } catch (error) {
+        console.error('[desktop] Container provider change refused:', error);
+        await dialog.showMessageBox({
+          type: 'warning', title: 'Container provider unchanged',
+          message: error instanceof Error ? error.message : String(error), buttons: ['OK'],
+        });
+      }
+    } else if (response !== 0) return;
+    await startDataTierOnLaunch();
   }
 }
 
@@ -378,6 +440,7 @@ async function dataTierSnapshot(): Promise<DataTierInstancesSnapshot | null> {
 }
 
 function requireDataTier(): DataTierManager {
+  if (containerProviderChanging) throw new Error('Wait for the container provider change to finish.');
   if (!dataTier) throw new Error('Instance management is available in installed builds that include the Working Memory data tier.');
   return dataTier;
 }
@@ -819,6 +882,7 @@ async function readContainerAppDefinitions(): Promise<ReturnType<typeof containe
 }
 
 function beginContainerOperation(): { client: ControlPlaneClient; signal: AbortSignal; end: () => void } {
+  if (containerProviderChanging) throw new Error('Wait for the container provider change to finish.');
   const controller = new AbortController();
   const generation = containerEnvironmentGeneration;
   containerOperations.add(controller);
@@ -1085,7 +1149,8 @@ function registerIpc(): void {
   });
   ipcMain.handle('environment:discover', async () => {
     await dataTierLaunch;
-    return environmentState(await discoverEnvironments());
+    return environmentState(await (environmentManager.currentEnvironment
+      ? discoverEnvironments() : environmentManager.initialize()));
   });
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
     documentChangeController?.abort();
@@ -1098,6 +1163,11 @@ function registerIpc(): void {
     return environmentState(environmentManager.availableEnvironments);
   });
   ipcMain.handle('instances:list', () => dataTierSnapshot());
+  ipcMain.handle('container-provider:get', () => containerProvider);
+  ipcMain.handle('container-provider:set', async (_event, value: unknown) => {
+    await dataTierLaunch;
+    await changeContainerProvider(value);
+  });
   ipcMain.handle('instances:create', async (_event, name?: unknown) => {
     await requireDataTier().create(typeof name === 'string' ? name : undefined);
     return dataTierSnapshot();
@@ -1887,6 +1957,8 @@ if (!ownsSingleInstanceLock) {
     windowStateFile = join(app.getPath('userData'), 'window-state.json');
     await environmentManager.initialize();
     await initializeUpdates();
+    containerProvider = await readContainerProvider(join(app.getPath('userData'), 'container-provider.json'));
+    dockerContainers = createContainerService();
     dataTier = createDataTierManager();
     dataTierLaunch = startDataTierOnLaunch();
     desktopLinkBridge = new DesktopLinkBridge(

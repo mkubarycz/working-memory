@@ -44,6 +44,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       <script>
         import ActiveRail from '/src/renderer/ActiveRail.svelte';
         import Backlog from '/src/renderer/documents/TopicBacklogView.svelte';
+        import { SvelteSet } from 'svelte/reactivity';
         import { topicBacklogDocument } from '/src/renderer/topicBacklog';
         import '/src/renderer/style.css';
         const fixture = window.__backlogTest = {
@@ -53,13 +54,24 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         let panel = $state(${JSON.stringify(panel)});
         let features = $state({ search: false });
         let drag = $state(null);
+        const expanded = new SvelteSet();
+        let selectedTab = $state('backlog');
+        let backlogOpen = $state(true);
+        $effect(() => { if (!backlogOpen) expanded.clear(); });
+        fixture.selectTab = tab => { selectedTab = tab; };
+        fixture.closeBacklog = () => { backlogOpen = false; selectedTab = 'other'; };
+        fixture.openBacklog = () => { backlogOpen = true; selectedTab = 'backlog'; };
+        fixture.resetEnvironment = () => expanded.clear();
         fixture.heartbeat = () => { features = { search: false }; };
         window.workingMemory = {
           prepareResourceDrag: (uri, label) => new Promise(resolve => fixture.preparations.push(() => resolve({
             filePath: '/tmp/test-context.md', fileUrl: 'file:///tmp/test-context.md', filename: 'test-context.md',
           }))),
           startResourceDrag: prepared => fixture.nativeDrags.push(prepared),
-          onResourceDragResult: listener => { fixture.dragListeners.push(listener); return () => {}; },
+          onResourceDragResult: listener => {
+            fixture.dragListeners.push(listener);
+            return () => { fixture.dragListeners = fixture.dragListeners.filter(item => item !== listener); };
+          },
         };
         const treeProps = $derived({
           data: panel, loading: false, error: '', environments: [], selectedEnvironment: null,
@@ -91,7 +103,15 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         };
       </script>
       <div class="rail active-rail"><ActiveRail {...treeProps} bind:activeDrag={drag} /></div>
-      <div class="backlog"><Backlog {backlog} {treeProps} bind:activeDrag={drag} /></div>
+      <div class="backlog">
+        {#key selectedTab}
+          {#if selectedTab === 'backlog' && backlogOpen}
+            <Backlog {backlog} {treeProps} {expanded} bind:activeDrag={drag} />
+          {:else}
+            <p>Other document</p>
+          {/if}
+        {/key}
+      </div>
       <style>
         :global(body) { display: flex; width: 1200px; }
         .rail { width: 300px; height: 900px; }
@@ -213,6 +233,24 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.querySelector('.backlog [aria-label=\\"Expand child\\"]')");
           await evaluate("document.querySelector('.backlog [aria-label=\\"Expand child\\"]').click()");
           await wait("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row').length === 3");
+          await evaluate("document.querySelector('.backlog header').dataset.originalMount = 'true'");
+          await evaluate("window.__backlogTest.selectTab('other')");
+          await wait("!document.querySelector('.backlog .backlog-tree-surface')");
+          await evaluate("window.__backlogTest.selectTab('backlog')");
+          await wait("document.querySelector('.backlog [aria-label=\\"Collapse child\\"]')");
+          assert.equal(await evaluate("document.querySelector('.backlog header').dataset.originalMount"), undefined,
+            'Switching tabs must remount the view, as in the document stage');
+          assert.equal(await evaluate("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row').length"), 3,
+            'Nested expansion must survive a tab switch');
+          await evaluate("document.querySelector('.backlog [aria-label=\\"Collapse child\\"]').click()");
+          await evaluate("window.__backlogTest.selectTab('other')");
+          await wait("!document.querySelector('.backlog .backlog-tree-surface')");
+          await evaluate("window.__backlogTest.selectTab('backlog')");
+          await wait("document.querySelector('.backlog [aria-label=\\"Expand child\\"]')");
+          assert.equal(await evaluate("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row').length"), 2,
+            'Explicitly collapsed nodes must also survive a tab switch');
+          await evaluate("document.querySelector('.backlog [aria-label=\\"Expand child\\"]').click()");
+          await wait("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row').length === 3");
           assert(await contrast('.backlog .active-row .active-open') >= 4.5, 'Topic text contrast');
           assert(await contrast('.backlog .active-group-header') >= 4.5, 'Topic group contrast');
           assert(await contrast('.backlog .graph-node-dot', 'borderTopColor', '.backlog .active-card') >= 3, 'Topic connector contrast');
@@ -251,6 +289,29 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.ok(await evaluate("window.__backlogTest.preparations.length") > beforePanelRefresh,
             'A changed panel must still invalidate and refresh prepared document context');
           assert.equal(await evaluate("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row').length"), 3);
+          await evaluate("window.__backlogTest.selectTab('other')");
+          await wait("!document.querySelector('.backlog .backlog-tree-surface')");
+          await evaluate("window.__backlogTest.selectTab('backlog')");
+          await wait("document.querySelector('.backlog [aria-label=\\"Collapse parent refreshed\\"]')");
+          assert.equal(await evaluate("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row').length"), 3,
+            'Refresh and remount must preserve expansion by stable node ID');
+          await evaluate("window.__backlogTest.closeBacklog()");
+          await wait("!document.querySelector('.backlog .backlog-tree-surface')");
+          await evaluate("window.__backlogTest.openBacklog()");
+          await wait("document.querySelector('.backlog [aria-label=\\"Expand inbox\\"]')");
+          assert.equal(await evaluate("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row').length"), 0,
+            'Closing the backlog tab must discard its expansion state');
+          await evaluate("document.querySelector('.backlog [aria-label=\\"Expand inbox\\"]').click()");
+          await evaluate("window.__backlogTest.resetEnvironment()");
+          await wait("document.querySelector('.backlog [aria-label=\\"Expand inbox\\"]')");
+          assert.equal(await evaluate("document.querySelector('.rail [aria-label=\\"Collapse active\\"]') !== null"), true,
+            'Backlog expansion must remain independent of the active rail');
+          await evaluate("document.querySelector('.backlog [aria-label=\\"Expand inbox\\"]').click()");
+          await wait("document.querySelector('.backlog [aria-label=\\"Expand parent refreshed\\"]')");
+          await evaluate("document.querySelector('.backlog [aria-label=\\"Expand parent refreshed\\"]').click()");
+          await wait("document.querySelector('.backlog [aria-label=\\"Expand child\\"]')");
+          await evaluate("document.querySelector('.backlog [aria-label=\\"Expand child\\"]').click()");
+          await wait("document.querySelectorAll('.backlog [data-workstream=inbox] .active-row').length === 3");
           const source = '.backlog [data-workstream=inbox] .active-row .active-open';
           const queue = '.rail [data-workstream=queued] .active-card-header';
           const dropped = await drag(source, queue);

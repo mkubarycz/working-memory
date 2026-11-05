@@ -25,6 +25,7 @@
   let busy = $state<string | null>(null);
   let status = $state('');
   let newName = $state('');
+  let provider = $state<'docker' | 'podman'>('docker');
 
   onMount(() => {
     void refresh();
@@ -40,6 +41,7 @@
   async function refresh(quiet = false): Promise<void> {
     if (!quiet) loading = true;
     try {
+      provider = await window.workingMemory.getContainerProvider();
       const next = await window.workingMemory.listInstances();
       supported = next !== null;
       snapshot = next;
@@ -125,6 +127,15 @@
     void run('channel', 'Checking the backend channel…', () => window.workingMemory.setBackendUpdateChannel(channel), '');
   }
 
+  async function setProvider(value: string): Promise<void> {
+    if (value !== 'docker' && value !== 'podman') return;
+    await run('provider', 'Changing container provider...', async () => {
+      await window.workingMemory.setContainerProvider(value);
+      provider = value;
+      return window.workingMemory.listInstances();
+    }, 'Container provider selected. Existing data stays with its original provider.');
+  }
+
   function active(instance: DataTierInstanceStatus): boolean {
     return instance.state === 'running' || instance.state === 'starting' || instance.state === 'unhealthy';
   }
@@ -132,9 +143,19 @@
 
 <div class="instances">
   <p>
-    Each instance is a separate Working Memory control plane running in Docker with its own data.
+    Each instance is a separate Working Memory control plane with its own data.
     {#if snapshot}This app bundles backend version {snapshot.appVersion}.{/if}
   </p>
+  <label class="container-provider">
+    Container provider
+    <select value={provider} disabled={busy !== null || loading}
+      onchange={(event) => void setProvider(event.currentTarget.value)}>
+      <option value="docker">Docker</option>
+      <option value="podman">Podman</option>
+    </select>
+    <span class="instances-hint">The selected provider must be running with Compose installed.
+      Working Memory does not start providers or migrate data between them.</span>
+  </label>
 
   {#if !supported}
     <p class="instances-note">
@@ -144,7 +165,8 @@
   {:else}
     {#if snapshot?.dockerError}
       <p class="instances-note" role="alert">
-        {snapshot.dockerError} Starting or adding an instance starts Docker Desktop when it is installed.
+        {snapshot.dockerError}
+        <button disabled={busy !== null || loading} onclick={() => void refresh()}>Retry</button>
       </p>
     {/if}
 

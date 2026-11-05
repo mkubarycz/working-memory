@@ -349,6 +349,9 @@ export interface ManagedDataTierInstance {
   createdAt: string;
   /** Image the instance was last composed with; absent means the image bundled with the app. */
   image?: string;
+  /** Legacy registrations belong to Docker. Provider changes never migrate data. */
+  provider?: 'docker' | 'podman';
+  connection?: string;
 }
 
 export type DataTierInstanceState = 'running' | 'starting' | 'unhealthy' | 'stopped' | 'missing' | 'unknown';
@@ -405,6 +408,8 @@ export interface DesktopBuildInfo {
 }
 
 export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
+  getContainerProvider(): Promise<'docker' | 'podman'>;
+  setContainerProvider(provider: 'docker' | 'podman'): Promise<void>;
   getDesktopBuildInfo(): Promise<DesktopBuildInfo>;
   prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
   sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;

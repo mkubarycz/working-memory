@@ -24,6 +24,11 @@ describe('container app contracts and renderer', () => {
     expect(preload).toContain("openContainerApp: (id) => invoke('container:open', id)");
     expect(preload).toContain("getAppResourceContract: (id) => invoke('app-mcp:contract', id)");
     expect(main).toContain("ipcMain.handle('container:run'");
+    expect(main).toContain('return await dockerContainers.launch(');
+    expect(main).toContain('confirmStorageCreation: async (claim, provider)');
+    expect(main).toContain("title: 'Initialize new Container App storage?'");
+    expect(main).toContain("buttons: ['Cancel', 'Initialize new storage']");
+    expect(main).toContain('return response === 1');
     expect(main).toContain("ipcMain.handle('container:inspect'");
     expect(main).toContain("ipcMain.handle('container:stop'");
     expect(main).toContain("ipcMain.handle('container:open'");
@@ -123,7 +128,7 @@ describe('container app contracts and renderer', () => {
     expect(detail).toContain('class="container-app-frame"');
     expect(detail).toContain("view === 'app' && app.embeddable");
     expect(detail).toContain('sandbox="allow-forms allow-scripts allow-same-origin allow-popups"');
-    for (const field of ['Claim title', 'Claim', 'Repository', 'Build context', 'Image', 'Container', 'Docker context', 'State / health', 'Ports', 'URL', 'Last action']) {
+    for (const field of ['Claim title', 'Claim', 'Repository', 'Build context', 'Image', 'Container', 'Container connection', 'State / health', 'Ports', 'URL', 'Last action']) {
       expect(detail).toContain(`['${field}'`);
     }
   });

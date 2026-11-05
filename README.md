@@ -69,19 +69,60 @@ standalone installers built by `.github/workflows/release.yml`:
 Both installers register the `working-memory://` URL scheme so chat links from
 VS Code and other apps open the desktop UI.
 
-**Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+**Prerequisite:** a running local Docker or Podman installation with Compose support.
+Docker Desktop is supported; Podman Desktop is not required.
 Installers only install the app; the data tier is managed from inside it.
 
 On launch, Working Memory connects to a running data tier if one is
 reachable (for example an existing `working-memory-control-plane` on
-`127.0.0.1:7717`). Otherwise it starts Docker Desktop (if needed), loads the
+`127.0.0.1:7717`). Otherwise it checks the selected provider, loads the
 prebuilt control-plane image bundled in the installer, and starts its default
-instance with `docker compose`, creating it on a fresh install. Loading the
+instance with Compose, creating it on a fresh install. Loading the
 image can take a few minutes. No npm downloads, local image builds, registry
 login, or backend registry access are needed on the installed computer.
 CI builds Linux ARM64 images for Mac installers and Linux x64 images for
 Windows installers. Local `npm run build` / packaging builds the image using
 Docker first; CI supplies it via `WM_DATA_TIER_IMAGE_ARCHIVE`.
+
+Choose **Docker** (the default) or **Podman** under **Settings > Updates > Back End >
+Container provider**, or in the startup dependency dialog. The selection applies to
+both managed backends and Container Apps. Executables, safe local connections, and
+Compose invocation are resolved internally; there is no fallback to another engine.
+Working Memory never launches Docker Desktop or starts a Podman machine. Install and
+start the selected provider yourself, then use **Retry** if its CLI, engine, or Compose
+support is unavailable. Podman requires an installed external Compose implementation
+(`podman compose version` must work); both Docker Compose and podman-compose are supported.
+Native Linux Podman and local Podman-machine connections are supported; remote TCP/SSH
+engines are rejected. Docker continues to use local Unix-socket/named-pipe contexts.
+Without an explicit context override, Docker uses the CLI's active context, including
+local providers such as Colima; unavailable or remote contexts do not trigger fallback.
+
+Changing provider is **not a database migration**. Existing registrations belong to
+their original engine/connection (legacy registrations belong to Docker). The app
+refuses to manage those registrations through another engine, recreate missing
+registered data, or switch an environment's existing stateful Container Apps to
+another provider. Return to the original provider to manage that data. New Windows
+instances explicitly create engine-owned volumes; Compose treats them as external
+and cannot silently create replacement volumes. No provider action deletes volumes.
+Starting a stopped registered backend validates its existing database or volume before
+the engine start command, just as recreation through Compose does.
+Legacy backend registrations are pinned only after their container image, Compose
+labels, data mount, loopback port and existing storage are verified; listing alone
+does not adopt them. Stopped legacy containers are checked against configured port
+bindings; running containers and owner setup still require live loopback bindings.
+Failed new-instance provisioning keeps a per-port reservation so Retry reuses
+the same storage, including after desktop restart; a missing Compose dependency does
+not reserve an engine. After an installer update, Retry reconciles a pending bundled
+image with the new archive while preserving its provider, connection, port and storage.
+Pending bind storage also records initialization and refuses
+to recreate a lost data directory or a database known to have been initialized.
+Stateful legacy Container Apps must be adopted from their
+verified Docker container and existing volumes, never inferred as new Podman storage.
+Returning to a recorded app's original provider is allowed. On a stateful app's first
+desktop Run, a native confirmation can explicitly initialize new empty storage if no
+container, ownership record or existing volume is found. Cancel is the default:
+only confirm for an app that has never stored data, not to recover a legacy app.
+An existing unverified volume or recorded owner is never overridden by this action.
 
 Open **environment menu > Manage instances…** (or **Settings > Updates > Back End**) to
 manage the data-tier instances the app created. Reachable Working Memory servers the app did not
@@ -116,10 +157,20 @@ Managed instances are recorded in the app's `data-tier/instances.json`
 
 - macOS: `~/Library/Application Support/WorkingMemory` (bind mount); other
   ports use `WorkingMemory-<port>`.
-- Windows: the Docker volume `working-memory-data` (SQLite WAL is unreliable
+- Windows: the selected engine's volume `working-memory-data` (SQLite WAL is unreliable
   on Windows bind mounts); other ports use `working-memory-data-<port>`.
 
 Set `WM_DATA_TIER_AUTOSTART=0` to disable automatic data-tier startup.
+This controls backend containers only, never provider startup.
+
+Podman support is intended for canary feedback before Stable 1.7. Automated provider
+fixtures cover lifecycle, upgrade persistence, Container Apps, ownership refusal and
+diagnostic normalization. These tests are not evidence of real Windows/Podman
+validation. Before release, exercise fresh install, provider restart, backend upgrade,
+stateful Container Apps, owner bootstrap and crash/health diagnostics on Windows with
+a real Podman machine and both Compose implementations. Installer-image preparation
+and CI still use Docker; this is developer/release tooling, not an installed-app
+Docker dependency.
 
 Builds are not code-signed or notarized yet. On macOS, use **System Settings >
 Privacy & Security > Open Anyway** (or `xattr -dr com.apple.quarantine
@@ -726,7 +777,9 @@ backlog workstream stay grouped under that workstream rather than appearing twic
 Expand a backlog workstream to browse its topic tree, including nested child
 topics, or click its title to open it. **Send to Queue** and **Send to In Progress**
 move the workstream directly from the backlog page. The page refreshes as
-membership and status change.
+membership and status change. Expanded workstreams and topic nodes stay expanded
+when switching document tabs or refreshing the backlog. Closing the Backlog tab or
+switching environments clears that view's expansion state.
 
 Backlog nodes use the same tree interactions as the left rail: right-click for
 context-sensitive topic/workstream actions, drag between workstreams to copy a
@@ -812,9 +865,9 @@ only after an HTTP readiness check succeeds. Docker must already be installed
 and running; the launcher uses only a validated local Unix socket or Windows
 named pipe (`npipe:////./pipe/...`). Remote TCP, SSH, and named-pipe hosts are
 not permitted. The launcher reports missing CLI, daemon, timeout, build, ownership-conflict,
-startup, and readiness failures without removing unrelated containers. Set
-`WORKING_MEMORY_DOCKER_CONTEXT` to prefer a context; otherwise the launcher
-checks `desktop-linux`, `orbstack`, and `default`. Configure local source paths
+startup, and readiness failures without removing unrelated containers.
+`WORKING_MEMORY_DOCKER_CONTEXT` (or `DOCKER_CONTEXT`) overrides the CLI's active
+context; an unavailable or remote target never falls back to another context. Configure local source paths
 in the claim's repository and runtime; no app-specific environment variable is
 required. `sourceRevision` records intent; the launcher does not check out or
 switch the repository's branch.
@@ -1446,6 +1499,18 @@ public password hint. Otherwise it prompts for sign-in. Expiry, revocation, or
 sign-out returns to that same connection screen. **Manage instances** remains
 available before sign-in to start, create, or upgrade a managed instance.
 
+Identity checks run every 30 seconds. A timeout or connection failure keeps an
+already-open workspace and its drafts visible, shows a **Reconnecting** notice
+with request details, **Retry connection**, and **Diagnostics**, and retries
+automatically. Failed checks never grant a new authenticated session; the backend
+continues enforcing authorization on every request. Explicit authentication
+rejection still returns to sign-in. A failed initial connection also retries
+automatically and loads the workspace only after identity is confirmed.
+If startup finds no responding instance, automatic retries rediscover and initialize
+the intended target using the normal persisted-selection preference. Recovery restores
+that environment's saved composer draft before loading its workspace, then opens any
+queued deep link only if the environment and authentication are still current.
+
 `/mcp`, `/attachments`, and `/changes` require a valid bearer token on every
 request. MCP sessions are bound to the credential that initialized them; a
 different credential cannot resume the session. Delayed change responses
@@ -1653,15 +1718,33 @@ resumes immediately when visible again; inactive subtabs do not background poll.
 A shared Refresh selector defaults to 15 seconds and offers 2, 5, 15, 30 and 60
 seconds; changing it applies to the selected diagnostics view without overlapping requests.
 Queue shows only the selected environment: a **Queue Processing**
-chart with 10-second samples (latest 30 minutes), the live waiting/running list,
-and a request log grouped by request ID from the latest 100 lifecycle events.
+chart with one-minute aggregation of 10-second samples (latest 30 minutes), a stacked **Tool requests over
+time** chart, and a request log grouped by request ID from the latest 100 lifecycle events.
 Each log row shows queue-entry time, total duration, request ID, tool, wait time,
 runtime and status; live timings are elapsed so far. Finished timings remain
 available even if earlier lifecycle events have left the window. An unfinished
 request no longer in the live list has an unavailable outcome, not a fabricated
 completion time. Hover a request ID for its caller. The chart also shows the peak depth
 between samples so short bursts are not lost when the queue drains quickly.
-Processed items/second uses a separate right axis and a rolling ten-second rate.
+Each processing series is independently scaled to 0-100% of its visible-window
+peak; the legend and hover show aggregated values. Each minute averages sampled
+queue depth and processing rates while retaining maximum peak waiting. The current
+minute is partial. Processing-rate samples use a rolling ten-second rate.
+The stacked chart shares the processing chart's exact time bounds and horizontal
+plot alignment. Its raw counts come from per-tool cumulative arrival counters
+sampled with runtime telemetry, not the truncated lifecycle log. Every call is
+counted once, including rejected work, irrespective of how many lifecycle events
+it produces. Sampled count deltas are summed into one-minute bars by interval end,
+with exact minute-boundary endings assigned to the preceding minute. Deltas are
+never proportionally split or estimated; hover shows counts and actual observed
+interval boundaries, including partial minutes or longer sampling gaps. Older backends or
+samples without counters are explicitly unavailable, not zero; counters are never
+differenced across backend restarts.
+All Queue, HTTP and Runtime charts use modular Apache ECharts with an SVG
+renderer and one-minute buckets (HTTP is already aggregated by minute). Runtime
+averages memory, CPU and queue gauges, preserves maximum event-loop delay, and
+sums GC counts and duration. Click a legend entry to isolate it; click it again or **Show all** to
+restore the other series. Selection survives telemetry refreshes.
 The rolling one-minute wait/processing averages are weighted by calls finishing
 in that minute, including failed executions but excluding work rejected or cancelled
 before execution. Tool-level errors (`isError: true`) are failed executions, not

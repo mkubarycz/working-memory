@@ -3,6 +3,28 @@
 Working Memory is a standalone Electron desktop app backed by a Docker/Node
 control plane and SQLite document store. It is not a VS Code extension.
 
+## Review calibration and scope
+
+- Triage review findings before implementing them: accept, downgrade, defer, or
+  reject with a reason. Separate impact, likelihood, and confidence; identify the
+  reachable production path, triggering conditions, and evidence. Distinguish
+  reproduced failures, code-traced defects, and hypothetical concerns.
+- Reserve High priority for broken ordinary workflows or credible serious harm
+  under realistic conditions. A severe worst case alone does not make an unlikely
+  compound scenario High. Do not dismiss credible data-loss or security risks.
+- For each finding, explicitly summarize what happens if it is NOT fixed:
+  affected users, conditions, practical consequence, and recovery or workaround.
+  State uncertainty. Include priority and proposed disposition in the summary.
+- Keep fixes focused on introduced regressions, requested behavior, and necessary
+  safety or correctness work. Prefer the smallest root-cause fix; justify new
+  persistent state, abstractions, or workflow restrictions. Test production entry
+  points, not just helpers.
+- Consider valid low-priority or unrelated findings for separate GitHub issues
+  and separate branches/PRs instead of expanding the current changeset. Search
+  for existing issues first; reuse or create a concise linked issue explaining
+  the consequence and reason for deferral. Do not ticket rejected speculation.
+  Report deferred work and links; a ticket does not mean the problem is fixed.
+
 ## Project shape
 
 ```text
