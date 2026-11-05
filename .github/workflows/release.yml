@@ -13,10 +13,6 @@ on:
       - 'v*'
   pull_request:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Installer version (for example 0.16.1). Defaults to desktop-ui/package.json.'
-        required: false
 
 permissions:
   contents: write
@@ -28,20 +24,29 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Resolve version
         id: version
+        run: node scripts/release-version.mjs
+      - name: Reject replacement of a published release
+        if: github.ref_type == 'tag'
         env:
-          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            version="${GITHUB_REF_NAME#v}"
-          elif [[ -n "$INPUT_VERSION" ]]; then
-            version="$INPUT_VERSION"
-          else
-            base="$(node -p "require('./desktop-ui/package.json').version")"
-            version="${base}-build.${GITHUB_RUN_NUMBER}"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          node --input-type=module <<'EOF'
+          const response = await fetch(
+            `${process.env.GITHUB_API_URL}/repos/${process.env.GITHUB_REPOSITORY}/releases/tags/${encodeURIComponent(process.env.GITHUB_REF_NAME)}`,
+            { headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json' } },
+          );
+          if (response.status !== 404) {
+            if (response.ok) throw new Error('This release already exists. Publish a new version instead of replacing its assets or backend image.');
+            throw new Error(`Could not check existing release: HTTP ${response.status}`);
+          }
+          EOF
 
   backend:
     needs: version
@@ -60,19 +65,19 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          docker build --platform linux/${{ matrix.arch }} --tag "working-memory-control-plane:$VERSION" .
+          docker build --platform linux/${{ matrix.arch }} --build-arg "WM_BUILD_VERSION=$VERSION" --tag "working-memory-control-plane:$VERSION" .
           docker run --detach --network none --name backend-smoke "working-memory-control-plane:$VERSION"
           trap 'docker logs backend-smoke; docker rm --force backend-smoke' EXIT
           healthy=false
           for attempt in {1..30}; do
-            if docker exec backend-smoke node -e "fetch('http://127.0.0.1:7717/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
+            if docker exec --env "EXPECTED_VERSION=$VERSION" backend-smoke node -e "fetch('http://127.0.0.1:7717/health').then(async r => process.exit(r.ok && (await r.json()).version === process.env.EXPECTED_VERSION ? 0 : 1)).catch(() => process.exit(1))"; then
               healthy=true
               break
             fi
             sleep 2
           done
           if [[ "$healthy" != true ]]; then
-            echo "Prebuilt backend failed its offline health check" >&2
+            echo "Prebuilt backend failed its offline health/version check (expected $VERSION)" >&2
             exit 1
           fi
           docker save --output "$RUNNER_TEMP/image.tar" "working-memory-control-plane:$VERSION"
@@ -143,6 +148,11 @@ jobs:
           CSC_FOR_PULL_REQUEST: 'true'
           WM_DATA_TIER_IMAGE_ARCHIVE: ${{ github.workspace }}/backend-image/image.tar
         run: npm run package:${{ matrix.target }} --prefix desktop-ui -- -c.extraMetadata.version=${{ needs.version.outputs.version }}
+
+      - name: Verify packaged desktop version
+        env:
+          EXPECTED_VERSION: ${{ needs.version.outputs.version }}
+        run: node scripts/verify-packaged-version.mjs ${{ matrix.target }}
 
       - name: Verify packaged macOS signatures
         if: matrix.target == 'mac'
@@ -216,6 +226,7 @@ jobs:
             channel=canary
             tag=canary
           fi
+          if [[ "$VERSION" == *-* ]]; then channel=canary; fi
           CHANNEL="$channel" TAG="$tag" REPOSITORY_OWNER="${GITHUB_REPOSITORY_OWNER,,}" node <<'EOF'
           const { createHash } = require('node:crypto');
           const { readFileSync, readdirSync, writeFileSync } = require('node:fs');
@@ -275,7 +286,8 @@ jobs:
           prerelease=()
           if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" installers/* update.json --clobber
+            echo "Release $GITHUB_REF_NAME already exists; published release assets are immutable." >&2
+            exit 1
           else
             gh release create "$GITHUB_REF_NAME" installers/* update.json --title "Working Memory $VERSION" --generate-notes "${prerelease[@]}"
           fi
