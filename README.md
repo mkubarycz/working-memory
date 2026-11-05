@@ -1236,7 +1236,10 @@ and keeps them as workflow-run artifacts. **Git tags are the release-version
 authority**, not package manifests or mutable PR labels:
 
 - A `vX.Y.Z` tag builds exactly `X.Y.Z` and publishes a Stable release.
-- A `vX.Y.Z-rc.N` tag builds that exact prerelease and publishes to Canary.
+- A `vX.Y.Z-rc.N` tag builds that exact prerelease with a Canary-classified
+  manifest. Tagged prereleases require a manual download: automatic Canary
+  updates consider only the rolling `canary` release and latest Stable release,
+  not separately tagged release candidates.
 - Untagged PR, main and manual builds use the highest Stable `vX.Y.Z` tag
   reachable from the checked-out commit, increment its patch, then append
   `-build.<workflow run number>`. After `v1.7.0`, these are `1.7.1-build.N`.
