@@ -466,6 +466,10 @@ export class DataTierManager {
         provider: this.provider.provider,
         connection: this.provider.identity(docker),
       };
+      if (pending && isBundledImage(instance.image) && instance.image !== this.bundledTarget.image) {
+        instance.image = this.bundledTarget.image;
+        this.writePendingInstance({ ...pending, instance });
+      }
       await this.composeUp(docker, env, port, instance.image, instance);
       return instance;
     });

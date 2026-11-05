@@ -146,6 +146,26 @@ describe('desktop environment manager', () => {
     expect(fallback.instance.currentEnvironment?.port).toBe(7717);
   });
 
+  it('initializes the persisted target when discovery recovers after an empty startup', async () => {
+    const healthy: number[] = [];
+    const instance = new DesktopEnvironmentManager({
+      ...discovery({
+        [productionFile]: JSON.stringify({ port: 7717, pid: 10 }),
+        [sandboxFile]: JSON.stringify({ port: 8811, pid: 11 }),
+      }, healthy),
+      readPersistedSelection: async () => 'http://127.0.0.1:8811/mcp',
+      createClient: url => new FakeClient(url),
+    });
+    await expect(instance.initialize()).resolves.toEqual([]);
+    expect(instance.currentEnvironment).toBeNull();
+    healthy.push(7717, 8811);
+    await instance.discover();
+    expect(instance.currentEnvironment).toBeNull();
+    await instance.initialize();
+    expect(instance.currentEnvironment?.port).toBe(8811);
+    expect(instance.currentClient.url).toBe('http://127.0.0.1:8811/mcp');
+  });
+
   it('disposes the old session and routes subsequent access to the new client', async () => {
     const { instance, clients, persisted } = manager();
     await instance.initialize();

@@ -119,7 +119,6 @@
   import type { RailSide, RailWidths } from './railLayout';
   import {
     emptyEnvironmentBoundRendererState,
-    reloadEnvironmentBoundData,
     type SelectedTool,
   } from './environmentState';
   import {
@@ -1220,12 +1219,16 @@
 
   function pollInstanceConnection(): Promise<void> {
     if (instanceConnectionPoll) return instanceConnectionPoll;
-    if (environmentLoading || !selectedEnvironment || instanceConnectionRefresh) return Promise.resolve();
-    if (!instanceConnection?.authenticated && !instanceConnectionError) return Promise.resolve();
+    if (environmentLoading || instanceConnectionRefresh) return Promise.resolve();
+    if (selectedEnvironment && !instanceConnection?.authenticated && !instanceConnectionError) return Promise.resolve();
     const generation = environmentGeneration;
     const wasAuthenticated = instanceConnection?.authenticated;
     const pending = (async () => {
       try {
+        if (!selectedEnvironment) {
+          await discoverEnvironments(true);
+          if (generation !== environmentGeneration || !selectedEnvironment) return;
+        }
         if (!await refreshInstanceConnection() || generation !== environmentGeneration) return;
         if (!wasAuthenticated) await loadAuthenticatedWorkspace();
         else {
@@ -1266,19 +1269,27 @@
     managingInstancesBeforeSignIn = false;
     await documentSaves.flushAll();
     await loadAuthenticatedWorkspace();
-    if (pendingResource) {
+  }
+
+  async function loadAuthenticatedWorkspace(): Promise<void> {
+    const generation = environmentGeneration, authenticationGeneration = instanceAuthenticationGeneration;
+    const isCurrent = () => generation === environmentGeneration
+      && authenticationGeneration === instanceAuthenticationGeneration && instanceConnection?.authenticated;
+    if (!isCurrent()) return;
+    input = readComposerDraft(localStorage, selectedEnvironment?.id);
+    restoreUnreadResponses();
+    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps(), refreshFeatures()]);
+    if (!isCurrent()) return;
+    await refreshAccessRequests();
+    if (!isCurrent()) return;
+    if (!documentTabsPersistenceReady) await restoreDocumentTabs();
+    if (!isCurrent()) return;
+    await startDocumentChanges();
+    if (isCurrent() && pendingResource) {
       const resource = pendingResource;
       pendingResource = null;
       await openResource(resource.kind, resource.identifier);
     }
-  }
-
-  async function loadAuthenticatedWorkspace(): Promise<void> {
-    restoreUnreadResponses();
-    await Promise.all([refreshActive(), refreshLatestHistory(true), refreshAgentMessages(), refreshBackendHealth(), loadContainerApps(), refreshFeatures()]);
-    await refreshAccessRequests();
-    if (!documentTabsPersistenceReady) await restoreDocumentTabs();
-    await startDocumentChanges();
   }
 
   async function restoreDocumentTabs(): Promise<void> {
@@ -1440,15 +1451,18 @@
   }
 
   async function discoverEnvironments(restoreDraft = false): Promise<void> {
+    const generation = environmentGeneration;
     environmentLoading = true;
     environmentError = '';
     try {
-      applyEnvironmentState(await window.workingMemory.discoverEnvironments());
+      const state = await window.workingMemory.discoverEnvironments();
+      if (generation !== environmentGeneration) return;
+      applyEnvironmentState(state);
       if (restoreDraft) input = readComposerDraft(localStorage, selectedEnvironment?.id);
     } catch (error) {
-      environmentError = error instanceof Error ? error.message : String(error);
+      if (generation === environmentGeneration) environmentError = error instanceof Error ? error.message : String(error);
     } finally {
-      environmentLoading = false;
+      if (generation === environmentGeneration) environmentLoading = false;
     }
   }
 
@@ -1525,15 +1539,7 @@
       const state = await window.workingMemory.switchEnvironment(mcpUrl);
       applyEnvironmentState(state);
       if (!await refreshInstanceConnection()) return;
-      restoreUnreadResponses();
-      input = readComposerDraft(localStorage, selectedEnvironment?.id);
-      await reloadEnvironmentBoundData(refreshActive, () => refreshLatestHistory(true));
-      await refreshAgentMessages();
-      await loadContainerApps();
-      await refreshFeatures();
-      await restoreDocumentTabs();
-      await refreshBackendHealth();
-      await startDocumentChanges();
+      await loadAuthenticatedWorkspace();
     } catch (error) {
       environmentError = error instanceof Error ? error.message : String(error);
     } finally {

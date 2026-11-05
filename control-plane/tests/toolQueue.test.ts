@@ -118,11 +118,24 @@ it('caps lifecycle persistence at 2000 rows and expires events after 24 hours', 
   }
   expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(2000);
   expect(f.queue.events()).toHaveLength(100);
+  expect(f.queue.state().requestsByTool).toEqual({ 'wm-document-query': 700 });
   expect(f.queue.processing()).toMatchObject({ processedPerSecond: 70, processedLastMinute: 700 });
   await vi.advanceTimersByTimeAsync(86400001);
   await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
   expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(3);
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it('counts arrivals once by tool, including rejected work, without recounting lifecycle events or snapshots', async () => {
+  const f = fixture();
+  await f.queue.run(f.metadata(), { private: 'NOT_RECORDED' }, new AbortController().signal, async () => {});
+  const signal = AbortSignal.abort();
+  await expect(f.queue.run({ ...f.metadata(), operation: 'wm-document-read' }, {}, signal, async () => {}))
+    .rejects.toMatchObject({ code: 'cancelled' });
+  const expected = { 'wm-document-query': 1, 'wm-document-read': 1 };
+  expect(f.queue.state().requestsByTool).toEqual(expected);
+  expect(f.queue.events().length).toBeGreaterThan(2);
+  expect(f.queue.state().requestsByTool).toEqual(expected);
 });
 
 it.each(['state', 'events'] as const)('expires idle lifecycle records through %s without another tool call', async sample => {

@@ -1149,7 +1149,8 @@ function registerIpc(): void {
   });
   ipcMain.handle('environment:discover', async () => {
     await dataTierLaunch;
-    return environmentState(await discoverEnvironments());
+    return environmentState(await (environmentManager.currentEnvironment
+      ? discoverEnvironments() : environmentManager.initialize()));
   });
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
     documentChangeController?.abort();

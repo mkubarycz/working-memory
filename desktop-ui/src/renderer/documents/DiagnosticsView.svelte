@@ -88,7 +88,7 @@
     <h3>Runtime history</h3>
     <p>CPU 100% is one logical core. GC is observed, never forced. Gaps and backend restarts break the traces.</p>
     <DiagnosticsTimeSeries chart={runtimeDiagnosticsChart(instance.samples)} label="Normalized runtime time series"
-      description="Memory, CPU, event-loop delay, garbage collection and tool activity, independently normalized to each series' peak"
+      description="One-minute buckets: average memory, CPU and tool activity; maximum event-loop delay; total GC count and duration. Each series is independently normalized to its peak."
       emptyMessage="No runtime samples are available for this environment." />
   {:else if snapshot?.instance && tab === 'http'}
     {@const instance = snapshot.instance}

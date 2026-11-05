@@ -18,16 +18,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       import { mount } from 'svelte';
       import App from '/src/renderer/App.svelte';
       import '/src/renderer/style.css';
+      const parameters = new URLSearchParams(location.search);
       const state = window.__connectionTest = {
-        mode: location.search ? 'timeout' : 'success', authenticated: true,
+        mode: parameters.has('startup') ? 'timeout' : 'success', authenticated: true,
         reads: 0, activeReads: 0, maxReads: 0, pause: false, releases: [],
-        streamStarts: 0, current: 0,
+        streamStarts: 0, current: parameters.has('offline') ? -1 : 0,
+        offline: parameters.has('offline'), discoveries: 0, opened: [],
+        pauseWorkspace: false, activeLoads: 0, workspaceReleases: [],
       };
       const environments = [7717, 7719].map(port => ({
         id: 'test-' + port, port, displayName: 'Test ' + port,
         mcpUrl: 'http://127.0.0.1:' + port + '/mcp', source: 'sandbox',
       }));
-      const environmentState = () => ({ environments, selected: environments[state.current] });
+      const environmentState = () => ({ environments: state.offline ? [] : environments, selected: environments[state.current] ?? null });
       const interval = window.setInterval.bind(window);
       window.setInterval = (callback, milliseconds, ...args) => {
         if (milliseconds === 30_000 && callback.toString().includes('refreshBackendHealth')) {
@@ -44,7 +47,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           humanName: '', profiles: [], routing: {},
         }),
         getOpenAiHealth: async () => ({ state: 'unreachable', result: 'Not configured', observedAt: Date.now() }),
-        discoverEnvironments: async () => environmentState(),
+        discoverEnvironments: async () => {
+          state.discoveries++;
+          if (!state.offline && state.current < 0) state.current = 1;
+          return environmentState();
+        },
         switchEnvironment: async url => {
           state.current = environments.findIndex(environment => environment.mcpUrl === url);
           return environmentState();
@@ -73,14 +80,27 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           state.authenticationChanged = callback;
           return () => {};
         },
-        onOpenResource: () => () => {},
+        onOpenResource: callback => { state.openResource = callback; return () => {}; },
+        async openResource(kind, identifier) {
+          state.opened.push({ kind, identifier, environment: state.current });
+          return { kind: 'workstream', id: identifier, title: 'Recovered link', status: 'open',
+            createdAt: 1, updatedAt: 1, closure: null, resourceVersion: 1, editable: false,
+            topics: [], tree: [], agentMessages: [] };
+        },
         onDocumentChanges: () => () => {},
         onResourceDragResult: () => () => {},
         getBackendHealth: async () => ({
-          state: 'healthy', endpoint: environments[state.current].mcpUrl,
+          state: state.offline ? 'unreachable' : 'healthy', endpoint: environments[state.current]?.mcpUrl,
           result: 'OK', observedAt: Date.now(), source: 'sandbox',
         }),
-        getActivePanel: async () => ({ tab: 'active', items: [], emptyMessage: 'No active workstreams.' }),
+        getActivePanel: async () => {
+          if (state.pauseWorkspace) {
+            state.activeLoads++;
+            await new Promise(resolve => state.workspaceReleases.push(resolve));
+            state.activeLoads--;
+          }
+          return { tab: 'active', items: [], emptyMessage: 'No active workstreams.' };
+        },
         getChatHistory: async () => ({ journals: [] }),
         getAgentMessages: async () => [],
         listContainerApps: async () => [],
@@ -211,18 +231,67 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate('window.__connectionTest.releases.shift()()');
           await wait('window.__connectionTest.activeReads === 0');
           assert.equal(await evaluate("document.querySelector('.instance-connection-notice')"), null, 'Ignore failures from the previous instance');
+          await evaluate("localStorage.setItem('working-memory.desktop.composer-draft:test-7719', 'Saved destination draft'); window.__connectionTest.mode = 'timeout'");
+          await switchTo(7719);
+          await wait("document.querySelector('.instance-connection')?.textContent.includes('10 seconds')");
+          await evaluate("window.__connectionTest.openResource('workstream', 'stale-environment-link'); window.__connectionTest.pauseWorkspace = true; window.__connectionTest.mode = 'success'; window.__connectionTest.heartbeat()");
+          await wait("document.querySelector('textarea[aria-label=Message]')?.value === 'Saved destination draft'");
+          await wait("window.__connectionTest.activeLoads === 1");
+          await evaluate(\`{ const composer = document.querySelector('textarea[aria-label=Message]');
+            composer.value += ' continued'; composer.dispatchEvent(new Event('input', { bubbles: true })); }\`);
+          assert.equal(await evaluate("localStorage.getItem('working-memory.desktop.composer-draft:test-7719')"), 'Saved destination draft continued');
+          await evaluate("window.__connectionTest.pauseWorkspace = false");
+          await switchTo(7717);
+          await wait("document.querySelector('.shell') && document.querySelector('.environment-trigger').textContent.includes('7717')");
+          await evaluate("window.__connectionTest.workspaceReleases.shift()()");
+          await wait("window.__connectionTest.activeLoads === 0");
+          assert.equal(await evaluate("window.__connectionTest.opened.length"), 0, 'A stale recovery must not open the queued link in another environment');
           const startup = new BrowserWindow({ show: false });
           await startup.loadURL('http://127.0.0.1:${address.port}/connection-test.html?startup=timeout');
           await waitStartup("document.querySelector('.instance-connection')?.textContent.includes('10 seconds')");
           assert.equal(await startup.webContents.executeJavaScript("document.querySelector('.shell')"), null);
-          await startup.webContents.executeJavaScript("window.__connectionTest.mode = 'success'; window.__connectionTest.heartbeat()");
+          await startup.webContents.executeJavaScript(\`
+            localStorage.setItem('working-memory.desktop.composer-draft:test-7717', 'Saved startup draft');
+            window.__connectionTest.openResource('workstream', 'queued-link');
+            window.__connectionTest.mode = 'success'; window.__connectionTest.pauseWorkspace = true;
+            window.__connectionTest.heartbeat();\`);
+          await waitStartup("window.__connectionTest.activeLoads === 1");
+          assert.equal(await startup.webContents.executeJavaScript("document.querySelector('textarea[aria-label=Message]').value"), 'Saved startup draft');
+          await startup.webContents.executeJavaScript(\`
+            window.__connectionTest.authenticated = false;
+            window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false });
+            window.__connectionTest.pauseWorkspace = false; window.__connectionTest.workspaceReleases.shift()();\`);
+          await waitStartup("document.querySelector('.instance-connection input[type=password]') && window.__connectionTest.activeLoads === 0");
+          assert.equal(await startup.webContents.executeJavaScript("window.__connectionTest.opened.length"), 0, 'Revocation must not consume the pending link');
+          await startup.webContents.executeJavaScript(\`{ const password = document.querySelector('input[type=password]');
+            password.value = 'test-owner-password'; password.dispatchEvent(new Event('input', { bubbles: true }));
+            password.form.requestSubmit(); }\`);
           await waitStartup("document.querySelector('.shell') && window.__connectionTest.streamStarts === 1");
+          await waitStartup("window.__connectionTest.opened.length === 1 && document.body.innerText.includes('Recovered link')");
+          assert.deepEqual(await startup.webContents.executeJavaScript("window.__connectionTest.opened"), [
+            { kind: 'workstream', identifier: 'queued-link', environment: 0 },
+          ]);
+          await startup.webContents.executeJavaScript("window.__connectionTest.heartbeat()");
+          await delay(50);
+          assert.equal(await startup.webContents.executeJavaScript("window.__connectionTest.opened.length"), 1);
+          const offline = new BrowserWindow({ show: false });
+          await offline.loadURL('http://127.0.0.1:${address.port}/connection-test.html?offline=true');
+          await waitStartup("window.__connectionTest.discoveries === 1 && typeof window.__connectionTest.heartbeat === 'function'", offline);
+          assert.equal(await offline.webContents.executeJavaScript("window.__connectionTest.reads"), 0);
+          await offline.webContents.executeJavaScript("window.__connectionTest.heartbeat(); window.__connectionTest.heartbeat()");
+          await waitStartup("window.__connectionTest.discoveries === 2", offline);
+          await offline.webContents.executeJavaScript("window.__connectionTest.offline = false; window.__connectionTest.heartbeat()");
+          await waitStartup("document.querySelector('.shell') && window.__connectionTest.streamStarts === 1", offline);
+          assert.equal(await offline.webContents.executeJavaScript("window.__connectionTest.current"), 1, 'Recover the intended target, not the first discovered environment');
+          assert.equal(await offline.webContents.executeJavaScript("document.querySelector('textarea[aria-label=Message]').value"), 'Saved destination draft continued');
+          assert.equal(await offline.webContents.executeJavaScript("window.__connectionTest.maxReads"), 1);
+          offline.destroy();
           startup.destroy();
           window.destroy();
-          async function waitStartup(code) {
+          async function waitStartup(code, target = startup) {
             const until = Date.now() + 10_000;
             while (Date.now() < until) {
-              if (await startup.webContents.executeJavaScript(code)) return;
+              if (await target.webContents.executeJavaScript(code)) return;
               await delay(20);
             }
             throw new Error('Startup recovery timed out: ' + code);

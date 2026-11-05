@@ -108,7 +108,9 @@ does not adopt them. Stopped legacy containers are checked against configured po
 bindings; running containers and owner setup still require live loopback bindings.
 Failed new-instance provisioning keeps a per-port reservation so Retry reuses
 the same storage, including after desktop restart; a missing Compose dependency does
-not reserve an engine. Pending bind storage also records initialization and refuses
+not reserve an engine. After an installer update, Retry reconciles a pending bundled
+image with the new archive while preserving its provider, connection, port and storage.
+Pending bind storage also records initialization and refuses
 to recreate a lost data directory or a database known to have been initialized.
 Stateful legacy Container Apps must be adopted from their
 verified Docker container and existing volumes, never inferred as new Podman storage.
@@ -1500,6 +1502,10 @@ automatically. Failed checks never grant a new authenticated session; the backen
 continues enforcing authorization on every request. Explicit authentication
 rejection still returns to sign-in. A failed initial connection also retries
 automatically and loads the workspace only after identity is confirmed.
+If startup finds no responding instance, automatic retries rediscover and initialize
+the intended target using the normal persisted-selection preference. Recovery restores
+that environment's saved composer draft before loading its workspace, then opens any
+queued deep link only if the environment and authentication are still current.
 
 `/mcp`, `/attachments`, and `/changes` require a valid bearer token on every
 request. MCP sessions are bound to the credential that initialized them; a
@@ -1708,15 +1714,33 @@ resumes immediately when visible again; inactive subtabs do not background poll.
 A shared Refresh selector defaults to 15 seconds and offers 2, 5, 15, 30 and 60
 seconds; changing it applies to the selected diagnostics view without overlapping requests.
 Queue shows only the selected environment: a **Queue Processing**
-chart with 10-second samples (latest 30 minutes), the live waiting/running list,
-and a request log grouped by request ID from the latest 100 lifecycle events.
+chart with one-minute aggregation of 10-second samples (latest 30 minutes), a stacked **Tool requests over
+time** chart, and a request log grouped by request ID from the latest 100 lifecycle events.
 Each log row shows queue-entry time, total duration, request ID, tool, wait time,
 runtime and status; live timings are elapsed so far. Finished timings remain
 available even if earlier lifecycle events have left the window. An unfinished
 request no longer in the live list has an unavailable outcome, not a fabricated
 completion time. Hover a request ID for its caller. The chart also shows the peak depth
 between samples so short bursts are not lost when the queue drains quickly.
-Processed items/second uses a separate right axis and a rolling ten-second rate.
+Each processing series is independently scaled to 0-100% of its visible-window
+peak; the legend and hover show aggregated values. Each minute averages sampled
+queue depth and processing rates while retaining maximum peak waiting. The current
+minute is partial. Processing-rate samples use a rolling ten-second rate.
+The stacked chart shares the processing chart's exact time bounds and horizontal
+plot alignment. Its raw counts come from per-tool cumulative arrival counters
+sampled with runtime telemetry, not the truncated lifecycle log. Every call is
+counted once, including rejected work, irrespective of how many lifecycle events
+it produces. Sampled count deltas are summed into one-minute bars by interval end,
+with exact minute-boundary endings assigned to the preceding minute. Deltas are
+never proportionally split or estimated; hover shows counts and actual observed
+interval boundaries, including partial minutes or longer sampling gaps. Older backends or
+samples without counters are explicitly unavailable, not zero; counters are never
+differenced across backend restarts.
+All Queue, HTTP and Runtime charts use modular Apache ECharts with an SVG
+renderer and one-minute buckets (HTTP is already aggregated by minute). Runtime
+averages memory, CPU and queue gauges, preserves maximum event-loop delay, and
+sums GC counts and duration. Click a legend entry to isolate it; click it again or **Show all** to
+restore the other series. Selection survives telemetry refreshes.
 The rolling one-minute wait/processing averages are weighted by calls finishing
 in that minute, including failed executions but excluding work rejected or cancelled
 before execution. Tool-level errors (`isError: true`) are failed executions, not

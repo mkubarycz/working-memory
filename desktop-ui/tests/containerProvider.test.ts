@@ -321,9 +321,10 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     expect(await fixture.manager().create()).toMatchObject({ port: 7717, provider: 'podman' });
   });
 
-  it.each(['load', 'compose'])('reuses the same pending Windows volume and port after %s fails, even after desktop restart', async failure => {
+  it.each(['load', 'compose'])('reuses the pending Windows volume and port with the new installer image after %s fails', async failure => {
     const fixture = backend();
     let failing = true;
+    let version = '1.7.0';
     const runner: CommandRunner = { run(file, args, options) {
       if (failing && (failure === 'load' ? args.includes('load') : args.includes('up'))) {
         return Promise.reject(new CommandExecutionError('temporary failure', 1));
@@ -331,17 +332,25 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
       return fixture.runner.run(file, args, options);
     } };
     const manager = () => new DataTierManager({
-      ...host, provider: 'podman', buildContext: fixture.dir, stateDirectory: fixture.dir, version: '1.7.0',
+      ...host, provider: 'podman', buildContext: fixture.dir, stateDirectory: fixture.dir, version,
       runner, fileExists: path => path.endsWith('podman.exe'), portAvailable: async () => true,
       healthy: async () => true,
     });
     await expect(manager().create('Recover me')).rejects.toThrow('temporary failure');
+    const pending = JSON.parse(readFileSync(join(fixture.dir, 'pending-instance.json'), 'utf8'));
+    version = '1.7.1';
     await expect(manager().create('Do not allocate another port')).rejects.toThrow('temporary failure');
-    expect(JSON.parse(readFileSync(join(fixture.dir, 'pending-instance.json'), 'utf8'))).toMatchObject({
-      instance: { port: 7717, name: 'Recover me' }, storageReady: true,
+    expect(JSON.parse(readFileSync(join(fixture.dir, 'pending-instance.json'), 'utf8'))).toEqual({
+      ...pending, instance: { ...pending.instance, image: 'working-memory-control-plane:1.7.1' },
     });
     failing = false;
-    expect(await manager().create()).toMatchObject({ port: 7717, name: 'Recover me' });
+    expect(await manager().create()).toEqual({ ...pending.instance, image: 'working-memory-control-plane:1.7.1' });
+    expect(JSON.parse(readFileSync(join(fixture.dir, 'instances', '7717', 'compose.yaml'), 'utf8')))
+      .toMatchObject({ services: { 'control-plane': {
+        image: 'working-memory-control-plane:1.7.1',
+        volumes: [{ type: 'volume', source: 'working-memory-data', target: '/data' }],
+        ports: ['127.0.0.1:7717:7717'],
+      } } });
     expect(fixture.calls.filter(args => args[0] === 'volume' && args[1] === 'create')).toEqual([['volume', 'create', 'working-memory-data']]);
     expect(existsSync(join(fixture.dir, 'pending-instance.json'))).toBe(false);
     expect(manager().instances).toHaveLength(1);
