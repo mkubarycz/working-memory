@@ -787,6 +787,8 @@ navigation tabs, not in the ordinary rail or backlog sections.
 Switching pinned tabs during autosave retains in-flight drafts and restores the
 selected workstream when its save completes. Failed drafts remain editable with
 an explicit save error.
+The exact name **Inbox** is reserved: another workstream cannot acquire Inbox
+protection by being renamed. Names such as **Inbox cleanup** remain editable.
 
 The **Backlog** subtab shows workstreams with backlog status first,
 above open topics that do not belong to any non-closed workstream. Topics in a
@@ -811,7 +813,10 @@ including on Windows; no extra modifier or separate handle is required.
 The shared tree uses light cards and menus on the backlog page while retaining
 the dark rail palette. Move buttons wrap below titles when the page is narrow.
 
-Workstream document trees also support topic dragging and drops. **Hide closed
+Workstream document trees also support topic dragging and drops. Dropping on a
+topic row reparents it without changing workstream membership; dropping on the
+workstream surface transfers membership, moving by default or copying with a
+modifier key. **Hide closed
 topics** is a persisted per-workstream preference, off by default. It affects
 that workstream's trees in the rail, Backlog, and workstream/pinned views without
 changing membership, topic status, or message history. Open descendants of

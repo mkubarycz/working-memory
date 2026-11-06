@@ -674,6 +674,9 @@ export function openStore(dbFilePath: string): Store {
     if (existing?.kind === 'Workstream' && existing.spec.title === 'Inbox') {
       if (input.spec.title !== 'Inbox') throw new Error('The Inbox workstream cannot be renamed.');
     }
+    if (existing?.kind === 'Workstream' && existing.spec.title !== 'Inbox' && input.spec.title === 'Inbox') {
+      throw new Error('Inbox is reserved for the Inbox workstream. Use a different name.');
+    }
     if (existing?.kind === 'Workstream' && input.spec.title === 'Inbox' && input.spec.pinned === false) {
       throw new Error('Inbox is always pinned.');
     }

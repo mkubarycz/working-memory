@@ -78,6 +78,7 @@ export interface WorkstreamVM {
   resourceVersion: number;
   /** Whether this workstream permits authored edits. */
   editable: boolean;
+  readonly isInbox?: boolean;
   pinned?: boolean;
   includeClosedTopics?: boolean;
   topics: WorkstreamTopicVM[];

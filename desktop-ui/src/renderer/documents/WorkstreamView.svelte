@@ -50,7 +50,7 @@
   }: Props = $props();
 
   const STATUSES = ['queue', 'progress', 'backlog', 'closed'];
-  const inbox = $derived(ws.title === 'Inbox');
+  const inbox = $derived(ws.isInbox === true);
   let dragError = $state('');
   let dropTarget = $state<string | null>(null);
   let nativeDragFilePath: string | null = null;
@@ -104,16 +104,10 @@
 
   function acceptDrop(event: DragEvent, parent: string | null, drop = false): void {
     if (activeDrag?.kind !== 'topic') return;
-    const transfer = planTopicTransfer(activeDrag, ws.id, topicDropMoves(event));
-    if (transfer && onTransferTopic) {
-      event.preventDefault();
+    if (parent !== null || activeDrag.sourceWorkstream === ws.id) {
       event.stopPropagation();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(activeDrag, transfer.move ? 'move' : 'copy');
-      dropTarget = 'workstream';
-      if (drop) { finishDrag(); onTransferTopic(transfer); }
-    } else if (activeDrag.sourceWorkstream === ws.id && activeDrag.id !== parent && onReparentTopic) {
+      if (activeDrag.id === parent || !onReparentTopic) return;
       event.preventDefault();
-      event.stopPropagation();
       if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(activeDrag, 'move');
       dropTarget = parent ?? 'root';
       if (drop) {
@@ -121,6 +115,15 @@
         finishDrag();
         onReparentTopic(id, parent);
       }
+      return;
+    }
+    const transfer = planTopicTransfer(activeDrag, ws.id, topicDropMoves(event));
+    if (transfer && onTransferTopic) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(activeDrag, transfer.move ? 'move' : 'copy');
+      dropTarget = 'workstream';
+      if (drop) { finishDrag(); onTransferTopic(transfer); }
     }
   }
 

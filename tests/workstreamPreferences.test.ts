@@ -24,6 +24,11 @@ it('persists workstream preferences through the typed API and consistently filte
       expect(inbox).toMatchObject({ pinned: true, includeClosedTopics: true, status: 'backlog' });
       const normal = await client.wsCreate({ title: 'Normal', status: 'progress' });
       expect(normal).toMatchObject({ pinned: false, includeClosedTopics: true });
+      const normalDocument = await loadWorkstreamViewModel(client, normal.id);
+      if (!normalDocument) throw new Error('Normal workstream view-model was not loaded.');
+      expect(normalDocument.isInbox).toBe(false);
+      normalDocument.title = 'Inbox';
+      expect(normalDocument.isInbox).toBe(false);
       const pinned = await client.wsCreate({ title: 'Pinned', pinned: true, includeClosedTopics: false });
       const type = await client.topicTypeCreate({ label: 'Test', icon: 'symbol-key', description: 'Test topics' });
       const membership = [inbox.id, normal.id, pinned.id];
@@ -51,6 +56,7 @@ it('persists workstream preferences through the typed API and consistently filte
       for (const id of [inbox.id, pinned.id]) {
         const card = panels.active.pinnedWorkstreams!.find(item => item.id === id)!;
         const document = await loadWorkstreamViewModel(client, id);
+        expect(document?.isInbox).toBe(id === inbox.id);
         expect(card.children[0].children.map(node => node.label).sort()).toEqual(['Open child', 'Open great-grandchild']);
         expect(document?.tree[0].children.map(node => node.label).sort()).toEqual(['Open child', 'Open great-grandchild']);
         expect(document?.topics.map(topic => topic.title)).toEqual(['Open child', 'Open great-grandchild']);

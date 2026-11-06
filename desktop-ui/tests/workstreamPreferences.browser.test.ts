@@ -9,6 +9,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+function fixtureModuleSpecifier(filename: string): string {
+  return JSON.stringify(`/@fs/${filename.replaceAll('\\', '/')}`);
+}
+
+it.each([
+  ['C:\\Working Memory\\shared\\panelData.ts', '/@fs/C:/Working Memory/shared/panelData.ts'],
+  ['C:\\quoted"name\\workstreamViewModel.ts', '/@fs/C:/quoted"name/workstreamViewModel.ts'],
+  ['/Users/test/shared/panelData.ts', '/@fs//Users/test/shared/panelData.ts'],
+])('quotes portable Vite filesystem imports for %s', (filename, expected) => {
+  expect(fixtureModuleSpecifier(filename)).toBe(JSON.stringify(expected));
+  expect(JSON.parse(fixtureModuleSpecifier(filename))).toBe(expected);
+});
+
 it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
   'delivers pinned navigation, scoped autosaves, closed-parent filtering and workstream-view moves in the actual App',
   async () => {
@@ -18,19 +31,20 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
     const fixture = `
       import { mount } from 'svelte';
       import App from '/src/renderer/App.svelte';
-      import { buildWorkstreamPanels } from '/@fs${fileURLToPath(new URL('../../shared/panelData.ts', import.meta.url))}';
-      import { loadWorkstreamViewModel } from '/@fs${fileURLToPath(new URL('../../shared/viewModels/workstreamViewModel.ts', import.meta.url))}';
+      import { buildWorkstreamPanels } from ${fixtureModuleSpecifier(fileURLToPath(new URL('../../shared/panelData.ts', import.meta.url)))};
+      import { loadWorkstreamViewModel } from ${fixtureModuleSpecifier(fileURLToPath(new URL('../../shared/viewModels/workstreamViewModel.ts', import.meta.url)))};
       import '/src/renderer/style.css';
       const ws = (id, title, status) => ({ id, title, status, position: 0, closure: null,
         opened_at: 1, updated_at: 1, closed_at: null, resourceVersion: 1 });
       const topic = (id, title, status, parents = []) => ({ id, title, status, parents,
         body: '', topicType: 'type', workstreams: ['inbox', 'first'], focusedWorkstreams: [],
         created_at: 1, updated_at: 1, resourceVersion: 1 });
-      const state = window.__preferences = { saves: [], transfers: [], nativeDrags: [],
+      const state = window.__preferences = { saves: [], transfers: [], reparents: [], nativeDrags: [],
         workstreams: [ws('first', 'First', 'progress'), ws('inbox', 'Inbox', 'backlog'),
-          ws('target', 'Target', 'queue'), ws('later', 'Later', 'backlog')],
+          ws('target', 'Target', 'progress'), ws('later', 'Later', 'backlog')],
         topics: [topic('closed', 'Closed parent', 'closed'),
-          topic('child', 'Open child', 'open', ['closed']), topic('copy', 'Copy me', 'open')],
+          topic('child', 'Open child', 'open', ['closed']), topic('copy', 'Copy me', 'open'),
+          { ...topic('reparent', 'Reparent me', 'open'), workstreams: ['target'] }],
       };
       const client = {
         wsRead: async ({ id } = {}) => state.workstreams.filter(ws => !id || ws.id === id),
@@ -68,6 +82,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         startDocumentChanges: async () => {},
         saveWorkstream: async (id, patch) => {
           state.saves.push({ id, patch });
+          if (patch.title === 'Inbox' && id !== 'inbox') throw new Error('Inbox is reserved for the Inbox workstream.');
           if (state.delayNextSave) {
             state.delayNextSave = false;
             await new Promise(resolve => state.finishSave = resolve);
@@ -79,6 +94,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           const ws = state.workstreams.find(ws => ws.id === id);
           Object.assign(ws, patch); ws.resourceVersion++;
           return load(id);
+        },
+        reparentTopic: async (id, parent) => {
+          state.reparents.push({ id, parent });
+          state.topics.find(topic => topic.id === id).parents = parent ? [parent] : [];
         },
         invokeAction: async (target, command, args) => {
           if (command !== 'workingMemory.topic.transfer') throw new Error('Unexpected action: ' + command);
@@ -154,6 +173,28 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           }
           await window.loadURL('http://127.0.0.1:${address.port}/preferences-test.html');
           await wait('document.querySelector(".title-input")?.value === "First"');
+          for (const title of ['I', 'In', 'Inb', 'Inbo', 'Inbox']) {
+            await evaluate(\`{
+              const input = document.querySelector('.title-input');
+              input.focus();
+              input.value = \${JSON.stringify(title)};
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+            }\`);
+            await wait(\`document.querySelector('.title-input')?.value === \${JSON.stringify(title)} && document.activeElement === document.querySelector('.title-input')\`);
+          }
+          await wait('[...document.querySelectorAll("[role=alert]")].some(node => node.textContent.includes("Inbox is reserved"))');
+          await evaluate(\`{
+            const input = document.querySelector('.title-input');
+            input.value += ' cleanup';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          }\`);
+          await wait('window.__preferences.workstreams[0].title === "Inbox cleanup" && document.querySelector(".title-input")?.value === "Inbox cleanup"');
+          await evaluate(\`{
+            const input = document.querySelector('.title-input');
+            input.value = 'First';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          }\`);
+          await wait('window.__preferences.workstreams[0].title === "First" && ![...document.querySelectorAll("[role=alert]")].some(node => node.textContent.includes("Inbox is reserved"))');
           await preference('Pin workstream');
           await wait('window.__preferences.workstreams[0].pinned === true');
           await evaluate('document.querySelector(".topic-backlog-button").click()');
@@ -201,6 +242,27 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           })()\`), true);
           await wait('window.__preferences.transfers.length === 3');
           assert.deepEqual(await evaluate('window.__preferences.transfers[2]'), { target: 'inbox', topicId: 'copy', sourceWorkstream: 'first', move: true });
+          async function dropRailTopicOnTopic(sourceLabel, parentLabel) {
+            return evaluate(\`(() => {
+              const from = [...document.querySelectorAll('.active-rail [data-workstream=target] .active-open')].find(row => row.textContent.includes(\${JSON.stringify(sourceLabel)}));
+              const to = [...document.querySelectorAll('.tree-link')].find(row => row.textContent.includes(\${JSON.stringify(parentLabel)})).closest('.row-wrap');
+              const dataTransfer = new DataTransfer();
+              from.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }));
+              const event = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer });
+              to.dispatchEvent(event);
+              to.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+              from.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer }));
+              return event.defaultPrevented;
+            })()\`);
+          }
+          assert.equal(await dropRailTopicOnTopic('Reparent me', 'Copy me'), true);
+          await wait('window.__preferences.reparents.length === 1');
+          assert.deepEqual(await evaluate('window.__preferences.reparents[0]'), { id: 'reparent', parent: 'copy' });
+          assert.deepEqual(await evaluate('window.__preferences.topics.find(topic => topic.id === "reparent").workstreams'), ['target']);
+          assert.equal(await evaluate('window.__preferences.transfers.length'), 3);
+          assert.equal(await dropRailTopicOnTopic('Copy me', 'Copy me'), false);
+          assert.equal(await evaluate('window.__preferences.reparents.length'), 1);
+          assert.equal(await evaluate('window.__preferences.transfers.length'), 3);
           await evaluate('[...document.querySelectorAll(".document-tab-select")].find(tab => tab.textContent.trim() === "First").click()');
           await wait('document.querySelector(".title-input")?.value === "First"');
           await preference('Hide closed topics');

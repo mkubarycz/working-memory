@@ -24,6 +24,7 @@ export interface WorkstreamViewModel {
   closure: string | null;
   resourceVersion: number;
   editable: boolean;
+  readonly isInbox?: boolean;
   pinned?: boolean;
   includeClosedTopics?: boolean;
   topics: Array<{ id: string; title: string;  status: string; pinned: boolean }>;
@@ -167,6 +168,7 @@ export async function loadWorkstreamViewModel(
     closure: workstream.closure,
     resourceVersion: workstream.resourceVersion,
     editable: Boolean(id),
+    isInbox: workstream.title === 'Inbox',
     pinned: workstream.title === 'Inbox' || workstream.pinned === true,
     includeClosedTopics: workstream.includeClosedTopics !== false,
     topics: ordered,
