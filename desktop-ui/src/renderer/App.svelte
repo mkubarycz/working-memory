@@ -27,7 +27,7 @@
   import TopicBacklogView from './documents/TopicBacklogView.svelte';
   import SearchView from './documents/SearchView.svelte';
   import { createSearchViewState, searchContextForSession, searchStateAfterTabChange } from './documentSearch';
-  import { topicBacklogDocument } from './topicBacklog';
+  import { selectedPinnedWorkstream, topicBacklogDocument } from './topicBacklog';
   import SettingsView, { type SettingsTab, type UpdatesTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
@@ -90,6 +90,7 @@
     closeOtherDocumentTabs,
     createDocumentOpenGuard,
     documentTabKey,
+    documentTabDropIndex,
     documentTabIcon,
     documentTabTooltip,
     hostTaskDocument,
@@ -99,6 +100,7 @@
     promoteDocumentTab,
     promoteOnDocumentInput,
     replaceSelectedTab,
+    reorderDocumentTab,
     restoreLocalDocumentTab,
     serializeDocumentTabs,
     settingsDocument,
@@ -205,6 +207,9 @@
   });
   let selectedDocumentKey = $state<string | null>(null);
   let previewDocumentKey = $state<string | null>(null);
+  let draggedDocumentKey = $state<string | null>(null);
+  let documentTabDropTarget = $state<number | null>(null);
+  const DOCUMENT_TAB_DRAG_TYPE = 'application/x-working-memory-tab';
   const documentOpens = createDocumentOpenGuard();
   const closedDuringRestore = new Set<string>();
 
@@ -254,6 +259,10 @@
     observedAt: number;
   }>({ state: 'unknown', result: 'No backend request observed yet.', observedAt: 0 });
   let activePanel = $state<PanelData | null>(null);
+  let pinnedWorkstreamDocument = $state<WorkstreamVM | null>(null);
+  let pinnedWorkstreamError = $state('');
+  let selectedBacklogTab = $state<string | null>(null);
+  let pinnedWorkstreamRequest = 0;
   let activeLoading = $state(false);
   let activeError = $state('');
   let activeRailCollapsed = $state(false);
@@ -290,7 +299,11 @@
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
   const selectedContainerAppId = $derived(containerAppIdForDocument(activeDocument));
   const selectedContainerApp = $derived(containerApps.find((app) => app.id === selectedContainerAppId) ?? null);
-  const currentChatContext = $derived(chatContextForDocument(activeDocument));
+  const activePinnedCard = $derived(activeDocument?.kind === 'topic-backlog'
+    ? selectedPinnedWorkstream(activeDocument, selectedBacklogTab) : undefined);
+  const contextDocument = $derived(activePinnedCard?.id === pinnedWorkstreamDocument?.id && activePinnedCard
+    ? pinnedWorkstreamDocument : activeDocument);
+  const currentChatContext = $derived(chatContextForDocument(contextDocument));
   const busy = $derived(contextBusy(currentChatContext));
   const pendingRun = $derived(chatContextPending(chatRuns, currentChatContext));
   const pendingConfirmation = $derived(pendingRun?.pendingConfirmation ?? null);
@@ -712,7 +725,7 @@
     }
   }
 
-  type DocumentPatch = TopicPatch & { status?: string };
+  type DocumentPatch = TopicPatch & import('../shared/contracts').WorkstreamPatch;
   const documentSaves = createDocumentSaveQueue<DocumentPatch, DocumentVM>({
     delayMs: 350,
     save: (key, patch) => {
@@ -737,6 +750,7 @@
     },
     onSaved: (key, document) => {
       replaceActive(document, key);
+      if (document.kind === 'workstream' && pinnedWorkstreamDocument?.id === document.id) pinnedWorkstreamDocument = document;
       documentSaveStates[key] = 'saved';
       documentSaveErrors[key] = '';
       if (key === selectedDocumentKey) saveState = 'saved';
@@ -887,7 +901,7 @@
     return timestamp ? new Date(timestamp).toLocaleTimeString() : 'never';
   }
   const scopedContext = $derived(currentChatContext
-    ? { ...currentChatContext, id: activeDocument?.id } : undefined);
+    ? { ...currentChatContext, id: contextDocument?.id } : undefined);
   const scopedHistoryKey = $derived(`${selectedEnvironment?.id ?? ''}:${chatContextKey(scopedContext)}:${scopedContext?.id ?? ''}`);
   let loadedScopeKey = $state('');
   const scopedConversationRuns = $derived(mergeScopedHistory(chatRuns,
@@ -1348,6 +1362,7 @@
     }
     documents = restored;
     previewDocumentKey = null;
+    endDocumentTabDrag();
     selectedDocumentKey = restored.some((document) =>
       documentTabKey(document) === persisted.selectedKey)
       ? persisted.selectedKey
@@ -1429,6 +1444,9 @@
       const panel = await window.workingMemory.getActivePanel();
       if (generation !== environmentGeneration) return;
       activePanel = panel;
+      if (pinnedWorkstreamDocument && panel.pinnedWorkstreams?.some(card => card.id === pinnedWorkstreamDocument?.id)) {
+        void loadPinnedWorkstream(pinnedWorkstreamDocument.id);
+      }
       documents = documents.map((document) =>
         document.kind === 'topic-backlog'
           ? topicBacklogDocument(panel)
@@ -1491,6 +1509,10 @@
     historyInitialized = false;
     activeChatContexts = [];
     documentSaveStates = {};
+    pinnedWorkstreamRequest += 1;
+    pinnedWorkstreamDocument = null;
+    pinnedWorkstreamError = '';
+    selectedBacklogTab = null;
     documentSaveErrors = {};
     input = reset.input;
     documents = reset.documents;
@@ -2065,6 +2087,7 @@
     let mutationError = '';
     try {
       const document = await operation();
+      if (document.kind === 'workstream' && pinnedWorkstreamDocument?.id === document.id) pinnedWorkstreamDocument = document;
       const key = `workstream:${workstream}`;
       if (documents.some((candidate) => documentTabKey(candidate) === key)) replaceActive(document, key);
       documentError = '';
@@ -2099,9 +2122,9 @@
     onTransferTopic: transferActiveTopic,
     onReparentTopic: (id: string, parent: string | null) => void reparentActiveTopic(id, parent),
     onAddTopic: (workstream: string, parent?: { id: string; title: string }) => {
-      const card = activePanel?.items
+      const card = [...(activePanel?.items
         .filter((item) => item.kind === 'workstream-section')
-        .flatMap((section) => section.workstreams)
+        .flatMap((section) => section.workstreams) ?? []), ...(activePanel?.pinnedWorkstreams ?? [])]
         .find((candidate) => candidate.id === workstream);
       void startTopicCreation(workstream, card?.label ?? workstream, parent);
     },
@@ -2219,7 +2242,25 @@
     }
   }
 
-  function saveWorkstream(document: DocumentVM | null, patch: { title?: string; status?: string }): void {
+  async function loadPinnedWorkstream(id: string): Promise<void> {
+    if (documentIsDirty(`workstream:${id}`)) return;
+    const request = ++pinnedWorkstreamRequest;
+    const generation = environmentGeneration;
+    if (pinnedWorkstreamDocument?.id !== id) pinnedWorkstreamDocument = null;
+    pinnedWorkstreamError = '';
+    try {
+      const document = await window.workingMemory.openResource('workstream', id);
+      if (request !== pinnedWorkstreamRequest || generation !== environmentGeneration || documentIsDirty(`workstream:${id}`)) return;
+      if (document.kind !== 'workstream') throw new Error('Unable to load the pinned workstream.');
+      pinnedWorkstreamDocument = document;
+    } catch (error) {
+      if (request === pinnedWorkstreamRequest && generation === environmentGeneration) {
+        pinnedWorkstreamError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
+  function saveWorkstream(document: DocumentVM | null, patch: import('../shared/contracts').WorkstreamPatch): void {
     if (document?.kind !== 'workstream' || !document.id) return;
     promoteDocument(documentTabKey(document));
     documentSaves.schedule(documentTabKey(document), patch);
@@ -2395,6 +2436,39 @@
     if (!documentTabsPersistenceReady) closedDuringRestore.add(key);
     documentTabMenu = null;
     applyDocumentTabs(closeDocumentTab(documentTabsState(), key));
+  }
+
+  function startDocumentTabDrag(event: DragEvent, key: string): void {
+    if (!event.dataTransfer) return;
+    event.dataTransfer.setData(DOCUMENT_TAB_DRAG_TYPE, key);
+    event.dataTransfer.effectAllowed = 'move';
+    draggedDocumentKey = key;
+    documentTabMenu = null;
+    containerAppTabMenu = null;
+  }
+
+  function endDocumentTabDrag(): void {
+    draggedDocumentKey = null;
+    documentTabDropTarget = null;
+  }
+
+  function documentTabDragOver(event: DragEvent & { currentTarget: HTMLDivElement }): void {
+    if (!draggedDocumentKey || !event.dataTransfer?.types.includes(DOCUMENT_TAB_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('.document-tab')];
+    documentTabDropTarget = documentTabDropIndex(tabs.map(tab => tab.getBoundingClientRect()), event.clientX);
+  }
+
+  function dropDocumentTab(event: DragEvent & { currentTarget: HTMLDivElement }): void {
+    const key = draggedDocumentKey;
+    if (!key || event.dataTransfer?.getData(DOCUMENT_TAB_DRAG_TYPE) !== key) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('.document-tab')];
+    const index = documentTabDropIndex(tabs.map(tab => tab.getBoundingClientRect()), event.clientX);
+    applyDocumentTabs(reorderDocumentTab(documentTabsState(), key, index));
+    endDocumentTabDrag();
   }
 
   async function openDocumentTabMenu(event: MouseEvent, key: string): Promise<void> {
@@ -2602,8 +2676,20 @@
     <div class="stage-content" use:collapseChatOnInteraction={() => (scopePreviewExpanded = false)}>
     {#if activeDocument}
       <div class="document-stage">
-        <div class="document-tabs" role="tablist" aria-label="Open documents">
-          {#each documents as document (documentTabKey(document))}
+        <div
+          class="document-tabs"
+          role="tablist"
+          tabindex="-1"
+          aria-label="Open documents"
+          ondragover={documentTabDragOver}
+          ondrop={dropDocumentTab}
+          ondragleave={(event) => {
+            if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
+              documentTabDropTarget = null;
+            }
+          }}
+        >
+          {#each documents as document, index (documentTabKey(document))}
             {@const key = documentTabKey(document)}
             {@const tabApp = document.kind === 'container-app'
               ? containerApps.find((app) => app.id === (document.id))
@@ -2614,6 +2700,9 @@
               use:keepSelectedTabVisible={key === selectedDocumentKey}
               class:selected={key === selectedDocumentKey}
               class:preview={key === previewDocumentKey}
+              class:dragging={key === draggedDocumentKey}
+              class:drop-before={documentTabDropTarget === index}
+              class:drop-after={documentTabDropTarget === documents.length && index === documents.length - 1}
               role="presentation"
               oncontextmenu={(event) => void openDocumentTabMenu(event, key)}
             >
@@ -2622,6 +2711,9 @@
                 role="tab"
                 aria-selected={key === selectedDocumentKey}
                 title={documentTabTooltip(document, key === previewDocumentKey)}
+                draggable="true"
+                ondragstart={(event) => startDocumentTabDrag(event, key)}
+                ondragend={endDocumentTabDrag}
                 onclick={() => selectDocument(key)}
                 ondblclick={() => promoteDocument(key)}
               >
@@ -2825,6 +2917,9 @@
             onRecordDecision={recordAgentMessageDecision}
             onSnooze={snoozeAgentMessage}
             attachmentBaseUrl={selectedAttachmentBaseUrl()}
+            bind:activeDrag={activeTreeDrag}
+            onTransferTopic={transferActiveTopic}
+            onReparentTopic={activeTreeProps.onReparentTopic}
           />
         {:else if activeDocument?.kind === 'topic-create'}
           <TopicCreateView
@@ -2839,6 +2934,31 @@
             expanded={backlogExpanded}
             treeProps={activeTreeProps}
             bind:activeDrag={activeTreeDrag}
+            bind:selected={selectedBacklogTab}
+            pinnedDocument={pinnedWorkstreamDocument}
+            pinnedSaveState={pinnedWorkstreamDocument ? documentSaveStates[`workstream:${pinnedWorkstreamDocument.id}`] ?? 'idle' : 'idle'}
+            pinnedError={pinnedWorkstreamError || (pinnedWorkstreamDocument ? documentSaveErrors[`workstream:${pinnedWorkstreamDocument.id}`] ?? '' : '')}
+            onSelectPinned={loadPinnedWorkstream}
+            workstreamProps={{
+              unreadResponses,
+              onSave: patch => saveWorkstream(pinnedWorkstreamDocument, patch),
+              onOpenTopic: id => void openResource('topic', id),
+              onAddTopic: parent => {
+                if (pinnedWorkstreamDocument) void startTopicCreation(pinnedWorkstreamDocument.id, pinnedWorkstreamDocument.title, parent);
+              },
+              onInvoke: (command, args) => {
+                if (pinnedWorkstreamDocument) void runActiveAction(pinnedWorkstreamDocument.id, { command, title: command, args });
+              },
+              onTogglePin: id => {
+                if (pinnedWorkstreamDocument) toggleActiveFocus(pinnedWorkstreamDocument.id, id);
+              },
+              onSetAgentMessageStatus: setAgentMessageStatus,
+              onRecordDecision: recordAgentMessageDecision,
+              onSnooze: snoozeAgentMessage,
+              attachmentBaseUrl: selectedAttachmentBaseUrl(),
+              onTransferTopic: transferActiveTopic,
+              onReparentTopic: activeTreeProps.onReparentTopic,
+            }}
           />
         {:else if activeDocument?.kind === 'topic'}
           <TopicView

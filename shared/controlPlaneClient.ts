@@ -41,6 +41,7 @@ import {
 /** Client identity advertised to the control-plane during the MCP handshake. */
 const CLIENT_NAME = 'working-memory-extension';
 const RETRYABLE_READ_TOOLS = new Set([
+  'wm-document-read',
   'wm-document-search',
   'wm-document-query',
   'ws-workstream-read', 'ws-containerclaim-read', 'ws-topic-read', 'ws-topictype-read', 'ws-config-read',
@@ -158,6 +159,8 @@ export interface Workstream {
   closure: string | null;
   /** Stable sort position within the current Active lifecycle section. */
   position?: number;
+  pinned?: boolean;
+  includeClosedTopics?: boolean;
   opened_at: number;
   updated_at: number;
   closed_at: number | null;
@@ -194,6 +197,8 @@ export interface WsCreateInput {
   title: string;
   status?: string;
   closure?: string;
+  pinned?: boolean;
+  includeClosedTopics?: boolean;
 }
 
 export interface WsUpdateInput {
@@ -202,6 +207,8 @@ export interface WsUpdateInput {
   status?: string;
   closure?: string;
   position?: number;
+  pinned?: boolean;
+  includeClosedTopics?: boolean;
 }
 
 export interface WsReorderInput {
@@ -1050,10 +1057,10 @@ export class ControlPlaneClient {
       return { available: false, documents: [], error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
-      const result = await this.retryStaleRead(client, connected => connected.callTool({
+      const result = await this.retryStaleSession(client, connected => connected.callTool({
         name: 'wm-document-read',
         arguments: { ...(kind ? { kind } : {}), ...filter },
-      }));
+      }), undefined, true);
       const parsed = parseToolText(result) as { documents?: unknown } | null;
       const documents = Array.isArray(parsed?.documents)
         ? (parsed!.documents as DocumentEnvelope[])
@@ -1072,10 +1079,10 @@ export class ControlPlaneClient {
       return { available: false, document: null, error: this.authenticationError ?? 'Control plane not running' };
     }
     try {
-      const result = await this.retryStaleRead(client, connected => connected.callTool({
+      const result = await this.retryStaleSession(client, connected => connected.callTool({
         name: 'wm-document-read',
         arguments: { ...input },
-      }));
+      }), undefined, true);
       const parsed = parseToolText(result) as { documents?: unknown } | null;
       const documents = Array.isArray(parsed?.documents)
         ? (parsed!.documents as DocumentEnvelope[])
@@ -1105,7 +1112,8 @@ export class ControlPlaneClient {
       if (input.spec !== undefined) {
         args.spec = input.spec;
       }
-      const result = await client.callTool({ name: 'wm-document-create', arguments: args });
+      const result = await this.retryStaleSession(client, connected =>
+        connected.callTool({ name: 'wm-document-create', arguments: args }));
       return interpretWriteResult(result);
     } catch (err) {
       this.resetConnection();
@@ -1136,7 +1144,8 @@ export class ControlPlaneClient {
       if (input.labels !== undefined) {
         args.labels = input.labels;
       }
-      const result = await client.callTool({ name: 'wm-document-update', arguments: args });
+      const result = await this.retryStaleSession(client, connected =>
+        connected.callTool({ name: 'wm-document-update', arguments: args }));
       return interpretWriteResult(result);
     } catch (err) {
       this.resetConnection();
@@ -1161,7 +1170,8 @@ export class ControlPlaneClient {
       if (input.expectedResourceVersion !== undefined) {
         args.expectedResourceVersion = input.expectedResourceVersion;
       }
-      const result = await client.callTool({ name: 'wm-document-delete', arguments: args });
+      const result = await this.retryStaleSession(client, connected =>
+        connected.callTool({ name: 'wm-document-delete', arguments: args }));
       return interpretWriteResult(result);
     } catch (err) {
       this.resetConnection();
@@ -1191,8 +1201,8 @@ export class ControlPlaneClient {
     }
     let res: unknown;
     try {
-      res = await abortable(this.retryStaleRead(client, connected => signal
-        ? connected.listTools({}, { signal }) : connected.listTools(), signal), signal);
+      res = await abortable(this.retryStaleSession(client, connected => signal
+        ? connected.listTools({}, { signal }) : connected.listTools(), signal, true), signal);
     } catch (err) {
       if (!signal?.aborted) this.resetConnection();
       throw new ControlPlaneClientError(messageOf(err));
@@ -1241,7 +1251,9 @@ export class ControlPlaneClient {
     let result: unknown;
     try {
       const request = { name, arguments: args };
-      result = await (signal ? client.callTool(request, undefined, { signal }) : client.callTool(request));
+      result = await abortable(this.retryStaleSession(client, connected => signal
+        ? connected.callTool(request, undefined, { signal }) : connected.callTool(request),
+      signal, RETRYABLE_READ_TOOLS.has(name)), signal);
     } catch (err) {
       if (!signal?.aborted) this.resetConnection();
       return { ok: false, error: messageOf(err) };
@@ -1283,7 +1295,7 @@ export class ControlPlaneClient {
       const request = { name, arguments: args };
       const call = (connected: Client) => signal
         ? connected.callTool(request, undefined, { signal }) : connected.callTool(request);
-      result = await abortable(RETRYABLE_READ_TOOLS.has(name) ? this.retryStaleRead(client, call, signal) : call(client), signal);
+      result = await abortable(this.retryStaleSession(client, call, signal, RETRYABLE_READ_TOOLS.has(name)), signal);
     } catch (err) {
       if (!signal?.aborted) this.resetConnection();
       throw new ControlPlaneClientError(messageOf(err));
@@ -1294,18 +1306,25 @@ export class ControlPlaneClient {
     return result;
   }
 
-  private async retryStaleRead<T>(client: Client, read: (connected: Client) => Promise<T>, signal?: AbortSignal): Promise<T> {
-    try { return await read(client); }
+  private async retryStaleSession<T>(
+    client: Client,
+    call: (connected: Client) => Promise<T>,
+    signal?: AbortSignal,
+    readOnly = false,
+  ): Promise<T> {
+    try { return await call(client); }
     catch (error) {
       signal?.throwIfAborted();
-      const stale = this.staleConnections.has(client) || error instanceof StreamableHTTPError && staleSessionRejected(error);
+      // Writes are safe to retry only when this request was explicitly rejected before dispatch.
+      const stale = readOnly && this.staleConnections.has(client)
+        || error instanceof StreamableHTTPError && staleSessionRejected(error);
       if (!stale || this.disposed) throw error;
       this.staleConnections.add(client);
-      // Another concurrent read may already have replaced this expired connection.
+      // Another concurrent call may already have replaced this expired connection.
       if (this.client === client) this.resetConnection();
       const connected = await abortable(this.ensureConnected(), signal);
       if (!connected) throw error;
-      return read(connected);
+      return call(connected);
     }
   }
 
@@ -1349,6 +1368,8 @@ export class ControlPlaneClient {
   /** Create a workstream via `ws-workstream-create`. Returns the created workstream. */
   async wsCreate(input: WsCreateInput): Promise<Workstream> {
     const args: Record<string, unknown> = { title: input.title };
+    if (input.pinned !== undefined) args.pinned = input.pinned;
+    if (input.includeClosedTopics !== undefined) args.includeClosedTopics = input.includeClosedTopics;
     if (input.status !== undefined) {
       args.status = input.status;
     }
@@ -1364,6 +1385,8 @@ export class ControlPlaneClient {
    */
   async wsUpdate(input: WsUpdateInput): Promise<Workstream> {
     const args: Record<string, unknown> = { id: input.id };
+    if (input.pinned !== undefined) args.pinned = input.pinned;
+    if (input.includeClosedTopics !== undefined) args.includeClosedTopics = input.includeClosedTopics;
     if (input.title !== undefined) {
       args.title = input.title;
     }

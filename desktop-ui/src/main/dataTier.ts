@@ -16,6 +16,7 @@ import { parseBackendImage } from './updateChannels';
 import { defaultFileExists, type DockerHost as DataTierHost } from './dockerCli';
 import { ContainerProviderAdapter, type ContainerProvider } from './containerProvider';
 import { checkContainerOwnership } from './containerOwnership';
+import { summarizeContainerLogs, summarizeContainerStats } from './containerIncidentEvidence';
 import type {
   BackendUpdateTarget,
   DataTierInstanceState,
@@ -452,6 +453,27 @@ export class DataTierManager {
           `Health check ${check.Start} to ${check.End}: exit ${check.ExitCode}`).join('\n') };
   }
 
+  async incidentEvidence(port: number, since: number, signal: AbortSignal): Promise<string> {
+    this.require(port);
+    const { docker, env } = await this.docker(false, signal);
+    const container = dataTierInstanceNames(port).container;
+    const capture = async (label: string, args: string[], summarize: (raw: string) => string, includeStderr = false) => {
+      try {
+        const result = await this.runner.run(docker, args, { env, signal, timeoutMs: 5000 });
+        return summarize((includeStderr ? `${result.stdout}\n${result.stderr}` : result.stdout).trim());
+      } catch (error) {
+        console.error(`[instance-monitor] ${label} capture failed:`, error);
+        return `${label} unavailable: container command failed, timed out, or returned invalid data. See desktop logs.`;
+      }
+    };
+    const [logs, stats] = await Promise.all([
+      capture('Container logs', ['logs', '--timestamps', '--since', new Date(since).toISOString(),
+        '--tail', '200', container], summarizeContainerLogs, true),
+      capture('Container resource sample', ['stats', '--no-stream', '--format', 'json', container], summarizeContainerStats),
+    ]);
+    return `${logs}\n\n${stats}`;
+  }
+
   create(name?: string): Promise<ManagedDataTierInstance> {
     return this.serialize(async () => {
       const { docker, env } = await this.docker();
@@ -591,10 +613,10 @@ export class DataTierManager {
     return instance;
   }
 
-  private async docker(adoptLegacy = true): Promise<{ docker: string; env: NodeJS.ProcessEnv }> {
+  private async docker(adoptLegacy = true, signal?: AbortSignal): Promise<{ docker: string; env: NodeJS.ProcessEnv }> {
     this.assertProviderRegistrations();
     try {
-      const docker = await this.provider.resolve();
+      const docker = await this.provider.resolve(signal);
       this.ownership(docker);
       const instances = this.instances;
       const connection = this.provider.identity(docker);

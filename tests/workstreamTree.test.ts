@@ -61,6 +61,17 @@ describe('buildWorkstreamTree', () => {
     expect(labels).not.toContain('Other');
   });
 
+  test('hides closed parents without losing open descendants or membership used for message rollups', () => {
+    const members = [
+      topic({ id: 'closed', title: 'Closed', status: 'closed', workstreams: ['ws'] }),
+      topic({ id: 'open', title: 'Open', parents: ['closed'], workstreams: ['ws'] }),
+    ];
+    const hidden = buildWorkstreamTree('ws', 'active', members, new Map(), [], false);
+    expect(hidden.members).toEqual(members);
+    expect(hidden.groups[0].children.map(child => child.documentId)).toEqual(['open']);
+    expect(buildWorkstreamTree('ws', 'active', members, new Map(), []).groups[0].children[0].documentId).toBe('closed');
+  });
+
   test('retains closed members but includes only open focused topics in the pinned strip', () => {
     const typeMap = new Map<string, TopicType>([
       ['type-feature', {

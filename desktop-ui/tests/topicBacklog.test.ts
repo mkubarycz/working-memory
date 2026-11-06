@@ -109,7 +109,7 @@ describe('backlog document', () => {
 
   it('handles empty and unavailable panels without losing either section', () => {
     expect(topicBacklogDocument(null)).toEqual({
-      kind: 'topic-backlog', id: 'open-topic-backlog', title: 'Backlog', topics: [], workstreams: [],
+      kind: 'topic-backlog', id: 'open-topic-backlog', title: 'Backlog', topics: [], workstreams: [], pinnedWorkstreams: [],
     });
     expect(topicBacklogDocument(buildWorkstreamPanels({ available: false, workstreams: [] }).active))
       .toEqual(topicBacklogDocument(null));

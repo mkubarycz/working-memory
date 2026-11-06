@@ -197,6 +197,7 @@ export interface PanelAgentMessage {
 export type PanelAlert = PanelAgentMessage;
 
 export interface PanelData {
+  pinnedWorkstreams?: PanelWorkstream[];
   tab: PanelTab;
   items: PanelItem[];
   emptyMessage: string;
@@ -585,8 +586,8 @@ export interface WorkstreamTree {
  * Compose a workstream's {@link WorkstreamTree}. Extracted from
  * {@link buildDomainWorkstreamCard} so the rail card and the Svelte workstream
  * editor build the SAME nested topic structure from the same inputs.
- * The full tree retains every member; only open focused topics appear in the
- * pinned strip.
+ * Hidden closed parents promote their visible descendants to tree roots.
+ * Membership is retained separately for message rollups.
  */
 export function buildWorkstreamTree(
   wsId: string,
@@ -594,6 +595,7 @@ export function buildWorkstreamTree(
   topics: ControlPlaneTopic[] | undefined,
   typeMap: Map<string, TopicType>,
   alerts: ControlPlaneAlert[],
+  includeClosedTopics = true,
 ): WorkstreamTree {
   const groups: PanelTopicsGroup[] = [];
   const members =
@@ -605,9 +607,9 @@ export function buildWorkstreamTree(
     const { group, orderedTopics } = buildControlPlaneCardTopics(
       wsId,
       tab,
-      members,
-      typeMap,
-      alerts,
+        includeClosedTopics ? members : members.filter(topic => topic.status !== 'closed'),
+        typeMap,
+        alerts,
     );
     groups.push(group);
     focusedTopics = orderedTopics.filter((t) => t.focused && t.status === 'open');
@@ -664,6 +666,7 @@ function buildDomainWorkstreamCard(
     topics,
     typeMap,
     alerts,
+    ws.includeClosedTopics !== false,
   );
   const memberIds = members
     .map((t) => t.id ?? '')
@@ -727,13 +730,16 @@ export function buildWorkstreamPanels(input: {
     backlog: [],
   };
   const archived: PanelWorkstream[] = [];
+  const pinned: PanelWorkstream[] = [];
   const orderedWorkstreams = input.workstreams
     .map((workstream, index) => ({ workstream, index }))
     .sort((left, right) =>
       (left.workstream.position ?? 0) - (right.workstream.position ?? 0) || left.index - right.index)
     .map(({ workstream }) => workstream);
   for (const ws of orderedWorkstreams) {
-    if (ws.status === 'closed') {
+    if (ws.title === 'Inbox' || ws.pinned === true) {
+      pinned.push(buildDomainWorkstreamCard(ws, ws.status === 'closed' ? 'archive' : 'active', input.topics, typeMap, alerts));
+    } else if (ws.status === 'closed') {
       archived.push(
         buildDomainWorkstreamCard(ws, 'archive', input.topics, typeMap, alerts),
       );
@@ -770,6 +776,7 @@ export function buildWorkstreamPanels(input: {
       items: activeItems,
       emptyMessage: 'No active workstreams.',
       topicBacklog,
+      pinnedWorkstreams: pinned.sort((left, right) => Number(right.label === 'Inbox') - Number(left.label === 'Inbox')),
     },
     archive: {
       tab: 'archive',

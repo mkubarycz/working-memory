@@ -9,12 +9,18 @@
   import { sortTreeChildren } from './treeSort';
   import SaveStatus from './SaveStatus.svelte';
   import AgentMessageCallouts from './AgentMessageCallouts.svelte';
+  import type { WorkstreamPatch } from '../../shared/contracts';
+  import { ResourceDragPreparationCache, resourceDropEffect, setResourceDragData, topicDropMoves, type ActiveResourceDrag } from '../resourceDrag';
+  import { planTopicTransfer, type TopicTransferRequest } from '../topicTransfer';
 
   interface Props {
     unreadResponses?: UnreadResponse[];
     ws: WorkstreamVM;
     saveState: SaveState;
-    onSave: (patch: { title?: string; status?: string }) => void;
+    onSave: (patch: WorkstreamPatch) => void;
+    activeDrag?: ActiveResourceDrag | null;
+    onTransferTopic?: (request: TopicTransferRequest) => void;
+    onReparentTopic?: (id: string, parent: string | null) => void;
     onOpenTopic: (id: string) => void;
     onAddTopic: (parent?: { id: string; title: string }) => void;
     onInvoke: (command: string, args: unknown[]) => void;
@@ -38,9 +44,85 @@
     onRecordDecision,
     onSnooze,
     attachmentBaseUrl = '',
+    activeDrag = $bindable(null),
+    onTransferTopic,
+    onReparentTopic,
   }: Props = $props();
 
   const STATUSES = ['queue', 'progress', 'backlog', 'closed'];
+  const inbox = $derived(ws.title === 'Inbox');
+  let dragError = $state('');
+  let dropTarget = $state<string | null>(null);
+  let nativeDragFilePath: string | null = null;
+  const resourceDrags = new ResourceDragPreparationCache(
+    (uri, label) => window.workingMemory.prepareResourceDrag(uri, label),
+    error => {
+      dragError = error instanceof Error ? error.message : String(error);
+      console.error('Unable to prepare Working Memory drag context:', error);
+    },
+  );
+  $effect(() => {
+    resourceDrags.clear();
+    const prepare = (nodes: TreeTopicVM[]) => {
+      for (const node of nodes) {
+        resourceDrags.prepare(topicUri(node.id), node.label);
+        prepare(node.children);
+      }
+    };
+    for (const group of ws.tree) prepare(group.children);
+  });
+  $effect(() => window.workingMemory.onResourceDragResult(result => {
+    if (result.filePath !== nativeDragFilePath || result.status !== 'failed') return;
+    dragError = result.error ?? 'Unable to drag Working Memory context.';
+    console.error('Unable to drag Working Memory context:', result.error);
+    finishDrag();
+  }));
+
+  function topicUri(id: string): string {
+    return `working-memory:/topic/${encodeURIComponent(id)}.working-memory`;
+  }
+
+  function startDrag(event: DragEvent, node: TreeTopicVM): void {
+    event.stopPropagation();
+    activeDrag = { kind: 'topic', id: node.id, sourceWorkstream: ws.id };
+    const uri = topicUri(node.id);
+    const prepared = resourceDrags.get(uri);
+    setResourceDragData(event.dataTransfer, uri, node.label, prepared);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove';
+    if (!prepared) return;
+    event.preventDefault();
+    nativeDragFilePath = prepared.filePath;
+    activeDrag = { ...activeDrag, native: true };
+    window.workingMemory.startResourceDrag(prepared);
+  }
+
+  function finishDrag(): void {
+    if (activeDrag?.kind === 'topic') activeDrag = null;
+    nativeDragFilePath = null;
+    dropTarget = null;
+  }
+
+  function acceptDrop(event: DragEvent, parent: string | null, drop = false): void {
+    if (activeDrag?.kind !== 'topic') return;
+    const transfer = planTopicTransfer(activeDrag, ws.id, topicDropMoves(event));
+    if (transfer && onTransferTopic) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(activeDrag, transfer.move ? 'move' : 'copy');
+      dropTarget = 'workstream';
+      if (drop) { finishDrag(); onTransferTopic(transfer); }
+    } else if (activeDrag.sourceWorkstream === ws.id && activeDrag.id !== parent && onReparentTopic) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(activeDrag, 'move');
+      dropTarget = parent ?? 'root';
+      if (drop) {
+        const id = activeDrag.id;
+        finishDrag();
+        onReparentTopic(id, parent);
+      }
+    }
+  }
 
   // How many EXTRA levels a single expand cascades open (children + grandchildren).
   const CASCADE_LEVELS = 2;
@@ -176,10 +258,11 @@
 
 </script>
 
-<svelte:window onclick={onWindowClick} onkeydown={onWindowKeydown} />
+<svelte:window onclick={onWindowClick} onkeydown={onWindowKeydown}
+  onpointermove={event => { if (event.buttons === 0 && nativeDragFilePath) finishDrag(); }} />
 
 <header class="head">
-  {#if ws.editable}
+  {#if ws.editable && !inbox}
     <input
       class="title-input"
       value={ws.title}
@@ -204,7 +287,7 @@
   <div class="attr">
     <span class="k">Status</span>
     <span class="v">
-      {#if ws.editable}
+      {#if ws.editable && !inbox}
         <select value={ws.status} onchange={onStatusChange} aria-label="Status">
           {#each STATUSES as s}
             <option value={s}>{s}</option>
@@ -233,13 +316,32 @@
   </div>
 </section>
 
+{#if ws.editable}
+  <section class="workstream-preferences" aria-label="Workstream preferences">
+    <label>
+      <input type="checkbox" checked={inbox || ws.pinned === true} disabled={inbox}
+        onchange={event => onSave({ pinned: event.currentTarget.checked })} />
+      Pin workstream
+    </label>
+    <label>
+      <input type="checkbox" checked={ws.includeClosedTopics === false}
+        onchange={event => onSave({ includeClosedTopics: !event.currentTarget.checked })} />
+      Hide closed topics
+    </label>
+  </section>
+{/if}
+{#if dragError}<p role="alert">{dragError}</p>{/if}
+
 <AgentMessageCallouts agentMessages={ws.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {onSnooze} {attachmentBaseUrl} />
 
 {#snippet treeNode(node: TreeTopicVM)}
     {@const hasChildren = node.children.length > 0}
     {@const open = isExpanded(node.id)}
     <li class="tree-node">
-      <div class="row-wrap" role="group" oncontextmenu={(e) => openMenu(e, topicMenu(node))}>
+      <div class="row-wrap" role="group" class:drop-target={dropTarget === node.id}
+        ondragover={event => acceptDrop(event, node.id)}
+        ondrop={event => acceptDrop(event, node.id, true)}
+        oncontextmenu={(e) => openMenu(e, topicMenu(node))}>
         {#if hasChildren}
           <button
             class="twistie"
@@ -256,6 +358,10 @@
           class="tree-link"
           class:pinned={node.pinned}
           class:closed={node.status === 'closed'}
+          draggable="true"
+          onpointerdown={() => resourceDrags.prepare(topicUri(node.id), node.label)}
+          ondragstart={event => startDrag(event, node)}
+          ondragend={finishDrag}
           onclick={() => onOpenTopic(node.id)}
         >
           <span class="codicon codicon-{node.icon}"></span>
@@ -296,7 +402,11 @@
 {/snippet}
 
 {#if ws.tree.length > 0}
-  <section class="tree" aria-label="Topics tree">
+  <section class="tree" aria-label="Topics tree" role="group"
+    class:drop-target={dropTarget === 'workstream' || dropTarget === 'root'}
+    ondragover={event => acceptDrop(event, null)}
+    ondragleave={event => { if (!(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) dropTarget = null; }}
+    ondrop={event => acceptDrop(event, null, true)}>
     {#each ws.tree as group (group.id)}
       {@const groupHasChildren = group.children.length > 0}
       {@const groupOpen = isExpanded(group.id)}
@@ -362,6 +472,9 @@
 {/if}
 
 <style>
+  .workstream-preferences { display: flex; flex-wrap: wrap; gap: 20px; margin: 16px 0; }
+  .workstream-preferences label { display: flex; align-items: center; gap: 6px; }
+  .drop-target { outline: 2px solid var(--desktop-accent-strong); outline-offset: -2px; }
   .empty {
     color: var(--vscode-descriptionForeground);
     font-style: italic;

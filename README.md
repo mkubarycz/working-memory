@@ -733,6 +733,11 @@ strip, including after resizing the stage or closing neighboring tabs. Empty
 new-topic forms use the same available document width as populated topics;
 typing does not change the form's width.
 
+Drag a tab header left or right within the tab bar to reorder it. The insertion
+marker shows where it will land, and dropping it does not change the selected
+document or promote a preview. The new permanent-tab order is remembered per
+environment.
+
 The right-hand Chat rail starts collapsed when no preference has been saved.
 Its open/closed state is remembered locally across desktop restarts, alongside
 the rail widths. Explicit chat actions can still open it when needed.
@@ -768,10 +773,17 @@ through the selected environment's authenticated attachment proxy. Raster images
 (PNG, JPEG, GIF, WebP, or AVIF; up to 30 MB) are opened as private temporary files,
 which are removed when Working Memory quits.
 
-## Backlog
+## Inbox, pinned workstreams and Backlog
 
 The left rail shows **Queue** and **In Progress** workstreams. Its backlog button
-opens the **Backlog** page, where workstreams with backlog status appear first,
+opens a page with Settings-style **Inbox**, other pinned workstream, and **Backlog**
+tabs. Inbox is always pinned, keeps its existing ID and lifecycle status, and
+cannot be renamed or unpinned. Its tab shows the workstream view, without the
+Send to Queue/In Progress buttons. Pin or unpin other workstreams using **Pin
+workstream** in their workstream view. Pinned workstreams appear only in these
+navigation tabs, not in the ordinary rail or backlog sections.
+
+The **Backlog** subtab shows workstreams with backlog status first,
 above open topics that do not belong to any non-closed workstream. Topics in a
 backlog workstream stay grouped under that workstream rather than appearing twice.
 Expand a backlog workstream to browse its topic tree, including nested child
@@ -782,8 +794,8 @@ when switching document tabs or refreshing the backlog. Closing the Backlog tab 
 switching environments clears that view's expansion state.
 
 Backlog nodes use the same tree interactions as the left rail: right-click for
-context-sensitive topic/workstream actions, drag between workstreams to copy a
-topic tree (hold Command to move), drop on topics to reparent, and drag workstreams
+context-sensitive topic/workstream actions, drag between workstreams to move a
+topic tree (hold Option/Alt, Ctrl, or Command to copy), drop on topics to reparent, and drag workstreams
 between Backlog, Queue, and In Progress or reorder within a section. Dragged
 resources also carry the same Markdown/context-file references for editors and
 other apps. Unassigned topic trees can be added to a workstream without removing
@@ -793,6 +805,14 @@ Internal moves and external Markdown-file exports use the same drag gesture,
 including on Windows; no extra modifier or separate handle is required.
 The shared tree uses light cards and menus on the backlog page while retaining
 the dark rail palette. Move buttons wrap below titles when the page is narrow.
+
+Workstream document trees also support topic dragging and drops. **Hide closed
+topics** is a persisted per-workstream preference, off by default. It affects
+that workstream's trees in the rail, Backlog, and workstream/pinned views without
+changing membership, topic status, or message history. Open descendants of
+hidden closed parents remain visible. Different workstreams can show the same
+topic with different visibility preferences; standalone topic family trees have
+no workstream scope and are unchanged.
 
 ## Desktop container apps
 
@@ -1709,8 +1729,10 @@ Trusted owner clients use `GET /identity/v1/sessions` (optional `before` event
 cursor) and `POST /identity/v1/sessions` with the complete policy:
 `idleMinutes`, `maxPerClient`, `maxTotal`, `handshakesPerMinute`, `retentionDays`.
 Unknown/expired MCP sessions return HTTP 404. The desktop reconnects and retries
-a recognized stale-session read once; generic tool calls and writes are never
-automatically replayed. Short-lived MCP consumers should send session DELETE
+once when the server explicitly rejects a stale session before dispatch, including
+desktop actions, generic tool calls, and document writes. Writes are never replayed
+after a network failure or any other error with an uncertain execution outcome.
+Short-lived MCP consumers should send session DELETE
 (`transport.terminateSession()`) before `client.close()` to reclaim resources
 immediately instead of waiting for idle cleanup.
 The desktop client and native connector do this on reset and shutdown, with a
@@ -1726,6 +1748,18 @@ active request/session counts. `GET /identity/v1/diagnostics` is restricted to
 trusted owner requests; older backends show an explicit upgrade message.
 Health and MCP advertise the package release version. Health also returns a
 process boot ID so a restart is distinguishable from an unavailable endpoint.
+
+Automatic incident reports capture recent container error categories, safe stack
+locations, and CPU/memory/PID/block-I/O statistics for desktop-managed instances,
+both at detection and after an outage recovers. Container commands are bounded,
+and failures or unsupported evidence are reported explicitly. Arbitrary log
+messages, document bodies, credentials, and request payloads are not included.
+Reports retain the last successful runtime sample and add recovery-time diagnostics
+and persisted tool lifecycle history (including events from before a container
+restart). Lifecycle summaries describe the retained event window, not a complete
+request count. Evidence is capped at 20,000 characters with explicit truncation.
+These changes improve future reports; they cannot reconstruct logs already lost
+when an affected container was recreated.
 
 Diagnostics has **Queue**, **HTTP**, **Runtime**, and **Automatic incident reports**
 subtabs. HTTP shows transactions, errors,

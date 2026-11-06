@@ -24,6 +24,8 @@ export interface WorkstreamViewModel {
   closure: string | null;
   resourceVersion: number;
   editable: boolean;
+  pinned?: boolean;
+  includeClosedTopics?: boolean;
   topics: Array<{ id: string; title: string;  status: string; pinned: boolean }>;
   tree: WorkstreamTreeGroupViewModel[];
   agentMessages: AgentMessageVM[];
@@ -131,6 +133,7 @@ export async function loadWorkstreamViewModel(
   agentMessages = await client.agentMessageRead();
 
   const rows = topics
+    .filter(topic => workstream.includeClosedTopics !== false || topic.status !== 'closed')
     .map((topic) => ({
       id: topic.id,
       title: topic.title,
@@ -147,6 +150,7 @@ export async function loadWorkstreamViewModel(
     id ? topics : undefined,
     typeMap,
     agentMessages,
+    workstream.includeClosedTopics !== false,
   );
   const memberIds = topics
     .map((topic) => topic.id)
@@ -163,6 +167,8 @@ export async function loadWorkstreamViewModel(
     closure: workstream.closure,
     resourceVersion: workstream.resourceVersion,
     editable: Boolean(id),
+    pinned: workstream.title === 'Inbox' || workstream.pinned === true,
+    includeClosedTopics: workstream.includeClosedTopics !== false,
     topics: ordered,
     tree: groups.map(treeGroup),
     agentMessages: buildAgentMessageVMs(agentMessages, {

@@ -241,11 +241,11 @@ export class DesktopInstanceIdentity {
     return z.object({ topicId: z.string().uuid() }).parse(result).topicId;
   }
 
-  async toolQueue(mcpUrl: string): Promise<ToolQueueSnapshot> {
+  async toolQueue(mcpUrl: string, signal?: AbortSignal): Promise<ToolQueueSnapshot> {
     const token = this.vault.session(hostTaskOrigin(mcpUrl));
     if (!token) throw new Error('Sign in as the instance owner to view the tool queue.');
     try {
-      return toolQueueSnapshotSchema.parse(await this.request(mcpUrl, '/identity/v1/tool-queue', undefined, token));
+      return toolQueueSnapshotSchema.parse(await this.request(mcpUrl, '/identity/v1/tool-queue', undefined, token, signal));
     } catch (error) {
       if (error instanceof InstanceHttpError && error.status === 404) throw new Error('This backend does not support queue diagnostics. Upgrade it first.');
       throw error;

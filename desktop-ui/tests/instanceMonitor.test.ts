@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { InstanceMonitor, deliverIncident, type MonitorProbe } from '../src/main/instanceMonitor';
-import { type InstanceIncident, type InstanceDiagnostics } from '../../control-plane/src/diagnosticContract';
+import { InstanceMonitor, deliverIncident, formatIncidentToolQueue, type MonitorProbe, type MonitorTarget } from '../src/main/instanceMonitor';
+import { incidentReportRequestSchema, type InstanceIncident, type InstanceDiagnostics } from '../../control-plane/src/diagnosticContract';
 import { startServer } from '../../control-plane/src/server';
 import { openStore } from '../../control-plane/src/store';
 import { InstanceIdentity } from '../../control-plane/src/instanceIdentity';
@@ -25,7 +25,7 @@ function fixture() {
   let now = 1793733600000, selected: { mcpUrl: string } | null = { mcpUrl: 'http://127.0.0.1:7719/mcp' };
   let result: MonitorProbe = { healthy: true, bootId: randomUUID(), diagnostics: null, evidence: '' };
   const probe = vi.fn(async () => result);
-  const deliver = vi.fn(async () => randomUUID());
+  const deliver = vi.fn(async (_target: MonitorTarget, _incident: InstanceIncident, _current: () => boolean, _signal: AbortSignal) => randomUUID());
   const options = { file, selected: () => selected, probe, deliver, clock: () => now };
   const monitor = new InstanceMonitor(options);
   cleanup.push(() => monitor.stop());
@@ -58,6 +58,129 @@ it('requires three failures, persists one outage across app restarts, and retrie
   await vi.waitFor(() => expect(restarted.incidents(url)[0].topicId).not.toBeNull());
   expect(f.deliver).toHaveBeenCalledTimes(2);
   expect(JSON.parse(readFileSync(f.file, 'utf8')).incidents).toHaveLength(1);
+});
+
+it('persists detection evidence before capture and adds recovery evidence before delivering the report', async () => {
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  const captureEvidence = vi.fn(async (_target: MonitorTarget, _since: number, healthy: boolean) => {
+    expect(JSON.parse(readFileSync(f.file, 'utf8')).incidents).toHaveLength(1);
+    return healthy ? 'Recovered container logs and persisted tool history' : 'At-hang container logs: SQLITE_BUSY';
+  });
+  const monitor = new InstanceMonitor({ ...f.options, captureEvidence });
+  cleanup.push(() => monitor.stop());
+  await monitor.tick();
+  f.result({ healthy: false });
+  for (let i = 0; i < 3; i++) { f.advance(); await monitor.tick(); }
+  const incident = monitor.incidents(url)[0];
+  expect(incident.evidence).toContain('At-hang container logs: SQLITE_BUSY');
+  expect(captureEvidence).toHaveBeenCalledWith({ mcpUrl: url }, incident.at - 120000, false, expect.any(AbortSignal));
+  expect(f.deliver).not.toHaveBeenCalled();
+  f.result({ healthy: true, bootId: randomUUID(), evidence: 'Container restarted' });
+  await monitor.tick();
+  await vi.waitFor(() => expect(monitor.incidents(url)[0].topicId).not.toBeNull());
+  const delivered = f.deliver.mock.calls[0][1];
+  expect(delivered.kind).toBe('restart');
+  expect(delivered.evidence).toContain('At-hang container logs: SQLITE_BUSY');
+  expect(delivered.evidence).toContain('Recovery observation');
+  expect(delivered.evidence).toContain('Recovered container logs and persisted tool history');
+});
+
+it('bounds capture deadlines and report size without losing the queued incident', async () => {
+  vi.useFakeTimers();
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  const captureEvidence = vi.fn()
+    .mockImplementationOnce(() => new Promise<string>(() => {}))
+    .mockResolvedValue('x'.repeat(50000));
+  const monitor = new InstanceMonitor({ ...f.options, captureEvidence });
+  cleanup.push(() => monitor.stop());
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  f.result({ healthy: false });
+  await monitor.tick(); await monitor.tick();
+  const pending = monitor.tick();
+  await vi.advanceTimersByTimeAsync(10000);
+  await pending;
+  expect(monitor.incidents(url)[0].evidence).toContain('10-second deadline');
+  expect(JSON.parse(readFileSync(f.file, 'utf8')).incidents).toHaveLength(1);
+  f.result({ healthy: true });
+  await monitor.tick();
+  await vi.advanceTimersByTimeAsync(0);
+  const incident = monitor.incidents(url)[0];
+  expect(incident.evidence.length).toBeLessThanOrEqual(20000);
+  expect(incident.evidence).toContain('Evidence truncated');
+  const { id, environment, at, kind, evidence } = incident;
+  expect(incidentReportRequestSchema.safeParse({ id, environment, at, kind, evidence }).success).toBe(true);
+  expect(incident.topicId).not.toBeNull();
+});
+
+it('never appends or delivers capture results after the selected environment changes', async () => {
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  let release!: (evidence: string) => void;
+  const captureEvidence = vi.fn(() => new Promise<string>(resolve => { release = resolve; }));
+  const monitor = new InstanceMonitor({ ...f.options, captureEvidence });
+  cleanup.push(() => monitor.stop());
+  f.result({ healthy: false });
+  await monitor.tick(); await monitor.tick();
+  const pending = monitor.tick();
+  await vi.waitFor(() => expect(captureEvidence).toHaveBeenCalledOnce());
+  f.select('http://127.0.0.1:7721/mcp');
+  release('Stale capture result');
+  await pending;
+  expect(monitor.incidents(url)[0].evidence).not.toContain('Stale capture result');
+  expect(f.deliver).not.toHaveBeenCalled();
+  expect(monitor.incidents('http://127.0.0.1:7721/mcp')).toEqual([]);
+});
+
+it('recovers persisted tool activity for a 50-document batch after a real backend restart', async () => {
+  const f = fixture();
+  const database = join(dirname(f.file), 'batch.sqlite');
+  let store = openStore(database);
+  const owner = await new InstanceIdentity(store.db).initialize('private batch test password');
+  let server = await startServer({ port: 0, store });
+  cleanup.push(async () => { await server.close(); store.close(); });
+  const url = `${server.url}/mcp`, port = Number(new URL(server.url).port);
+  const client = new ControlPlaneClient({ resolveUrl: () => url, getToken: () => owner.token });
+  cleanup.push(() => client.dispose());
+  const vault = new HostTaskCredentialVault({
+    isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn(),
+  }, process.platform, '/not-used');
+  vault.setSession(server.url, owner.token, owner.expiresAt);
+  const identity = new DesktopInstanceIdentity(vault, async () => '', () => false);
+  f.select(url);
+  f.result({ diagnostics: await identity.diagnostics(url) });
+  const captureEvidence = vi.fn(async (_target: MonitorTarget, _since: number, healthy: boolean) => healthy
+    ? formatIncidentToolQueue(await identity.toolQueue(url), Date.now()) : 'Container evidence captured during outage');
+  const monitor = new InstanceMonitor({
+    ...f.options, captureEvidence,
+    deliver: (_target, incident, current, signal) => deliverIncident(identity, incident, current, signal),
+  });
+  cleanup.push(() => monitor.stop());
+  await monitor.tick();
+  const topicType = await client.topicTypeCreate({ label: 'Topic', icon: 'file', description: 'Batch fixture' });
+  for (let i = 0; i < 50; i++) {
+    expect((await client.createDocument({ kind: 'Topic', spec: {
+      title: `private batch title ${i}`, body: 'private document contents', topicType: topicType.id,
+    } })).available).toBe(true);
+  }
+  expect(store.listDocuments({ kind: 'Topic' })).toHaveLength(50);
+  f.result({ healthy: false, diagnostics: null });
+  await monitor.tick(); await monitor.tick(); await monitor.tick();
+  await client.dispose();
+  await server.close();
+  store.close();
+  store = openStore(database);
+  server = await startServer({ port, store });
+  const diagnostics = await vi.waitFor(() => identity.diagnostics(url));
+  f.result({ healthy: true, bootId: diagnostics.bootId, diagnostics });
+  await monitor.tick();
+  await vi.waitFor(() => expect(monitor.incidents(url)[0].topicId).not.toBeNull());
+  const incident = monitor.incidents(url)[0];
+  const report = store.getDocument({ id: incident.topicId!, kind: 'Topic' })!;
+  expect(report.spec.body).toContain('Recovery observation');
+  expect(report.spec.body).toContain('wm-document-create completed');
+  expect(report.spec.body).toContain('100 lifecycle events, not a complete request count');
+  expect(report.spec.body).not.toContain('private batch title');
+  expect(report.spec.body).not.toContain('private document contents');
+  expect(store.listDocuments({ kind: 'Topic' })).toHaveLength(51);
 });
 
 it('does not confuse successful health probes, transient failures, environment changes or intentional upgrades with crashes', async () => {

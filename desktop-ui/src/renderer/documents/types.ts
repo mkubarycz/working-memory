@@ -78,6 +78,8 @@ export interface WorkstreamVM {
   resourceVersion: number;
   /** Whether this workstream permits authored edits. */
   editable: boolean;
+  pinned?: boolean;
+  includeClosedTopics?: boolean;
   topics: WorkstreamTopicVM[];
   /** Full nested topic tree, mirroring the left rail's card. */
   tree: TreeGroupVM[];
@@ -168,6 +170,7 @@ export interface TopicBacklogVM {
   title: 'Backlog';
   workstreams: PanelWorkstream[];
   topics: PanelTopicRow[];
+  pinnedWorkstreams?: PanelWorkstream[];
 }
 
 export interface SettingsVM {

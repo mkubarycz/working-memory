@@ -22,6 +22,8 @@ const wsWorkstreamUpdateInputSchema = z.object({
           .describe("New lifecycle status: 'queue' | 'progress' | 'backlog' | 'closed'."),
         closure: z.string().optional().describe('New closure note.'),
         position: z.number().finite().optional().describe('Sort position within the lifecycle section.'),
+        pinned: z.boolean().optional().describe('Show as a pinned navigation tab. Inbox cannot be unpinned.'),
+        includeClosedTopics: z.boolean().optional().describe('Include closed topics in all workstream trees.'),
       }).strict();
 
 
@@ -38,17 +40,19 @@ export function registerWsWorkstreamUpdate(server: McpServer, store: Store): voi
       title: 'Workstream: Update',
       description:
         'Update a Workstream identified by `id`. Pass only the fields you are changing ' +
-        '(`title`, `status`, `closure`, `position`). Reads the current document for its id + resourceVersion, ' +
+        '(`title`, `status`, `closure`, `position`, `pinned`, `includeClosedTopics`). Reads the current document for its id + resourceVersion, ' +
         'then does a compare-and-swap write of the merged, re-validated spec. Unknown IDs and ' +
         'version conflicts are surfaced clearly. Returns the updated workstream.',
       inputSchema: wsWorkstreamUpdateInputSchema,
     },
-    async ({ id, title, status, closure, position }) => {
+    async ({ id, title, status, closure, position, pinned, includeClosedTopics }) => {
       const existing = store.getDocument({ id, kind: WORKSTREAM_KIND });
       if (!existing) {
         return asError(`Unknown workstream ID: "${id}". No live workstream with that ID.`);
       }
       const patch: Record<string, unknown> = {};
+      if (pinned !== undefined) patch.pinned = pinned;
+      if (includeClosedTopics !== undefined) patch.includeClosedTopics = includeClosedTopics;
       if (title !== undefined) {
         patch.title = title;
       }
