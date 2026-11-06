@@ -758,6 +758,8 @@ Live Markdown text uses native spell checking. Right-click a misspelled word
 to choose a correction or **Add to Dictionary**; ordinary cut/copy/paste actions
 remain available. Windows and Linux download Chromium spelling dictionaries, so
 initial dictionary setup requires network access.
+Dictionary failure monitoring is cleaned up safely when desktop windows close or
+restart.
 
 Pasting rich text into **Live** or **Source** converts clipboard HTML to authored
 Markdown, preserving hyperlinks (including their display text), headings, basic

@@ -10,9 +10,10 @@ export function watchSpellingDictionaryFailures(
   },
   report: (language: string) => void,
 ): void {
+  const session = contents.session;
   const failure = (_event: Electron.Event, language: string) => report(language);
-  contents.session.on('spellcheck-dictionary-download-failure', failure);
-  contents.once('destroyed', () => contents.session.removeListener('spellcheck-dictionary-download-failure', failure));
+  session.on('spellcheck-dictionary-download-failure', failure);
+  contents.once('destroyed', () => session.removeListener('spellcheck-dictionary-download-failure', failure));
 }
 
 export function spellingMenuItems(
