@@ -782,6 +782,9 @@ cannot be renamed or unpinned. Its tab shows the workstream view, without the
 Send to Queue/In Progress buttons. Pin or unpin other workstreams using **Pin
 workstream** in their workstream view. Pinned workstreams appear only in these
 navigation tabs, not in the ordinary rail or backlog sections.
+Switching pinned tabs during autosave retains in-flight drafts and restores the
+selected workstream when its save completes. Failed drafts remain editable with
+an explicit save error.
 
 The **Backlog** subtab shows workstreams with backlog status first,
 above open topics that do not belong to any non-closed workstream. Topics in a

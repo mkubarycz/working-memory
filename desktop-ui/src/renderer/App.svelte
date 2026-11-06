@@ -260,6 +260,7 @@
   }>({ state: 'unknown', result: 'No backend request observed yet.', observedAt: 0 });
   let activePanel = $state<PanelData | null>(null);
   let pinnedWorkstreamDocument = $state<WorkstreamVM | null>(null);
+  const pendingWorkstreamDrafts = new Map<string, WorkstreamVM>();
   let pinnedWorkstreamError = $state('');
   let selectedBacklogTab = $state<string | null>(null);
   let pinnedWorkstreamRequest = 0;
@@ -750,7 +751,10 @@
     },
     onSaved: (key, document) => {
       replaceActive(document, key);
-      if (document.kind === 'workstream' && pinnedWorkstreamDocument?.id === document.id) pinnedWorkstreamDocument = document;
+      if (document.kind === 'workstream') {
+        pendingWorkstreamDrafts.delete(document.id);
+        if (activePinnedCard?.id === document.id) pinnedWorkstreamDocument = document;
+      }
       documentSaveStates[key] = 'saved';
       documentSaveErrors[key] = '';
       if (key === selectedDocumentKey) saveState = 'saved';
@@ -1444,14 +1448,12 @@
       const panel = await window.workingMemory.getActivePanel();
       if (generation !== environmentGeneration) return;
       activePanel = panel;
-      if (pinnedWorkstreamDocument && panel.pinnedWorkstreams?.some(card => card.id === pinnedWorkstreamDocument?.id)) {
-        void loadPinnedWorkstream(pinnedWorkstreamDocument.id);
-      }
       documents = documents.map((document) =>
         document.kind === 'topic-backlog'
           ? topicBacklogDocument(panel)
           : document,
       );
+      if (activePinnedCard) void loadPinnedWorkstream(activePinnedCard.id);
       if (activePanel.items.length === 0 && activePanel.emptyMessage !== 'No active workstreams.') {
         activeError = activePanel.emptyMessage;
       }
@@ -1511,6 +1513,7 @@
     documentSaveStates = {};
     pinnedWorkstreamRequest += 1;
     pinnedWorkstreamDocument = null;
+    pendingWorkstreamDrafts.clear();
     pinnedWorkstreamError = '';
     selectedBacklogTab = null;
     documentSaveErrors = {};
@@ -2243,11 +2246,14 @@
   }
 
   async function loadPinnedWorkstream(id: string): Promise<void> {
-    if (documentIsDirty(`workstream:${id}`)) return;
     const request = ++pinnedWorkstreamRequest;
     const generation = environmentGeneration;
-    if (pinnedWorkstreamDocument?.id !== id) pinnedWorkstreamDocument = null;
     pinnedWorkstreamError = '';
+    if (documentIsDirty(`workstream:${id}`)) {
+      pinnedWorkstreamDocument = pendingWorkstreamDrafts.get(id) ?? null;
+      return;
+    }
+    if (pinnedWorkstreamDocument?.id !== id) pinnedWorkstreamDocument = null;
     try {
       const document = await window.workingMemory.openResource('workstream', id);
       if (request !== pinnedWorkstreamRequest || generation !== environmentGeneration || documentIsDirty(`workstream:${id}`)) return;
@@ -2262,6 +2268,8 @@
 
   function saveWorkstream(document: DocumentVM | null, patch: import('../shared/contracts').WorkstreamPatch): void {
     if (document?.kind !== 'workstream' || !document.id) return;
+    Object.assign(document, patch);
+    pendingWorkstreamDrafts.set(document.id, document);
     promoteDocument(documentTabKey(document));
     documentSaves.schedule(documentTabKey(document), patch);
   }
@@ -2936,8 +2944,8 @@
             bind:activeDrag={activeTreeDrag}
             bind:selected={selectedBacklogTab}
             pinnedDocument={pinnedWorkstreamDocument}
-            pinnedSaveState={pinnedWorkstreamDocument ? documentSaveStates[`workstream:${pinnedWorkstreamDocument.id}`] ?? 'idle' : 'idle'}
-            pinnedError={pinnedWorkstreamError || (pinnedWorkstreamDocument ? documentSaveErrors[`workstream:${pinnedWorkstreamDocument.id}`] ?? '' : '')}
+            pinnedSaveState={activePinnedCard ? documentSaveStates[`workstream:${activePinnedCard.id}`] ?? 'idle' : 'idle'}
+            pinnedError={pinnedWorkstreamError || (activePinnedCard ? documentSaveErrors[`workstream:${activePinnedCard.id}`] ?? '' : '')}
             onSelectPinned={loadPinnedWorkstream}
             workstreamProps={{
               unreadResponses,

@@ -42,12 +42,13 @@ export function summarizeContainerStats(raw: string): string {
     if (value === undefined) return 'unavailable';
     if (typeof value !== 'string' && typeof value !== 'number') throw new Error('Invalid container resource metric.');
     const text = String(value).trim();
+    if (/^--(?:\s*\/\s*--)?$/.test(text)) return 'unavailable';
     if (!pattern.test(text)) throw new Error('Invalid container resource metric.');
     return text;
   };
   const percent = /^\d+(?:\.\d+)?%?$/;
   const bytes = /^\d+(?:\.\d+)?\s*(?:B|kB|KB|KiB|MB|MiB|GB|GiB|TB|TiB)(?:\s*\/\s*\d+(?:\.\d+)?\s*(?:B|kB|KB|KiB|MB|MiB|GB|GiB|TB|TiB))?$/;
-  return `Container resource sample: CPU ${metric(['CPUPerc', 'CPU'], percent)}; `
-    + `memory ${metric(['MemUsage'], bytes)} (${metric(['MemPerc'], percent)}); `
-    + `PIDs ${metric(['PIDs', 'PIDS'], /^\d+$/)}; block I/O ${metric(['BlockIO'], bytes)}.`;
+  return `Container resource sample: CPU ${metric(['CPUPerc', 'CPU', 'cpu_percent'], percent)}; `
+    + `memory ${metric(['MemUsage', 'mem_usage'], bytes)} (${metric(['MemPerc', 'mem_percent'], percent)}); `
+    + `PIDs ${metric(['PIDs', 'PIDS', 'pids'], /^\d+$/)}; block I/O ${metric(['BlockIO', 'blocki'], bytes)}.`;
 }

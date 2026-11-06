@@ -37,12 +37,24 @@ it('explicitly distinguishes absent recognized evidence from proof of no errors 
 it.each([
   { CPUPerc: '99.12%', MemUsage: '785MiB / 3.826GiB', MemPerc: '20.1%', PIDs: '12', BlockIO: '400kB / 1MB' },
   [{ CPU: '99.12%', MemUsage: '785MiB / 3.826GiB', MemPerc: '20.1%', PIDS: 12, BlockIO: '400kB / 1MB' }],
+  [{ cpu_percent: '99.12%', mem_usage: '785MiB / 3.826GiB', mem_percent: '20.1%', pids: '12', blocki: '400kB / 1MB' }],
 ])('keeps only numeric resource metrics from Docker and Podman JSON', value => {
   const evidence = summarizeContainerStats(JSON.stringify(value));
   expect(evidence).toContain('CPU 99.12%');
   expect(evidence).toContain('memory 785MiB / 3.826GiB');
   expect(evidence).toContain('PIDs 12');
   expect(evidence).toContain('block I/O 400kB / 1MB');
+});
+
+it('keeps available Podman metrics when rootless or no-stream values are unavailable', () => {
+  const evidence = summarizeContainerStats(JSON.stringify([{
+    id: 'private-id', name: 'private-name', cpu_percent: '--',
+    mem_usage: '3.092MB / 16.7GB', mem_percent: '0.02%', netio: '-- / --', blocki: '-- / --', pids: '2',
+  }]));
+  expect(evidence).toContain('CPU unavailable');
+  expect(evidence).toContain('memory 3.092MB / 16.7GB (0.02%)');
+  expect(evidence).toContain('PIDs 2; block I/O unavailable');
+  expect(evidence).not.toContain('private');
 });
 
 it('does not include unrelated container fields or invalid metric values', () => {

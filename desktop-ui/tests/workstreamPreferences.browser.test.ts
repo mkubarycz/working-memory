@@ -68,6 +68,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         startDocumentChanges: async () => {},
         saveWorkstream: async (id, patch) => {
           state.saves.push({ id, patch });
+          if (state.delayNextSave) {
+            state.delayNextSave = false;
+            await new Promise(resolve => state.finishSave = resolve);
+          }
+          if (state.failNextSave) {
+            state.failNextSave = false;
+            throw new Error('Test save failed');
+          }
           const ws = state.workstreams.find(ws => ws.id === id);
           Object.assign(ws, patch); ws.resourceVersion++;
           return load(id);
@@ -199,6 +207,43 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait('window.__preferences.workstreams[0].includeClosedTopics === false && !document.querySelector(".active-rail [data-workstream=first] .active-row.closed")');
           await wait('!document.querySelector(".tree-link.closed") && [...document.querySelectorAll(".tree-label")].some(row => row.textContent === "Open child")');
           assert.equal(await evaluate('window.__preferences.topics.find(topic => topic.id === "closed").status'), 'closed');
+          await preference('Pin workstream');
+          await wait('window.__preferences.workstreams[0].pinned === true');
+          await evaluate('document.querySelector(".topic-backlog-button").click()');
+          await subtab('First');
+          await wait('document.querySelector(".title-input")?.value === "First"');
+          await evaluate(\`{
+            window.__preferences.delayNextSave = true;
+            const title = document.querySelector('.title-input');
+            title.value = 'First edited';
+            title.dispatchEvent(new Event('input', { bubbles: true }));
+          }\`);
+          await wait('typeof window.__preferences.finishSave === "function"');
+          await subtab('Inbox');
+          await wait('document.querySelector("h1.title")?.textContent === "Inbox"');
+          await subtab('First');
+          await evaluate('window.__preferences.finishSave()');
+          await wait('document.querySelector(".title-input")?.value === "First edited" && document.querySelector(".composer-context")?.textContent.includes("First edited")');
+          await evaluate(\`{
+            window.__preferences.finishSave = null;
+            window.__preferences.delayNextSave = true;
+            window.__preferences.failNextSave = true;
+            const title = document.querySelector('.title-input');
+            title.value = 'First draft';
+            title.dispatchEvent(new Event('input', { bubbles: true }));
+          }\`);
+          await wait('typeof window.__preferences.finishSave === "function"');
+          await subtab('Inbox');
+          await wait('document.querySelector("h1.title")?.textContent === "Inbox"');
+          await subtab('First edited');
+          await evaluate('window.__preferences.finishSave()');
+          await wait('document.querySelector(".title-input")?.value === "First draft" && [...document.querySelectorAll("[role=alert]")].some(node => node.textContent.includes("Test save failed"))');
+          await evaluate(\`{
+            const title = document.querySelector('.title-input');
+            title.value = 'First retried';
+            title.dispatchEvent(new Event('input', { bubbles: true }));
+          }\`);
+          await wait('window.__preferences.workstreams[0].title === "First retried" && ![...document.querySelectorAll("[role=alert]")].some(node => node.textContent.includes("Test save failed"))');
           console.log('preferences-browser: pinning, Inbox, scoped saves, visibility and native move/copy passed');
           window.destroy(); app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });

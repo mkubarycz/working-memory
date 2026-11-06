@@ -48,6 +48,31 @@ function podmanRunner(
 }
 
 describe('shared container provider adapter', () => {
+  it('captures authentic Podman resource JSON through the production incident entry point', async () => {
+    const dir = directory();
+    const runner = podmanRunner(async args => ({
+      stdout: args[0] === 'stats' ? JSON.stringify([{
+        cpu_percent: '--', mem_usage: '3.092MB / 16.7GB', mem_percent: '0.02%',
+        blocki: '-- / --', pids: '2',
+      }]) : '',
+      stderr: '',
+    }));
+    const adapter = new ContainerProviderAdapter({ provider: 'podman', host, runner, fileExists: () => true });
+    writeFileSync(join(dir, 'instances.json'), JSON.stringify({ instances: [
+      { port: 7719, provider: 'podman', connection: adapter.identity(await adapter.resolve()) },
+    ] }));
+    const manager = new DataTierManager({
+      ...host, provider: 'podman', buildContext: dir, stateDirectory: dir, version: '1.7.0',
+      runner, fileExists: () => true,
+    });
+    const evidence = await manager.incidentEvidence(7719, Date.now(), new AbortController().signal);
+    expect(evidence).toContain('memory 3.092MB / 16.7GB (0.02%)');
+    expect(evidence).toContain('PIDs 2; block I/O unavailable');
+    expect(runner.run).toHaveBeenCalledWith(expect.any(String), [
+      '--connection', connection.Name, 'stats', '--no-stream', '--format', 'json', 'working-memory-control-plane-7719',
+    ], expect.objectContaining({ timeoutMs: 5000 }));
+  });
+
   it('discovers Podman without Podman Desktop on GUI Windows/macOS paths and never substitutes Docker', () => {
     const windows = 'C:\\Program Files\\RedHat\\Podman\\podman.exe';
     expect(dockerCliPath(host, candidate => candidate === windows, 'podman')).toBe(windows);
