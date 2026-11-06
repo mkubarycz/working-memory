@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
 
 const directories: string[] = [];
@@ -18,13 +19,23 @@ function fixture() {
   const log = join(directory, 'calls.jsonl');
   mkdirSync(scripts, { recursive: true });
   mkdirSync(desktop, { recursive: true });
+  cpSync(new URL('../.gitignore', import.meta.url), join(cwd, '.gitignore'));
   for (const name of ['build-desktop.mjs', 'release-version.mjs']) {
     cpSync(new URL(`../scripts/${name}`, import.meta.url), join(scripts, name));
   }
-  const record = (phase: string) => `import('node:fs').then(({ appendFileSync }) =>
-    appendFileSync(${JSON.stringify(log)}, JSON.stringify({
-      phase: ${JSON.stringify(phase)}, args: process.argv.slice(2), version: process.env.WM_DATA_TIER_VERSION,
-    }) + '\\n'));`;
+  const record = (phase: string) => `import('node:fs').then(async ({ appendFileSync, writeFileSync, rmSync }) => {
+    const config = ${JSON.stringify(join(desktop, 'electron.vite.config.1793974393234.mjs'))};
+    if (${JSON.stringify(phase)} === 'vite') writeFileSync(config, '// Generated bundled Vite config');
+    try {
+      const { resolveWorkspaceVersion } = await import(${JSON.stringify(pathToFileURL(join(scripts, 'release-version.mjs')).href)});
+      const version = resolveWorkspaceVersion({ cwd: ${JSON.stringify(cwd)} });
+      appendFileSync(${JSON.stringify(log)}, JSON.stringify({
+        phase: ${JSON.stringify(phase)}, args: process.argv.slice(2), version,
+      }) + '\\n');
+    } finally {
+      if (${JSON.stringify(phase)} === 'vite') rmSync(config);
+    }
+  });`;
   for (const [phase, filename] of [
     ['vite', 'node_modules/electron-vite/bin/electron-vite.js'],
     ['builder', 'node_modules/electron-builder/cli.js'],

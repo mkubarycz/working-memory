@@ -30,6 +30,7 @@ media/webview-ui/
 
 # Platform-specific Electron runtime staged for local desktop installs.
 desktop-ui/runtime/
+desktop-ui/electron.vite.config.*.mjs
 
 # Desktop installer outputs and the staged control-plane build context.
 desktop-ui/release/
