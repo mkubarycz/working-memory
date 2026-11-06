@@ -42,6 +42,7 @@ import { parseTopicAutocomplete, topicAutocompletePrompt } from './topicAutocomp
 import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, searchByIntent, searchInstructions, searchOptionsSchema, SEARCH_TIMEOUT_MS } from './documentSearch';
 import { SearchAppTools } from './searchAppTools';
 declare const __WM_BUILD_TIMESTAMP__: string;
+declare const __WM_BUILD_VERSION__: string;
 import {
   DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
   DesktopChatAgent,
@@ -251,6 +252,10 @@ function isLocalBuild(): boolean {
   }
 }
 
+function desktopVersion(): string {
+  return app.isPackaged ? app.getVersion() : __WM_BUILD_VERSION__;
+}
+
 async function saveUpdateSettings(patch: Partial<UpdateSettings>): Promise<void> {
   updateSettings = { ...updateSettings, ...patch };
   await writeUpdateSettings(updateSettingsFile, updateSettings);
@@ -266,13 +271,13 @@ function broadcastDesktopUpdate(): void {
 
 async function initializeUpdates(): Promise<void> {
   updateSettingsFile = join(app.getPath('userData'), 'updates.json');
-  const defaultChannel = defaultDesktopChannel(app.getVersion(), isLocalBuild());
+  const defaultChannel = defaultDesktopChannel(desktopVersion(), isLocalBuild() || !app.isPackaged);
   updateSettings = await readUpdateSettings(updateSettingsFile, {
     desktopChannel: defaultChannel,
     backendChannel: defaultChannel,
   });
   desktopUpdater = new DesktopUpdater({
-    currentVersion: app.getVersion(),
+    currentVersion: desktopVersion(),
     channel: updateSettings.desktopChannel,
     saveChannel: (desktopChannel) => saveUpdateSettings({ desktopChannel }),
     downloadDirectory: join(app.getPath('userData'), 'updates'),
@@ -361,7 +366,7 @@ function createDataTierManager(): DataTierManager | null {
   return new DataTierManager({
     buildContext,
     stateDirectory: dataTierStateDirectory(),
-    version: app.getVersion(),
+    version: desktopVersion(),
     provider: containerProvider,
   });
 }
@@ -955,7 +960,7 @@ function restartInstalledDesktop(): void {
 
 function registerIpc(): void {
   ipcMain.handle('desktop:build-info', () => ({
-    version: app.getVersion(), development: isLocalBuild() || !app.isPackaged,
+    version: desktopVersion(), development: isLocalBuild() || !app.isPackaged,
   }));
   const hostTaskVault = new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets'));
   instanceVault = hostTaskVault;
@@ -1955,7 +1960,7 @@ if (!ownsSingleInstanceLock) {
       return {
         topic, sourceUrl, fetcher: client.fetch.bind(client),
         recordReceipt: receipt => recordFeedbackReceipt(client, topic.id, receipt),
-        context: { desktop: { version: app.getVersion(), build: __WM_BUILD_TIMESTAMP__ }, backend: { version: result.version } },
+        context: { desktop: { version: desktopVersion(), build: __WM_BUILD_TIMESTAMP__ }, backend: { version: result.version } },
       };
     });
     try {

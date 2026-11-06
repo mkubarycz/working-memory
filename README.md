@@ -1295,6 +1295,12 @@ installers locally with `npm run package:mac --prefix desktop-ui` or
 `npm run package:win --prefix desktop-ui` (output: `desktop-ui/release/`).
 Local development builds do not publish releases; their source-package metadata
 is not the release-version authority.
+Local builds use the highest reachable Stable tag's next patch followed by
+`-dev.g<Git commit>` (and `.dirty` for uncommitted changes). One resolved version
+is used for the desktop metadata, bundled image tag, and backend health/MCP
+identity. For example, local work after `v1.7.0` reports `1.7.1-dev.g<commit>`,
+not the historical source-package version. `npm run build` and local installer
+packaging require release tags and never rewrite source-package versions.
 
 The GHCR package `working-memory-control-plane` must be public so installed
 apps can pull it without logging in. After the first push from `main`, set it
