@@ -23,6 +23,8 @@ import type { AgentMessageVM } from '../../../shared/viewModels/agentMessageVms'
 import type { SearchOptions, SearchResponse, SearchTrace, SearchWorkstream } from '../../../shared/documentSearch';
 
 export type ContainerAppId = string;
+export type WorkstreamPatch = Pick<import('../../../shared/controlPlaneClient').WsUpdateInput,
+  'title' | 'status' | 'pinned' | 'includeClosedTopics'>;
 
 export interface AppMcpEndpoint {
   transport: 'streamable-http';
@@ -461,7 +463,7 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   prepareResourceDrag(openUri: string, label: string): Promise<PreparedResourceDrag>;
   startResourceDrag(prepared: PreparedResourceDrag): void;
   onResourceDragResult(listener: (result: ResourceDragResult) => void): () => void;
-  saveWorkstream(identifier: string, patch: { title?: string; status?: string }): Promise<DocumentVM>;
+  saveWorkstream(identifier: string, patch: WorkstreamPatch): Promise<DocumentVM>;
   saveTopic(identifier: string, patch: TopicPatch): Promise<DocumentVM>;
   listTopicTypes(): Promise<TopicTypeMetaVM[]>;
   createWorkstream(title: string): Promise<{ id: string; title: string }>;

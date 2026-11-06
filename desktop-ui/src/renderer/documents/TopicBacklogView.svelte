@@ -1,20 +1,71 @@
 <script lang="ts">
-  import type { ComponentProps } from 'svelte';
+  import { untrack, type ComponentProps } from 'svelte';
   import type { SvelteSet } from 'svelte/reactivity';
   import ActiveRail from '../ActiveRail.svelte';
-  import type { ActiveResourceDrag } from '../resourceDrag';
-  import type { TopicBacklogVM } from './types';
+  import WorkstreamView from './WorkstreamView.svelte';
+  import { resourceDropEffect, topicDropMoves, type ActiveResourceDrag } from '../resourceDrag';
+  import { planTopicTransfer } from '../topicTransfer';
+  import { selectedPinnedWorkstream } from '../topicBacklog';
+  import type { TopicBacklogVM, WorkstreamVM, SaveState } from './types';
 
   interface Props {
     backlog: TopicBacklogVM;
     treeProps: ComponentProps<typeof ActiveRail>;
     expanded?: SvelteSet<string>;
     activeDrag?: ActiveResourceDrag | null;
+    pinnedDocument?: WorkstreamVM | null;
+    pinnedSaveState?: SaveState;
+    pinnedError?: string;
+    workstreamProps?: Omit<ComponentProps<typeof WorkstreamView>, 'ws' | 'saveState' | 'activeDrag'>;
+    onSelectPinned?: (id: string) => void;
+    selected?: string | null;
   }
 
-  let { backlog, treeProps, expanded, activeDrag = $bindable(null) }: Props = $props();
+  let {
+    backlog, treeProps, expanded, activeDrag = $bindable(null),
+    pinnedDocument = null, pinnedSaveState = 'idle', pinnedError = '', workstreamProps, onSelectPinned,
+    selected = $bindable(null),
+  }: Props = $props();
+  const pinned = $derived(backlog.pinnedWorkstreams ?? []);
+  const card = $derived(selectedPinnedWorkstream(backlog, selected));
+  const selectedTab = $derived(card?.id ?? 'backlog');
+  const selectedPinnedId = $derived(card?.id);
+  $effect(() => {
+    const id = selectedPinnedId;
+    if (id) untrack(() => onSelectPinned?.(id));
+  });
+
+  function pinnedDrop(event: DragEvent, id: string, drop = false): void {
+    const source = activeDrag?.kind === 'topic' ? activeDrag : null;
+    const request = planTopicTransfer(source, id, topicDropMoves(event));
+    if (!request) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(activeDrag, request.move ? 'move' : 'copy');
+    selected = id;
+    if (drop) { activeDrag = null; treeProps.onTransferTopic(request); }
+  }
 </script>
 
+<div class="settings-tabs settings-subtabs" role="tablist" aria-label="Workstreams">
+  {#each pinned as workstream (workstream.id)}
+    <button role="tab" aria-selected={selectedTab === workstream.id}
+      onclick={() => selected = workstream.id}
+      ondragover={event => pinnedDrop(event, workstream.id)}
+      ondrop={event => pinnedDrop(event, workstream.id, true)}
+    >{workstream.label}</button>
+  {/each}
+  <button role="tab" aria-selected={selectedTab === 'backlog'} onclick={() => selected = 'backlog'}>Backlog</button>
+</div>
+
+{#if card}
+  {#if pinnedError}<p role="alert">{pinnedError}</p>{/if}
+  {#if pinnedDocument?.id === card.id && workstreamProps}
+    <WorkstreamView {...workstreamProps} ws={pinnedDocument} saveState={pinnedSaveState} bind:activeDrag />
+  {:else if !pinnedError}
+    <p role="status">Loading {card.label}...</p>
+  {/if}
+{:else}
 <header class="backlog-head">
   <div>
     <p class="eyebrow">Backlog</p>
@@ -25,6 +76,7 @@
 </header>
 
 <ActiveRail {...treeProps} {backlog} {expanded} bind:activeDrag />
+{/if}
 
 <style>
   .backlog-head {

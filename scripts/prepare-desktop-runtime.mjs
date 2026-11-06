@@ -16,12 +16,14 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveWorkspaceVersion } from './release-version.mjs';
 import {
   MAC_APP_IDENTIFIER,
   macCodeSignArguments,
 } from './macos-code-signing.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const buildVersion = resolveWorkspaceVersion({ cwd: repoRoot });
 const desktopRoot = join(repoRoot, 'desktop-ui');
 const electronRoot = join(desktopRoot, 'node_modules', 'electron');
 const sourceDist = join(electronRoot, 'dist');
@@ -103,6 +105,8 @@ function prepareMacApp(appBundle, deepSign) {
   replacePlistString('CFBundleIdentifier', MAC_APP_IDENTIFIER);
   replacePlistString('CFBundleName', 'Working Memory');
   replacePlistString('CFBundleDisplayName', 'Working Memory');
+  replacePlistString('CFBundleShortVersionString', buildVersion.split('-')[0]);
+  replacePlistString('CFBundleVersion', buildVersion.split('-')[0]);
   if (!info.includes('<key>NSCameraUsageDescription</key>')) {
     info = info.replace(
       '</dict>\n</plist>',
@@ -155,7 +159,7 @@ function prepareMacApp(appBundle, deepSign) {
     `${JSON.stringify({
       name: 'working-memory-desktop',
       productName: 'Working Memory',
-      version: JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8')).version,
+      version: buildVersion,
       type: 'module',
       main: 'out/main/index.js',
       // Local builds update through `npm run build`; their Updates channel defaults to Off.

@@ -34,6 +34,45 @@ afterEach(() => {
 });
 
 describe('data tier launcher', () => {
+  it('captures bounded Windows container logs and resource statistics without requiring a healthy backend', async () => {
+    const directory = stateDirectory();
+    writeFileSync(join(directory, 'instances.json'), JSON.stringify({ instances: [{ port: 7719 }] }));
+    const run = vi.fn<CommandRunner['run']>(async (_file, args) => {
+      if (args[0] === 'logs') return { stdout: '', stderr: '2026-11-05T21:47:01.000Z Error: database is locked\nprivate document content' };
+      if (args[0] === 'stats') return {
+        stdout: JSON.stringify({ CPUPerc: '99%', MemUsage: '700MiB / 2GiB', MemPerc: '35%', PIDs: '12', BlockIO: '1MB / 2MB' }),
+        stderr: 'a provider warning that is not part of the JSON',
+      };
+      return { stdout: '', stderr: '' };
+    });
+    const manager = new DataTierManager({
+      ...windows, buildContext: 'ctx', stateDirectory: directory, version: '1',
+      runner: localDockerRunner({ run }), fileExists: file => file.endsWith('docker.exe'),
+    });
+    const signal = new AbortController().signal;
+    const evidence = await manager.incidentEvidence(7719, Date.parse('2026-11-05T21:45:00Z'), signal);
+    expect(evidence).toContain('database is locked');
+    expect(evidence).toContain('CPU 99%');
+    expect(evidence).not.toContain('private document content');
+    expect(run).toHaveBeenCalledWith(expect.stringContaining('docker.exe'), [
+      'logs', '--timestamps', '--since', '2026-11-05T21:45:00.000Z', '--tail', '200', 'working-memory-control-plane-7719',
+    ], expect.objectContaining({ signal, timeoutMs: 5000 }));
+    expect(run).toHaveBeenCalledWith(expect.any(String), [
+      'stats', '--no-stream', '--format', 'json', 'working-memory-control-plane-7719',
+    ], expect.objectContaining({ signal, timeoutMs: 5000 }));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    run.mockImplementation(async (_file, args) => {
+      if (args[0] === 'logs') throw new CommandExecutionError('private error detail');
+      if (args[0] === 'stats') return { stdout: 'malformed statistics', stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+    const failed = await manager.incidentEvidence(7719, Date.now(), signal);
+    expect(failed).toContain('Container logs unavailable');
+    expect(failed).toContain('Container resource sample unavailable');
+    expect(failed).not.toContain('private error detail');
+    consoleError.mockRestore();
+  });
+
   it('finds Docker Desktop outside the GUI PATH and exposes its helpers to child commands', () => {
     const docker = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe';
     expect(dockerCliPath(windows, (candidate) => candidate === docker)).toBe(docker);

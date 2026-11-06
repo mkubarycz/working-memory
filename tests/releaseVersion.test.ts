@@ -1,10 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { resolveReleaseVersion } from '../scripts/release-version.mjs';
+import { resolveReleaseVersion, resolveWorkspaceVersion } from '../scripts/release-version.mjs';
 
 describe('release version authority', () => {
   it('builds the requested 1.7.0 release from its tag without consulting manifests', () => {
@@ -28,6 +28,19 @@ describe('release version authority', () => {
       runNumber: '2', tags: ['v1.9.9', 'v1.10.0', 'v0.99.99'],
     })).toBe('1.10.1-build.2');
   });
+
+  it('identifies local builds from reachable release history and their Git revision', () => {
+    expect(resolveReleaseVersion({ tags: ['v1.4.0', 'v1.7.0'], localCommit: 'abcdef123456' }))
+      .toBe('1.7.1-dev.gabcdef123456');
+    expect(resolveReleaseVersion({ tags: ['v1.7.0'], localCommit: 'abcdef123456', dirty: true }))
+      .toBe('1.7.1-dev.gabcdef123456.dirty');
+  });
+
+  it.each(['', '../version', 'not-a-commit', 'ABCDEF123456'])(
+    'rejects an invalid local Git revision %s', localCommit => {
+      expect(() => resolveReleaseVersion({ tags: ['v1.7.0'], localCommit })).toThrow('valid Git commit');
+    },
+  );
 
   it('keeps explicit prerelease tags and supports patch, minor and major releases', () => {
     for (const tag of ['v1.6.1', 'v1.7.0', 'v2.0.0', 'v1.7.0-rc.1']) {
@@ -93,5 +106,29 @@ describe('release version CLI', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe('1.6.1-build.130');
     expect(readFileSync(output, 'utf8')).toBe('version=1.6.1-build.130\n');
+  });
+
+  it('ignores source-package versions locally and rejects a conflicting build override', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'wm-workspace-version-'));
+    directories.push(cwd);
+    const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    git('init', '--initial-branch=main');
+    const manifest = join(cwd, 'package.json');
+    writeFileSync(manifest, JSON.stringify({ version: '1.4.1' }));
+    git('add', 'package.json');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      '-c', 'commit.gpgsign=false', 'commit', '-m', 'release');
+    git('tag', 'v1.7.0');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'local changes');
+    const version = `1.7.1-dev.g${git('rev-parse', '--short=12', 'HEAD')}`;
+    expect(resolveWorkspaceVersion({ cwd, env: {} })).toBe(version);
+    expect(JSON.parse(readFileSync(manifest, 'utf8')).version).toBe('1.4.1');
+    writeFileSync(manifest, JSON.stringify({ version: '99.0.0' }));
+    expect(resolveWorkspaceVersion({ cwd, env: {} })).toBe(`${version}.dirty`);
+    expect(resolveWorkspaceVersion({ cwd, env: { GITHUB_REF_TYPE: 'branch', GITHUB_RUN_NUMBER: '131' } }))
+      .toBe('1.7.1-build.131');
+    expect(() => resolveWorkspaceVersion({ cwd, env: { WM_DATA_TIER_VERSION: '1.4.1' } }))
+      .toThrow('must match the Git-derived');
   });
 });

@@ -5,13 +5,21 @@ import { spellingMenuItems, watchSpellingDictionaryFailures } from '../src/main/
 describe('native editor context menu', () => {
   it('reports dictionary failures before any image action and unregisters the window listener on destruction', () => {
     const session = new EventEmitter(), contents = new EventEmitter(), report = vi.fn();
-    watchSpellingDictionaryFailures({ session, once: contents.once.bind(contents) }, report);
+    let destroyed = false;
+    watchSpellingDictionaryFailures({
+      get session() {
+        if (destroyed) throw new TypeError('Object has been destroyed');
+        return session;
+      },
+      once: contents.once.bind(contents),
+    }, report);
     expect(session.listenerCount('spellcheck-dictionary-download-failure')).toBe(1);
     session.emit('spellcheck-dictionary-download-failure', undefined, 'en-US');
     expect(report).toHaveBeenCalledExactlyOnceWith('en-US');
     for (let index = 0; index < 20; index++) contents.emit('context-menu', { mediaType: 'image' });
     expect(session.listenerCount('spellcheck-dictionary-download-failure')).toBe(1);
-    contents.emit('destroyed');
+    destroyed = true;
+    expect(() => contents.emit('destroyed')).not.toThrow();
     expect(session.listenerCount('spellcheck-dictionary-download-failure')).toBe(0);
     session.emit('spellcheck-dictionary-download-failure', undefined, 'fr');
     expect(report).toHaveBeenCalledOnce();

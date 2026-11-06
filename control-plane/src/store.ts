@@ -506,6 +506,9 @@ export function openStore(dbFilePath: string): Store {
   }
 
   function createDocument(input: CreateDocumentInput): DocumentEnvelope {
+    if (input.kind === 'Workstream' && input.spec?.title === 'Inbox' && input.spec.pinned === false) {
+      throw new Error('Inbox is always pinned.');
+    }
     const legacyInput = input.kind === 'Alert';
     if (legacyInput) {
       const source = input.spec ?? {};
@@ -668,6 +671,15 @@ export function openStore(dbFilePath: string): Store {
 
   function updateDocument(input: UpdateDocumentInput, validatePreconditions?: () => void): DocumentEnvelope {
     const existing = getDocument({ id: input.id });
+    if (existing?.kind === 'Workstream' && existing.spec.title === 'Inbox') {
+      if (input.spec.title !== 'Inbox') throw new Error('The Inbox workstream cannot be renamed.');
+    }
+    if (existing?.kind === 'Workstream' && existing.spec.title !== 'Inbox' && input.spec.title === 'Inbox') {
+      throw new Error('Inbox is reserved for the Inbox workstream. Use a different name.');
+    }
+    if (existing?.kind === 'Workstream' && input.spec.title === 'Inbox' && input.spec.pinned === false) {
+      throw new Error('Inbox is always pinned.');
+    }
     if (existing?.kind === AGENT_KIND) input = { ...input, spec: validateAgent(input.spec, input.id) };
     if (existing?.kind === AGENT_MESSAGE_KIND) {
       input = { ...input, spec: validateMessage(input.spec, input.id) };

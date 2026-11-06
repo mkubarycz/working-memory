@@ -22,6 +22,8 @@ const wsWorkstreamCreateInputSchema = z.object({
             "Lifecycle status: 'queue' | 'progress' | 'backlog' | 'closed' (default 'progress').",
           ),
         closure: z.string().optional().describe('Closure note (set when closing a workstream).'),
+        pinned: z.boolean().optional().describe('Show as a pinned navigation tab. Inbox is always pinned.'),
+        includeClosedTopics: z.boolean().optional().describe('Include closed topics in workstream trees (default true).'),
       }).strict();
 
 
@@ -39,12 +41,15 @@ export function registerWsWorkstreamCreate(server: McpServer, store: Store): voi
       description:
         'Create a Workstream. Provide a `title` (required, ≤120 chars). Also accepts an ' +
         "optional lifecycle `status` ('queue' | 'progress' | 'backlog' | 'closed', default " +
-        "'progress'), and an optional `closure` note. The spec is validated against the " +
+        "'progress'), an optional `closure` note, `pinned` (default false; Inbox always true), " +
+        "and `includeClosedTopics` (default true). The spec is validated against the " +
         'Workstream kind (invalid status is rejected). Returns the created workstream with its document ID.',
       inputSchema: wsWorkstreamCreateInputSchema,
     },
-    async ({ title, status, closure }) => {
+    async ({ title, status, closure, pinned, includeClosedTopics }) => {
       const specInput: Record<string, unknown> = { title };
+      if (pinned !== undefined) specInput.pinned = pinned;
+      if (includeClosedTopics !== undefined) specInput.includeClosedTopics = includeClosedTopics;
       if (status !== undefined) {
         specInput.status = status;
       }

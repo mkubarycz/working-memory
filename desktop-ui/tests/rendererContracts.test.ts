@@ -395,7 +395,7 @@ describe('desktop tree icon contract', () => {
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
 
-    expect(app).toContain('const currentChatContext = $derived(chatContextForDocument(activeDocument));');
+    expect(app).toContain('const currentChatContext = $derived(chatContextForDocument(contextDocument));');
     expect(app).toContain('class="composer-context"');
     expect(app).toContain('{currentChatContext.kind}');
     expect(app).toContain('{currentChatContext.title}');
@@ -413,7 +413,7 @@ describe('desktop tree icon contract', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
     const styles = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/style.css'), 'utf8');
 
-    expect(app).toContain('class="document-tabs" role="tablist"');
+    expect(app).toMatch(/class="document-tabs"\s+role="tablist"/);
     expect(app).toContain('role="tab"');
     expect(app).toContain('aria-selected={key === selectedDocumentKey}');
     const documentHost = app.slice(app.indexOf('<div class="document-stage">'), app.indexOf('<section class="empty-state">'));

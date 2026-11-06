@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { topicDropMoves } from '../src/renderer/resourceDrag';
 import {
   moveTopicToNewWorkstream,
   planTopicTransfer,
@@ -8,14 +9,17 @@ import {
 } from '../src/renderer/topicTransfer';
 
 describe('topic transfer drag planning', () => {
-  it('copies by default and moves when Command is held at drop time', () => {
+  it('moves by default and copies with a platform copy modifier at drop time', () => {
     const source = { id: 'parent', sourceWorkstream: 'source' };
-    expect(planTopicTransfer(source, 'target', false)).toEqual({
-      ...source, targetWorkstream: 'target', move: false,
-    });
-    expect(planTopicTransfer(source, 'target', true)).toEqual({
+    const event = { altKey: false, ctrlKey: false, metaKey: false };
+    expect(planTopicTransfer(source, 'target', topicDropMoves(event))).toEqual({
       ...source, targetWorkstream: 'target', move: true,
     });
+    for (const modifier of ['altKey', 'ctrlKey', 'metaKey'] as const) {
+      expect(planTopicTransfer(source, 'target', topicDropMoves({ ...event, [modifier]: true }))).toEqual({
+        ...source, targetWorkstream: 'target', move: false,
+      });
+    }
   });
 
   describe('moving to a new workstream', () => {

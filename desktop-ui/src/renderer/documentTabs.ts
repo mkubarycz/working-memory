@@ -149,6 +149,26 @@ export function documentTabKey(document: DocumentVM): string {
   return `${documentRouteKind(document.kind)}:${identifier}`;
 }
 
+export function documentTabDropIndex(
+  bounds: Array<{ left: number; width: number }>,
+  pointerX: number,
+): number {
+  const index = bounds.findIndex(({ left, width }) => pointerX < left + width / 2);
+  return index < 0 ? bounds.length : index;
+}
+
+export function reorderDocumentTab(state: DocumentTabsState, key: string, targetIndex: number): DocumentTabsState {
+  const sourceIndex = state.tabs.findIndex(document => documentTabKey(document) === key);
+  if (sourceIndex < 0 || !Number.isInteger(targetIndex)) return state;
+  const boundary = Math.max(0, Math.min(targetIndex, state.tabs.length));
+  const insertionIndex = sourceIndex < boundary ? boundary - 1 : boundary;
+  if (sourceIndex === insertionIndex) return state;
+  const tabs = [...state.tabs];
+  const [document] = tabs.splice(sourceIndex, 1);
+  tabs.splice(insertionIndex, 0, document);
+  return { ...state, tabs };
+}
+
 export function serializeDocumentTabs(state: DocumentTabsState): string {
   const tabs = state.tabs.filter((document) => documentTabKey(document) !== state.previewKey)
     .slice(0, MAX_PERSISTED_TABS);

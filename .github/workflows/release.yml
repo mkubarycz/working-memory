@@ -106,6 +106,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v4
@@ -140,14 +142,13 @@ jobs:
         run: npm test --prefix desktop-ui -- tests/dockerContainerService.test.ts
 
       - name: Build installer
-        # PowerShell splits `-c.extraMetadata.version=...` into two arguments.
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           # mac.identity is explicitly '-' (ad-hoc); no signing credentials are used.
           CSC_FOR_PULL_REQUEST: 'true'
           WM_DATA_TIER_IMAGE_ARCHIVE: ${{ github.workspace }}/backend-image/image.tar
-        run: npm run package:${{ matrix.target }} --prefix desktop-ui -- -c.extraMetadata.version=${{ needs.version.outputs.version }}
+        run: npm run package:${{ matrix.target }} --prefix desktop-ui
 
       - name: Verify packaged desktop version
         env:

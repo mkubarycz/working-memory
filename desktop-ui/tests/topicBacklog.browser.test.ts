@@ -319,12 +319,12 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(dropped.reference.href, 'http://127.0.0.1:7718/open/topic/parent');
           assert.equal(dropped.markdown, '[parent refreshed](http://127.0.0.1:7718/open/topic/parent)');
           assert.deepEqual(await evaluate("window.__backlogTest.transfers.at(-1)"),
-            { id: 'parent', sourceWorkstream: 'inbox', targetWorkstream: 'queued', move: false });
+            { id: 'parent', sourceWorkstream: 'inbox', targetWorkstream: 'queued', move: true });
           await drag(source, queue, true);
-          assert.equal(await evaluate("window.__backlogTest.transfers.at(-1).move"), true);
+          assert.equal(await evaluate("window.__backlogTest.transfers.at(-1).move"), false);
           await drag('.rail [data-workstream=active] .active-row .active-open', '.backlog [data-workstream=later] .active-card-header');
           assert.deepEqual(await evaluate("window.__backlogTest.transfers.at(-1)"),
-            { id: 'active-topic', sourceWorkstream: 'active', targetWorkstream: 'later', move: false });
+            { id: 'active-topic', sourceWorkstream: 'active', targetWorkstream: 'later', move: true });
           await drag(source, '.rail [data-workstream=active] .active-row');
           assert.deepEqual(await evaluate("window.__backlogTest.parents.at(-1)"), { id: 'parent', parent: 'active-topic' });
           await drag('.rail [data-workstream=active] .active-row .active-open', '.backlog [data-workstream=inbox] .active-group');
@@ -335,7 +335,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("window.__backlogTest.reorders.at(-1).section"), 'backlog');
           await drag('.backlog .backlog-orphan-topics .active-open', queue);
           assert.deepEqual(await evaluate("window.__backlogTest.transfers.at(-1)"),
-            { id: 'orphan', sourceWorkstream: '', targetWorkstream: 'queued', move: false });
+            { id: 'orphan', sourceWorkstream: '', targetWorkstream: 'queued', move: true });
           await menu('.backlog [data-workstream=inbox] .active-row');
           assert(await contrast('.backlog-context-menu button') >= 4.5, 'Backlog menu text contrast');
           assert.equal(await evaluate("getComputedStyle(document.querySelector('.backlog-context-menu')).backgroundColor"), 'rgb(255, 255, 255)');
@@ -375,7 +375,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             assert.equal(result.effect, 'copy', 'Windows native source permits copy/link, not move');
             assert.equal(await evaluate('window.__backlogTest.reorders.at(-1).id'), 'active');
           }
-          const nativeTransfer = await drag(source, queue, true);
+          const nativeTransfer = await drag(source, queue);
           assert.equal(nativeTransfer.effect, 'copy');
           assert.equal(await evaluate('window.__backlogTest.transfers.at(-1).move'), true, 'Native transport copy must preserve the logical move');
           await evaluate(\`{

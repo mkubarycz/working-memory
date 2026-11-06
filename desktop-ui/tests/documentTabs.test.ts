@@ -6,6 +6,7 @@ import {
   closeOtherDocumentTabs,
   createDocumentOpenGuard,
   documentTabKey,
+  documentTabDropIndex,
   documentTabIcon,
   documentTabTooltip,
   hostTaskDocument,
@@ -16,6 +17,7 @@ import {
   promoteDocumentTab,
   promoteOnDocumentInput,
   replaceSelectedTab,
+  reorderDocumentTab,
   serializeDocumentTabs,
   restoreLocalDocumentTab,
   settingsDocument,
@@ -34,6 +36,58 @@ function topic(id: string, title = id): TopicVM {
 }
 
 describe('document tabs', () => {
+  it('finds drop boundaries from horizontal midpoints, including scrolled tabs and trailing space', () => {
+    const bounds = [{ left: -60, width: 100 }, { left: 40, width: 180 }, { left: 220, width: 120 }];
+    expect(documentTabDropIndex(bounds, -20)).toBe(0);
+    expect(documentTabDropIndex(bounds, 0)).toBe(1);
+    expect(documentTabDropIndex(bounds, 129)).toBe(1);
+    expect(documentTabDropIndex(bounds, 130)).toBe(2);
+    expect(documentTabDropIndex(bounds, 280)).toBe(3);
+    expect(documentTabDropIndex(bounds, 800)).toBe(3);
+    expect(documentTabDropIndex([], 0)).toBe(0);
+  });
+
+  it('moves tabs in both directions without changing selection, previews or document objects', () => {
+    const tabs = [topic('first'), settingsDocument(), topic('preview'), topic('last')];
+    const state = { tabs, selectedKey: 'settings:desktop-settings', previewKey: 'topic:preview' };
+    const right = reorderDocumentTab(state, 'topic:first', 4);
+    expect(right.tabs.map(documentTabKey)).toEqual([
+      'settings:desktop-settings', 'topic:preview', 'topic:last', 'topic:first',
+    ]);
+    expect(right.selectedKey).toBe(state.selectedKey);
+    expect(right.previewKey).toBe(state.previewKey);
+    expect(right.tabs[3]).toBe(tabs[0]);
+    expect(state.tabs).toBe(tabs);
+    const left = reorderDocumentTab(right, 'topic:preview', 0);
+    expect(left.tabs.map(documentTabKey)).toEqual([
+      'topic:preview', 'settings:desktop-settings', 'topic:last', 'topic:first',
+    ]);
+    expect(left.selectedKey).toBe(state.selectedKey);
+    expect(left.previewKey).toBe('topic:preview');
+    expect(parseDocumentTabs(serializeDocumentTabs(left))).toEqual({
+      version: 1, selectedKey: 'settings:desktop-settings',
+      tabs: [
+        { kind: 'settings', identifier: 'desktop-settings' },
+        { kind: 'topic', identifier: 'last' },
+        { kind: 'topic', identifier: 'first' },
+      ],
+    });
+  });
+
+  it('handles adjacent drops, closed sources, out-of-range boundaries and a single tab', () => {
+    const state = { tabs: [topic('first'), topic('second'), topic('third')], selectedKey: 'topic:second' };
+    expect(reorderDocumentTab(state, 'topic:second', 1)).toBe(state);
+    expect(reorderDocumentTab(state, 'topic:second', 2)).toBe(state);
+    expect(reorderDocumentTab(state, 'topic:closed', 0)).toBe(state);
+    expect(reorderDocumentTab(state, 'topic:second', NaN)).toBe(state);
+    expect(reorderDocumentTab(state, 'topic:second', -10).tabs.map(documentTabKey))
+      .toEqual(['topic:second', 'topic:first', 'topic:third']);
+    expect(reorderDocumentTab(state, 'topic:second', 100).tabs.map(documentTabKey))
+      .toEqual(['topic:first', 'topic:third', 'topic:second']);
+    const single = { tabs: [topic('only')], selectedKey: 'topic:only' };
+    expect(reorderDocumentTab(single, 'topic:only', 1)).toBe(single);
+  });
+
   it('keeps utility tabs permanent without replacing or persisting a document preview', () => {
     let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('preview'));
     const backlog = topicBacklogDocument(null);

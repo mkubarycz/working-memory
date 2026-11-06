@@ -1,6 +1,13 @@
 import type { PanelAction, PanelData, PanelWorkstream } from '../../../shared/panelData';
 import type { TopicBacklogVM } from './documents/types';
 
+export function selectedPinnedWorkstream(backlog: TopicBacklogVM, selected: string | null): PanelWorkstream | undefined {
+  if (selected === 'backlog') return undefined;
+  const pinned = backlog.pinnedWorkstreams ?? [];
+  return pinned.find(workstream => workstream.id === selected)
+    ?? pinned.find(workstream => workstream.label === 'Inbox');
+}
+
 export function backlogMoveActions(workstream: PanelWorkstream): PanelAction[] {
   return workstream.actions.filter(action => {
     const target = action.args?.[0];
@@ -18,5 +25,6 @@ export function topicBacklogDocument(panel: PanelData | null): TopicBacklogVM {
     workstreams: panel?.items.flatMap(item =>
       item.kind === 'workstream-section' && item.section === 'backlog' ? item.workstreams : []) ?? [],
     topics: panel?.topicBacklog ?? [],
+    pinnedWorkstreams: panel?.pinnedWorkstreams ?? [],
   };
 }

@@ -9,15 +9,15 @@
  *
  * `class Workstream` carries every field as a public instance property and
  * assigns them all in its constructor from a `DocumentEnvelope` — NO methods, NO
- * getters — so `JSON.stringify(new Workstream(env))` yields byte-for-byte the
- * same object the previous `mapWorkstream` projection returned (the `asText`
- * result is unchanged). Field declaration order AND constructor assignment order
- * both match the old object literal, so serialized key order is stable.
+ * getters — so `JSON.stringify(new Workstream(env))` includes the domain fields
+ * and defaulted navigation/tree preferences directly.
  *
  * The document↔domain mapping (unchanged from the old `mapWorkstream`):
  *   - `title`      ← `spec.title`
  *   - `status`     ← `spec.status`   (queue | progress | backlog | closed)
  *   - `closure`    ← `spec.closure`  (absent → null)
+ *   - `pinned`     ← `spec.pinned`   (absent → false; Inbox is always true)
+ *   - `includeClosedTopics` ← `spec.includeClosedTopics` (absent → true)
  *   - `opened_at`  ← `metadata.createdAt`
  *   - `updated_at` ← `metadata.updatedAt`
  *   - `closed_at`  ← derived: `metadata.updatedAt` when status is 'closed', else null
@@ -45,6 +45,8 @@ export interface IWorkstream {
   status: WorkstreamLifecycleStatus;
   closure: string | null;
   position: number;
+  pinned: boolean;
+  includeClosedTopics: boolean;
   opened_at: number;
   updated_at: number;
   closed_at: number | null;
@@ -62,6 +64,8 @@ export class Workstream implements IWorkstream {
   status: WorkstreamLifecycleStatus;
   closure: string | null;
   position: number;
+  pinned: boolean;
+  includeClosedTopics: boolean;
   opened_at: number;
   updated_at: number;
   closed_at: number | null;
@@ -76,6 +80,8 @@ export class Workstream implements IWorkstream {
     this.status = status;
     this.closure = closure;
     this.position = typeof env.spec.position === 'number' ? env.spec.position : 0;
+    this.pinned = this.title === 'Inbox' || spec.pinned === true;
+    this.includeClosedTopics = spec.includeClosedTopics !== false;
     this.opened_at = env.metadata.createdAt;
     this.updated_at = env.metadata.updatedAt;
     // The store has no closed_at column; best-effort is the last update time

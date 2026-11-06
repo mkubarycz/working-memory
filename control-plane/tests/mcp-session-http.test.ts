@@ -443,17 +443,117 @@ it('removes a disconnected HTTP call from the queue without executing its mutati
     .toMatchObject({ content: [{ type: 'text', text: expect.stringMatching(/"count"\s*:\s*0/) }] });
 });
 
-it('never replays generic calls or typed and document writes after expiration', async () => {
+it('recovers desktop workstream actions and generic calls after expiration', async () => {
+  const f = await fixture(), data = f.data();
+  const workstream = await data.wsCreate({ title: 'Release fixes' });
+  f.advance(61 * 60000);
+  expect(await data.wsUpdate({ id: workstream.id, status: 'backlog' })).toMatchObject({
+    id: workstream.id, status: 'backlog',
+  });
+  f.advance(61 * 60000);
+  expect(await data.wsCreate({ title: 'Typed recovery' })).toMatchObject({ title: 'Typed recovery' });
+  f.advance(61 * 60000);
+  expect(await data.callTool('ws-workstream-create', { title: 'Generic recovery' })).toMatchObject({
+    ok: true, result: { title: 'Generic recovery' },
+  });
+  f.advance(61 * 60000);
+  expect((await data.callTool('wm-document-read', {})).ok).toBe(true);
+  expect(f.store.listDocuments({ kind: 'Workstream' }).map(document => document.spec.title).sort())
+    .toEqual(['Generic recovery', 'Release fixes', 'Typed recovery']);
+  expect((await f.snapshot()).active).toHaveLength(1);
+});
+
+it('recovers document create, update and delete after expiration with one persisted change each', async () => {
   const f = await fixture(), data = f.data();
   await data.listDocuments();
   f.advance(61 * 60000);
-  expect((await data.createDocument({ kind: 'Workstream', spec: { title: 'No replay' } })).available).toBe(false);
-  await data.listDocuments();
+  const created = await data.createDocument({ kind: 'Workstream', spec: { title: 'Document recovery' } });
+  expect(created.available).toBe(true);
+  expect(created.document).not.toBeNull();
+  const { id, resourceVersion } = created.document!.metadata;
   f.advance(61 * 60000);
-  await expect(data.wsCreate({ title: 'No typed replay' })).rejects.toThrow('Session not found');
-  await data.listDocuments();
+  const updated = await data.updateDocument({ id, expectedResourceVersion: resourceVersion, spec: { title: 'Updated' } });
+  expect(updated.document).toMatchObject({
+    metadata: { id, resourceVersion: resourceVersion + 1 }, spec: { title: 'Updated' },
+  });
   f.advance(61 * 60000);
-  expect((await data.callTool('wm-document-read', {})).ok).toBe(false);
+  const deleted = await data.deleteDocument({ id, expectedResourceVersion: updated.document!.metadata.resourceVersion });
+  expect(deleted.available).toBe(true);
+  expect(deleted.error).toBeUndefined();
+  expect(f.store.listDocuments({ kind: 'Workstream' })).toEqual([]);
+  expect(f.store.listDocuments({ kind: 'Workstream', includeDeleted: true })).toHaveLength(1);
+  expect((await f.snapshot()).active).toHaveLength(1);
+});
+
+it.each(['typed', 'generic', 'document'].flatMap(entry =>
+  [false, true].map(concurrent => ({ entry, concurrent })),
+))('never replays a $entry write with a lost response (concurrent stale recovery: $concurrent)', async ({ entry, concurrent }) => {
+  const f = await fixture(), data = f.data();
+  await data.listDocuments();
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const body = String(init?.body ?? '');
+    if (body.includes('"name":"ws-workstream-create"') || body.includes('"name":"wm-document-create"')) {
+      calls++;
+      const response = await realFetch(input, init);
+      await response.body?.cancel();
+      if (concurrent) {
+        f.advance(61 * 60000);
+        expect((await data.listDocuments()).available).toBe(true);
+      }
+      throw new TypeError('Response lost after execution');
+    }
+    return realFetch(input, init);
+  });
+  const error = concurrent ? 'Connection closed' : 'Response lost after execution';
+  if (entry === 'typed') {
+    await expect(data.wsCreate({ title: 'Exactly once' })).rejects.toThrow(error);
+  } else if (entry === 'generic') {
+    expect(await data.callTool('ws-workstream-create', { title: 'Exactly once' }))
+      .toMatchObject({ ok: false, error: expect.stringContaining(error) });
+  } else {
+    expect(await data.createDocument({ kind: 'Workstream', spec: { title: 'Exactly once' } }))
+      .toMatchObject({ available: false, error: expect.stringContaining(error) });
+  }
+  expect(calls).toBe(1);
+  expect(f.store.listDocuments({ kind: 'Workstream' })).toHaveLength(1);
+});
+
+it.each([400, 403, 404, 429, 500])('does not retry unrelated HTTP %i write failures', async status => {
+  const f = await fixture(), data = f.data();
+  await data.listDocuments();
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if (String(init?.body ?? '').includes('"name":"ws-workstream-create"')) {
+      calls++;
+      return new Response('Unrelated failure', { status });
+    }
+    return realFetch(input, init);
+  });
+  await expect(data.wsCreate({ title: 'Not executed' })).rejects.toThrow('Unrelated failure');
+  expect(calls).toBe(1);
+  expect(f.store.listDocuments({ kind: 'Workstream' })).toEqual([]);
+});
+
+it.each([400, 404])('retries an explicit HTTP %i stale-session write rejection at most once', async status => {
+  const f = await fixture(), data = f.data();
+  await data.listDocuments();
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if (String(init?.body ?? '').includes('"name":"ws-workstream-create"')) {
+      calls++;
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0', error: { code: -32000, message: status === 400
+          ? 'Bad Request: no valid session ID' : 'Session not found or expired. Initialize a new session.' }, id: null,
+      }), { status });
+    }
+    return realFetch(input, init);
+  });
+  await expect(data.wsCreate({ title: 'Not executed' })).rejects.toThrow();
+  expect(calls).toBe(2);
   expect(f.store.listDocuments({ kind: 'Workstream' })).toEqual([]);
 });
 

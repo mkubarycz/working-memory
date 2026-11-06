@@ -25,7 +25,7 @@
     type ActiveSectionBoundary,
     type ActiveSectionHeights,
   } from './activeSectionLayout';
-  import { ResourceDragPreparationCache, resourceDropEffect, setResourceDragData, type ActiveResourceDrag } from './resourceDrag';
+  import { ResourceDragPreparationCache, resourceDropEffect, setResourceDragData, topicDropMoves, type ActiveResourceDrag } from './resourceDrag';
   import type { TopicBacklogVM } from './documents/types';
   import { backlogMoveActions } from './topicBacklog';
   import { attachTreeConnector } from './treeConnector';
@@ -113,9 +113,11 @@
   );
   const railSections = $derived(sections.filter(section => section.section !== 'backlog'));
   const backlogWorkstreams = $derived(sections.find(section => section.section === 'backlog')?.workstreams ?? []);
-  const moveTargets = $derived(sections.flatMap((section) =>
-    section.workstreams.flatMap((workstream): ActiveMoveTarget[] =>
-      workstream.id ? [{ id: workstream.id, title: workstream.label }] : [])));
+  const moveTargets = $derived([
+    ...sections.flatMap(section => section.workstreams),
+    ...(panelData?.pinnedWorkstreams ?? []),
+  ].flatMap((workstream): ActiveMoveTarget[] =>
+    workstream.id ? [{ id: workstream.id, title: workstream.label }] : []));
 
   $effect(() => {
     if (backlog) return;
@@ -472,15 +474,15 @@
   }
 
   function updateTopicDropTarget(event: DragEvent, targetWorkstream: string): void {
-    if (!planTopicTransfer(topicDrag, targetWorkstream, event.metaKey)) return;
+    if (!planTopicTransfer(topicDrag, targetWorkstream, topicDropMoves(event))) return;
     event.preventDefault();
     event.stopPropagation();
     topicDropTarget = targetWorkstream;
-    if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(topicDrag, event.metaKey ? 'move' : 'copy');
+    if (event.dataTransfer) event.dataTransfer.dropEffect = resourceDropEffect(topicDrag, topicDropMoves(event) ? 'move' : 'copy');
   }
 
   function dropTopic(event: DragEvent, targetWorkstream: string): void {
-    const request = planTopicTransfer(topicDrag, targetWorkstream, event.metaKey);
+    const request = planTopicTransfer(topicDrag, targetWorkstream, topicDropMoves(event));
     if (!request) return;
     event.preventDefault();
     event.stopPropagation();
@@ -876,7 +878,7 @@
     {/if}
     <button
       class="active-header-button topic-backlog-button"
-      title="Open backlog workstreams and topics outside active workstreams"
+      title="Open Inbox, pinned workstreams and Backlog"
       aria-label={`Open backlog (${backlogWorkstreams.length} workstreams, ${data?.topicBacklog?.length ?? 0} topics)`}
       onclick={onOpenTopicBacklog}
     >

@@ -10,6 +10,10 @@ export type ActiveResourceDrag = (
   | { kind: 'workstream'; id: string; section: WorkstreamSection }
 ) & { native?: boolean };
 
+export function topicDropMoves(event: Pick<DragEvent, 'altKey' | 'ctrlKey' | 'metaKey'>): boolean {
+  return !(event.altKey || event.ctrlKey || event.metaKey);
+}
+
 export function resourceDropEffect(
   drag: ActiveResourceDrag | null,
   intended: 'copy' | 'move',

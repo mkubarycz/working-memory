@@ -24,6 +24,47 @@ async function connect() {
 }
 
 describe('control-plane Workstream ID-only API', () => {
+  it('rejects acquiring the reserved Inbox identity through domain and generic renames', async () => {
+    const { call, store } = await connect();
+    await call('ws-workstream-create', { title: 'Inbox' });
+    const ordinary = (await call('ws-workstream-create', { title: 'Planning', pinned: true })).data;
+    const renamed = await call('ws-workstream-update', { id: ordinary.id, title: 'Inbox' });
+    expect(renamed.result.isError).toBe(true);
+    expect(renamed.text).toMatch(/Inbox.*reserved/);
+    const doc = store.getDocument({ id: ordinary.id })!;
+    const generic = await call('wm-document-update', {
+      id: ordinary.id, expectedResourceVersion: doc.metadata.resourceVersion,
+      spec: { ...doc.spec, title: 'Inbox' },
+    });
+    expect(generic.result.isError).toBe(true);
+    expect(generic.text).toMatch(/Inbox.*reserved/);
+    expect(store.getDocument({ id: ordinary.id })?.metadata.resourceVersion).toBe(ordinary.resourceVersion);
+    expect((await call('ws-workstream-update', { id: ordinary.id, title: 'Inbox cleanup' })).data)
+      .toMatchObject({ id: ordinary.id, title: 'Inbox cleanup' });
+    expect((await call('ws-workstream-update', { id: ordinary.id, title: 'Planning again' })).data)
+      .toMatchObject({ id: ordinary.id, title: 'Planning again' });
+  });
+
+  it('protects the existing Inbox name and pin through domain and generic writes', async () => {
+    const { call, store } = await connect();
+    const inbox = (await call('ws-workstream-create', { title: 'Inbox', status: 'backlog' })).data;
+    expect(inbox).toMatchObject({ pinned: true, includeClosedTopics: true });
+    for (const patch of [{ title: 'Renamed' }, { pinned: false }]) {
+      const result = await call('ws-workstream-update', { id: inbox.id, ...patch });
+      expect(result.result.isError).toBe(true);
+      expect(result.text).toMatch(/Inbox/);
+      const doc = store.getDocument({ id: inbox.id })!;
+      const generic = await call('wm-document-update', {
+        id: inbox.id, expectedResourceVersion: doc.metadata.resourceVersion, spec: { ...doc.spec, ...patch },
+      });
+      expect(generic.result.isError).toBe(true);
+      expect(generic.text).toMatch(/Inbox/);
+    }
+    expect((await call('ws-workstream-create', { title: 'Inbox', pinned: false })).result.isError).toBe(true);
+    expect((await call('ws-workstream-update', { id: inbox.id, includeClosedTopics: false })).data)
+      .toMatchObject({ id: inbox.id, title: 'Inbox', status: 'backlog', pinned: true, includeClosedTopics: false });
+  });
+
   it('advertises stable tool names, document IDs, and strict input objects', async () => {
     const { client } = await connect();
     const tools = (await client.listTools()).tools;

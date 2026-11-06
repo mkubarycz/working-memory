@@ -1,13 +1,16 @@
 import { resolve } from 'node:path';
 import { defineConfig } from 'electron-vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { resolveWorkspaceVersion } from '../scripts/release-version.mjs';
 
 const buildTimestamp = new Date().toISOString();
+const buildVersion = resolveWorkspaceVersion({ cwd: resolve(__dirname, '..') });
 
 export default defineConfig({
   main: {
     define: {
       __WM_BUILD_TIMESTAMP__: JSON.stringify(buildTimestamp),
+      __WM_BUILD_VERSION__: JSON.stringify(buildVersion),
     },
     build: {
       rollupOptions: {

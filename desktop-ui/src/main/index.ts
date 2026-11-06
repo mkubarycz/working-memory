@@ -35,13 +35,14 @@ import {
 import { checkConfiguredModel } from './modelHealth';
 import { LocalCopilotProvider } from './copilotProvider';
 import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
-import { InstanceMonitor, deliverIncident, type MonitorProbe } from './instanceMonitor';
+import { InstanceMonitor, deliverIncident, formatIncidentToolQueue, type MonitorProbe } from './instanceMonitor';
 import { recoverHeap } from './heapRecovery';
 import { z } from 'zod';
 import { parseTopicAutocomplete, topicAutocompletePrompt } from './topicAutocomplete';
 import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, searchByIntent, searchInstructions, searchOptionsSchema, SEARCH_TIMEOUT_MS } from './documentSearch';
 import { SearchAppTools } from './searchAppTools';
 declare const __WM_BUILD_TIMESTAMP__: string;
+declare const __WM_BUILD_VERSION__: string;
 import {
   DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
   DesktopChatAgent,
@@ -251,6 +252,10 @@ function isLocalBuild(): boolean {
   }
 }
 
+function desktopVersion(): string {
+  return app.isPackaged ? app.getVersion() : __WM_BUILD_VERSION__;
+}
+
 async function saveUpdateSettings(patch: Partial<UpdateSettings>): Promise<void> {
   updateSettings = { ...updateSettings, ...patch };
   await writeUpdateSettings(updateSettingsFile, updateSettings);
@@ -266,13 +271,13 @@ function broadcastDesktopUpdate(): void {
 
 async function initializeUpdates(): Promise<void> {
   updateSettingsFile = join(app.getPath('userData'), 'updates.json');
-  const defaultChannel = defaultDesktopChannel(app.getVersion(), isLocalBuild());
+  const defaultChannel = defaultDesktopChannel(desktopVersion(), isLocalBuild() || !app.isPackaged);
   updateSettings = await readUpdateSettings(updateSettingsFile, {
     desktopChannel: defaultChannel,
     backendChannel: defaultChannel,
   });
   desktopUpdater = new DesktopUpdater({
-    currentVersion: app.getVersion(),
+    currentVersion: desktopVersion(),
     channel: updateSettings.desktopChannel,
     saveChannel: (desktopChannel) => saveUpdateSettings({ desktopChannel }),
     downloadDirectory: join(app.getPath('userData'), 'updates'),
@@ -361,7 +366,7 @@ function createDataTierManager(): DataTierManager | null {
   return new DataTierManager({
     buildContext,
     stateDirectory: dataTierStateDirectory(),
-    version: app.getVersion(),
+    version: desktopVersion(),
     provider: containerProvider,
   });
 }
@@ -955,7 +960,7 @@ function restartInstalledDesktop(): void {
 
 function registerIpc(): void {
   ipcMain.handle('desktop:build-info', () => ({
-    version: app.getVersion(), development: isLocalBuild() || !app.isPackaged,
+    version: desktopVersion(), development: isLocalBuild() || !app.isPackaged,
   }));
   const hostTaskVault = new HostTaskCredentialVault(safeStorage, process.platform, join(app.getPath('userData'), 'host-task-secrets'));
   instanceVault = hostTaskVault;
@@ -1020,6 +1025,23 @@ function registerIpc(): void {
       file: join(app.getPath('userData'), 'instance-incidents.json'),
       selected: () => environmentManager.currentEnvironment,
       probe: probeInstance,
+      captureEvidence: async (target, since, healthy, signal) => {
+        const port = Number(new URL(target.mcpUrl).port);
+        const container = dataTier?.instances.some(instance => instance.port === port)
+          ? dataTier.incidentEvidence(port, since, signal).catch(error => {
+            console.error('[instance-monitor] Container incident evidence failed:', error);
+            return 'Container logs and resource sample unavailable: the selected container engine could not be queried.';
+          })
+          : Promise.resolve('Container logs and resource sample unavailable: this instance is not managed by this desktop.');
+        const queue = healthy ? identity.toolQueue(target.mcpUrl, signal).then(snapshot =>
+          `Persisted tool history captured at ${new Date(snapshot.observedAt).toISOString()} (boot ${snapshot.bootId}):\n`
+          + formatIncidentToolQueue(snapshot, snapshot.observedAt)).catch(error => {
+          console.error('[instance-monitor] Incident tool history failed:', error);
+          return 'Persisted tool history unavailable: the owner diagnostics request failed. See desktop logs.';
+        }) : Promise.resolve('Backend tool history cannot be queried during the outage; it will be captured after recovery.');
+        const [containerEvidence, queueEvidence] = await Promise.all([container, queue]);
+        return `${queueEvidence}\n\n${containerEvidence}`;
+      },
       deliver: (target, incident, current, signal) => {
         if (!current() || environmentManager.currentEnvironment?.mcpUrl !== target.mcpUrl) {
           throw new Error('Selected environment changed.');
@@ -1456,7 +1478,7 @@ function registerIpc(): void {
     if (!created.id) throw new Error('The created workstream did not return a id.');
     return { id: created.id, title: created.title };
   });
-  ipcMain.handle('workstream:save', async (_event, identifier: string, patch: { title?: string; status?: string }) => {
+  ipcMain.handle('workstream:save', async (_event, identifier: string, patch: import('../shared/contracts').WorkstreamPatch) => {
     const current = await loadWorkstreamViewModel(controlPlane(), identifier);
     if (!current?.id) throw new Error('This workstream cannot be edited.');
     await controlPlane().wsUpdate({ id: current.id, ...patch });
@@ -1938,7 +1960,7 @@ if (!ownsSingleInstanceLock) {
       return {
         topic, sourceUrl, fetcher: client.fetch.bind(client),
         recordReceipt: receipt => recordFeedbackReceipt(client, topic.id, receipt),
-        context: { desktop: { version: app.getVersion(), build: __WM_BUILD_TIMESTAMP__ }, backend: { version: result.version } },
+        context: { desktop: { version: desktopVersion(), build: __WM_BUILD_TIMESTAMP__ }, backend: { version: result.version } },
       };
     });
     try {

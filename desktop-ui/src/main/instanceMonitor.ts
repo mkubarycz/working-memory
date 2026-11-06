@@ -4,6 +4,48 @@ import { dirname } from 'node:path';
 import { monitorStateSchema, type MonitorState, type InstanceIncident, type InstanceDiagnostics } from '../../../control-plane/src/diagnosticContract';
 import type { DesktopInstanceIdentity } from './instanceIdentity';
 import type { SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
+import { abortable } from '../../../shared/abort';
+
+const MAX_EVIDENCE_LENGTH = 20000;
+
+function boundedEvidence(evidence: string, limit = MAX_EVIDENCE_LENGTH): string {
+  const suffix = `\n[Evidence truncated at ${limit} characters]`;
+  return evidence.length > limit ? evidence.slice(0, limit - suffix.length) + suffix : evidence;
+}
+
+export function formatIncidentToolQueue(queue: NonNullable<InstanceDiagnostics['workQueue']>, observedAt: number): string {
+  const counts = new Map<string, Map<string, number>>();
+  for (const event of queue.events) {
+    const operation = counts.get(event.operation) ?? new Map<string, number>();
+    operation.set(event.event, (operation.get(event.event) ?? 0) + 1);
+    counts.set(event.operation, operation);
+  }
+  return 'Current tool queue:\n'
+    + `${queue.waiting} waiting, ${queue.running} running; memory blocked: ${queue.memoryBlocked}.\n`
+    + queue.items.slice(0, 20).map(item => `${item.requestId}: ${item.operation}, `
+      + `${item.startedAt === undefined ? 'waiting' : 'running'} ${Math.max(0, observedAt - (item.startedAt ?? item.queuedAt))} ms`).join('\n')
+    + `\nRetained tool activity summary (${queue.events.length} lifecycle events, not a complete request count):\n`
+    + [...counts].map(([operation, events]) => `${operation}: ${[...events].map(([event, count]) => `${event} ${count}`).join(', ')}`).join('\n')
+    + '\nRecent tool activity (persisted history, including previous processes):\n'
+    + queue.events.slice(0, 25).map(event =>
+      `${new Date(event.at).toISOString()}: ${event.requestId} ${event.operation} ${event.event}, wait ${Math.round(event.waitMs)} ms, run ${Math.round(event.runMs)} ms`).join('\n');
+}
+
+function formatIncidentDiagnostics(diagnostics: InstanceDiagnostics): string {
+  let evidence = `Backend version: ${diagnostics.version}; observed: ${new Date(diagnostics.observedAt).toISOString()}; `
+    + `boot ID: ${diagnostics.bootId}; `
+    + `heap used: ${diagnostics.runtime.heapUsedBytes}; heap limit: ${diagnostics.runtime.heapLimitBytes}; `
+    + `RSS: ${diagnostics.runtime.rssBytes}; event-loop max: ${Math.round(diagnostics.runtime.eventLoopMaxMs)} ms; `
+    + `active requests: ${diagnostics.runtime.activeRequests}; active sessions: ${diagnostics.runtime.activeSessions}.\n`
+    + diagnostics.events.slice(0, 10).map(event => `${new Date(event.at).toISOString()}: ${event.code} ${event.route}: `
+      + `HTTP ${event.status}, ${Math.round(event.durationMs)} ms, count ${event.count}`).join('\n');
+  if (diagnostics.samples?.length) evidence += '\n\nRecent runtime samples:\n'
+    + diagnostics.samples.slice(0, 12).map(sample => `${new Date(sample.at).toISOString()} (boot ${sample.bootId}): heap ${sample.heapUsedBytes}, `
+      + `RSS ${sample.rssBytes}, CPU ${sample.cpuPercent.toFixed(1)}%, GC ${sample.gcCount}/${sample.gcDurationMs.toFixed(1)} ms, `
+      + `loop ${Math.round(sample.eventLoopMaxMs)} ms, queue ${sample.queueDepth}, running ${sample.runningTools}`).join('\n');
+  if (diagnostics.workQueue) evidence += '\n\n' + formatIncidentToolQueue(diagnostics.workQueue, diagnostics.observedAt);
+  return boundedEvidence(evidence, 6000);
+}
 
 export interface MonitorTarget { mcpUrl: string }
 export interface MonitorProbe {
@@ -17,6 +59,7 @@ interface MonitorOptions {
   selected: () => MonitorTarget | null;
   probe: (target: MonitorTarget) => Promise<MonitorProbe>;
   deliver: (target: MonitorTarget, incident: InstanceIncident, current: () => boolean, signal: AbortSignal) => Promise<string>;
+  captureEvidence?: (target: MonitorTarget, since: number, healthy: boolean, signal: AbortSignal) => Promise<string>;
   clock?: () => number;
 }
 
@@ -43,6 +86,7 @@ export class InstanceMonitor {
   private readonly generations = new Map<string, number>();
   private readonly manualReports = new Set<string>();
   private delivery: { controller: AbortController; environment: string } | null = null;
+  private evidenceCapture: { controller: AbortController; environment: string } | null = null;
 
   async recordMemoryReport(target: MonitorTarget, snapshot: SessionSnapshot, saveReport: (incidentId: string) => Promise<string>): Promise<string> {
       const current = () => !this.stopped && this.options.selected()?.mcpUrl === target.mcpUrl;
@@ -92,6 +136,7 @@ export class InstanceMonitor {
     this.generations.set(mcpUrl, (this.generations.get(mcpUrl) ?? 0) + 1);
     this.suspended.set(mcpUrl, (this.suspended.get(mcpUrl) ?? 0) + 1);
     if (this.delivery?.environment === mcpUrl) this.delivery.controller.abort();
+    if (this.evidenceCapture?.environment === mcpUrl) this.evidenceCapture.controller.abort();
     let resumed = false;
     return () => {
       if (resumed) return;
@@ -112,7 +157,12 @@ export class InstanceMonitor {
     };
     void poll();
   }
-  stop(): void { this.stopped = true; clearTimeout(this.timer); this.delivery?.controller.abort(); }
+  stop(): void {
+    this.stopped = true;
+    clearTimeout(this.timer);
+    this.delivery?.controller.abort();
+    this.evidenceCapture?.controller.abort();
+  }
 
   private save(): void {
     // Keep all undelivered incidents; bound completed history without losing queued reports.
@@ -139,10 +189,13 @@ export class InstanceMonitor {
         bootId: null, failures: 0, outageId: null, memoryBlocked: false, stallAt: 0,
         lastEvidence: 'No pre-incident runtime sample was available.',
       };
+      const captures: Array<{ incident: InstanceIncident; recovery: boolean }> = [];
       const add = (kind: InstanceIncident['kind'], evidence: string): string => {
         const id = randomUUID();
-        this.state.incidents.push({ id, environment: target.mcpUrl, at: this.clock(), kind,
-          evidence, topicId: null, deliveryError: null });
+        const incident = { id, environment: target.mcpUrl, at: this.clock(), kind,
+          evidence: boundedEvidence(evidence), topicId: null, deliveryError: null };
+        this.state.incidents.push(incident);
+        captures.push({ incident, recovery: false });
         return id;
       };
       if (!probe.healthy) {
@@ -151,6 +204,7 @@ export class InstanceMonitor {
           `Three consecutive health probes failed (10 seconds between attempts). This is an outage, not proof of a crash.\n\n${probe.evidence}\n\n`
             + `Last successful sample:\n${state.lastEvidence}`);
       } else {
+        const recovered = this.state.incidents.find(item => item.id === state.outageId && !item.topicId);
         if (state.bootId && probe.bootId && state.bootId !== probe.bootId) {
           if (state.outageId) {
             const incident = this.state.incidents.find(item => item.id === state.outageId);
@@ -166,21 +220,7 @@ export class InstanceMonitor {
         state.outageId = null;
         const diagnostics = probe.diagnostics;
         if (diagnostics) {
-          state.lastEvidence = `Backend version: ${diagnostics.version}; observed: ${new Date(diagnostics.observedAt).toISOString()}; `
-            + `heap used: ${diagnostics.runtime.heapUsedBytes}; heap limit: ${diagnostics.runtime.heapLimitBytes}; `
-            + `RSS: ${diagnostics.runtime.rssBytes}; event-loop max: ${Math.round(diagnostics.runtime.eventLoopMaxMs)} ms; `
-            + `active requests: ${diagnostics.runtime.activeRequests}; active sessions: ${diagnostics.runtime.activeSessions}.\n`
-            + diagnostics.events.slice(0, 5).map(event => `${event.code} ${event.route}: HTTP ${event.status}, ${Math.round(event.durationMs)} ms, count ${event.count}`).join('\n');
-          if (diagnostics.samples?.length) state.lastEvidence += '\n\nRecent runtime samples:\n'
-            + diagnostics.samples.slice(0, 6).map(sample => `${new Date(sample.at).toISOString()}: heap ${sample.heapUsedBytes}, `
-              + `RSS ${sample.rssBytes}, CPU ${sample.cpuPercent.toFixed(1)}%, GC ${sample.gcCount}/${sample.gcDurationMs.toFixed(1)} ms, `
-              + `loop ${Math.round(sample.eventLoopMaxMs)} ms, queue ${sample.queueDepth}, running ${sample.runningTools}`).join('\n');
-          if (diagnostics.workQueue) state.lastEvidence += '\n\nCurrent tool queue:\n'
-            + `${diagnostics.workQueue.waiting} waiting, ${diagnostics.workQueue.running} running; memory blocked: ${diagnostics.workQueue.memoryBlocked}.\n`
-            + diagnostics.workQueue.items.slice(0, 5).map(item => `${item.requestId}: ${item.operation}, `
-              + `${item.startedAt === undefined ? 'waiting' : 'running'} ${Math.max(0, diagnostics.observedAt - (item.startedAt ?? item.queuedAt))} ms`).join('\n')
-            + '\nRecent tool activity:\n' + diagnostics.workQueue.events.slice(0, 5).map(event =>
-              `${new Date(event.at).toISOString()}: ${event.requestId} ${event.operation} ${event.event}, wait ${Math.round(event.waitMs)} ms, run ${Math.round(event.runMs)} ms`).join('\n');
+          state.lastEvidence = formatIncidentDiagnostics(diagnostics);
           if (diagnostics.runtime.admissionBlocked && !state.memoryBlocked) {
             add('memory_pressure', `JavaScript heap usage reached the 60% session-admission cutoff.\n\n`
               + `Heap used: ${diagnostics.runtime.heapUsedBytes} bytes; heap limit: ${diagnostics.runtime.heapLimitBytes} bytes; `
@@ -197,10 +237,41 @@ export class InstanceMonitor {
             state.stallAt = stall.at;
           }
         }
+        if (recovered) {
+          recovered.evidence = boundedEvidence(recovered.evidence + '\n\nRecovery observation:\n' + probe.evidence
+            + '\n' + (diagnostics ? boundedEvidence(formatIncidentDiagnostics(diagnostics), 4000) : 'Backend diagnostics unavailable after recovery.'));
+          captures.push({ incident: recovered, recovery: true });
+        }
       }
       this.save();
+      for (const capture of captures) {
+        await this.captureEvidence(target, capture.incident, probe.healthy, capture.recovery, current);
+        if (!current()) return;
+        this.save();
+      }
       if (probe.healthy) this.deliverNext(target, current);
     } finally { this.busy = false; }
+  }
+
+  private async captureEvidence(
+    target: MonitorTarget, incident: InstanceIncident, healthy: boolean, recovery: boolean, current: () => boolean,
+  ): Promise<void> {
+    if (!this.options.captureEvidence || !current()) return;
+    const controller = new AbortController();
+    this.evidenceCapture = { controller, environment: target.mcpUrl };
+    const timer = setTimeout(() => controller.abort(new Error('Incident evidence capture exceeded its 10-second deadline.')), 10000);
+    let evidence: string;
+    try {
+      evidence = await abortable(this.options.captureEvidence(target, Math.max(0, incident.at - 120000), healthy, controller.signal), controller.signal);
+    } catch (error) {
+      console.error('[instance-monitor] Incident evidence capture failed:', error);
+      evidence = 'Additional incident evidence unavailable: capture failed or exceeded its 10-second deadline. See desktop logs.';
+    } finally {
+      clearTimeout(timer);
+      this.evidenceCapture = null;
+    }
+    if (current()) incident.evidence = boundedEvidence(`${incident.evidence}\n\n`
+      + `${recovery ? 'After recovery' : 'At detection'} (${new Date(this.clock()).toISOString()}):\n${evidence}`);
   }
 
   private deliverNext(target: MonitorTarget, current: () => boolean): void {
