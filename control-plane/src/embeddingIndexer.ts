@@ -3,10 +3,38 @@ import { setTimeout as delay } from 'node:timers/promises';
 import {
   EMBEDDING_MODEL, EMBEDDING_DOWNLOAD_BYTES, embeddingConfigureSchema,
   embeddingHostSchema, embeddingHostStatusSchema, embeddingInferenceSchema,
+  embeddingErrorMessage,
   semanticSearchSchema, EMBEDDING_KINDS, SEMANTIC_SEARCH_INFERENCE_TIMEOUT_MS,
   type EmbeddingDashboard,
 } from './embeddingContract.js';
 import { embeddingStats, nextEmbeddingWork, semanticSearch, submitEmbeddings } from './topicEmbeddings.js';
+
+async function hostFailure(response: Response): Promise<string> {
+  let detail: string;
+  try {
+    if (!response.body) throw new Error('Empty error response.');
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > 8192) {
+          await reader.cancel();
+          throw new Error('Host error response exceeds the diagnostic limit.');
+        }
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+    const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!value || typeof value !== 'object' || !('error' in value)
+      || typeof value.error !== 'string' || !value.error.trim()) throw new Error('No diagnostic error message was returned.');
+    detail = embeddingErrorMessage(value.error);
+  } catch (error) { detail = `Error details unavailable: ${embeddingErrorMessage(error)}`; }
+  return `Host inference failed (HTTP ${response.status}): ${detail} Open Diagnostics > Embeddings and Retry.`;
+}
 
 export class EmbeddingIndexer {
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -142,14 +170,18 @@ export class EmbeddingIndexer {
         state.warning = status.warning;
         state.rssBytes = status.rssBytes;
         state.downloadBytes = status.downloadBytes;
-        if (settings.enabled && !settings.paused && !state.error) {
-          state.phase = !this.searchEnabled() ? 'paused' : status.phase;
-          state.error = status.error;
+        if (!settings.paused) {
+          if (status.phase === 'error' || status.error) {
+            state.phase = 'error';
+            state.error = embeddingErrorMessage(status.error || 'Host service reports an error without details. Check the service error log and Retry.');
+          } else if (!state.error) {
+            state.phase = !this.searchEnabled() ? 'paused' : status.phase;
+          }
         }
-      } catch {
+      } catch (error) {
         state.backend = null;
         state.rssBytes = null;
-        state.error = 'Host inference service unavailable. Open WM and Retry; check the background service and Docker connectivity.';
+        state.error = `Host inference service unavailable: ${embeddingErrorMessage(error)} Open Diagnostics > Embeddings and Retry; check the background service and Docker connectivity.`;
         if (settings.enabled && !settings.paused) state.phase = 'error';
       }
     }
@@ -174,7 +206,7 @@ export class EmbeddingIndexer {
       });
       if (!response.ok) {
         this.halted = ![409, 503].includes(response.status);
-        throw new Error(`Host inference failed (HTTP ${response.status}). Check host diagnostics and Retry.`);
+        throw new Error(await hostFailure(response));
       }
       const parsed = embeddingInferenceSchema.safeParse(await response.json());
       if (!parsed.success) {
@@ -193,7 +225,7 @@ export class EmbeddingIndexer {
       this.state.phase = 'idle';
     } catch (error) {
       if (!controller.signal.aborted && !this.stopped) {
-        const message = error instanceof Error ? error.message : 'Embedding indexing failed.';
+        const message = embeddingErrorMessage(error);
         if (this.state.error !== message) console.error('[embeddings]', message);
         this.state.error = message;
         this.state.phase = 'error';

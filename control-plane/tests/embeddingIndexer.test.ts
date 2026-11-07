@@ -37,13 +37,18 @@ async function hostFixture(responseDelayMs = 0) {
   let invalid = false;
   let busy = false;
   let requests = 0;
+  let errorBody: string | undefined;
+  let statusError: string | null = null;
+  let statusPhase: 'idle' | 'error' = 'idle';
+  let statusCode = 200;
   const token = 'c'.repeat(64);
   const host = createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json');
     expect(req.headers.authorization).toBe(`Bearer ${token}`);
     if (req.url === '/status') {
-      res.end(JSON.stringify({ model: EMBEDDING_MODEL, version: 'test', phase: 'idle', downloadBytes: 0,
-        backend: 'Test accelerator', warning: null, error: null, rssBytes: 1000 }));
+      res.writeHead(statusCode);
+      res.end(JSON.stringify({ model: EMBEDDING_MODEL, version: 'test', phase: statusPhase, downloadBytes: 0,
+        backend: 'Test accelerator', warning: null, error: statusError, rssBytes: 1000 }));
       return;
     }
     const chunks: Buffer[] = [];
@@ -52,6 +57,7 @@ async function hostFixture(responseDelayMs = 0) {
       requests++;
       if (busy) { busy = false; res.writeHead(409); res.end('{}'); return; }
       started = true;
+      if (errorBody !== undefined) { res.writeHead(500); res.end(errorBody); return; }
       const input = JSON.parse(Buffer.concat(chunks).toString());
       const answer = () => res.end(JSON.stringify({ id: 1, durationMs: 10, startupMs: 12, rssBytes: 1000,
         vectors: input.texts.map(() => Array.from({ length: 384 }, (_, index) => invalid ? 0 : Number(index === 0))) }));
@@ -67,7 +73,10 @@ async function hostFixture(responseDelayMs = 0) {
   return { host: { endpoint: `http://127.0.0.1:${address.port}`, token },
     block: () => { block = true; }, started: () => started, release: () => release?.(),
     unblock: () => { block = false; }, invalidate: () => { invalid = true; },
-    requests: () => requests, busyOnce: () => { busy = true; } };
+    requests: () => requests, busyOnce: () => { busy = true; },
+    fail: (body: string) => { errorBody = body; },
+    statusError: (message: string | null) => { statusError = message; statusPhase = 'error'; },
+    statusCode: (code: number) => { statusCode = code; } };
 }
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'wm-background-index-'));
@@ -79,6 +88,46 @@ function fixture() {
   return { store, path };
 }
 describe('container-owned embedding lifecycle', () => {
+  it('preserves inference error details through authenticated MCP and prefers the host root cause', async () => {
+    const { store } = fixture();
+    store.createDocument({ kind: 'Topic', spec: { title: 'Search troubleshooting', body: 'Private document passage.' } });
+    const inference = await hostFixture();
+    inference.fail(JSON.stringify({ error: `Bundled helper DLL missing. Bearer ${inference.host.token}` }));
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    const snapshot = async () => {
+      const result = await client.callTool('wm-embeddings-dashboard', {});
+      expect(JSON.stringify(result)).not.toContain(inference.host.token);
+      expect(JSON.stringify(result)).not.toContain('Private document passage.');
+      return result.ok ? result.result : null;
+    };
+    try {
+      await client.callTool('wm-embeddings-configure', { action: 'enable', host: inference.host });
+      await expect.poll(snapshot).toMatchObject({ phase: 'error', error: expect.stringContaining('Bundled helper DLL missing') });
+      inference.statusError('OpenVINO NPU plugin unavailable');
+      expect(await snapshot()).toMatchObject({ phase: 'error', error: 'OpenVINO NPU plugin unavailable' });
+      inference.statusError(null);
+      expect(await snapshot()).toMatchObject({ phase: 'error', error: expect.stringContaining('without details') });
+      inference.statusCode(401);
+      expect(await snapshot()).toMatchObject({ phase: 'error', error: expect.stringContaining('HTTP 401') });
+    } finally { await client.dispose(); await server.close(); }
+  });
+  it.each(['not json', '{}', JSON.stringify({ error: 'x'.repeat(9000) })])
+    ('reports unreadable or oversized inference error responses explicitly', async body => {
+      const { store } = fixture();
+      store.createDocument({ kind: 'Topic', spec: { title: 'Search troubleshooting' } });
+      const inference = await hostFixture();
+      inference.fail(body);
+      const server = await startServer({ port: 0, store });
+      const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+      try {
+        await client.callTool('wm-embeddings-configure', { action: 'enable', host: inference.host });
+        await expect.poll(async () => {
+          const result = await client.callTool('wm-embeddings-dashboard', {});
+          return result.ok ? result.result : null;
+        }).toMatchObject({ phase: 'error', error: expect.stringContaining('Error details unavailable') });
+      } finally { await client.dispose(); await server.close(); }
+    });
   it('allows cold inference beyond thirty seconds through authenticated MCP', async () => {
     const { store } = fixture();
     const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Nanites', body: 'Nanite model research.' } });

@@ -1,12 +1,13 @@
 import { createServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { appendFileSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  EMBEDDING_MODEL, EMBEDDING_HOST_PORT, embeddingHostRequestSchema,
+  EMBEDDING_MODEL, EMBEDDING_HOST_PORT, embeddingHostRequestSchema, embeddingErrorMessage,
   embeddingHostSettingsSchema, type EmbeddingHostSettings, type embeddingHostStatusSchema,
 } from '../../../control-plane/src/embeddingContract';
 import { EmbeddingRuntime, installEmbeddingModel } from './embeddingRuntime';
+import { appendEmbeddingServiceLog } from './embeddingServiceLog';
 
 type Status = ReturnType<typeof embeddingHostStatusSchema.parse>;
 export function readEmbeddingHostSettings(home: string): EmbeddingHostSettings {
@@ -30,7 +31,7 @@ export async function startEmbeddingHostService(home: string, executable: string
   let closing = false;
   const state: Status = { model: EMBEDDING_MODEL, version, phase: 'idle', downloadBytes: 0,
     backend: null, warning: null, error: null, rssBytes: null };
-  const log = (message: string) => appendFileSync(join(home, 'service.log'), `${new Date().toISOString()} ${message}\n`, { mode: 0o600 });
+  const log = (message: string) => appendEmbeddingServiceLog(home, message);
   const server = createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Cache-Control', 'no-store');
@@ -93,9 +94,10 @@ export async function startEmbeddingHostService(home: string, executable: string
       answer(200, { ...result, ...(metrics ? { startupMs } : {}) });
     })().catch(error => {
       if (!controller.signal.aborted) {
-        const message = error instanceof Error ? error.message : 'Host inference failed.';
+        const message = embeddingErrorMessage(error);
         if (!configuring) { state.error = message; state.phase = 'error'; }
-        log(message);
+        try { log(message); }
+        catch (logError) { console.error('[embeddings] Host inference error could not be logged:', logError); }
         if (!res.headersSent && !res.destroyed) answer(500, { error: message });
       }
       if (!configuring) runtime.stop();

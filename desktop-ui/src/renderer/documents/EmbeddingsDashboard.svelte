@@ -1,10 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { EmbeddingAction, EmbeddingDashboard } from '../../shared/embeddings';
+  import type { EmbeddingAction, EmbeddingDashboard, EmbeddingDiagnostics } from '../../shared/embeddings';
   import { startVisiblePolling } from '../visiblePolling';
 
   let snapshot = $state<EmbeddingDashboard | null>(null);
+  let diagnostics = $state<EmbeddingDiagnostics | null>(null);
+  let diagnosticsError = $state('');
   let error = $state('');
+  let operationError = $state('');
   let busy = $state(false);
   let refreshing = $state(false);
   let retention = $state('always');
@@ -16,10 +19,15 @@
     refreshing = true;
     const current = generation;
     try {
-      const value = await window.workingMemory.getEmbeddingDashboard();
-      if (active && current === generation) { snapshot = value; error = ''; }
-    } catch (cause) {
-      if (active && current === generation) error = cause instanceof Error ? cause.message : String(cause);
+      const [dashboard, host] = await Promise.allSettled([
+        window.workingMemory.getEmbeddingDashboard(), window.workingMemory.getEmbeddingDiagnostics(),
+      ]);
+      if (active && current === generation) {
+        if (dashboard.status === 'fulfilled') { snapshot = dashboard.value; error = ''; }
+        else error = dashboard.reason instanceof Error ? dashboard.reason.message : String(dashboard.reason);
+        if (host.status === 'fulfilled') { diagnostics = host.value; diagnosticsError = ''; }
+        else diagnosticsError = host.reason instanceof Error ? host.reason.message : String(host.reason);
+      }
     } finally { refreshing = false; }
   }
   onMount(() => {
@@ -30,34 +38,54 @@
     generation++;
     busy = true;
     error = '';
+    operationError = '';
     try {
       const value = await window.workingMemory.setEmbeddingAction(action);
       if (active) snapshot = value;
     } catch (cause) {
-      if (active) error = cause instanceof Error ? cause.message : String(cause);
-    } finally { busy = false; }
+      if (active) operationError = cause instanceof Error ? cause.message : String(cause);
+    } finally { busy = false; void refresh(); }
   }
   async function setRetention(value: string): Promise<void> {
     generation++;
     busy = true;
     error = '';
+    operationError = '';
     try {
       const next = await window.workingMemory.setEmbeddingRetention(value === 'always' ? null : Number(value));
       if (active) snapshot = next;
     } catch (cause) {
-      if (active) error = cause instanceof Error ? cause.message : String(cause);
+      if (active) operationError = cause instanceof Error ? cause.message : String(cause);
       retention = snapshot?.idleTimeoutMinutes == null ? 'always' : String(snapshot.idleTimeoutMinutes);
     } finally { busy = false; }
   }
   const mib = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MiB`;
   const date = (at: number | null) => at ? new Date(at).toLocaleString() : 'Not yet';
+  const failed = $derived(!!error || !!operationError || !!snapshot?.error || snapshot?.phase === 'error'
+    || !!diagnosticsError || !!diagnostics?.service.error);
 </script>
 
 <section aria-label="Embeddings dashboard" class="embeddings-dashboard">
   <h2>Embeddings</h2>
   <p>Local meaning-based Search and Related topics. Each enabled environment indexes WM documents in its container,
     even when this desktop is closed. The bundled host inference service starts at sign-in.</p>
+  {#if operationError}<p role="alert">{operationError}</p>{/if}
   {#if error || snapshot?.error}<p role="alert">{error || snapshot?.error}</p>{/if}
+  {#if snapshot?.phase === 'error' && !snapshot.error && !error && !operationError}
+    <p role="alert">Indexing reports an error without details. Check the host service and error log below, then Retry.</p>
+  {/if}
+  <div class="controls">
+    {#if snapshot?.enabled}
+      <button disabled={busy} onclick={() => void act(snapshot?.paused ? 'resume' : 'pause')}>
+        {snapshot.paused ? 'Resume' : 'Pause'}
+      </button>
+      {#if failed || (diagnostics && (diagnostics.service.state !== 'running'
+        || diagnostics.service.version !== diagnostics.service.expectedVersion))}
+        <button disabled={busy} onclick={() => void act('retry')}>Retry</button>
+      {/if}
+    {/if}
+    <button disabled={refreshing || busy} onclick={() => void refresh()}>Refresh</button>
+  </div>
   {#if snapshot}
     <p><strong>Status:</strong> {snapshot.phase}
       {#if snapshot.phase === 'downloading'}
@@ -65,17 +93,6 @@
         <progress max={snapshot.downloadTotal} value={snapshot.downloadBytes} aria-label="Model download progress"></progress>
       {/if}
     </p>
-    <div class="controls">
-      {#if snapshot.enabled}
-        <button disabled={busy} onclick={() => void act(snapshot?.paused ? 'resume' : 'pause')}>
-          {snapshot.paused ? 'Resume' : 'Pause'}
-        </button>
-        {#if snapshot.error}
-          <button disabled={busy} onclick={() => void act('retry')}>Retry</button>
-        {/if}
-      {/if}
-      <button disabled={refreshing} onclick={() => void refresh()}>Refresh</button>
-    </div>
     <label>Keep model loaded
       <select aria-label="Model retention" disabled={busy}
         bind:value={retention}
@@ -117,6 +134,36 @@
       Pending includes new or changed documents. Search requires enabled Embeddings and complete indexing.
       An empty queue means the index is caught up, not that every suggested relationship is correct.</p>
   {:else if !error}<p role="status">Loading embeddings diagnostics...</p>{/if}
+  <details class="service-troubleshooting" open={failed}>
+    <summary>Service troubleshooting and error log</summary>
+    {#if diagnosticsError}<p role="alert">Local service diagnostics failed: {diagnosticsError}</p>{/if}
+    {#if diagnostics}
+      <dl>
+        <dt>Host service (this computer)</dt><dd>{diagnostics.service.state} &middot; 127.0.0.1:7716</dd>
+        <dt>Host phase / backend</dt><dd>{diagnostics.service.phase ?? 'Unavailable'} / {diagnostics.service.backend ?? 'Not loaded'}</dd>
+        <dt>Service version</dt><dd>{diagnostics.service.version ?? 'Unavailable'}</dd>
+        <dt>Installed version</dt><dd>{diagnostics.service.expectedVersion}</dd>
+        <dt>Service log location</dt><dd>{diagnostics.logPath}</dd>
+      </dl>
+      {#if diagnostics.service.error}<p role="alert">Host service: {diagnostics.service.error}</p>{/if}
+      {#if diagnostics.service.version && diagnostics.service.version !== diagnostics.service.expectedVersion}
+        <p role="alert">The host service is running an older or different build. Retry replaces it with the installed build.</p>
+      {/if}
+      <p>If the host is running but indexing reports a connection error, check Docker connectivity to
+        host.docker.internal:7716. If the host is unreachable, Retry repairs its sign-in service.
+        On Windows, check Task Scheduler &gt; Working Memory Embeddings; NPU errors may require an Intel NPU driver update.
+        Missing helper or DLL errors require reinstalling the current Windows build.</p>
+      <p>Not loaded alone is normal before first inference or after unloading. Retry also resumes indexing for this environment.
+        The log is shared by this computer's local environments; it shows the latest 100 lines (up to 32 KiB).
+        Credentials are redacted; document passages are not logged.</p>
+      {#if diagnostics.log}
+        <pre aria-label="Embedding service error log">{diagnostics.log}</pre>
+      {:else}
+        <p role="status">{diagnostics.logExists ? 'The service log is empty.' : 'No service log has been created yet.'}
+          Retry records installation and early startup failures here, even if the inference service cannot start.</p>
+      {/if}
+    {:else if !diagnosticsError}<p role="status">Loading local service diagnostics...</p>{/if}
+  </details>
 </section>
 
 <style>
@@ -125,4 +172,6 @@
   dl { display: grid; grid-template-columns: minmax(140px, 1fr) 2fr; gap: 10px 16px; }
   dt { font-weight: 600; } dd { margin: 0; overflow-wrap: anywhere; }
   progress { display: block; width: 100%; margin-top: 8px; }
+  summary { cursor: pointer; font-weight: 600; }
+  pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

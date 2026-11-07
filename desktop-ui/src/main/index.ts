@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ControlPlaneClient } from '../../../shared/controlPlaneClient';
 import { EmbeddingServiceManager } from './embeddingServiceManager';
+import { appendEmbeddingServiceLog } from './embeddingServiceLog';
 import { startEmbeddingHostService } from './embeddingHostService';
 import { LocalEmbeddings } from './localEmbeddings';
 import { listAgentMessages, recordAgentMessageDecision, snoozeAgentMessage, updateAgentMessageStatus } from './agentMessageLifecycle';
@@ -986,6 +987,10 @@ function registerIpc(): void {
     assertHostTaskSender(event, mainWindow, rendererUrl);
     return embeddings().snapshot();
   });
+  ipcMain.handle('embeddings:diagnostics', event => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    return embeddingService.diagnostics();
+  });
   ipcMain.handle('embeddings:retention', (event, minutes: unknown) => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
     if (minutes !== null && (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 1 || minutes > 1440)) {
@@ -1943,9 +1948,9 @@ app.setPath('userData', originalUserData);
 const connectorIndex = process.argv.indexOf('--mcp-stdio');
 if (process.argv.includes('--embedding-service')) {
   app.dock?.hide();
+  const homeIndex = process.argv.indexOf('--embedding-service-home');
+  const home = homeIndex === -1 ? undefined : process.argv[homeIndex + 1];
   void app.whenReady().then(async () => {
-    const homeIndex = process.argv.indexOf('--embedding-service-home');
-    const home = homeIndex === -1 ? undefined : process.argv[homeIndex + 1];
     if (!home) throw new Error('Pass --embedding-service-home with the installed service data directory.');
     const name = process.platform === 'win32' ? 'wm-embeddings.exe' : 'wm-embeddings';
     const packagedHelper = join(process.resourcesPath, 'embeddings', name);
@@ -1957,6 +1962,10 @@ if (process.argv.includes('--embedding-service')) {
     process.once('SIGINT', stop);
   }).catch(error => {
     console.error('[embeddings] Host inference service startup failed:', error);
+    if (home) {
+      try { appendEmbeddingServiceLog(home, `Host service startup failed: ${error instanceof Error ? error.message : String(error)}`); }
+      catch (logError) { console.error('[embeddings] Startup error could not be logged:', logError); }
+    }
     app.exit(1);
   });
 } else if (connectorIndex !== -1) {

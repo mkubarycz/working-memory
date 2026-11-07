@@ -89,8 +89,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         },
         async getEmbeddingDashboard() {
           state.embeddingReads = (state.embeddingReads || 0) + 1;
+          if (state.embeddingDashboardUnavailable) throw new Error('Container unavailable');
           return { endpoint: 'http://127.0.0.1:7719/mcp', enabled: !!state.embeddingEnabled, paused: !!state.embeddingPaused,
-            phase: state.embeddingPaused ? 'paused' : state.embeddingEnabled ? 'indexing' : 'disabled',
+            phase: state.embeddingPhase || (state.embeddingPaused ? 'paused' : state.embeddingEnabled ? 'indexing' : 'disabled'),
             model: 'minilm-l6-v2:1110a243:384:v1', downloadBytes: 0, downloadTotal: 90871461,
             backend: state.embeddingPaused ? null : 'OpenVINO / NPU', warning: null, error: state.embeddingFailure || null,
             rssBytes: state.embeddingPaused ? null : 512 * 1048576, lastInferenceMs: 42, lastSuccessAtMs: Date.now(),
@@ -98,10 +99,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             stats: { total: 100, indexed: 80, pending: 20, limited: 1, vectorBytes: 123456, lastIndexedAt: Math.floor(Date.now() / 1000) },
           };
         },
+        async getEmbeddingDiagnostics() {
+          if (state.embeddingDiagnosticsFailure) throw new Error('Service log could not be read');
+          return { logPath: '/actual/desktop/profile/embeddings/service.log', logExists: !state.embeddingLogMissing,
+            log: state.embeddingLogMissing ? '' : state.embeddingLog || '2026-11-07T05:59:42.702Z Host service started.',
+            service: { state: 'running', version: 'test-build', expectedVersion: 'test-build',
+              phase: 'idle', backend: 'OpenVINO / NPU', error: null },
+          };
+        },
         async setEmbeddingAction(action) {
           state.embeddingActions = [...(state.embeddingActions || []), action];
           if (action === 'enable' || action === 'resume' || action === 'retry') {
             state.embeddingEnabled = true; state.embeddingPaused = false; state.embeddingFailure = null;
+            state.embeddingPhase = null;
           }
           if (action === 'pause') state.embeddingPaused = true;
           if (action === 'disable') state.embeddingEnabled = false;
@@ -478,13 +488,34 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate("window.__diagnosticsTest.retentionFailure=true;(()=>{const s=document.querySelector('.embeddings-dashboard select');s.value='1';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
           await wait("document.body.innerText.includes('Retention save failed')");
           assert.equal(await evaluate("document.querySelector('.embeddings-dashboard select').value"), '30');
+          await evaluate("window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("!Array.from(document.querySelectorAll('.embeddings-dashboard button')).find(b=>b.textContent.trim()==='Refresh').disabled");
+          assert.ok((await evaluate('document.body.innerText')).includes('Retention save failed'));
           await evaluate("window.__diagnosticsTest.retentionFailure=false");
           await evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Pause').click()");
           await wait("document.body.innerText.includes('Status: paused')");
           assert.ok((await evaluate('document.body.innerText')).includes('Not loaded'));
           await evaluate("window.__diagnosticsTest.embeddingFailure = 'Intel NPU driver unavailable'; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
           await wait("document.body.innerText.includes('Intel NPU driver unavailable')");
-          await evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Retry').click()");
+          await evaluate("window.__diagnosticsTest.embeddingPhase='error'; window.__diagnosticsTest.embeddingFailure=null; window.__diagnosticsTest.embeddingLog='2026-11-07T05:59:42.702Z Host service startup failed: missing helper DLL <script>window.__unsafeEmbeddingLog=true</script>'; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.body.innerText.includes('Indexing reports an error without details')");
+          assert.equal(await evaluate("document.querySelector('.service-troubleshooting').open"), true);
+          assert.ok((await evaluate("document.querySelector('.service-troubleshooting pre').textContent")).includes('missing helper DLL'));
+          assert.equal(await evaluate("!!window.__unsafeEmbeddingLog"), false);
+          assert.ok((await evaluate('document.body.innerText')).includes('/actual/desktop/profile/embeddings/service.log'));
+          await evaluate("Array.from(document.querySelectorAll('.embeddings-dashboard button')).find(b=>b.textContent.trim()==='Retry').click()");
+          await wait("document.body.innerText.includes('Status: indexing')");
+          assert.ok((await evaluate("document.querySelector('.service-troubleshooting pre').textContent")).includes('missing helper DLL'));
+          await evaluate("window.__diagnosticsTest.embeddingDashboardUnavailable=true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.body.innerText.includes('Container unavailable')");
+          assert.ok((await evaluate("document.querySelector('.service-troubleshooting pre').textContent")).includes('missing helper DLL'));
+          await evaluate("window.__diagnosticsTest.embeddingDiagnosticsFailure=true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.body.innerText.includes('Local service diagnostics failed: Service log could not be read')");
+          await evaluate("window.__diagnosticsTest.embeddingDashboardUnavailable=false; window.__diagnosticsTest.embeddingDiagnosticsFailure=false; window.__diagnosticsTest.embeddingLogMissing=true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.querySelector('.service-troubleshooting').textContent.includes('No service log has been created yet')");
+          await evaluate("(()=>{const d=document.querySelector('.service-troubleshooting');if(!d.open)d.querySelector('summary').click();})()");
+          await wait("document.body.innerText.includes('No service log has been created yet')");
+          await evaluate("window.__diagnosticsTest.embeddingLogMissing=false");
           await wait("!document.body.innerText.includes('Intel NPU driver unavailable')");
           assert.deepEqual(await evaluate("window.__diagnosticsTest.embeddingActions"), ['enable', 'pause', 'retry']);
           await evaluate("window.__setDiagnosticsVisible(false)");

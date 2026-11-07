@@ -8,6 +8,7 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 
 const api: DesktopApi = {
   getEmbeddingDashboard: () => invoke('embeddings:dashboard'),
+  getEmbeddingDiagnostics: () => invoke('embeddings:diagnostics'),
   setEmbeddingAction: action => invoke('embeddings:action', action),
   setEmbeddingRetention: minutes => invoke('embeddings:retention', minutes),
   getRelatedTopics: id => invoke('embeddings:related', id),

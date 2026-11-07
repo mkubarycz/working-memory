@@ -4,9 +4,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { EMBEDDING_HOST_PORT, embeddingHostStatusSchema, embeddingHostSettingsSchema, type EmbeddingHostSettings } from '../../../control-plane/src/embeddingContract';
+import { EMBEDDING_HOST_PORT, embeddingHostStatusSchema, embeddingHostSettingsSchema, embeddingErrorMessage, type EmbeddingHostSettings } from '../../../control-plane/src/embeddingContract';
 import { readEmbeddingHostSettings } from './embeddingHostService';
 import { acquireLock, AlreadyRunningError } from '../../../control-plane/src/lockfile';
+import { appendEmbeddingServiceLog, readEmbeddingServiceLog } from './embeddingServiceLog';
+import type { EmbeddingDiagnostics } from '../shared/embeddings';
 
 const execute = promisify(execFile);
 const label = 'com.workingmemory.embeddings';
@@ -34,6 +36,28 @@ export class EmbeddingServiceManager {
   private installing: Promise<{ endpoint: string; token: string }> | undefined;
   constructor(private executable: string, private home: string, private version: string, private application?: string) {}
   readSettings(): EmbeddingHostSettings { return readEmbeddingHostSettings(this.home); }
+  private async hostStatus(token: string) {
+    const response = await fetch(`http://127.0.0.1:${EMBEDDING_HOST_PORT}/status`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000), redirect: 'error',
+    });
+    if (!response.ok) throw new Error(`Host service status returned HTTP ${response.status}. Retry repairs the local service connection.`);
+    return embeddingHostStatusSchema.parse(await response.json());
+  }
+  async diagnostics(): Promise<EmbeddingDiagnostics> {
+    const log = readEmbeddingServiceLog(this.home);
+    const service: EmbeddingDiagnostics['service'] = { state: 'not-installed', version: null,
+      expectedVersion: this.version, phase: null, backend: null, error: null };
+    try {
+      const token = readFileSync(join(this.home, 'host-token'), 'utf8').trim();
+      if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Host service credentials are invalid. Existing credentials have not been replaced.');
+      const status = await this.hostStatus(token);
+      return { ...log, service: { ...service, state: 'running', version: status.version,
+        phase: status.phase, backend: status.backend, error: status.error ? embeddingErrorMessage(status.error) : null } };
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { ...log, service };
+      return { ...log, service: { ...service, state: 'unreachable', error: embeddingErrorMessage(error) } };
+    }
+  }
   async setRetention(idleTimeoutMinutes: number | null): Promise<EmbeddingHostSettings> {
     const settings = embeddingHostSettingsSchema.parse({ idleTimeoutMinutes });
     const { token } = await this.ensure();
@@ -45,7 +69,11 @@ export class EmbeddingServiceManager {
     return embeddingHostSettingsSchema.parse(await response.json());
   }
   ensure() {
-    return this.installing ??= this.install().finally(() => { this.installing = undefined; });
+    return this.installing ??= this.install().catch(error => {
+      try { appendEmbeddingServiceLog(this.home, `Desktop service setup failed: ${embeddingErrorMessage(error)}`); }
+      catch (logError) { console.error('[embeddings] Service setup error could not be logged:', logError); }
+      throw error;
+    }).finally(() => { this.installing = undefined; });
   }
   private async install() {
     for (let attempt = 0; attempt < 80; attempt++) {
@@ -67,14 +95,14 @@ export class EmbeddingServiceManager {
     if (!existsSync(file)) writeFileSync(file, `${randomBytes(32).toString('hex')}\n`, { mode: 0o600, flag: 'wx' });
     const token = readFileSync(file, 'utf8').trim();
     if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Host inference credentials are invalid; existing credentials have not been replaced.');
-    const localEndpoint = `http://127.0.0.1:${EMBEDDING_HOST_PORT}`;
+    let lastHealthError = 'No successful host service status response.';
     const healthy = async () => {
       try {
-        const response = await fetch(`${localEndpoint}/status`, {
-          headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000), redirect: 'error',
-        });
-        return response.ok && embeddingHostStatusSchema.parse(await response.json()).version === this.version;
-      } catch { return false; }
+        const status = await this.hostStatus(token);
+        if (status.version === this.version) return true;
+        lastHealthError = `Service version ${status.version} does not match installed version ${this.version}.`;
+      } catch (error) { lastHealthError = embeddingErrorMessage(error); }
+      return false;
     };
     if (process.platform === 'darwin') {
       const directory = join(homedir(), 'Library', 'LaunchAgents');
@@ -130,7 +158,7 @@ export class EmbeddingServiceManager {
       if (await healthy()) return { endpoint: `http://host.docker.internal:${EMBEDDING_HOST_PORT}`, token };
       await new Promise(resolve => setTimeout(resolve, 250));
     }
-    throw new Error('The host inference service did not start. Check background-service logs and Retry.');
+    throw new Error(`The host inference service did not start: ${lastHealthError} Open Diagnostics > Embeddings > Service troubleshooting and Retry.`);
   }
   async restore(): Promise<void> {
     if (existsSync(join(this.home, 'host-token'))) await this.ensure();
