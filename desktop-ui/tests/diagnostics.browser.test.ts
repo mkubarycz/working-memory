@@ -230,7 +230,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             throw new Error('Timed out: ' + code + '\\n' + await evaluate('document.body.innerText'));
           }
           await window.loadURL('http://127.0.0.1:${address.port}/diagnostics-test.html');
-          await wait("document.body.innerText.includes('MCP tool queue')");
+          await wait("document.body.innerText.includes('Queue Settings')");
+          assert.ok(await evaluate("document.querySelector('[aria-label=\\"Tool queue\\"]').firstElementChild.matches('details.queue-settings')"));
+          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Tool queue\\"]').innerText.includes('MCP tool queue') || document.querySelector('[aria-label=\\"Tool queue\\"]').innerText.includes('http://127.0.0.1:7719/mcp')"), false);
           assert.equal(await evaluate("document.querySelector('[aria-label=\\"Refresh interval\\"]').value"), '15000');
           assert.equal(await evaluate("window.__diagnosticsTest.queueCalls"), 0);
           await evaluate("window.__setDiagnosticsVisible(true)");
@@ -242,6 +244,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.ok(await evaluate("Boolean(document.querySelector('[aria-label=\\"Refresh interval\\"]').closest('.chart-controls'))"));
           assert.ok(await evaluate("document.querySelector('.chart-controls').getBoundingClientRect().bottom <= document.querySelector('[aria-label=\\"Queue processing history\\"] .diagnostics-chart').getBoundingClientRect().top"));
           assert.ok(await evaluate("document.querySelector('.chart-controls').getBoundingClientRect().right > document.querySelector('.graph-header h4').getBoundingClientRect().right"));
+          assert.ok(await evaluate("(() => {const refresh=document.querySelector('[aria-label=\\"Refresh interval\\"]').getBoundingClientRect();const bucket=document.querySelector('[aria-label=\\"Queue bucket size\\"]').getBoundingClientRect();return Math.abs(refresh.top-bucket.top)<=1 && Math.abs(refresh.bottom-bucket.bottom)<=1;})()"), 'Refresh and Bucket size must align within one pixel');
           assert.deepEqual(await evaluate("['Max Concurrency','Max Queue Size','Queue Timeout','Heap Dispatch Pause Threshold'].map(label=>document.querySelector('input[aria-label=\\"'+label+'\\"]').value)"), ['4','16','5','60']);
           assert.ok(!(await evaluate('document.body.innerText')).includes('One-minute buckets'));
           assert.ok(!(await evaluate('document.body.innerText')).includes('without smoothing'));
@@ -256,7 +259,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.body.innerText.includes('Sum Queue Timeouts: 4 drops') && document.body.innerText.includes('Sum Rejections: 6 drops') && document.body.innerText.includes('Sum Shutdown Drops: 1 drops')");
           assert.ok(!(await evaluate("document.querySelector('[aria-label=\\"Queue processing history\\"] svg').textContent")).includes('%'));
           assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('details summary')).map(item=>item.textContent)"),
-            ['Top 50 by wait time', 'Top 50 by runtime', 'Queue log']);
+            ['Queue Settings', 'Top 50 by wait time', 'Top 50 by runtime', 'Queue log']);
           assert.ok(await evaluate("Array.from(document.querySelectorAll('details')).every(item=>!item.open)"));
           assert.equal(await evaluate("document.querySelector('[aria-label=\\"Queue request log\\"]')"), null);
           await evaluate("(() => { const select = document.querySelector('[aria-label=\\"Queue bucket size\\"]'); select.value = '120000'; select.dispatchEvent(new Event('change', { bubbles: true })); })()");
@@ -326,7 +329,15 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.deepEqual(await evaluate("Array.from(Array.from(document.querySelectorAll('[aria-label=\\"Queue request log\\"] tbody tr')).find(r => r.textContent.includes('00000000-0000-4000-8000-000000000003')).querySelectorAll('td')).slice(1).map(c => c.textContent)"),
             ['34', '00000000-0000-4000-8000-000000000003', 'wm-document-read', '2', '32', 'Completed']);
           assert.equal(await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Queue request log\\"] td')).find(c => c.textContent === '00000000-0000-4000-8000-000000000003').title"), 'Caller: client:approved-id');
+          await evaluate("document.querySelector('.queue-settings summary').click()");
+          assert.ok(await evaluate("document.querySelector('input[aria-label=\\"Max Concurrency\\"]').getBoundingClientRect().height>0"));
           await evaluate("['Max Concurrency','Max Queue Size','Queue Timeout','Heap Dispatch Pause Threshold'].forEach((label,index)=>{const input=document.querySelector('input[aria-label=\\"'+label+'\\"]');input.value=['2','8','12','55'][index];input.dispatchEvent(new Event('input',{bubbles:true}));})");
+          await evaluate("document.querySelector('.queue-settings summary').click()");
+          const collapsedCalls = await evaluate("window.__diagnosticsTest.queueCalls");
+          await wait("window.__diagnosticsTest.queueCalls > " + collapsedCalls);
+          assert.equal(await evaluate("document.querySelector('.queue-settings').open"), false);
+          assert.equal(await evaluate("document.querySelector('input[aria-label=\\"Max Concurrency\\"]').value"), '2');
+          await evaluate("document.querySelector('.queue-settings summary').click()");
           await evaluate("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Save Queue settings').click()");
           await wait("document.body.innerText.includes('Queue settings saved.')");
           assert.deepEqual(await evaluate("window.__diagnosticsTest.queueSettingsUpdates.at(-1)"), {
@@ -337,15 +348,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           });
           await evaluate("window.__diagnosticsTest.queueSettingsFailure=true;(()=>{const input=document.querySelector('input[aria-label=\\"Max Concurrency\\"]');input.value='3';input.dispatchEvent(new Event('input',{bubbles:true}));})()");
           await evaluate("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Save Queue settings').click()");
+          await evaluate("document.querySelector('.queue-settings summary').click()");
           await wait("document.body.innerText.includes('Queue settings save failed')");
+          assert.equal(await evaluate("document.querySelector('.queue-settings').open"), false);
+          assert.ok(await evaluate("Array.from(document.querySelectorAll('[role=\\"alert\\"]')).some(element=>element.textContent==='Queue settings save failed' && element.getBoundingClientRect().height>0)"));
           assert.equal(await evaluate("window.__diagnosticsTest.queueSettings.maxConcurrency"),2);
           assert.equal(await evaluate("document.querySelector('input[aria-label=\\"Max Concurrency\\"]').value"),'3');
-          await evaluate("window.__diagnosticsTest.queueSettingsFailure=false;Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Discard changes').click()");
+          await evaluate("document.querySelector('.queue-settings summary').click();window.__diagnosticsTest.queueSettingsFailure=false;Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Discard changes').click()");
           assert.equal(await evaluate("document.querySelector('input[aria-label=\\"Max Concurrency\\"]').value"),'2');
           await evaluate("document.querySelector('#diagnostics-tab-http').click()");
           await wait("document.body.innerText.includes('correlated-request-id')");
           await evaluate("document.querySelector('#diagnostics-tab-queue').click()");
           await wait("document.querySelector('input[aria-label=\\"Max Concurrency\\"]')?.value==='2'");
+          await evaluate("document.querySelector('.queue-settings summary').click()");
           await evaluate("['Max Concurrency','Max Queue Size','Queue Timeout','Heap Dispatch Pause Threshold'].forEach((label,index)=>{const input=document.querySelector('input[aria-label=\\"'+label+'\\"]');input.value=['4','16','5','60'][index];input.dispatchEvent(new Event('input',{bubbles:true}));})");
           await evaluate("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Save Queue settings').click()");
           await wait("document.body.innerText.includes('Queue settings saved.')");

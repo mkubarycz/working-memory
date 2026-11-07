@@ -1980,8 +1980,11 @@ visible diagnostics view polls. Polling stops while the window is hidden and
 resumes immediately when visible again; inactive subtabs do not background poll.
 A shared Refresh selector defaults to 15 seconds and offers 2, 5, 15, 30 and 60
 seconds; changing it applies to the selected diagnostics view without overlapping requests.
-On Queue, Refresh and Bucket size sit at the top right above the first graph.
-The owner can save persistent, per-container **Queue settings**: Max Concurrency
+On Queue, Refresh and Bucket size align on one row at the top right above the
+first graph. **Queue Settings** is a collapsed section at the top, replacing
+the old MCP tool queue heading and endpoint text. Drafts survive collapsing
+and polling, and save errors remain visible even when the section is collapsed.
+The owner can save persistent, per-container **Queue Settings**: Max Concurrency
 (1-64, default 4), Max Queue Size (1-1000, default 16), Queue Timeout
 (0.1-300 seconds, default 5), and Heap Dispatch Pause Threshold
 (10-90%, default 60%). Saved settings take effect without restarting the backend.

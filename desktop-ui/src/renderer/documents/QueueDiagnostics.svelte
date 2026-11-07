@@ -123,8 +123,42 @@
 {/snippet}
 
 <section aria-label="Tool queue">
-  <h3>MCP tool queue</h3>
-  <p>{result?.endpoint ?? 'Selected environment'}</p>
+  <details class="queue-settings" aria-label="Queue settings">
+    <summary>Queue Settings</summary>
+    {#if draft && snapshot?.settings}
+      <form onsubmit={event => { event.preventDefault(); void saveSettings(); }}>
+        <fieldset disabled={saving}>
+          <label>Max Concurrency
+            <input aria-label="Max Concurrency" type="number" min="1" max="64" step="1"
+              bind:value={draft.maxConcurrency} oninput={editSettings} />
+            <small>1-64</small>
+          </label>
+          <label>Max Queue Size
+            <input aria-label="Max Queue Size" type="number" min="1" max="1000" step="1"
+              bind:value={draft.maxQueueSize} oninput={editSettings} />
+            <small>1-1000</small>
+          </label>
+          <label>Queue Timeout (seconds)
+            <input aria-label="Queue Timeout" type="number" min="0.1" max="300" step="0.1"
+              bind:value={timeoutSeconds} oninput={editSettings} />
+            <small>0.1-300 seconds; new arrivals only</small>
+          </label>
+          <label>% Heap Dispatch Pause Threshold
+            <input aria-label="Heap Dispatch Pause Threshold" type="number" min="10" max="90" step="1"
+              bind:value={draft.heapDispatchPausePercent} oninput={editSettings} />
+            <small>10-90%; new-session admission keeps its separate 60% cutoff</small>
+          </label>
+        </fieldset>
+        <div class="settings-actions">
+          <button type="submit" disabled={!dirty || saving}>Save Queue settings</button>
+          <button type="button" disabled={saving || !dirty} onclick={resetDraft}>Discard changes</button>
+        </div>
+      </form>
+    {:else if snapshot}<p role="status">Queue settings are unavailable on this backend. Upgrade it to configure them.</p>
+    {:else}<p role="status">Loading Queue settings.</p>{/if}
+  </details>
+  {#if settingsError}<p role="alert">{settingsError}</p>{/if}
+  {#if settingsStatus}<p role="status">{settingsStatus}</p>{/if}
   {#if error || result?.error}<p role="alert">{error || result?.error}</p>{/if}
   {#if snapshot}
     <p>{snapshot.waiting} waiting / {snapshot.limits.waiting} &middot;
@@ -173,41 +207,6 @@
         <p role="status">Collecting wait/runtime history. Older samples cannot be backfilled.</p>
       {/if}
     {/if}
-    <section class="queue-settings" aria-label="Queue settings">
-      <h4>Queue settings</h4>
-      {#if draft && snapshot.settings}
-        <form onsubmit={event => { event.preventDefault(); void saveSettings(); }}>
-          <fieldset disabled={saving}>
-            <label>Max Concurrency
-              <input aria-label="Max Concurrency" type="number" min="1" max="64" step="1"
-                bind:value={draft.maxConcurrency} oninput={editSettings} />
-              <small>1-64</small>
-            </label>
-            <label>Max Queue Size
-              <input aria-label="Max Queue Size" type="number" min="1" max="1000" step="1"
-                bind:value={draft.maxQueueSize} oninput={editSettings} />
-              <small>1-1000</small>
-            </label>
-            <label>Queue Timeout (seconds)
-              <input aria-label="Queue Timeout" type="number" min="0.1" max="300" step="0.1"
-                bind:value={timeoutSeconds} oninput={editSettings} />
-              <small>0.1-300 seconds; new arrivals only</small>
-            </label>
-            <label>% Heap Dispatch Pause Threshold
-              <input aria-label="Heap Dispatch Pause Threshold" type="number" min="10" max="90" step="1"
-                bind:value={draft.heapDispatchPausePercent} oninput={editSettings} />
-              <small>10-90%; new-session admission keeps its separate 60% cutoff</small>
-            </label>
-          </fieldset>
-          <div class="settings-actions">
-            <button type="submit" disabled={!dirty || saving}>Save Queue settings</button>
-            <button type="button" disabled={saving || !dirty} onclick={resetDraft}>Discard changes</button>
-          </div>
-        </form>
-      {:else}<p role="status">Queue settings are unavailable on this backend. Upgrade it to configure them.</p>{/if}
-      {#if settingsError}<p role="alert">{settingsError}</p>{/if}
-      {#if settingsStatus}<p role="status">{settingsStatus}</p>{/if}
-    </section>
     <details bind:open={waitOpen}><summary>Top 50 by wait time</summary>
       {#if waitOpen}{@render requestTable(topWait, 'Top 50 by wait time')}{/if}
     </details>
@@ -225,8 +224,7 @@
   th, td { text-align: left; padding: 6px; border-bottom: 1px solid var(--border-color, #444); overflow-wrap: anywhere; }
   .graph-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .chart-controls { display: flex; align-items: center; gap: 16px; margin-left: auto; flex-wrap: wrap; }
-  .chart-controls :global(.refresh-control) { margin-bottom: 0; }
-  .bucket-size { display: flex; align-items: center; gap: 8px; }
+  .chart-controls :global(label) { display: flex; align-items: center; gap: 8px; margin: 0; white-space: nowrap; }
   fieldset { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; border: 0; padding: 0; }
   .queue-settings label { display: flex; flex-direction: column; gap: 4px; }
   .queue-settings input { width: 100%; box-sizing: border-box; }
