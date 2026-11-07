@@ -1992,6 +1992,13 @@ time** chart, and collapsed **Top 50 by wait time**, **Top 50 by runtime**, and
 **Queue log** sections. Rankings and the log use retained lifecycle history
 (up to 2,000 events, at most 24 hours), with one row per request and live items
 included. Unavailable timings are excluded from rankings.
+**Drops**, immediately below Queue Processing, sums queue timeouts, capacity
+rejections and shutdown drops using the same bucket size and time bounds. Counts
+come from cumulative telemetry, not the truncated queue log. A final sample
+preserves graceful-shutdown drops across backend restarts. Client cancellations,
+connection closures, authorization denials and failed executions are excluded.
+Abrupt crashes or forced termination may interrupt requests without recording
+a shutdown drop. Older samples without drop counters cannot be backfilled.
 Each log row shows queue-entry time, total duration, request ID, tool, wait time,
 runtime and status; live timings are elapsed so far. Finished timings remain
 available even if earlier lifecycle events have left the window. An unfinished

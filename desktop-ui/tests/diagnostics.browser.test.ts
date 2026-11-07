@@ -118,6 +118,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           return { endpoint: 'http://127.0.0.1:7719/mcp', error: null, snapshot: {
             bootId: '00000000-0000-4000-8000-000000000002', observedAt: queueAt,
             settings: state.noQueueSettings ? undefined : settings,
+            queueDrops: { timeouts: 5, rejections: 9, shutdown: 2 },
             limits: { running: settings.maxConcurrency, waiting: settings.maxQueueSize, waitMs: settings.queueTimeoutMs }, memoryBlocked: true,
             processing: { processedPerSecond: 2.5, processedLastMinute: 30, averageWaitMs: 12.5, averageRunMs: 40 },
             requestsByTool: state.noToolHistory ? undefined : { 'wm-document-query': 13, 'wm-document-read': 12 },
@@ -128,6 +129,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             running: 0, waiting: state.queueGone ? 0 : 1,
             items: state.queueGone ? [] : [{ requestId, operation: 'wm-document-query', caller: 'owner', queuedAt: Date.now() - 1500 }],
             history: [{ at: queueAt - 10000, bootId: '00000000-0000-4000-8000-000000000002', queueDepth: 2, peakQueueDepth: 6,
+              queueDrops: { timeouts: 1, rejections: 3, shutdown: 1 },
               requestsByTool: state.noToolHistory ? undefined : { 'wm-document-query': 10, 'wm-document-read': 5 },
               timingsByTool: {
                 'wm-document-query': { finished: 10, executed: 10, waitMs: 100, runMs: 200 },
@@ -245,13 +247,18 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().series[2].data.map(point => point[1])"), [100]);
           assert.equal(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].max - window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].min"), 60000);
           await wait("window.__diagnosticsTest.chart('Tool request history')?.getOption().series.length === 4");
+          await wait("window.__diagnosticsTest.chart('Queue drops history')?.getOption().series.length === 3");
+          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Queue drops history').getOption().series.map(series=>series.data[0][1])"), [4,6,1]);
+          assert.ok(await evaluate("document.querySelector('[aria-label=\\"Queue processing history\\"]').getBoundingClientRect().top < document.querySelector('[aria-label=\\"Queue drops history\\"]').getBoundingClientRect().top && document.querySelector('[aria-label=\\"Queue drops history\\"]').getBoundingClientRect().top < document.querySelector('[aria-label=\\"Tool request history\\"]').getBoundingClientRect().top"));
+          await evaluate("window.__diagnosticsTest.chart('Queue drops history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
+          await wait("document.body.innerText.includes('Sum Queue Timeouts: 4 drops') && document.body.innerText.includes('Sum Rejections: 6 drops') && document.body.innerText.includes('Sum Shutdown Drops: 1 drops')");
           assert.ok(!(await evaluate("document.querySelector('[aria-label=\\"Queue processing history\\"] svg').textContent")).includes('%'));
           assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('details summary')).map(item=>item.textContent)"),
             ['Top 50 by wait time', 'Top 50 by runtime', 'Queue log']);
           assert.ok(await evaluate("Array.from(document.querySelectorAll('details')).every(item=>!item.open)"));
           assert.equal(await evaluate("document.querySelector('[aria-label=\\"Queue request log\\"]')"), null);
           await evaluate("(() => { const select = document.querySelector('[aria-label=\\"Queue bucket size\\"]'); select.value = '120000'; select.dispatchEvent(new Event('change', { bubbles: true })); })()");
-          await wait("['Queue processing history','Tool request history'].every(label=>window.__diagnosticsTest.chart(label).getOption().xAxis[0].minInterval===120000)");
+          await wait("['Queue processing history','Queue drops history','Tool request history'].every(label=>window.__diagnosticsTest.chart(label).getOption().xAxis[0].minInterval===120000)");
           assert.equal(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].max - window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].min"), 120000);
           await evaluate("(() => { const select = document.querySelector('[aria-label=\\"Queue bucket size\\"]'); select.value = '60000'; select.dispatchEvent(new Event('change', { bubbles: true })); })()");
           await wait("window.__diagnosticsTest.chart('Tool request history').getOption().xAxis[0].minInterval===60000");

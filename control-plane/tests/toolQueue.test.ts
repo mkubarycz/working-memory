@@ -98,6 +98,43 @@ it('uses the configured heap percentage for dispatch and resumes waiters when th
   expect(action).toHaveBeenCalledOnce();
 });
 
+it('counts only capacity, timeout and shutdown drops, excluding cancellations, denials and failed executions', async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, maxQueueSize: 1, queueTimeoutMs: 1000 }, f.queue.state().settings);
+  f.block(true);
+  const pending = f.queue.run(f.metadata(), {}, signal, async () => {});
+  const expired = expect(pending).rejects.toMatchObject({ code: 'expired' });
+  await expect(f.queue.run(f.metadata(), {}, signal, async () => {})).rejects.toMatchObject({ code: 'full' });
+  await vi.advanceTimersByTimeAsync(1000);
+  await expired;
+  await expect(f.queue.run(f.metadata(), {}, AbortSignal.abort(), async () => {})).rejects.toMatchObject({ code: 'cancelled' });
+  f.block(false);
+  await f.queue.run(f.metadata(), {}, signal, async () => 'not_executed' as const, value => value);
+  await expect(f.queue.run(f.metadata(), {}, signal, async () => { throw new Error('Executed failure'); })).rejects.toThrow('Executed failure');
+  f.block(true);
+  const shutdown = f.queue.run(f.metadata(), {}, signal, async () => {});
+  const dropped = expect(shutdown).rejects.toMatchObject({ code: 'shutdown' });
+  f.queue.close();
+  await dropped;
+  expect(f.queue.state().queueDrops).toEqual({ timeouts: 1, rejections: 1, shutdown: 1 });
+});
+
+it('retains drop totals after lifecycle-log truncation without recounting snapshots', async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, maxQueueSize: 1 }, f.queue.state().settings);
+  f.block(true);
+  const pending = f.queue.run(f.metadata(), {}, signal, async () => {});
+  const stopped = expect(pending).rejects.toMatchObject({ code: 'shutdown' });
+  for (let index = 0; index < 2005; index++) {
+    await expect(f.queue.run(f.metadata(), {}, signal, async () => {})).rejects.toMatchObject({ code: 'full' });
+  }
+  expect(f.queue.events(2000)).toHaveLength(2000);
+  expect(f.queue.state().queueDrops.rejections).toBe(2005);
+  expect(f.queue.state().queueDrops.rejections).toBe(2005);
+  f.queue.close();
+  await stopped;
+});
+
 it('runs four calls, bounds the FIFO queue at sixteen, and never executes rejected work', async () => {
   const f = fixture(), gate = deferred(), order: number[] = [];
   const calls = Array.from({ length: 20 }, (_, index) =>

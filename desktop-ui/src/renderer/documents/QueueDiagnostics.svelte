@@ -4,6 +4,7 @@
   import { startVisiblePolling } from '../visiblePolling';
   import { toolQueueRequests, topQueueRequests } from '../toolQueueRequests';
   import { queueProcessingChart } from '../queueProcessingChart';
+  import { queueDropsChart } from '../queueDropsChart';
   import { toolRequestsChart } from '../toolRequestsChart';
   import DiagnosticsTimeSeries from './DiagnosticsTimeSeries.svelte';
 
@@ -35,6 +36,7 @@
   const milliseconds = (value: number | null) => value === null ? '-' : value.toFixed(0);
   const chart = $derived(snapshot ? queueProcessingChart(snapshot, bucketMs) : null);
   const toolsChart = $derived(snapshot && chart ? toolRequestsChart(snapshot, chart, bucketMs, selectedTool) : null);
+  const dropsChart = $derived(snapshot && chart ? queueDropsChart(snapshot, chart, bucketMs) : null);
 
   function apply(next: DesktopToolQueue): void {
     result = next;
@@ -153,6 +155,12 @@
         emptyMessage="No queue samples are available." syncGroup="queue-diagnostics" />
     {/if}
     {#if !snapshot.processing}<p role="status">Processing metrics unavailable on this backend.</p>{/if}
+    <h4>Drops</h4>
+    {#if dropsChart}
+      <DiagnosticsTimeSeries chart={dropsChart} stacked label="Queue drops history"
+        showExplanation={false} showPercentages={false} syncGroup="queue-diagnostics"
+        emptyMessage="Collecting drop history. Older samples cannot be backfilled." />
+    {/if}
     <h4>Tool requests over time</h4>
     {#if toolsChart}
       <DiagnosticsTimeSeries chart={toolsChart} stacked label="Tool request history" bind:selected={selectedTool}

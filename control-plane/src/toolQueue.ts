@@ -39,6 +39,7 @@ export class ToolQueue {
   private stopped = false;
   private peakDepth = 0;
   private readonly requestsByTool = new Map<string, number>();
+  private readonly drops = { timeouts: 0, rejections: 0, shutdown: 0 };
   private readonly timingsByTool = new Map<string, { finished: number; executed: number; waitMs: number; runMs: number }>();
   private lastProcessingPruneSecond: number | undefined;
 
@@ -79,6 +80,9 @@ export class ToolQueue {
   }
 
   private record(item: QueuedTool, event: string): void {
+    if (event === 'expired') this.drops.timeouts++;
+    else if (event === 'full') this.drops.rejections++;
+    else if (event === 'shutdown') this.drops.shutdown++;
     const now = this.clock();
     const startedAt = event === 'not_executed' ? undefined : item.startedAt;
     const waitMs = Math.max(0, (startedAt ?? now) - item.queuedAt);
@@ -217,6 +221,7 @@ export class ToolQueue {
       memoryBlocked: this.memoryBlocked(this.settings.heapDispatchPausePercent),
       processing: this.processing(),
       requestsByTool: Object.fromEntries(this.requestsByTool),
+      queueDrops: { ...this.drops },
       timingsByTool: Object.fromEntries([...this.timingsByTool].map(([tool, totals]) => [tool, { ...totals }])),
       running: this.running.size, waiting: this.waiting.length,
       items: [...this.running.values(), ...this.waiting.map(({ requestId, operation, caller, queuedAt }) => ({

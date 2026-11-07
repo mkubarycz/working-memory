@@ -161,6 +161,7 @@ export class HttpDiagnostics {
       processing: queue?.processing,
       requestsByTool: queue?.requestsByTool,
       timingsByTool: queue?.timingsByTool,
+      queueDrops: queue?.queueDrops,
       operations: queue?.items.slice(0, 8) ?? [],
     };
     this.db.prepare('INSERT INTO instance_runtime_samples(at,data) VALUES(?,?)').run(sample.at, JSON.stringify(sample));

@@ -624,8 +624,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const diagnostics = new HttpDiagnostics(store.db, version, Date.now, toolQueue);
   const queueSnapshot = () => ({
     bootId: diagnostics.bootId, ...toolQueue.state(), events: toolQueue.events(2000),
-    history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool, timingsByTool }) =>
-      ({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool, timingsByTool })),
+    history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool, timingsByTool, queueDrops }) =>
+      ({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool, timingsByTool, queueDrops })),
   });
   let oauth: InstanceOAuth;
   const ownsStore = providedStore === undefined;
@@ -1209,6 +1209,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       transports.clear();
       return new Promise<void>((resolve, reject) => {
         httpServer.close((err) => {
+          try { diagnostics.sample(); }
+          catch (error) { console.error('[diagnostics] Unable to persist final queue sample:', error); }
           diagnostics.close();
           // Only close a store we own; an injected store is the caller's to close.
           if (ownsStore) {

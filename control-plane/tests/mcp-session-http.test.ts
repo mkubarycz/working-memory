@@ -102,6 +102,26 @@ it('configures the real queue only through trusted owner requests, enforcing val
   expect((await f.snapshot()).memory.admissionBlocked).toBe(true);
 });
 
+it('persists a final shutdown-drop sample before closing diagnostics', async () => {
+  const store = openStore(':memory:');
+  const owner = await new InstanceIdentity(store.db).initialize('private shutdown test password');
+  let used = 100, closed = false;
+  const server = await startServer({ port: 0, store, sessionDiagnostics: { memory: () => ({ used, limit: 1000 }) } });
+  const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp`, getToken: () => owner.token });
+  cleanup.push(async () => { await client.dispose(); if (!closed) await server.close(); store.close(); });
+  await client.listTools();
+  used = 650;
+  const pending = client.callTool('wm-ping', {});
+  await vi.waitFor(() => expect(store.db.prepare("SELECT count(*) AS count FROM instance_tool_queue_events WHERE event='queued'").get()?.count).toBe(1));
+  await server.close();
+  closed = true;
+  await pending;
+  const samples = store.db.prepare('SELECT data FROM instance_runtime_samples ORDER BY sequence DESC').all()
+    .map(row => JSON.parse(String(row.data)));
+  expect(samples[0].queueDrops).toEqual({ timeouts: 0, rejections: 0, shutdown: 1 });
+  expect(samples.some(sample => sample.queueDrops?.shutdown === 0)).toBe(true);
+});
+
 it('restricts diagnostics and policy to trusted owner requests and hides all protocol credentials', async () => {
   const f = await fixture(), issued = f.enroll();
   expect((await f.request('/identity/v1/sessions', {}, '')).status).toBe(401);

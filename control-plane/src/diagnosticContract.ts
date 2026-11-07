@@ -29,6 +29,11 @@ export const toolTimingTotalsSchema = z.object({
   finished: z.number().int().nonnegative(), executed: z.number().int().nonnegative(),
   waitMs: z.number().nonnegative(), runMs: z.number().nonnegative(),
 });
+export const queueDropsSchema = z.object({
+  timeouts: z.number().int().nonnegative(),
+  rejections: z.number().int().nonnegative(),
+  shutdown: z.number().int().nonnegative(),
+});
 export const runtimeSampleSchema = z.object({
   at: z.number(), bootId: z.string().uuid(),
   heapUsedBytes: z.number(), heapLimitBytes: z.number(), rssBytes: z.number(),
@@ -39,6 +44,7 @@ export const runtimeSampleSchema = z.object({
   processing: queueProcessingSchema.optional(),
   requestsByTool: z.record(z.string(), z.number().int().nonnegative()).optional(),
   timingsByTool: z.record(z.string(), toolTimingTotalsSchema).optional(),
+  queueDrops: queueDropsSchema.optional(),
   operations: z.array(z.object({
     requestId: z.string().uuid(), operation: z.string(), caller: z.string(),
     queuedAt: z.number(), startedAt: z.number().optional(),
@@ -56,13 +62,14 @@ export const toolQueueSnapshotSchema = z.object({
   processing: queueProcessingSchema.optional(),
   requestsByTool: z.record(z.string(), z.number().int().nonnegative()).optional(),
   timingsByTool: z.record(z.string(), toolTimingTotalsSchema).optional(),
+  queueDrops: queueDropsSchema.optional(),
   items: z.array(queuedToolSchema),
   events: z.array(z.object({
     sequence: z.number().int(), at: z.number(), requestId: z.string().uuid(),
     operation: z.string(), caller: z.string(), event: z.string(),
     waiting: z.number().int(), running: z.number().int(), waitMs: z.number(), runMs: z.number(),
   })),
-  history: z.array(runtimeSampleSchema.pick({ at: true, bootId: true, queueDepth: true, peakQueueDepth: true, runningTools: true, processing: true, requestsByTool: true, timingsByTool: true })),
+  history: z.array(runtimeSampleSchema.pick({ at: true, bootId: true, queueDepth: true, peakQueueDepth: true, runningTools: true, processing: true, requestsByTool: true, timingsByTool: true, queueDrops: true })),
 });
 export type ToolQueueSnapshot = z.infer<typeof toolQueueSnapshotSchema>;
 export interface DesktopToolQueue {
