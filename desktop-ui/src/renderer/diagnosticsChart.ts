@@ -8,6 +8,7 @@ export interface DiagnosticsChartPoint {
 }
 
 export interface DiagnosticsChartSeries {
+  overlay?: boolean;
   key: string;
   label: string;
   unit: string;
@@ -18,6 +19,7 @@ export interface DiagnosticsChartSeries {
 }
 
 export interface DiagnosticsChartData {
+  bucketMs?: number;
   start: number;
   end: number;
   hasData: boolean;
@@ -40,20 +42,21 @@ export function normalizedDiagnosticsChart<Key extends string>(
   input: readonly ({ at: number; bootId?: string } & Record<Key, number | undefined>)[],
   metrics: readonly Metric<Key>[],
   maxGapMs = DIAGNOSTICS_BUCKET_MS,
+  bucketMs = DIAGNOSTICS_BUCKET_MS,
 ): DiagnosticsChartData {
   const samples = [...input].sort((a, b) => a.at - b.at);
   const buckets = new Map<number, typeof samples>();
   for (const sample of samples) {
-    const at = Math.floor(sample.at / DIAGNOSTICS_BUCKET_MS) * DIAGNOSTICS_BUCKET_MS;
+    const at = Math.floor(sample.at / bucketMs) * bucketMs;
     const bucket = buckets.get(at) ?? [];
     bucket.push(sample);
     buckets.set(at, bucket);
   }
   const entries = [...buckets];
   const start = entries[0]?.[0] ?? 0;
-  const end = (entries.at(-1)?.[0] ?? start) + DIAGNOSTICS_BUCKET_MS;
+  const end = (entries.at(-1)?.[0] ?? start) + bucketMs;
   return {
-    start, end, hasData: samples.length > 0,
+    start, end, bucketMs, hasData: samples.length > 0,
     series: metrics.map(metric => {
       const points: DiagnosticsChartPoint[] = entries.map(([from, bucket], index) => {
         const values = bucket.flatMap(sample => {
@@ -66,7 +69,7 @@ export function normalizedDiagnosticsChart<Key extends string>(
         const value = !values.length ? null : metric.aggregation === 'max' ? Math.max(...values)
           : values.reduce((total, value) => total + value, 0) / (metric.aggregation === 'sum' ? 1 : values.length);
         return {
-          at: from + DIAGNOSTICS_BUCKET_MS / 2, from, to: from + DIAGNOSTICS_BUCKET_MS,
+          at: from + bucketMs / 2, from, to: from + bucketMs,
           value, normalized: null,
           breakBefore: !previous || previous[metric.key] === undefined || previous.bootId !== first.bootId
             || first.at - previous.at > maxGapMs

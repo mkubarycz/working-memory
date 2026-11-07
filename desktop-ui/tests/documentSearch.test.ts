@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createServer } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { fileURLToPath } from 'node:url';
-import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, searchByIntent, searchInstructions } from '../src/main/documentSearch';
+import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, requireSemanticSearchReady, searchByIntent, searchWithMatches, searchInstructions } from '../src/main/documentSearch';
 import { createSearchViewState, searchContextForDocument, searchContextForSession, searchStateAfterTabChange } from '../src/renderer/documentSearch';
 import { chatToolsWithFeatures, sanitizeForJournalWithMetadata, systemPromptForContext } from '../src/main/desktopChatAgent';
 import { createModelConversation, type ParsedModelTurn } from '../src/main/modelTools';
@@ -12,7 +12,7 @@ import { chatContextForDocument } from '../src/shared/contracts';
 import type { DocumentEnvelope, Workstream } from '../../shared/controlPlaneClient';
 import type { DocumentQueryResult, QueryDocument, SearchBlock } from '../../shared/documentSearch';
 
-const hit = { id: 'topic-1', kind: 'Topic', title: 'OAuth sign-in', excerpt: 'Reliable identity handshakes.', score: 2 };
+const hit = { id: 'topic-1', kind: 'Topic', title: 'OAuth sign-in', excerpt: 'Reliable identity handshakes.', score: 0.81, similarity: 0.81, resourceVersion: 4 };
 const topic: DocumentEnvelope = { kind: 'Topic', metadata: { id: hit.id, labels: {}, createdAt: 1, updatedAt: 1, deletedAt: null, resourceVersion: 4 },
   spec: { title: hit.title, body: 'Untouched markdown', status: 'open', workstreams: ['existing'], parents: ['parent'], focusedWorkstreams: ['existing'] }, status: {} };
 const ws = (id: string, status = 'progress'): Workstream => ({
@@ -35,7 +35,7 @@ function harness(turns: ParsedModelTurn[]) {
   return {
     conversation: createModelConversation({ mode: 'chat-completions', model: 'test', userMessage: 'test',
       systemPrompt: searchInstructions(), tools: readOnlySearchTools([
-        { name: 'wm-document-query' }, { name: 'wm-document-search' }, { name: 'ws-topic-delete' },
+        { name: 'wm-document-query' }, { name: 'wm-semantic-search' }, { name: 'wm-document-search' }, { name: 'ws-topic-delete' },
       ]) }),
     turn: vi.fn(async () => {
       const next = turns.shift();
@@ -44,12 +44,239 @@ function harness(turns: ParsedModelTurn[]) {
       return previous;
     }),
     callTool: vi.fn(async (_name: string, _args: Record<string, unknown>) => ({ ok: true, result: queryResult() })),
-    apps: { list: vi.fn(async () => []), discover: vi.fn(), call: vi.fn() },
     signal: new AbortController().signal,
   };
 }
 
 describe('agentic document search', () => {
+  it('returns a single-word search locally without an AI turn or extra reads', async () => {
+    const timings = { startupMs: 0, inferenceMs: 7, rankingMs: 80, hostMs: 10 };
+    const dependencies = { ...harness([]), conversation: undefined, onResults: vi.fn(),
+      prepareConversation: vi.fn(async (): Promise<ReturnType<typeof createModelConversation>> => { throw new Error('No AI profile'); }) };
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 1, results: [hit], timings } });
+    const response = await searchWithMatches('nanites', dependencies);
+    expect(response.results[0].id).toBe(hit.id);
+    expect(response.trace?.[0].timings).toEqual(timings);
+    expect(dependencies.onResults).toHaveBeenCalledWith(response);
+    expect(dependencies.turn).not.toHaveBeenCalled();
+    expect(dependencies.prepareConversation).not.toHaveBeenCalled();
+    expect(dependencies.callTool).toHaveBeenCalledOnce();
+  });
+
+  it('publishes matches before a pending AI turn and preserves timing on refinement failure', async () => {
+    let reject!: (error: Error) => void;
+    const dependencies = { ...harness([]), onResults: vi.fn(), onTrace: vi.fn() };
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 1, results: [hit] } });
+    dependencies.turn.mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const pending = searchWithMatches('model research', dependencies);
+    const rejected = expect(pending).rejects.toThrow('Model unavailable');
+    await vi.waitFor(() => expect(dependencies.turn).toHaveBeenCalledOnce());
+    expect(dependencies.onResults).toHaveBeenCalledWith(expect.objectContaining({ results: [expect.objectContaining({ id: hit.id })] }));
+    reject(new Error('Model unavailable'));
+    await rejected;
+    expect(dependencies.onTrace).toHaveBeenLastCalledWith(expect.objectContaining({
+      stage: 'ai', status: 'error', durationMs: expect.any(Number), error: 'Model unavailable',
+    }));
+  });
+
+  it('does not require AI to return a genuine empty term search', async () => {
+    const dependencies = harness([]);
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 0, results: [] } });
+    expect((await searchWithMatches('unknownterm', dependencies)).results).toEqual([]);
+    expect(dependencies.turn).not.toHaveBeenCalled();
+  });
+
+  it('treats capped term matches as normal results, not partial evidence or a tool failure', async () => {
+    const dependencies = harness([]);
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 1, results: [hit], limited: true } });
+    const response = await searchWithMatches('health', dependencies);
+    expect(response).toMatchObject({ limited: true, partial: false, results: [expect.objectContaining({ id: hit.id })] });
+    expect(response.trace).toEqual([expect.objectContaining({ status: 'success' })]);
+    expect(dependencies.turn).not.toHaveBeenCalled();
+    expect(dependencies.callTool).toHaveBeenCalledOnce();
+  });
+
+  it('publishes results before AI configuration failure and cancels pending refinement without losing the publication', async () => {
+    const controller = new AbortController();
+    const dependencies = { ...harness([]), signal: controller.signal, onResults: vi.fn() };
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 1, results: [hit] } });
+    dependencies.turn.mockImplementation(() => new Promise(() => {}));
+    const pending = searchWithMatches('model research', dependencies);
+    const cancelled = expect(pending).rejects.toThrow('Search cancelled');
+    await vi.waitFor(() => expect(dependencies.turn).toHaveBeenCalledOnce());
+    controller.abort(new Error('Search cancelled'));
+    await cancelled;
+    expect(dependencies.onResults).toHaveBeenCalledOnce();
+    const unconfigured = { ...harness([]), conversation: undefined, onResults: vi.fn(),
+      prepareConversation: vi.fn(async (): Promise<ReturnType<typeof createModelConversation>> => { throw new Error('No AI profile'); }) };
+    unconfigured.callTool.mockResolvedValue({ ok: true, result: { count: 1, results: [hit] } });
+    await expect(searchWithMatches('model research', unconfigured)).rejects.toThrow('No AI profile');
+    expect(unconfigured.onResults).toHaveBeenCalledOnce();
+  });
+
+  it.each(['transport', 'tool', 'malformed'] as const)('reports initial retrieval failures in read-only activity (%s)', async failure => {
+    const dependencies = { ...harness([]), onTrace: vi.fn() };
+    const message = 'Search timed out while starting the local embedding model.';
+    if (failure === 'transport') dependencies.callTool.mockRejectedValue(new Error(message));
+    else if (failure === 'tool') dependencies.callTool.mockResolvedValue({ ok: false, error: message });
+    else dependencies.callTool.mockResolvedValue({ ok: true, result: { results: [] } });
+    await expect(searchWithMatches('nanites', dependencies)).rejects.toThrow(failure === 'malformed' ? 'Malformed' : message);
+    expect(dependencies.onTrace).toHaveBeenCalledOnce();
+    expect(dependencies.onTrace).toHaveBeenCalledWith(expect.objectContaining({
+      tool: 'wm-semantic-search', status: 'error', durationMs: expect.any(Number),
+      arguments: expect.objectContaining({ literalQuery: 'nanites' }), error: expect.any(String),
+    }));
+    expect(dependencies.turn).not.toHaveBeenCalled();
+  });
+
+  it.each([23, 24])('keeps the 24-call total budget including initial retrieval (%s additional calls)', async count => {
+    const calls = Array.from({ length: count }, (_, index) => ({
+      id: `read-${index}`, name: 'wm-document-query', arguments: { id: hit.id },
+    }));
+    const dependencies = harness([
+      { text: '', calls, assistantMessage: { role: 'assistant', content: null, tool_calls: calls.map(item => ({
+        id: item.id, type: 'function', function: { name: item.name, arguments: JSON.stringify(item.arguments) },
+      })) } },
+      answer([{ type: 'list', items: [{ sourceId: hit.id, text: 'Supporting evidence.' }] }]),
+    ]);
+    dependencies.callTool.mockResolvedValueOnce({ ok: true, result: { count: 1, results: [hit] } });
+    const pending = searchWithMatches('model research', dependencies);
+    if (count === 23) {
+      expect((await pending).trace?.filter(entry => entry.stage !== 'ai')).toHaveLength(24);
+      expect(dependencies.callTool).toHaveBeenCalledTimes(24);
+    } else {
+      await expect(pending).rejects.toThrow('24 total; 1 used, 24 requested');
+      expect(dependencies.callTool).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each(['chat-completions', 'responses'] as const)('handles a batch of five evidence reads after initial retrieval and an empty literal query (%s)', async mode => {
+    const hits = Array.from({ length: 4 }, (_, index) => ({ ...hit, id: `source-${index}` }));
+    const calls = [
+      ...hits.map(source => ({ id: `read-${source.id}`, name: 'wm-document-query', arguments: { id: source.id } })),
+      { id: 'types', name: 'wm-document-query', arguments: { kind: 'TopicType' } },
+    ];
+    const dependencies = harness([
+      call('literal', 'wm-document-query', { query: 'model research' }),
+      { text: '', calls, assistantMessage: { role: 'assistant', content: null, tool_calls: calls.map(item => ({
+        id: item.id, type: 'function', function: { name: item.name, arguments: JSON.stringify(item.arguments) },
+      })) } },
+      answer([{ type: 'list', items: hits.map(source => ({ sourceId: source.id, text: 'Supporting research.' })) }]),
+    ]);
+    dependencies.conversation = createModelConversation({ ...dependencies.conversation, mode });
+    dependencies.callTool.mockImplementation(async (name, args) => name === 'wm-semantic-search'
+      ? { ok: true, result: { count: hits.length, results: hits } }
+      : { ok: true, result: queryResult(typeof args.id === 'string' ? [queryDoc(args.id)] : []) });
+    const response = await searchWithMatches('model research', dependencies);
+    expect(response.results.map(source => source.id)).toEqual(hits.map(source => source.id));
+    expect(response.trace?.filter(entry => entry.stage !== 'ai')).toHaveLength(7);
+    expect(response.trace?.filter(entry => entry.stage === 'ai')).toHaveLength(3);
+    expect(response.trace?.every(entry => entry.status === 'success')).toBe(true);
+    expect(dependencies.callTool).toHaveBeenCalledTimes(7);
+    const outputs = mode === 'responses' ? dependencies.conversation.responseInput
+      : dependencies.conversation.chatMessages?.filter(message => message.role === 'tool').slice(-5);
+    expect(outputs).toHaveLength(5);
+  });
+
+  it.each(['chat-completions', 'responses'] as const)('retrieves a phrase before asking questions and retains scored term matches before suggestions (%s)', async mode => {
+    const dependencies = harness([answer([{ type: 'clarification', text: 'You can narrow these matches.',
+      suggestions: ['Find bank account setup', 'Find bank networking notes'] }])]);
+    dependencies.conversation = createModelConversation({ ...dependencies.conversation, mode });
+    const literal = { ...hit, title: 'Account setup', excerpt: 'Configure the bank account.', literalMatch: true,
+      similarity: 0.1, score: 0.1, confidence: { level: 'high' as const, reason: 'Exact word match.' } };
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 1, results: [literal] } });
+    const response = await searchWithMatches('bank account', dependencies);
+    expect(dependencies.callTool).toHaveBeenCalledWith('wm-semantic-search', expect.objectContaining({ queries: ['bank account'], literalQuery: 'bank account' }));
+    expect(response.blocks?.map(block => block.type)).toEqual(['list', 'clarification']);
+    expect(response.results[0]).toMatchObject({ literalMatch: true, similarity: 0.1, confidence: { level: 'high' } });
+    expect(JSON.stringify(mode === 'responses' ? dependencies.conversation.responseInput : dependencies.conversation.chatMessages)).toContain('Host-retrieved search evidence');
+    expect(response.trace?.[0].tool).toBe('wm-semantic-search');
+  });
+
+  it('orders literal results before semantic-only model selections without dropping either', async () => {
+    const other = { ...hit, id: 'semantic', score: 0.95, similarity: 0.95 };
+    const dependencies = harness([answer([{ type: 'list', items: [{ sourceId: other.id, text: 'A related concept.' }] }])]);
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 2, results: [
+      { ...hit, literalMatch: true, similarity: 0.1, score: 0.1 }, other,
+    ] } });
+    const response = await searchWithMatches('bank account', dependencies);
+    expect(response.results.map(result => result.id)).toEqual([hit.id, other.id]);
+    expect(response.blocks?.[0]).toMatchObject({ type: 'list', items: [{ sourceId: hit.id }] });
+  });
+
+  it('does not ask the model when initial retrieval fails or the request is cancelled', async () => {
+    const dependencies = harness([]);
+    dependencies.callTool.mockRejectedValue(new Error('Backend unavailable'));
+    await expect(searchWithMatches('bank', dependencies)).rejects.toThrow('Backend unavailable');
+    expect(dependencies.turn).not.toHaveBeenCalled();
+    const controller = new AbortController();
+    controller.abort();
+    dependencies.signal = controller.signal;
+    dependencies.callTool.mockClear();
+    await expect(searchWithMatches('bank', dependencies)).rejects.toThrow();
+    expect(dependencies.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { enabled: false, ready: false, pending: 0, error: 'Enable Embeddings' },
+    { enabled: true, ready: false, pending: 2, error: '2 documents pending' },
+  ])('does not invoke a model or retrieval while the semantic index is unavailable (%j)', async state => {
+    const client = { callTool: vi.fn(async () => ({ ok: true, result: {
+      enabled: state.enabled, ready: state.ready,
+      stats: { total: 2, indexed: 2 - state.pending, pending: state.pending, limited: 0, vectorBytes: 0, lastIndexedAt: null },
+    } })) };
+    const dependencies = { ...harness([]), assertEnabled: () => requireSemanticSearchReady(client) };
+    await expect(searchByIntent('Find a related subject', dependencies)).rejects.toThrow(state.error);
+    expect(dependencies.turn).not.toHaveBeenCalled();
+    expect(dependencies.callTool).not.toHaveBeenCalled();
+    expect(client.callTool).toHaveBeenCalledWith('wm-semantic-status', {}, undefined);
+  });
+
+  it('preserves semantic relevance and the supporting passage when reading additional source evidence', async () => {
+    const dependencies = harness([
+      call('discover', 'wm-semantic-search', { queries: ['Trouble signing in'] }),
+      call('read', 'wm-document-query', { id: hit.id }),
+      answer([{ type: 'list', items: [{ sourceId: hit.id, text: 'Describes the authentication handshake.' }] }]),
+    ]);
+    const confidence = { level: 'high' as const, reason: 'Strong passage and document evidence agree.' };
+    dependencies.callTool.mockResolvedValueOnce({ ok: true, result: { count: 1, results: [{ ...hit, confidence, literalMatch: true }], limited: true } })
+      .mockResolvedValueOnce({ ok: true, result: queryResult([queryDoc(hit.id, { body: 'Full source evidence' })]) });
+    const result = await searchByIntent('Trouble signing in', dependencies);
+    expect(result.results[0]).toMatchObject({ id: hit.id, excerpt: hit.excerpt, similarity: 0.81, score: 0.81, confidence, literalMatch: true });
+    expect(result.partial).toBe(true);
+  });
+
+  it('can ask a focused clarification after finding ambiguous semantic evidence without treating scores as confidence', async () => {
+    const dependencies = harness([
+      call('discover', 'wm-semantic-search', { queries: ['Connection failures'] }),
+      answer([{ type: 'clarification', text: 'Is this about signing in or network routing?',
+        suggestions: ['Find sign-in connection failures', 'Find network routing failures'] }]),
+    ]);
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 1, results: [hit] } });
+    const result = await searchByIntent('Connection failures', dependencies);
+    expect(result.blocks?.[0]).toMatchObject({ type: 'clarification' });
+    expect(result.results).toEqual([]);
+    expect(searchInstructions()).toContain('never a confidence percentage');
+    expect(searchInstructions()).toContain('Connected applications are excluded');
+  });
+
+  it('does not attach a stale similarity or passage to a newer document revision', async () => {
+    const dependencies = harness([
+      call('discover', 'wm-semantic-search', { queries: ['Trouble signing in'] }),
+      call('read', 'wm-document-query', { id: hit.id }),
+      answer([{ type: 'list', items: [{ sourceId: hit.id, text: 'Current evidence.' }] }]),
+    ]);
+    dependencies.callTool.mockResolvedValueOnce({ ok: true, result: { count: 1, results: [
+      { ...hit, literalMatch: true, confidence: { level: 'high', reason: 'Exact term match.' } },
+    ] } })
+      .mockResolvedValueOnce({ ok: true, result: queryResult([queryDoc(hit.id, { body: 'New evidence', resourceVersion: 5 })]) });
+    const result = await searchByIntent('Trouble signing in', dependencies);
+    expect(result.results[0]).toMatchObject({ resourceVersion: 5, excerpt: 'New evidence', score: 0 });
+    expect(result.results[0].similarity).toBeUndefined();
+    expect(result.results[0].confidence).toBeUndefined();
+    expect(result.results[0].literalMatch).toBeUndefined();
+  });
+
   it('blocks model execution while disabled and rejects an answer if disabled during the model call', async () => {
     const assertEnabled = vi.fn(async () => { throw new Error('Search is turned off'); });
     const dependencies = { ...harness([answer([{ type: 'clarification', question: 'Which scope?' }])]), assertEnabled };
@@ -59,12 +286,11 @@ describe('agentic document search', () => {
     assertEnabled.mockResolvedValueOnce(undefined);
     await expect(searchByIntent('Find cases', dependencies)).rejects.toThrow('Search is turned off');
     expect(dependencies.turn).toHaveBeenCalledTimes(1);
-    expect(dependencies.apps.list).not.toHaveBeenCalled();
   });
 
-  it('rechecks the feature before each read, including app discovery', async () => {
+  it('rechecks availability before each read', async () => {
     const turn = call('first', 'wm-document-query', {});
-    turn.calls.push({ id: 'apps', name: 'list_container_apps', arguments: {} });
+    turn.calls.push({ id: 'second', name: 'wm-document-query', arguments: {} });
     let enabled = true;
     const dependencies = { ...harness([turn]), assertEnabled: async () => {
       if (!enabled) throw new Error('Search is turned off');
@@ -72,7 +298,6 @@ describe('agentic document search', () => {
     dependencies.callTool.mockImplementation(async () => { enabled = false; return { ok: true, result: queryResult() }; });
     await expect(searchByIntent('Find cases', dependencies)).rejects.toThrow('Search is turned off');
     expect(dependencies.callTool).toHaveBeenCalledTimes(1);
-    expect(dependencies.apps.list).not.toHaveBeenCalled();
   });
 
   it('cancels promptly while a feature check is pending', async () => {
@@ -98,15 +323,15 @@ describe('agentic document search', () => {
     ]);
     expect(result.results[0].reason).toBe('Reliable authentication.');
     expect(result.partial).toBe(false);
-    expect(result.trace).toHaveLength(2);
+    expect(result.trace?.filter(entry => entry.stage !== 'ai')).toHaveLength(2);
     expect(JSON.stringify(dependencies.conversation.chatMessages)).toContain(hit.excerpt);
     expect(dependencies.conversation.tools.some(tool => /delete/.test(tool.name))).toBe(false);
   });
 
   it('lets the model retry different concepts after an empty search', async () => {
     const dependencies = harness([
-      call('first', 'wm-document-search', { queries: ['vpost express route'] }),
-      call('retry', 'wm-document-search', { queries: ['ExpressRoute', 'vpost'] }),
+      call('first', 'wm-semantic-search', { queries: ['vpost express route'] }),
+      call('retry', 'wm-semantic-search', { queries: ['ExpressRoute', 'vpost'] }),
       answer([{ type: 'list', items: [{ sourceId: hit.id, text: 'Matching route evidence.' }] }]),
     ]);
     dependencies.callTool.mockResolvedValueOnce({ ok: true, result: { count: 0, results: [] } })
@@ -183,25 +408,16 @@ describe('agentic document search', () => {
     ]) });
     expect((await searchByIntent('Summarize', dependencies)).partial).toBe(false);
   });
-  it('allows registered read-only app discovery and grounds adaptive app answers', async () => {
-    const dependencies = harness([
-      call('apps', 'list_container_apps', {}),
-      call('tools', 'container_app_tools', { appId: 'queries' }),
-      call('capacity', 'app__queries__read', { query: 'Azure capacity' }),
-      answer([{ type: 'list', items: [{ sourceId: 'app:queries:capacity', text: 'Capacity queries returned by the registered app.' }] }]),
-    ]);
-    dependencies.apps.list.mockResolvedValue([{ id: 'queries', title: 'Query store', capabilities: ['queries'], mcpAvailable: true }]);
-    dependencies.apps.discover.mockResolvedValue({ app: { id: 'queries' }, tools: [{ name: 'app__queries__read' }] });
-    dependencies.apps.call.mockResolvedValue({ appId: 'queries', title: 'Query store', result: { queries: ['Azure capacity'], apiKey: 'secret' } });
-    const result = await searchByIntent('Show me queries about capacity in azure', dependencies);
-    expect(result.results[0].appId).toBe('queries');
-    expect(result.results[0].excerpt).not.toContain('"secret"');
-    expect(dependencies.apps.call).toHaveBeenCalledWith('app__queries__read', { query: 'Azure capacity' }, expect.any(AbortSignal));
+  it.each(['list_container_apps', 'container_app_tools', 'app__queries__read', 'wm-document-search'])('does not expose or execute %s', async name => {
+    const dependencies = harness([call('outside', name, {})]);
+    expect(dependencies.conversation.tools.some(tool => tool.name === name)).toBe(false);
+    await expect(searchByIntent('Find information', dependencies)).rejects.toThrow('unavailable or mutating tool');
+    expect(dependencies.callTool).not.toHaveBeenCalled();
   });
 
-  it('rejects uncited facts after an empty catalog and represents empty retrievals as verified zero counts', async () => {
+  it('rejects uncited facts and represents empty structured retrievals as verified zero counts', async () => {
     await expect(searchByIntent('Summarize cases', harness([
-      call('apps', 'list_container_apps', {}),
+      call('empty', 'wm-document-query', {}),
       answer([{ type: 'summary', text: 'All cases are resolved.', sourceIds: [] }]),
     ]))).rejects.toThrow();
     const dependencies = harness([
@@ -223,7 +439,7 @@ describe('agentic document search', () => {
 
   it('accepts a verified zero count from an empty indexed search and exposes its query ID', async () => {
     const dependencies = harness([
-      call('empty-index', 'wm-document-search', { queries: ['does not exist'] }),
+      call('empty-index', 'wm-semantic-search', { queries: ['does not exist'] }),
       answer([{ type: 'count', label: 'Matching documents', value: 0, queryId: 'empty-index' }]),
     ]);
     dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 0, results: [] } });
@@ -236,7 +452,7 @@ describe('agentic document search', () => {
 
   it.each([1, 20])('does not verify a nonzero indexed hit count with limit %s as a total', async limit => {
     const dependencies = harness([
-      call('limited-index', 'wm-document-search', { queries: ['OAuth'], limit }),
+      call('limited-index', 'wm-semantic-search', { queries: ['OAuth'], limit }),
       answer([{ type: 'count', label: 'All matches', value: 1, queryId: 'limited-index' }]),
     ]);
     dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 1, results: [hit] } });
@@ -261,68 +477,9 @@ describe('agentic document search', () => {
     expect(dependencies.callTool).not.toHaveBeenCalled();
   });
 
-  it('sanitizes descriptors sent to the model while preserving schema names and invocation constraints', async () => {
-    const dependencies = harness([
-      call('tools', 'container_app_tools', { appId: 'queries' }),
-      answer([{ type: 'clarification', text: 'Choose a query.', suggestions: [] }]),
-    ]);
-    dependencies.apps.discover.mockResolvedValue({ tools: [{
-      name: 'app__queries__read', description: 'apiKey=descriptor-secret',
-      inputSchema: { type: 'object', additionalProperties: false, required: ['apiKey', 'default'],
-        properties: { apiKey: { type: 'string', minLength: 4, default: 'schema-secret', examples: ['example-secret'] },
-          default: { type: 'string', enum: ['capacity', 'usage'] },
-          mode: { const: { default: 'safe', description: 'Literal object' } } } },
-    }] });
-    await searchByIntent('Find capacity', dependencies);
-    const descriptor = dependencies.conversation.tools.find(tool => tool.name === 'app__queries__read');
-    expect(descriptor?.inputSchema).toEqual({ type: 'object', additionalProperties: false, required: ['apiKey', 'default'],
-      properties: { apiKey: { type: 'string', minLength: 4 }, default: { type: 'string', enum: ['capacity', 'usage'] },
-        mode: { const: { default: 'safe', description: 'Literal object' } } } });
-    expect(JSON.stringify(dependencies.conversation)).not.toMatch(/descriptor-secret|schema-secret|example-secret/);
-  });
-
-  it('rejects descriptors with credential literal constraints rather than exposing secrets or changing constraints', async () => {
-    const dependencies = harness([
-      call('tools', 'container_app_tools', { appId: 'queries' }),
-      answer([{ type: 'clarification', text: 'Choose another app.', suggestions: [] }]),
-    ]);
-    dependencies.apps.discover.mockResolvedValue({ tools: [{
-      name: 'app__queries__read', inputSchema: { type: 'object', properties: { apiKey: { const: 'constraint-secret' } } },
-    }] });
-    await expect(searchByIntent('Find capacity', dependencies)).rejects.toThrow('credential-valued constraints');
-    expect(JSON.stringify(dependencies.conversation)).not.toContain('constraint-secret');
-    expect(dependencies.conversation.tools.some(tool => tool.name === 'app__queries__read')).toBe(false);
-  });
-
-  it.each(['$ref', '$dynamicRef', '$recursiveRef'])('rejects uninspected credential schema %s targets before model registration', async reference => {
-    const dependencies = harness([
-      call('tools', 'container_app_tools', { appId: 'queries' }),
-      answer([{ type: 'clarification', text: 'Choose another app.', suggestions: [] }]),
-    ]);
-    dependencies.apps.discover.mockResolvedValue({ tools: [{
-      name: 'app__queries__read', inputSchema: { type: 'object',
-        $defs: { Auth: { const: 'referenced-secret' } },
-        properties: { apiKey: { allOf: [{ [reference]: reference === '$recursiveRef' ? '#' : '#/$defs/Auth' }] } } },
-    }] });
-    await expect(searchByIntent('Find capacity', dependencies)).rejects.toThrow('credential-valued schema references');
-    expect(JSON.stringify(dependencies.conversation)).not.toContain('referenced-secret');
-    expect(dependencies.conversation.tools.some(tool => tool.name === 'app__queries__read')).toBe(false);
-  });
-
-  it('retains noncredential schema references and their validation constraints', async () => {
-    const dependencies = harness([
-      call('tools', 'container_app_tools', { appId: 'queries' }),
-      answer([{ type: 'clarification', text: 'Choose a query.', suggestions: [] }]),
-    ]);
-    const inputSchema = { type: 'object', $defs: { Query: { type: 'string', minLength: 1 } },
-      properties: { query: { $ref: '#/$defs/Query' } }, required: ['query'] };
-    dependencies.apps.discover.mockResolvedValue({ tools: [{ name: 'app__queries__read', inputSchema }] });
-    await searchByIntent('Find capacity', dependencies);
-    expect(dependencies.conversation.tools.find(tool => tool.name === 'app__queries__read')?.inputSchema).toEqual(inputSchema);
-  });
-
   it('keeps ordinary chat tools usable when feature reads fail or time out, with a visible diagnostic', async () => {
-    const catalog = [{ name: 'ws-topic-read' }, { name: 'wm-document-search' }, { name: 'wm-document-query' }];
+    const catalog = [{ name: 'ws-topic-read' }, { name: 'wm-document-search' }, { name: 'wm-document-query' },
+      { name: 'wm-semantic-search' }, { name: 'wm-semantic-status' }];
     const client = { listTools: async () => catalog };
     const onError = vi.fn();
     expect(await chatToolsWithFeatures(client, async () => { throw new Error('HTTP 503'); }, onError)).toEqual([catalog[0]]);
@@ -352,38 +509,6 @@ describe('agentic document search', () => {
     const fresh = searchStateAfterTabChange(state, [search, other], [other]);
     expect(fresh).toEqual(createSearchViewState());
     expect(searchContextForSession(fresh, other)).toMatchObject({ workstreams: [{ id: 'other', title: 'Other workstream' }] });
-  });
-
-  it.each([false, true])('redacts structured application text before forwarding success/error (isError=%s)', async isError => {
-    const dependencies = harness([
-      call('tools', 'container_app_tools', { appId: 'queries' }),
-      call('read', 'app__queries__read', {}),
-      answer([{ type: 'clarification', text: 'Choose a narrower query.', suggestions: ['Search by title'] }]),
-    ]);
-    dependencies.apps.discover.mockResolvedValue({ tools: [{ name: 'app__queries__read' }] });
-    dependencies.apps.call.mockResolvedValue({ appId: 'queries', title: 'Queries', result: {
-      isError, content: [{ type: 'text', text: JSON.stringify({ nested: {
-        password: 'plain-password', apiKey: 'plain-key', access_token: 'plain-token', result: 'Safe evidence',
-      } }) }],
-    } });
-    const result = await searchByIntent('Find queries', dependencies);
-    const exposed = JSON.stringify([result, dependencies.conversation.chatMessages]);
-    for (const secret of ['plain-password', 'plain-key', 'plain-token']) expect(exposed).not.toContain(secret);
-    expect(exposed).toContain('Safe evidence');
-  });
-
-  it('marks a nested application result incomplete when sanitization drops array members', async () => {
-    const dependencies = harness([
-      call('tools', 'container_app_tools', { appId: 'queries' }),
-      call('read', 'app__queries__read', {}),
-      answer([{ type: 'summary', text: 'Partial query results.', sourceIds: ['app:queries:read'] }]),
-    ]);
-    dependencies.apps.discover.mockResolvedValue({ tools: [{ name: 'app__queries__read' }] });
-    dependencies.apps.call.mockResolvedValue({ appId: 'queries', title: 'Queries',
-      result: { nested: Array.from({ length: 1_001 }, () => 1) } });
-    expect((await searchByIntent('All queries', dependencies)).partial).toBe(true);
-    const output = dependencies.conversation.chatMessages?.find(message => message.role === 'tool' && message.tool_call_id === 'read');
-    expect(JSON.parse(String(output?.content))).toMatchObject({ truncated: true });
   });
 
   it('reports all sanitizer bounds and redacts malformed credential-bearing prose', () => {
@@ -421,10 +546,10 @@ describe('agentic document search', () => {
     failure.callTool.mockResolvedValue({ ok: false, result: undefined });
     await expect(searchByIntent('find', failure)).rejects.toThrow('could not read');
     const secrets = harness([
-      call('secret', 'wm-document-search', { queries: ['password'], kinds: ['Config'] }),
+      call('secret', 'wm-semantic-search', { queries: ['password'], kinds: ['Config'] }),
       answer([{ type: 'summary', text: 'No matches.', sourceIds: [] }]),
     ]);
-    await expect(searchByIntent('find', secrets)).rejects.toThrow('configuration secrets');
+    await expect(searchByIntent('find', secrets)).rejects.toThrow('Invalid option');
     expect(secrets.callTool).not.toHaveBeenCalled();
   });
 
@@ -503,10 +628,10 @@ describe('agentic document search', () => {
     expect(chatContextForDocument(doc)).toBeUndefined();
   });
 
-  it('renders native links, explanations and topic-only membership actions without body previews safely', async () => {
+  it('renders shared collapsed result rows, native links, relevance and escaped explanations safely', async () => {
     const state = createSearchViewState();
     state.response = { query: 'login', queries: ['OAuth'], results: [
-      { ...hit, reason: 'Authentication <script>not executable</script>' },
+      { ...hit, similarity: 0.81, reason: 'Authentication <script>not executable</script>' },
       { ...hit, id: 'workstream', kind: 'Workstream', reason: 'Related initiative', excerpt: '\n ' },
     ] };
     const server = await createServer({ configFile: false, root: fileURLToPath(new URL('..', import.meta.url)),
@@ -522,9 +647,10 @@ describe('agentic document search', () => {
       expect(body).not.toContain(hit.excerpt);
       expect(body).not.toContain('<blockquote');
       expect(body).not.toContain('<summary>Evidence</summary>');
-      expect(body.match(/<footer\b/g)).toHaveLength(1);
+      expect(body).toContain('Relevance 0.81');
+      expect(body).toContain('aria-expanded="false"');
+      expect(body).not.toContain('<footer');
       expect(body).toContain('placeholder="Describe what you want to find"');
-      expect(body.match(/Add to workstream/g)).toHaveLength(1);
     } finally { await server.close(); }
   });
 });

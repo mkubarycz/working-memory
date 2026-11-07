@@ -1,5 +1,6 @@
 import type {
   ContainerAppResourceReference,
+  DesktopApi,
   PreparedResourceDrag,
 } from '../shared/contracts';
 import type { WorkstreamSection } from '../../../shared/panelData';
@@ -28,6 +29,69 @@ const RESOURCE_URI_RE =
 export interface ResourceDragLink {
   href: string;
   markdown: string;
+}
+
+export interface TopicLinkReference {
+  id: string;
+  title: string;
+}
+
+export class TopicLinkDragController {
+  private cache: ResourceDragPreparationCache;
+  private owned: ActiveResourceDrag | null = null;
+  private nativeFile: string | null = null;
+
+  constructor(
+    private api: Pick<DesktopApi, 'prepareResourceDrag' | 'startResourceDrag' | 'onResourceDragResult'>,
+    private current: () => ActiveResourceDrag | null,
+    private update: (drag: ActiveResourceDrag | null) => void,
+    private onError: (message: string) => void,
+  ) {
+    this.cache = new ResourceDragPreparationCache(
+      (uri, title) => api.prepareResourceDrag(uri, title),
+      error => onError(`Unable to prepare drag context: ${error instanceof Error ? error.message : String(error)}`),
+    );
+  }
+  private uri(id: string): string {
+    return `working-memory:/topic/${encodeURIComponent(id)}.working-memory`;
+  }
+  prepare(id: string, title: string): void {
+    this.cache.prepare(this.uri(id), title);
+  }
+  clear(): void { this.cache.clear(); }
+  get native(): boolean { return this.nativeFile !== null; }
+  listen(): () => void {
+    return this.api.onResourceDragResult(result => {
+      if (result.filePath !== this.nativeFile || result.status !== 'failed') return;
+      this.finish();
+      this.onError(`Unable to drag Working Memory context: ${result.error ?? 'Native drag failed.'}`);
+    });
+  }
+  start(event: DragEvent, id: string, title: string, sourceWorkstream = ''): void {
+    event.stopPropagation();
+    const uri = this.uri(id);
+    const prepared = this.cache.get(uri);
+    event.dataTransfer?.clearData();
+    if (!setResourceDragData(event.dataTransfer, uri, title, prepared)) {
+      event.preventDefault();
+      this.onError('Unable to drag this Working Memory link.');
+      return;
+    }
+    this.owned = { kind: 'topic', id, sourceWorkstream, ...(prepared ? { native: true } : {}) };
+    this.update(this.owned);
+    this.owned = this.current();
+    if (sourceWorkstream && event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove';
+    if (!prepared) return;
+    event.preventDefault();
+    this.nativeFile = prepared.filePath;
+    this.api.startResourceDrag(prepared);
+  }
+  finish(): void {
+    if (this.owned && this.current() === this.owned) this.update(null);
+    this.owned = null;
+    this.nativeFile = null;
+  }
+  dispose(): void { this.clear(); this.finish(); }
 }
 
 export class ResourceDragPreparationCache {

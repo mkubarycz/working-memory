@@ -1,3 +1,5 @@
+import { semanticSearchTimingsSchema, type MatchConfidence, type SemanticSearchTimings } from '../control-plane/src/embeddingContract';
+
 export interface DocumentSearchInput {
   queries: string[];
   kinds?: string[];
@@ -10,9 +12,15 @@ export interface DocumentSearchHit {
   title: string;
   excerpt: string;
   score: number;
+  similarity?: number;
+  resourceVersion?: number;
+  literalMatch?: boolean;
+  confidence?: MatchConfidence;
 }
 
 export interface DocumentSearchResult {
+  timings?: SemanticSearchTimings;
+  limited?: boolean;
   count: number;
   results: DocumentSearchHit[];
 }
@@ -42,6 +50,8 @@ export type SearchBlock =
   | { type: 'clarification'; text: string; suggestions: string[] };
 
 export interface SearchTrace {
+  stage?: 'retrieval' | 'ai';
+  timings?: SemanticSearchTimings;
   id: string;
   tool: string;
   arguments: Record<string, unknown>;
@@ -58,6 +68,7 @@ export interface SearchResponse {
   blocks?: SearchBlock[];
   trace?: SearchTrace[];
   partial?: boolean;
+  limited?: boolean;
 }
 
 export interface DocumentQueryInput {
@@ -109,11 +120,19 @@ export interface SearchWorkstream {
 
 export function isDocumentSearchResult(value: unknown): value is DocumentSearchResult {
   if (!value || typeof value !== 'object' || !('count' in value) || !('results' in value)
-    || !Array.isArray(value.results) || value.count !== value.results.length) return false;
+    || !Array.isArray(value.results) || value.count !== value.results.length
+    || 'limited' in value && typeof value.limited !== 'boolean'
+    || 'timings' in value && !semanticSearchTimingsSchema.safeParse(value.timings).success) return false;
   return value.results.every((hit: unknown) => hit !== null && typeof hit === 'object'
     && 'id' in hit && typeof hit.id === 'string'
     && 'kind' in hit && typeof hit.kind === 'string'
     && 'title' in hit && typeof hit.title === 'string'
     && 'excerpt' in hit && typeof hit.excerpt === 'string'
-    && 'score' in hit && typeof hit.score === 'number' && Number.isFinite(hit.score));
+    && 'score' in hit && typeof hit.score === 'number' && Number.isFinite(hit.score)
+    && (!('similarity' in hit) || typeof hit.similarity === 'number' && Number.isFinite(hit.similarity) && hit.similarity >= -1 && hit.similarity <= 1)
+    && (!('resourceVersion' in hit) || typeof hit.resourceVersion === 'number' && Number.isSafeInteger(hit.resourceVersion) && hit.resourceVersion >= 0)
+    && (!('literalMatch' in hit) || typeof hit.literalMatch === 'boolean')
+    && (!('confidence' in hit) || !!hit.confidence && typeof hit.confidence === 'object'
+      && 'level' in hit.confidence && ['high', 'medium', 'low'].includes(String(hit.confidence.level))
+      && 'reason' in hit.confidence && typeof hit.confidence.reason === 'string' && hit.confidence.reason.length > 0));
 }

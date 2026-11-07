@@ -2069,6 +2069,12 @@
     await refreshActive();
   }
 
+  async function refreshTopicMemberships(): Promise<void> {
+    await refreshActive();
+    await Promise.all(documents.filter(doc => doc.kind === 'topic' || doc.kind === 'workstream')
+      .map(doc => refreshOpenDocument(documentTabKey(doc))));
+  }
+
   async function mutate(operation: () => Promise<DocumentVM>): Promise<void> {
     const targetKey = selectedDocumentKey;
     promoteDocument(targetKey);
@@ -2865,16 +2871,9 @@
           {/key}
         {:else if activeDocument?.kind === 'search' && instanceFeatures.search}
           <SearchView bind:state={searchState} bind:activeDrag={activeTreeDrag} onOpen={(kind, id) => openResource(kind, id)}
-            onOpenApp={async id => {
-              const app = containerApps.find(app => app.id === id);
-              if (!app) throw new Error('The application is no longer registered in this environment. Refresh Container apps.');
-              await openContainerAppDetail(app);
-            }}
-            onAdded={async () => {
-              await refreshActive();
-              await Promise.all(documents.filter(doc => doc.kind === 'topic' || doc.kind === 'workstream')
-                .map(doc => refreshOpenDocument(documentTabKey(doc))));
-            }} />
+            attachmentBaseUrl={selectedAttachmentBaseUrl()}
+            onAddChild={(parent, workstream) => startTopicCreation(workstream.id, workstream.title, parent)}
+            onAdded={refreshTopicMemberships} />
         {:else if activeDocument?.kind === 'settings'}
           <SettingsView
             profiles={modelProfiles}
@@ -2970,6 +2969,10 @@
           />
         {:else if activeDocument?.kind === 'topic'}
           <TopicView
+            showRelatedTopics={instanceFeatures.search}
+            bind:activeDrag={activeTreeDrag}
+            onAddChild={(parent, workstream) => startTopicCreation(workstream.id, workstream.title, parent)}
+            onTopicAdded={refreshTopicMemberships}
             {unreadResponses}
             topic={activeDocument}
             onShare={(topic) => { sharingTopic = topic; }}

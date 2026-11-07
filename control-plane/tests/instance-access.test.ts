@@ -10,6 +10,8 @@ import { defaultInstancePermissions, type InstancePermissions } from '../src/ins
 import { authorizeInstanceTool } from '../src/instanceAuthorization';
 import { HostTaskBroker } from '../src/hostTasks';
 import { InstanceFeatureStore } from '../src/instanceFeatures';
+import { EMBEDDING_MODEL } from '../src/embeddingContract';
+import { nextEmbeddingWork, submitEmbeddings } from '../src/topicEmbeddings';
 import { randomUUID } from 'node:crypto';
 import { scriptTaskSchema, scriptJobSchema, scriptVersionSchema } from '../src/hostScriptPolicy';
 
@@ -54,6 +56,13 @@ it('searches only readable kinds before ranking/limits and rechecks permissions 
   new InstanceFeatureStore(store.db).write({ search: true });
   store.createDocument({ kind: 'Config', spec: { name: 'searchneedle', data: { visibleKey: 'secretValueNotSearchable' } } });
   const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Searchneedle notes', body: 'Readable content.' } });
+  store.createDocument({ kind: 'Agent', spec: { name: 'Search reader settings' } });
+  for (let next = nextEmbeddingWork(store.db); next.work; next = nextEmbeddingWork(store.db)) {
+    const work = next.work;
+    submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+      model: EMBEDDING_MODEL, vectors: work.passages.map(() => Array.from({ length: 384 }, (_, index) => Number(index === 0))) });
+  }
+  store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
   const enrollment = access.request({ label: 'Search reader', access: 'read', refresh: false }, '', 'test');
   const permissions = noPermissions();
   permissions.content.read = true;
@@ -64,12 +73,16 @@ it('searches only readable kinds before ranking/limits and rechecks permissions 
   const client = await connect(issued.token);
   const search = () => client.callTool({ name: 'wm-document-search', arguments: { queries: ['searchneedle'], limit: 1 } });
   expect(value(await search())).toMatchObject({ count: 1, results: [{ id: topic.metadata.id, kind: 'Topic' }] });
+  const semanticStatus = () => client.callTool({ name: 'wm-semantic-status', arguments: {} });
+  expect(value(await semanticStatus())).toMatchObject({ ready: true, stats: { total: 1, indexed: 1 } });
   const settingsOnly = noPermissions();
   settingsOnly.settings.read = true;
   access.setPermissions(owner!.token, issued.clientId, 'client', settingsOnly);
   expect(value(await search())).toMatchObject({ count: 1, results: [{ kind: 'Config' }] });
+  expect(value(await semanticStatus())).toMatchObject({ ready: true, stats: { total: 1, indexed: 1 } });
   access.setPermissions(owner!.token, issued.clientId, 'client', noPermissions());
   await expect(search()).rejects.toThrow();
+  await expect(semanticStatus()).rejects.toThrow();
 });
 
 it('queues only missing permissions on denial and approval updates the same client and live MCP session', async () => {

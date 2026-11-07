@@ -224,7 +224,7 @@ export async function chatToolsWithFeatures(
   const availability = abortable(Promise.resolve().then(() => readFeatures(signal)), signal)
     .catch(error => { onFeatureError(error); return { search: false }; });
   const [tools, features] = await Promise.all([client.listTools(), availability]);
-  return features.search ? tools : tools.filter(tool => tool.name !== 'wm-document-search' && tool.name !== 'wm-document-query');
+  return features.search ? tools : tools.filter(tool => !['wm-document-search', 'wm-document-query', 'wm-semantic-search', 'wm-semantic-status'].includes(tool.name));
 }
 
 export class DesktopChatAgent {

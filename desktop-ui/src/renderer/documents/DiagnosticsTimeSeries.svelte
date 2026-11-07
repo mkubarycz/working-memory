@@ -3,13 +3,17 @@
   import type { EChartsType } from 'echarts/core';
   import type { DiagnosticsChartData } from '../diagnosticsChart';
 
-  let { chart, label, description, emptyMessage, stacked = false, syncGroup }: {
+  let { chart, label, description = '', emptyMessage, stacked = false, syncGroup, showExplanation = true,
+    showPercentages = true, selected = $bindable(null) }: {
     chart: DiagnosticsChartData;
     label: string;
-    description: string;
+    description?: string;
     emptyMessage: string;
     stacked?: boolean;
     syncGroup?: string;
+    showExplanation?: boolean;
+    showPercentages?: boolean;
+    selected?: string | null;
   } = $props();
   let element: HTMLDivElement;
   let instance: EChartsType | undefined;
@@ -18,10 +22,9 @@
   let active = false;
   let loading = false;
   let resize: ResizeObserver | undefined;
-  let selected = $state<string | null>(null);
   function update(): void {
-    const data = chart, selection = selected, bars = stacked;
-    if (instance && runtime) instance.setOption(runtime.diagnosticsChartOption(data, selection, bars), { notMerge: true });
+    const data = chart, selection = selected, bars = stacked, percentages = showPercentages;
+    if (instance && runtime) instance.setOption(runtime.diagnosticsChartOption(data, selection, bars, percentages), { notMerge: true });
   }
   async function initialize(): Promise<void> {
     if (loading || instance) return;
@@ -61,10 +64,10 @@
 </script>
 
 <section class="diagnostics-time-series" aria-label={label}>
-  <p>{description}</p>
+  {#if description}<p>{description}</p>{/if}
   {#if chartError}<p role="alert">Chart unavailable: {chartError}
     <button onclick={() => void initialize()}>Retry chart</button></p>{/if}
-  {#if !stacked}
+  {#if !stacked && showExplanation}
     <p>Each series has its own scale: 0-100% of its peak in this window, without smoothing.
       Compare patterns, not absolute magnitudes. Hover for original values.</p>
   {/if}
@@ -74,11 +77,13 @@
     <ul class="chart-legend">
       {#each chart.series as series (series.key)}
         <li>
-          <button style:border-left={`3px solid ${series.color}`} aria-pressed={selected === series.key}
+          {#if series.overlay}
+            <span style:border-left={`3px solid ${series.color}`}>{series.label} · peak {series.peak.toLocaleString()} {series.unit}</span>
+          {:else}<button style:border-left={`3px solid ${series.color}`} aria-pressed={selected === series.key}
             title="Show only this series; click again to show all"
             onclick={() => { selected = selected === series.key ? null : series.key; }}>
             <strong>{series.label}</strong> · peak {series.peak.toLocaleString()} {series.unit}
-          </button>
+          </button>{/if}
         </li>
       {/each}
       <li><button disabled={selected === null} onclick={() => { selected = null; }}>Show all</button></li>
@@ -90,5 +95,6 @@
   .diagnostics-chart { width: 100%; height: 260px; }
   .chart-legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; list-style: none; }
   .chart-legend button { padding: 4px 8px; color: inherit; background: transparent; border: 1px solid var(--vscode-input-border); text-align: left; }
+  .chart-legend span { display: inline-block; padding: 4px 8px; }
   .chart-legend button[aria-pressed="true"] { background: var(--desktop-accent-soft); outline: 1px solid var(--desktop-accent-strong); }
 </style>

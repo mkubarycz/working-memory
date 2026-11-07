@@ -47,6 +47,10 @@ it('records runtime and operation trends without request arguments, and accepts 
   expect(workQueue?.processing?.processedLastMinute).toBe(0);
   controller.abort();
   await cancelled;
+  diagnostics.sample();
+  expect(diagnostics.history()[0].timingsByTool).toMatchObject({
+    'wm-document-query': { finished: 1, executed: 0, runMs: 0 },
+  });
 });
 
 it('bounds persistent runtime history to 24 hours and 8640 samples across restarts', async () => {

@@ -410,6 +410,10 @@ export interface DesktopBuildInfo {
 }
 
 export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
+  getEmbeddingDashboard(): Promise<import('./embeddings').EmbeddingDashboard>;
+  setEmbeddingAction(action: import('./embeddings').EmbeddingAction): Promise<import('./embeddings').EmbeddingDashboard>;
+  setEmbeddingRetention(minutes: number | null): Promise<import('./embeddings').EmbeddingDashboard>;
+  getRelatedTopics(id: string): Promise<import('../../../control-plane/src/embeddingContract').RelatedTopics>;
   getContainerProvider(): Promise<'docker' | 'podman'>;
   setContainerProvider(provider: 'docker' | 'podman'): Promise<void>;
   getDesktopBuildInfo(): Promise<DesktopBuildInfo>;
@@ -452,6 +456,7 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   searchDocuments(query: string, options?: SearchOptions): Promise<SearchResponse>;
   cancelDocumentSearch(requestId: string): Promise<void>;
   onDocumentSearchTrace(listener: (event: { requestId: string; trace: SearchTrace }) => void): () => void;
+  onDocumentSearchResults(listener: (event: { requestId: string; response: SearchResponse }) => void): () => void;
   listSearchWorkstreams(): Promise<SearchWorkstream[]>;
   addSearchTopicToWorkstream(topicId: string, workstreamId: string): Promise<void>;
   resolveChatConfirmation(id: string, confirmed: boolean, context?: ChatContext): Promise<ChatResult>;

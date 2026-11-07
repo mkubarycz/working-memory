@@ -52,6 +52,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         topicTypeRead: async () => [], agentMessageRead: async () => [],
       };
       const load = id => loadWorkstreamViewModel(client, id);
+      const loadTopic = id => {
+        const value = state.topics.find(topic => topic.id === id);
+        const relation = id => ({ id, title: state.workstreams.find(ws => ws.id === id)?.title || id,
+          agentMessageCount: 0, agentMessageSeverity: null });
+        return { ...value, kind: 'topic', typeMeta: null, topicTypes: [{ id: 'type', label: 'Topic', icon: 'symbol-key', description: '' }],
+          createdAt: 1, updatedAt: 1, editable: true, parents: [], children: [],
+          workstreams: value.workstreams.map(relation), focusedWorkstreams: [], agentMessages: [] };
+      };
       const environment = { id: 'preferences-test', port: 7717, displayName: 'Preferences test',
         mcpUrl: 'http://127.0.0.1:7717/mcp', source: 'sandbox' };
       localStorage.setItem('working-memory.desktop.document-tabs:v1:preferences-test', JSON.stringify({
@@ -67,7 +75,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           passwordConfigured: true, passwordHint: '', setupAvailable: true, authenticated: true }),
         onInstanceAuthenticationChanged: () => () => {},
         onOpenResource: listener => { state.open = listener; return () => {}; },
-        openResource: async (_kind, id) => load(id),
+        openResource: async (kind, id) => kind === 'topic' ? loadTopic(id) : load(id),
         onDocumentChanges: () => () => {},
         onResourceDragResult: () => () => {},
         prepareResourceDrag: async () => ({ filename: 'context.md', filePath: '/tmp/context.md', fileUrl: 'file:///tmp/context.md' }),
@@ -77,7 +85,22 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         getActivePanel: async () => buildWorkstreamPanels({ available: true, workstreams: state.workstreams, topics: state.topics }).active,
         getChatHistory: async input => { state.scope = input; return { journals: [] }; },
         getAgentMessages: async () => [], listContainerApps: async () => [],
-        getInstanceFeatures: async () => ({ hostTasks: false, search: false }),
+        getInstanceFeatures: async () => ({ hostTasks: false, search: true }),
+        getRelatedTopics: async () => ({ state: 'ready', limited: false, results: [{
+          id: 'reparent', title: 'Reparent me', excerpt: 'A related topic.', similarity: 0.8, evidence: 'semantic', alreadyLinked: false,
+        }] }),
+        listTopicTypes: async () => [{ id: 'type', label: 'Topic', icon: 'symbol-key', description: '' }],
+        createTopic: async input => {
+          state.createdTopic = input;
+          state.topics.push({ ...topic('new-child', input.title, 'open', [input.parent]), workstreams: [input.workstream] });
+          return loadTopic('new-child');
+        },
+        listSearchWorkstreams: async () => state.workstreams.map(({ id, title }) => ({ id, title })),
+        addSearchTopicToWorkstream: async (id, workstream) => {
+          state.addedTopic = { id, workstream };
+          const value = state.topics.find(topic => topic.id === id);
+          value.workstreams = [...new Set([...value.workstreams, workstream])];
+        },
         getInstanceAccess: async () => ({ requests: [], clients: [] }),
         startDocumentChanges: async () => {},
         saveWorkstream: async (id, patch) => {
@@ -306,6 +329,40 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             title.dispatchEvent(new Event('input', { bubbles: true }));
           }\`);
           await wait('window.__preferences.workstreams[0].title === "First retried" && ![...document.querySelectorAll("[role=alert]")].some(node => node.textContent.includes("Test save failed"))');
+          await evaluate('window.__preferences.open("topic", "copy")');
+          await wait('document.querySelector(".related-topics .topic-link")?.textContent.includes("Reparent me")');
+          await evaluate('window.__preferences.topics.find(topic => topic.id === "reparent").workstreams = ["inbox"]');
+          const membershipsBefore = await evaluate('window.__preferences.topics.find(topic => topic.id === "reparent").workstreams');
+          const transfersBefore = await evaluate('window.__preferences.transfers.length');
+          assert.equal(await evaluate(\`(() => {
+            const from = document.querySelector('.related-topics .topic-link');
+            const to = document.querySelector('.active-rail [data-workstream=target] .active-card-header');
+            const dataTransfer = new DataTransfer();
+            from.dispatchEvent(new DragEvent('dragstart', {bubbles: true, cancelable: true, dataTransfer}));
+            const event = new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer});
+            to.dispatchEvent(event);
+            to.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer}));
+            from.dispatchEvent(new DragEvent('dragend', {bubbles: true, dataTransfer}));
+            return event.defaultPrevented && dataTransfer.getData('text/markdown').includes('/topic/reparent');
+          })()\`), true);
+          await wait('window.__preferences.transfers.length > ' + transfersBefore);
+          const membershipsAfter = await evaluate('window.__preferences.topics.find(topic => topic.id === "reparent").workstreams');
+          assert.ok(membershipsBefore.every(id => membershipsAfter.includes(id)), 'Related links must not remove existing memberships');
+          assert.ok(membershipsAfter.includes('target'));
+          await evaluate('window.__preferences.topics.find(topic => topic.id === "reparent").workstreams = ["target"]');
+          await evaluate('document.querySelector(".related-topics .topic-link").dispatchEvent(new MouseEvent("contextmenu", {bubbles: true, cancelable: true}))');
+          await wait('!!document.querySelector(".topic-link-menu")');
+          await evaluate('[...document.querySelectorAll(".topic-link-menu button")].find(b => b.textContent.trim() === "Add Child...").click()');
+          await wait('[...document.querySelectorAll("button")].some(b => b.textContent.trim() === "Create Topic")');
+          await evaluate(\`{
+            const input = document.querySelector('[aria-label="Topic title"]');
+            input.value = 'Related child';
+            input.dispatchEvent(new Event('input', {bubbles: true}));
+          }\`);
+          await evaluate('[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Create Topic").click()');
+          await wait('window.__preferences.createdTopic?.title === "Related child"');
+          assert.equal(await evaluate('window.__preferences.createdTopic.parent'), 'reparent');
+          assert.equal(await evaluate('window.__preferences.createdTopic.workstream'), 'target');
           console.log('preferences-browser: pinning, Inbox, scoped saves, visibility and native move/copy passed');
           window.destroy(); app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });

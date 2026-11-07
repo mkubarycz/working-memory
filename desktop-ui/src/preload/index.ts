@@ -7,6 +7,10 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const api: DesktopApi = {
+  getEmbeddingDashboard: () => invoke('embeddings:dashboard'),
+  setEmbeddingAction: action => invoke('embeddings:action', action),
+  setEmbeddingRetention: minutes => invoke('embeddings:retention', minutes),
+  getRelatedTopics: id => invoke('embeddings:related', id),
   getDesktopBuildInfo: () => invoke('desktop:build-info'),
   getInstanceIdentity: () => invoke('instance:identity'),
   signInInstance: (input) => invoke('instance:sign-in', input),
@@ -16,6 +20,7 @@ const api: DesktopApi = {
   getSessionDiagnostics: (before) => invoke('instance:sessions', before),
   getInstanceDiagnostics: () => invoke('instance:diagnostics'),
   getToolQueue: () => invoke('instance:tool-queue'),
+  updateToolQueueSettings: (update, mcpUrl) => invoke('instance:queue-settings', { update, mcpUrl }),
   inspectQueuedRequest: (requestId, mcpUrl) => invoke('instance:queued-request', { requestId, mcpUrl }),
   recoverInstanceHeap: (mcpUrl) => invoke('instance:recover-heap', { mcpUrl }),
   updateSessionPolicy: (policy, mcpUrl) => invoke('instance:session-policy', { policy, mcpUrl }),
@@ -96,6 +101,11 @@ const api: DesktopApi = {
     const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
     ipcRenderer.on('search:trace', handler);
     return () => ipcRenderer.removeListener('search:trace', handler);
+  },
+  onDocumentSearchResults: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
+    ipcRenderer.on('search:results', handler);
+    return () => ipcRenderer.removeListener('search:results', handler);
   },
   listSearchWorkstreams: () => invoke('search:workstreams'),
   addSearchTopicToWorkstream: (topicId, workstreamId) => invoke('search:add-topic', topicId, workstreamId),

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
+  import { onDestroy, onMount } from 'svelte';
   import { formatDocumentTimestamp as fmtTs } from '../documentDates';
   import UnreadBadge from '../UnreadBadge.svelte';
   import { unreadResponseCount, type UnreadResponse } from '../chatUnread';
@@ -10,7 +11,7 @@
   import SaveStatus from './SaveStatus.svelte';
   import AgentMessageCallouts from './AgentMessageCallouts.svelte';
   import type { WorkstreamPatch } from '../../shared/contracts';
-  import { ResourceDragPreparationCache, resourceDropEffect, setResourceDragData, topicDropMoves, type ActiveResourceDrag } from '../resourceDrag';
+  import { TopicLinkDragController, resourceDropEffect, topicDropMoves, type ActiveResourceDrag } from '../resourceDrag';
   import { planTopicTransfer, type TopicTransferRequest } from '../topicTransfer';
 
   interface Props {
@@ -53,52 +54,33 @@
   const inbox = $derived(ws.isInbox === true);
   let dragError = $state('');
   let dropTarget = $state<string | null>(null);
-  let nativeDragFilePath: string | null = null;
-  const resourceDrags = new ResourceDragPreparationCache(
-    (uri, label) => window.workingMemory.prepareResourceDrag(uri, label),
-    error => {
-      dragError = error instanceof Error ? error.message : String(error);
-      console.error('Unable to prepare Working Memory drag context:', error);
+  const topicDrags = new TopicLinkDragController(
+    window.workingMemory, () => activeDrag, value => { activeDrag = value; },
+    message => {
+      dragError = message;
+      console.error(message);
+      finishDrag();
     },
   );
+  onMount(() => topicDrags.listen());
+  onDestroy(() => topicDrags.dispose());
   $effect(() => {
-    resourceDrags.clear();
+    topicDrags.clear();
     const prepare = (nodes: TreeTopicVM[]) => {
       for (const node of nodes) {
-        resourceDrags.prepare(topicUri(node.id), node.label);
+        topicDrags.prepare(node.id, node.label);
         prepare(node.children);
       }
     };
     for (const group of ws.tree) prepare(group.children);
   });
-  $effect(() => window.workingMemory.onResourceDragResult(result => {
-    if (result.filePath !== nativeDragFilePath || result.status !== 'failed') return;
-    dragError = result.error ?? 'Unable to drag Working Memory context.';
-    console.error('Unable to drag Working Memory context:', result.error);
-    finishDrag();
-  }));
-
-  function topicUri(id: string): string {
-    return `working-memory:/topic/${encodeURIComponent(id)}.working-memory`;
-  }
-
   function startDrag(event: DragEvent, node: TreeTopicVM): void {
-    event.stopPropagation();
-    activeDrag = { kind: 'topic', id: node.id, sourceWorkstream: ws.id };
-    const uri = topicUri(node.id);
-    const prepared = resourceDrags.get(uri);
-    setResourceDragData(event.dataTransfer, uri, node.label, prepared);
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove';
-    if (!prepared) return;
-    event.preventDefault();
-    nativeDragFilePath = prepared.filePath;
-    activeDrag = { ...activeDrag, native: true };
-    window.workingMemory.startResourceDrag(prepared);
+    topicDrags.start(event, node.id, node.label, ws.id);
   }
 
   function finishDrag(): void {
+    topicDrags.finish();
     if (activeDrag?.kind === 'topic') activeDrag = null;
-    nativeDragFilePath = null;
     dropTarget = null;
   }
 
@@ -262,7 +244,8 @@
 </script>
 
 <svelte:window onclick={onWindowClick} onkeydown={onWindowKeydown}
-  onpointermove={event => { if (event.buttons === 0 && nativeDragFilePath) finishDrag(); }} />
+  onpointermove={event => { if (event.buttons === 0 && topicDrags.native) finishDrag(); }}
+  onpointerup={event => { if (event.buttons === 0 && topicDrags.native) finishDrag(); }} />
 
 <header class="head">
   {#if ws.editable && !inbox}
@@ -362,7 +345,7 @@
           class:pinned={node.pinned}
           class:closed={node.status === 'closed'}
           draggable="true"
-          onpointerdown={() => resourceDrags.prepare(topicUri(node.id), node.label)}
+          onpointerdown={() => topicDrags.prepare(node.id, node.label)}
           ondragstart={event => startDrag(event, node)}
           ondragend={finishDrag}
           onclick={() => onOpenTopic(node.id)}

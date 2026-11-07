@@ -24,6 +24,7 @@ export function toolQueueRequests(snapshot: Pick<ToolQueueSnapshot, 'events' | '
     const previous = latest.get(event.requestId);
     if (!previous || previous.sequence < event.sequence) latest.set(event.requestId, event);
   }
+
   const requests = new Map<string, QueueRequest>();
   for (const event of latest.values()) {
     const finished = Object.hasOwn(outcomes, event.event);
@@ -45,4 +46,10 @@ export function toolQueueRequests(snapshot: Pick<ToolQueueSnapshot, 'events' | '
     });
   }
   return [...requests.values()].sort((a, b) => b.queuedAt - a.queuedAt || a.requestId.localeCompare(b.requestId));
+}
+
+export function topQueueRequests(requests: readonly QueueRequest[], metric: 'waitMs' | 'runMs'): QueueRequest[] {
+  return requests.filter(request => request[metric] !== null)
+    .sort((a, b) => (b[metric] ?? 0) - (a[metric] ?? 0) || b.queuedAt - a.queuedAt || a.requestId.localeCompare(b.requestId))
+    .slice(0, 50);
 }

@@ -1,5 +1,22 @@
 import { z } from 'zod';
 
+export const toolQueueSettingsSchema = z.object({
+  maxConcurrency: z.number().int().min(1).max(64),
+  maxQueueSize: z.number().int().min(1).max(1000),
+  queueTimeoutMs: z.number().int().min(100).max(300000),
+  heapDispatchPausePercent: z.number().int().min(10).max(90),
+}).strict();
+export type ToolQueueSettings = z.infer<typeof toolQueueSettingsSchema>;
+export const DEFAULT_TOOL_QUEUE_SETTINGS: ToolQueueSettings = {
+  maxConcurrency: 4, maxQueueSize: 16, queueTimeoutMs: 5000, heapDispatchPausePercent: 60,
+};
+export const toolQueueSettingsUpdateSchema = z.object({
+  expectedBootId: z.string().uuid(),
+  expectedSettings: toolQueueSettingsSchema,
+  settings: toolQueueSettingsSchema,
+}).strict();
+export type ToolQueueSettingsUpdate = z.infer<typeof toolQueueSettingsUpdateSchema>;
+
 export const diagnosticEventSchema = z.object({
   sequence: z.number().int(), at: z.number(), code: z.string(), requestId: z.string().nullable(),
   route: z.string(), status: z.number().int(), durationMs: z.number(), count: z.number().int(),
@@ -7,6 +24,10 @@ export const diagnosticEventSchema = z.object({
 export const queueProcessingSchema = z.object({
   processedPerSecond: z.number(), processedLastMinute: z.number().int(),
   averageWaitMs: z.number().nullable(), averageRunMs: z.number().nullable(),
+});
+export const toolTimingTotalsSchema = z.object({
+  finished: z.number().int().nonnegative(), executed: z.number().int().nonnegative(),
+  waitMs: z.number().nonnegative(), runMs: z.number().nonnegative(),
 });
 export const runtimeSampleSchema = z.object({
   at: z.number(), bootId: z.string().uuid(),
@@ -17,6 +38,7 @@ export const runtimeSampleSchema = z.object({
   peakQueueDepth: z.number().int().optional(),
   processing: queueProcessingSchema.optional(),
   requestsByTool: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  timingsByTool: z.record(z.string(), toolTimingTotalsSchema).optional(),
   operations: z.array(z.object({
     requestId: z.string().uuid(), operation: z.string(), caller: z.string(),
     queuedAt: z.number(), startedAt: z.number().optional(),
@@ -28,17 +50,19 @@ const queuedToolSchema = z.object({
 });
 export const toolQueueSnapshotSchema = z.object({
   bootId: z.string().uuid(), observedAt: z.number(),
+  settings: toolQueueSettingsSchema.optional(),
   limits: z.object({ running: z.number().int(), waiting: z.number().int(), waitMs: z.number() }),
   memoryBlocked: z.boolean(), running: z.number().int(), waiting: z.number().int(),
   processing: queueProcessingSchema.optional(),
   requestsByTool: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  timingsByTool: z.record(z.string(), toolTimingTotalsSchema).optional(),
   items: z.array(queuedToolSchema),
   events: z.array(z.object({
     sequence: z.number().int(), at: z.number(), requestId: z.string().uuid(),
     operation: z.string(), caller: z.string(), event: z.string(),
     waiting: z.number().int(), running: z.number().int(), waitMs: z.number(), runMs: z.number(),
   })),
-  history: z.array(runtimeSampleSchema.pick({ at: true, bootId: true, queueDepth: true, peakQueueDepth: true, runningTools: true, processing: true, requestsByTool: true })),
+  history: z.array(runtimeSampleSchema.pick({ at: true, bootId: true, queueDepth: true, peakQueueDepth: true, runningTools: true, processing: true, requestsByTool: true, timingsByTool: true })),
 });
 export type ToolQueueSnapshot = z.infer<typeof toolQueueSnapshotSchema>;
 export interface DesktopToolQueue {

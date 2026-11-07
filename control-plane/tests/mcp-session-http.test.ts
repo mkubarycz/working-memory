@@ -9,6 +9,7 @@ import { loadKinds } from '../src/kinds/loader';
 import { getKind } from '../src/kinds/registry';
 import { DEFAULT_SESSION_POLICY, sessionSnapshotSchema } from '../src/sessionPolicy';
 import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { DEFAULT_TOOL_QUEUE_SETTINGS, toolQueueSnapshotSchema } from '../src/diagnosticContract';
 
 const cleanup: Array<() => Promise<void>> = [];
 beforeAll(async () => { await loadKinds(); });
@@ -66,6 +67,40 @@ async function fixture() {
   return { store, owner, access, server, request, postMcp, snapshot, policy, enroll, connect, data,
     advance: (ms: number) => { now += ms; }, memory: (bytes: number) => { used = bytes; } };
 }
+
+it('configures the real queue only through trusted owner requests, enforcing validation and stale-state guards', async () => {
+  const f = await fixture(), issued = f.enroll();
+  const current = toolQueueSnapshotSchema.parse(await (await f.request('/identity/v1/tool-queue')).json());
+  const settings = { ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 2, maxQueueSize: 8, queueTimeoutMs: 10000, heapDispatchPausePercent: 50 };
+  const body = { expectedBootId: current.bootId, expectedSettings: current.settings, settings };
+  const post: RequestInit = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+  const path = '/identity/v1/tool-queue/settings';
+  expect((await f.request(path, post, '')).status).toBe(401);
+  expect((await f.request(path, post, issued.token)).status).toBe(401);
+  expect((await f.request(path, { ...post, headers: { 'content-type': 'application/json', origin: 'http://untrusted.invalid' } })).status).toBe(400);
+  expect((await f.request(`${path}?token=secret`, post)).status).toBe(400);
+  expect((await f.request(path)).status).toBe(405);
+  expect((await f.request(path, { ...post, body: '{' })).status).toBe(400);
+  expect((await f.request(path, { ...post, body: JSON.stringify({ ...body, settings: { ...settings, maxConcurrency: 0 } }) })).status).toBe(400);
+  expect((await f.request(path, { ...post, body: JSON.stringify({ ...body, expectedBootId: '00000000-0000-4000-8000-000000000001' }) })).status).toBe(409);
+  const saved = await f.request(path, post);
+  expect(saved.status).toBe(200);
+  expect(saved.headers.get('cache-control')).toBe('no-store');
+  expect(toolQueueSnapshotSchema.parse(await saved.json())).toMatchObject({ settings, limits: { running: 2, waiting: 8, waitMs: 10000 } });
+  expect((await f.request(path, post)).status).toBe(409);
+  f.memory(550);
+  expect((await (await f.request('/identity/v1/tool-queue')).json()).memoryBlocked).toBe(true);
+  expect((await f.snapshot()).memory.admissionBlocked).toBe(false);
+  const { client } = await f.connect();
+  const pending = client.callTool({ name: 'wm-ping', arguments: {} });
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
+  const raised = { ...settings, heapDispatchPausePercent: 80 };
+  expect((await f.request(path, { ...post, body: JSON.stringify({ expectedBootId: current.bootId, expectedSettings: settings, settings: raised }) })).status).toBe(200);
+  expect((await pending).isError).not.toBe(true);
+  f.memory(650);
+  expect((await (await f.request('/identity/v1/tool-queue')).json()).memoryBlocked).toBe(false);
+  expect((await f.snapshot()).memory.admissionBlocked).toBe(true);
+});
 
 it('restricts diagnostics and policy to trusted owner requests and hides all protocol credentials', async () => {
   const f = await fixture(), issued = f.enroll();
