@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { ToolQueueSnapshot } from '../../control-plane/src/diagnosticContract';
-import { toolQueueRequests } from '../src/renderer/toolQueueRequests';
+import { toolQueueRequests, topQueueRequests } from '../src/renderer/toolQueueRequests';
 
 type Event = ToolQueueSnapshot['events'][number];
 const event = (overrides: Partial<Event> = {}): Event => ({
@@ -71,5 +71,20 @@ it('orders rows by queue-entry time with stable IDs for ties and handles empty h
       event({ requestId: 'c', at: 2000, waitMs: 0, runMs: 0 }),
     ], items: [], observedAt: 9999,
   });
+
   expect(rows.map(row => row.requestId)).toEqual(['c', 'a', 'b']);
+});
+
+it('ranks the top 50 by wait or runtime without mutating the log or including unavailable timings', () => {
+  const rows = toolQueueRequests({
+    events: Array.from({ length: 60 }, (_, i) => event({ requestId: String(i), waitMs: i, runMs: 60 - i })),
+    items: [], observedAt: 9999,
+  });
+  const original = rows.map(row => row.requestId);
+  rows.push({ ...rows[0], requestId: 'unknown', waitMs: null, runMs: null });
+  expect(topQueueRequests(rows, 'waitMs')).toHaveLength(50);
+  expect(topQueueRequests(rows, 'waitMs')[0].requestId).toBe('59');
+  expect(topQueueRequests(rows, 'runMs')[0].requestId).toBe('0');
+  expect(topQueueRequests(rows, 'waitMs').some(row => row.requestId === 'unknown')).toBe(false);
+  expect(rows.slice(0, 60).map(row => row.requestId)).toEqual(original);
 });

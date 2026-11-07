@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ToolQueue, TOOL_QUEUE_LIMITS } from '../src/toolQueue';
+import { DEFAULT_TOOL_QUEUE_SETTINGS } from '../src/diagnosticContract';
 
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); vi.useRealTimers(); });
@@ -21,6 +22,120 @@ function deferred() {
   return { promise, resolve };
 }
 
+it('persists validated settings across queue restarts and rejects stale or failed writes without applying them', () => {
+  const f = fixture();
+  const settings = { ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 2, maxQueueSize: 8, queueTimeoutMs: 10000, heapDispatchPausePercent: 50 };
+  f.queue.configure(settings, f.queue.state().settings);
+  expect(f.queue.state()).toMatchObject({ settings, limits: { running: 2, waiting: 8, waitMs: 10000 } });
+  expect(() => f.queue.configure(DEFAULT_TOOL_QUEUE_SETTINGS, DEFAULT_TOOL_QUEUE_SETTINGS)).toThrow('settings changed');
+  expect(() => f.queue.configure({ ...settings, maxConcurrency: 0 }, settings)).toThrow();
+  f.db.exec('PRAGMA query_only=ON');
+  expect(() => f.queue.configure({ ...settings, maxConcurrency: 3 }, settings)).toThrow();
+  f.db.exec('PRAGMA query_only=OFF');
+  expect(f.queue.state().settings).toEqual(settings);
+  f.queue.close();
+  const restarted = new ToolQueue(f.db, () => false);
+  cleanup.push(() => restarted.close());
+  expect(restarted.state().settings).toEqual(settings);
+});
+
+it('lets running work finish and preserves FIFO waiters when concurrency and queue size are reduced', async () => {
+  const f = fixture(), gate = deferred(), order: number[] = [];
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 1 }, f.queue.state().settings);
+  const calls = Array.from({ length: 3 }, (_, index) => f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {
+    order.push(index);
+    if (index === 0) await gate.promise;
+  }));
+  await Promise.resolve();
+  expect(f.queue.state()).toMatchObject({ running: 1, waiting: 2 });
+  f.queue.configure({ ...f.queue.state().settings, maxQueueSize: 1 }, f.queue.state().settings);
+  expect(f.queue.state()).toMatchObject({ running: 1, waiting: 2 });
+  await expect(f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {})).rejects.toMatchObject({ code: 'full' });
+  gate.resolve();
+  await Promise.all(calls);
+  expect(order).toEqual([0, 1, 2]);
+});
+
+it('increases concurrency immediately but does not cancel running work when it is lowered again', async () => {
+  const f = fixture(), gate = deferred(), signal = new AbortController().signal;
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 1 }, f.queue.state().settings);
+  const calls = [f.queue.run(f.metadata(), {}, signal, () => gate.promise), f.queue.run(f.metadata(), {}, signal, () => gate.promise)];
+  expect(f.queue.state()).toMatchObject({ running: 1, waiting: 1 });
+  f.queue.configure({ ...f.queue.state().settings, maxConcurrency: 2 }, f.queue.state().settings);
+  expect(f.queue.state()).toMatchObject({ running: 2, waiting: 0 });
+  f.queue.configure({ ...f.queue.state().settings, maxConcurrency: 1 }, f.queue.state().settings);
+  expect(f.queue.state()).toMatchObject({ running: 2, waiting: 0 });
+  gate.resolve();
+  await Promise.all(calls);
+});
+
+it('applies timeout changes only to new arrivals, preserving the deadlines of existing waiters', async () => {
+  const f = fixture(), signal = new AbortController().signal, action = vi.fn(async () => {});
+  f.block(true);
+  const old = f.queue.run(f.metadata(), {}, signal, action);
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, queueTimeoutMs: 1000 }, f.queue.state().settings);
+  const next = f.queue.run(f.metadata(), {}, signal, action);
+  const expired = expect(next).rejects.toMatchObject({ code: 'expired' });
+  await vi.advanceTimersByTimeAsync(1100);
+  await expired;
+  expect(f.queue.state().waiting).toBe(1);
+  f.block(false);
+  await vi.advanceTimersByTimeAsync(100);
+  await old;
+  expect(action).toHaveBeenCalledOnce();
+});
+
+it('uses the configured heap percentage for dispatch and resumes waiters when the threshold is raised', async () => {
+  const f = fixture(), signal = new AbortController().signal, action = vi.fn(async () => {});
+  f.queue.close();
+  const queue = new ToolQueue(f.db, percent => 55 >= percent);
+  cleanup.push(() => queue.close());
+  queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, heapDispatchPausePercent: 50 }, queue.state().settings);
+  const pending = queue.run(f.metadata(), {}, signal, action);
+  expect(queue.state()).toMatchObject({ memoryBlocked: true, waiting: 1, running: 0 });
+  queue.configure({ ...queue.state().settings, heapDispatchPausePercent: 60 }, queue.state().settings);
+  await pending;
+  expect(action).toHaveBeenCalledOnce();
+});
+
+it('counts only capacity, timeout and shutdown drops, excluding cancellations, denials and failed executions', async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, maxQueueSize: 1, queueTimeoutMs: 1000 }, f.queue.state().settings);
+  f.block(true);
+  const pending = f.queue.run(f.metadata(), {}, signal, async () => {});
+  const expired = expect(pending).rejects.toMatchObject({ code: 'expired' });
+  await expect(f.queue.run(f.metadata(), {}, signal, async () => {})).rejects.toMatchObject({ code: 'full' });
+  await vi.advanceTimersByTimeAsync(1000);
+  await expired;
+  await expect(f.queue.run(f.metadata(), {}, AbortSignal.abort(), async () => {})).rejects.toMatchObject({ code: 'cancelled' });
+  f.block(false);
+  await f.queue.run(f.metadata(), {}, signal, async () => 'not_executed' as const, value => value);
+  await expect(f.queue.run(f.metadata(), {}, signal, async () => { throw new Error('Executed failure'); })).rejects.toThrow('Executed failure');
+  f.block(true);
+  const shutdown = f.queue.run(f.metadata(), {}, signal, async () => {});
+  const dropped = expect(shutdown).rejects.toMatchObject({ code: 'shutdown' });
+  f.queue.close();
+  await dropped;
+  expect(f.queue.state().queueDrops).toEqual({ timeouts: 1, rejections: 1, shutdown: 1 });
+  expect(f.queue.state().maxQueueWaitMs).toBe(1000);
+});
+
+it('retains drop totals after lifecycle-log truncation without recounting snapshots', async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, maxQueueSize: 1 }, f.queue.state().settings);
+  f.block(true);
+  const pending = f.queue.run(f.metadata(), {}, signal, async () => {});
+  const stopped = expect(pending).rejects.toMatchObject({ code: 'shutdown' });
+  for (let index = 0; index < 2005; index++) {
+    await expect(f.queue.run(f.metadata(), {}, signal, async () => {})).rejects.toMatchObject({ code: 'full' });
+  }
+  expect(f.queue.events(2000)).toHaveLength(2000);
+  expect(f.queue.state().queueDrops.rejections).toBe(2005);
+  expect(f.queue.state().queueDrops.rejections).toBe(2005);
+  f.queue.close();
+  await stopped;
+});
+
 it('runs four calls, bounds the FIFO queue at sixteen, and never executes rejected work', async () => {
   const f = fixture(), gate = deferred(), order: number[] = [];
   const calls = Array.from({ length: 20 }, (_, index) =>
@@ -35,8 +150,9 @@ it('runs four calls, bounds the FIFO queue at sixteen, and never executes reject
   expect(await Promise.all(calls)).toEqual(Array.from({ length: 20 }, (_, index) => index));
   expect(order).toEqual(Array.from({ length: 20 }, (_, index) => index));
   expect(f.queue.state()).toMatchObject({ running: 0, waiting: 0 });
-  expect(f.queue.takePeakDepth()).toBe(16);
-  expect(f.queue.takePeakDepth()).toBe(0);
+  expect(f.queue.state().peakQueueDepth).toBe(16);
+  f.queue.resetSamplingPeaks();
+  expect(f.queue.state().peakQueueDepth).toBe(0);
   expect(JSON.stringify(f.queue.events())).not.toContain('PRIVATE_REQUEST');
   expect(JSON.stringify(f.db.prepare('SELECT * FROM instance_tool_queue_events').all())).not.toContain('PRIVATE_REQUEST');
 });
@@ -118,12 +234,46 @@ it('caps lifecycle persistence at 2000 rows and expires events after 24 hours', 
   }
   expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(2000);
   expect(f.queue.events()).toHaveLength(100);
+  expect(f.queue.events(2000)).toHaveLength(2000);
   expect(f.queue.state().requestsByTool).toEqual({ 'wm-document-query': 700 });
+  expect(f.queue.state().timingsByTool['wm-document-query'].finished).toBe(700);
   expect(f.queue.processing()).toMatchObject({ processedPerSecond: 70, processedLastMinute: 700 });
   await vi.advanceTimersByTimeAsync(86400001);
   await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
   expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(3);
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it('samples cumulative per-tool timing totals once per finished request without diluting executed runtimes with denials', async () => {
+  const f = fixture(), gate = deferred(), signal = new AbortController().signal;
+  f.block(true);
+  const pending = f.queue.run(f.metadata(), {}, signal, () => gate.promise);
+  await vi.advanceTimersByTimeAsync(200);
+  f.block(false);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(f.queue.state().timingsByTool).toEqual({});
+  await vi.advanceTimersByTimeAsync(40);
+  gate.resolve();
+  await pending;
+  await expect(f.queue.run(f.metadata(), {}, signal, async () => {
+    await vi.advanceTimersByTimeAsync(30);
+    throw new Error('Failed execution');
+  })).rejects.toThrow('Failed execution');
+  const read = { ...f.metadata(), operation: 'wm-document-read' };
+  await expect(f.queue.run(read, {}, AbortSignal.abort(), async () => {})).rejects.toMatchObject({ code: 'cancelled' });
+  await f.queue.run({ ...read, requestId: randomUUID() }, {}, signal, async () => {
+    await vi.advanceTimersByTimeAsync(100);
+    return 'not_executed' as const;
+  }, value => value);
+  const expected = {
+    'wm-document-query': { finished: 2, executed: 2, waitMs: 300, runMs: 70 },
+    'wm-document-read': { finished: 2, executed: 0, waitMs: 100, runMs: 0 },
+  };
+  expect(f.queue.state().timingsByTool).toEqual(expected);
+  const prior = f.queue.state();
+  prior.timingsByTool['wm-document-query'].waitMs = 999;
+  expect(f.queue.state().timingsByTool).toEqual(expected);
+  expect(f.queue.processing().processedLastMinute).toBe(2);
 });
 
 it('counts arrivals once by tool, including rejected work, without recounting lifecycle events or snapshots', async () => {

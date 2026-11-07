@@ -7,5 +7,9 @@
 !macroend
 
 !macro customUnInstall
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /End /TN "Working Memory Embeddings"'
+  Pop $0
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "Working Memory Embeddings" /F'
+  Pop $0
   DeleteRegKey HKCU "Software\Classes\working-memory"
 !macroend

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
+import type { MatchConfidence } from './embeddingContract.js';
 import { getKind, listKinds } from './kinds/registry.js';
 
 export const QUERY_KINDS = ['Topic', 'Workstream', 'AgentMessage', 'CommandJournal', 'ContainerClaim', 'TopicType', 'Agent'] as const;
@@ -116,6 +117,10 @@ export interface DocumentSearchHit {
   title: string;
   excerpt: string;
   score: number;
+  similarity?: number;
+  resourceVersion?: number;
+  literalMatch?: boolean;
+  confidence?: MatchConfidence;
 }
 
 type DocumentSearchInput = z.input<typeof documentSearchSchema>;
@@ -185,7 +190,7 @@ export function ensureDocumentSearch(db: DatabaseSync): void {
   }
 }
 
-function refreshDocumentSearch(db: DatabaseSync): void {
+export function refreshDocumentSearch(db: DatabaseSync): void {
   if (!db.prepare('SELECT 1 FROM document_search_dirty LIMIT 1').get()) return;
   db.exec('SAVEPOINT document_search_refresh');
   try {

@@ -157,12 +157,16 @@ export class HttpDiagnostics {
       cpuPercent: Math.max(0, ((cpu.user - this.lastCpu.user) + (cpu.system - this.lastCpu.system)) / 1000 / Math.max(1, now - this.lastCpuAt) * 100),
       eventLoopMaxMs: this.lag.max / 1e6, gcCount: this.gcCount, gcDurationMs: this.gcDurationMs,
       queueDepth: queue?.waiting ?? 0, runningTools: queue?.running ?? 0,
-      peakQueueDepth: this.queue?.takePeakDepth() ?? 0,
+      peakQueueDepth: queue?.peakQueueDepth ?? 0,
+      maxQueueWaitMs: queue?.maxQueueWaitMs,
       processing: queue?.processing,
       requestsByTool: queue?.requestsByTool,
+      timingsByTool: queue?.timingsByTool,
+      queueDrops: queue?.queueDrops,
       operations: queue?.items.slice(0, 8) ?? [],
     };
     this.db.prepare('INSERT INTO instance_runtime_samples(at,data) VALUES(?,?)').run(sample.at, JSON.stringify(sample));
+    this.queue?.resetSamplingPeaks();
     this.db.prepare('DELETE FROM instance_runtime_samples WHERE at<?').run(this.clock() - 86400000);
     this.db.prepare(`DELETE FROM instance_runtime_samples WHERE sequence IN
       (SELECT sequence FROM instance_runtime_samples ORDER BY sequence DESC LIMIT -1 OFFSET 8640)`).run();

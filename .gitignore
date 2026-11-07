@@ -35,6 +35,7 @@ desktop-ui/electron.vite.config.*.mjs
 # Desktop installer outputs and the staged control-plane build context.
 desktop-ui/release/
 desktop-ui/build/data-tier/
+desktop-ui/build/embeddings/
 
 # Repository-pinned Cruft environment, cache, and disposable smoke projects.
 .tools/

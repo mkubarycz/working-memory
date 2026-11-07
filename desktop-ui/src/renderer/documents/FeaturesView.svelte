@@ -1,14 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { InstanceFeatures } from '../../../../control-plane/src/instanceFeatures';
+  import type { EmbeddingDashboard } from '../../shared/embeddings';
 
   let { onChanged }: { onChanged: (features: InstanceFeatures) => void } = $props();
   let features = $state<InstanceFeatures | null>(null);
   let enabled = $state(false);
   let searchEnabled = $state(false);
+  let embeddings = $state<EmbeddingDashboard | null>(null);
+  let embeddingsEnabled = $state(false);
   let busy = $state(false);
   let error = $state('');
   let pollError = $state('');
+  let embeddingsPollError = $state('');
   let active = false;
   let refreshing = false;
   let generation = 0;
@@ -18,16 +22,43 @@
     refreshing = true;
     const current = generation;
     try {
-      const loaded = await window.workingMemory.getInstanceFeatures();
+      const [loaded, embeddingStatus] = await Promise.allSettled([
+        window.workingMemory.getInstanceFeatures(),
+        window.workingMemory.getEmbeddingDashboard(),
+      ]);
       if (!active || current !== generation) return;
-      features = loaded;
-      enabled = features.hostTasks;
-      searchEnabled = features.search;
-      pollError = '';
-      onChanged(features);
+      if (loaded.status === 'fulfilled') {
+        features = loaded.value;
+        enabled = features.hostTasks;
+        searchEnabled = features.search;
+        pollError = '';
+        onChanged(features);
+      } else pollError = loaded.reason instanceof Error ? loaded.reason.message : String(loaded.reason);
+      if (embeddingStatus.status === 'fulfilled') {
+        embeddings = embeddingStatus.value;
+        embeddingsEnabled = embeddings.enabled;
+        embeddingsPollError = '';
+      } else {
+        embeddings = null;
+        embeddingsPollError = embeddingStatus.reason instanceof Error ? embeddingStatus.reason.message : String(embeddingStatus.reason);
+      }
     } catch (cause) {
       if (active && current === generation) pollError = cause instanceof Error ? cause.message : String(cause);
     } finally { refreshing = false; }
+  }
+  async function toggleEmbeddings(requested: boolean): Promise<void> {
+    if (!active || busy || !embeddings) return;
+    busy = true;
+    generation += 1;
+    error = '';
+    try {
+      const saved = await window.workingMemory.setEmbeddingAction(requested ? 'enable' : 'disable');
+      if (active) embeddings = saved;
+    } catch (cause) { if (active) error = cause instanceof Error ? cause.message : String(cause); }
+    finally {
+      embeddingsEnabled = embeddings?.enabled ?? false;
+      busy = false;
+    }
   }
   async function toggle(feature: keyof InstanceFeatures, requested: boolean): Promise<void> {
     if (!active || busy || !features) return;
@@ -74,11 +105,22 @@
         <input class="feature-switch" type="checkbox" role="switch" aria-label="Working Memory search" bind:checked={searchEnabled}
           disabled={!features || busy} onchange={(event) => void toggle('search', event.currentTarget.checked)} />
       </td>
+    </tr>
+    <tr>
+      <th scope="row">Embeddings <small>Experimental</small></th>
+      <td>Enable semantic Search and Related topics with local background indexing. Search waits for complete document indexing. Monitor progress in Diagnostics &gt; Embeddings.</td>
+      <td>
+        <input class="feature-switch" type="checkbox" role="switch" aria-label="Embeddings" bind:checked={embeddingsEnabled}
+          disabled={!features || !embeddings || busy || (!searchEnabled && !embeddingsEnabled)}
+          onchange={(event) => void toggleEmbeddings(event.currentTarget.checked)} />
+      </td>
     </tr></tbody>
   </table>
   <p class="hint">Turning off Host tasks hides its UI and blocks new requests. Existing scripts, permissions, and history are retained.</p>
   <p class="hint">Search is off by default. Turning it off hides Search and stops its requests; documents and workstream memberships are retained.</p>
-  {#if error || pollError}<p role="alert">{error || pollError}</p>{/if}
+  <p class="hint">Embeddings requires Working Memory search. Enabling installs the bundled background service and downloads
+    a verified 87 MiB model once. Topic content stays local. Disabling stops this instance's indexing but retains cached models and vectors.</p>
+  {#if error || pollError || embeddingsPollError}<p role="alert">{error || pollError || embeddingsPollError}</p>{/if}
 </section>
 
 <style>

@@ -25,12 +25,13 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         session.context={document:{id:'workstream-1',kind:'workstream',title:'Connection reliability'},workstreams:[{id:'workstream-1',title:'Connection reliability'}]};
         let active = $state('search');
         let activeDrag = $state(null);
-        const test = window.__searchTest = { searches: [], adds: [], opened: [], refreshes: 0, preparations: [], nativeDrags: [], dragListeners: [] };
+        const test = window.__searchTest = { searches: [], adds: [], children: [], opened: [], refreshes: 0, preparations: [], nativeDrags: [], dragListeners: [] };
         test.readDrag=()=>activeDrag;
         test.browse=()=>{active='topic';};
         test.readTrace=()=>session.trace;
         window.workingMemory = {
-          onDocumentSearchTrace: () => () => {},
+          onDocumentSearchTrace: listener => {test.traceListener=listener;return ()=>{test.traceListener=null;};},
+          onDocumentSearchResults: listener => {test.resultsListener=listener;return ()=>{test.resultsListener=null;};},
           cancelDocumentSearch: async () => {},
           onResourceDragResult: listener => {
             test.dragListeners.push(listener);
@@ -38,18 +39,21 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           },
           prepareResourceDrag: async (openUri,label) => {
             test.preparations.push({openUri,label});
+            if(test.holdPreparation) await new Promise(resolve=>{test.releasePreparation=resolve;});
             return {filename:'context.md',filePath:'/tmp/search-context.md',fileUrl:'file:///tmp/search-context.md',workstreamSection:'progress'};
           },
+          openResource: async () => ({kind:'topic',workstreams:[{id:'workstream-1',title:'Connection reliability'}]}),
           startResourceDrag: prepared => {test.nativeDrags.push(prepared);},
           searchDocuments: async (query,options) => {
             test.searches.push(query);
             test.options=options;
             if(test.holdSearch) await new Promise(resolve=>{test.releaseSearch=resolve;});
             if (test.failSearch) throw new Error('Model unavailable');
-            return {query, queries:['OAuth'], blocks:test.blocks, trace:test.trace, results:test.empty ? [] : [{
+            return {query, queries:['OAuth'], blocks:test.blocks, trace:test.trace, limited:test.limited, partial:test.partial, results:test.empty ? [] : [{
               id:'topic-1', kind:'Topic', title:'OAuth connections',
               excerpt:'The connector authenticates through a handshake.',
-              reason:'Explains connection reliability and authentication.', score:1,status:'open'
+              reason:'Explains connection reliability and authentication.', score:0.81,similarity:0.81,status:'open',
+              confidence:{level:'high',reason:'Strong passage and document evidence agree.'}
             },...(test.extraResults??[])]};
           },
           listSearchWorkstreams: async () => {
@@ -77,7 +81,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       </aside>
       <div style="flex:1;min-width:0">
       {#if active === 'search'}
-        <SearchView bind:state={session} bind:activeDrag onOpen={open} onAdded={() => {test.refreshes++;}} />
+        <SearchView bind:state={session} bind:activeDrag onOpen={open} onAdded={() => {test.refreshes++;}}
+          onAddChild={async (parent,workstream)=>{test.children.push({parent:{id:parent.id,title:parent.title},workstream});}} />
       {:else}
         <h1>Opened topic</h1><button onclick={() => {active='search';}}>Back to search</button>
       {/if}
@@ -85,7 +90,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
     `;
     const server = await createServer({
       configFile: false, root: fileURLToPath(new URL('..', import.meta.url)),
-      cacheDir: join(directory, 'vite-cache'), optimizeDeps: { include: ['svelte'] },
+      cacheDir: join(directory, 'vite-cache'), optimizeDeps: { include: ['svelte', 'markdown-it'] },
       plugins: [{
         name: 'search-browser-fixture',
         resolveId: id => ['/search-fixture.svelte', '/search-fixture.js'].includes(id) ? `\0${id.slice(1)}` : undefined,
@@ -123,7 +128,13 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             while(Date.now()<until){if(await evaluate('Boolean('+code+')'))return;await delay(20);}
             throw new Error('Timed out: '+code+'\\n'+await evaluate('document.body.innerText'));
           }
-          const click=label=>evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==='+JSON.stringify(label)+'||b.getAttribute("aria-label")==='+JSON.stringify(label)+').click()');
+          const click=async label=>{
+            if(label==='Add to workstream'||label==='Add Child...') {
+              await evaluate('document.querySelector("article .topic-link").dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
+              await wait('document.querySelector("[role=menuitem]")');
+            }
+            return evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==='+JSON.stringify(label)+'||b.getAttribute("aria-label")==='+JSON.stringify(label)+').click()');
+          };
           const submit=()=>evaluate('document.querySelector("form").requestSubmit()');
           const drag=selector=>evaluate('(()=>{const link=document.querySelector('+JSON.stringify(selector)+');const dataTransfer=new DataTransfer();dataTransfer.setData("text/uri-list",link.href);dataTransfer.setData("text/html","default anchor");const event=new DragEvent("dragstart",{bubbles:true,cancelable:true,dataTransfer});link.dispatchEvent(event);return {prevented:event.defaultPrevented,markdown:dataTransfer.getData("text/markdown"),plain:dataTransfer.getData("text/plain"),uri:dataTransfer.getData("text/uri-list"),html:dataTransfer.getData("text/html"),reference:JSON.parse(dataTransfer.getData("application/vnd.kubarycz.working-memory+json")),active:JSON.parse(JSON.stringify(window.__searchTest.readDrag()))};})()');
           const endDrag=selector=>evaluate('document.querySelector('+JSON.stringify(selector)+').dispatchEvent(new DragEvent("dragend",{bubbles:true}))');
@@ -173,38 +184,45 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             await delay(50);
             assert.equal(await evaluate('(()=>{const h=document.querySelector(".active-rail-header").getBoundingClientRect();return [...document.querySelectorAll(".active-header-button")].every(b=>{const r=b.getBoundingClientRect();return r.left>=h.left&&r.right<=h.right;});})()'),true);
           }
-          await evaluate('(()=>{const t=document.querySelector("textarea");t.value="Find work on reliable sign in";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
+          await evaluate('window.__searchTest.holdPreparation=true;(()=>{const t=document.querySelector("textarea");t.value="Find work on reliable sign in";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
           await enter();
           await wait('document.querySelector("[data-search-result]")');
           assert.equal(await evaluate('window.__searchTest.searches[0]'),'Find work on reliable sign in');
           assert.equal(await evaluate('window.__searchTest.options.context.workstreams[0].id'),'workstream-1');
           assert.ok(await evaluate('document.querySelector("article").getBoundingClientRect().height<150'));
-          assert.equal(await evaluate('document.querySelector("article h3 a").getAttribute("href")'),'working-memory://open/topic/topic-1');
+          assert.equal(await evaluate('document.querySelector("article .topic-link").getAttribute("title")'),'OAuth connections');
+          assert.equal(await evaluate('document.querySelector(".relevance").textContent.trim()'),'Relevance 0.81');
+          assert.equal(await evaluate('document.querySelector(".confidence").textContent.trim()'),'Confidence High');
+          assert.ok((await evaluate('document.querySelector(".confidence").title')).includes('not a calibrated probability'));
           assert.equal(await evaluate('document.querySelector(".reason").textContent'),'Explains connection reliability and authentication.');
           assert.equal(await evaluate('document.querySelector("article details")'),null);
           assert.equal(await evaluate('document.querySelector("article blockquote")'),null);
           assert.equal(await evaluate('document.querySelector("article").textContent.includes("The connector authenticates through a handshake.")'),false);
-          assert.equal(await evaluate('document.querySelector("article h3 a").draggable'),true);
-          const fallback=await drag('article h3 a');
+          await click('Expand excerpt for OAuth connections');
+          await wait('document.querySelector("article blockquote")');
+          assert.equal(await evaluate('document.querySelector("article blockquote").textContent.trim()'),'The connector authenticates through a handshake.');
+          await click('Collapse excerpt for OAuth connections');
+          assert.equal(await evaluate('document.querySelector("article .topic-link").draggable'),true);
+          const fallback=await drag('article .topic-link');
           assert.equal(fallback.prevented,false);
           assert.equal(fallback.markdown,'[OAuth connections](http://127.0.0.1:7718/open/topic/topic-1)');
           assert.equal(fallback.plain,fallback.markdown);
           assert.equal(fallback.uri,'');
           assert.equal(fallback.html,'');
           assert.deepEqual(fallback.active,{kind:'topic',id:'topic-1',sourceWorkstream:''});
-          await endDrag('article h3 a');
+          await endDrag('article .topic-link');
           assert.equal(await evaluate('window.__searchTest.readDrag()'),null);
-          await evaluate('document.querySelector("article h3 a").dispatchEvent(new PointerEvent("pointerenter"))');
+          await evaluate('window.__searchTest.holdPreparation=false;window.__searchTest.releasePreparation()');
           await wait('window.__searchTest.preparations.length===1');
           await delay(20);
-          const preparedDrag=await drag('article h3 a');
+          const preparedDrag=await drag('article .topic-link');
           assert.equal(preparedDrag.prevented,true);
           assert.equal(preparedDrag.uri,'file:///tmp/search-context.md');
           assert.equal(preparedDrag.reference.uri,preparedDrag.uri);
           assert.equal(await evaluate('window.__searchTest.nativeDrags.length'),1);
           await evaluate('window.dispatchEvent(new PointerEvent("pointerup",{buttons:0}))');
           assert.equal(await evaluate('window.__searchTest.readDrag()'),null);
-          await evaluate('document.querySelector("article h3 a").click()');
+          await evaluate('document.querySelector("article .topic-link").click()');
           await wait('document.body.innerText.includes("Opened topic")');
           await evaluate('document.querySelector(".active-rail-header .codicon-search").closest("button").click()');
           await wait('document.querySelector("[data-search-result]")');
@@ -235,6 +253,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('window.__searchTest.refreshes'),1);
           assert.deepEqual(await evaluate('window.__searchTest.adds.at(-1)'),{id:'topic-1',workstream:'workstream-1'});
           assert.ok(await evaluate('document.querySelector(".notice").textContent.includes("Connection reliability")'));
+          await click('Add Child...');
+          await wait('window.__searchTest.children.length===1');
+          assert.deepEqual(await evaluate('window.__searchTest.children[0]'),{
+            parent:{id:'topic-1',title:'OAuth connections'},workstream:{id:'workstream-1',title:'Connection reliability'}
+          });
           await evaluate('window.__searchTest.failSearch=true');
           await submit();await wait('document.querySelector(".search-view [role=alert]")');
           await evaluate('window.__searchTest.failSearch=false;window.__searchTest.empty=true');
@@ -243,10 +266,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await submit();await wait('document.querySelector("table")');
           assert.equal(await evaluate('document.querySelectorAll("tbody td")[1].textContent.trim()'),'open');
           assert.equal(await evaluate('document.querySelectorAll("tbody td")[2].textContent.trim()'),'Case summary');
-          assert.equal(await evaluate('document.querySelector("tbody a").getAttribute("href")'),'working-memory://open/topic/topic-1');
-          const tableDrag=await drag('tbody a');
+          assert.equal(await evaluate('document.querySelector("tbody .topic-link").getAttribute("title")'),'OAuth connections');
+          const tableDrag=await drag('tbody .topic-link');
           assert.equal(tableDrag.markdown,'[OAuth connections](http://127.0.0.1:7718/open/topic/topic-1)');
-          await endDrag('tbody a');
+          await endDrag('tbody .topic-link');
           await evaluate('window.__searchTest.extraResults=[{id:"workstream-1",kind:"Workstream",title:"Connection reliability",excerpt:"",reason:"Related scope",score:1,status:"progress"}];window.__searchTest.blocks=[{type:"summary",text:"Related scope",sourceIds:["workstream-1"]}]');
           await submit();await wait('document.querySelector(".citations a")');
           await evaluate('document.querySelector(".citations a").dispatchEvent(new PointerEvent("pointerenter"))');
@@ -269,7 +292,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await enter(['control']);
           await wait('window.__searchTest.searches.length==='+String(before+1));
           assert.equal(await evaluate('window.__searchTest.searches.at(-1)'),'Line one\\nLine two');
-          await evaluate('document.querySelector("article h3 a").click()');
+          await evaluate('document.querySelector("article .topic-link").click()');
           await wait('document.body.innerText.includes("Opened topic")');
           await click('Back to search');
           await wait('document.querySelector("textarea")');
@@ -278,6 +301,37 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await enter(['meta']);
           await wait('window.__searchTest.searches.length==='+String(before+2));
           await wait('!document.querySelector("textarea").disabled');
+          await evaluate('window.__searchTest.holdSearch=true;window.__searchTest.failSearch=true;window.__searchTest.releaseSearch=null');
+          await enter(['meta']);
+          await wait('typeof window.__searchTest.releaseSearch==="function"');
+          await evaluate('window.__searchTest.resultsListener({requestId:"stale",response:{query:"old",queries:[],results:[]}})');
+          assert.equal(await evaluate('document.querySelector("article")'),null);
+          await evaluate('window.__searchTest.resultsListener({requestId:window.__searchTest.options.requestId,response:{query:"Line one\\\\nLine two",queries:[],results:[{id:"topic-1",kind:"Topic",title:"Immediate match",excerpt:"Local evidence",score:0.8,similarity:0.8,reason:"Local match"}]}})');
+          await wait('document.querySelector("article .topic-link")?.textContent.includes("Immediate match")');
+          assert.equal(await evaluate('document.querySelector("textarea").disabled'),true);
+          await evaluate('window.__searchTest.traceListener({requestId:window.__searchTest.options.requestId,trace:{id:"initial",tool:"wm-semantic-search",arguments:{},durationMs:91,status:"success",timings:{startupMs:0,inferenceMs:7,rankingMs:80,hostMs:10}}})');
+          assert.ok((await evaluate('document.querySelector(".search-trace").textContent')).includes('Startup: 0 ms'));
+          assert.ok((await evaluate('document.querySelector(".search-trace").textContent')).includes('Ranking: 80 ms'));
+          await evaluate('window.__searchTest.releaseSearch()');
+          await wait('document.querySelector(".search-view [role=alert]")?.textContent.includes("Retrieved results remain available")');
+          assert.ok(await evaluate('document.querySelector("article .topic-link").textContent.includes("Immediate match")'));
+          await evaluate('window.__searchTest.holdSearch=false;window.__searchTest.failSearch=false');
+          await evaluate('window.__searchTest.limited=true;(()=>{const t=document.querySelector("textarea");t.value="health";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
+          await enter(['meta']);
+          await wait('!document.querySelector("textarea").disabled');
+          assert.equal(await evaluate('window.__searchTest.searches.at(-1)'),'health');
+          assert.equal(await evaluate('Array.from(document.querySelectorAll("button")).some(button=>button.textContent.includes("Refine with AI"))'),false);
+          assert.ok((await evaluate('document.body.innerText')).includes('Showing top matches'));
+          assert.equal(await evaluate('document.querySelector(".search-view .notice")'),null);
+          assert.equal(await evaluate('document.querySelector(".search-view [role=alert]")'),null);
+          await evaluate('window.__searchTest.partial=true');
+          await enter(['meta']);
+          await wait('document.querySelector(".search-view .notice")?.textContent.includes("Some source evidence was incomplete")');
+          assert.ok(!(await evaluate('document.body.innerText')).includes('tool failed'));
+          await evaluate('window.__searchTest.partial=false;window.__searchTest.limited=false;(()=>{const t=document.querySelector("textarea");t.value="health benefits";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
+          await enter(['meta']);
+          await wait('!document.querySelector("textarea").disabled');
+          assert.equal(await evaluate('window.__searchTest.searches.at(-1)'),'health benefits');
           await evaluate('window.__searchTest.holdSearch=true;window.__searchTest.trace=[{id:"while-away",tool:"wm-document-query",arguments:{},durationMs:1,status:"success",count:1}]');
           await enter(['meta']);
           await wait('typeof window.__searchTest.releaseSearch==="function"');

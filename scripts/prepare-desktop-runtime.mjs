@@ -168,6 +168,11 @@ function prepareMacApp(appBundle, deepSign) {
   );
 
   const dataTier = join(contents, 'Resources', 'data-tier');
+  const embeddings = join(contents, 'Resources', 'embeddings');
+  rmSync(embeddings, { recursive: true, force: true });
+  cpSync(join(desktopRoot, 'build', 'embeddings', 'wm-embeddings'), embeddings, {
+    recursive: true, verbatimSymlinks: true,
+  });
   rmSync(dataTier, { recursive: true, force: true });
   if (existsSync(join(desktopRoot, 'build', 'data-tier', 'image.tar'))) {
     cpSync(join(desktopRoot, 'build', 'data-tier'), dataTier, { recursive: true });

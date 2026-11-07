@@ -47,8 +47,12 @@ export class McpSessions {
 
   get activeCount(): number { return this.sessions.size; }
   get memoryBlocked(): boolean {
+    return this.isMemoryBlockedAt(SESSION_HEAP_FRACTION);
+  }
+
+  isMemoryBlockedAt(thresholdFraction: number): boolean {
     const memory = this.memoryUsage();
-    return memory.used >= memory.limit * SESSION_HEAP_FRACTION;
+    return memory.used >= memory.limit * thresholdFraction;
   }
 
   constructor(private readonly db: DatabaseSync, options: SessionDiagnosticsOptions = {}) {

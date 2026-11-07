@@ -12,6 +12,8 @@ files:
   # Working Memory disables Copilot tools; omit the runtime's desktop-automation helper app.
   - '!node_modules/@github/copilot-sdk-*/plugins/computer-use/**'
 extraResources:
+  - from: build/embeddings/wm-embeddings
+    to: embeddings
   - from: build/data-tier
     to: data-tier
 # Native executables must be launched from app.asar.unpacked, not inside app.asar.

@@ -10,6 +10,8 @@
   import SaveStatus from './SaveStatus.svelte';
   import AgentMessageCallouts from './AgentMessageCallouts.svelte';
   import HybridMarkdownEditor from './HybridMarkdownEditor.svelte';
+  import RelatedTopics from './RelatedTopics.svelte';
+  import type { ActiveResourceDrag, TopicLinkReference } from '../resourceDrag';
 
   interface Props {
     unreadResponses?: UnreadResponse[];
@@ -27,6 +29,10 @@
     onOpenLink?: (href: string) => void;
     titlePlaceholder?: string;
     draft?: boolean;
+    showRelatedTopics?: boolean;
+    activeDrag?: ActiveResourceDrag | null;
+    onAddChild?: (parent: TopicLinkReference, workstream: TopicLinkReference) => Promise<void>;
+    onTopicAdded?: () => Promise<void>;
     newWorkstreamTitle?: string;
     onNewWorkstreamTitleChange?: (title: string) => void;
   }
@@ -47,6 +53,10 @@
     onOpenLink,
     titlePlaceholder = '',
     draft = false,
+    showRelatedTopics = false,
+    activeDrag = $bindable(null),
+    onAddChild,
+    onTopicAdded,
     newWorkstreamTitle,
     onNewWorkstreamTitleChange,
   }: Props = $props();
@@ -438,6 +448,11 @@
     </div>
   </div>
 </section>
+
+{#if showRelatedTopics && !draft && topic.id}
+  <RelatedTopics id={topic.id} resourceVersion={topic.resourceVersion} {onOpenTopic} {attachmentBaseUrl}
+    bind:activeDrag {onAddChild} onAdded={onTopicAdded} />
+{/if}
 
 <style>
   .head {

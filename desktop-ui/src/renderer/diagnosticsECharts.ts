@@ -11,19 +11,23 @@ export { init, connect, disconnect } from 'echarts/core';
 use([LineChart, BarChart, GridComponent, TooltipComponent, AriaComponent, SVGRenderer]);
 type ChartOption = ComposeOption<LineSeriesOption | BarSeriesOption | GridComponentOption | TooltipComponentOption | AriaComponentOption>;
 
-export function diagnosticsChartOption(chart: DiagnosticsChartData, selected: string | null, stacked: boolean): ChartOption {
-  const series = chart.series.filter(item => selected === null || item.key === selected);
+export function diagnosticsChartOption(chart: DiagnosticsChartData, selected: string | null, stacked: boolean, showPercentages = true): ChartOption {
+  const series = chart.series.filter(item => selected === null || item.key === selected || item.overlay);
+  const normalizedAxis = { type: 'value' as const, min: 0, max: 100,
+    axisLabel: { show: showPercentages, formatter: '{value}%' }, axisTick: { show: showPercentages } };
   return {
     animation: false,
     aria: { enabled: true },
     grid: { left: 64, right: 24, top: 20, bottom: 40 },
     xAxis: {
-      type: 'time', min: chart.start, max: chart.end, minInterval: DIAGNOSTICS_BUCKET_MS,
+      type: 'time', min: chart.start, max: chart.end, minInterval: chart.bucketMs ?? DIAGNOSTICS_BUCKET_MS,
       containShape: false, boundaryGap: [0, 0],
       axisLabel: { hideOverlap: true, formatter: (at: number) => new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) },
     },
-    yAxis: { type: 'value', min: 0, ...(stacked ? { minInterval: 1 } : { max: 100 }),
-      axisLabel: { formatter: stacked ? '{value}' : '{value}%' } },
+    yAxis: stacked ? [
+      { type: 'value', min: 0, minInterval: 1, axisLabel: { formatter: '{value}' } },
+      { ...normalizedAxis, axisLabel: { show: false }, axisTick: { show: false }, splitLine: { show: false } },
+    ] : normalizedAxis,
     tooltip: {
       trigger: 'axis', confine: true,
       formatter: params => {
@@ -46,16 +50,17 @@ export function diagnosticsChartOption(chart: DiagnosticsChartData, selected: st
       },
     },
     series: series.map(metric => ({
-      id: metric.key, name: metric.label, type: stacked ? 'bar' : 'line',
-      ...(stacked ? { stack: 'requests', barMaxWidth: 24 } : {
+      id: metric.key, name: metric.label, type: stacked && !metric.overlay ? 'bar' : 'line',
+      yAxisIndex: stacked && metric.overlay ? 1 : 0,
+      ...(stacked && !metric.overlay ? { stack: 'requests', barMaxWidth: 24 } : {
         connectNulls: false, symbolSize: 5, showSymbol: true,
         lineStyle: { type: metric.dash ? 'dashed' : 'solid' },
       }),
       itemStyle: { color: metric.color },
       data: metric.points.flatMap((point, index) => {
-        const value = stacked ? point.value : point.normalized;
+        const value = stacked && !metric.overlay ? point.value : point.normalized;
         const data = [point.at, value];
-        return !stacked && point.breakBefore && index > 0 ? [[point.at, null], data] : [data];
+        return (!stacked || metric.overlay) && point.breakBefore && index > 0 ? [[point.at, null], data] : [data];
       }),
     })),
   };

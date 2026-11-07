@@ -376,19 +376,29 @@ unavailable, preserving Host tasks while leaving unsupported Search disabled.
 
 When enabled, click the magnifying glass beside Refresh in the upper-left rail to open a
 permanent **Search** tab. Describe what you want to find in natural language,
-then select **Find with AI**.
+then select **Search**.
 
 Enter submits the query; Shift+Enter inserts a newline. Use the page icon in the
 textbox's upper-right corner to toggle **Multiline mode** (white when off, dark
 when on) for chat-style expanded composition: Enter inserts newlines and
 Ctrl/Cmd+Enter submits. Switching modes preserves the text.
 
-Search uses the configured **Medium / Complex** model profile and a
-host-controlled, read-only tool loop:
+Single-word searches such as `nanites` or `bank` return local matches without
+calling an AI model or performing AI-selected source reads. Add to the search
+text to narrow results; there is no separate AI refinement action. Normal
+result caps and bounded indexed text are shown as top matches, not as evidence
+errors or tool failures. Longer requests use the configured
+**Medium / Complex** model profile and a host-controlled, read-only tool loop:
 
-1. AI resolves intent and scope, using the document/workstream selected when
-   opening Search. Ambiguous memberships produce a clarification.
-2. AI chooses indexed concept searches or structured document queries, follows
+1. Search retrieves local evidence before asking the AI to interpret the request.
+   Exact whole-word/phrase matches are returned first, including matches below
+   the semantic relevance cutoff. Searching `bank` shows documents containing
+   that word before semantic-only matches or suggestions for narrowing it.
+   The AI uses the document/workstream selected when opening Search as context.
+   Retrieved rows display immediately, before AI configuration or refinement.
+   Refinement runs without blocking those rows; cancellation or a model failure
+   leaves retrieved results available and explicitly reports the interruption.
+2. AI chooses local semantic searches or structured document queries, follows
    workstream membership/parent/type relationships, reads bounded body chunks,
    and can retry different strategies. Structured filters/counts run in SQLite
    before paging; literal queries scan stored search projections rather than
@@ -397,29 +407,46 @@ host-controlled, read-only tool loop:
    `nextBodyOffset` count Unicode code points. AgentMessage evidence includes
    searchable scheduling, recommendations, decisions and relationships, not
    opaque metadata. Ranked excerpts are SQL-capped at 1,200 code points.
-3. Registered container apps can be discovered without an `@mention`. Only MCP
-   tools explicitly marked read-only and not destructive are exposed. Each call
-   rechecks registration, endpoint, connection and tool annotations. Search
-   never starts an app, invokes a write/host task or connects to a model-provided URL.
+3. Discovery embeds the search phrase using the same local model/index as
+   Related topics, then ranks supporting passages across readable Topics,
+   Workstreams, AgentMessages, CommandJournals, TopicTypes, Agents and
+   ContainerClaims. Only safe searchable projections are indexed, never Config
+   values or arbitrary journal/tool payloads. Connected applications are excluded
+   from this Search surface: no app catalog, discovery or app tool calls.
 4. AI returns typed summaries, linked lists, tables, verified query counts or
    clarification suggestions. Titles/statuses come from actual sources; invented
    source IDs and unsupported counts are rejected. Narrative summaries are
    always evidence-cited, even after an unrelated empty query, but not mechanically
-   proven factually correct. Empty structured queries and indexed searches use
-   verified zero-count blocks; nonzero indexed hit counts are not verified totals.
+   proven factually correct. Matching documents are retained even if the AI
+   only asks a clarification; optional refinements follow the results.
+   An empty semantic retrieval means zero sufficiently
+   similar passages, not proof the information does not exist. Exact totals
+   require structured query evidence.
 
 Open results to browse and return to Search without losing the request, original
 scope, results or completed retrieval trace.
 Closing the Search tab clears that session; reopen Search from another document
 to start fresh with that document's context.
-Result cards show explanations and source links, not expandable document-body
-previews; open the source to read the full document.
-Document links in result cards, tables and citations can be dragged like rail
+Search and Related topics use the same compact tree-style result widget with
+separate **Relevance** and **Confidence** labels and supporting Markdown quotes,
+collapsed by default. Relevance is raw cosine similarity, not a probability.
+Confidence is a local, transparent evidence-strength heuristic: High means a
+verified exact word/phrase occurrence, or passage cosine >= 0.65 and document
+cosine >= 0.50 with complete coverage; Medium means passage cosine >= 0.45 and
+document cosine >= 0.35; otherwise Low. Passage and document agreement uses the
+same query vector. Limited coverage prevents semantic High. Exact-term High
+verifies occurrence, not the intended meaning; tooltips explain each rating.
+Structured-only results show unavailable scores rather than inventing them.
+Read enrichment preserves scores, term-match evidence and supporting passages
+only when the document version still matches.
+Document links in results, tables and citations can be dragged like rail
 items: they provide a Markdown link and, once prepared, a native Markdown
 context attachment. Topic drops onto a workstream add the topic tree without
 removing existing memberships; open workstreams can be reordered in the rail.
-Context preparation starts on hover, focus or pointer-down, not for every result.
-Topic results offer **Add to workstream**, followed by an explicit choice of an
+Topic handles share their preparation/drag controller and right-click menu with
+Related topics. Topic results offer **Add Child...** and **Add to workstream**,
+not removal or pinning. Children use the parent's sole workstream, otherwise
+the picker asks which workstream to use. Membership addition requires an explicit choice of an
 open workstream (Queued, In Progress or Backlog). This adds membership only:
 existing memberships, focus pins, parent links and topic status are preserved.
 The dedicated membership action checks the Search flag and open workstream
@@ -428,28 +455,68 @@ topic edits produce a visible conflict rather than overwriting newer membership.
 Model, transport and save failures remain visible and retryable; search never
 falls back silently to an unranked full-store listing.
 
-Search is bounded to eight model turns, 24 tool calls, four discovered apps and
-90 seconds per request. Model evidence/context and app tool catalogs are
+Search is bounded to eight model turns, 24 tool calls and
+90 seconds per request. The initial host retrieval counts toward the 24-call
+total. Batches of evidence reads execute sequentially within that remaining
+budget; there is no separate four-call-per-turn limit. Budget errors report
+the total, calls already used and size of the rejected batch.
+Model evidence/context and semantic result counts are
 bounded; incomplete pages/body chunks, truncated responses and tool failures
-are visibly marked. External apps still control their own response sizes.
-Cancel stops inference/follow-up calls and signals pending MCP catalog,
-discovery and tool requests without disconnecting shared clients. Identical
-in-flight app handshakes are shared; cancellation stops only that caller's wait
-unless no callers remain.
+are visibly marked. Cancel stops follow-up calls and signals pending query
+inference/MCP requests without disconnecting shared clients. A busy host (HTTP
+409) is retried until cancellation or the inference deadline, with backoff
+starting at 500 ms and capped at two seconds, never replaced with keyword results.
+Local query inference allows up to 60 seconds, including cold model startup;
+the desktop MCP client allows 70 seconds for that tool so the backend can return
+a useful timeout error before the client expires. The overall Search deadline
+remains 90 seconds. Initial retrieval failures appear in read-only activity with
+their elapsed time, even when no documents have been returned.
+External indexing callers need `content.read`, `settings.read`, and
+`settings.update` for `wm-embeddings-next`, because pending work can include
+settings documents as well as content. Update permission alone never authorizes
+reading their passages.
+Activity separates each AI turn from retrieval calls and shows local-model
+startup (including cache verification/loading), inference, ranking and host
+round-trip times. Host round trip includes transport and busy retries; startup
+is zero for an already-loaded helper, or unavailable with an older host.
+New hosts add timing metadata only for callers opting in with
+`X-WM-Embedding-Metrics: 1`, preserving strict response shapes for older containers.
 Switching environments cancels searches
 and discards stale results. Read-only activity is inspectable without storing a
 write-only CommandJournal or exposing model chain-of-thought.
 
-This uses existing AI configuration, **not an embeddings index** or an additional
-model service. Only retrieved evidence is supplied to the configured model,
+AI-driven Search uses existing AI configuration for conversation and the
+**local embeddings index** for retrieval. Search requires Embeddings enabled
+and complete indexing of the caller's readable WM documents. Disabled/pending
+states are checked before any AI call and before semantic retrieval; edits
+during query inference are checked again before returning results. A paused
+but fully indexed corpus remains searchable. Indexing the first 32,000 body
+characters counts as indexed; later text remains outside semantic coverage,
+and AI answers using incomplete evidence are marked partial. Local match lists
+instead indicate their bounded retrieval without implying a failed read.
+No keyword/partial-index fallback is
+used by this surface. Only retrieved evidence is supplied to the configured model,
 not the entire store; Config secrets are excluded and tool output (including
 JSON embedded in MCP text) is redacted. Sanitizer limits mark answers partial.
-Discovered tool descriptions are redacted before model registration. Schema
-defaults/examples are omitted without renaming properties or changing required
-fields; unsafe credential-valued constraints reject discovery explicitly.
-References inside credential-valued schemas are rejected rather than exposing
-uninspected target constraints, including dynamic and recursive references.
-AI output is rendered as plain text, not executable Markdown/HTML.
+AI explanations are rendered as plain text, not executable Markdown/HTML.
+Expandable source quotes use the normal safe Markdown renderer and the selected
+environment's attachment URL.
+
+The read-only `wm-semantic-status` reports enabled/readiness and readable
+document coverage without contacting the host. `wm-semantic-search` accepts
+`{ "queries": ["Trouble signing into the service"], "kinds": ["Topic"], "limit": 20 }`
+and returns versioned sources with the best supporting passage, raw cosine
+`similarity`, and a `limited` coverage/result-cap marker. Permissions are
+rechecked and filtered before ranking/limits. Related topics still returns only
+Topics even though the shared index covers other document kinds.
+
+MCP callers use the same read-only retrieval as desktop Search. For topic-only
+search, call `wm-semantic-search` with
+`{ "queries": ["health"], "literalQuery": "health", "kinds": ["Topic"], "limit": 20 }`.
+`literalQuery` prioritizes exact text matches; results include relevance,
+evidence confidence and source IDs. Use `wm-document-query` for literal filters,
+exact counts, workstream membership or full source reads. Conversational AI
+interpretation remains desktop-owned, not an extra MCP or HTTP search endpoint.
 
 Agents can call the read-only `wm-document-search` tool with
 `{ "queries": ["authentication", "sign in"], "kinds": ["Topic"], "limit": 20 }`.
@@ -475,6 +542,128 @@ triggers, so run this backend once before rolling back an experimental database.
 Kind descriptors supply searchable text, including Config's key-only projection
 that excludes configuration values. As with all resource writes, connections must
 be opened through `openStore` to install the local projection function and triggers.
+
+### Local embeddings and Related topics (V1)
+
+With Search and Embeddings enabled, saved topics show **Related topics**:
+semantic candidates ranked by vector similarity.
+Results include supporting passages and label existing parent/child links;
+they never create links or modify authored documents. Compact topic-tree-style
+rows show a relevance score (vector cosine similarity, not a confidence
+percentage). Supporting Markdown passages are quoted beneath the title when
+expanded; they start collapsed. The section is hidden
+when Embeddings is disabled, without running related-topic retrieval. Pending
+source topics show an indexing message, not keyword substitutes. Ordinary
+keyword MCP search remains available separately; desktop Search uses semantic retrieval.
+
+Related topic handles share drag handling with the workstream tree: drag to the
+left rail or export the same Markdown context attachment to VS Code. Their
+right-click menu offers **Add to workstream** and **Add Child...**, not removal
+or pinning. Child creation uses the parent's workstream when there is exactly
+one; otherwise it asks for an open workstream before opening the normal form.
+Search and Related topics share the result component, topic actions and workstream picker.
+
+Enable local indexing with the **Embeddings** switch in **Settings > Features**.
+Monitor progress and use pause/resume or retry in **Settings > Diagnostics > Embeddings**. Enabling downloads
+the pinned Apache-2.0 [MiniLM model](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
+(about 87 MiB) once, verifies file sizes and SHA-256 hashes, and caches it in the
+desktop profile. WM document text is processed locally, not sent to Hugging Face.
+The bundled helper includes its runtime; users do not install Python or a model
+server. Developers building the desktop need Python 3.13 (`WM_EMBEDDING_PYTHON`
+can select its executable); build each installer on its native target OS.
+The build creates an isolated environment from
+`native/embeddings/requirements.txt`.
+
+The control plane owns the background indexing worker: it selects changed
+searchable WM documents, reuses their safe stored search projections, prepares
+bounded passages, calls the host inference service, and accepts
+vectors only while the document content version remains current. Existing
+Topic text/hash representation is preserved, so valid Topic vectors are reused
+while other kinds join the index. Enabling indexing
+persists settings in that instance, independently of the desktop's selected
+environment. Each explicitly enabled local environment continues indexing after
+the desktop quits and resumes after its container restarts.
+
+WM installs a per-user host inference service on enablement: a macOS LaunchAgent
+or Windows sign-in Scheduled Task. It starts at sign-in, survives desktop exit,
+and runs the bundled helper over private standard input/output. No separate
+Python or model-server installation is required. Indexing needs an awake
+computer, a signed-in user, Docker and a running control plane; it does not run
+before sign-in. A service restored by WM uses the current installed application
+version. Updates retain model files and indexing settings.
+
+The inference service binds **127.0.0.1:7716** and requires a random bearer
+credential for every request, including status. Docker Desktop containers
+connect using `host.docker.internal:7716`; the credential is stored in the local
+profile and the instance's private configuration, never returned in diagnostics
+or queue inspection. Only fixed-model, bounded embedding requests are accepted;
+no arbitrary model paths or executable commands are exposed. Service logs live
+under the profile's `embeddings` directory. Remote environments cannot be enabled
+against this local bundled service.
+
+The Windows uninstaller removes the background task. Before manually deleting
+the Mac app, stop its service with
+`launchctl bootout gui/$(id -u)/com.workingmemory.embeddings` and remove
+`~/Library/LaunchAgents/com.workingmemory.embeddings.plist`. Cached models and
+instance indexing settings are retained; an unavailable service is reported
+in diagnostics rather than treated as successful indexing.
+
+Only the control plane owns the SQLite embedding tables.
+Metadata-only edits reuse vectors; changed content is
+reindexed, incompatible model versions are excluded, and deleted topics remove
+their derived vectors. Related lookup uses cached topic summaries, exact cosine
+similarity and best-passage evidence, without running a chat model. V1 scans
+topic summaries rather than maintaining an approximate-nearest-neighbor graph.
+
+Windows packages OpenVINO and its Intel NPU plugin. Intel Core Ultra 7 165H /
+Intel AI Boost is the required hardware acceptance target, with Windows 11 and
+a compatible Intel NPU driver. The helper compiles the fixed-shape model for
+`NPU`, caches it, and reports OpenVINO's execution devices. Missing drivers or
+failed NPU compilation produce a visible warning and CPU recovery. A successful
+CPU run does **not** establish NPU support. Mac packages ONNX Runtime; it reports
+providers observed in a warm-up profile. Core ML permits GPU execution but that
+provider label is not proof every operator executed on the GPU; CPU and mixed
+execution are explicit.
+
+The dashboard shows installation/download progress, backend, topic coverage,
+last indexing success, last topic inference time, helper RSS and passage-vector
+disk bytes (not total database size). Pause/disable stop that instance's indexing
+but retain cached weights and stored vectors. The host serializes inference
+across enabled instances. Once loaded, the helper stays warm until the host
+service stops by default, avoiding repeated cold starts while holding roughly
+1.1 GiB of memory. **Diagnostics > Embeddings > Keep model loaded** can instead
+unload it after 1, 10, 30 or 60 idle minutes. The host-wide setting is saved
+atomically in the service's `model-settings.json`, survives restarts/updates,
+and applies to all local environments. It neither enables Embeddings nor starts
+indexing. A new service installation uses the always-warm default; the first
+use after a service restart still pays model initialization.
+Connectivity failures are visible and retried automatically; invalid inference
+responses halt until Retry or Resume. Retry also repairs/restarts the host service.
+Only the visible dashboard polls, every two seconds. V1 indexes the first
+32,000 body characters in overlapping passages; the dashboard and affected
+topics identify that limit. The model has a 256-token passage input limit.
+
+Validate the real packaged-helper-to-MCP path with:
+
+```bash
+WM_TEST_EMBEDDINGS=1 npm test --prefix desktop-ui -- tests/embeddingRuntime.integration.test.ts --reporter=verbose --silent=false
+```
+
+On macOS, validate the installed sign-in service with a real disposable Docker
+container (it disconnects its desktop client before indexing and removes only
+its synthetic container/data afterward):
+
+```bash
+WM_TEST_BACKGROUND_EMBEDDINGS=1 npm test --prefix desktop-ui -- tests/embeddingBackground.integration.test.ts --reporter=verbose --silent=false
+```
+
+This installs/restores the actual per-user host service and retains its verified
+model cache. It never enables indexing in an existing WM environment.
+
+On the target Windows PC, additionally set `WM_REQUIRE_INTEL_NPU=1`; this fails
+unless the helper actually reports NPU execution. Unit/browser tests use isolated
+fixtures and do not download weights. The opt-in integration test downloads only
+public model artifacts and uses synthetic topic content.
 
 ## VS Code MCP integration
 
@@ -1777,7 +1966,7 @@ request count. Evidence is capped at 20,000 characters with explicit truncation.
 These changes improve future reports; they cannot reconstruct logs already lost
 when an affected container was recreated.
 
-Diagnostics has **Queue**, **HTTP**, **Runtime**, and **Automatic incident reports**
+Diagnostics has **Queue**, **HTTP**, **Runtime**, **Automatic incident reports**, and **Embeddings**
 subtabs. HTTP shows transactions, errors,
 average duration and maximum duration as time series, independently scaled to
 0-100% of each series' visible-window peak. Raw peaks remain in the legend and
@@ -1786,36 +1975,75 @@ log sits below the graph, with the current caller/route/status breakdown in an
 expandable non-tabular summary. Automatic incident reports has its own subtab,
 including reports queued while the backend is unavailable.
 Diagnostics navigation uses pink, keyboard-accessible secondary tabs under the
-main Settings tabs. There are no manual refresh buttons: only the selected,
+main Settings tabs. Except for Embeddings' explicit Refresh control, there are no manual refresh buttons: only the selected,
 visible diagnostics view polls. Polling stops while the window is hidden and
 resumes immediately when visible again; inactive subtabs do not background poll.
 A shared Refresh selector defaults to 15 seconds and offers 2, 5, 15, 30 and 60
 seconds; changing it applies to the selected diagnostics view without overlapping requests.
+On Queue, Refresh and Bucket size align on one row at the top right above the
+first graph. **Queue Settings** is a collapsed section at the top, replacing
+the old MCP tool queue heading and endpoint text. Drafts survive collapsing
+and polling, and save errors remain visible even when the section is collapsed.
+The owner can save persistent, per-container **Queue Settings**: Max Concurrency
+(1-64, default 4), Max Queue Size (1-1000, default 16), Queue Timeout
+(0.1-300 seconds, default 5), and Heap Dispatch Pause Threshold
+(10-90%, default 60%). Saved settings take effect without restarting the backend.
+Running calls finish; existing waiters retain FIFO order and their original
+deadlines. Lowering queue capacity rejects new arrivals until capacity returns.
+Changing the timeout affects new arrivals only. New-session admission retains
+its separate 60% heap cutoff; raising dispatch limits does not change that policy.
+Settings are owner-only, validate the backend boot identity and previous settings,
+and reject stale saves rather than overwriting newer configuration.
 Queue shows only the selected environment: a **Queue Processing**
-chart with one-minute aggregation of 10-second samples (latest 30 minutes), a stacked **Tool requests over
-time** chart, and a request log grouped by request ID from the latest 100 lifecycle events.
+chart with aggregation of 10-second samples (latest 30 minutes), a stacked **Tool requests over
+time** chart, and collapsed **Top 50 by wait time**, **Top 50 by runtime**, and
+**Queue log** sections. Rankings and the log use retained lifecycle history
+(up to 2,000 events, at most 24 hours), with one row per request and live items
+included. Unavailable timings are excluded from rankings.
+**Drops**, immediately below Queue Processing, sums queue timeouts, capacity
+rejections and shutdown drops using the same bucket size and time bounds. Counts
+come from cumulative telemetry, not the truncated queue log. A final sample
+preserves graceful-shutdown drops across backend restarts. Client cancellations,
+connection closures, authorization denials and failed executions are excluded.
+Abrupt crashes or forced termination may interrupt requests without recording
+a shutdown drop. Older samples without drop counters cannot be backfilled.
 Each log row shows queue-entry time, total duration, request ID, tool, wait time,
 runtime and status; live timings are elapsed so far. Finished timings remain
 available even if earlier lifecycle events have left the window. An unfinished
 request no longer in the live list has an unavailable outcome, not a fabricated
-completion time. Hover a request ID for its caller. The chart also shows the peak depth
-between samples so short bursts are not lost when the queue drains quickly.
-Each processing series is independently scaled to 0-100% of its visible-window
-peak; the legend and hover show aggregated values. Each minute averages sampled
-queue depth and processing rates while retaining maximum peak waiting. The current
-minute is partial. Processing-rate samples use a rolling ten-second rate.
+completion time. Hover a request ID for its caller. Queue Processing shows
+**Max queue depth**, **Max wait time**, and average processing rate. Depth is
+captured on enqueue, before dispatch, so even short-lived waiting calls are
+retained between samples. Maximum wait includes elapsed time for currently
+waiting calls and waits ending in dispatch or a drop, not execution runtime.
+Polling does not clear these peaks; they reset only after a runtime sample is
+persisted. Older samples cannot be backfilled with missing waits or depth peaks.
+Each processing series is independently scaled to its visible-window peak,
+without percentage labels; legend and hover show real values. A shared **Bucket
+size** selector defaults to one minute and offers 15/30 seconds and 1/2/5/10
+minutes for all Queue plots. Buckets retain maximum depth and wait time while
+averaging sampled processing rates. Processing-rate samples use a rolling
+ten-second rate.
 The stacked chart shares the processing chart's exact time bounds and horizontal
 plot alignment. Its raw counts come from per-tool cumulative arrival counters
 sampled with runtime telemetry, not the truncated lifecycle log. Every call is
 counted once, including rejected work, irrespective of how many lifecycle events
-it produces. Sampled count deltas are summed into one-minute bars by interval end,
-with exact minute-boundary endings assigned to the preceding minute. Deltas are
+it produces. Sampled count deltas are summed into bars by interval end,
+with exact bucket-boundary endings assigned to the preceding bucket. Deltas are
 never proportionally split or estimated; hover shows counts and actual observed
 interval boundaries, including partial minutes or longer sampling gaps. Older backends or
 samples without counters are explicitly unavailable, not zero; counters are never
-differenced across backend restarts.
+differenced across backend restarts. Two line overlays show total wait for
+finished requests and call-weighted average runtime for completed/failed
+executions in each bucket. Rejected requests contribute their wait, not a
+zero runtime that would dilute the average. Per-tool cumulative timing counters
+are sampled alongside arrival counters, independent of lifecycle-log truncation.
+Filtering a tool also filters both timing aggregates. Lines are independently
+normalized on a hidden secondary axis; hover shows real milliseconds. No
+executed calls means an unavailable runtime average, not zero. Older samples
+without timing counters are not backfilled.
 All Queue, HTTP and Runtime charts use modular Apache ECharts with an SVG
-renderer and one-minute buckets (HTTP is already aggregated by minute). Runtime
+renderer. HTTP and Runtime retain one-minute buckets (HTTP is already aggregated by minute). Runtime
 averages memory, CPU and queue gauges, preserves maximum event-loop delay, and
 sums GC counts and duration. Click a legend entry to isolate it; click it again or **Show all** to
 restore the other series. Selection survives telemetry refreshes.

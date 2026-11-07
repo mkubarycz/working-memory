@@ -21,8 +21,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       const state = window.__featuresTest = {
         enabled: false, search: false, writes: [], reads: 0, activeReads: 0, maxReads: 0, changes: [],
         pauseRead: false, releaseRead: null, failSave: false, failPoll: false,
+        embeddings: false, embeddingActions: [], failEmbeddingSave: false, failEmbeddingPoll: false,
       };
       window.workingMemory = {
+        async getEmbeddingDashboard() {
+          if (state.failEmbeddingPoll) throw new Error('Embedding feature unavailable');
+          return { enabled: state.embeddings };
+        },
+        async setEmbeddingAction(action) {
+          if (state.failEmbeddingSave) { state.failEmbeddingSave = false; throw new Error('Embedding enable failed'); }
+          state.embeddingActions.push(action);
+          state.embeddings = action === 'enable';
+          return { enabled: state.embeddings };
+        },
         async getInstanceFeatures() {
           state.reads++;
           state.maxReads = Math.max(state.maxReads, ++state.activeReads);
@@ -94,13 +105,30 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.querySelector('[role=switch]') && !document.querySelector('[role=switch]').disabled");
           assert.equal(await evaluate("document.querySelectorAll('button').length"), 0);
           assert.equal(await evaluate("document.querySelector('[role=switch]').checked"), false);
-          assert.equal(await evaluate("document.querySelectorAll('[role=switch]').length"), 2);
+          assert.equal(await evaluate("document.querySelectorAll('[role=switch]').length"), 3);
+          assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').disabled"), true);
           assert.equal(await evaluate('document.querySelectorAll("[role=switch]")[1].checked'), false);
           assert.equal(await evaluate('document.querySelectorAll("[role=switch]")[1].getAttribute("aria-label")'), 'Working Memory search');
           await evaluate('document.querySelectorAll("[role=switch]")[1].click()');
           await wait("window.__featuresTest.search && !document.querySelector('[role=switch]').disabled");
           assert.deepEqual(await evaluate("window.__featuresTest.writes.at(-1)"), { search: true });
           assert.equal(await evaluate("window.__featuresTest.enabled"), false);
+          await wait("!document.querySelector('[aria-label=Embeddings]').disabled");
+          await evaluate("document.querySelector('[aria-label=Embeddings]').click()");
+          await wait("window.__featuresTest.embeddings && !document.querySelector('[aria-label=Embeddings]').disabled");
+          assert.deepEqual(await evaluate("window.__featuresTest.embeddingActions"), ['enable']);
+          await evaluate("window.__featuresTest.failEmbeddingSave = true; document.querySelector('[aria-label=Embeddings]').click()");
+          await wait("document.querySelector('[role=alert]')?.textContent === 'Embedding enable failed'");
+          assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').checked"), true);
+          await evaluate("document.querySelector('[aria-label=Embeddings]').click()");
+          await wait("!window.__featuresTest.embeddings && !document.querySelector('[role=alert]')");
+          assert.deepEqual(await evaluate("window.__featuresTest.embeddingActions"), ['enable', 'disable']);
+          await evaluate("window.__featuresTest.failEmbeddingPoll = true");
+          await wait("document.querySelector('[role=alert]')?.textContent === 'Embedding feature unavailable'");
+          assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').disabled"), true);
+          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Host tasks\\"]').disabled"), false);
+          await evaluate("window.__featuresTest.failEmbeddingPoll = false");
+          await wait("!document.querySelector('[role=alert]') && !document.querySelector('[aria-label=Embeddings]').disabled");
           await evaluate("window.__featuresTest.enabled = true");
           await wait("document.querySelector('[role=switch]').checked");
           assert.equal(await evaluate("window.__featuresTest.changes.at(-1)"), true);

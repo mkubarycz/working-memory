@@ -4,11 +4,31 @@ import { startServer, type RunningServer } from '../../control-plane/src/server'
 import { DesktopInstanceIdentity } from '../src/main/instanceIdentity';
 import { HostTaskCredentialVault } from '../src/main/hostTaskBroker';
 import { HostScriptAdminClient } from '../src/main/hostScriptClient';
+import { DEFAULT_TOOL_QUEUE_SETTINGS } from '../../control-plane/src/diagnosticContract';
 
 const servers: RunningServer[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(servers.splice(0).map(server => server.close()));
+});
+
+it('updates queue settings through authenticated HTTP and surfaces rejected saves without clearing credentials', async () => {
+  const origin = 'http://127.0.0.1:7717', token = randomBytes(32).toString('hex');
+  const vault = new HostTaskCredentialVault({ isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn() }, process.platform, '/not-used');
+  vault.setSession(origin, token, Date.now() + 60000);
+  const settings = { ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 2 };
+  const update = { expectedBootId: '00000000-0000-4000-8000-000000000001', expectedSettings: DEFAULT_TOOL_QUEUE_SETTINGS, settings };
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json({
+    bootId: update.expectedBootId, observedAt: Date.now(), settings, limits: { running: 2, waiting: 16, waitMs: 5000 },
+    memoryBlocked: false, running: 0, waiting: 0, items: [], events: [], history: [],
+  }));
+  const identity = new DesktopInstanceIdentity(vault, async () => '', () => false, fetcher);
+  expect((await identity.updateToolQueueSettings(`${origin}/mcp`, update)).settings).toEqual(settings);
+  expect(fetcher.mock.calls[0][0]).toBe(`${origin}/identity/v1/tool-queue/settings`);
+  expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'POST', body: JSON.stringify(update) });
+  fetcher.mockResolvedValueOnce(Response.json({ error: 'Queue settings changed' }, { status: 409 }));
+  await expect(identity.updateToolQueueSettings(`${origin}/mcp`, update)).rejects.toThrow('Queue settings changed');
+  expect(vault.session(origin)).toBe(token);
 });
 
 it('explains identity timeouts without clearing the session, then accepts recovery or authoritative revocation', async () => {

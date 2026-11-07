@@ -45,11 +45,15 @@ import { createHeapReport, createInstanceIncidentReport, HeapReportError } from 
 import { incidentReportRequestSchema } from './diagnosticContract.js';
 import { IdentityError } from './instanceIdentity.js';
 import { diagnosticRoute, HttpDiagnostics } from './diagnostics.js';
-import { ToolQueue, ToolQueueError, type ToolExecutionOutcome } from './toolQueue.js';
+import { ToolQueue, ToolQueueError, QueueSettingsConflictError, type ToolExecutionOutcome } from './toolQueue.js';
+import { toolQueueSettingsUpdateSchema } from './diagnosticContract.js';
 import { documentPermissionCategory, instancePermissionsSchema, permits } from './instancePermissions.js';
 import { activateDueReminders, REMINDER_SWEEP_INTERVAL_MS } from './agentMessageReminders.js';
 import { authorizeInstanceTool, instanceToolPermissions } from './instanceAuthorization.js';
 import { documentQuerySchema, documentSearchSchema, queryDocuments, searchDocuments } from './documentSearch.js';
+import { embeddingConfigureSchema, embeddingSubmitSchema, relatedTopicsInputSchema, semanticSearchSchema } from './embeddingContract.js';
+import { EmbeddingIndexer } from './embeddingIndexer.js';
+import { embeddingStats, nextEmbeddingWork, relatedTopics, submitEmbeddings } from './topicEmbeddings.js';
 import type { PermissionSelection } from './instancePermissions.js';
 import { registerInstanceTaskTools } from './instanceToolsMcp.js';
 import { topicSpecWithDefaults, validateTopicReferences } from './kinds/topic/references.js';
@@ -181,6 +185,7 @@ export function createMcpServer(
   name: string = SERVICE_NAME,
   taskDispatch?: (method: string, path: string, input?: unknown) => unknown,
   canReadKind: (kind: string) => boolean = () => true,
+  embeddings?: EmbeddingIndexer,
 ): McpServer {
   const server = new McpServer({ name, version });
   const features = new InstanceFeatureStore(store.db);
@@ -463,6 +468,51 @@ export function createMcpServer(
     ? asText(queryDocuments(store.db, input, canReadKind))
     : asError('Search is turned off. Enable it in Settings > Features.'));
 
+  server.registerTool('wm-embeddings-status', {
+    title: 'Embeddings: Index Progress', description: 'Read topic embedding coverage for this instance.',
+    inputSchema: wmListKindsInputSchema, annotations: { readOnlyHint: true },
+  }, async () => asText(embeddingStats(store.db)));
+  server.registerTool('wm-embeddings-dashboard', {
+    title: 'Embeddings: Background Diagnostics', description: 'Read container indexing and independent host inference status.',
+    inputSchema: wmListKindsInputSchema, annotations: { readOnlyHint: true },
+  }, async () => embeddings ? asText(await embeddings.snapshot()) : asError('Background indexing is unavailable.'));
+  server.registerTool('wm-embeddings-configure', {
+    title: 'Embeddings: Configure Background Indexing',
+    description: 'Enable, pause or disable indexing for this instance. Host credentials are never returned.',
+    inputSchema: embeddingConfigureSchema,
+  }, async input => embeddings ? asText(await embeddings.configure(input)) : asError('Background indexing is unavailable.'));
+  server.registerTool('wm-embeddings-next', {
+    title: 'Embeddings: Next Topic', description: 'Get bounded topic passages for local indexing. Repairs metadata-only index versions.',
+    inputSchema: wmListKindsInputSchema,
+  }, async () => features.read().search
+    ? asText(nextEmbeddingWork(store.db)) : asError('Enable Search in Settings > Features before indexing.'));
+  server.registerTool('wm-embeddings-submit', {
+    title: 'Embeddings: Store Vectors', description: 'Store validated vectors only if topic content and version still match. Does not modify authored documents.',
+    inputSchema: embeddingSubmitSchema,
+  }, async input => features.read().search
+    ? asText(submitEmbeddings(store.db, input)) : asError('Search is turned off.'));
+  server.registerTool('wm-related-topics', {
+    title: 'Topics: Related Topics', description: 'Read semantic suggestions with evidence when Embeddings is enabled. Similarity is not an authored relationship.',
+    inputSchema: relatedTopicsInputSchema, annotations: { readOnlyHint: true },
+  }, async input => {
+    if (!features.read().search || !canReadKind('Topic')) return asError('Search is disabled or Topic read permission is unavailable.');
+    if (!embeddings) return asError('Background indexing is unavailable.');
+    return asText(relatedTopics(store.db, input, embeddings.isEnabled()));
+  });
+  server.registerTool('wm-semantic-status', {
+    title: 'Search: Semantic Readiness', description: 'Read whether Embeddings is enabled and all searchable WM documents are indexed.',
+    inputSchema: wmListKindsInputSchema, annotations: { readOnlyHint: true },
+  }, async () => embeddings ? asText(embeddings.readiness(canReadKind)) : asError('Background indexing is unavailable.'));
+  server.registerTool('wm-semantic-search', {
+    title: 'Search: Semantic Documents',
+    description: 'Find WM documents by meaning using local embeddings. Requires Embeddings enabled and complete indexing. Similarity is not confidence or proof of a relationship. Config and connected-app data are excluded.',
+    inputSchema: semanticSearchSchema, annotations: { readOnlyHint: true },
+  }, async (input, extra) => {
+    if (!features.read().search) return asError('Search is turned off.');
+    if (!embeddings) return asError('Background indexing is unavailable.');
+    return asText(await embeddings.search(input, canReadKind, extra.signal));
+  });
+
   server.registerTool('wm-search-add-topic', {
     title: 'Search: Add Topic to Workstream',
     description: 'Explicit Search membership action, never an AI search tool. Atomically requires Search enabled, an open target workstream and the expected topic version. Preserves existing memberships, body, parent links, focus and lifecycle.',
@@ -561,6 +611,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // store and own its lifecycle; when absent (tests) we own an ephemeral one.
   const providedStore = opts.store;
   const store = providedStore ?? openStore(':memory:');
+  const embeddings = new EmbeddingIndexer(store.db, () => new InstanceFeatureStore(store.db).read().search);
   try { activateDueReminders(store); }
   catch (error) {
     if (providedStore === undefined) store.close();
@@ -569,8 +620,13 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const hostTasks = new HostTaskBroker(store.db, opts);
   const access = new InstanceAccess(store.db, hostTasks.identity, opts.hostTaskClock);
   const sessions = new McpSessions(store.db, opts.sessionDiagnostics);
-  const toolQueue = new ToolQueue(store.db, () => sessions.memoryBlocked, opts.sessionDiagnostics?.clock);
+  const toolQueue = new ToolQueue(store.db, percent => sessions.isMemoryBlockedAt(percent / 100), opts.sessionDiagnostics?.clock);
   const diagnostics = new HttpDiagnostics(store.db, version, Date.now, toolQueue);
+  const queueSnapshot = () => ({
+    bootId: diagnostics.bootId, ...toolQueue.state(), events: toolQueue.events(2000),
+    history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, maxQueueWaitMs, runningTools, processing, requestsByTool, timingsByTool, queueDrops }) =>
+      ({ at, bootId, queueDepth, peakQueueDepth, maxQueueWaitMs, runningTools, processing, requestsByTool, timingsByTool, queueDrops })),
+  });
   let oauth: InstanceOAuth;
   const ownsStore = providedStore === undefined;
   const changeFeed = createDocumentChangeFeed(store);
@@ -691,7 +747,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             await toolQueue.run({
               requestId: String(res.getHeader('X-Request-Id')), operation,
               caller: principal.role === 'owner' ? 'owner' : `client:${principal.clientId}`,
-            }, body, controller.signal, () => {
+            }, name === 'wm-embeddings-configure' && call.success
+              ? { ...body, params: { ...call.data.params, arguments: {
+                ...call.data.params.arguments, host: '[redacted]',
+              } } } : body, controller.signal, () => {
               releaseWaitingCall();
               return dispatch();
             }, outcome => outcome);
@@ -753,7 +812,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             const current = access.authenticate(sessionToken);
             const category = documentPermissionCategory(kind);
             return !!current && (current.role === 'owner' || category !== null && permits(current.permissions, category, 'read'));
-          });
+          }, embeddings);
           managed.close = async () => {
             transports.delete(managed.protocolId);
             await server.close();
@@ -827,10 +886,25 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       res.setHeader('Cache-Control', 'no-store');
       if (req.headers.origin || url.search) { endJson(res, 400, { error: 'Use the trusted desktop connection without query parameters.' }); return; }
       if (!hostTasks.identity.authenticate(token)) { endJson(res, 401, { error: 'Sign in as the instance owner to view the tool queue.' }); return; }
+      if (url.pathname === '/identity/v1/tool-queue/settings') {
+        if (req.method !== 'POST') { endJson(res, 405, { error: 'Queue settings accepts POST only.' }); return; }
+        if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') { endJson(res, 415, { error: 'JSON required.' }); return; }
+        try {
+          const input = toolQueueSettingsUpdateSchema.parse(await readJsonBody(req));
+          if (input.expectedBootId !== diagnostics.bootId) throw new QueueSettingsConflictError();
+          toolQueue.configure(input.settings, input.expectedSettings);
+          endJson(res, 200, queueSnapshot());
+        } catch (error) {
+          if (error instanceof QueueSettingsConflictError) endJson(res, 409, { error: error.message });
+          else if (error instanceof z.ZodError || error instanceof SyntaxError) {
+            endJson(res, 400, { error: 'Invalid Queue settings. Use concurrency 1-64, queue size 1-1000, timeout 0.1-300 seconds and heap pause 10-90%.' });
+          } else throw error;
+        }
+        return;
+      }
       if (req.method !== 'GET') { endJson(res, 405, { error: 'Queue inspection accepts GET only.' }); return; }
       if (url.pathname === '/identity/v1/tool-queue') {
-        endJson(res, 200, { bootId: diagnostics.bootId, ...toolQueue.state(), events: toolQueue.events(),
-          history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool }) => ({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool })) });
+        endJson(res, 200, queueSnapshot());
       } else {
         const id = z.string().uuid().safeParse(url.pathname.slice('/identity/v1/tool-queue/'.length));
         if (!id.success) { endJson(res, 400, { error: 'A valid queued request ID is required.' }); return; }
@@ -1118,6 +1192,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     catch (error) { console.error('[agent-message-reminders] Deadline activation failed:', error); }
   }, REMINDER_SWEEP_INTERVAL_MS);
   reminderTimer.unref();
+  embeddings.start();
 
   return {
     host,
@@ -1128,11 +1203,14 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       clearInterval(hostTaskCleanupTimer);
       clearInterval(sessionCleanupTimer);
       clearInterval(reminderTimer);
+      await embeddings.stop();
       changeFeed.close();
       await sessions.close();
       transports.clear();
       return new Promise<void>((resolve, reject) => {
         httpServer.close((err) => {
+          try { diagnostics.sample(); }
+          catch (error) { console.error('[diagnostics] Unable to persist final queue sample:', error); }
           diagnostics.close();
           // Only close a store we own; an injected store is the caller's to close.
           if (ownsStore) {

@@ -144,6 +144,18 @@ describe('ControlPlaneClient catalog surface (mocked listTools/callTool)', () =>
     expect(outcome).toEqual({ ok: true, result: { ok: true, id: 'roadmap' } });
   });
 
+  it.each([false, true])('allows semantic inference to finish before the client deadline (cancellable=%s)', async cancellable => {
+    callToolMock.mockResolvedValueOnce(okText({ count: 0, results: [] }));
+    const client = makeClient();
+    const signal = cancellable ? new AbortController().signal : undefined;
+    await client.callTool('wm-semantic-search', { queries: ['nanites'] }, signal);
+    expect(callToolMock).toHaveBeenCalledWith(
+      { name: 'wm-semantic-search', arguments: { queries: ['nanites'] } }, undefined,
+      { timeout: 70000, ...(signal ? { signal } : {}) },
+    );
+    await client.dispose();
+  });
+
   it('callTool() maps an isError result to { ok: false, error }', async () => {
     callToolMock.mockResolvedValueOnce(errText('id already exists'));
     const outcome = await makeClient().callTool('ws-topic-create', { id: 'dup' });

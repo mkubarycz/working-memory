@@ -8,6 +8,7 @@ import type { InstanceAccessAction } from '../shared/instanceIdentity';
 import { heapCollectionSchema, heapCollectionRequestSchema, heapReportRequestSchema, sessionPolicySchema, sessionSnapshotSchema,
   type HeapCollection, type SessionPolicy, type SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
 import { diagnosticsSchema, incidentReportRequestSchema, toolQueueSnapshotSchema, queuedRequestSchema,
+  toolQueueSettingsUpdateSchema, type ToolQueueSettingsUpdate,
   type InstanceDiagnostics, type InstanceIncident, type ToolQueueSnapshot } from '../../../control-plane/src/diagnosticContract';
 
 const statusSchema = z.object({ passwordConfigured: z.boolean(), passwordHint: z.string().max(1000),
@@ -70,6 +71,10 @@ export class DesktopInstanceIdentity {
           this.onUnauthorized(mcpUrl);
         }
         throw new Error('Incorrect password or expired session. Sign in to this instance again.');
+      }
+      if (path === '/identity/v1/tool-queue/settings') {
+        const detail = z.object({ error: z.string().min(1).max(1000) }).safeParse(await response.json());
+        throw new InstanceHttpError(response.status, detail.success ? detail.data.error : `Queue settings update failed (HTTP ${response.status}).`);
       }
       if (response.status === 429) throw new Error(path === '/identity/v1/sessions/gc'
         ? 'Wait one minute before requesting another heap collection.' : 'Too many sign-in attempts. Try again in a minute.');
@@ -257,6 +262,15 @@ export class DesktopInstanceIdentity {
     if (!token) throw new Error('Sign in as the instance owner to inspect a queued request.');
     const id = z.string().uuid().parse(requestId);
     return queuedRequestSchema.parse(await this.request(mcpUrl, `/identity/v1/tool-queue/${id}`, undefined, token));
+  }
+
+  async updateToolQueueSettings(mcpUrl: string, update: ToolQueueSettingsUpdate): Promise<ToolQueueSnapshot> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to configure the tool queue.');
+    const snapshot = toolQueueSnapshotSchema.parse(await this.request(mcpUrl, '/identity/v1/tool-queue/settings',
+      toolQueueSettingsUpdateSchema.parse(update), token));
+    if (!snapshot.settings) throw new Error('The backend did not confirm the Queue settings update.');
+    return snapshot;
   }
 
   async collectHeap(mcpUrl: string, expectedStartedAt: number, reportTopicId: string): Promise<{ collection: HeapCollection; snapshot: SessionSnapshot }> {

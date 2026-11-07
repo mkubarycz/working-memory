@@ -4,6 +4,9 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ControlPlaneClient } from '../../../shared/controlPlaneClient';
+import { EmbeddingServiceManager } from './embeddingServiceManager';
+import { startEmbeddingHostService } from './embeddingHostService';
+import { LocalEmbeddings } from './localEmbeddings';
 import { listAgentMessages, recordAgentMessageDecision, snoozeAgentMessage, updateAgentMessageStatus } from './agentMessageLifecycle';
 import { renderDocumentByKind } from './documentRenderers';
 import type {
@@ -38,9 +41,9 @@ import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
 import { InstanceMonitor, deliverIncident, formatIncidentToolQueue, type MonitorProbe } from './instanceMonitor';
 import { recoverHeap } from './heapRecovery';
 import { z } from 'zod';
+import { toolQueueSettingsUpdateSchema } from '../../../control-plane/src/diagnosticContract';
 import { parseTopicAutocomplete, topicAutocompletePrompt } from './topicAutocomplete';
-import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, searchByIntent, searchInstructions, searchOptionsSchema, SEARCH_TIMEOUT_MS } from './documentSearch';
-import { SearchAppTools } from './searchAppTools';
+import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, requireSemanticSearchReady, searchWithMatches, searchInstructions, searchOptionsSchema, SEARCH_TIMEOUT_MS } from './documentSearch';
 declare const __WM_BUILD_TIMESTAMP__: string;
 declare const __WM_BUILD_VERSION__: string;
 import {
@@ -237,6 +240,7 @@ function dataTierStateDirectory(): string {
 function controlPlane(): ControlPlaneClient {
   return environmentManager.currentClient;
 }
+let localEmbeddings: LocalEmbeddings | null = null;
 
 /** Installed builds bundle the control-plane image context; source-tree runs do not. */
 let updateSettingsFile = '';
@@ -959,6 +963,48 @@ function restartInstalledDesktop(): void {
 }
 
 function registerIpc(): void {
+  const embeddingHome = join(app.getPath('userData'), 'embeddings');
+  const embeddingService = new EmbeddingServiceManager(process.execPath, embeddingHome,
+    `${desktopVersion()}@${__WM_BUILD_TIMESTAMP__}`, app.isPackaged ? undefined : app.getAppPath());
+  try {
+    localEmbeddings = new LocalEmbeddings(() => {
+      const environment = environmentManager.currentEnvironment;
+      return environment ? { endpoint: environment.mcpUrl, client: controlPlane() } : null;
+    }, embeddingService);
+    void embeddingService.restore().catch(error => {
+      console.error('[embeddings] Background inference could not be restored:', error);
+    });
+  } catch (error) {
+    console.error('[embeddings] Settings could not be loaded:', error);
+    dialog.showErrorBox('Embeddings unavailable', 'Embedding settings could not be read. Existing settings have not been overwritten.');
+  }
+  const embeddings = () => {
+    if (!localEmbeddings) throw new Error('Embeddings are unavailable. Check desktop logs and restart Working Memory.');
+    return localEmbeddings;
+  };
+  ipcMain.handle('embeddings:dashboard', event => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    return embeddings().snapshot();
+  });
+  ipcMain.handle('embeddings:retention', (event, minutes: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    if (minutes !== null && (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 1 || minutes > 1440)) {
+      throw new Error('Model retention must be 1 to 1440 minutes, or until the host service stops.');
+    }
+    return embeddings().setRetention(minutes);
+  });
+  ipcMain.handle('embeddings:action', (event, action: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    if (action !== 'enable' && action !== 'pause' && action !== 'resume' && action !== 'retry' && action !== 'disable') {
+      throw new Error('Unknown embedding action.');
+    }
+    return embeddings().action(action);
+  });
+  ipcMain.handle('embeddings:related', (event, id: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    if (typeof id !== 'string' || !id || id.length > 256) throw new Error('Choose a saved topic.');
+    return embeddings().related(id);
+  });
   ipcMain.handle('desktop:build-info', () => ({
     version: desktopVersion(), development: isLocalBuild() || !app.isPackaged,
   }));
@@ -1075,6 +1121,14 @@ function registerIpc(): void {
     catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
     if (environmentManager.currentEnvironment?.mcpUrl !== target.mcpUrl) throw new Error('Selected environment changed. Refresh Queue.');
     return { endpoint: target.mcpUrl, snapshot, error };
+  });
+  ipcMain.handle('instance:queue-settings', async (event, raw: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const { update, mcpUrl } = z.object({ update: toolQueueSettingsUpdateSchema, mcpUrl: z.string().min(1) }).strict().parse(raw);
+    if (environmentManager.currentEnvironment?.mcpUrl !== mcpUrl) throw new Error('Selected environment changed. Refresh Queue.');
+    const snapshot = await identity.updateToolQueueSettings(mcpUrl, update);
+    if (environmentManager.currentEnvironment?.mcpUrl !== mcpUrl) throw new Error('Selected environment changed. Refresh Queue.');
+    return snapshot;
   });
   ipcMain.handle('instance:queued-request', async (event, raw: unknown) => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
@@ -1369,19 +1423,30 @@ function registerIpc(): void {
       await requireSearchFeature(controller.signal);
       assertCurrent();
       const client = controlPlane();
-      const config = await readStoredConfig(configFile);
-      const profile = resolveModelProfile(config, 'medium', 'complex');
-      if (!profile.model.trim()) throw new Error('Configure a model for Medium / Complex search in Settings.');
-      const request = configuredRequest(profile);
-      const tools = readOnlySearchTools(await client.listTools(controller.signal));
+      await requireSemanticSearchReady(client, controller.signal);
       assertCurrent();
-      const response = await searchByIntent(query, {
-        conversation: createModelConversation({ mode: request.mode, model: profile.model, tools, systemPrompt: searchInstructions(context), userMessage: query }),
+      let refinement: { profile: ReturnType<typeof resolveModelProfile>; request: ReturnType<typeof configuredRequest> } | undefined;
+      const response = await searchWithMatches(query, {
+        prepareConversation: async () => {
+          const config = await readStoredConfig(configFile);
+          const profile = resolveModelProfile(config, 'medium', 'complex');
+          if (!profile.model.trim()) throw new Error('Configure a model for Medium / Complex search in Settings.');
+          const request = configuredRequest(profile);
+          const tools = readOnlySearchTools(await client.listTools(controller.signal));
+          assertCurrent();
+          refinement = { profile, request };
+          return createModelConversation({ mode: request.mode, model: profile.model, tools, systemPrompt: searchInstructions(context), userMessage: query });
+        },
         signal: controller.signal,
-        assertEnabled: async () => { await requireSearchFeature(controller.signal); assertCurrent(); },
-        apps: new SearchAppTools({ client, mcp: appMcp, inspect: claim => dockerContainers.inspect(claim), assertCurrent }),
+        assertEnabled: async () => {
+          await requireSearchFeature(controller.signal);
+          await requireSemanticSearchReady(client, controller.signal);
+          assertCurrent();
+        },
         turn: async (conversation, signal) => {
           assertCurrent();
+          if (!refinement) throw new Error('AI refinement has not been initialized.');
+          const { profile, request } = refinement;
           return profile.provider === 'copilot'
             ? copilotProvider.turn(conversation, DESKTOP_MODEL_REQUEST_TIMEOUT_MS, signal)
             : parseModelTurn(request.mode, await requestModel({ ...request, body: modelTurnRequest(conversation), timeoutMs: DESKTOP_MODEL_REQUEST_TIMEOUT_MS }, signal));
@@ -1394,6 +1459,10 @@ function registerIpc(): void {
         },
         onTrace: trace => {
           if (!event.sender.isDestroyed()) event.sender.send('search:trace', { requestId, trace });
+        },
+        onResults: response => {
+          assertCurrent();
+          if (!event.sender.isDestroyed()) event.sender.send('search:results', { requestId, response });
         },
       });
       assertCurrent();
@@ -1872,7 +1941,25 @@ app.setName('Working Memory');
 app.setPath('userData', originalUserData);
 
 const connectorIndex = process.argv.indexOf('--mcp-stdio');
-if (connectorIndex !== -1) {
+if (process.argv.includes('--embedding-service')) {
+  app.dock?.hide();
+  void app.whenReady().then(async () => {
+    const homeIndex = process.argv.indexOf('--embedding-service-home');
+    const home = homeIndex === -1 ? undefined : process.argv[homeIndex + 1];
+    if (!home) throw new Error('Pass --embedding-service-home with the installed service data directory.');
+    const name = process.platform === 'win32' ? 'wm-embeddings.exe' : 'wm-embeddings';
+    const packagedHelper = join(process.resourcesPath, 'embeddings', name);
+    const helper = existsSync(packagedHelper) ? packagedHelper
+      : join(app.getAppPath(), 'build', 'embeddings', 'wm-embeddings', name);
+    const service = await startEmbeddingHostService(home, helper, `${desktopVersion()}@${__WM_BUILD_TIMESTAMP__}`);
+    const stop = () => { void service.close().finally(() => app.exit(0)); };
+    process.once('SIGTERM', stop);
+    process.once('SIGINT', stop);
+  }).catch(error => {
+    console.error('[embeddings] Host inference service startup failed:', error);
+    app.exit(1);
+  });
+} else if (connectorIndex !== -1) {
   console.log = (...args: unknown[]) => console.error(...args);
   app.dock?.hide();
   void app.whenReady().then(async () => {

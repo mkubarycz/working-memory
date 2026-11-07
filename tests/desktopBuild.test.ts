@@ -44,7 +44,7 @@ function fixture() {
     mkdirSync(join(path, '..'), { recursive: true });
     writeFileSync(path, record(phase));
   }
-  for (const name of ['prepare-data-tier-bundle', 'prepare-desktop-runtime', 'install-desktop-app']) {
+  for (const name of ['prepare-embedding-runtime', 'prepare-data-tier-bundle', 'prepare-desktop-runtime', 'install-desktop-app']) {
     writeFileSync(join(scripts, `${name}.mjs`), record(name));
   }
   const manifest = join(desktop, 'package.json');
@@ -65,10 +65,11 @@ function fixture() {
   return { cwd, scripts, log, manifest, env, version };
 }
 
+const nativePackageArgs = ['--package', ...(process.platform === 'win32' ? ['--win'] : process.platform === 'darwin' ? ['--mac'] : [])];
 it.each([
   { args: [], ci: false },
-  { args: ['--package', '--mac'], ci: false },
-  { args: ['--package', '--win'], ci: true },
+  { args: nativePackageArgs, ci: false },
+  { args: nativePackageArgs, ci: true },
 ])('uses one Git-derived version through the actual build entry point: %j', ({ args, ci }) => {
   const { cwd, scripts, log, manifest, env, version } = fixture();
   const expected = ci ? '1.7.1-build.131' : version;
@@ -80,12 +81,25 @@ it.each([
   const calls = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   expect(calls.map(call => call.version)).toEqual(calls.map(() => expected));
   expect(calls.map(call => call.phase)).toEqual(args.length
-    ? ['vite', 'prepare-data-tier-bundle', 'builder']
-    : ['vite', 'prepare-data-tier-bundle', 'prepare-desktop-runtime', 'install-desktop-app']);
+    ? ['prepare-embedding-runtime', 'vite', 'prepare-data-tier-bundle', 'builder']
+    : ['prepare-embedding-runtime', 'vite', 'prepare-data-tier-bundle', 'prepare-desktop-runtime', 'install-desktop-app']);
   if (args.length) {
-    expect(calls.at(-1).args).toEqual(['--publish', 'never', args[1], `-c.extraMetadata.version=${expected}`]);
+    expect(calls.at(-1).args).toEqual(['--publish', 'never', ...args.slice(1), `-c.extraMetadata.version=${expected}`]);
   }
   expect(JSON.parse(readFileSync(manifest, 'utf8')).version).toBe('1.4.1');
+});
+
+it.each([
+  { flag: '--mac', platform: 'darwin' },
+  { flag: '--win', platform: 'win32' },
+].filter(target => target.platform !== process.platform))('rejects non-native packaging before build phases: $flag', ({ flag }) => {
+  const { cwd, scripts, log, env } = fixture();
+  const result = spawnSync(process.execPath, [join(scripts, 'build-desktop.mjs'), '--package', flag], {
+    cwd, env, encoding: 'utf8',
+  });
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain('must be packaged on its native target OS');
+  expect(existsSync(log)).toBe(false);
 });
 
 it('rejects a manual installer-version override before starting build phases', () => {

@@ -31,6 +31,7 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontex
 import { closeMcpSession, sessionLifecycleFetch, staleSessionRejected } from './mcpLifecycle';
 import { parseDocumentChanges, type DocumentChanges } from './documentChanges';
 import { abortable } from './abort';
+import { SEMANTIC_SEARCH_INFERENCE_TIMEOUT_MS } from '../control-plane/src/embeddingContract';
 import { isDocumentSearchResult, type DocumentSearchInput, type DocumentSearchResult } from './documentSearch';
 import {
   controlPlanePortFilePath,
@@ -44,6 +45,11 @@ const RETRYABLE_READ_TOOLS = new Set([
   'wm-document-read',
   'wm-document-search',
   'wm-document-query',
+  'wm-embeddings-status',
+  'wm-embeddings-dashboard',
+  'wm-related-topics',
+  'wm-semantic-search',
+  'wm-semantic-status',
   'ws-workstream-read', 'ws-containerclaim-read', 'ws-topic-read', 'ws-topictype-read', 'ws-config-read',
   'ws-agent-read', 'ws-agent-message-read', 'ws-alert-read', 'ws-commandjournal-read',
 ]);
@@ -1251,8 +1257,9 @@ export class ControlPlaneClient {
     let result: unknown;
     try {
       const request = { name, arguments: args };
-      result = await abortable(this.retryStaleSession(client, connected => signal
-        ? connected.callTool(request, undefined, { signal }) : connected.callTool(request),
+      const timeout = name === 'wm-semantic-search' ? SEMANTIC_SEARCH_INFERENCE_TIMEOUT_MS + 10_000 : undefined;
+      result = await abortable(this.retryStaleSession(client, connected => signal || timeout
+        ? connected.callTool(request, undefined, { ...(signal ? { signal } : {}), ...(timeout ? { timeout } : {}) }) : connected.callTool(request),
       signal, RETRYABLE_READ_TOOLS.has(name)), signal);
     } catch (err) {
       if (!signal?.aborted) this.resetConnection();

@@ -9,6 +9,7 @@ import { loadKinds } from '../src/kinds/loader';
 import { getKind } from '../src/kinds/registry';
 import { DEFAULT_SESSION_POLICY, sessionSnapshotSchema } from '../src/sessionPolicy';
 import { ControlPlaneClient } from '../../shared/controlPlaneClient';
+import { DEFAULT_TOOL_QUEUE_SETTINGS, toolQueueSnapshotSchema } from '../src/diagnosticContract';
 
 const cleanup: Array<() => Promise<void>> = [];
 beforeAll(async () => { await loadKinds(); });
@@ -66,6 +67,74 @@ async function fixture() {
   return { store, owner, access, server, request, postMcp, snapshot, policy, enroll, connect, data,
     advance: (ms: number) => { now += ms; }, memory: (bytes: number) => { used = bytes; } };
 }
+
+it('configures the real queue only through trusted owner requests, enforcing validation and stale-state guards', async () => {
+  const f = await fixture(), issued = f.enroll();
+  const current = toolQueueSnapshotSchema.parse(await (await f.request('/identity/v1/tool-queue')).json());
+  const settings = { ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 2, maxQueueSize: 8, queueTimeoutMs: 10000, heapDispatchPausePercent: 50 };
+  const body = { expectedBootId: current.bootId, expectedSettings: current.settings, settings };
+  const post: RequestInit = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+  const path = '/identity/v1/tool-queue/settings';
+  expect((await f.request(path, post, '')).status).toBe(401);
+  expect((await f.request(path, post, issued.token)).status).toBe(401);
+  expect((await f.request(path, { ...post, headers: { 'content-type': 'application/json', origin: 'http://untrusted.invalid' } })).status).toBe(400);
+  expect((await f.request(`${path}?token=secret`, post)).status).toBe(400);
+  expect((await f.request(path)).status).toBe(405);
+  expect((await f.request(path, { ...post, body: '{' })).status).toBe(400);
+  expect((await f.request(path, { ...post, body: JSON.stringify({ ...body, settings: { ...settings, maxConcurrency: 0 } }) })).status).toBe(400);
+  expect((await f.request(path, { ...post, body: JSON.stringify({ ...body, expectedBootId: '00000000-0000-4000-8000-000000000001' }) })).status).toBe(409);
+  const saved = await f.request(path, post);
+  expect(saved.status).toBe(200);
+  expect(saved.headers.get('cache-control')).toBe('no-store');
+  expect(toolQueueSnapshotSchema.parse(await saved.json())).toMatchObject({ settings, limits: { running: 2, waiting: 8, waitMs: 10000 } });
+  expect((await f.request(path, post)).status).toBe(409);
+  f.memory(550);
+  expect((await (await f.request('/identity/v1/tool-queue')).json()).memoryBlocked).toBe(true);
+  expect((await f.snapshot()).memory.admissionBlocked).toBe(false);
+  const { client } = await f.connect();
+  const pending = client.callTool({ name: 'wm-ping', arguments: {} });
+  await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
+  const raised = { ...settings, heapDispatchPausePercent: 80 };
+  expect((await f.request(path, { ...post, body: JSON.stringify({ expectedBootId: current.bootId, expectedSettings: settings, settings: raised }) })).status).toBe(200);
+  expect((await pending).isError).not.toBe(true);
+  f.memory(650);
+  expect((await (await f.request('/identity/v1/tool-queue')).json()).memoryBlocked).toBe(false);
+  expect((await f.snapshot()).memory.admissionBlocked).toBe(true);
+});
+
+it('exposes live and retained queue peaks through the real owner endpoint after a short MCP wait', async () => {
+  const f = await fixture(), { client } = await f.connect();
+  f.memory(650);
+  const pending = client.callTool({ name: 'wm-ping', arguments: {} });
+  const queue = async () => toolQueueSnapshotSchema.parse(await (await f.request('/identity/v1/tool-queue')).json());
+  await vi.waitFor(async () => expect((await queue()).waiting).toBe(1));
+  f.advance(750);
+  expect(await queue()).toMatchObject({ waiting: 1, peakQueueDepth: 1, maxQueueWaitMs: 750 });
+  f.memory(100);
+  await pending;
+  expect(await queue()).toMatchObject({ waiting: 0, peakQueueDepth: 1, maxQueueWaitMs: 750 });
+  expect(await queue()).toMatchObject({ waiting: 0, peakQueueDepth: 1, maxQueueWaitMs: 750 });
+});
+
+it('persists a final shutdown-drop sample before closing diagnostics', async () => {
+  const store = openStore(':memory:');
+  const owner = await new InstanceIdentity(store.db).initialize('private shutdown test password');
+  let used = 100, closed = false;
+  const server = await startServer({ port: 0, store, sessionDiagnostics: { memory: () => ({ used, limit: 1000 }) } });
+  const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp`, getToken: () => owner.token });
+  cleanup.push(async () => { await client.dispose(); if (!closed) await server.close(); store.close(); });
+  await client.listTools();
+  used = 650;
+  const pending = client.callTool('wm-ping', {});
+  await vi.waitFor(() => expect(store.db.prepare("SELECT count(*) AS count FROM instance_tool_queue_events WHERE event='queued'").get()?.count).toBe(1));
+  await server.close();
+  closed = true;
+  await pending;
+  const samples = store.db.prepare('SELECT data FROM instance_runtime_samples ORDER BY sequence DESC').all()
+    .map(row => JSON.parse(String(row.data)));
+  expect(samples[0].queueDrops).toEqual({ timeouts: 0, rejections: 0, shutdown: 1 });
+  expect(samples.some(sample => sample.queueDrops?.shutdown === 0)).toBe(true);
+});
 
 it('restricts diagnostics and policy to trusted owner requests and hides all protocol credentials', async () => {
   const f = await fixture(), issued = f.enroll();

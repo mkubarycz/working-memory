@@ -6,12 +6,14 @@
   import { runtimeDiagnosticsChart } from '../runtimeDiagnosticsChart';
   import DiagnosticsTimeSeries from './DiagnosticsTimeSeries.svelte';
   import { startVisiblePolling } from '../visiblePolling';
+  import EmbeddingsDashboard from './EmbeddingsDashboard.svelte';
 
   const tabs = [
     { id: 'queue', label: 'Queue' }, { id: 'http', label: 'HTTP' },
     { id: 'runtime', label: 'Runtime' }, { id: 'incidents', label: 'Automatic incident reports' },
+    { id: 'embeddings', label: 'Embeddings' },
   ] as const;
-  let tab = $state<'queue' | 'http' | 'runtime' | 'incidents'>('queue');
+  let tab = $state<'queue' | 'http' | 'runtime' | 'incidents' | 'embeddings'>('queue');
   let mounted = $state(false);
   let refreshIntervalMs = $state(15000);
   let snapshot = $state<DesktopDiagnostics | null>(null);
@@ -35,7 +37,7 @@
     return () => { active = false; };
   });
   $effect(() => {
-    if (!mounted || tab === 'queue') return;
+    if (!mounted || tab === 'queue' || tab === 'embeddings') return;
     const interval = refreshIntervalMs;
     return untrack(() => startVisiblePolling(refresh, interval));
   });
@@ -53,16 +55,7 @@
   }
 </script>
 
-<section class="diagnostics">
-  <div class="settings-tabs settings-subtabs diagnostics-tabs" role="tablist" aria-label="Diagnostics sections">
-    {#each tabs as item (item.id)}
-      <button id={`diagnostics-tab-${item.id}`} role="tab" aria-selected={tab === item.id}
-        aria-controls={`diagnostics-panel-${item.id}`} tabindex={tab === item.id ? 0 : -1}
-        onkeydown={navigateTabs} onclick={() => { tab = item.id; }}>{item.label}</button>
-    {/each}
-  </div>
-  <div id={`diagnostics-panel-${tab}`} role="tabpanel" aria-labelledby={`diagnostics-tab-${tab}`}>
-  <h2>Instance diagnostics</h2>
+{#snippet refreshControl()}
   <label class="refresh-control">Refresh
     <select aria-label="Refresh interval" bind:value={refreshIntervalMs}>
       <option value={2000}>2 seconds</option>
@@ -72,9 +65,25 @@
       <option value={60000}>1 minute</option>
     </select>
   </label>
-  {#if tab === 'queue'}
-    <QueueDiagnostics {refreshIntervalMs} />
+{/snippet}
+
+<section class="diagnostics">
+  <div class="settings-tabs settings-subtabs diagnostics-tabs" role="tablist" aria-label="Diagnostics sections">
+    {#each tabs as item (item.id)}
+      <button id={`diagnostics-tab-${item.id}`} role="tab" aria-selected={tab === item.id}
+        aria-controls={`diagnostics-panel-${item.id}`} tabindex={tab === item.id ? 0 : -1}
+        onkeydown={navigateTabs} onclick={() => { tab = item.id; }}>{item.label}</button>
+    {/each}
+  </div>
+  <div id={`diagnostics-panel-${tab}`} role="tabpanel" aria-labelledby={`diagnostics-tab-${tab}`}>
+  {#if tab === 'embeddings'}
+    <EmbeddingsDashboard />
   {:else}
+  <h2>Instance diagnostics</h2>
+  {#if tab === 'queue'}
+    <QueueDiagnostics {refreshIntervalMs} {refreshControl} />
+  {:else}
+  {@render refreshControl()}
   <p>Persisted telemetry excludes credentials, document content, request bodies, query strings and raw logs.</p>
   {#if error || snapshot?.error}<p role="alert">{error || snapshot?.error}</p>{/if}
   {#if snapshot?.instance && tab === 'runtime'}
@@ -84,7 +93,7 @@
     <p>Heap {mib(instance.runtime.heapUsedBytes)} / {mib(instance.runtime.heapLimitBytes)} &middot;
       RSS {mib(instance.runtime.rssBytes)} &middot; Event-loop max {instance.runtime.eventLoopMaxMs.toFixed(0)} ms</p>
     <p>{instance.runtime.activeSessions} active MCP sessions &middot; {instance.runtime.activeRequests} in-flight HTTP requests</p>
-    {#if instance.runtime.admissionBlocked}<p role="alert">New MCP sessions and queued tool dispatch blocked by the 60% heap safety cutoff.</p>{/if}
+    {#if instance.runtime.admissionBlocked}<p role="alert">New MCP sessions blocked by the 60% heap safety cutoff.</p>{/if}
     <h3>Runtime history</h3>
     <p>CPU 100% is one logical core. GC is observed, never forced. Gaps and backend restarts break the traces.</p>
     <DiagnosticsTimeSeries chart={runtimeDiagnosticsChart(instance.samples)} label="Normalized runtime time series"
@@ -127,6 +136,7 @@
       {:else}<p>Queued for Inbox. {incident.deliveryError ?? 'Waiting for the selected backend to recover.'}</p>{/if}
     </article>
   {:else}<p>No incidents recorded for this environment.</p>{/each}
+  {/if}
   {/if}
   {/if}
   </div>

@@ -25,6 +25,7 @@ import { AGENT_KIND, SYSTEM_IMPORT_AGENT_ID, agentSpec, normalizeAgentName } fro
 import { ensureHostTaskSchema } from './hostTasks.js';
 import { migrateResourceIds } from './resourceIdMigration.js';
 import { ensureDocumentSearch, registerDocumentSearchFunctions } from './documentSearch.js';
+import { ensureTopicEmbeddingSchema } from './topicEmbeddings.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -358,6 +359,7 @@ export function openStore(dbFilePath: string): Store {
     migrateResourceIds(db);
     ensureHostTaskSchema(db);
     ensureDocumentSearch(db);
+    ensureTopicEmbeddingSchema(db);
   }
   catch (error) { db.close(); throw error; }
 

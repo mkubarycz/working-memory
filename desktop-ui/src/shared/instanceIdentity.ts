@@ -1,6 +1,6 @@
 import type { InstancePermissions } from '../../../control-plane/src/instancePermissions';
 import type { HeapCollection, SessionPolicy, SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
-import type { DesktopDiagnostics, DesktopToolQueue } from '../../../control-plane/src/diagnosticContract';
+import type { DesktopDiagnostics, DesktopToolQueue, ToolQueueSettingsUpdate, ToolQueueSnapshot } from '../../../control-plane/src/diagnosticContract';
 export type HeapRecoveryResult =
   | { status: 'cancelled' }
   | { status: 'collected'; topicId: string; collection: HeapCollection; snapshot: SessionSnapshot }
@@ -42,6 +42,7 @@ export interface InstanceIdentityApi {
   getSessionDiagnostics(before?: number): Promise<SessionSnapshot>;
   getInstanceDiagnostics(): Promise<DesktopDiagnostics>;
   getToolQueue(): Promise<DesktopToolQueue>;
+  updateToolQueueSettings(update: ToolQueueSettingsUpdate, mcpUrl: string): Promise<ToolQueueSnapshot>;
   inspectQueuedRequest(requestId: string, mcpUrl: string): Promise<{ requestId: string; body: unknown }>;
   recoverInstanceHeap(mcpUrl: string): Promise<HeapRecoveryResult>;
   updateSessionPolicy(policy: SessionPolicy, mcpUrl: string): Promise<SessionSnapshot>;
