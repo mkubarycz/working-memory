@@ -63,9 +63,11 @@ export class EmbeddingIndexer {
     const hostStarted = performance.now();
     try {
       let response = await request();
-      for (let attempt = 0; response.status === 409 && attempt < 3; attempt++) {
+      let backoffMs = 500;
+      while (response.status === 409) {
         await response.body?.cancel();
-        await delay(500 * (attempt + 1), undefined, { signal: requestSignal });
+        await delay(backoffMs, undefined, { signal: requestSignal });
+        backoffMs = Math.min(backoffMs * 2, 2000);
         this.requireReady(canReadKind);
         response = await request();
       }

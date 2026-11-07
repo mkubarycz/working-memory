@@ -463,13 +463,18 @@ the total, calls already used and size of the rejected batch.
 Model evidence/context and semantic result counts are
 bounded; incomplete pages/body chunks, truncated responses and tool failures
 are visibly marked. Cancel stops follow-up calls and signals pending query
-inference/MCP requests without disconnecting shared clients. A busy host is
-retried within a bounded query timeout, never replaced with keyword results.
+inference/MCP requests without disconnecting shared clients. A busy host (HTTP
+409) is retried until cancellation or the inference deadline, with backoff
+starting at 500 ms and capped at two seconds, never replaced with keyword results.
 Local query inference allows up to 60 seconds, including cold model startup;
 the desktop MCP client allows 70 seconds for that tool so the backend can return
 a useful timeout error before the client expires. The overall Search deadline
 remains 90 seconds. Initial retrieval failures appear in read-only activity with
 their elapsed time, even when no documents have been returned.
+External indexing callers need `content.read`, `settings.read`, and
+`settings.update` for `wm-embeddings-next`, because pending work can include
+settings documents as well as content. Update permission alone never authorizes
+reading their passages.
 Activity separates each AI turn from retrieval calls and shows local-model
 startup (including cache verification/loading), inference, ranking and host
 round-trip times. Host round trip includes transport and busy retries; startup

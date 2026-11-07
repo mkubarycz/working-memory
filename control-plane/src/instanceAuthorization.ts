@@ -24,7 +24,10 @@ export function instanceToolPermissions(name: string, args: Record<string, unkno
   if (name === 'wm-embeddings-status') return [...required('content', 'read'), ...required('settings', 'read')];
   if (name === 'wm-embeddings-dashboard') return [...required('content', 'read'), ...required('settings', 'read')];
   if (name === 'wm-embeddings-configure') return [...required('content', 'read'), ...required('settings', 'update')];
-  if (name === 'wm-embeddings-next' || name === 'wm-embeddings-submit') {
+  if (name === 'wm-embeddings-next') {
+    return [...required('content', 'read'), ...required('settings', 'read'), ...required('settings', 'update')];
+  }
+  if (name === 'wm-embeddings-submit') {
     return [...required('content', 'read'), ...required('settings', 'update')];
   }
   if (name === 'wm-document-search' || name === 'wm-document-query') return required('content', 'read');

@@ -85,6 +85,37 @@ it('searches only readable kinds before ranking/limits and rechecks permissions 
   await expect(semanticStatus()).rejects.toThrow();
 });
 
+it('requires settings read as well as content read and settings update before returning embedding work', async () => {
+  const { access, owner, connect, store } = await fixture();
+  new InstanceFeatureStore(store.db).write({ search: true });
+  const document = store.createDocument({ kind: 'TopicType', spec: {
+    label: 'Protected indexing settings', description: 'PRIVATE_SETTINGS_PASSAGE',
+  } });
+  expect(nextEmbeddingWork(store.db).work?.id).toBe(document.metadata.id);
+  const enrollment = access.request({ label: 'Mixed permission indexer', access: 'write', refresh: false }, '', 'test');
+  const permissions = noPermissions();
+  permissions.content.read = true;
+  permissions.settings.update = true;
+  access.setPermissions(owner!.token, enrollment.requestId, 'request', permissions);
+  access.decide(owner!.token, enrollment.requestId, true);
+  const issued = access.claim(enrollment.requestId, enrollment.requestSecret);
+  if (!('token' in issued)) throw new Error('Expected client credential');
+  const client = await connect(issued.token);
+  const next = () => client.callTool({ name: 'wm-embeddings-next', arguments: {} });
+  await expect(next()).rejects.toThrow('Additional access requested');
+  expect(access.snapshot(owner!.token).requests[0].permissions).toEqual({
+    ...noPermissions(), settings: { ...noPermissions().settings, read: true },
+  });
+  permissions.settings.read = true;
+  access.setPermissions(owner!.token, issued.clientId, 'client', permissions);
+  const work = value(await next());
+  expect(work).toMatchObject({ work: { id: document.metadata.id } });
+  expect(JSON.stringify(work)).toContain('PRIVATE_SETTINGS_PASSAGE');
+  permissions.settings.read = false;
+  access.setPermissions(owner!.token, issued.clientId, 'client', permissions);
+  await expect(next()).rejects.toThrow('permission_denied');
+});
+
 it('queues only missing permissions on denial and approval updates the same client and live MCP session', async () => {
   const { access, owner, connect, store } = await fixture();
   store.createDocument({ kind: 'TopicType', spec: { label: 'Topic', icon: 'symbol-key' } });
