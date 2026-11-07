@@ -624,8 +624,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const diagnostics = new HttpDiagnostics(store.db, version, Date.now, toolQueue);
   const queueSnapshot = () => ({
     bootId: diagnostics.bootId, ...toolQueue.state(), events: toolQueue.events(2000),
-    history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool, timingsByTool, queueDrops }) =>
-      ({ at, bootId, queueDepth, peakQueueDepth, runningTools, processing, requestsByTool, timingsByTool, queueDrops })),
+    history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, maxQueueWaitMs, runningTools, processing, requestsByTool, timingsByTool, queueDrops }) =>
+      ({ at, bootId, queueDepth, peakQueueDepth, maxQueueWaitMs, runningTools, processing, requestsByTool, timingsByTool, queueDrops })),
   });
   let oauth: InstanceOAuth;
   const ownsStore = providedStore === undefined;

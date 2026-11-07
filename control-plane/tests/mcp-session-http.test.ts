@@ -102,6 +102,20 @@ it('configures the real queue only through trusted owner requests, enforcing val
   expect((await f.snapshot()).memory.admissionBlocked).toBe(true);
 });
 
+it('exposes live and retained queue peaks through the real owner endpoint after a short MCP wait', async () => {
+  const f = await fixture(), { client } = await f.connect();
+  f.memory(650);
+  const pending = client.callTool({ name: 'wm-ping', arguments: {} });
+  const queue = async () => toolQueueSnapshotSchema.parse(await (await f.request('/identity/v1/tool-queue')).json());
+  await vi.waitFor(async () => expect((await queue()).waiting).toBe(1));
+  f.advance(750);
+  expect(await queue()).toMatchObject({ waiting: 1, peakQueueDepth: 1, maxQueueWaitMs: 750 });
+  f.memory(100);
+  await pending;
+  expect(await queue()).toMatchObject({ waiting: 0, peakQueueDepth: 1, maxQueueWaitMs: 750 });
+  expect(await queue()).toMatchObject({ waiting: 0, peakQueueDepth: 1, maxQueueWaitMs: 750 });
+});
+
 it('persists a final shutdown-drop sample before closing diagnostics', async () => {
   const store = openStore(':memory:');
   const owner = await new InstanceIdentity(store.db).initialize('private shutdown test password');

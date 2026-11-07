@@ -41,6 +41,7 @@ export const runtimeSampleSchema = z.object({
   eventLoopMaxMs: z.number(), gcCount: z.number().int(), gcDurationMs: z.number(),
   queueDepth: z.number().int(), runningTools: z.number().int(),
   peakQueueDepth: z.number().int().optional(),
+  maxQueueWaitMs: z.number().nonnegative().optional(),
   processing: queueProcessingSchema.optional(),
   requestsByTool: z.record(z.string(), z.number().int().nonnegative()).optional(),
   timingsByTool: z.record(z.string(), toolTimingTotalsSchema).optional(),
@@ -59,6 +60,8 @@ export const toolQueueSnapshotSchema = z.object({
   settings: toolQueueSettingsSchema.optional(),
   limits: z.object({ running: z.number().int(), waiting: z.number().int(), waitMs: z.number() }),
   memoryBlocked: z.boolean(), running: z.number().int(), waiting: z.number().int(),
+  peakQueueDepth: z.number().int().nonnegative().optional(),
+  maxQueueWaitMs: z.number().nonnegative().optional(),
   processing: queueProcessingSchema.optional(),
   requestsByTool: z.record(z.string(), z.number().int().nonnegative()).optional(),
   timingsByTool: z.record(z.string(), toolTimingTotalsSchema).optional(),
@@ -69,7 +72,7 @@ export const toolQueueSnapshotSchema = z.object({
     operation: z.string(), caller: z.string(), event: z.string(),
     waiting: z.number().int(), running: z.number().int(), waitMs: z.number(), runMs: z.number(),
   })),
-  history: z.array(runtimeSampleSchema.pick({ at: true, bootId: true, queueDepth: true, peakQueueDepth: true, runningTools: true, processing: true, requestsByTool: true, timingsByTool: true, queueDrops: true })),
+  history: z.array(runtimeSampleSchema.pick({ at: true, bootId: true, queueDepth: true, peakQueueDepth: true, maxQueueWaitMs: true, runningTools: true, processing: true, requestsByTool: true, timingsByTool: true, queueDrops: true })),
 });
 export type ToolQueueSnapshot = z.infer<typeof toolQueueSnapshotSchema>;
 export interface DesktopToolQueue {

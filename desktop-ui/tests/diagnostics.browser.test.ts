@@ -119,6 +119,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             bootId: '00000000-0000-4000-8000-000000000002', observedAt: queueAt,
             settings: state.noQueueSettings ? undefined : settings,
             queueDrops: { timeouts: 5, rejections: 9, shutdown: 2 },
+            peakQueueDepth: state.queueGone ? 0 : 1, maxQueueWaitMs: state.queueGone ? 0 : 1500,
             limits: { running: settings.maxConcurrency, waiting: settings.maxQueueSize, waitMs: settings.queueTimeoutMs }, memoryBlocked: true,
             processing: { processedPerSecond: 2.5, processedLastMinute: 30, averageWaitMs: 12.5, averageRunMs: 40 },
             requestsByTool: state.noToolHistory ? undefined : { 'wm-document-query': 13, 'wm-document-read': 12 },
@@ -129,6 +130,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             running: 0, waiting: state.queueGone ? 0 : 1,
             items: state.queueGone ? [] : [{ requestId, operation: 'wm-document-query', caller: 'owner', queuedAt: Date.now() - 1500 }],
             history: [{ at: queueAt - 10000, bootId: '00000000-0000-4000-8000-000000000002', queueDepth: 2, peakQueueDepth: 6,
+              maxQueueWaitMs: 500,
               queueDrops: { timeouts: 1, rejections: 3, shutdown: 1 },
               requestsByTool: state.noToolHistory ? undefined : { 'wm-document-query': 10, 'wm-document-read': 5 },
               timingsByTool: {
@@ -283,7 +285,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() === " + originalWidth);
           await wait(matchesContainer);
           await evaluate("window.__diagnosticsTest.chart('Queue processing history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
-          await wait("document.body.innerText.includes('Average queue depth: 1.5 waiting')");
+          await wait("document.body.innerText.includes('Max queue depth: 6 waiting') && document.body.innerText.includes('Max wait time: ' + (1500).toLocaleString() + ' ms')");
+          assert.equal(await evaluate("document.body.innerText.includes('Peak waiting') || document.body.innerText.includes('Average queue depth')"), false);
           await evaluate("window.__diagnosticsTest.chart('Tool request history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
           await wait("document.body.innerText.includes('wm-document-query: 3 requests')");
           await wait("document.body.innerText.includes('Total wait time: 59 ms') && document.body.innerText.includes('Average runtime: 26 ms')");
@@ -368,7 +371,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate("window.__setDiagnosticsVisible(true)");
           await wait("document.body.innerText.includes('0 waiting / 16')");
           await evaluate("window.__diagnosticsTest.chart('Queue processing history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
-          await wait("document.body.innerText.includes('Average queue depth: 1 waiting')");
+          await wait("document.body.innerText.includes('Max queue depth: 6 waiting') && document.body.innerText.includes('Max wait time: 500 ms')");
           assert.equal((await evaluate('document.body.innerText')).includes('PRIVATE_LIVE_QUERY'), false);
           assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Diagnostics sections\\"] button')).map(b => b.textContent.trim())"),
             ['Queue', 'HTTP', 'Runtime', 'Automatic incident reports', 'Embeddings']);

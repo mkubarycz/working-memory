@@ -117,6 +117,7 @@ it('counts only capacity, timeout and shutdown drops, excluding cancellations, d
   f.queue.close();
   await dropped;
   expect(f.queue.state().queueDrops).toEqual({ timeouts: 1, rejections: 1, shutdown: 1 });
+  expect(f.queue.state().maxQueueWaitMs).toBe(1000);
 });
 
 it('retains drop totals after lifecycle-log truncation without recounting snapshots', async () => {
@@ -149,8 +150,9 @@ it('runs four calls, bounds the FIFO queue at sixteen, and never executes reject
   expect(await Promise.all(calls)).toEqual(Array.from({ length: 20 }, (_, index) => index));
   expect(order).toEqual(Array.from({ length: 20 }, (_, index) => index));
   expect(f.queue.state()).toMatchObject({ running: 0, waiting: 0 });
-  expect(f.queue.takePeakDepth()).toBe(16);
-  expect(f.queue.takePeakDepth()).toBe(0);
+  expect(f.queue.state().peakQueueDepth).toBe(16);
+  f.queue.resetSamplingPeaks();
+  expect(f.queue.state().peakQueueDepth).toBe(0);
   expect(JSON.stringify(f.queue.events())).not.toContain('PRIVATE_REQUEST');
   expect(JSON.stringify(f.db.prepare('SELECT * FROM instance_tool_queue_events').all())).not.toContain('PRIVATE_REQUEST');
 });

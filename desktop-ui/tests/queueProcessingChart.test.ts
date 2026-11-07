@@ -10,24 +10,28 @@ const processing = (rate: number) => ({
 const snapshot = (): ToolQueueSnapshot => ({
   bootId: 'boot', observedAt: 20000, limits: { running: 4, waiting: 16, waitMs: 5000 },
   memoryBlocked: false, waiting: 4, running: 1, items: [], events: [],
+  peakQueueDepth: 4, maxQueueWaitMs: 100,
   processing: processing(10), requestsByTool: { read: 12, query: 5 },
-  history: [{ at: 10000, bootId: 'boot', queueDepth: 8, peakQueueDepth: 12, runningTools: 1,
+  history: [{ at: 10000, bootId: 'boot', queueDepth: 8, peakQueueDepth: 12, maxQueueWaitMs: 300, runningTools: 1,
     requestsByTool: { read: 9, query: 1 }, processing: processing(5) }],
 });
 
-it('aggregates minute averages and maximum waiting before independently normalizing each metric', () => {
+it('uses bucket maxima for depth and wait time, not averages, before independently normalizing each metric', () => {
   const input = snapshot(), chart = queueProcessingChart(input);
-  expect(chart.series.map(series => series.peak)).toEqual([6, 12, 7.5]);
+  expect(chart.series.map(series => series.peak)).toEqual([12, 300, 7.5]);
+  expect(chart.series.map(series => series.label)).toEqual(['Max queue depth', 'Max wait time', 'Average processed / sec']);
   expect(chart.series.map(series => series.points.map(point => point.normalized))).toEqual([
     [100], [100], [100],
   ]);
-  expect(chart.series[0].points[0]).toMatchObject({ at: 30000, from: 0, to: 60000, value: 6 });
+  expect(chart.series[0].points[0]).toMatchObject({ at: 30000, from: 0, to: 60000, value: 12 });
   expect(input.history).toHaveLength(1);
 });
 
 it('breaks traces across missing data, sampling gaps and restarts without fabricating missing throughput or peaks', () => {
   const input = snapshot();
   input.observedAt = 130000; input.bootId = 'new-boot';
+  input.maxQueueWaitMs = undefined;
+  input.peakQueueDepth = undefined;
   input.history = [
     { at: 90000, bootId: 'boot', queueDepth: 1, runningTools: 1, processing: processing(1) },
     { at: 30000, bootId: 'boot', queueDepth: 1, runningTools: 1, processing: processing(1) },
@@ -98,12 +102,12 @@ it('uses one point per minute even with six backend samples per minute', () => {
   input.observedAt = 110000;
   input.history = Array.from({ length: 11 }, (_, i) => ({
     at: i * 10000, bootId: input.bootId, queueDepth: i,
-    peakQueueDepth: i + 2, runningTools: 0, processing: processing(i),
+    peakQueueDepth: i + 2, maxQueueWaitMs: i * 10, runningTools: 0, processing: processing(i),
   }));
   const chart = queueProcessingChart(input);
   expect(chart.series.every(series => series.points.length === 2)).toBe(true);
-  expect(chart.series[0].points.map(point => point.value)).toEqual([2.5, (6 + 7 + 8 + 9 + 10 + 4) / 6]);
-  expect(chart.series[1].points.map(point => point.value)).toEqual([7, 12]);
+  expect(chart.series[0].points.map(point => point.value)).toEqual([7, 12]);
+  expect(chart.series[1].points.map(point => point.value)).toEqual([50, 100]);
   expect(chart.series[2].points[0].normalized).toBeCloseTo(30);
 });
 
@@ -125,7 +129,7 @@ it('renders raw stacked counts and independently normalized lines through EChart
 
 it('uses the selected bucket for both plots and hides percentages only on Queue charts', () => {
   const input = snapshot(), chart = queueProcessingChart(input, 15000);
-  expect(chart.series[0].points.map(point => point.value)).toEqual([8, 4]);
+  expect(chart.series[0].points.map(point => point.value)).toEqual([12, 4]);
   const options = diagnosticsChartOption(chart, null, false, false);
   expect(options.xAxis).toMatchObject({ minInterval: 15000 });
   expect(options.yAxis).toMatchObject({ axisLabel: { show: false }, axisTick: { show: false } });

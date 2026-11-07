@@ -2003,13 +2003,18 @@ Each log row shows queue-entry time, total duration, request ID, tool, wait time
 runtime and status; live timings are elapsed so far. Finished timings remain
 available even if earlier lifecycle events have left the window. An unfinished
 request no longer in the live list has an unavailable outcome, not a fabricated
-completion time. Hover a request ID for its caller. The chart also shows the peak depth
-between samples so short bursts are not lost when the queue drains quickly.
+completion time. Hover a request ID for its caller. Queue Processing shows
+**Max queue depth**, **Max wait time**, and average processing rate. Depth is
+captured on enqueue, before dispatch, so even short-lived waiting calls are
+retained between samples. Maximum wait includes elapsed time for currently
+waiting calls and waits ending in dispatch or a drop, not execution runtime.
+Polling does not clear these peaks; they reset only after a runtime sample is
+persisted. Older samples cannot be backfilled with missing waits or depth peaks.
 Each processing series is independently scaled to its visible-window peak,
 without percentage labels; legend and hover show real values. A shared **Bucket
 size** selector defaults to one minute and offers 15/30 seconds and 1/2/5/10
-minutes for both Queue plots. Buckets average sampled queue depth and processing
-rates while retaining maximum peak waiting. Processing-rate samples use a rolling
+minutes for all Queue plots. Buckets retain maximum depth and wait time while
+averaging sampled processing rates. Processing-rate samples use a rolling
 ten-second rate.
 The stacked chart shares the processing chart's exact time bounds and horizontal
 plot alignment. Its raw counts come from per-tool cumulative arrival counters

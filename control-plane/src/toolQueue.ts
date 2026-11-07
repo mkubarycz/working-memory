@@ -38,6 +38,7 @@ export class ToolQueue {
   private ticker: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
   private peakDepth = 0;
+  private peakWaitMs = 0;
   private readonly requestsByTool = new Map<string, number>();
   private readonly drops = { timeouts: 0, rejections: 0, shutdown: 0 };
   private readonly timingsByTool = new Map<string, { finished: number; executed: number; waitMs: number; runMs: number }>();
@@ -86,6 +87,7 @@ export class ToolQueue {
     const now = this.clock();
     const startedAt = event === 'not_executed' ? undefined : item.startedAt;
     const waitMs = Math.max(0, (startedAt ?? now) - item.queuedAt);
+    if (item.startedAt === undefined || event === 'started') this.peakWaitMs = Math.max(this.peakWaitMs, waitMs);
     const runMs = startedAt === undefined ? 0 : Math.max(0, now - startedAt);
     if (event === 'completed' || event === 'failed' || event === 'not_executed'
       || event === 'full' || event === 'expired' || event === 'cancelled' || event === 'shutdown') {
@@ -141,7 +143,6 @@ export class ToolQueue {
       item.start();
     }
     if (!this.waiting.length && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }
-    this.peakDepth = Math.max(this.peakDepth, this.waiting.length);
   }
 
   run<T>(metadata: Omit<QueuedTool, 'queuedAt' | 'startedAt'>, payload: unknown, signal: AbortSignal,
@@ -173,6 +174,7 @@ export class ToolQueue {
         },
       };
       this.waiting.push(item);
+      this.peakDepth = Math.max(this.peakDepth, this.waiting.length);
       this.record(item, 'queued');
       signal.addEventListener('abort', cancel, { once: true });
       this.ticker ??= setInterval(() => this.pump(), 100);
@@ -185,10 +187,9 @@ export class ToolQueue {
     return this.waiting.find(item => item.requestId === requestId)?.payload;
   }
 
-  takePeakDepth(): number {
-    const peak = Math.max(this.peakDepth, this.waiting.length);
+  resetSamplingPeaks(): void {
     this.peakDepth = this.waiting.length;
-    return peak;
+    this.peakWaitMs = 0;
   }
 
   private pruneProcessing(now: number): void {
@@ -215,8 +216,11 @@ export class ToolQueue {
   state() {
     this.prune();
     this.pruneProcessing(this.clock());
+    const now = this.clock();
     return {
-      observedAt: this.clock(), settings: { ...this.settings },
+      observedAt: now, settings: { ...this.settings },
+      peakQueueDepth: Math.max(this.peakDepth, this.waiting.length),
+      maxQueueWaitMs: Math.max(this.peakWaitMs, ...this.waiting.map(item => Math.max(0, now - item.queuedAt))),
       limits: { running: this.settings.maxConcurrency, waiting: this.settings.maxQueueSize, waitMs: this.settings.queueTimeoutMs },
       memoryBlocked: this.memoryBlocked(this.settings.heapDispatchPausePercent),
       processing: this.processing(),

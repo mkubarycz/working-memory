@@ -53,6 +53,43 @@ it('records runtime and operation trends without request arguments, and accepts 
   });
 });
 
+it('retains transient depths and dispatch waits between samples, includes active waiters, and does not replay waits at completion', async () => {
+  vi.useFakeTimers();
+  const db = new DatabaseSync(':memory:');
+  let blocked = false;
+  const queue = new ToolQueue(db, () => blocked);
+  const diagnostics = new HttpDiagnostics(db, '1.4.1', Date.now, queue);
+  cleanup.push(() => db.close(), () => diagnostics.close(), () => queue.close());
+  const metadata = () => ({ requestId: randomUUID(), operation: 'wm-ping', caller: 'owner' });
+  await queue.run(metadata(), {}, new AbortController().signal, async () => {});
+  expect(queue.state()).toMatchObject({ waiting: 0, peakQueueDepth: 1 });
+  diagnostics.sample();
+  expect(diagnostics.history()[0]).toMatchObject({ queueDepth: 0, peakQueueDepth: 1, maxQueueWaitMs: 0 });
+  expect(queue.state().peakQueueDepth).toBe(0);
+  blocked = true;
+  let finish: () => void = () => {};
+  const work = new Promise<void>(resolve => { finish = resolve; });
+  const pending = queue.run(metadata(), {}, new AbortController().signal, () => work);
+  await vi.advanceTimersByTimeAsync(750);
+  expect(queue.state()).toMatchObject({ waiting: 1, peakQueueDepth: 1, maxQueueWaitMs: 750 });
+  db.exec("CREATE TEMP TRIGGER reject_sample BEFORE INSERT ON instance_runtime_samples BEGIN SELECT RAISE(ABORT,'sample rejected'); END");
+  expect(() => diagnostics.sample()).toThrow('sample rejected');
+  expect(queue.state()).toMatchObject({ peakQueueDepth: 1, maxQueueWaitMs: 750 });
+  db.exec('DROP TRIGGER reject_sample');
+  diagnostics.sample();
+  expect(diagnostics.history()[0]).toMatchObject({ queueDepth: 1, peakQueueDepth: 1, maxQueueWaitMs: 750 });
+  blocked = false;
+  await vi.advanceTimersByTimeAsync(250);
+  expect(queue.state()).toMatchObject({ waiting: 0, running: 1, peakQueueDepth: 1, maxQueueWaitMs: 800 });
+  diagnostics.sample();
+  expect(diagnostics.history()[0]).toMatchObject({ queueDepth: 0, peakQueueDepth: 1, maxQueueWaitMs: 800 });
+  expect(queue.state()).toMatchObject({ peakQueueDepth: 0, maxQueueWaitMs: 0 });
+  finish();
+  await pending;
+  diagnostics.sample();
+  expect(diagnostics.history()[0]).toMatchObject({ queueDepth: 0, peakQueueDepth: 0, maxQueueWaitMs: 0 });
+});
+
 it('bounds persistent runtime history to 24 hours and 8640 samples across restarts', async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-11-04T18:00:00Z'));
