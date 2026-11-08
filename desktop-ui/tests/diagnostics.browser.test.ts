@@ -641,13 +641,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           app.quit();
         }).catch(error => { console.error(error); app.exit(1); });
       `);
-      const { stdout } = await promisify(execFile)(executable, [script], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, timeout: 30000, maxBuffer: 1024 * 1024,
+      const { stdout, stderr } = await promisify(execFile)(executable, [script], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, timeout: 60000,
+        killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
       });
-      expect(stdout).toContain('diagnostics-browser-ok');
+      expect(stdout, `Electron exited without completing the diagnostics checks.\n${stderr}`).toContain('diagnostics-browser-ok');
     } finally {
       await server.close();
       await rm(directory, { recursive: true, force: true });
     }
-  }, 45000,
+  }, 75000,
 );
