@@ -652,7 +652,9 @@ check the **Working Memory Embeddings** Scheduled Task, install the current buil
 for missing helper/DLL errors, or update the Intel NPU driver for NPU errors.
 “Not loaded” by itself is normal before first inference or after model unloading;
 an `error` status is not. Retry resumes indexing for the selected environment.
-Only the visible dashboard polls, every two seconds. V1 indexes the first
+Container and local host diagnostics poll independently while the dashboard is
+visible, every two seconds, so a stalled container cannot block local evidence.
+V1 indexes the first
 32,000 body characters in overlapping passages; the dashboard and affected
 topics identify that limit. The model has a 256-token passage input limit.
 

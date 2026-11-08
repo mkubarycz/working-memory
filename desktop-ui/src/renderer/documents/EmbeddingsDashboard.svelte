@@ -10,29 +10,44 @@
   let operationError = $state('');
   let busy = $state(false);
   let refreshing = $state(false);
+  let diagnosticsRefreshing = $state(false);
   let retention = $state('always');
   $effect(() => { retention = snapshot?.idleTimeoutMinutes == null ? 'always' : String(snapshot.idleTimeoutMinutes); });
   let active = true;
   let generation = 0;
-  async function refresh(): Promise<void> {
-    if (refreshing || busy) return;
+  async function refreshDashboard(): Promise<void> {
+    if (!active || refreshing || busy) return;
     refreshing = true;
     const current = generation;
     try {
-      const [dashboard, host] = await Promise.allSettled([
-        window.workingMemory.getEmbeddingDashboard(), window.workingMemory.getEmbeddingDiagnostics(),
-      ]);
+      const value = await window.workingMemory.getEmbeddingDashboard();
       if (active && current === generation) {
-        if (dashboard.status === 'fulfilled') { snapshot = dashboard.value; error = ''; }
-        else error = dashboard.reason instanceof Error ? dashboard.reason.message : String(dashboard.reason);
-        if (host.status === 'fulfilled') { diagnostics = host.value; diagnosticsError = ''; }
-        else diagnosticsError = host.reason instanceof Error ? host.reason.message : String(host.reason);
+        snapshot = value;
+        error = '';
       }
+    } catch (cause) {
+      if (active && current === generation) error = cause instanceof Error ? cause.message : String(cause);
     } finally { refreshing = false; }
   }
+  async function refreshDiagnostics(): Promise<void> {
+    if (!active || diagnosticsRefreshing) return;
+    diagnosticsRefreshing = true;
+    const current = generation;
+    try {
+      const value = await window.workingMemory.getEmbeddingDiagnostics();
+      if (active && current === generation) { diagnostics = value; diagnosticsError = ''; }
+    } catch (cause) {
+      if (active && current === generation) diagnosticsError = cause instanceof Error ? cause.message : String(cause);
+    } finally { diagnosticsRefreshing = false; }
+  }
+  function refresh(): void {
+    void refreshDashboard();
+    void refreshDiagnostics();
+  }
   onMount(() => {
-    const stop = startVisiblePolling(refresh, 2000);
-    return () => { active = false; stop(); };
+    const stopDashboard = startVisiblePolling(refreshDashboard, 2000);
+    const stopDiagnostics = startVisiblePolling(refreshDiagnostics, 2000);
+    return () => { active = false; stopDashboard(); stopDiagnostics(); };
   });
   async function act(action: EmbeddingAction): Promise<void> {
     generation++;
@@ -84,7 +99,7 @@
         <button disabled={busy} onclick={() => void act('retry')}>Retry</button>
       {/if}
     {/if}
-    <button disabled={refreshing || busy} onclick={() => void refresh()}>Refresh</button>
+    <button disabled={(refreshing && diagnosticsRefreshing) || busy} onclick={() => refresh()}>Refresh</button>
   </div>
   {#if snapshot}
     <p><strong>Status:</strong> {snapshot.phase}
