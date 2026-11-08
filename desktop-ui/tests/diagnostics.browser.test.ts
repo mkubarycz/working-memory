@@ -89,19 +89,37 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         },
         async getEmbeddingDashboard() {
           state.embeddingReads = (state.embeddingReads || 0) + 1;
-          return { endpoint: 'http://127.0.0.1:7719/mcp', enabled: !!state.embeddingEnabled, paused: !!state.embeddingPaused,
-            phase: state.embeddingPaused ? 'paused' : state.embeddingEnabled ? 'indexing' : 'disabled',
+          if (state.embeddingDashboardUnavailable) throw new Error('Container unavailable');
+          const dashboard = { endpoint: 'http://127.0.0.1:7719/mcp', enabled: !!state.embeddingEnabled, paused: !!state.embeddingPaused,
+            phase: state.embeddingPhase || (state.embeddingPaused ? 'paused' : state.embeddingEnabled ? 'indexing' : 'disabled'),
             model: 'minilm-l6-v2:1110a243:384:v1', downloadBytes: 0, downloadTotal: 90871461,
             backend: state.embeddingPaused ? null : 'OpenVINO / NPU', warning: null, error: state.embeddingFailure || null,
             rssBytes: state.embeddingPaused ? null : 512 * 1048576, lastInferenceMs: 42, lastSuccessAtMs: Date.now(),
             idleTimeoutMinutes: state.retention ?? null,
             stats: { total: 100, indexed: 80, pending: 20, limited: 1, vectorBytes: 123456, lastIndexedAt: Math.floor(Date.now() / 1000) },
           };
+          if (state.embeddingDashboardPending) {
+            state.embeddingDashboardPending = false;
+            return new Promise(resolve => {
+              state.releaseEmbeddingDashboard = () => { state.releaseEmbeddingDashboard = null; resolve(dashboard); };
+            });
+          }
+          return dashboard;
+        },
+        async getEmbeddingDiagnostics() {
+          state.embeddingDiagnosticsReads = (state.embeddingDiagnosticsReads || 0) + 1;
+          if (state.embeddingDiagnosticsFailure) throw new Error('Service log could not be read');
+          return { logPath: '/actual/desktop/profile/embeddings/service.log', logExists: !state.embeddingLogMissing,
+            log: state.embeddingLogMissing ? '' : state.embeddingLog || '2026-11-07T05:59:42.702Z Host service started.',
+            service: { state: 'running', version: 'test-build', expectedVersion: 'test-build',
+              phase: 'idle', backend: 'OpenVINO / NPU', error: null },
+          };
         },
         async setEmbeddingAction(action) {
           state.embeddingActions = [...(state.embeddingActions || []), action];
           if (action === 'enable' || action === 'resume' || action === 'retry') {
             state.embeddingEnabled = true; state.embeddingPaused = false; state.embeddingFailure = null;
+            state.embeddingPhase = null;
           }
           if (action === 'pause') state.embeddingPaused = true;
           if (action === 'disable') state.embeddingEnabled = false;
@@ -455,7 +473,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.body.innerText.includes('0 waiting / 16')");
           await evaluate("window.__diagnosticsTest.noToolHistory = true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
           await wait("document.body.innerText.includes('Tool-request history is unavailable on this backend.')");
-          await evaluate("document.querySelector('#diagnostics-tab-embeddings').click()");
+          await evaluate("window.__diagnosticsTest.embeddingDashboardPending=true;document.querySelector('#diagnostics-tab-embeddings').click()");
+          await wait("window.__diagnosticsTest.releaseEmbeddingDashboard && document.querySelector('.service-troubleshooting pre')");
+          const pendingEmbeddingReads = await evaluate("window.__diagnosticsTest.embeddingReads");
+          const localReadsBeforeRefresh = await evaluate("window.__diagnosticsTest.embeddingDiagnosticsReads");
+          await evaluate("Array.from(document.querySelectorAll('.embeddings-dashboard button')).find(b=>b.textContent.trim()==='Refresh').click()");
+          await wait("window.__diagnosticsTest.embeddingDiagnosticsReads > " + localReadsBeforeRefresh);
+          await evaluate("window.__diagnosticsTest.embeddingLog='Host evidence while container request is still pending'");
+          await wait("document.querySelector('.service-troubleshooting pre').textContent.includes('Host evidence while container request is still pending')");
+          await evaluate("window.__diagnosticsTest.embeddingLog='New host evidence on the next independent poll'");
+          await wait("document.querySelector('.service-troubleshooting pre').textContent.includes('New host evidence on the next independent poll')");
+          assert.equal(await evaluate("window.__diagnosticsTest.embeddingReads"), pendingEmbeddingReads);
+          assert.ok(await evaluate("!!window.__diagnosticsTest.releaseEmbeddingDashboard"));
+          await evaluate("window.__diagnosticsTest.releaseEmbeddingDashboard()");
           await wait("document.body.innerText.includes('Enable Embeddings in Settings > Features')");
           assert.ok((await evaluate('document.body.innerText')).includes('80 / 100 indexed; 20 pending'));
           assert.ok((await evaluate('document.body.innerText')).includes('OpenVINO / NPU'));
@@ -478,26 +508,54 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate("window.__diagnosticsTest.retentionFailure=true;(()=>{const s=document.querySelector('.embeddings-dashboard select');s.value='1';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
           await wait("document.body.innerText.includes('Retention save failed')");
           assert.equal(await evaluate("document.querySelector('.embeddings-dashboard select').value"), '30');
+          await evaluate("window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("!Array.from(document.querySelectorAll('.embeddings-dashboard button')).find(b=>b.textContent.trim()==='Refresh').disabled");
+          assert.ok((await evaluate('document.body.innerText')).includes('Retention save failed'));
           await evaluate("window.__diagnosticsTest.retentionFailure=false");
+          await evaluate("window.__diagnosticsTest.embeddingDashboardPending=true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("!!window.__diagnosticsTest.releaseEmbeddingDashboard");
           await evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Pause').click()");
           await wait("document.body.innerText.includes('Status: paused')");
+          await evaluate("window.__diagnosticsTest.releaseEmbeddingDashboard()");
+          await new Promise(resolve => setTimeout(resolve, 100));
+          assert.ok((await evaluate('document.body.innerText')).includes('Status: paused'));
           assert.ok((await evaluate('document.body.innerText')).includes('Not loaded'));
           await evaluate("window.__diagnosticsTest.embeddingFailure = 'Intel NPU driver unavailable'; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
           await wait("document.body.innerText.includes('Intel NPU driver unavailable')");
-          await evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Retry').click()");
+          await evaluate("window.__diagnosticsTest.embeddingPhase='error'; window.__diagnosticsTest.embeddingFailure=null; window.__diagnosticsTest.embeddingLog='2026-11-07T05:59:42.702Z Host service startup failed: missing helper DLL <script>window.__unsafeEmbeddingLog=true</script>'; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.body.innerText.includes('Indexing reports an error without details')");
+          assert.equal(await evaluate("document.querySelector('.service-troubleshooting').open"), true);
+          assert.ok((await evaluate("document.querySelector('.service-troubleshooting pre').textContent")).includes('missing helper DLL'));
+          assert.equal(await evaluate("!!window.__unsafeEmbeddingLog"), false);
+          assert.ok((await evaluate('document.body.innerText')).includes('/actual/desktop/profile/embeddings/service.log'));
+          await evaluate("Array.from(document.querySelectorAll('.embeddings-dashboard button')).find(b=>b.textContent.trim()==='Retry').click()");
+          await wait("document.body.innerText.includes('Status: indexing')");
+          assert.ok((await evaluate("document.querySelector('.service-troubleshooting pre').textContent")).includes('missing helper DLL'));
+          await evaluate("window.__diagnosticsTest.embeddingDashboardUnavailable=true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.body.innerText.includes('Container unavailable')");
+          assert.ok((await evaluate("document.querySelector('.service-troubleshooting pre').textContent")).includes('missing helper DLL'));
+          await evaluate("window.__diagnosticsTest.embeddingDiagnosticsFailure=true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.body.innerText.includes('Local service diagnostics failed: Service log could not be read')");
+          await evaluate("window.__diagnosticsTest.embeddingDashboardUnavailable=false; window.__diagnosticsTest.embeddingDiagnosticsFailure=false; window.__diagnosticsTest.embeddingLogMissing=true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.querySelector('.service-troubleshooting').textContent.includes('No service log has been created yet')");
+          await evaluate("(()=>{const d=document.querySelector('.service-troubleshooting');if(!d.open)d.querySelector('summary').click();})()");
+          await wait("document.body.innerText.includes('No service log has been created yet')");
+          await evaluate("window.__diagnosticsTest.embeddingLogMissing=false");
           await wait("!document.body.innerText.includes('Intel NPU driver unavailable')");
           assert.deepEqual(await evaluate("window.__diagnosticsTest.embeddingActions"), ['enable', 'pause', 'retry']);
           await evaluate("window.__setDiagnosticsVisible(false)");
-          const hiddenEmbeddingReads = await evaluate("window.__diagnosticsTest.embeddingReads");
+          const hiddenEmbeddingReads = await evaluate("[window.__diagnosticsTest.embeddingReads, window.__diagnosticsTest.embeddingDiagnosticsReads]");
           await new Promise(resolve => setTimeout(resolve, 2200));
-          assert.equal(await evaluate("window.__diagnosticsTest.embeddingReads"), hiddenEmbeddingReads);
-          await evaluate("window.__setDiagnosticsVisible(true)");
+          assert.deepEqual(await evaluate("[window.__diagnosticsTest.embeddingReads, window.__diagnosticsTest.embeddingDiagnosticsReads]"), hiddenEmbeddingReads);
+          await evaluate("window.__diagnosticsTest.embeddingDashboardPending=true;window.__setDiagnosticsVisible(true)");
+          await wait("!!window.__diagnosticsTest.releaseEmbeddingDashboard");
           await evaluate("Array.from(document.querySelectorAll('[role=tab]')).find(b => b.textContent.trim() === 'Models').click()");
           await wait("document.body.innerText.includes('Routing matrix')");
-          const stoppedCounts = await evaluate("[window.__diagnosticsTest.calls, window.__diagnosticsTest.queueCalls]");
+          const stoppedCounts = await evaluate("[window.__diagnosticsTest.calls, window.__diagnosticsTest.queueCalls, window.__diagnosticsTest.embeddingDiagnosticsReads]");
+          await evaluate("window.__diagnosticsTest.releaseEmbeddingDashboard()");
           await evaluate("window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
           await new Promise(resolve => setTimeout(resolve, 2200));
-          assert.deepEqual(await evaluate("[window.__diagnosticsTest.calls, window.__diagnosticsTest.queueCalls]"), stoppedCounts);
+          assert.deepEqual(await evaluate("[window.__diagnosticsTest.calls, window.__diagnosticsTest.queueCalls, window.__diagnosticsTest.embeddingDiagnosticsReads]"), stoppedCounts);
           await evaluate("window.__diagnosticsTest.embeddingEnabled = false; window.__diagnosticsTest.mountRelated()");
           await wait("window.__diagnosticsTest.relatedReads > 0");
           assert.equal(await evaluate("document.querySelector('.related-topics')"), null);
@@ -583,13 +641,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           app.quit();
         }).catch(error => { console.error(error); app.exit(1); });
       `);
-      const { stdout } = await promisify(execFile)(executable, [script], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, timeout: 30000, maxBuffer: 1024 * 1024,
+      const { stdout, stderr } = await promisify(execFile)(executable, [script], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, timeout: 60000,
+        killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
       });
-      expect(stdout).toContain('diagnostics-browser-ok');
+      expect(stdout, `Electron exited without completing the diagnostics checks.\n${stderr}`).toContain('diagnostics-browser-ok');
     } finally {
       await server.close();
       await rm(directory, { recursive: true, force: true });
     }
-  }, 45000,
+  }, 75000,
 );

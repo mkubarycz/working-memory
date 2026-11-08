@@ -411,6 +411,7 @@ export interface DesktopBuildInfo {
 
 export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   getEmbeddingDashboard(): Promise<import('./embeddings').EmbeddingDashboard>;
+  getEmbeddingDiagnostics(): Promise<import('./embeddings').EmbeddingDiagnostics>;
   setEmbeddingAction(action: import('./embeddings').EmbeddingAction): Promise<import('./embeddings').EmbeddingDashboard>;
   setEmbeddingRetention(minutes: number | null): Promise<import('./embeddings').EmbeddingDashboard>;
   getRelatedTopics(id: string): Promise<import('../../../control-plane/src/embeddingContract').RelatedTopics>;

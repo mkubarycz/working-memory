@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startEmbeddingHostService, readEmbeddingHostSettings } from '../src/main/embeddingHostService';
 import { embeddingServicePlist } from '../src/main/embeddingServiceManager';
 import { EMBEDDING_MODEL, embeddingInferenceSchema, embeddingHostStatusSchema } from '../../control-plane/src/embeddingContract';
+import { installEmbeddingModel } from '../src/main/embeddingRuntime';
 
 vi.mock('../src/main/embeddingRuntime', () => ({
   installEmbeddingModel: vi.fn(async (_directory, _signal, progress) => progress(90871461)),
@@ -36,6 +37,22 @@ async function fixture() {
   return { home, server, url: `http://127.0.0.1:${server.port}`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-WM-Embedding-Metrics': '1' } };
 }
 describe('independent host inference endpoint', () => {
+  it('retains sanitized runtime failures in status, HTTP responses and the dashboard service log', async () => {
+    const { home, url, headers } = await fixture();
+    const token = 'b'.repeat(64);
+    vi.mocked(installEmbeddingModel).mockRejectedValueOnce(new Error(`Embedding helper DLL missing. Bearer ${token}`));
+    const response = await fetch(`${url}/embed`, { method: 'POST', headers,
+      body: JSON.stringify({ model: EMBEDDING_MODEL, texts: ['Private authored passage.'] }) });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'Embedding helper DLL missing. Bearer [redacted]' });
+    expect(await (await fetch(`${url}/status`, { headers })).json()).toMatchObject({
+      phase: 'error', backend: null, error: 'Embedding helper DLL missing. Bearer [redacted]',
+    });
+    const log = readFileSync(join(home, 'service.log'), 'utf8');
+    expect(log).toContain('Embedding helper DLL missing');
+    expect(log).not.toContain(token);
+    expect(log).not.toContain('Private authored passage.');
+  });
   it('keeps strict legacy response shapes unless the caller opts into metrics', async () => {
     const { url, headers } = await fixture();
     const legacy = { Authorization: headers.Authorization, 'Content-Type': 'application/json' };

@@ -639,7 +639,22 @@ indexing. A new service installation uses the always-warm default; the first
 use after a service restart still pays model initialization.
 Connectivity failures are visible and retried automatically; invalid inference
 responses halt until Retry or Resume. Retry also repairs/restarts the host service.
-Only the visible dashboard polls, every two seconds. V1 indexes the first
+**Diagnostics > Embeddings > Service troubleshooting and error log** checks the
+native host directly, independently of the container. It shows its connection
+state, backend, installed/service versions and the actual service log location
+for this desktop profile. The latest 100 log lines (up to 32 KiB) are displayed
+in the app, with credentials redacted; document passages are not logged.
+Installation and early startup failures are recorded even before the service
+can listen. Indexing preserves the host's error detail instead of only reporting
+HTTP 500. A running host with a container connection error points to Docker
+connectivity; an unreachable host points to the sign-in service. On Windows,
+check the **Working Memory Embeddings** Scheduled Task, install the current build
+for missing helper/DLL errors, or update the Intel NPU driver for NPU errors.
+“Not loaded” by itself is normal before first inference or after model unloading;
+an `error` status is not. Retry resumes indexing for the selected environment.
+Container and local host diagnostics poll independently while the dashboard is
+visible, every two seconds, so a stalled container cannot block local evidence.
+V1 indexes the first
 32,000 body characters in overlapping passages; the dashboard and affected
 topics identify that limit. The model has a 256-token passage input limit.
 

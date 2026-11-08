@@ -4,6 +4,20 @@ export const EMBEDDING_MODEL = 'minilm-l6-v2:1110a243:384:v1';
 export const EMBEDDING_DIMENSIONS = 384;
 export const EMBEDDING_TEXT_LIMIT = 32000;
 export const EMBEDDING_HOST_PORT = 7716;
+export function embeddingErrorMessage(error: unknown): string {
+  const messages: string[] = [];
+  for (let depth = 0; depth < 3 && error instanceof Error; depth++) {
+    if (error.message) messages.push(error.message);
+    error = error.cause;
+  }
+  if (!messages.length && typeof error === 'string') messages.push(error);
+  return (messages.join(': ') || 'Embedding operation failed without an error message.')
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\b[a-f0-9]{64}\b/gi, '[redacted]')
+    .replace(/(\b(?:token|api[_ -]?key|password|authorization)["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[redacted]')
+    .replace(/(https?:\/\/)[^/\s@]+@/gi, '$1[redacted]@')
+    .slice(0, 4000);
+}
 export const SEMANTIC_SEARCH_INFERENCE_TIMEOUT_MS = 60_000;
 export const embeddingHostSettingsSchema = z.object({
   idleTimeoutMinutes: z.number().int().min(1).max(1440).nullable(),
