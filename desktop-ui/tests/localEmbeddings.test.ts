@@ -12,10 +12,71 @@ function fixture() {
   let minutes: number | null = null;
   const readSettings = () => ({ idleTimeoutMinutes: minutes });
   const setRetention = vi.fn(async (value: number | null) => { minutes = value; return readSettings(); });
-  const service = new LocalEmbeddings(() => ({ endpoint, client: { callTool } }), { ensure, readSettings, setRetention });
-  return { service, callTool, ensure, setRetention, switchTo: (value: string) => { endpoint = value; } };
+  const usesWslNetworking = vi.fn(() => false);
+  const service = new LocalEmbeddings(() => ({ endpoint, client: { callTool } }), { ensure, readSettings, setRetention, usesWslNetworking });
+  return { service, callTool, ensure, setRetention, usesWslNetworking, switchTo: (value: string) => { endpoint = value; } };
 }
 describe('desktop background indexing controls', () => {
+  it('does not treat native model errors or a remote environment as a local WSL route repair', async () => {
+    const { service, callTool, ensure, usesWslNetworking, switchTo } = fixture();
+    usesWslNetworking.mockReturnValue(true);
+    callTool.mockResolvedValue({ ok: true, result: { ...dashboard, enabled: true, phase: 'error',
+      endpoint: 'http://172.24.32.1:7716', error: 'OpenVINO initialization failed' } });
+    await service.snapshot();
+    expect(ensure).not.toHaveBeenCalled();
+    switchTo('https://remote.example/mcp');
+    callTool.mockResolvedValue({ ok: true, result: { ...dashboard, enabled: true, phase: 'error',
+      error: 'Host inference service unavailable: connection refused' } });
+    await service.snapshot();
+    expect(ensure).not.toHaveBeenCalled();
+  });
+  it('cancels an explicit Enable if a newer Disable arrives during native setup', async () => {
+    const { service, callTool, ensure } = fixture();
+    let release!: () => void;
+    ensure.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve({ endpoint: 'http://host.docker.internal:7716', token: 'a'.repeat(64) });
+    }));
+    const pending = service.action('enable');
+    await service.action('disable');
+    release();
+    await expect(pending).rejects.toThrow('superseded');
+    expect(callTool).not.toHaveBeenCalledWith('wm-embeddings-configure', expect.objectContaining({ action: 'enable' }));
+  });
+  it('repairs a changed WSL endpoint on refresh without enabling a disabled or paused environment', async () => {
+    const { service, callTool, ensure, usesWslNetworking } = fixture();
+    usesWslNetworking.mockReturnValue(true);
+    callTool.mockResolvedValue({ ok: true, result: { ...dashboard, enabled: true, phase: 'error',
+      endpoint: 'http://172.20.0.1:7716', error: 'Host inference service unavailable: connection refused' } });
+    ensure.mockResolvedValue({ endpoint: 'http://172.24.32.1:7716', token: 'a'.repeat(64) });
+    await service.snapshot();
+    expect(callTool).toHaveBeenCalledWith('wm-embeddings-configure', {
+      action: 'retry', host: { endpoint: 'http://172.24.32.1:7716', token: 'a'.repeat(64) },
+    });
+    callTool.mockClear(); ensure.mockClear();
+    callTool.mockResolvedValue({ ok: true, result: { ...dashboard, enabled: true, paused: true, phase: 'paused' } });
+    await service.snapshot();
+    expect(ensure).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalledWith('wm-embeddings-configure', expect.anything());
+  });
+  it('does not undo Pause when endpoint discovery completes after a newer action', async () => {
+    const { service, callTool, ensure, usesWslNetworking } = fixture();
+    usesWslNetworking.mockReturnValue(true);
+    callTool.mockResolvedValue({ ok: true, result: { ...dashboard, enabled: true, phase: 'error',
+      error: 'Host inference service unavailable: connection refused' } });
+    let release!: () => void;
+    const started = new Promise<void>(resolve => {
+      ensure.mockImplementationOnce(() => new Promise(complete => {
+        release = () => complete({ endpoint: 'http://172.24.32.1:7716', token: 'a'.repeat(64) });
+        resolve();
+      }));
+    });
+    const pending = service.snapshot();
+    await started;
+    await service.action('pause');
+    release();
+    await pending;
+    expect(callTool).not.toHaveBeenCalledWith('wm-embeddings-configure', expect.objectContaining({ action: 'retry' }));
+  });
   it('saves host-wide retention without enabling indexing', async () => {
     const { service, setRetention, callTool } = fixture();
     expect(await service.setRetention(30)).toMatchObject({ enabled: false, idleTimeoutMinutes: 30 });
@@ -57,7 +118,7 @@ describe('desktop background indexing controls', () => {
     await expect(service.action('enable')).rejects.toThrow('registration failed');
     expect(callTool).not.toHaveBeenCalled();
     switchTo('https://example.test/mcp');
-    await expect(service.action('retry')).rejects.toThrow('local Docker');
+    await expect(service.action('retry')).rejects.toThrow('local container');
     expect(ensure).toHaveBeenCalledOnce();
   });
 });

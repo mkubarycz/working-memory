@@ -588,7 +588,7 @@ WM installs a per-user host inference service on enablement: a macOS LaunchAgent
 or Windows sign-in Scheduled Task. It starts at sign-in, survives desktop exit,
 and runs the bundled helper over private standard input/output. No separate
 Python or model-server installation is required. Indexing needs an awake
-computer, a signed-in user, Docker and a running control plane; it does not run
+computer, a signed-in user, a running local container runtime and control plane; it does not run
 before sign-in. A service restored by WM uses the current installed application
 version. Updates retain model files and indexing settings.
 
@@ -600,6 +600,31 @@ or queue inspection. Only fixed-model, bounded embedding requests are accepted;
 no arbitrary model paths or executable commands are exposed. Service logs live
 under the profile's `embeddings` directory. Remote environments cannot be enabled
 against this local bundled service.
+
+On Windows with Podman/WSL, WM additionally discovers private IPv4 addresses on
+Windows `vEthernet (WSL...)` interfaces and binds authenticated listeners there,
+after validating that the selected Podman connection belongs to a WSL machine.
+It does not open a wildcard or LAN-adapter listener, change VM networking mode,
+or reset the machine. Enable/Resume/Retry configure that private endpoint and
+probe candidate `/status` endpoints from the container before changing indexing
+settings. The existing host bridge remains a candidate for configurations where
+it already works, including WSL configurations without a private virtual adapter;
+discovery/binding errors remain available in native diagnostics.
+No available WSL interface, a refused connection, or a firewall block produces
+an explicit error; it is not reported as a model/NPU initialization failure.
+Windows firewall policy still applies; restricted hosts may require a scoped
+exception for the installed application on the WSL virtual interface.
+Both desktop and backend must be updated to accept private WSL endpoints.
+
+WSL listener enablement is retained in the native service's `network-settings.json`.
+The background service checks interface changes every ten seconds and keeps
+loopback access and a single shared model runtime. If an enabled, unpaused
+instance has a failed connection and its WSL address changed, opening the
+Embeddings dashboard refreshes its stored route automatically. Pause/Disable
+and environment changes cancel stale route repair. With the desktop closed,
+an instance whose stored WSL address changes remains visibly failed until that
+refresh or an explicit Retry; its existing vectors are retained. Host diagnostics
+show currently bound WSL endpoints and listener/discovery errors.
 
 The Windows uninstaller removes the background task. Before manually deleting
 the Mac app, stop its service with
@@ -646,7 +671,7 @@ for this desktop profile. The latest 100 log lines (up to 32 KiB) are displayed
 in the app, with credentials redacted; document passages are not logged.
 Installation and early startup failures are recorded even before the service
 can listen. Indexing preserves the host's error detail instead of only reporting
-HTTP 500. A running host with a container connection error points to Docker
+HTTP 500. A running host with a container connection error points to container
 connectivity; an unreachable host points to the sign-in service. On Windows,
 check the **Working Memory Embeddings** Scheduled Task, install the current build
 for missing helper/DLL errors, or update the Intel NPU driver for NPU errors.

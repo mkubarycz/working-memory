@@ -12,5 +12,6 @@ export interface EmbeddingDiagnostics {
     phase: string | null;
     backend: string | null;
     error: string | null;
+    endpoints?: string[];
   };
 }

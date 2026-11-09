@@ -88,6 +88,61 @@ function fixture() {
   return { store, path };
 }
 describe('container-owned embedding lifecycle', () => {
+  it('chooses a verified secondary endpoint through MCP instead of persisting the first discovered address', async () => {
+    const { store } = fixture();
+    const bad = await hostFixture(); bad.statusCode(401);
+    const good = await hostFixture();
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      expect(await client.callTool('wm-embeddings-configure', {
+        action: 'enable', host: { ...bad.host, candidates: [good.host.endpoint] },
+      })).toMatchObject({ ok: true, result: { enabled: true, endpoint: good.host.endpoint } });
+      new InstanceFeatureStore(store.db).write({ search: false });
+      good.statusCode(401);
+      expect(await client.callTool('wm-embeddings-dashboard', {})).toMatchObject({
+        ok: true, result: { phase: 'paused', error: expect.stringContaining('HTTP 401') },
+      });
+    } finally { await client.dispose(); await server.close(); }
+  });
+  it('does not undo a newer Pause while a supplied endpoint probe is pending', async () => {
+    const { store } = fixture();
+    const indexer = new EmbeddingIndexer(store.db, () => true);
+    let release!: () => void;
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async () => {
+      started();
+      await new Promise<void>(resolve => { release = resolve; });
+      return new Response(JSON.stringify({ model: EMBEDDING_MODEL, version: 'test', phase: 'idle',
+        downloadBytes: 0, backend: null, warning: null, error: null, rssBytes: null }));
+    });
+    try {
+      const pending = indexer.configure({ action: 'enable', host: { endpoint: 'http://127.0.0.1:7716', token: 'c'.repeat(64) } });
+      await ready;
+      await indexer.configure({ action: 'pause' });
+      release();
+      await expect(pending).rejects.toThrow('superseded');
+      expect(await indexer.snapshot()).toMatchObject({ enabled: false, paused: true, endpoint: null });
+    } finally { fetch.mockRestore(); indexer.stop(); }
+  });
+  it('rejects an unreachable supplied endpoint through MCP before persisting or enabling indexing', async () => {
+    const { store } = fixture();
+    const inference = await hostFixture();
+    inference.statusCode(401);
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      const result = await client.callTool('wm-embeddings-configure', { action: 'enable', host: inference.host });
+      expect(result.ok).toBe(false);
+      expect(JSON.stringify(result)).toContain('The container cannot reach');
+      expect(JSON.stringify(result)).toContain('HTTP 401');
+      expect(JSON.stringify(result)).not.toContain(inference.host.token);
+      const dashboard = await client.callTool('wm-embeddings-dashboard', {});
+      expect(dashboard).toMatchObject({ ok: true, result: { enabled: false, endpoint: null } });
+      expect(inference.requests()).toBe(0);
+    } finally { await client.dispose(); await server.close(); }
+  });
   it('preserves inference error details through authenticated MCP and prefers the host root cause', async () => {
     const { store } = fixture();
     store.createDocument({ kind: 'Topic', spec: { title: 'Search troubleshooting', body: 'Private document passage.' } });

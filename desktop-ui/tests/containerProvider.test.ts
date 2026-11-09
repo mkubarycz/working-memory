@@ -40,6 +40,9 @@ function podmanRunner(
     run: vi.fn(async (file, args) => {
       expect(file).toMatch(/podman(?:\.exe)?$/);
       if (args[0] === 'system') return { stdout: JSON.stringify([selected]), stderr: '' };
+      if (args[0] === 'machine' && args[1] === 'list') return { stdout: JSON.stringify([
+        { Name: vm.Name, VMType: 'wsl' }, { Name: 'other-machine', VMType: 'hyperv' },
+      ]), stderr: '' };
       if (args[0] === 'machine') return { stdout: JSON.stringify([vm]), stderr: '' };
       expect(args.slice(0, 2)).toEqual(['--connection', selected.Name]);
       return handler(args.slice(2));
@@ -48,6 +51,13 @@ function podmanRunner(
 }
 
 describe('shared container provider adapter', () => {
+  it('identifies the validated selected VM rather than inferring WSL from Windows or another machine', async () => {
+    const runner = podmanRunner();
+    const adapter = new ContainerProviderAdapter({ provider: 'podman', host, runner });
+    expect(await adapter.machineType(await adapter.resolve())).toBe('wsl');
+    expect(runner.run).toHaveBeenCalledWith('podman', ['machine', 'list', '--format', 'json'], expect.any(Object));
+    expect(vi.mocked(runner.run).mock.calls.some(([, args]) => args.includes('start') || args.includes('set'))).toBe(false);
+  });
   it('captures authentic Podman resource JSON through the production incident entry point', async () => {
     const dir = directory();
     const runner = podmanRunner(async args => ({

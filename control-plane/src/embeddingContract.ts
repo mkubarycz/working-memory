@@ -54,15 +54,30 @@ export const semanticSearchSchema = z.object({
   limit: z.number().int().min(1).max(40).default(20),
 }).strict();
 export const embeddingActionSchema = z.enum(['enable', 'pause', 'resume', 'retry', 'disable']);
-export const embeddingHostSchema = z.object({
-  endpoint: z.string().url().refine(value => {
+export function isPrivateEmbeddingAddress(value: string): boolean {
+  const parts = value.split('.');
+  if (parts.length !== 4 || parts.some(part => !/^(0|[1-9]\d{0,2})$/.test(part) || Number(part) > 255)) return false;
+  const [a, b] = parts.map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+    || (a === 169 && b === 254);
+}
+const embeddingEndpointSchema = z.string().url().refine(value => {
     if (!URL.canParse(value)) return false;
     const url = new URL(value);
-    return url.protocol === 'http:' && ['host.docker.internal', '127.0.0.1', '[::1]'].includes(url.hostname)
+    const local = ['host.docker.internal', '127.0.0.1', '[::1]'].includes(url.hostname);
+    const wsl = isPrivateEmbeddingAddress(url.hostname) && Number(url.port) === EMBEDDING_HOST_PORT;
+    return url.protocol === 'http:' && (local || wsl)
       && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash
       && Number(url.port) >= 1024 && value === url.origin;
-  }, 'Use a local host inference endpoint with an explicit port.'),
+  }, 'Use a local host endpoint or a private WSL IPv4 address on port 7716.');
+export const embeddingHostSchema = z.object({
+  endpoint: embeddingEndpointSchema,
   token: z.string().regex(/^[a-f0-9]{64}$/),
+  candidates: z.array(embeddingEndpointSchema).min(1).max(8).optional(),
+}).strict();
+export type EmbeddingHost = z.infer<typeof embeddingHostSchema>;
+export const embeddingNetworkResultSchema = z.object({
+  endpoints: z.array(embeddingEndpointSchema), error: z.string().nullable(),
 }).strict();
 export const embeddingConfigureSchema = z.object({
   action: embeddingActionSchema,
@@ -124,6 +139,9 @@ export const embeddingHostStatusSchema = z.object({
   warning: z.string().nullable(), error: z.string().nullable(),
   rssBytes: z.number().nonnegative().nullable(),
   idleTimeoutMinutes: embeddingHostSettingsSchema.shape.idleTimeoutMinutes.optional(),
+  networkEnabled: z.boolean().optional(),
+  networkEndpoints: z.array(z.string().url()).optional(),
+  networkError: z.string().nullable().optional(),
 }).strict();
 export const embeddingDashboardSchema = z.object({
   endpoint: z.string().nullable(), enabled: z.boolean(), paused: z.boolean(),

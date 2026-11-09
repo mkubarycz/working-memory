@@ -966,7 +966,7 @@ function restartInstalledDesktop(): void {
 function registerIpc(): void {
   const embeddingHome = join(app.getPath('userData'), 'embeddings');
   const embeddingService = new EmbeddingServiceManager(process.execPath, embeddingHome,
-    `${desktopVersion()}@${__WM_BUILD_TIMESTAMP__}`, app.isPackaged ? undefined : app.getAppPath());
+    `${desktopVersion()}@${__WM_BUILD_TIMESTAMP__}`, app.isPackaged ? undefined : app.getAppPath(), () => containerProvider);
   try {
     localEmbeddings = new LocalEmbeddings(() => {
       const environment = environmentManager.currentEnvironment;

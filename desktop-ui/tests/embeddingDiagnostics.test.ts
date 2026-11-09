@@ -44,7 +44,7 @@ describe('local embedding service troubleshooting', () => {
     vi.stubGlobal('fetch', fetch);
     const result = await manager.diagnostics();
     expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:7716/status', expect.objectContaining({
-      headers: { Authorization: `Bearer ${token}` }, redirect: 'error',
+      headers: expect.objectContaining({ Authorization: `Bearer ${token}` }), redirect: 'error',
     }));
     expect(result.service).toMatchObject({ state: 'running', version: 'older-build',
       expectedVersion: 'installed-build', phase: 'error', backend: null, error: 'NPU plugin failed. Bearer [redacted]' });
@@ -75,6 +75,27 @@ describe('local embedding service troubleshooting', () => {
       logExists: true, log: expect.stringContaining('Desktop service setup failed: Scheduled Task registration denied'),
     });
     expect(readFileSync(join(home, 'service.log'), 'utf8')).toMatch(/^\d{4}-.*Desktop service setup failed/);
+  });
+  it.each(['wsl', 'hyperv'])('discovers the selected Windows Podman VM type (%s) without restarting it', async vmType => {
+      const { home } = fixture();
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const token = 'a'.repeat(64);
+      writeFileSync(join(home, 'host-token'), token);
+      const manager = new EmbeddingServiceManager('/installed/app', home, 'installed-build', undefined, () => 'podman', {
+        resolve: vi.fn(async () => 'selected-machine'), machineType: vi.fn(async () => vmType),
+      });
+      const fetch = vi.fn(async (url: string | URL | Request) => new Response(JSON.stringify(String(url).endsWith('/network')
+        ? { endpoints: vmType === 'wsl' ? ['http://172.24.32.1:7716'] : [], error: null }
+        : { model: EMBEDDING_MODEL, version: 'installed-build', phase: 'idle', downloadBytes: 0,
+          backend: null, warning: null, rssBytes: null, error: null })));
+      vi.stubGlobal('fetch', fetch);
+      expect(await manager.ensure()).toEqual(vmType === 'wsl'
+        ? { endpoint: 'http://172.24.32.1:7716', candidates: ['http://172.24.32.1:7716', 'http://host.docker.internal:7716'], token }
+        : { endpoint: 'http://host.docker.internal:7716', token });
+      expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:7716/network', expect.objectContaining({
+        method: 'PUT', body: JSON.stringify({ enabled: vmType === 'wsl' }),
+      }));
+      expect(mocks.execute).not.toHaveBeenCalled();
   });
   it('retains startup errors across manager recreation and bounds/redacts existing log tails', async () => {
     const { home } = fixture();
