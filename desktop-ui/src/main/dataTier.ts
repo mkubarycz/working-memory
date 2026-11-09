@@ -402,6 +402,22 @@ export class DataTierManager {
     try {
       const { docker, env } = await this.docker(false);
       containers = await this.containers(docker, env);
+      const unresolved = instances.map(instance => dataTierInstanceNames(instance.port).container)
+        .filter(name => {
+          const container = containers.get(name);
+          return container && imageVersion(this.provider.imageReference(container.image)) === null;
+        });
+      if (unresolved.length) {
+        const result = await this.runner.run(docker, ['inspect', ...unresolved], { timeoutMs: this.timeouts.info, env });
+        const inspected = z.array(z.object({
+          Name: z.string(), Config: z.object({ Image: z.string() }),
+        })).parse(this.provider.inspect(result.stdout));
+        for (const name of unresolved) {
+          const container = inspected.find(container => container.Name.replace(/^\//, '') === name);
+          if (!container) throw new Error(`Container image information is unavailable for ${name}. Retry to check for updates.`);
+          containers.get(name)!.image = container.Config.Image;
+        }
+      }
       try {
         await this.provider.requireCompose(docker, { timeoutMs: this.timeouts.info, env });
       } catch (error) {
