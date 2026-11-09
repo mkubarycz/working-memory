@@ -156,6 +156,9 @@
       <dl>
         <dt>Host service (this computer)</dt><dd>{diagnostics.service.state} &middot; 127.0.0.1:7716</dd>
         <dt>Host phase / backend</dt><dd>{diagnostics.service.phase ?? 'Unavailable'} / {diagnostics.service.backend ?? 'Not loaded'}</dd>
+        {#if diagnostics.service.endpoints?.length}
+          <dt>WSL inference endpoints</dt><dd>{diagnostics.service.endpoints.join(', ')}</dd>
+        {/if}
         <dt>Service version</dt><dd>{diagnostics.service.version ?? 'Unavailable'}</dd>
         <dt>Installed version</dt><dd>{diagnostics.service.expectedVersion}</dd>
         <dt>Service log location</dt><dd>{diagnostics.logPath}</dd>
@@ -165,7 +168,9 @@
         <p role="alert">The host service is running an older or different build. Retry replaces it with the installed build.</p>
       {/if}
       <p>If the host is running but indexing reports a connection error, check Docker connectivity to
-        host.docker.internal:7716. If the host is unreachable, Retry repairs its sign-in service.
+        the configured inference endpoint. On Windows/Podman, Retry discovers a private WSL endpoint automatically;
+        if connectivity is still refused, check Windows firewall policy for the WSL virtual interface.
+        If the host is unreachable, Retry repairs its sign-in service.
         On Windows, check Task Scheduler &gt; Working Memory Embeddings; NPU errors may require an Intel NPU driver update.
         Missing helper or DLL errors require reinstalling the current Windows build.</p>
       <p>Not loaded alone is normal before first inference or after unloading. Retry also resumes indexing for this environment.

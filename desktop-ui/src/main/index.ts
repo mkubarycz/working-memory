@@ -966,14 +966,14 @@ function restartInstalledDesktop(): void {
 function registerIpc(): void {
   const embeddingHome = join(app.getPath('userData'), 'embeddings');
   const embeddingService = new EmbeddingServiceManager(process.execPath, embeddingHome,
-    `${desktopVersion()}@${__WM_BUILD_TIMESTAMP__}`, app.isPackaged ? undefined : app.getAppPath());
+    `${desktopVersion()}@${__WM_BUILD_TIMESTAMP__}`, app.isPackaged ? undefined : app.getAppPath(), () => containerProvider);
   try {
     localEmbeddings = new LocalEmbeddings(() => {
       const environment = environmentManager.currentEnvironment;
       return environment ? { endpoint: environment.mcpUrl, client: controlPlane() } : null;
     }, embeddingService);
-    void embeddingService.restore().catch(error => {
-      console.error('[embeddings] Background inference could not be restored:', error);
+    void localEmbeddings.restore(dataTierLaunch).catch(error => {
+      console.error('[embeddings] Background inference or its container route could not be restored:', error);
     });
   } catch (error) {
     console.error('[embeddings] Settings could not be loaded:', error);

@@ -17,21 +17,43 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
     const fixture = `
       import { mount, unmount } from 'svelte';
       import Features from '/src/renderer/documents/FeaturesView.svelte';
+      import { LocalEmbeddings } from '/src/main/localEmbeddings';
       import '/src/renderer/style.css';
       const state = window.__featuresTest = {
         enabled: false, search: false, writes: [], reads: 0, activeReads: 0, maxReads: 0, changes: [],
         pauseRead: false, releaseRead: null, failSave: false, failPoll: false,
-        embeddings: false, embeddingActions: [], failEmbeddingSave: false, failEmbeddingPoll: false,
+        embeddings: false, embeddingActions: [], failEmbeddingSave: false, failEmbeddingPoll: false, repairFailure: false,
       };
+      const localEmbeddings = new LocalEmbeddings(() => ({
+        endpoint: 'http://127.0.0.1:7717/mcp',
+        client: { async callTool(name) {
+          if (name !== 'wm-embeddings-dashboard') throw new Error('Unexpected embedding request');
+          return { ok: true, result: {
+            endpoint: 'http://host.docker.internal:7716', enabled: state.embeddings, paused: false,
+            configurationKey: 'd'.repeat(64),
+            phase: state.repairFailure ? 'error' : state.embeddings ? 'indexing' : 'disabled',
+            model: 'minilm-l6-v2:1110a243:384:v1', downloadBytes: 0, downloadTotal: 90871461,
+            backend: null, warning: null, rssBytes: null, lastInferenceMs: null, lastSuccessAtMs: null, stats: null,
+            error: state.repairFailure ? 'Host inference service unavailable: connection refused' : null,
+          } };
+        } },
+      }), {
+        async restore() {},
+        async ensure() { throw new Error('Private WSL route blocked'); },
+        readSettings: () => ({ idleTimeoutMinutes: null }),
+        async setRetention() {},
+        usesWslNetworking: () => true,
+      });
       window.workingMemory = {
         async getEmbeddingDashboard() {
           if (state.failEmbeddingPoll) throw new Error('Embedding feature unavailable');
-          return { enabled: state.embeddings };
+          return localEmbeddings.snapshot();
         },
         async setEmbeddingAction(action) {
           if (state.failEmbeddingSave) { state.failEmbeddingSave = false; throw new Error('Embedding enable failed'); }
           state.embeddingActions.push(action);
           state.embeddings = action === 'enable';
+          state.repairFailure = false;
           return { enabled: state.embeddings };
         },
         async getInstanceFeatures() {
@@ -58,9 +80,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       const target = document.createElement('main');
       target.className = 'settings';
       document.body.append(target);
-      const component = mount(Features, { target, props: {
+      const mountFeatures = () => mount(Features, { target, props: {
         onChanged: features => state.changes.push(features.hostTasks),
       } });
+      let component = mountFeatures();
+      state.remount = async () => { await unmount(component); component = mountFeatures(); };
       state.dispose = () => unmount(component);
     `;
     const server = await createServer({
@@ -120,6 +144,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate("window.__featuresTest.failEmbeddingSave = true; document.querySelector('[aria-label=Embeddings]').click()");
           await wait("document.querySelector('[role=alert]')?.textContent === 'Embedding enable failed'");
           assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').checked"), true);
+          await evaluate("window.__featuresTest.repairFailure = true; window.__featuresTest.remount()");
+          await wait("document.querySelector('[role=alert]')?.textContent.includes('Automatic WSL route repair failed: Private WSL route blocked')");
+          assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').checked"), true);
+          assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').disabled"), false);
           await evaluate("document.querySelector('[aria-label=Embeddings]').click()");
           await wait("!window.__featuresTest.embeddings && !document.querySelector('[role=alert]')");
           assert.deepEqual(await evaluate("window.__featuresTest.embeddingActions"), ['enable', 'disable']);

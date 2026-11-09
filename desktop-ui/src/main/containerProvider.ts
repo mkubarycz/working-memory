@@ -3,6 +3,7 @@ import { dockerCliPath, dockerEnvironment, type DockerHost } from './dockerCli';
 import type { CommandRunner, CommandRunOptions, CommandResult } from './dockerContainerService';
 
 export type ContainerProvider = 'docker' | 'podman';
+const podmanMachineTypesSchema = z.array(z.object({ Name: z.string(), VMType: z.string().min(1) }));
 
 export function parseContainerProvider(value: unknown): ContainerProvider {
   return z.enum(['docker', 'podman']).parse(value);
@@ -12,6 +13,7 @@ interface Connection {
   args: string[];
   env: NodeJS.ProcessEnv;
   identity: string;
+  machineName?: string;
 }
 
 export interface ContainerProviderOptions {
@@ -82,6 +84,7 @@ export class ContainerProviderAdapter {
       let args: string[];
       let key: string;
       let identity: string;
+      let machineName: string | undefined;
       if (!selected && this.options.host.platform === 'linux') {
         args = ['--remote=false'];
         key = 'podman:local';
@@ -114,9 +117,10 @@ export class ContainerProviderAdapter {
             throw new Error('The selected Podman connection does not match a running local machine. Start or repair the selected machine, then Retry.');
           }
           identity = `${vm.Name} (${vm.Created}; ${uri.username}${uri.pathname})`;
+          machineName = vm.Name;
         }
       }
-      this.connections.set(key, { args, env, identity });
+      this.connections.set(key, { args, env, identity, machineName });
       await this.run(key, ['info', '--format', 'json'], options);
       return key;
     }
@@ -149,6 +153,16 @@ export class ContainerProviderAdapter {
     const selected = this.connections.get(connection);
     if (!selected) throw new Error('Container connection has not been validated.');
     return selected.identity;
+  }
+  async machineType(connection: string): Promise<string | null> {
+    const selected = this.connections.get(connection);
+    if (!selected) throw new Error('Container connection has not been validated.');
+    if (!selected.machineName) return null;
+    const result = await this.raw(['machine', 'list', '--format', 'json'], { timeoutMs: 10000 });
+    const machines = podmanMachineTypesSchema.parse(JSON.parse(result.stdout));
+    const machine = machines.find(vm => vm.Name === selected.machineName);
+    if (!machine) throw new Error('The selected Podman machine is no longer listed. Start the selected machine and Retry.');
+    return machine.VMType;
   }
 
   imageReference(image: string, expectedImage?: string): string {

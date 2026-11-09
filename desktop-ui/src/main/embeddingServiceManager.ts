@@ -4,11 +4,13 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { EMBEDDING_HOST_PORT, embeddingHostStatusSchema, embeddingHostSettingsSchema, embeddingErrorMessage, type EmbeddingHostSettings } from '../../../control-plane/src/embeddingContract';
+import { EMBEDDING_HOST_PORT, embeddingHostStatusSchema, embeddingHostSettingsSchema, embeddingNetworkResultSchema, embeddingErrorMessage, type EmbeddingHost, type EmbeddingHostSettings } from '../../../control-plane/src/embeddingContract';
 import { readEmbeddingHostSettings } from './embeddingHostService';
 import { acquireLock, AlreadyRunningError } from '../../../control-plane/src/lockfile';
 import { appendEmbeddingServiceLog, readEmbeddingServiceLog } from './embeddingServiceLog';
 import type { EmbeddingDiagnostics } from '../shared/embeddings';
+import { ContainerProviderAdapter, type ContainerProvider } from './containerProvider';
+import { defaultFileExists } from './dockerCli';
 
 const execute = promisify(execFile);
 const label = 'com.workingmemory.embeddings';
@@ -33,12 +35,15 @@ ${application ? `<string>${xml(application)}</string>` : ''}
 }
 
 export class EmbeddingServiceManager {
-  private installing: Promise<{ endpoint: string; token: string }> | undefined;
-  constructor(private executable: string, private home: string, private version: string, private application?: string) {}
+  private installing: Promise<EmbeddingHost> | undefined;
+  constructor(private executable: string, private home: string, private version: string, private application?: string,
+    private provider: () => ContainerProvider = () => 'docker',
+    private container?: Pick<ContainerProviderAdapter, 'resolve' | 'machineType'>) {}
+  usesWslNetworking(): boolean { return process.platform === 'win32' && this.provider() === 'podman'; }
   readSettings(): EmbeddingHostSettings { return readEmbeddingHostSettings(this.home); }
   private async hostStatus(token: string) {
     const response = await fetch(`http://127.0.0.1:${EMBEDDING_HOST_PORT}/status`, {
-      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000), redirect: 'error',
+      headers: { Authorization: `Bearer ${token}`, 'X-WM-Embedding-Metrics': '1', 'X-WM-Embedding-Network': '1' }, signal: AbortSignal.timeout(1000), redirect: 'error',
     });
     if (!response.ok) throw new Error(`Host service status returned HTTP ${response.status}. Retry repairs the local service connection.`);
     return embeddingHostStatusSchema.parse(await response.json());
@@ -52,7 +57,8 @@ export class EmbeddingServiceManager {
       if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Host service credentials are invalid. Existing credentials have not been replaced.');
       const status = await this.hostStatus(token);
       return { ...log, service: { ...service, state: 'running', version: status.version,
-        phase: status.phase, backend: status.backend, error: status.error ? embeddingErrorMessage(status.error) : null } };
+        phase: status.phase, backend: status.backend, endpoints: status.networkEndpoints,
+        error: status.error || status.networkError ? embeddingErrorMessage(status.error || status.networkError) : null } };
     } catch (error) {
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { ...log, service };
       return { ...log, service: { ...service, state: 'unreachable', error: embeddingErrorMessage(error) } };
@@ -155,7 +161,31 @@ export class EmbeddingServiceManager {
       }
     } else throw new Error('Independent host inference currently supports macOS and Windows.');
     for (let attempt = 0; attempt < 40; attempt++) {
-      if (await healthy()) return { endpoint: `http://host.docker.internal:${EMBEDDING_HOST_PORT}`, token };
+      if (await healthy()) {
+        if (process.platform !== 'win32') return { endpoint: `http://host.docker.internal:${EMBEDDING_HOST_PORT}`, token };
+        let wsl = false;
+        if (this.usesWslNetworking()) {
+          const adapter = this.container ?? new ContainerProviderAdapter({
+            provider: 'podman', host: { platform: process.platform, env: process.env, homedir: homedir() },
+            fileExists: defaultFileExists(process.platform),
+            runner: { run: (file, args, options) => execute(file, args, { timeout: options?.timeoutMs,
+              env: options?.env, signal: options?.signal, windowsHide: true }) },
+          });
+          wsl = await adapter.machineType(await adapter.resolve()) === 'wsl';
+        }
+        const response = await fetch(`http://127.0.0.1:${EMBEDDING_HOST_PORT}/network`, {
+          method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: wsl }), redirect: 'error', signal: AbortSignal.timeout(5000),
+        });
+        const result = embeddingNetworkResultSchema.parse(await response.json());
+        if ((!response.ok || result.error) && !(wsl && result.error && [200, 503].includes(response.status))) {
+          throw new Error(`WSL endpoint configuration failed (HTTP ${response.status}): ${result.error ?? 'No diagnostic detail returned.'}`);
+        }
+        const bridge = `http://host.docker.internal:${EMBEDDING_HOST_PORT}`;
+        const candidates = [...result.endpoints.slice(0, 7), bridge];
+        // A bridge remains a candidate, not a successful route: the container must verify it.
+        return wsl ? { endpoint: candidates[0], candidates, token } : { endpoint: bridge, token };
+      }
       await new Promise(resolve => setTimeout(resolve, 250));
     }
     throw new Error(`The host inference service did not start: ${lastHealthError} Open Diagnostics > Embeddings > Service troubleshooting and Retry.`);

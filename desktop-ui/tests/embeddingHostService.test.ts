@@ -27,16 +27,44 @@ afterEach(async () => {
   vi.useRealTimers();
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
-async function fixture() {
+async function fixture(networkOptions?: { platform: NodeJS.Platform; addresses: () => string[] }) {
   const home = mkdtempSync(join(tmpdir(), 'wm-host-inference-'));
   directories.push(home);
   const token = 'b'.repeat(64);
   writeFileSync(join(home, 'host-token'), token);
-  const server = await startEmbeddingHostService(home, '', 'test-version', 0);
+  const server = await startEmbeddingHostService(home, '', 'test-version', 0, networkOptions);
   servers.push(server);
   return { home, server, url: `http://127.0.0.1:${server.port}`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-WM-Embedding-Metrics': '1' } };
 }
 describe('independent host inference endpoint', () => {
+  it('shares authenticated inference on a private listener, rejects remote reconfiguration and follows address changes', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let addresses = ['::1'];
+    const { url, server, headers: baseHeaders } = await fixture({ platform: 'win32', addresses: () => addresses });
+    const headers = { ...baseHeaders, 'X-WM-Embedding-Network': '1' };
+    const configure = () => fetch(`${url}/network`, { method: 'PUT', headers, body: JSON.stringify({ enabled: true }) });
+    const configured = await (await configure()).json();
+    expect(configured).toEqual({ endpoints: [`http://[::1]:${server.port}`], error: null });
+    const endpoint = configured.endpoints[0];
+    expect((await fetch(`${endpoint}/status`)).status).toBe(401);
+    expect((await fetch(`${endpoint}/network`, { method: 'PUT', headers,
+      body: JSON.stringify({ enabled: false }) })).status).toBe(403);
+    const result = await fetch(`${endpoint}/embed`, { method: 'POST', headers,
+      body: JSON.stringify({ model: EMBEDDING_MODEL, texts: ['Windows private inference'] }) });
+    expect(result.status).toBe(200);
+    expect(await (await fetch(`${url}/status`, { headers })).json()).toMatchObject({
+      networkEnabled: true, networkEndpoints: [endpoint], backend: 'Core ML + CPU',
+    });
+    const legacy = await (await fetch(`${url}/status`, { headers: baseHeaders })).json();
+    expect(legacy).not.toHaveProperty('networkEndpoints');
+    addresses = [];
+    expect(await (await configure()).json()).toMatchObject({ endpoints: [], error: expect.stringContaining('No private IPv4') });
+    expect(await (await fetch(`${url}/status`, { headers })).json()).toMatchObject({ backend: 'Core ML + CPU' });
+    await expect(fetch(`${endpoint}/status`)).rejects.toThrow();
+    addresses = ['::1'];
+    vi.advanceTimersByTime(10000);
+    await expect.poll(async () => (await (await fetch(`${url}/status`, { headers })).json()).networkEndpoints).toEqual([endpoint]);
+  });
   it('retains sanitized runtime failures in status, HTTP responses and the dashboard service log', async () => {
     const { home, url, headers } = await fixture();
     const token = 'b'.repeat(64);

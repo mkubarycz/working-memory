@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, type RequestListener } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import {
 } from '../../../control-plane/src/embeddingContract';
 import { EmbeddingRuntime, installEmbeddingModel } from './embeddingRuntime';
 import { appendEmbeddingServiceLog } from './embeddingServiceLog';
+import { EmbeddingWslNetwork, embeddingNetworkSettingsSchema } from './embeddingWslNetwork';
 
 type Status = ReturnType<typeof embeddingHostStatusSchema.parse>;
 export function readEmbeddingHostSettings(home: string): EmbeddingHostSettings {
@@ -19,7 +20,8 @@ export function readEmbeddingHostSettings(home: string): EmbeddingHostSettings {
   }
   return embeddingHostSettingsSchema.parse(JSON.parse(contents));
 }
-export async function startEmbeddingHostService(home: string, executable: string, version: string, port = EMBEDDING_HOST_PORT) {
+export async function startEmbeddingHostService(home: string, executable: string, version: string, port = EMBEDDING_HOST_PORT,
+  networkOptions?: { platform: NodeJS.Platform; addresses: () => string[] }) {
   const token = readFileSync(join(home, 'host-token'), 'utf8').trim();
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Host inference credentials are invalid. Reinstall from Embeddings diagnostics.');
   const tokenHash = createHash('sha256').update(`Bearer ${token}`).digest();
@@ -32,20 +34,27 @@ export async function startEmbeddingHostService(home: string, executable: string
   const state: Status = { model: EMBEDDING_MODEL, version, phase: 'idle', downloadBytes: 0,
     backend: null, warning: null, error: null, rssBytes: null };
   const log = (message: string) => appendEmbeddingServiceLog(home, message);
-  const server = createServer((req, res) => {
+  let network: EmbeddingWslNetwork;
+  const handler: RequestListener = (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Cache-Control', 'no-store');
     const answer = (code: number, value: unknown) => { res.writeHead(code); res.end(JSON.stringify(value)); };
     const hash = createHash('sha256').update(req.headers.authorization ?? '').digest();
     if (!timingSafeEqual(hash, tokenHash)) { answer(401, { error: 'Unauthorized' }); return; }
     const metrics = req.headers['x-wm-embedding-metrics'] === '1';
+    const networkMetrics = req.headers['x-wm-embedding-network'] === '1';
     if (req.method === 'GET' && req.url === '/status') {
-      answer(200, { ...state, ...(metrics ? settings : {}), backend: runtime.backend, warning: runtime.warning,
+      answer(200, { ...state, ...(metrics ? settings : {}), ...(networkMetrics ? { networkEnabled: network.enabled,
+        networkEndpoints: network.endpoints, networkError: network.error } : {}), backend: runtime.backend, warning: runtime.warning,
         rssBytes: runtime.rssBytes, error: runtime.failure ?? state.error,
         phase: runtime.failure ? 'error' : state.phase });
       return;
     }
-    const configuring = req.method === 'PUT' && req.url === '/settings';
+    const networking = req.method === 'PUT' && req.url === '/network';
+    if (networking && req.socket.localAddress !== '127.0.0.1') {
+      answer(403, { error: 'Network configuration requires the Windows loopback endpoint.' }); return;
+    }
+    const configuring = req.method === 'PUT' && (req.url === '/settings' || networking);
     if (!configuring && (req.method !== 'POST' || req.url !== '/embed')) { answer(404, { error: 'Unknown inference operation' }); return; }
     if (closing || (!configuring && busy)) { answer(409, { error: 'Inference service is busy; retry shortly.' }); return; }
     if (!req.headers['content-type']?.startsWith('application/json')) { answer(415, { error: 'Expected application/json' }); return; }
@@ -62,6 +71,15 @@ export async function startEmbeddingHostService(home: string, executable: string
         chunks.push(Buffer.from(chunk));
       }
       let input;
+      if (networking) {
+        let next;
+        try { next = embeddingNetworkSettingsSchema.parse(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+        catch { answer(400, { error: 'Invalid WSL network setting.' }); return; }
+        await network.configure(next.enabled);
+        answer(network.error && (!network.endpoints.length || !next.enabled) ? 503 : 200,
+          { endpoints: network.endpoints, error: network.error });
+        return;
+      }
       if (configuring) {
         let next: EmbeddingHostSettings;
         try { next = embeddingHostSettingsSchema.parse(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
@@ -109,7 +127,8 @@ export async function startEmbeddingHostService(home: string, executable: string
         if (controller.signal.aborted) state.phase = 'idle';
       }
     });
-  });
+  };
+  const server = createServer(handler);
   server.requestTimeout = 30000;
   server.headersTimeout = 10000;
   await new Promise<void>((resolve, reject) => {
@@ -119,6 +138,14 @@ export async function startEmbeddingHostService(home: string, executable: string
   });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Host inference service did not bind a TCP port.');
+  try {
+    network = new EmbeddingWslNetwork(home, handler, address.port, networkOptions?.platform, networkOptions?.addresses);
+    await network.refresh();
+  } catch (error) {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    throw error;
+  }
   const idle = setInterval(() => {
     if (!busy && settings.idleTimeoutMinutes !== null && Date.now() - lastUse >= settings.idleTimeoutMinutes * 60000) {
       if (runtime.failure) { state.error = runtime.failure; state.phase = 'error'; }
@@ -135,6 +162,7 @@ export async function startEmbeddingHostService(home: string, executable: string
       clearInterval(idle);
       active?.abort();
       runtime.stop();
+      await network.close();
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     },

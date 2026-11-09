@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   EMBEDDING_MODEL, EMBEDDING_DOWNLOAD_BYTES, embeddingConfigureSchema,
@@ -37,6 +38,7 @@ async function hostFailure(response: Response): Promise<string> {
 }
 
 export class EmbeddingIndexer {
+  private configurationGeneration = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private controller: AbortController | undefined;
   private running: Promise<void> | undefined;
@@ -57,6 +59,9 @@ export class EmbeddingIndexer {
     const row = this.db.prepare('SELECT enabled, paused, host FROM instance_embedding_settings WHERE singleton = 1').get();
     return { enabled: row?.enabled === 1, paused: row?.paused === 1,
       host: row?.host ? embeddingHostSchema.parse(JSON.parse(String(row.host))) : null };
+  }
+  private configurationKey(settings: ReturnType<EmbeddingIndexer['settings']>): string {
+    return createHash('sha256').update(JSON.stringify({ generation: this.configurationGeneration, ...settings })).digest('hex');
   }
   isEnabled(): boolean {
     return this.settings().enabled;
@@ -136,25 +141,67 @@ export class EmbeddingIndexer {
   }
   async configure(raw: unknown): Promise<EmbeddingDashboard> {
     const input = embeddingConfigureSchema.parse(raw);
+    const conditional = input.expectedConfiguration !== undefined;
+    const previous = this.settings();
+    if (conditional && (!previous.enabled || previous.paused || !this.searchEnabled()
+      || input.expectedConfiguration !== this.configurationKey(previous))) return this.snapshot(true);
     if (['enable', 'resume', 'retry'].includes(input.action) && !this.searchEnabled()) {
       throw new Error('Enable Search in Settings > Features before indexing.');
     }
-    const previous = this.settings();
-    const host = input.host ?? previous.host;
+    const generation = ++this.configurationGeneration;
+    const expectedHost = conditional
+      ? this.db.prepare('SELECT host FROM instance_embedding_settings WHERE singleton=1').get()?.host : undefined;
+    let host = input.host ?? previous.host;
     const enabled = input.action === 'disable' ? false : input.action === 'pause' ? previous.enabled : true;
     if (enabled && !host) throw new Error('Install the bundled host inference service from the Embeddings dashboard first.');
-    this.db.prepare(`INSERT INTO instance_embedding_settings VALUES(1, ?, ?, ?)
-      ON CONFLICT(singleton) DO UPDATE SET enabled=excluded.enabled, paused=excluded.paused, host=excluded.host`)
-      .run(enabled ? 1 : 0, input.action === 'pause' ? 1 : 0, host ? JSON.stringify(host) : null);
+    if (input.host && ['enable', 'resume', 'retry'].includes(input.action)) {
+      const failures: string[] = [];
+      let selected = false;
+      for (const endpoint of [...new Set([input.host.endpoint, ...(input.host.candidates ?? [])])]) {
+        try {
+          const response = await fetch(`${endpoint}/status`, {
+            headers: { Authorization: `Bearer ${input.host.token}` }, redirect: 'error', signal: AbortSignal.timeout(2000),
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          embeddingHostStatusSchema.parse(await response.json());
+          host = { ...input.host, endpoint };
+          selected = true;
+          break;
+        } catch (error) { failures.push(`${endpoint}: ${embeddingErrorMessage(error)}`); }
+      }
+      if (!selected) {
+        if (conditional && (generation !== this.configurationGeneration || !this.searchEnabled()
+          || JSON.stringify(previous) !== JSON.stringify(this.settings()))) return this.snapshot(true);
+        throw new Error(`The container cannot reach the configured inference endpoint: ${failures.join('; ')}. Windows/Podman requires the private WSL listener and firewall access on that interface. Existing indexing settings were not changed.`);
+      }
+    }
+    if (generation !== this.configurationGeneration) {
+      if (conditional) return this.snapshot(true);
+      throw new Error('Embedding configuration superseded by a newer action.');
+    }
+    if (['enable', 'resume', 'retry'].includes(input.action) && !this.searchEnabled()) {
+      if (conditional) return this.snapshot(true);
+      throw new Error('Enable Search in Settings > Features before indexing.');
+    }
+    if (conditional) {
+      const result = this.db.prepare(`UPDATE instance_embedding_settings SET host=?
+        WHERE singleton=1 AND enabled=1 AND paused=0 AND host=?`).run(JSON.stringify(host), expectedHost ?? null);
+      if (Number(result.changes) === 0) return this.snapshot(true);
+    } else {
+      this.db.prepare(`INSERT INTO instance_embedding_settings VALUES(1, ?, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET enabled=excluded.enabled, paused=excluded.paused, host=excluded.host`)
+        .run(enabled ? 1 : 0, input.action === 'pause' ? 1 : 0, host ? JSON.stringify(host) : null);
+    }
     this.controller?.abort();
     this.halted = false;
     this.state.error = null;
     this.schedule(0);
-    return this.snapshot();
+    return this.snapshot(conditional);
   }
-  async snapshot(): Promise<EmbeddingDashboard> {
+  async snapshot(withConfiguration = false): Promise<EmbeddingDashboard> {
     const settings = this.settings();
     const state = { ...this.state, enabled: settings.enabled, paused: settings.paused,
+      ...(withConfiguration ? { configurationKey: this.configurationKey(settings) } : {}),
       endpoint: settings.host?.endpoint ?? null, stats: embeddingStats(this.db) };
     if (!settings.enabled) state.phase = 'disabled';
     else if (settings.paused) state.phase = 'paused';
@@ -181,10 +228,11 @@ export class EmbeddingIndexer {
       } catch (error) {
         state.backend = null;
         state.rssBytes = null;
-        state.error = `Host inference service unavailable: ${embeddingErrorMessage(error)} Open Diagnostics > Embeddings and Retry; check the background service and Docker connectivity.`;
+        state.error = `Host inference service unavailable: ${embeddingErrorMessage(error)} Open Diagnostics > Embeddings and Retry; check the background service and container connectivity.`;
         if (settings.enabled && !settings.paused) state.phase = 'error';
       }
     }
+    if (settings.enabled && !this.searchEnabled()) state.phase = 'paused';
     return state;
   }
   private async tick(): Promise<void> {

@@ -51,7 +51,7 @@ import { documentPermissionCategory, instancePermissionsSchema, permits } from '
 import { activateDueReminders, REMINDER_SWEEP_INTERVAL_MS } from './agentMessageReminders.js';
 import { authorizeInstanceTool, instanceToolPermissions } from './instanceAuthorization.js';
 import { documentQuerySchema, documentSearchSchema, queryDocuments, searchDocuments } from './documentSearch.js';
-import { embeddingConfigureSchema, embeddingSubmitSchema, relatedTopicsInputSchema, semanticSearchSchema } from './embeddingContract.js';
+import { embeddingConfigureSchema, embeddingDashboardInputSchema, embeddingSubmitSchema, relatedTopicsInputSchema, semanticSearchSchema } from './embeddingContract.js';
 import { EmbeddingIndexer } from './embeddingIndexer.js';
 import { embeddingStats, nextEmbeddingWork, relatedTopics, submitEmbeddings } from './topicEmbeddings.js';
 import type { PermissionSelection } from './instancePermissions.js';
@@ -474,11 +474,11 @@ export function createMcpServer(
   }, async () => asText(embeddingStats(store.db)));
   server.registerTool('wm-embeddings-dashboard', {
     title: 'Embeddings: Background Diagnostics', description: 'Read container indexing and independent host inference status.',
-    inputSchema: wmListKindsInputSchema, annotations: { readOnlyHint: true },
-  }, async () => embeddings ? asText(await embeddings.snapshot()) : asError('Background indexing is unavailable.'));
+    inputSchema: embeddingDashboardInputSchema, annotations: { readOnlyHint: true },
+  }, async input => embeddings ? asText(await embeddings.snapshot(input.withConfiguration)) : asError('Background indexing is unavailable.'));
   server.registerTool('wm-embeddings-configure', {
     title: 'Embeddings: Configure Background Indexing',
-    description: 'Enable, pause or disable indexing for this instance. Host credentials are never returned.',
+    description: 'Enable, pause or disable indexing for this instance. Retry with expectedConfiguration conditionally repairs only the host route if the fetched configuration is unchanged and indexing remains enabled/unpaused. Host credentials are never returned.',
     inputSchema: embeddingConfigureSchema,
   }, async input => embeddings ? asText(await embeddings.configure(input)) : asError('Background indexing is unavailable.'));
   server.registerTool('wm-embeddings-next', {
