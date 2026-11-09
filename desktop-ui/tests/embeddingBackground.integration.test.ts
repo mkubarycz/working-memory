@@ -68,7 +68,7 @@ it.skipIf(process.env.WM_TEST_BACKGROUND_EMBEDDINGS !== '1')('indexes from a rea
     const source = documents.find(topic => topic.spec.title === 'Private network outage')!;
     const related = documents.find(topic => topic.spec.title === 'Connectivity recovery')!;
     const configured = await client.callTool('wm-embeddings-configure', { action: 'enable', host });
-    expect(configured.ok).toBe(true);
+    if (!configured.ok) throw new Error(configured.error);
     await client.dispose();
     client = undefined;
     const indexed = async () => {

@@ -8,6 +8,7 @@ import { EmbeddingServiceManager } from './embeddingServiceManager';
 import { appendEmbeddingServiceLog } from './embeddingServiceLog';
 import { startEmbeddingHostService } from './embeddingHostService';
 import { LocalEmbeddings } from './localEmbeddings';
+import { launchDesktopApplication, registerHeadlessDesktopActivation } from './headlessDesktopActivation';
 import { listAgentMessages, recordAgentMessageDecision, snoozeAgentMessage, updateAgentMessageStatus } from './agentMessageLifecycle';
 import { renderDocumentByKind } from './documentRenderers';
 import type {
@@ -1946,6 +1947,15 @@ app.setName('Working Memory');
 app.setPath('userData', originalUserData);
 
 const connectorIndex = process.argv.indexOf('--mcp-stdio');
+if (process.platform === 'darwin' && (process.argv.includes('--embedding-service') || connectorIndex !== -1)) {
+  registerHeadlessDesktopActivation(app,
+    url => launchDesktopApplication(dirname(dirname(dirname(process.execPath))), app.getAppPath(), url),
+    error => {
+      console.error('[desktop] Unable to open the desktop from a background process:', error);
+      dialog.showErrorBox('Working Memory could not open',
+        `Unable to start the desktop app. ${error instanceof Error ? error.message : String(error)}`);
+    });
+}
 if (process.argv.includes('--embedding-service')) {
   app.dock?.hide();
   const homeIndex = process.argv.indexOf('--embedding-service-home');
