@@ -200,12 +200,26 @@
   let historyInitialized = false;
   let activeChatContexts = $state<string[]>([]);
   const deferredDocumentRefreshes = new Set<string>();
+  const refreshingDocumentKeys = new SvelteSet<string>();
+  const documentRefreshRequests = new Map<string, number>();
+  const documentRefreshErrors = new Map<string, string>();
+  let documentRefreshRevision = 0;
   let documents = $state<DocumentVM[]>([]);
   const backlogExpanded = new SvelteSet<string>();
   $effect(() => {
     if (!documents.some(document => document.kind === 'topic-backlog')) backlogExpanded.clear();
   });
   let selectedDocumentKey = $state<string | null>(null);
+  $effect(() => {
+    const key = selectedDocumentKey;
+    if (key) untrack(() => {
+      if (deferredDocumentRefreshes.has(key)) {
+        void refreshOpenDocument(key).catch(error => {
+          liveUpdateError = error instanceof Error ? error.message : String(error);
+        });
+      }
+    });
+  });
   let previewDocumentKey = $state<string | null>(null);
   let draggedDocumentKey = $state<string | null>(null);
   let documentTabDropTarget = $state<number | null>(null);
@@ -813,16 +827,37 @@
     if (!document) return;
     const target = documentRefreshTarget(document);
     if (!target) return;
-    if (documentIsDirty(key)) { deferredDocumentRefreshes.add(key); return; }
+    if (key !== selectedDocumentKey || documentIsDirty(key)) {
+      deferredDocumentRefreshes.add(key);
+      return;
+    }
     const generation = environmentGeneration;
-    const refreshed = await window.workingMemory.openResource(target.kind, target.identifier);
-    if (generation !== environmentGeneration) return;
-    if (documentIsDirty(key)) { deferredDocumentRefreshes.add(key); return; }
-    const current = documents.find((candidate) => documentTabKey(candidate) === key);
-    if (!current) return;
-    if ('resourceVersion' in refreshed && 'resourceVersion' in current
-      && refreshed.resourceVersion < current.resourceVersion) return;
-    replaceActive(refreshed, key);
+    const revision = ++documentRefreshRevision;
+    deferredDocumentRefreshes.delete(key);
+    documentRefreshRequests.set(key, revision);
+    refreshingDocumentKeys.add(key);
+    try {
+      const refreshed = await window.workingMemory.openResource(target.kind, target.identifier);
+      if (generation !== environmentGeneration || documentRefreshRequests.get(key) !== revision) return;
+      if (documentIsDirty(key)) { deferredDocumentRefreshes.add(key); return; }
+      const current = documents.find((candidate) => documentTabKey(candidate) === key);
+      if (!current) return;
+      if ('resourceVersion' in refreshed && 'resourceVersion' in current
+        && refreshed.resourceVersion < current.resourceVersion) return;
+      replaceActive(refreshed, key);
+      if (liveUpdateError === documentRefreshErrors.get(key)) liveUpdateError = '';
+      documentRefreshErrors.delete(key);
+    } catch (error) {
+      if (generation !== environmentGeneration || documentRefreshRequests.get(key) !== revision) return;
+      deferredDocumentRefreshes.add(key);
+      documentRefreshErrors.set(key, error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      if (documentRefreshRequests.get(key) === revision) {
+        documentRefreshRequests.delete(key);
+        refreshingDocumentKeys.delete(key);
+      }
+    }
   }
 
   async function refreshChangedDocuments(change: DocumentChanges): Promise<void> {
@@ -1505,6 +1540,9 @@
     movingToNewWorkstream = null;
     searchState = createSearchViewState();
     deferredDocumentRefreshes.clear();
+    documentRefreshRequests.clear();
+    documentRefreshErrors.clear();
+    refreshingDocumentKeys.clear();
     unreadEnvironment = null;
     unreadResponses = [];
     liveUpdateError = '';
@@ -2432,6 +2470,15 @@
   }
 
   function applyDocumentTabs(next: DocumentTabsState): void {
+    const keys = new Set(next.tabs.map(documentTabKey));
+    for (const key of deferredDocumentRefreshes) if (!keys.has(key)) deferredDocumentRefreshes.delete(key);
+    for (const key of documentRefreshErrors.keys()) if (!keys.has(key)) documentRefreshErrors.delete(key);
+    for (const key of documentRefreshRequests.keys()) {
+      if (!keys.has(key)) {
+        documentRefreshRequests.delete(key);
+        refreshingDocumentKeys.delete(key);
+      }
+    }
     const nextSearch = searchStateAfterTabChange(searchState, documents, next.tabs);
     if (nextSearch !== searchState) {
       if (searchState.requestId) void window.workingMemory.cancelDocumentSearch(searchState.requestId).catch(cause => {
@@ -2850,6 +2897,9 @@
           inert={environmentLoading}
         >
           <div class="document-toolbar">
+          {#if selectedDocumentKey && refreshingDocumentKeys.has(selectedDocumentKey)}
+            <span class="document-refresh-status" role="status">Refreshing...</span>
+          {/if}
           {#if documentError}<span class="document-error" role="alert">{documentError}</span>{/if}
           </div>
         {#key selectedDocumentKey}

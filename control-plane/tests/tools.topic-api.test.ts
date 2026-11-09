@@ -34,6 +34,31 @@ async function connect() {
 }
 
 describe('Topic ID-only domain API', () => {
+  it('projects relationship metadata before JS materialization without changing full reads or stored Markdown', async () => {
+    const { call, client, workstream, seed, store, read } = await connect();
+    const ws = workstream('Metadata projection');
+    const body = '# Authored Markdown\n\nSynthetic body content. '.repeat(3000);
+    const parent = seed('Parent', { workstreams: [ws], body });
+    const child = seed('Child', { workstreams: [ws], parents: [parent], focusedWorkstreams: [ws], body });
+    seed('Other workstream', { body });
+    const full = await call('ws-topic-read', { workstream: ws });
+    const fullTopics = json<{ topics: ITopic[] }>(full).topics;
+    const listing = vi.spyOn(store, 'listDocuments');
+    const metadata = await call('ws-topic-read', { workstream: ws, metadataOnly: true });
+    expect(error(metadata)).toBe(false);
+    expect(client.getServerCapabilities()?.experimental?.['working-memory/topic-metadata']).toEqual({ version: 1 });
+    expect(listing).toHaveBeenLastCalledWith({ kind: 'Topic', omitBody: true });
+    expect(listing.mock.results[0].value.every((doc: { spec: Record<string, unknown> }) => !('body' in doc.spec))).toBe(true);
+    expect(json(metadata)).toEqual({ count: 2, topics: fullTopics.map(({ body: _body, ...topic }) => topic) });
+    expect(text(metadata).length).toBeLessThan(text(full).length / 10);
+    const single = json<{ topics: Array<Omit<ITopic, 'body'>> }>(await call('ws-topic-read', { id: child, metadataOnly: true }));
+    expect(single.topics[0]).toMatchObject({ id: child, parents: [parent], focusedWorkstreams: [ws] });
+    expect(single.topics[0]).not.toHaveProperty('body');
+    expect(error(await call('ws-topic-read', { metadataOnly: true, query: 'content' }))).toBe(true);
+    expect((await read(child)).body).toBe(body);
+    expect(store.getDocument({ id: parent })?.spec.body).toBe(body);
+  });
+
   it('atomically assigns an unassigned tree while preserving other memberships and topic statuses', async () => {
     const { call, workstream, seed, read, store } = await connect();
     const archived = workstream('Archived membership');

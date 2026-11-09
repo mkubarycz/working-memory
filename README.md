@@ -981,6 +981,11 @@ strip, including after resizing the stage or closing neighboring tabs. Empty
 new-topic forms use the same available document width as populated topics;
 typing does not change the form's width.
 
+Live changes refresh only the selected document tab. Inactive open tabs keep
+their cached content and are marked stale; selecting one refreshes it with a
+non-blocking **Refreshing...** indicator. Unsaved or failed local edits remain
+protected, including when a deferred save completes in an inactive tab.
+
 Drag a tab header left or right within the tab bar to reorder it. The insertion
 marker shows where it will land, and dropping it does not change the selected
 document or promote a preview. The new permanent-tab order is remembered per
@@ -1119,7 +1124,7 @@ The catalog loads at startup and on environment switches, then refreshes when a
 ContainerClaim changes. The desktop listens to a commit-driven, metadata-only
 `GET /changes` long poll on the selected control plane; an idle connection does
 not reload documents or the catalog. External MCP writes refresh the Active
-rail and open documents, coalescing bursts of changes. Pending, saving, or failed
+rail and selected document, deferring inactive tabs and coalescing bursts of changes. Pending, saving, or failed
 local edits are preserved rather than overwritten. Reconnecting beyond the
 bounded replay window triggers a full refresh.
 
@@ -1130,6 +1135,13 @@ it does not silently fall back to continuous document polling. Changing
 environments cancels the previous watch and ignores stale notifications.
 Document created/updated timestamps are stored as Unix seconds and displayed
 in the user's local date and time.
+
+Topic relationships, workstream trees, and the Active rail request
+`ws-topic-read` with `metadataOnly: true`: SQLite removes the authored body before
+JavaScript materialization, and responses omit `body`. Normal topic reads and
+stored Markdown are unchanged. Metadata-only reads cannot include a text query.
+The MCP initialization capability `working-memory/topic-metadata` (version 1)
+advertises support; older backends retain full-read compatibility until upgraded.
 Updates through `ws-containerclaim-update` change the same persisted definition;
 deleting a claim removes it from the catalog without stopping or deleting its
 container or data. A claim without a Docker runtime is intent-only and is not

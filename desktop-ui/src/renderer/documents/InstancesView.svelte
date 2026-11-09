@@ -50,6 +50,7 @@
     const onVisibilityChange = () => poll();
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
+      revision += 1;
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };

@@ -188,7 +188,9 @@ export function createMcpServer(
   canReadKind: (kind: string) => boolean = () => true,
   embeddings?: EmbeddingIndexer,
 ): McpServer {
-  const server = new McpServer({ name, version });
+  const server = new McpServer({ name, version }, {
+    capabilities: { experimental: { 'working-memory/topic-metadata': { version: 1 } } },
+  });
   const features = new InstanceFeatureStore(store.db);
   if (taskDispatch) registerInstanceTaskTools(server, taskDispatch);
 

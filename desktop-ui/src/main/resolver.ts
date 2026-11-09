@@ -9,7 +9,7 @@ export async function loadActivePanelData(client: ControlPlaneClient): Promise<P
   try {
     const [workstreams, topics, agentMessages, topicTypes] = await Promise.all([
       client.wsRead({}),
-      client.topicRead({}),
+      client.topicRead({ metadataOnly: true }),
       client.agentMessageRead({}),
       client.topicTypeRead({}),
     ]);
@@ -106,7 +106,7 @@ export async function loadTopicViewModel(
   const topic = await readTopic(client, identifier);
   if (!topic) return null;
   const [allTopics, workstreams, agentMessages, topicTypes] = await Promise.all([
-    client.topicRead().catch(() => []),
+    client.topicRead({ metadataOnly: true }).catch(() => []),
     client.wsRead().catch(() => []),
     client.agentMessageRead(),
     client.topicTypeRead().catch(() => []),

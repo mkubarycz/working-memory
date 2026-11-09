@@ -344,6 +344,10 @@ export interface Topic {
   resourceVersion: number;
 }
 
+export type TopicMetadata = Omit<Topic, 'body'>;
+
+export type TopicMetadataReadInput = TopicReadInput & { metadataOnly: true; query?: never };
+
 export interface TopicReadInput {
 
   id?: string;
@@ -1285,7 +1289,7 @@ export class ControlPlaneClient {
    */
   private async callDomainTool(
     name: string,
-    args: Record<string, unknown>,
+    args: Record<string, unknown> | ((client: Client) => Record<string, unknown>),
     signal?: AbortSignal,
   ): Promise<unknown> {
     signal?.throwIfAborted();
@@ -1295,9 +1299,10 @@ export class ControlPlaneClient {
     }
     let result: unknown;
     try {
-      const request = { name, arguments: args };
-      const call = (connected: Client) => signal
-        ? connected.callTool(request, { signal }) : connected.callTool(request);
+      const call = (connected: Client) => {
+        const request = { name, arguments: typeof args === 'function' ? args(connected) : args };
+        return signal ? connected.callTool(request, { signal }) : connected.callTool(request);
+      };
       result = await abortable(this.retryStaleSession(client, call, signal, RETRYABLE_READ_TOOLS.has(name)), signal);
     } catch (err) {
       if (!signal?.aborted) this.resetConnection();
@@ -1490,7 +1495,10 @@ export class ControlPlaneClient {
    * array; list mode (no id) returns all live topics, optionally filtered
    * by `query` (substring), `workstream` (membership), and capped by `limit`.
    */
-  async topicRead(input: TopicReadInput = {}): Promise<Topic[]> {
+  async topicRead(input: TopicMetadataReadInput): Promise<TopicMetadata[]>;
+  async topicRead(input?: TopicReadInput): Promise<Topic[]>;
+  async topicRead(input: TopicReadInput | TopicMetadataReadInput = {}): Promise<Topic[] | TopicMetadata[]> {
+    const metadataOnly = 'metadataOnly' in input && input.metadataOnly;
     const args: Record<string, unknown> = {};
     if (input.id !== undefined) {
       args.id = input.id;
@@ -1504,9 +1512,13 @@ export class ControlPlaneClient {
     if (input.limit !== undefined) {
       args.limit = input.limit;
     }
-    const result = await this.callDomainTool('ws-topic-read', args);
+    const result = await this.callDomainTool('ws-topic-read', metadataOnly ? connected => {
+      const capability = connected.getServerCapabilities()?.experimental?.['working-memory/topic-metadata'];
+      return capability && 'version' in capability && capability.version === 1 ? { ...args, metadataOnly: true } : args;
+    } : args);
     const parsed = parseToolText(result) as { topics?: unknown } | null;
     const list = Array.isArray(parsed?.topics) ? parsed!.topics : [];
+    if (metadataOnly) return (list as Topic[]).map(({ body: _body, ...metadata }) => metadata);
     return list as Topic[];
   }
 
