@@ -398,7 +398,7 @@ export class DataTierManager {
     // Self-hosted servers come from environment discovery, which the manager does not own.
     const base = { appVersion: this.options.version, selfHosted: [] };
     let containers: Map<string, { state: string; status: string; image: string }>;
-    let dependencyError: string | null = null;
+    const dependencyErrors: string[] = [];
     try {
       const { docker, env } = await this.docker(false);
       containers = await this.containers(docker, env);
@@ -408,27 +408,31 @@ export class DataTierManager {
           return container && imageVersion(this.provider.imageReference(container.image)) === null;
         });
       if (unresolved.length) {
-        const result = await this.runner.run(docker, ['inspect', ...unresolved], { timeoutMs: this.timeouts.info, env });
-        const inspected = z.array(z.object({
-          Name: z.string(), Config: z.object({ Image: z.string() }),
-        })).parse(this.provider.inspect(result.stdout));
-        for (const name of unresolved) {
-          const container = inspected.find(container => container.Name.replace(/^\//, '') === name);
-          if (!container) throw new Error(`Container image information is unavailable for ${name}. Retry to check for updates.`);
-          containers.get(name)!.image = container.Config.Image;
+        try {
+          const result = await this.runner.run(docker, ['inspect', ...unresolved], { timeoutMs: this.timeouts.info, env });
+          const inspected = z.array(z.object({
+            Name: z.string(), Config: z.object({ Image: z.string() }),
+          })).parse(this.provider.inspect(result.stdout));
+          for (const name of unresolved) {
+            const container = inspected.find(container => container.Name.replace(/^\//, '') === name);
+            if (!container) throw new Error(`Container image information is unavailable for ${name}. Retry to check for updates.`);
+            containers.get(name)!.image = container.Config.Image;
+          }
+        } catch (error) {
+          dependencyErrors.push(commandDetail(error));
         }
       }
       try {
         await this.provider.requireCompose(docker, { timeoutMs: this.timeouts.info, env });
       } catch (error) {
-        dependencyError = commandDetail(error);
+        dependencyErrors.push(commandDetail(error));
       }
     } catch (error) {
       return { ...base, dockerError: commandDetail(error), instances: instances.map((instance) => this.status(instance, target)) };
     }
     return {
       ...base,
-      dockerError: dependencyError,
+      dockerError: dependencyErrors.length ? dependencyErrors.join('\n') : null,
       instances: instances.map((instance) => {
         const container = containers.get(dataTierInstanceNames(instance.port).container);
         return this.status(
