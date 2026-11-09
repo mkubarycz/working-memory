@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { startServer } from '../src/server';
 import { openStore } from '../src/store';
 import { InstanceIdentity } from '../src/instanceIdentity';
@@ -10,6 +10,7 @@ import { getKind } from '../src/kinds/registry';
 import { DEFAULT_SESSION_POLICY, sessionSnapshotSchema } from '../src/sessionPolicy';
 import { ControlPlaneClient } from '../../shared/controlPlaneClient';
 import { DEFAULT_TOOL_QUEUE_SETTINGS, toolQueueSnapshotSchema } from '../src/diagnosticContract';
+import { z } from 'zod';
 
 const cleanup: Array<() => Promise<void>> = [];
 beforeAll(async () => { await loadKinds(); });
@@ -161,7 +162,7 @@ it('expires real MCP transports with 404, preserves approval, and admits a new a
   await f.policy({ idleMinutes: 1 });
   const { client } = await f.connect(issued.token);
   f.advance(60001);
-  await expect(client.callTool({ name: 'wm-ping', arguments: {} })).rejects.toMatchObject({ code: 404 });
+  await expect(client.callTool({ name: 'wm-ping', arguments: {} })).rejects.toMatchObject({ status: 404 });
   expect((await f.snapshot()).active).toEqual([]);
   expect((await f.snapshot()).events[0].type).toBe('idle_expired');
   expect(f.access.authenticate(issued.token)).not.toBeNull();
@@ -177,7 +178,7 @@ it('does not expire an actual asynchronous tool request while its JSON response 
   const running = new Promise<void>(resolve => { started = resolve; });
   kind.registerApi = (server, store) => {
     original?.(server, store);
-    server.registerTool('test-wait', { inputSchema: {} }, async () => {
+    server.registerTool('test-wait', { inputSchema: z.object({}) }, async () => {
       started(); await waiting;
       return { content: [{ type: 'text', text: 'completed' }] };
     });
@@ -280,10 +281,10 @@ it('enforces handshake limits and queues existing-session tools under pressure w
   const f = await fixture();
   await f.policy({ maxPerClient: 1, maxTotal: 2 });
   const first = await f.connect();
-  await expect(f.connect()).rejects.toMatchObject({ code: 429 });
+  await expect(f.connect()).rejects.toMatchObject({ status: 429 });
   const issued = f.enroll();
   f.memory(600);
-  await expect(f.connect(issued.token)).rejects.toMatchObject({ code: 503 });
+  await expect(f.connect(issued.token)).rejects.toMatchObject({ status: 503 });
   expect((await f.snapshot()).events[0].type).toBe('memory_rejected');
   const pending = first.client.callTool({ name: 'wm-ping', arguments: {} });
   await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
@@ -292,7 +293,7 @@ it('enforces handshake limits and queues existing-session tools under pressure w
   f.memory(599);
   expect((await pending).isError).not.toBe(true);
   await f.connect(issued.token);
-  await expect(f.connect(f.enroll().token)).rejects.toMatchObject({ code: 503 });
+  await expect(f.connect(f.enroll().token)).rejects.toMatchObject({ status: 503 });
   expect((await f.snapshot()).events[0].type).toBe('global_quota');
   expect((await f.snapshot()).active).toHaveLength(2);
 });
@@ -323,7 +324,7 @@ it('provides an owner-only live payload inspector while persisting only bounded,
   const calls: Promise<unknown>[] = [];
   kind.registerApi = (server, store) => {
     original?.(server, store);
-    server.registerTool('test-wait', { inputSchema: {} }, async () => {
+    server.registerTool('test-wait', { inputSchema: z.object({}) }, async () => {
       await gate;
       return { content: [{ type: 'text', text: 'completed' }] };
     });
@@ -361,7 +362,7 @@ it('never dispatches an expired queued mutation, even when headroom returns afte
   const f = await fixture(), { client } = await f.connect();
   f.memory(600);
   const pending = client.callTool({ name: 'ws-topic-create', arguments: { title: 'NEVER_EXECUTED_TITLE' } });
-  const rejected = expect(pending).rejects.toMatchObject({ code: 503 });
+  const rejected = expect(pending).rejects.toMatchObject({ status: 503 });
   await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
   f.advance(5000);
   f.memory(599);
@@ -379,7 +380,7 @@ it('reauthenticates queued calls before dispatch so revocation cannot be bypasse
   if (!clientId) throw new Error('Expected client credential.');
   f.memory(600);
   const pending = client.callTool({ name: 'wm-ping', arguments: {} });
-  const rejected = expect(pending).rejects.toMatchObject({ code: 401 });
+  const rejected = expect(pending).rejects.toMatchObject({ status: 401 });
   await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
   f.access.revoke(f.owner.token, clientId);
   f.memory(599);
@@ -396,7 +397,7 @@ it('preserves queued permission-denial HTTP status and excludes the unexecuted w
   if (!principal?.clientId) throw new Error('Expected client credential.');
   f.memory(600);
   const pending = client.callTool({ name: 'ws-topic-create', arguments: { title: 'DENIED_QUEUED_TITLE' } });
-  const rejected = expect(pending).rejects.toMatchObject({ code: 403 });
+  const rejected = expect(pending).rejects.toMatchObject({ status: 403 });
   await vi.waitFor(async () => expect((await (await f.request('/identity/v1/tool-queue')).json()).waiting).toBe(1));
   f.access.setPermissions(f.owner.token, principal.clientId, 'client', {
     ...principal.permissions, content: { ...principal.permissions.content, create: false },
@@ -415,21 +416,20 @@ it('tracks concurrent tool errors separately from successful HTTP responses and 
   const original = kind.registerApi;
   kind.registerApi = (server, store) => {
     original?.(server, store);
-    server.registerTool('test-tool-error', { inputSchema: {} }, async () => {
+    server.registerTool('test-tool-error', { inputSchema: z.object({}) }, async () => {
       await new Promise(resolve => setTimeout(resolve, 20));
       return { isError: true, content: [{ type: 'text', text: 'PRIVATE_ERROR_CONTENT' }] };
     });
   };
   try {
     const { client } = await f.connect();
-    const [failure, success, missing] = await Promise.all([
+    const [failure, success] = await Promise.all([
       client.callTool({ name: 'test-tool-error', arguments: {} }),
       client.callTool({ name: 'wm-ping', arguments: {} }),
-      client.callTool({ name: 'missing-tool', arguments: {} }),
+      expect(client.callTool({ name: 'missing-tool', arguments: {} })).rejects.toMatchObject({ code: -32602 }),
     ]);
     expect(failure.isError).toBe(true);
     expect(success.isError).not.toBe(true);
-    expect(missing.isError).toBe(true);
     const queue = await (await f.request('/identity/v1/tool-queue')).json();
     expect(queue.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ event: 'failed', operation: 'unknown-tool' }),
@@ -439,6 +439,32 @@ it('tracks concurrent tool errors separately from successful HTTP responses and 
     expect(queue.processing.processedLastMinute).toBe(3);
     expect(JSON.stringify(queue.events)).not.toContain('PRIVATE_ERROR_CONTENT');
   } finally { kind.registerApi = original; }
+});
+
+it('releases completed large JSON responses while the production HTTP session remains open', async () => {
+  const requests = vi.spyOn(NodeStreamableHTTPServerTransport.prototype, 'handleRequest');
+  const f = await fixture();
+  for (let index = 0; index < 300; index++) {
+    f.store.createDocument({ kind: 'Topic', spec: {
+      title: `Synthetic retention topic ${index}`, body: 'Synthetic response content. '.repeat(80),
+    } });
+  }
+  const { client, transport } = await f.connect();
+  const sessionId = transport.sessionId;
+  const adapter = requests.mock.contexts.find(value => value instanceof NodeStreamableHTTPServerTransport);
+  if (!adapter) throw new Error('Production HTTP transport was not observed.');
+  const webTransport: unknown = Reflect.get(adapter, '_webStandardTransport');
+  if (!webTransport || typeof webTransport !== 'object') throw new Error('SDK web transport was not found.');
+  const streams: unknown = Reflect.get(webTransport, '_streamMapping');
+  if (!(streams instanceof Map)) throw new Error('SDK response stream registry was not found.');
+  for (let index = 0; index < 32; index++) {
+    const response = await client.callTool({ name: 'ws-topic-read', arguments: {} });
+    expect(response.isError).not.toBe(true);
+    expect(JSON.stringify(response).length).toBeGreaterThan(600_000);
+    expect(streams.size).toBe(0);
+    expect(transport.sessionId).toBe(sessionId);
+  }
+  expect((await f.snapshot()).active).toHaveLength(1);
 });
 
 it.each([0, 'queued-write'])('cancels queued mutation %s through the protocol without closing its HTTP connection', async requestId => {
@@ -679,7 +705,7 @@ it('reclaims a reserved session when registering its tools fails', async () => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
   kind.registerApi = () => { throw new Error('Test registration failure'); };
   try {
-    await expect(f.connect()).rejects.toMatchObject({ code: 500 });
+    await expect(f.connect()).rejects.toMatchObject({ status: 500 });
     const snapshot = await f.snapshot();
     expect(snapshot.active).toEqual([]);
     expect(snapshot.events[0].type).toBe('initialization_failed');

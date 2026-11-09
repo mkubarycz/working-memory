@@ -1,14 +1,26 @@
-<script lang="ts">
-  import { onMount } from 'svelte';
+<script lang="ts" module>
   import type { DataTierInstanceStatus, DataTierInstancesSnapshot, UpdateChannel } from '../../shared/contracts';
 
+  const REFRESH_INTERVAL_MS = 15_000;
+  let cached: {
+    snapshot: DataTierInstancesSnapshot | null;
+    provider: 'docker' | 'podman';
+    refreshedAt: number;
+  } | undefined;
+  let revision = 0;
+</script>
+
+<script lang="ts">
+  import { onMount } from 'svelte';
+
   interface Props {
+    section?: 'backend' | 'provider' | 'all';
     selectedMcpUrl: string | null;
     onMakeCurrent: (mcpUrl: string) => Promise<void>;
     onInstancesChanged: () => Promise<void>;
   }
 
-  let { selectedMcpUrl, onMakeCurrent, onInstancesChanged }: Props = $props();
+  let { section = 'all', selectedMcpUrl, onMakeCurrent, onInstancesChanged }: Props = $props();
 
   const STATE_LABELS: Record<DataTierInstanceStatus['state'], string> = {
     running: 'Running',
@@ -19,37 +31,61 @@
     unknown: 'Unknown',
   };
 
-  let snapshot = $state<DataTierInstancesSnapshot | null>(null);
-  let supported = $state(true);
-  let loading = $state(true);
+  let snapshot = $state<DataTierInstancesSnapshot | null>(cached?.snapshot ?? null);
+  let supported = $state(cached?.snapshot !== null);
+  let loading = $state(cached === undefined);
   let busy = $state<string | null>(null);
   let status = $state('');
   let newName = $state('');
-  let provider = $state<'docker' | 'podman'>('docker');
+  let provider = $state<'docker' | 'podman'>(cached?.provider ?? 'docker');
+  let refreshError = $state('');
+  let refreshing = false;
 
   onMount(() => {
-    void refresh();
+    const poll = (force = false) => {
+      if (!document.hidden && !busy && (force || Date.now() - (cached?.refreshedAt ?? 0) >= REFRESH_INTERVAL_MS)) void refresh(true);
+    };
+    poll();
+    const timer = setInterval(() => poll(true), REFRESH_INTERVAL_MS);
+    const onVisibilityChange = () => poll();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   });
 
   // Docker reports health a few seconds after the server answers; re-poll until it settles.
   $effect(() => {
-    if (busy || !snapshot?.instances.some((instance) => instance.state === 'starting')) return;
-    const timer = setTimeout(() => void refresh(true), 3000);
+    if (section === 'provider' || busy || !snapshot?.instances.some((instance) => instance.state === 'starting')) return;
+    const timer = setTimeout(() => { if (!document.hidden) void refresh(true); }, 3000);
     return () => clearTimeout(timer);
   });
 
   async function refresh(quiet = false): Promise<void> {
+    if (refreshing) return;
+    refreshing = true;
+    const current = revision;
     if (!quiet) loading = true;
     try {
-      provider = await window.workingMemory.getContainerProvider();
+      const nextProvider = await window.workingMemory.getContainerProvider();
       const next = await window.workingMemory.listInstances();
-      supported = next !== null;
-      snapshot = next;
+      if (current !== revision) return;
+      provider = nextProvider;
+      applySnapshot(next);
+      refreshError = '';
     } catch (error) {
-      status = message(error);
+      if (current === revision) refreshError = message(error);
     } finally {
       loading = false;
+      refreshing = false;
     }
+  }
+
+  function applySnapshot(next: DataTierInstancesSnapshot | null): void {
+    snapshot = next;
+    supported = next !== null;
+    cached = { snapshot: next, provider, refreshedAt: Date.now() };
   }
 
   function message(error: unknown): string {
@@ -64,10 +100,12 @@
     done: string,
   ): Promise<boolean> {
     if (busy) return false;
+    revision += 1;
     busy = key;
     status = progress;
     try {
-      snapshot = await operation();
+      applySnapshot(await operation());
+      refreshError = '';
       status = done;
       await onInstancesChanged();
       return true;
@@ -142,10 +180,13 @@
 </script>
 
 <div class="instances">
+  {#if section !== 'provider'}
   <p>
     Each instance is a separate Working Memory control plane with its own data.
     {#if snapshot}This app bundles backend version {snapshot.appVersion}.{/if}
   </p>
+  {/if}
+  {#if section !== 'backend'}
   <label class="container-provider">
     Container provider
     <select value={provider} disabled={busy !== null || loading}
@@ -156,8 +197,16 @@
     <span class="instances-hint">The selected provider must be running with Compose installed.
       Working Memory does not start providers or migrate data between them.</span>
   </label>
+  {/if}
 
-  {#if !supported}
+  {#if section === 'provider'}
+    {#if snapshot?.dockerError}
+      <p class="instances-note" role="alert">
+        {snapshot.dockerError}
+        <button disabled={busy !== null || loading} onclick={() => void refresh()}>Retry</button>
+      </p>
+    {/if}
+  {:else if !supported}
     <p class="instances-note">
       Instance management needs a build that bundles the Working Memory data tier. Run
       <code>npm run build</code> in <code>desktop-ui</code> or install a release build.
@@ -290,5 +339,8 @@
     </p>
   {/if}
 
+  {#if refreshError}<p class="instances-note" role="alert">{refreshError}
+    <button disabled={busy !== null || loading} onclick={() => void refresh()}>Retry</button>
+  </p>{/if}
   {#if status}<p class="instances-status" role="status">{status}</p>{/if}
 </div>

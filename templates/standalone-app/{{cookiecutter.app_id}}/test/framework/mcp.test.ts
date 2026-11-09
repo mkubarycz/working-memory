@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { appConfig } from '../../src/app/config.js';
 import { createRegistry } from '../../src/app/registry.js';
 import { ResourceService } from '../../src/framework/service.js';

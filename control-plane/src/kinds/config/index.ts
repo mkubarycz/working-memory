@@ -18,7 +18,7 @@
  */
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { Base, type KindModule } from '../base.js';
 import type { Store } from '../../store.js';
 import { CONFIG_KIND } from './config.js';

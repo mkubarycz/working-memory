@@ -3,7 +3,7 @@ import { startServer } from '../../tests/authenticatedFixture';
 import { openStore } from '../src/store';
 import { loadKinds } from '../src/kinds/loader';
 import { clearKinds } from '../src/kinds/registry';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/client';
 import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 let sqliteAvailable = true;

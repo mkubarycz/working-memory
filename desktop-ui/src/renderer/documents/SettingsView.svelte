@@ -1,6 +1,6 @@
 <script lang="ts" module>
-  export type SettingsTab = 'models' | 'human' | 'updates' | 'features' | 'access' | 'sessions' | 'diagnostics';
-  export type UpdatesTab = 'back-end' | 'front-end';
+  export type SettingsTab = 'models' | 'human' | 'system' | 'features' | 'access' | 'sessions' | 'diagnostics';
+  export type SystemTab = 'back-end' | 'front-end' | 'container-provider';
 </script>
 
 <script lang="ts">
@@ -38,7 +38,7 @@
     onChange: () => void;
     onFlush: () => void;
     tab?: SettingsTab;
-    updatesTab?: UpdatesTab;
+    systemTab?: SystemTab;
     selectedMcpUrl: string | null;
     onMakeCurrent: (mcpUrl: string) => Promise<void>;
     onInstancesChanged: () => Promise<void>;
@@ -63,7 +63,7 @@
     onChange,
     onFlush,
     tab = $bindable('models'),
-    updatesTab = $bindable('back-end'),
+    systemTab = $bindable('back-end'),
     selectedMcpUrl,
     onMakeCurrent,
     onInstancesChanged,
@@ -115,7 +115,7 @@
   <div class="settings-tabs" role="tablist" aria-label="Settings">
     <button role="tab" aria-selected={tab === 'models'} onclick={() => (tab = 'models')}>Models</button>
     <button role="tab" aria-selected={tab === 'human'} onclick={() => (tab = 'human')}>Human</button>
-    <button role="tab" aria-selected={tab === 'updates'} onclick={() => (tab = 'updates')}>Updates</button>
+    <button role="tab" aria-selected={tab === 'system'} onclick={() => (tab = 'system')}>System</button>
     <button role="tab" aria-selected={tab === 'features'} onclick={() => (tab = 'features')}>Features</button>
     <button role="tab" aria-selected={tab === 'access'} onclick={() => (tab = 'access')}>Access</button>
     <button role="tab" aria-selected={tab === 'sessions'} onclick={() => (tab = 'sessions')}>Sessions</button>
@@ -236,20 +236,26 @@
     {#key selectedMcpUrl}<SessionsView mcpUrl={selectedMcpUrl} />{/key}
   {:else if tab === 'diagnostics'}
     {#key selectedMcpUrl}<DiagnosticsView />{/key}
-  {:else if tab === 'updates'}
-    <div class="settings-tabs settings-subtabs" role="tablist" aria-label="Updates">
-      <button id="updates-back-end-tab" role="tab" aria-selected={updatesTab === 'back-end'}
-        aria-controls="updates-back-end" onclick={() => (updatesTab = 'back-end')}>Back End</button>
-      <button id="updates-front-end-tab" role="tab" aria-selected={updatesTab === 'front-end'}
-        aria-controls="updates-front-end" onclick={() => (updatesTab = 'front-end')}>Front End</button>
+  {:else if tab === 'system'}
+    <div class="settings-tabs settings-subtabs" role="tablist" aria-label="System">
+      <button id="system-front-end-tab" role="tab" aria-selected={systemTab === 'front-end'}
+        aria-controls="system-front-end" onclick={() => (systemTab = 'front-end')}>Front End</button>
+      <button id="system-back-end-tab" role="tab" aria-selected={systemTab === 'back-end'}
+        aria-controls="system-back-end" onclick={() => (systemTab = 'back-end')}>Backend</button>
+      <button id="system-container-provider-tab" role="tab" aria-selected={systemTab === 'container-provider'}
+        aria-controls="system-container-provider" onclick={() => (systemTab = 'container-provider')}>Container Provider</button>
     </div>
-    {#if updatesTab === 'back-end'}
-      <div id="updates-back-end" role="tabpanel" aria-labelledby="updates-back-end-tab">
-        <InstancesView {selectedMcpUrl} {onMakeCurrent} {onInstancesChanged} />
+    {#if systemTab === 'back-end'}
+      <div id="system-back-end" role="tabpanel" aria-labelledby="system-back-end-tab">
+        <InstancesView section="backend" {selectedMcpUrl} {onMakeCurrent} {onInstancesChanged} />
+      </div>
+    {:else if systemTab === 'front-end'}
+      <div id="system-front-end" role="tabpanel" aria-labelledby="system-front-end-tab">
+        <UpdatesView />
       </div>
     {:else}
-      <div id="updates-front-end" role="tabpanel" aria-labelledby="updates-front-end-tab">
-        <UpdatesView />
+      <div id="system-container-provider" role="tabpanel" aria-labelledby="system-container-provider-tab">
+        <InstancesView section="provider" {selectedMcpUrl} {onMakeCurrent} {onInstancesChanged} />
       </div>
     {/if}
   {:else}
@@ -267,7 +273,7 @@
       <p>Your initials appear beside your messages in the inline chat response.</p>
     </div>
   {/if}
-  {#if tab !== 'updates' && tab !== 'features' && tab !== 'access' && tab !== 'sessions' && tab !== 'diagnostics'}
+  {#if tab !== 'system' && tab !== 'features' && tab !== 'access' && tab !== 'sessions' && tab !== 'diagnostics'}
     <p class="settings-actions" role={settingsError ? 'alert' : 'status'}>{settingsStatus || 'Changes save automatically.'}</p>
   {/if}
 </section>

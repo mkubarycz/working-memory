@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { CreationOrderedDocument, DocumentEnvelope, Store } from '../../store.js';
 import { asError, asText } from '../toolResult.js';
 import { COMMAND_JOURNAL_KIND, type CommandJournalEvent, type CommandJournalSpec } from './schema.js';

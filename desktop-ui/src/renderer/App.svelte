@@ -28,7 +28,7 @@
   import SearchView from './documents/SearchView.svelte';
   import { createSearchViewState, searchContextForSession, searchStateAfterTabChange } from './documentSearch';
   import { selectedPinnedWorkstream, topicBacklogDocument } from './topicBacklog';
-  import SettingsView, { type SettingsTab, type UpdatesTab } from './documents/SettingsView.svelte';
+  import SettingsView, { type SettingsTab, type SystemTab } from './documents/SettingsView.svelte';
   import DocumentView from './documents/DocumentView.svelte';
   import type {
     AgentMessageVM,
@@ -1825,7 +1825,7 @@
   }
 
   let settingsTab = $state<SettingsTab>('models');
-  let updatesTab = $state<UpdatesTab>('back-end');
+  let systemTab = $state<SystemTab>('back-end');
 
   function applyFeatures(features: InstanceFeatures): void {
     instanceFeatures = features;
@@ -1917,8 +1917,8 @@
   }
 
   function openInstances(): void {
-    updatesTab = 'back-end';
-    openSettings('updates');
+    systemTab = 'back-end';
+    openSettings('system');
   }
 
   function openSearch(): void {
@@ -2893,7 +2893,7 @@
             onChange={queueSettingsSave}
             onFlush={flushSettings}
             bind:tab={settingsTab}
-            bind:updatesTab
+            bind:systemTab
             selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
             onMakeCurrent={makeInstanceCurrent}
             onInstancesChanged={() => discoverEnvironments()}

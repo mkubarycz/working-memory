@@ -1,9 +1,8 @@
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client, SdkHttpError, SdkErrorCode } from '@modelcontextprotocol/client';
 import { loadKinds } from '../control-plane/src/kinds/loader';
 import { ControlPlaneClient, startServer, fetch as ownerFetch, StreamableHTTPClientTransport } from './authenticatedFixture';
 import { closeMcpSession, sessionLifecycleFetch, SESSION_TERMINATION_TIMEOUT_MS, staleSessionRejected } from '../shared/mcpLifecycle';
-import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { InstanceIdentity } from '../control-plane/src/instanceIdentity';
 import { openStore } from '../control-plane/src/store';
 
@@ -84,9 +83,12 @@ it('bounds DELETE cleanup, preserves authentication and still closes locally aft
 }, 10_000);
 
 it('only recognizes explicit pre-dispatch stale-session responses', () => {
-  expect(staleSessionRejected(new StreamableHTTPError(404, 'Session not found or expired. Initialize a new session.'))).toBe(true);
-  expect(staleSessionRejected(new StreamableHTTPError(404, 'Document not found'))).toBe(false);
-  expect(staleSessionRejected(new StreamableHTTPError(503, 'Unavailable'))).toBe(false);
+  const httpError = (status: number, message: string) =>
+    new SdkHttpError(SdkErrorCode.ClientHttpFailedToOpenStream, message, { status });
+  expect(staleSessionRejected(httpError(404, 'Session not found or expired. Initialize a new session.'))).toBe(true);
+  expect(staleSessionRejected(httpError(400, '{"message":"Bad Request: no valid session ID"}'))).toBe(true);
+  expect(staleSessionRejected(httpError(404, 'Document not found'))).toBe(false);
+  expect(staleSessionRejected(httpError(503, 'Unavailable'))).toBe(false);
   expect(staleSessionRejected(new TypeError('fetch failed'))).toBe(false);
 });
 

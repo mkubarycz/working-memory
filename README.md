@@ -84,8 +84,8 @@ CI builds Linux ARM64 images for Mac installers and Linux x64 images for
 Windows installers. Local `npm run build` / packaging builds the image using
 Docker first; CI supplies it via `WM_DATA_TIER_IMAGE_ARCHIVE`.
 
-Choose **Docker** (the default) or **Podman** under **Settings > Updates > Back End >
-Container provider**, or in the startup dependency dialog. The selection applies to
+Choose **Docker** (the default) or **Podman** under **Settings > System >
+Container Provider**, or in the startup dependency dialog. The selection applies to
 both managed backends and Container Apps. Executables, safe local connections, and
 Compose invocation are resolved internally; there is no fallback to another engine.
 Working Memory never launches Docker Desktop or starts a Podman machine. Install and
@@ -124,7 +124,7 @@ container, ownership record or existing volume is found. Cancel is the default:
 only confirm for an app that has never stored data, not to recover a legacy app.
 An existing unverified volume or recorded owner is never overridden by this action.
 
-Open **environment menu > Manage instances…** (or **Settings > Updates > Back End**) to
+Open **environment menu > Manage instances…** (or **Settings > System > Backend**) to
 manage the data-tier instances the app created. Reachable Working Memory servers the app did not
 create (for example one started from this repo's `compose.yaml`) are listed as
 **Self-hosted**: you can make them current, but start, stop, upgrade, and
@@ -189,8 +189,11 @@ plane.
 
 ### Desktop updates
 
-**Settings > Updates** combines instance/backend management under **Back End**
-and desktop updates under **Front End**. **Settings > Updates > Front End**
+**Settings > System** contains **Front End**, **Backend**, and **Container Provider**.
+Backend instances are cached across navigation and refreshed every 15 seconds
+while the tab is visible; starting instances also receive faster health checks.
+Refresh failures leave the last known list visible and show an error with Retry.
+**Settings > System > Front End**
 picks the desktop update channel: **Off**, **Canary**
 (the newer of the rolling `canary` build and the latest Stable release), or **Stable**
 (the latest non-prerelease `vX.Y.Z` release). Installer builds default to
@@ -1121,7 +1124,7 @@ local edits are preserved rather than overwritten. Reconnecting beyond the
 bounded replay window triggers a full refresh.
 
 Live updates require the 1.1.1 control-plane image as well as the desktop update.
-Upgrade an existing data-tier instance through **Settings > Updates > Back End** to use
+Upgrade an existing data-tier instance through **Settings > System > Backend** to use
 the new endpoint. Selecting an older backend shows an explicit upgrade warning;
 it does not silently fall back to continuous document polling. Changing
 environments cancels the previous watch and ignores stale notifications.
@@ -2252,6 +2255,14 @@ abandoned-but-not-yet-idle MCP sessions rather than relying on GC to release
 live objects. CommandJournal schemas live in an independent schema module to
 avoid circular initialization when registrations reuse them.
 
+The control plane and desktop use the MCP SDK v2 split packages (2.4.0,
+with the Node HTTP adapter at 2.1.2). The Node adapter preserves the existing
+Streamable HTTP endpoints and JSON responses; completed responses are released
+without closing their session. The existing PKCE authorization-server flow
+temporarily uses the frozen `@modelcontextprotocol/server-legacy/auth` helpers
+to preserve approval and credential behavior, including RFC 9207 issuer
+parameters. This compatibility dependency is not the MCP transport.
+
 For reproducible local analysis with **synthetic in-memory data only**:
 
 ```bash
@@ -2259,7 +2270,10 @@ npm run compile
 npm run test:mcp-heap -- /absolute/path/to/diagnostic-output
 ```
 
-The harness exercises 1,000 clean reconnects with tool discovery and ping,
+The harness first exercises 100 responses larger than 1 MiB in one open
+session, without forced GC between reads. It measures retained heap before
+terminating that session, with a 16 MiB incremental budget. It also exercises
+1,000 clean reconnects with tool discovery and ping,
 100 client-close-without-DELETE sessions followed by idle expiry, and 100
 unauthenticated OAuth challenges. It captures post-GC heap/RSS samples and
 local `.heapprofile` allocation sampling, including a checkpoint while

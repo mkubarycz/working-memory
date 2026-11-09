@@ -12,7 +12,7 @@ import { loadKinds } from '../src/kinds/loader';
 import topicTypeModule from '../src/kinds/topictype';
 import { startServer } from '../../tests/authenticatedFixture';
 import { openStore } from '../src/store';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/client';
 import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 let sqliteAvailable = true;

@@ -1,13 +1,12 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema, McpError, type CallToolResult, type Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { CallToolResultSchema } from '@modelcontextprotocol/core';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { Server, ProtocolError, SdkHttpError } from '@modelcontextprotocol/server';
+import type { CallToolResult, Tool, Transport } from '@modelcontextprotocol/server';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 import { hostTaskOrigin } from './hostTaskBroker';
 import type { NativeInstanceCredentialVault } from './instancePasswordVault';
-import { closeMcpSession, sessionLifecycleFetch, staleSessionRejected } from '../../../shared/mcpLifecycle';
+import { closeMcpSession, mcpHttpStatus, sessionLifecycleFetch, staleSessionRejected } from '../../../shared/mcpLifecycle';
 
 const requestSchema = z.object({
   requestId: z.string().uuid(), requestSecret: z.string().regex(/^[A-Za-z0-9_-]{43}$/), expiresAt: z.number().int(),
@@ -35,7 +34,7 @@ function jsonResult(value: unknown): unknown {
 }
 
 function authenticationFailed(error: unknown): boolean {
-  if (error instanceof McpError || error instanceof StreamableHTTPError) return error.code === 401;
+  if (error instanceof ProtocolError || error instanceof SdkHttpError) return mcpHttpStatus(error) === 401;
   return error instanceof Error && /\bHTTP 401\b|\bauthentication\b|\bUnauthorized\b/i.test(error.message);
 }
 
@@ -62,8 +61,8 @@ export class InstanceMcpConnector {
     pollIntervalMs?: number;
   }) {
     this.origin = hostTaskOrigin(options.mcpUrl);
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...connectionTools, ...this.tools] }));
-    this.server.setRequestHandler(CallToolRequestSchema, async request => {
+    this.server.setRequestHandler('tools/list', async () => ({ tools: [...connectionTools, ...this.tools] }));
+    this.server.setRequestHandler('tools/call', async request => {
       if (request.params.name === 'wm-connection-status') return result(this.status());
       if (request.params.name === 'wm-request-access') {
         void this.connect();
@@ -80,7 +79,7 @@ export class InstanceMcpConnector {
         catch (error) {
           // These responses are rejected before tool dispatch; unknown-outcome
           // failures must never replay a potentially completed write.
-          if (!(error instanceof StreamableHTTPError && staleSessionRejected(error))) throw error;
+          if (!(error instanceof SdkHttpError && staleSessionRejected(error))) throw error;
           await this.recoverSession(remote);
           if (!this.remote || !this.tools.some(tool => tool.name === request.params.name)) throw error;
           remote = this.remote;

@@ -1,7 +1,6 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import type { Transport } from '@modelcontextprotocol/client';
 import { abortable } from '../../../shared/abort';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type {
   AppMcpEndpoint,
   AppMcpStatus,
@@ -254,7 +253,6 @@ export class AppMcpService {
     signal?.throwIfAborted();
     return connection.client.callTool(
       { name, arguments: args },
-      undefined,
       { timeout: this.timeoutMs, signal },
     );
   }

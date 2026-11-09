@@ -3,21 +3,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DatabaseSync } from 'node:sqlite';
 import express, { type ErrorRequestHandler, type Response } from 'express';
 import { z } from 'zod';
-import type { OAuthServerProvider, AuthorizationParams } from '@modelcontextprotocol/sdk/server/auth/provider.js';
-import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
-import { authorizationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/authorize.js';
-import { tokenHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/token.js';
-import { clientRegistrationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/register.js';
-import { revocationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/revoke.js';
-import { createOAuthMetadata, mcpAuthMetadataRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
-import {
-  InvalidClientMetadataError, InvalidGrantError, InvalidRequestError, InvalidScopeError,
-  InvalidTargetError, InvalidTokenError, UnsupportedGrantTypeError,
-} from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import {
-  OAuthClientInformationFullSchema, type OAuthClientInformationFull, type OAuthTokens,
-  type OAuthTokenRevocationRequest,
-} from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { OAuthClientInformationFull, OAuthTokens, OAuthTokenRevocationRequest } from '@modelcontextprotocol/server';
+import { OAuthClientInformationFullSchema } from '@modelcontextprotocol/core';
+import { authorizationHandler, tokenHandler, clientRegistrationHandler, revocationHandler, createOAuthMetadata, mcpAuthMetadataRouter, InvalidClientMetadataError, InvalidGrantError, InvalidRequestError, InvalidScopeError, InvalidTargetError, InvalidTokenError, UnsupportedGrantTypeError } from '@modelcontextprotocol/server-legacy/auth';
+import type { OAuthServerProvider, AuthorizationParams, OAuthRegisteredClientsStore } from '@modelcontextprotocol/server-legacy/auth';
 import { AccessError, InstanceAccess, credentialHash } from './instanceAccess.js';
 
 const scopesSupported = ['wm.read', 'wm.write'];
@@ -109,6 +98,7 @@ export class InstanceOAuth implements OAuthServerProvider {
       ...createOAuthMetadata({ provider: this, issuerUrl: new URL(origin), scopesSupported }),
       grant_types_supported: ['authorization_code'], token_endpoint_auth_methods_supported: ['none'],
       revocation_endpoint_auth_methods_supported: ['none'],
+      authorization_response_iss_parameter_supported: true,
     };
     this.app.use(mcpAuthMetadataRouter({
       oauthMetadata: metadata, resourceServerUrl: this.resource, scopesSupported, resourceName: 'Working Memory',
@@ -197,6 +187,7 @@ const status=document.getElementById('status');async function poll(){try{const r
     }
     const params = paramsSchema.parse(JSON.parse(String(row.params)));
     const redirect = new URL(params.redirectUri);
+    redirect.searchParams.set('iss', new URL(this.origin).href);
     if (params.state !== undefined) redirect.searchParams.set('state', params.state);
     if (row.state === 'denied') {
       redirect.searchParams.set('error', 'access_denied');

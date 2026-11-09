@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
+import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { appConfig } from './app/config.js';
 import { applicationContract } from './contract.js';
@@ -23,7 +23,7 @@ export class McpAdapter {
       json(res, 405, { error: 'MCP requires POST.' });
       return;
     }
-    const transport = new StreamableHTTPServerTransport({
+    const transport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
@@ -37,57 +37,57 @@ export class McpAdapter {
     server.registerTool('contract-discover', {
       title: 'Discover application contract',
       description: 'Return the live Zod-derived resource contract. Call this before resource operations.',
-      inputSchema: { transactionId: z.string().uuid().optional() },
+      inputSchema: z.object({ transactionId: z.string().uuid().optional() }),
       annotations: { readOnlyHint: true },
     }, async () => text(applicationContract(this.registry)));
     server.registerTool('resource-query', {
       description: 'Query envelopes of one discovered resource kind using optional top-level spec equality.',
-      inputSchema: {
-        kind: z.string().min(1),
-        specEquals: z.record(z.string(), z.unknown()).optional(),
-        transactionId: z.string().uuid().optional(),
-      },
+      inputSchema: z.object({
+              kind: z.string().min(1),
+              specEquals: z.record(z.string(), z.unknown()).optional(),
+              transactionId: z.string().uuid().optional(),
+            }),
       annotations: { readOnlyHint: true },
     }, async (input) => text(this.service.query(input.kind, input.specEquals, input.transactionId)));
     server.registerTool('resource-get', {
       description: 'Get one resource envelope by discovered kind and identifier.',
-      inputSchema: {
-        kind: z.string().min(1),
-        id: z.string().uuid(),
-        transactionId: z.string().uuid().optional(),
-      },
+      inputSchema: z.object({
+              kind: z.string().min(1),
+              id: z.string().uuid(),
+              transactionId: z.string().uuid().optional(),
+            }),
       annotations: { readOnlyHint: true },
     }, async (input) => text(this.service.get(input.kind, input.id, input.transactionId)));
     server.registerTool('resource-create', {
       description: 'Create a validated resource envelope.',
-      inputSchema: {
-        kind: z.string().min(1),
-        spec: z.record(z.string(), z.unknown()),
-        status: z.record(z.string(), z.unknown()).optional(),
-        relationships: z.record(z.string(), z.unknown()).optional(),
-        ...contextSchema,
-      },
+      inputSchema: z.object({
+              kind: z.string().min(1),
+              spec: z.record(z.string(), z.unknown()),
+              status: z.record(z.string(), z.unknown()).optional(),
+              relationships: z.record(z.string(), z.unknown()).optional(),
+              ...contextSchema,
+            }),
     }, async (input) => text(this.service.create(input)));
     server.registerTool('resource-update', {
       description: 'Replace a resource envelope using resource-version compare-and-swap.',
-      inputSchema: {
-        kind: z.string().min(1),
-        id: z.string().uuid(),
-        expectedResourceVersion: z.number().int().positive(),
-        spec: z.record(z.string(), z.unknown()),
-        status: z.record(z.string(), z.unknown()),
-        relationships: z.record(z.string(), z.unknown()),
-        ...contextSchema,
-      },
+      inputSchema: z.object({
+              kind: z.string().min(1),
+              id: z.string().uuid(),
+              expectedResourceVersion: z.number().int().positive(),
+              spec: z.record(z.string(), z.unknown()),
+              status: z.record(z.string(), z.unknown()),
+              relationships: z.record(z.string(), z.unknown()),
+              ...contextSchema,
+            }),
     }, async (input) => text(this.service.update(input)));
     server.registerTool('resource-delete', {
       description: 'Delete a resource envelope using resource-version compare-and-swap.',
-      inputSchema: {
-        kind: z.string().min(1),
-        id: z.string().uuid(),
-        expectedResourceVersion: z.number().int().positive(),
-        ...contextSchema,
-      },
+      inputSchema: z.object({
+              kind: z.string().min(1),
+              id: z.string().uuid(),
+              expectedResourceVersion: z.number().int().positive(),
+              ...contextSchema,
+            }),
     }, async (input) => text(this.service.delete(input)));
     return server;
   }

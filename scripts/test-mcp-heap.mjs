@@ -4,8 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { performance, monitorEventLoopDelay } from 'node:perf_hooks';
 import { getHeapSpaceStatistics } from 'node:v8';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { startServer } from '../out/control-plane/server.js';
 import { openStore } from '../out/control-plane/store.js';
 import { InstanceIdentity } from '../out/control-plane/instanceIdentity.js';
@@ -87,6 +86,30 @@ try {
     const { client, transport } = await connect();
     await transport.terminateSession(); await client.close();
   }
+  for (let i = 0; i < 512; i++) {
+    store.createDocument({ kind: 'Topic', spec: {
+      title: `Synthetic heap topic ${i}`, body: 'Synthetic allocation diagnostic text. '.repeat(58),
+    } });
+  }
+  const reader = await connect();
+  const readAllTopics = async () => {
+    const response = await reader.client.callTool({ name: 'ws-topic-read', arguments: {} });
+    assert.notEqual(response.isError, true);
+    assert.ok(JSON.stringify(response).length > 1048576, 'Exercise responses larger than 1 MiB.');
+  };
+  for (let i = 0; i < 5; i++) await readAllTopics();
+  const readBaseline = await sample('open-session-large-response-warmup');
+  let openReadPeakHeapUsed = readBaseline.heapUsed;
+  for (let i = 0; i < 100; i++) {
+    await readAllTopics();
+    openReadPeakHeapUsed = Math.max(openReadPeakHeapUsed, process.memoryUsage().heapUsed);
+  }
+  const readFinal = await sample('open-session-after-100-large-responses');
+  assert.equal(readFinal.activeSessions, 1, 'Measure response retention before terminating the session.');
+  const openSessionResponseGrowthBytes = readFinal.heapUsed - readBaseline.heapUsed;
+  assert.ok(openSessionResponseGrowthBytes <= 16 * 1048576,
+    'Completed JSON responses retained more than 16 MiB across 100 large reads in one open session.');
+  await reader.transport.terminateSession(); await reader.client.close();
   const baseline = await sample('warmup');
   for (let batch = 1; batch <= 10; batch++) {
     for (let i = 0; i < 100; i++) {
@@ -139,6 +162,7 @@ try {
   latencies.sort((a, b) => a - b);
   const report = {
     runtime: process.version, syntheticDataOnly: true, reconnects: 1000,
+    openSessionLargeReads: 100, openSessionResponseGrowthBytes, openReadPeakHeapUsed,
     cleanHeapGrowthBytes: cleanFinal.heapUsed - baseline.heapUsed,
     cleanHeapGrowthRatio: cleanFinal.heapUsed / baseline.heapUsed,
     abandonedSessionHeapBytes: abandoned.heapUsed - cleanFinal.heapUsed,
@@ -147,7 +171,8 @@ try {
     connectionAndDiscoveryMaxMs: latencies.at(-1), eventLoopMaxMs: lag.max / 1e6,
     samples, abandonedAllocationOwners,
     largestSampledAllocations: allocations.sort((a, b) => b.sampledBytes - a.sampledBytes).slice(0, 20),
-    regressionBudget: { abandonedBytesPerSession: 1048576, cleanHeapGrowthRatio: 1.2, connectionP95Ms: 1000 },
+    regressionBudget: { openSessionResponseGrowthBytes: 16 * 1048576,
+      abandonedBytesPerSession: 1048576, cleanHeapGrowthRatio: 1.2, connectionP95Ms: 1000 },
   };
   await writeFile(join(output, 'mcp-heap-report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, samples: undefined, abandonedAllocationOwners: undefined, largestSampledAllocations: undefined }));

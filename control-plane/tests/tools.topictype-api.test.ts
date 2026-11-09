@@ -4,7 +4,7 @@ import { openStore, type Store, type DocumentEnvelope } from '../src/store';
 import { clearKinds } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';
 import { TopicType } from '../src/kinds/topictype/topictype';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/client';
 import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 let sqliteAvailable = true;

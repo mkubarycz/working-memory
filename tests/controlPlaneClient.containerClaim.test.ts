@@ -5,14 +5,13 @@ const connectMock = vi.fn();
 const clientCloseMock = vi.fn();
 const transportCloseMock = vi.fn();
 
-vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
+vi.mock('@modelcontextprotocol/client', async importOriginal => ({
+  ...await importOriginal<typeof import('@modelcontextprotocol/client')>(),
   Client: class {
     connect = connectMock;
     close = clientCloseMock;
     callTool = callToolMock;
   },
-}));
-vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
   StreamableHTTPClientTransport: class {
     close = transportCloseMock;
   },

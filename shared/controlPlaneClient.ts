@@ -17,17 +17,13 @@
  * next call reconnects. The module is VS Code-free so it can be unit-tested
  * against an ephemeral in-process server.
  *
- * The SDK ships dual CJS/ESM behind an `exports` map. The extension is built
- * with `module: commonjs` / classic node resolution, which ignores `exports`,
- * so `tsconfig.json` maps `@modelcontextprotocol/sdk/*` to the physical
- * `dist/cjs/*` types; the runtime `require` still resolves the public subpath
- * via the package's catch-all export.
+ * The SDK ships dual CJS/ESM behind an `exports` map. Node16 module resolution
+ * selects its public CommonJS entry points for the shared/control-plane build.
  */
 
 import * as os from 'node:os';
 import { readFileSync } from 'node:fs';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport, SdkHttpError } from '@modelcontextprotocol/client';
 import { closeMcpSession, sessionLifecycleFetch, staleSessionRejected } from './mcpLifecycle';
 import { parseDocumentChanges, type DocumentChanges } from './documentChanges';
 import { abortable } from './abort';
@@ -1259,7 +1255,7 @@ export class ControlPlaneClient {
       const request = { name, arguments: args };
       const timeout = name === 'wm-semantic-search' ? SEMANTIC_SEARCH_INFERENCE_TIMEOUT_MS + 10_000 : undefined;
       result = await abortable(this.retryStaleSession(client, connected => signal || timeout
-        ? connected.callTool(request, undefined, { ...(signal ? { signal } : {}), ...(timeout ? { timeout } : {}) }) : connected.callTool(request),
+        ? connected.callTool(request, { ...(signal ? { signal } : {}), ...(timeout ? { timeout } : {}) }) : connected.callTool(request),
       signal, RETRYABLE_READ_TOOLS.has(name)), signal);
     } catch (err) {
       if (!signal?.aborted) this.resetConnection();
@@ -1301,7 +1297,7 @@ export class ControlPlaneClient {
     try {
       const request = { name, arguments: args };
       const call = (connected: Client) => signal
-        ? connected.callTool(request, undefined, { signal }) : connected.callTool(request);
+        ? connected.callTool(request, { signal }) : connected.callTool(request);
       result = await abortable(this.retryStaleSession(client, call, signal, RETRYABLE_READ_TOOLS.has(name)), signal);
     } catch (err) {
       if (!signal?.aborted) this.resetConnection();
@@ -1324,7 +1320,7 @@ export class ControlPlaneClient {
       signal?.throwIfAborted();
       // Writes are safe to retry only when this request was explicitly rejected before dispatch.
       const stale = readOnly && this.staleConnections.has(client)
-        || error instanceof StreamableHTTPError && staleSessionRejected(error);
+        || error instanceof SdkHttpError && staleSessionRejected(error);
       if (!stale || this.disposed) throw error;
       this.staleConnections.add(client);
       // Another concurrent call may already have replaced this expired connection.

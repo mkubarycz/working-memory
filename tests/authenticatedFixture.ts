@@ -1,4 +1,4 @@
-import { StreamableHTTPClientTransport as Transport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport as Transport } from '@modelcontextprotocol/client';
 import { ControlPlaneClient as DataClient, type ControlPlaneClientOptions } from '../shared/controlPlaneClient';
 import { startServer as start, type StartServerOptions, type RunningServer } from '../control-plane/src/server';
 import { openStore } from '../control-plane/src/store';
