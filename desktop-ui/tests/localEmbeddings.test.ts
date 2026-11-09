@@ -1,22 +1,97 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalEmbeddings } from '../src/main/localEmbeddings';
 import { EMBEDDING_MODEL, EMBEDDING_DOWNLOAD_BYTES } from '../../control-plane/src/embeddingContract';
+import type { EmbeddingDashboard } from '../src/shared/embeddings';
 
-const dashboard = { endpoint: null, enabled: false, paused: false, phase: 'disabled', model: EMBEDDING_MODEL,
+const dashboard: EmbeddingDashboard = { endpoint: null, enabled: false, paused: false, phase: 'disabled', model: EMBEDDING_MODEL,
   downloadBytes: 0, downloadTotal: EMBEDDING_DOWNLOAD_BYTES, backend: null, warning: null, error: null,
   rssBytes: null, lastInferenceMs: null, lastSuccessAtMs: null, stats: null };
 function fixture() {
   let endpoint = 'http://127.0.0.1:7717/mcp';
-  const callTool = vi.fn(async () => ({ ok: true as const, result: dashboard }));
+  const callTool = vi.fn(async (): Promise<{ ok: true; result: EmbeddingDashboard } | { ok: false; error: string }> =>
+    ({ ok: true, result: dashboard }));
   const ensure = vi.fn(async () => ({ endpoint: 'http://host.docker.internal:7716', token: 'a'.repeat(64) }));
   let minutes: number | null = null;
   const readSettings = () => ({ idleTimeoutMinutes: minutes });
   const setRetention = vi.fn(async (value: number | null) => { minutes = value; return readSettings(); });
   const usesWslNetworking = vi.fn(() => false);
-  const service = new LocalEmbeddings(() => ({ endpoint, client: { callTool } }), { ensure, readSettings, setRetention, usesWslNetworking });
-  return { service, callTool, ensure, setRetention, usesWslNetworking, switchTo: (value: string) => { endpoint = value; } };
+  const restore = vi.fn(async () => {});
+  const current = () => endpoint ? { endpoint, client: { callTool } } : null;
+  const service = new LocalEmbeddings(current, { ensure, restore, readSettings, setRetention, usesWslNetworking });
+  return { service, callTool, ensure, restore, setRetention, usesWslNetworking, switchTo: (value: string) => { endpoint = value; } };
 }
+afterEach(() => vi.restoreAllMocks());
 describe('desktop background indexing controls', () => {
+  it('waits for launch and native restoration before repairing the newly selected environment', async () => {
+    const { service, callTool, ensure, restore, usesWslNetworking, switchTo } = fixture();
+    usesWslNetworking.mockReturnValue(true);
+    switchTo('');
+    let launch!: () => void;
+    let nativeReady!: () => void;
+    restore.mockImplementationOnce(() => new Promise<void>(resolve => { nativeReady = resolve; }));
+    const pending = service.restore(new Promise<void>(resolve => { launch = resolve; }));
+    await Promise.resolve();
+    expect(restore).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalled();
+    switchTo('http://127.0.0.1:7719/mcp');
+    callTool.mockResolvedValue({ ok: true, result: { ...dashboard, enabled: true, phase: 'error',
+      error: 'Host inference service unavailable: connection refused' } });
+    launch();
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+    expect(callTool).not.toHaveBeenCalled();
+    nativeReady();
+    await pending;
+    expect(ensure).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith('wm-embeddings-configure', expect.objectContaining({ action: 'retry' }));
+  });
+  it('propagates launch failures without prematurely restoring the native service', async () => {
+    const { service, restore, callTool } = fixture();
+    await expect(service.restore(Promise.reject(new Error('Launch failed')))).rejects.toThrow('Launch failed');
+    expect(restore).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalled();
+  });
+  it('does not check the route before a failed native restoration completes', async () => {
+    const { service, restore, callTool } = fixture();
+    restore.mockRejectedValueOnce(new Error('Native restoration failed'));
+    await expect(service.restore(Promise.resolve())).rejects.toThrow('Native restoration failed');
+    expect(callTool).not.toHaveBeenCalled();
+  });
+  it.each(['setup', 'probe', 'rejection'])('retains fetched controls and redacts an automatic %s repair failure', async failure => {
+    const { service, callTool, ensure, usesWslNetworking } = fixture();
+    usesWslNetworking.mockReturnValue(true);
+    const fetched: EmbeddingDashboard = { ...dashboard, enabled: true, phase: 'error',
+      error: 'Host inference service unavailable: connection refused',
+      stats: { total: 10, indexed: 2, pending: 8, limited: 0, vectorBytes: 100, lastIndexedAt: null } };
+    callTool.mockResolvedValue({ ok: true, result: fetched });
+    const token = 'b'.repeat(64);
+    const error = new Error(`Route blocked. Bearer ${token}`, { cause: new Error('ECONNREFUSED') });
+    if (failure === 'setup') ensure.mockRejectedValueOnce(error);
+    else if (failure === 'probe') callTool.mockResolvedValueOnce({ ok: true, result: fetched }).mockRejectedValueOnce(error);
+    else callTool.mockResolvedValueOnce({ ok: true, result: fetched })
+      .mockResolvedValueOnce({ ok: false, error: `Route blocked. Bearer ${token} Cause: ECONNREFUSED` });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await service.snapshot();
+    expect(result).toMatchObject({ enabled: true, paused: false, phase: 'error', stats: fetched.stats,
+      error: expect.stringContaining('Automatic WSL route repair failed: Route blocked.') });
+    expect(result.error).toContain('ECONNREFUSED');
+    expect(result.error).not.toContain(token);
+    expect(log).toHaveBeenCalledWith('[embeddings] Automatic WSL route repair failed:', expect.not.stringContaining(token));
+    await service.action('pause');
+    await service.action('disable');
+    expect(callTool).toHaveBeenCalledWith('wm-embeddings-configure', { action: 'pause' });
+    expect(callTool).toHaveBeenCalledWith('wm-embeddings-configure', { action: 'disable' });
+  });
+  it.each(['setup', 'probe'])('rejects a changed environment even when %s repair fails', async failure => {
+    const { service, callTool, ensure, usesWslNetworking, switchTo } = fixture();
+    usesWslNetworking.mockReturnValue(true);
+    callTool.mockResolvedValue({ ok: true, result: { ...dashboard, enabled: true, phase: 'error',
+      error: 'Host inference service unavailable: connection refused' } });
+    const fail = async () => { switchTo('http://127.0.0.1:7719/mcp'); throw new Error('Repair failed'); };
+    if (failure === 'setup') ensure.mockImplementationOnce(fail);
+    else callTool.mockResolvedValueOnce({ ok: true, result: { ...dashboard, enabled: true, phase: 'error',
+      error: 'Host inference service unavailable: connection refused' } }).mockImplementationOnce(fail);
+    await expect(service.snapshot()).rejects.toThrow('Selected environment changed');
+  });
   it('does not treat native model errors or a remote environment as a local WSL route repair', async () => {
     const { service, callTool, ensure, usesWslNetworking, switchTo } = fixture();
     usesWslNetworking.mockReturnValue(true);

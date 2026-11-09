@@ -1,5 +1,5 @@
 import type { ControlPlaneClient } from '../../../shared/controlPlaneClient';
-import { embeddingDashboardSchema, relatedTopicsSchema, isPrivateEmbeddingAddress, type RelatedTopics } from '../../../control-plane/src/embeddingContract';
+import { embeddingDashboardSchema, relatedTopicsSchema, isPrivateEmbeddingAddress, embeddingErrorMessage, type RelatedTopics } from '../../../control-plane/src/embeddingContract';
 import type { EmbeddingAction, EmbeddingDashboard } from '../shared/embeddings';
 import type { EmbeddingServiceManager } from './embeddingServiceManager';
 
@@ -7,7 +7,12 @@ type Target = { endpoint: string; client: Pick<ControlPlaneClient, 'callTool'> }
 const isLocalEndpoint = (endpoint: string) => ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(endpoint).hostname);
 export class LocalEmbeddings {
   private generation = 0;
-  constructor(private current: () => Target | null, private service: Pick<EmbeddingServiceManager, 'ensure' | 'readSettings' | 'setRetention' | 'usesWslNetworking'>) {}
+  constructor(private current: () => Target | null, private service: Pick<EmbeddingServiceManager, 'ensure' | 'restore' | 'readSettings' | 'setRetention' | 'usesWslNetworking'>) {}
+  async restore(ready: Promise<void>): Promise<void> {
+    await ready;
+    await this.service.restore();
+    if (this.service.usesWslNetworking() && this.current()) await this.snapshot();
+  }
   private target(): Target {
     const target = this.current();
     if (!target) throw new Error('Select a Working Memory environment first.');
@@ -25,12 +30,19 @@ export class LocalEmbeddings {
     let dashboard = embeddingDashboardSchema.parse(await this.call(target, 'wm-embeddings-dashboard', {}));
     if (dashboard.enabled && !dashboard.paused && dashboard.phase === 'error' && isLocalEndpoint(target.endpoint)
       && dashboard.error?.startsWith('Host inference service unavailable:') && this.service.usesWslNetworking()) {
-      const host = await this.service.ensure();
-      if (this.current()?.endpoint !== target.endpoint) throw new Error('Selected environment changed during WSL endpoint discovery.');
-      const bound = dashboard.endpoint && isPrivateEmbeddingAddress(new URL(dashboard.endpoint).hostname)
-        ? (host.candidates ?? [host.endpoint]).includes(dashboard.endpoint) : host.endpoint === dashboard.endpoint;
-      if (generation === this.generation && !bound) {
-        dashboard = embeddingDashboardSchema.parse(await this.call(target, 'wm-embeddings-configure', { action: 'retry', host }));
+      try {
+        const host = await this.service.ensure();
+        if (this.current()?.endpoint !== target.endpoint) throw new Error('Selected environment changed during WSL endpoint discovery.');
+        const bound = dashboard.endpoint && isPrivateEmbeddingAddress(new URL(dashboard.endpoint).hostname)
+          ? (host.candidates ?? [host.endpoint]).includes(dashboard.endpoint) : host.endpoint === dashboard.endpoint;
+        if (generation === this.generation && !bound) {
+          dashboard = embeddingDashboardSchema.parse(await this.call(target, 'wm-embeddings-configure', { action: 'retry', host }));
+        }
+      } catch (error) {
+        if (this.current()?.endpoint !== target.endpoint) throw new Error('Selected environment changed during WSL route repair.');
+        const message = embeddingErrorMessage(error);
+        console.error('[embeddings] Automatic WSL route repair failed:', message);
+        dashboard = { ...dashboard, error: `Automatic WSL route repair failed: ${message}` };
       }
     }
     return { ...dashboard, ...this.service.readSettings(), endpoint: target.endpoint };

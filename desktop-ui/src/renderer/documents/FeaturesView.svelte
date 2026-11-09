@@ -37,7 +37,7 @@
       if (embeddingStatus.status === 'fulfilled') {
         embeddings = embeddingStatus.value;
         embeddingsEnabled = embeddings.enabled;
-        embeddingsPollError = '';
+        embeddingsPollError = embeddings.error ?? '';
       } else {
         embeddings = null;
         embeddingsPollError = embeddingStatus.reason instanceof Error ? embeddingStatus.reason.message : String(embeddingStatus.reason);

@@ -621,7 +621,10 @@ The background service checks interface changes every ten seconds and keeps
 loopback access and a single shared model runtime. If an enabled, unpaused
 instance has a failed connection and its WSL address changed, starting WM or
 opening the Embeddings dashboard refreshes its stored route automatically. Pause/Disable
-and environment changes cancel stale route repair. With the desktop closed,
+and environment changes cancel stale route repair. Startup restoration waits for
+data-tier launch and environment selection. A failed automatic repair retains the
+fetched dashboard state and displays its error, keeping Pause/Retry and the
+Features disable switch available. With the desktop closed,
 an instance whose stored WSL address changes remains visibly failed until that
 refresh or an explicit Retry; its existing vectors are retained. Host diagnostics
 show currently bound WSL endpoints and listener/discovery errors.
