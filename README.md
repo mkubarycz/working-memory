@@ -575,7 +575,10 @@ the pinned Apache-2.0 [MiniLM model](https://huggingface.co/sentence-transformer
 (about 87 MiB) once, verifies file sizes and SHA-256 hashes, and caches it in the
 desktop profile. WM document text is processed locally, not sent to Hugging Face.
 The bundled helper includes its runtime; users do not install Python or a model
-server. Developers building the desktop need Python 3.13 (`WM_EMBEDDING_PYTHON`
+server. On macOS, background Embeddings and MCP connector processes forward app
+activation and resource links to the desktop UI, without stopping background work.
+Starting a background process alone does not open a desktop window.
+Developers building the desktop need Python 3.13 (`WM_EMBEDDING_PYTHON`
 can select its executable); build each installer on its native target OS.
 The build creates an isolated environment from
 `native/embeddings/requirements.txt`.
