@@ -4,6 +4,7 @@ import { EMBEDDING_MODEL, EMBEDDING_DOWNLOAD_BYTES } from '../../control-plane/s
 import type { EmbeddingDashboard } from '../src/shared/embeddings';
 
 const dashboard: EmbeddingDashboard = { endpoint: null, enabled: false, paused: false, phase: 'disabled', model: EMBEDDING_MODEL,
+  configurationKey: 'd'.repeat(64),
   downloadBytes: 0, downloadTotal: EMBEDDING_DOWNLOAD_BYTES, backend: null, warning: null, error: null,
   rssBytes: null, lastInferenceMs: null, lastSuccessAtMs: null, stats: null };
 function fixture() {
@@ -22,6 +23,16 @@ function fixture() {
 }
 afterEach(() => vi.restoreAllMocks());
 describe('desktop background indexing controls', () => {
+  it('retains legacy backend controls without performing an unconditional automatic retry', async () => {
+    const { service, callTool, ensure, usesWslNetworking } = fixture();
+    usesWslNetworking.mockReturnValue(true);
+    callTool.mockResolvedValue({ ok: true, result: { ...dashboard, configurationKey: undefined,
+      enabled: true, phase: 'error', error: 'Host inference service unavailable: connection refused' } });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await service.snapshot()).toMatchObject({ enabled: true, error: expect.stringContaining('Update the selected backend') });
+    expect(ensure).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalledWith('wm-embeddings-configure', expect.anything());
+  });
   it('waits for launch and native restoration before repairing the newly selected environment', async () => {
     const { service, callTool, ensure, restore, usesWslNetworking, switchTo } = fixture();
     usesWslNetworking.mockReturnValue(true);
@@ -126,6 +137,7 @@ describe('desktop background indexing controls', () => {
     await service.snapshot();
     expect(callTool).toHaveBeenCalledWith('wm-embeddings-configure', {
       action: 'retry', host: { endpoint: 'http://172.24.32.1:7716', token: 'a'.repeat(64) },
+      expectedConfiguration: dashboard.configurationKey,
     });
     callTool.mockClear(); ensure.mockClear();
     callTool.mockResolvedValue({ ok: true, result: { ...dashboard, enabled: true, paused: true, phase: 'paused' } });

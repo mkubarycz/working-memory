@@ -5,11 +5,12 @@ import { join } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadKinds } from '../src/kinds/loader';
 import { openStore, type Store } from '../src/store';
-import { EMBEDDING_MODEL, semanticStatusSchema } from '../src/embeddingContract';
+import { EMBEDDING_MODEL, semanticStatusSchema, embeddingDashboardSchema } from '../src/embeddingContract';
 import { embeddingStats, nextEmbeddingWork, submitEmbeddings } from '../src/topicEmbeddings';
 import { InstanceFeatureStore } from '../src/instanceFeatures';
 import { EmbeddingIndexer } from '../src/embeddingIndexer';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
+import { LocalEmbeddings } from '../../desktop-ui/src/main/localEmbeddings';
 
 const stores: Store[] = [];
 const hosts: Server[] = [];
@@ -41,14 +42,21 @@ async function hostFixture(responseDelayMs = 0) {
   let statusError: string | null = null;
   let statusPhase: 'idle' | 'error' = 'idle';
   let statusCode = 200;
+  let blockStatus = false;
+  let statusStarted = false;
+  let releaseStatus: (() => void) | undefined;
   const token = 'c'.repeat(64);
   const host = createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json');
     expect(req.headers.authorization).toBe(`Bearer ${token}`);
     if (req.url === '/status') {
-      res.writeHead(statusCode);
-      res.end(JSON.stringify({ model: EMBEDDING_MODEL, version: 'test', phase: statusPhase, downloadBytes: 0,
-        backend: 'Test accelerator', warning: null, error: statusError, rssBytes: 1000 }));
+      const answer = () => {
+        res.writeHead(statusCode);
+        res.end(JSON.stringify({ model: EMBEDDING_MODEL, version: 'test', phase: statusPhase, downloadBytes: 0,
+          backend: 'Test accelerator', warning: null, error: statusError, rssBytes: 1000 }));
+      };
+      if (blockStatus) { statusStarted = true; releaseStatus = answer; }
+      else answer();
       return;
     }
     const chunks: Buffer[] = [];
@@ -76,7 +84,9 @@ async function hostFixture(responseDelayMs = 0) {
     requests: () => requests, busyOnce: () => { busy = true; },
     fail: (body: string) => { errorBody = body; },
     statusError: (message: string | null) => { statusError = message; statusPhase = 'error'; },
-    statusCode: (code: number) => { statusCode = code; } };
+    statusCode: (code: number) => { statusCode = code; },
+    blockStatus: () => { blockStatus = true; }, statusStarted: () => statusStarted,
+    releaseStatus: () => { blockStatus = false; const answer = releaseStatus; releaseStatus = undefined; answer?.(); } };
 }
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'wm-background-index-'));
@@ -88,6 +98,83 @@ function fixture() {
   return { store, path };
 }
 describe('container-owned embedding lifecycle', () => {
+  it.each((['discovery', 'probe'] as const).flatMap(stage =>
+    (['pause', 'disable', 'reconfigure'] as const).map(action => ({ stage, action }))))
+    ('preserves a second client $action while automatic route $stage is pending', async ({ stage, action }) => {
+      const { store } = fixture();
+      const old = await hostFixture();
+      const replacement = await hostFixture();
+      const server = await startServer({ port: 0, store });
+      const first = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+      const second = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+      let release!: () => void;
+      let started!: () => void;
+      const discovering = new Promise<void>(resolve => { started = resolve; });
+      const local = new LocalEmbeddings(() => ({ endpoint: `${server.url}/mcp`, client: first }), {
+        ensure: async () => {
+          started();
+          if (stage === 'discovery') await new Promise<void>(resolve => { release = resolve; });
+          return replacement.host;
+        },
+        restore: async () => {},
+        readSettings: () => ({ idleTimeoutMinutes: null }),
+        setRetention: async minutes => ({ idleTimeoutMinutes: minutes }),
+        usesWslNetworking: () => true,
+      });
+      try {
+        expect(await first.callTool('wm-embeddings-configure', { action: 'enable', host: old.host })).toMatchObject({ ok: true });
+        old.statusCode(401);
+        if (stage === 'probe') replacement.blockStatus();
+        const pending = local.snapshot();
+        if (stage === 'discovery') await discovering;
+        else await waitFor(() => replacement.statusStarted());
+        const peerHost = { ...old.host, candidates: [replacement.host.endpoint] };
+        if (action === 'reconfigure') old.statusCode(200);
+        expect(await second.callTool('wm-embeddings-configure', action === 'reconfigure'
+          ? { action: 'retry', host: peerHost } : { action })).toMatchObject({ ok: true });
+        if (stage === 'discovery') release();
+        else replacement.releaseStatus();
+        const result = await pending;
+        expect(result).toMatchObject({ enabled: action !== 'disable', paused: action === 'pause' });
+        const current = await second.callTool('wm-embeddings-dashboard', {});
+        expect(current).toMatchObject({ ok: true, result: {
+          enabled: action !== 'disable', paused: action === 'pause', endpoint: old.host.endpoint,
+        } });
+        const row = store.db.prepare('SELECT host FROM instance_embedding_settings WHERE singleton=1').get();
+        expect(JSON.parse(String(row?.host))).toEqual(action === 'reconfigure' ? peerHost : old.host);
+      } finally {
+        release?.(); replacement.releaseStatus();
+        await first.dispose(); await second.dispose(); await server.close();
+      }
+    });
+  it('keeps legacy responses strict-compatible and conditionally repairs an unchanged configuration', async () => {
+    const { store } = fixture();
+    const old = await hostFixture();
+    const replacement = await hostFixture();
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      await client.callTool('wm-embeddings-configure', { action: 'enable', host: old.host });
+      const legacy = await client.callTool('wm-embeddings-dashboard', {});
+      if (!legacy.ok) throw new Error(legacy.error);
+      expect(legacy.result).not.toHaveProperty('configurationKey');
+      embeddingDashboardSchema.omit({ configurationKey: true }).parse(legacy.result);
+      const optedIn = await client.callTool('wm-embeddings-dashboard', { withConfiguration: true });
+      if (!optedIn.ok) throw new Error(optedIn.error);
+      const expectedConfiguration = embeddingDashboardSchema.parse(optedIn.result).configurationKey;
+      expect(expectedConfiguration).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(optedIn.result)).not.toContain(old.host.token);
+      expect(await client.callTool('wm-embeddings-configure', { action: 'retry',
+        host: replacement.host, expectedConfiguration })).toMatchObject({
+        ok: true, result: { enabled: true, paused: false, endpoint: replacement.host.endpoint },
+      });
+      const invalid = await client.callTool('wm-embeddings-configure', { action: 'disable', expectedConfiguration });
+      expect(invalid.ok).toBe(false);
+      expect(JSON.stringify(invalid)).toContain('Conditional route repair requires retry and a host');
+      const after = await client.callTool('wm-embeddings-dashboard', {});
+      expect(after.ok && after.result).not.toHaveProperty('configurationKey');
+    } finally { await client.dispose(); await server.close(); }
+  });
   it('chooses a verified secondary endpoint through MCP instead of persisting the first discovered address', async () => {
     const { store } = fixture();
     const bad = await hostFixture(); bad.statusCode(401);

@@ -82,6 +82,13 @@ export const embeddingNetworkResultSchema = z.object({
 export const embeddingConfigureSchema = z.object({
   action: embeddingActionSchema,
   host: embeddingHostSchema.optional(),
+  expectedConfiguration: z.string().regex(/^[a-f0-9]{64}$/).optional()
+    .describe('For automatic route-only repair: the configurationKey from a dashboard requested with withConfiguration.'),
+}).strict().refine(input => !input.expectedConfiguration || (input.action === 'retry' && !!input.host), {
+  message: 'Conditional route repair requires retry and a host.', path: ['expectedConfiguration'],
+});
+export const embeddingDashboardInputSchema = z.object({
+  withConfiguration: z.boolean().optional().describe('Opt in to an opaque configuration key for conditional route repair.'),
 }).strict();
 export const embeddingStatsSchema = z.object({
   total: z.number().int().nonnegative(),
@@ -145,6 +152,7 @@ export const embeddingHostStatusSchema = z.object({
 }).strict();
 export const embeddingDashboardSchema = z.object({
   endpoint: z.string().nullable(), enabled: z.boolean(), paused: z.boolean(),
+  configurationKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   phase: z.enum(['disabled', 'paused', 'downloading', 'starting', 'indexing', 'idle', 'error']),
   model: z.literal(EMBEDDING_MODEL), downloadBytes: z.number().nonnegative(),
   downloadTotal: z.number().nonnegative(), backend: z.string().nullable(),

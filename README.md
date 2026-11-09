@@ -621,7 +621,11 @@ The background service checks interface changes every ten seconds and keeps
 loopback access and a single shared model runtime. If an enabled, unpaused
 instance has a failed connection and its WSL address changed, starting WM or
 opening the Embeddings dashboard refreshes its stored route automatically. Pause/Disable
-and environment changes cancel stale route repair. Startup restoration waits for
+and environment changes cancel stale route repair. Automatic repair uses an
+opt-in configuration fingerprint and a server-side conditional host-only update;
+another client's Pause/Disable or configuration change cancels it before saving,
+including while endpoint discovery or probing is pending. Legacy dashboards
+omit the fingerprint. Startup restoration waits for
 data-tier launch and environment selection. A failed automatic repair retains the
 fetched dashboard state and displays its error, keeping Pause/Retry and the
 Features disable switch available. With the desktop closed,
@@ -1516,6 +1520,10 @@ authority**, not package manifests or mutable PR labels:
 - Published version tags and release assets must not be moved or replaced.
   Correct a published release with a new version. Only the rolling `canary`
   tag/assets are mutable. A source change to package versions is not needed.
+
+Installer jobs retry packaging up to three times for upstream HTTP 502/503/504
+download failures, retaining the job's download cache. Other failures stop
+immediately; persistent download failures still fail the check.
 
 Pushes to `main` also push the
 backend image to GHCR and replace the rolling `canary` prerelease (installers

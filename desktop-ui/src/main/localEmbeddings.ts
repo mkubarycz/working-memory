@@ -27,16 +27,21 @@ export class LocalEmbeddings {
   async snapshot(): Promise<EmbeddingDashboard> {
     const target = this.target();
     const generation = this.generation;
-    let dashboard = embeddingDashboardSchema.parse(await this.call(target, 'wm-embeddings-dashboard', {}));
-    if (dashboard.enabled && !dashboard.paused && dashboard.phase === 'error' && isLocalEndpoint(target.endpoint)
-      && dashboard.error?.startsWith('Host inference service unavailable:') && this.service.usesWslNetworking()) {
+    const conditionalRepair = isLocalEndpoint(target.endpoint) && this.service.usesWslNetworking();
+    let dashboard = embeddingDashboardSchema.parse(await this.call(target, 'wm-embeddings-dashboard',
+      conditionalRepair ? { withConfiguration: true } : {}));
+    if (dashboard.enabled && !dashboard.paused && dashboard.phase === 'error' && conditionalRepair
+      && dashboard.error?.startsWith('Host inference service unavailable:')) {
       try {
+        if (!dashboard.configurationKey) throw new Error('Update the selected backend to support conditional WSL route repair.');
         const host = await this.service.ensure();
         if (this.current()?.endpoint !== target.endpoint) throw new Error('Selected environment changed during WSL endpoint discovery.');
         const bound = dashboard.endpoint && isPrivateEmbeddingAddress(new URL(dashboard.endpoint).hostname)
           ? (host.candidates ?? [host.endpoint]).includes(dashboard.endpoint) : host.endpoint === dashboard.endpoint;
         if (generation === this.generation && !bound) {
-          dashboard = embeddingDashboardSchema.parse(await this.call(target, 'wm-embeddings-configure', { action: 'retry', host }));
+          dashboard = embeddingDashboardSchema.parse(await this.call(target, 'wm-embeddings-configure', {
+            action: 'retry', host, expectedConfiguration: dashboard.configurationKey,
+          }));
         }
       } catch (error) {
         if (this.current()?.endpoint !== target.endpoint) throw new Error('Selected environment changed during WSL route repair.');

@@ -30,6 +30,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           if (name !== 'wm-embeddings-dashboard') throw new Error('Unexpected embedding request');
           return { ok: true, result: {
             endpoint: 'http://host.docker.internal:7716', enabled: state.embeddings, paused: false,
+            configurationKey: 'd'.repeat(64),
             phase: state.repairFailure ? 'error' : state.embeddings ? 'indexing' : 'disabled',
             model: 'minilm-l6-v2:1110a243:384:v1', downloadBytes: 0, downloadTotal: 90871461,
             backend: null, warning: null, rssBytes: null, lastInferenceMs: null, lastSuccessAtMs: null, stats: null,

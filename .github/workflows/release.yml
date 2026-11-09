@@ -153,7 +153,19 @@ jobs:
           # mac.identity is explicitly '-' (ad-hoc); no signing credentials are used.
           CSC_FOR_PULL_REQUEST: 'true'
           WM_DATA_TIER_IMAGE_ARCHIVE: ${{ github.workspace }}/backend-image/image.tar
-        run: npm run package:${{ matrix.target }} --prefix desktop-ui
+        run: |
+          for attempt in 1 2 3; do
+            set +e
+            npm run package:${{ matrix.target }} --prefix desktop-ui 2>&1 | tee "$RUNNER_TEMP/installer-build.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            if [[ "$status" == 0 ]]; then exit 0; fi
+            if [[ "$attempt" == 3 ]] || ! grep -Eq 'Response code (502|503|504) \(' "$RUNNER_TEMP/installer-build.log"; then
+              exit "$status"
+            fi
+            echo "::warning::Upstream installer download failed; retrying with the existing download cache (attempt $attempt of 3)."
+            sleep $((attempt * 30))
+          done
 
       - name: Verify packaged desktop version
         env:
