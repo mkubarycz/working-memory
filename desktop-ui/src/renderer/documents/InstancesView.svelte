@@ -210,7 +210,10 @@
           </div>
           <span class="instance-state state-{instance.state}">{STATE_LABELS[instance.state]}</span>
           <span class="instance-version">
-            {instance.version ?? '—'}
+            <span title="Version from this instance's container image.">Current version <strong>{instance.version ?? 'Unknown'}</strong></span>
+            {#if instance.version === null}
+              <span>Update availability cannot be determined.</span>
+            {/if}
             {#if instance.updateAvailable}<em>Update available</em>{/if}
           </span>
           <div class="instance-actions">

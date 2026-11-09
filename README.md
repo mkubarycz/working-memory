@@ -146,6 +146,12 @@ backup are managed outside the app.
 - **Update to <version>** appears when an instance runs a different version
   than the channel's target; it recreates the container with that image and
   keeps its data.
+- **Current version** shows each instance's container-image version. If the
+  container list only returns an image ID, Working Memory inspects that managed
+  container to recover its configured image tag. Unknown versions are labeled
+  explicitly, rather than implying the instance is up to date.
+  Inspection errors remain visible without discarding known container states,
+  versions, or updates for other instances.
 - **Rename** changes the display name shown in the environment picker.
 - **Back up…** writes a consistent SQLite snapshot
   (`working-memory-<name>-<timestamp>.sqlite`) to a folder you choose

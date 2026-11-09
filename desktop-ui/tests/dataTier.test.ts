@@ -237,7 +237,7 @@ describe('data tier launcher', () => {
   describe('instance manager', () => {
     const docker = '/usr/local/bin/docker';
 
-    interface FakeContainer { state: string; status: string; image: string }
+    interface FakeContainer { state: string; status: string; image: string; configuredImage?: string }
 
     function harness(options: {
       directory?: string;
@@ -246,6 +246,8 @@ describe('data tier launcher', () => {
       busyPorts?: number[];
       containers?: Record<string, FakeContainer>;
       instances?: Array<{ port: number; name: string }>;
+      inspectionError?: string;
+      composeError?: string;
     } = {}) {
       const directory = options.directory ?? stateDirectory();
       const testHost = { ...mac, platform: options.platform ?? mac.platform, homedir: directory };
@@ -271,6 +273,12 @@ describe('data tier launcher', () => {
               stderr: '',
             };
           }
+          if (args[0] === 'inspect') {
+            if (options.inspectionError) throw new CommandExecutionError('inspect failed', 1, options.inspectionError);
+            return { stdout: JSON.stringify(args.slice(1).map(name => ({
+              Name: `/${name}`, Config: { Image: containers.get(name)!.configuredImage ?? containers.get(name)!.image },
+            }))), stderr: '' };
+          }
           if (args[0] === 'compose') {
             const compose = JSON.parse(readFileSync(args[2], 'utf8'));
             const service = compose.services['control-plane'];
@@ -281,8 +289,15 @@ describe('data tier launcher', () => {
           return { stdout: '', stderr: '' };
         }),
       };
+      const localRunner = localDockerRunner(runner);
       const manager = new DataTierManager({
-        ...testHost, buildContext: '/ctx', stateDirectory: directory, version, runner: localDockerRunner(runner),
+        ...testHost, buildContext: '/ctx', stateDirectory: directory, version,
+        runner: { run: async (file, args, runOptions) => {
+          if (options.composeError && args[2] === 'compose' && args[3] === 'version') {
+            throw new CommandExecutionError('compose failed', 1, options.composeError);
+          }
+          return localRunner.run(file, args, runOptions);
+        } },
         healthy: async (url) => {
           const port = Number(new URL(url).port);
           return containers.get(dataTierInstanceNames(port).container)?.state === 'running';
@@ -342,6 +357,47 @@ describe('data tier launcher', () => {
         ...mac, buildContext: '/ctx', stateDirectory: directory, version: '2.0.0', runner: localDockerRunner(runner),
         fileExists: (candidate) => candidate === docker,
       }).start(7720)).rejects.toThrow('Start the selected provider');
+    });
+
+    it.each(['5bf5063e263c', `sha256:${'a'.repeat(64)}`])('resolves a managed version when ps reports an image ID: %s', async image => {
+      const { manager, calls } = harness({
+        instances: [{ port: 7719, name: 'Old' }, { port: 7720, name: 'Current' }],
+        containers: {
+          'working-memory-control-plane-7719': { ...running('1.3.1'), image, configuredImage: 'working-memory-control-plane:1.3.1' },
+          'working-memory-control-plane-7720': running('2.0.0'),
+          'working-memory-control-plane-7721': { ...running('1.0.0'), image },
+        },
+      });
+      const snapshot = await manager.list();
+      expect(snapshot.dockerError).toBeNull();
+      expect(snapshot.instances[0]).toMatchObject({ version: '1.3.1', updateAvailable: true, state: 'running' });
+      expect(snapshot.instances[1]).toMatchObject({ version: '2.0.0', updateAvailable: false });
+      expect(calls.filter(args => args[0] === 'inspect')).toEqual([['inspect', 'working-memory-control-plane-7719']]);
+      await manager.upgrade(7719);
+      expect((await manager.list()).instances[0]).toMatchObject({ version: '2.0.0', updateAvailable: false });
+    });
+
+    it.each([undefined, 'Compose helper unavailable'])('retains listed states and versions when inspection fails (Compose error: %s)', async composeError => {
+      const { manager } = harness({
+        instances: [{ port: 7719, name: 'Unresolved' }, { port: 7720, name: 'Old' }, { port: 7721, name: 'Current' }],
+        containers: {
+          'working-memory-control-plane-7719': { ...running('1.3.1'), image: '5bf5063e263c' },
+          'working-memory-control-plane-7720': running('1.3.1'),
+          'working-memory-control-plane-7721': running('2.0.0'),
+        },
+        inspectionError: 'Container image inspection is unavailable',
+        composeError,
+      });
+      const snapshot = await manager.list();
+      expect(snapshot).toMatchObject({
+        dockerError: expect.stringContaining('Container image inspection is unavailable'),
+        instances: [
+          { state: 'running', version: null, updateAvailable: false },
+          { state: 'running', version: '1.3.1', updateAvailable: true },
+          { state: 'running', version: '2.0.0', updateAvailable: false },
+        ],
+      });
+      if (composeError) expect(snapshot.dockerError).toContain(composeError);
     });
 
     it('starts, stops, upgrades, and renames managed instances', async () => {

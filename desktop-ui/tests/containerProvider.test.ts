@@ -58,6 +58,31 @@ describe('shared container provider adapter', () => {
     expect(runner.run).toHaveBeenCalledWith('podman', ['machine', 'list', '--format', 'json'], expect.any(Object));
     expect(vi.mocked(runner.run).mock.calls.some(([, args]) => args.includes('start') || args.includes('set'))).toBe(false);
   });
+  it('recovers the version through Podman inspection when the container list only reports an image ID', async () => {
+    const dir = directory();
+    const runner = podmanRunner(async args => ({
+      stdout: args[0] === 'ps'
+        ? 'working-memory-control-plane-7719\trunning\tUp (healthy)\t5bf5063e263c'
+        : args[0] === 'inspect'
+          ? JSON.stringify([{ Name: 'working-memory-control-plane-7719', Config: { Image: 'localhost/working-memory-control-plane:1.3.1' } }])
+          : '',
+      stderr: '',
+    }));
+    const adapter = new ContainerProviderAdapter({ provider: 'podman', host, runner });
+    writeFileSync(join(dir, 'instances.json'), JSON.stringify({ instances: [
+      { port: 7719, provider: 'podman', connection: adapter.identity(await adapter.resolve()) },
+    ] }));
+    const manager = new DataTierManager({
+      ...host, provider: 'podman', buildContext: dir, stateDirectory: dir, version: '1.7.1-build.154',
+      runner, fileExists: () => true,
+    });
+    expect(await manager.list()).toMatchObject({
+      dockerError: null, instances: [{ version: '1.3.1', updateAvailable: true }],
+    });
+    expect(runner.run).toHaveBeenCalledWith(expect.any(String), [
+      '--connection', connection.Name, 'inspect', 'working-memory-control-plane-7719',
+    ], expect.any(Object));
+  });
   it('captures authentic Podman resource JSON through the production incident entry point', async () => {
     const dir = directory();
     const runner = podmanRunner(async args => ({

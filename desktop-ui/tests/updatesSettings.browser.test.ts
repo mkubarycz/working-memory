@@ -31,12 +31,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         const backend = {
           appVersion: '1.4.1', backendChannel: 'off',
           backendTarget: { version: '1.4.2', image: 'working-memory-control-plane:1.4.2' },
-          backendTargetError: null, dockerError: null, selfHosted: [],
+          backendTargetError: null, dockerError: 'Container image inspection is unavailable', selfHosted: [],
           instances: [
             { port: 7717, name: 'Current', createdAt: '', mcpUrl: 'http://127.0.0.1:7717/mcp',
               container: 'working-memory-control-plane', state: 'running', version: '1.4.1', updateAvailable: false },
             { port: 7719, name: 'Test', createdAt: '', mcpUrl: 'http://127.0.0.1:7719/mcp',
               container: 'working-memory-control-plane-7719', state: 'stopped', version: '1.4.0', updateAvailable: true },
+            { port: 7721, name: 'Unavailable', createdAt: '', mcpUrl: 'http://127.0.0.1:7721/mcp',
+              container: 'working-memory-control-plane-7721', state: 'unknown', version: null, updateAvailable: false },
           ],
         };
         const frontend = {
@@ -135,7 +137,12 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             throw new Error('Timed out: ' + code + '\\n' + await evaluate('document.body.innerText'));
           }
           await window.loadURL('http://127.0.0.1:${address.port}/updates-test.html');
-          await wait("document.querySelectorAll('.instance').length === 2");
+          await wait("document.querySelectorAll('.instance').length === 3");
+          assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.instance-version strong')).map(version => version.textContent)"), ['1.4.1', '1.4.0', 'Unknown']);
+          assert.equal(await evaluate("Array.from(document.querySelectorAll('.instance-version')).every(version => version.textContent.includes('Current version'))"), true);
+          assert.equal(await evaluate("document.querySelectorAll('.instance-version')[2].textContent.includes('Update availability cannot be determined.')"), true);
+          assert.equal(await evaluate("document.querySelector('.instances-note[role=alert]').textContent.includes('Container image inspection is unavailable')"), true);
+          assert.equal(await evaluate("Array.from(document.querySelectorAll('.instance')[0].querySelectorAll('button')).find(button => button.textContent.trim() === 'Back up…').disabled"), false);
           assert.equal(await evaluate(button('Instances') + ' === undefined'), true);
           assert.equal(await evaluate("document.querySelector('[aria-label=Settings] [aria-selected=true]').textContent"), 'Updates');
           assert.equal(await evaluate("document.querySelector('[aria-label=Updates] [aria-selected=true]').textContent"), 'Back End');
@@ -144,11 +151,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("window.__updatesTest.backendChannels[0] === 'canary' && !document.querySelector('.backend-channel select').disabled");
           await evaluate(button('Start') + '.click()');
           await wait("window.__updatesTest.operations.includes('start:7719') && " + button('Make current') + "?.disabled === false");
+          assert.equal(await evaluate("Array.from(document.querySelectorAll('.instance')[1].querySelectorAll('button')).find(button => button.textContent.trim() === 'Back up…').disabled"), false);
+          assert.equal(await evaluate(button('Update to 1.4.2') + '.disabled'), false);
           await evaluate(button('Make current') + '.click()');
           await wait("document.querySelectorAll('.instance')[1].classList.contains('current')");
           assert.equal(await evaluate("Array.from(document.querySelectorAll('.instance')[1].querySelectorAll('button')).find(button => button.textContent.trim() === 'Stop').disabled"), true);
           await evaluate(button('Update to 1.4.2') + '.click()');
           await wait("window.__updatesTest.operations.includes('upgrade:7719') && " + button('Update to 1.4.2') + " === undefined");
+          assert.equal(await evaluate("document.querySelectorAll('.instance-version strong')[1].textContent"), '1.4.2');
           assert.equal(await evaluate("window.__updatesTest.changes"), 3);
           await evaluate("(() => { const provider = document.querySelector('.container-provider select'); provider.value = 'podman'; provider.dispatchEvent(new Event('change', { bubbles: true })); })()");
           await wait("window.__updatesTest.providerChanges[0] === 'podman' && " + button('Retry') + "?.disabled === false");
