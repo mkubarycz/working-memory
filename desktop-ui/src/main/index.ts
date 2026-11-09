@@ -972,8 +972,11 @@ function registerIpc(): void {
       const environment = environmentManager.currentEnvironment;
       return environment ? { endpoint: environment.mcpUrl, client: controlPlane() } : null;
     }, embeddingService);
-    void embeddingService.restore().catch(error => {
-      console.error('[embeddings] Background inference could not be restored:', error);
+    const restoredEmbeddings = localEmbeddings;
+    void embeddingService.restore().then(() => {
+      if (embeddingService.usesWslNetworking() && environmentManager.currentEnvironment) return restoredEmbeddings.snapshot();
+    }).catch(error => {
+      console.error('[embeddings] Background inference or its container route could not be restored:', error);
     });
   } catch (error) {
     console.error('[embeddings] Settings could not be loaded:', error);

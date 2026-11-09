@@ -619,8 +619,8 @@ Both desktop and backend must be updated to accept private WSL endpoints.
 WSL listener enablement is retained in the native service's `network-settings.json`.
 The background service checks interface changes every ten seconds and keeps
 loopback access and a single shared model runtime. If an enabled, unpaused
-instance has a failed connection and its WSL address changed, opening the
-Embeddings dashboard refreshes its stored route automatically. Pause/Disable
+instance has a failed connection and its WSL address changed, starting WM or
+opening the Embeddings dashboard refreshes its stored route automatically. Pause/Disable
 and environment changes cancel stale route repair. With the desktop closed,
 an instance whose stored WSL address changes remains visibly failed until that
 refresh or an explicit Retry; its existing vectors are retained. Host diagnostics

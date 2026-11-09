@@ -73,7 +73,7 @@ it.skipIf(process.env.WM_TEST_BACKGROUND_EMBEDDINGS !== '1')('indexes from a rea
     client = undefined;
     const indexed = async () => {
       const result = await execute('docker', ['exec', name, 'node', '--input-type=module', '-e',
-        "import {DatabaseSync} from 'node:sqlite';const db=new DatabaseSync('/data/journal.sqlite',{readOnly:true});console.log(db.prepare('SELECT count(*) AS count FROM topic_embedding_index').get().count);db.close()"]);
+        "import {DatabaseSync} from 'node:sqlite';const db=new DatabaseSync('/data/journal.sqlite',{readOnly:true});console.log(db.prepare(\"SELECT count(*) AS count FROM topic_embedding_index i JOIN resources r ON r.id=i.topic_id WHERE r.kind='Topic'\").get().count);db.close()"]);
       return Number(result.stdout.trim());
     };
     for (let attempt = 0; attempt < 180; attempt++) {
@@ -110,7 +110,9 @@ it.skipIf(process.env.WM_TEST_BACKGROUND_EMBEDDINGS !== '1')('indexes from a rea
     const state = await client.callTool('wm-embeddings-dashboard', {});
     if (!state.ok) throw new Error(state.error);
     const snapshot = embeddingDashboardSchema.parse(state.result);
-    expect(snapshot.stats?.indexed).toBe(4);
+    expect(snapshot.stats?.indexed).toBeGreaterThanOrEqual(4);
+    expect(snapshot.stats?.indexed).toBe(snapshot.stats?.total);
+    expect(snapshot.stats?.pending).toBe(0);
     expect(snapshot.backend).toContain('Core ML');
     const startup = await execute('/bin/launchctl', ['print', `gui/${process.getuid!()}/com.workingmemory.embeddings`]);
     expect(startup.stdout).toContain('state = running');
