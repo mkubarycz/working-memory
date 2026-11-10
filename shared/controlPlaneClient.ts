@@ -17,17 +17,13 @@
  * next call reconnects. The module is VS Code-free so it can be unit-tested
  * against an ephemeral in-process server.
  *
- * The SDK ships dual CJS/ESM behind an `exports` map. The extension is built
- * with `module: commonjs` / classic node resolution, which ignores `exports`,
- * so `tsconfig.json` maps `@modelcontextprotocol/sdk/*` to the physical
- * `dist/cjs/*` types; the runtime `require` still resolves the public subpath
- * via the package's catch-all export.
+ * The SDK ships dual CJS/ESM behind an `exports` map. Node16 module resolution
+ * selects its public CommonJS entry points for the shared/control-plane build.
  */
 
 import * as os from 'node:os';
 import { readFileSync } from 'node:fs';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport, SdkHttpError } from '@modelcontextprotocol/client';
 import { closeMcpSession, sessionLifecycleFetch, staleSessionRejected } from './mcpLifecycle';
 import { parseDocumentChanges, type DocumentChanges } from './documentChanges';
 import { abortable } from './abort';
@@ -347,6 +343,10 @@ export interface Topic {
   /** CAS counter from the envelope, for a subsequent update. */
   resourceVersion: number;
 }
+
+export type TopicMetadata = Omit<Topic, 'body'>;
+
+export type TopicMetadataReadInput = TopicReadInput & { metadataOnly: true; query?: never };
 
 export interface TopicReadInput {
 
@@ -1259,7 +1259,7 @@ export class ControlPlaneClient {
       const request = { name, arguments: args };
       const timeout = name === 'wm-semantic-search' ? SEMANTIC_SEARCH_INFERENCE_TIMEOUT_MS + 10_000 : undefined;
       result = await abortable(this.retryStaleSession(client, connected => signal || timeout
-        ? connected.callTool(request, undefined, { ...(signal ? { signal } : {}), ...(timeout ? { timeout } : {}) }) : connected.callTool(request),
+        ? connected.callTool(request, { ...(signal ? { signal } : {}), ...(timeout ? { timeout } : {}) }) : connected.callTool(request),
       signal, RETRYABLE_READ_TOOLS.has(name)), signal);
     } catch (err) {
       if (!signal?.aborted) this.resetConnection();
@@ -1289,7 +1289,7 @@ export class ControlPlaneClient {
    */
   private async callDomainTool(
     name: string,
-    args: Record<string, unknown>,
+    args: Record<string, unknown> | ((client: Client) => Record<string, unknown>),
     signal?: AbortSignal,
   ): Promise<unknown> {
     signal?.throwIfAborted();
@@ -1299,9 +1299,10 @@ export class ControlPlaneClient {
     }
     let result: unknown;
     try {
-      const request = { name, arguments: args };
-      const call = (connected: Client) => signal
-        ? connected.callTool(request, undefined, { signal }) : connected.callTool(request);
+      const call = (connected: Client) => {
+        const request = { name, arguments: typeof args === 'function' ? args(connected) : args };
+        return signal ? connected.callTool(request, { signal }) : connected.callTool(request);
+      };
       result = await abortable(this.retryStaleSession(client, call, signal, RETRYABLE_READ_TOOLS.has(name)), signal);
     } catch (err) {
       if (!signal?.aborted) this.resetConnection();
@@ -1324,7 +1325,7 @@ export class ControlPlaneClient {
       signal?.throwIfAborted();
       // Writes are safe to retry only when this request was explicitly rejected before dispatch.
       const stale = readOnly && this.staleConnections.has(client)
-        || error instanceof StreamableHTTPError && staleSessionRejected(error);
+        || error instanceof SdkHttpError && staleSessionRejected(error);
       if (!stale || this.disposed) throw error;
       this.staleConnections.add(client);
       // Another concurrent call may already have replaced this expired connection.
@@ -1494,7 +1495,10 @@ export class ControlPlaneClient {
    * array; list mode (no id) returns all live topics, optionally filtered
    * by `query` (substring), `workstream` (membership), and capped by `limit`.
    */
-  async topicRead(input: TopicReadInput = {}): Promise<Topic[]> {
+  async topicRead(input: TopicMetadataReadInput): Promise<TopicMetadata[]>;
+  async topicRead(input?: TopicReadInput): Promise<Topic[]>;
+  async topicRead(input: TopicReadInput | TopicMetadataReadInput = {}): Promise<Topic[] | TopicMetadata[]> {
+    const metadataOnly = 'metadataOnly' in input && input.metadataOnly;
     const args: Record<string, unknown> = {};
     if (input.id !== undefined) {
       args.id = input.id;
@@ -1508,9 +1512,13 @@ export class ControlPlaneClient {
     if (input.limit !== undefined) {
       args.limit = input.limit;
     }
-    const result = await this.callDomainTool('ws-topic-read', args);
+    const result = await this.callDomainTool('ws-topic-read', metadataOnly ? connected => {
+      const capability = connected.getServerCapabilities()?.experimental?.['working-memory/topic-metadata'];
+      return capability && 'version' in capability && capability.version === 1 ? { ...args, metadataOnly: true } : args;
+    } : args);
     const parsed = parseToolText(result) as { topics?: unknown } | null;
     const list = Array.isArray(parsed?.topics) ? parsed!.topics : [];
+    if (metadataOnly) return (list as Topic[]).map(({ body: _body, ...metadata }) => metadata);
     return list as Topic[];
   }
 

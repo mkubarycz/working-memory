@@ -13,7 +13,7 @@ import type {
   AgentMessage as ControlPlaneAlert,
   DocumentEnvelope,
   ListDocumentsResult,
-  Topic as ControlPlaneTopic,
+  TopicMetadata as ControlPlaneTopic,
   TopicType,
   Workstream,
 } from './controlPlaneClient';

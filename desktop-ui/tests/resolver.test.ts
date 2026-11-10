@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import type { AgentMessage, Topic, TopicType, Workstream } from '../../shared/controlPlaneClient';
+import { describe, expect, it, vi } from 'vitest';
+import { ControlPlaneClient, type AgentMessage, type Topic, type TopicType, type Workstream } from '../../shared/controlPlaneClient';
 import {
   chooseWorkstream,
   loadActivePanelData,
@@ -24,6 +24,27 @@ const roadmap: Workstream = {
 };
 
 describe('workstream resolver', () => {
+  it('uses full bodies only for the selected topic, not relationship lists, trees or the Active rail', async () => {
+    const topic: Topic = {
+      id: 'topic-1', title: 'Projection', body: '# Selected body', status: 'open', topicType: 'type-1',
+      parents: [], workstreams: [roadmap.id], focusedWorkstreams: [], created_at: 1, updated_at: 2, resourceVersion: 3,
+    };
+    const client = new ControlPlaneClient({ resolveUrl: () => null });
+    const reads = vi.spyOn(client, 'topicRead').mockResolvedValue([topic]);
+    vi.spyOn(client, 'wsRead').mockResolvedValue([roadmap]);
+    vi.spyOn(client, 'agentMessageRead').mockResolvedValue([]);
+    vi.spyOn(client, 'topicTypeRead').mockResolvedValue([]);
+    try {
+      expect((await loadTopicViewModel(client, topic.id))?.body).toBe('# Selected body');
+      await loadWorkstreamViewModel(client, roadmap.id);
+      await loadActivePanelData(client);
+      expect(reads.mock.calls).toEqual([
+        [{ id: topic.id }], [{ metadataOnly: true }],
+        [{ workstream: roadmap.id, metadataOnly: true }], [{ metadataOnly: true }],
+      ]);
+    } finally { await client.dispose(); }
+  });
+
   it('extracts a deterministic query from a navigation request', () => {
     expect(localWorkstreamQuery('Show me the 0.15.0 roadmap workstream')).toBe('0.15.0 roadmap');
   });

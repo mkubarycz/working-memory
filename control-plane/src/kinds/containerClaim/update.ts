@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { ConflictError, NotFoundError, type Store } from '../../store.js';
 import { validateSpec } from '../registry.js';
 import { asError, asText } from '../toolResult.js';

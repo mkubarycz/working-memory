@@ -15,17 +15,14 @@ const connectMock = vi.fn();
 const clientCloseMock = vi.fn();
 const transportCloseMock = vi.fn();
 
-vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
+vi.mock('@modelcontextprotocol/client', async importOriginal => ({
+  ...await importOriginal<typeof import('@modelcontextprotocol/client')>(),
   Client: class {
     connect = connectMock;
     close = clientCloseMock;
     listTools = listToolsMock;
     callTool = callToolMock;
   },
-}));
-
-vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', async importOriginal => ({
-  ...await importOriginal<typeof import('@modelcontextprotocol/sdk/client/streamableHttp.js')>(),
   StreamableHTTPClientTransport: class {
     constructor(_url: URL) {}
     close = transportCloseMock;
@@ -131,7 +128,7 @@ describe('ControlPlaneClient catalog surface (mocked listTools/callTool)', () =>
     callToolMock.mockResolvedValueOnce(okText({ claims: [] })).mockResolvedValueOnce(okText({ total: 0, documents: [] }));
     await client.containerClaimRead({}, controller.signal);
     await client.callTool('wm-document-query', {}, controller.signal);
-    for (const call of callToolMock.mock.calls) expect(call[2]?.signal).toBe(controller.signal);
+    for (const call of callToolMock.mock.calls) expect(call[1]?.signal).toBe(controller.signal);
     await client.dispose();
   });
   it('callTool() forwards the name + args and parses the JSON text payload', async () => {
@@ -150,7 +147,7 @@ describe('ControlPlaneClient catalog surface (mocked listTools/callTool)', () =>
     const signal = cancellable ? new AbortController().signal : undefined;
     await client.callTool('wm-semantic-search', { queries: ['nanites'] }, signal);
     expect(callToolMock).toHaveBeenCalledWith(
-      { name: 'wm-semantic-search', arguments: { queries: ['nanites'] } }, undefined,
+      { name: 'wm-semantic-search', arguments: { queries: ['nanites'] } },
       { timeout: 70000, ...(signal ? { signal } : {}) },
     );
     await client.dispose();

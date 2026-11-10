@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
-    "module": "commonjs",
+    "module": "node16",
+    "moduleResolution": "node16",
     "target": "ES2022",
     "lib": ["ES2022"],
     "outDir": "out",
@@ -10,16 +11,7 @@
     "skipLibCheck": true,
     "sourceMap": true,
     "resolveJsonModule": true,
-    "types": ["node"],
-    // `paths` is resolved relative to this tsconfig's directory (no `baseUrl`
-    // needed since TS 5.0). `baseUrl` was removed because it's deprecated in
-    // TS 6.0 and stops functioning in 7.0 — keeping `paths` alone is the
-    // forward-compatible form.
-    "paths": {
-      "@modelcontextprotocol/sdk/*": [
-        "./node_modules/@modelcontextprotocol/sdk/dist/cjs/*"
-      ]
-    }
+    "types": ["node"]
   },
   "include": ["shared/**/*.ts"],
   "exclude": ["node_modules", "out", ".vscode-test"]

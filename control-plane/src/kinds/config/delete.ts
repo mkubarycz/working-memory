@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { type Store, NotFoundError } from '../../store.js';
 import { asText, asError } from '../toolResult.js';
 import { CONFIG_KIND } from './config.js';

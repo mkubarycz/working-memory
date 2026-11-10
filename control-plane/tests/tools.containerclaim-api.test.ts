@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/client';
 import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 import { clearKinds } from '../src/kinds/registry';
 import { loadKinds } from '../src/kinds/loader';

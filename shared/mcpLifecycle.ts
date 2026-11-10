@@ -1,3 +1,5 @@
+import { SdkHttpError } from '@modelcontextprotocol/client';
+
 export const SESSION_TERMINATION_TIMEOUT_MS = 2000;
 
 /** DELETE must survive cancellation of the connection it is reclaiming. */
@@ -13,10 +15,16 @@ export function sessionLifecycleFetch(base: typeof fetch, lifetime: AbortSignal)
 }
 
 export function staleSessionRejected(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && (
-    error.code === 404 && error.message.includes('Session not found or expired.')
-    || error.code === 400 && error.message.includes('"message":"Bad Request: no valid session ID"')
+  const status = mcpHttpStatus(error);
+  return error instanceof Error && (
+    status === 404 && error.message.includes('Session not found or expired.')
+    || status === 400 && error.message.includes('"message":"Bad Request: no valid session ID"')
   );
+}
+
+export function mcpHttpStatus(error: unknown): number | undefined {
+  if (error instanceof SdkHttpError) return error.status;
+  return error instanceof Error && 'code' in error && typeof error.code === 'number' ? error.code : undefined;
 }
 
 type SessionClient = { close(): Promise<void> };
@@ -35,7 +43,7 @@ export function closeMcpSession(
   const completion = (async () => {
     try { await transport?.terminateSession(); }
     catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 404)) onError(error);
+      if (mcpHttpStatus(error) !== 404) onError(error);
     } finally {
       try { await client?.close(); }
       catch (error) { onError(error); }

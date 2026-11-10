@@ -1,7 +1,7 @@
 import type {
   AgentMessage,
   ControlPlaneClient,
-  Topic,
+  TopicMetadata,
   TopicType,
   Workstream,
 } from '../controlPlaneClient';
@@ -122,12 +122,12 @@ export async function loadWorkstreamViewModel(
   if (!workstream) return null;
 
   const id = workstream.id;
-  let topics: Topic[] = [];
+  let topics: TopicMetadata[] = [];
   let topicTypes: TopicType[] = [];
   let agentMessages: AgentMessage[] = [];
   if (id) {
     [topics, topicTypes] = await Promise.all([
-      client.topicRead({ workstream: id }).catch(() => []),
+      client.topicRead({ workstream: id, metadataOnly: true }).catch(() => []),
       client.topicTypeRead().catch(() => []),
     ]);
   }

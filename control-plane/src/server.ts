@@ -20,9 +20,10 @@
 import * as http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CancelledNotificationSchema, isInitializeRequest, isJSONRPCRequest, type RequestId } from '@modelcontextprotocol/sdk/types.js';
+import { CancelledNotificationSchema } from '@modelcontextprotocol/core';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
+import { McpServer, isInitializeRequest, isJSONRPCRequest } from '@modelcontextprotocol/server';
+import type { RequestId } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import {
   DEFAULT_PORT,
@@ -187,7 +188,9 @@ export function createMcpServer(
   canReadKind: (kind: string) => boolean = () => true,
   embeddings?: EmbeddingIndexer,
 ): McpServer {
-  const server = new McpServer({ name, version });
+  const server = new McpServer({ name, version }, {
+    capabilities: { experimental: { 'working-memory/topic-metadata': { version: 1 } } },
+  });
   const features = new InstanceFeatureStore(store.db);
   if (taskDispatch) registerInstanceTaskTools(server, taskDispatch);
 
@@ -507,10 +510,10 @@ export function createMcpServer(
     title: 'Search: Semantic Documents',
     description: 'Find WM documents by meaning using local embeddings. Requires Embeddings enabled and complete indexing. Similarity is not confidence or proof of a relationship. Config and connected-app data are excluded.',
     inputSchema: semanticSearchSchema, annotations: { readOnlyHint: true },
-  }, async (input, extra) => {
+  }, async (input, ctx) => {
     if (!features.read().search) return asError('Search is turned off.');
     if (!embeddings) return asError('Background indexing is unavailable.');
-    return asText(await embeddings.search(input, canReadKind, extra.signal));
+    return asText(await embeddings.search(input, canReadKind, ctx.mcpReq.signal));
   });
 
   server.registerTool('wm-search-add-topic', {
@@ -634,7 +637,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // Per-server session registry (stateful Streamable HTTP), keyed by MCP
   // session id. Supports multiple concurrent clients, each with its own MCP
   // session and connected McpServer instance.
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const transports = new Map<string, NodeStreamableHTTPServerTransport>();
   const waitingToolCalls = new Map<string, Map<RequestId, Set<AbortController>>>();
 
   function denyPermission(req: http.IncomingMessage, res: http.ServerResponse, required: PermissionSelection[] | null): void {
@@ -781,7 +784,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             id: 'id' in body && (typeof body.id === 'number' || typeof body.id === 'string') ? body.id : null });
           return;
         }
-        const transport = new StreamableHTTPServerTransport({
+        const transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => managed.protocolId,
           enableJsonResponse: true,
           onsessioninitialized: (id) => {

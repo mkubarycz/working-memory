@@ -58,6 +58,7 @@ export interface CreateDocumentInput {
 
 export interface ListDocumentsInput {
   kind?: string;
+  omitBody?: boolean;
   includeDeleted?: boolean;
   limit?: number;
   offset?: number;
@@ -72,6 +73,7 @@ export interface CreationOrderedDocument {
 export interface GetDocumentInput {
   id?: string;
   kind?: string;
+  omitBody?: boolean;
   /**
    * When true, a by-id read also matches a soft-deleted row.
    */
@@ -609,20 +611,23 @@ export function openStore(dbFilePath: string): Store {
     return document;
   }
 
+  const metadataColumns = "id, kind, labels, status, agent_name_key, created_at, updated_at, deleted_at, resource_version, json_remove(spec, '$.body') AS spec";
+
   function listDocuments(input: ListDocumentsInput = {}): DocumentEnvelope[] {
     input = { ...input, kind: canonicalKind(input.kind) };
+    const columns = input.omitBody ? metadataColumns : '*';
     const rows = (
       input.kind
         ? db
             .prepare(
-              `SELECT * FROM resources
+              `SELECT ${columns} FROM resources
                WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'} AND kind = ?
                ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?`,
             )
             .all(input.kind, input.limit ?? -1, input.offset ?? 0)
         : db
             .prepare(
-              `SELECT * FROM resources
+              `SELECT ${columns} FROM resources
                WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'}
                ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?`,
             )
@@ -635,18 +640,19 @@ export function openStore(dbFilePath: string): Store {
     input: ListDocumentsInput = {},
   ): CreationOrderedDocument[] {
     input = { ...input, kind: canonicalKind(input.kind) };
+    const columns = input.omitBody ? metadataColumns : '*';
     const rows = (
       input.kind
         ? db
             .prepare(
-              `SELECT *, rowid AS creation_sequence FROM resources
+              `SELECT ${columns}, rowid AS creation_sequence FROM resources
                WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'} AND kind = ?
                ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
             )
             .all(input.kind, input.limit ?? -1, input.offset ?? 0)
         : db
             .prepare(
-              `SELECT *, rowid AS creation_sequence FROM resources
+              `SELECT ${columns}, rowid AS creation_sequence FROM resources
                WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'}
                ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
             )
@@ -660,12 +666,13 @@ export function openStore(dbFilePath: string): Store {
 
   function getDocument(input: GetDocumentInput): DocumentEnvelope | null {
     input = { ...input, kind: canonicalKind(input.kind) };
+    const columns = input.omitBody ? metadataColumns : '*';
     // `includeDeleted` drops the live-only filter so a soft-deleted row can be
     // located for restoration. Defaults to live-only.
     const deletedClause = input.includeDeleted === true ? '' : ' AND deleted_at IS NULL';
     let row: ResourceRow | undefined;
     if (input.id) {
-      row = db.prepare(`SELECT * FROM resources WHERE id = ?${deletedClause}${input.kind ? ' AND kind = ?' : ''}`)
+      row = db.prepare(`SELECT ${columns} FROM resources WHERE id = ?${deletedClause}${input.kind ? ' AND kind = ?' : ''}`)
         .get(...(input.kind ? [input.id, input.kind] : [input.id])) as ResourceRow | undefined;
     }
     return row ? rowToEnvelope(row) : null;

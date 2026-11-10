@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { loadKinds } from '../../control-plane/src/kinds/loader';
 import { startServer } from '../../control-plane/src/server';
 import { openStore } from '../../control-plane/src/store';

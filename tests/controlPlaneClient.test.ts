@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeAll, vi } from 'vitest';
 import { startServer, type RunningServer } from './authenticatedFixture';
 import { clearKinds } from '../control-plane/src/kinds/registry';
 import { loadKinds } from '../control-plane/src/kinds/loader';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/client';
 import { StreamableHTTPClientTransport } from './authenticatedFixture';
 import {
   ControlPlaneClient,
@@ -49,6 +49,30 @@ describe('ControlPlaneClient (Blackboard MCP path)', () => {
   afterEach(async () => {
     await server?.close();
     server = null;
+  });
+
+  it.each([true, false])('reads typed relationship metadata with negotiated support=%s', async supported => {
+    server = await startServer({ port: 0 });
+    const url = `${server.url}/mcp`;
+    const type = await seedDocument(url, { kind: 'TopicType', spec: { label: 'Topic', icon: 'notebook', description: 'Default topic' } });
+    const topic = await seedDocument(url, { kind: 'Topic', spec: {
+      title: 'Projection compatibility', topicType: type.metadata.id, body: '# Keep this body',
+    } });
+    const originalCapabilities = Client.prototype.getServerCapabilities;
+    const capabilities = vi.spyOn(Client.prototype, 'getServerCapabilities').mockImplementation(function(this: Client) {
+      return supported ? originalCapabilities.call(this) : { tools: {} };
+    });
+    const calls = vi.spyOn(Client.prototype, 'callTool');
+    const client = new ControlPlaneClient({ resolveUrl: () => url });
+    try {
+      const metadata = await client.topicRead({ id: topic.metadata.id, metadataOnly: true });
+      expect(metadata).toMatchObject([{ id: topic.metadata.id, title: 'Projection compatibility', parents: [] }]);
+      expect(metadata[0]).not.toHaveProperty('body');
+      expect(calls).toHaveBeenLastCalledWith({
+        name: 'ws-topic-read', arguments: { id: topic.metadata.id, ...(supported ? { metadataOnly: true } : {}) },
+      });
+      expect((await client.topicRead({ id: topic.metadata.id }))[0].body).toBe('# Keep this body');
+    } finally { calls.mockRestore(); capabilities.mockRestore(); await client.dispose(); }
   });
 
   it('preserves read-only and destructive annotations in the canonical tool catalog', async () => {

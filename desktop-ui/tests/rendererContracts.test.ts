@@ -223,10 +223,12 @@ describe('desktop tree icon contract', () => {
 
     expect(settings).toContain('>Models</button>');
     expect(settings).not.toContain('>Instances</button>');
-    expect(settings).toContain('>Back End</button>');
+    expect(settings).toContain('>System</button>');
+    expect(settings).toContain('>Backend</button>');
     expect(settings).toContain('>Front End</button>');
-    expect(app).toContain("updatesTab = 'back-end';\n    openSettings('updates');");
-    expect(app).toContain('bind:updatesTab');
+    expect(settings).toContain('>Container Provider</button>');
+    expect(app).toContain("systemTab = 'back-end';\n    openSettings('system');");
+    expect(app).toContain('bind:systemTab');
     expect(settings).not.toContain('>Routing matrix</button>');
     expect(settings).toContain('<h2>Routing matrix</h2>');
     expect(settings).not.toContain('>Save</button>');

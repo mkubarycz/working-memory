@@ -1,9 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { afterEach, beforeAll, expect, it } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { auth, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
-import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import { Client, StreamableHTTPClientTransport, auth } from '@modelcontextprotocol/client';
+import type { OAuthClientProvider, OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/client';
 import { startServer } from '../src/server';
 import { openStore } from '../src/store';
 import { InstanceIdentity } from '../src/instanceIdentity';
@@ -164,7 +162,10 @@ it('uses the official MCP OAuth client for discovery, enrollment, token exchange
   const response = await fetch(`${f.server.url}${location}?poll=1`).then(result => result.json());
   const callback = new URL(response.redirectUri);
   expect(callback.searchParams.get('state')).toBe('official-client-state');
-  expect(await auth(provider, { serverUrl, authorizationCode: callback.searchParams.get('code')! })).toBe('AUTHORIZED');
+  expect(callback.searchParams.get('iss')).toBe(new URL(f.server.url).href);
+  expect(await auth(provider, {
+    serverUrl, authorizationCode: callback.searchParams.get('code')!, iss: callback.searchParams.get('iss')!,
+  })).toBe('AUTHORIZED');
   const client = new Client({ name: 'Copilot OAuth integration test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(serverUrl, { authProvider: provider }));
   cleanup.push(() => client.close());

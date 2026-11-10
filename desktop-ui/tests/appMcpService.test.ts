@@ -1,7 +1,6 @@
 import { createServer } from 'node:http';
 import { AddressInfo } from 'node:net';
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { Client, Transport } from '@modelcontextprotocol/client';
 import { describe, expect, it, vi } from 'vitest';
 import {
   AppMcpService,
@@ -57,7 +56,7 @@ describe('app MCP endpoint security and lifecycle', () => {
         if (stage === 'list') await hold(options?.signal);
         return { tools: [] };
       }),
-      callTool: vi.fn<Client['callTool']>().mockImplementation(async (_params, _schema, options) => {
+      callTool: vi.fn<Client['callTool']>().mockImplementation(async (_params, options) => {
         if (stage === 'call') await hold(options?.signal);
         return { content: [] };
       }),

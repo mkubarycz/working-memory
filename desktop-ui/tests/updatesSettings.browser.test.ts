@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
-  'combines backend and desktop updates, preserves actions and subtab selection, and cleans up subscriptions',
+  'organizes System settings, caches instances, polls only while visible, and preserves actions',
   async () => {
     const executable: unknown = createRequire(import.meta.url)('electron');
     if (typeof executable !== 'string') throw new Error('Electron executable is unavailable.');
@@ -20,13 +20,34 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       <script>
         import Settings from '/src/renderer/documents/SettingsView.svelte';
         import '/src/renderer/style.css';
-        let tab = $state('updates');
-        let updatesTab = $state('back-end');
+        let tab = $state('system');
+        let systemTab = $state('back-end');
         let selectedMcpUrl = $state('http://127.0.0.1:7717/mcp');
         const probe = window.__updatesTest = {
           backendReads: 0, backendChannels: [], operations: [], changes: 0,
           frontendReads: 0, frontendChannels: [], frontendActions: [],
           subscriptions: 0, unsubscriptions: 0, listener: null, provider: 'docker', providerChanges: [],
+          hidden: false, failRefresh: false, holdRefresh: false, releaseRefresh: null, polls: new Map(),
+        };
+        Object.defineProperty(document, 'hidden', { get: () => probe.hidden });
+        const realNow = Date.now;
+        let elapsed = 0;
+        Date.now = () => realNow() + elapsed;
+        const realSetInterval = window.setInterval;
+        const realClearInterval = window.clearInterval;
+        let timerId = -1;
+        window.setInterval = (callback, delay, ...args) => {
+          if (delay !== 15000) return realSetInterval(callback, delay, ...args);
+          const id = timerId--;
+          probe.polls.set(id, callback);
+          return id;
+        };
+        window.clearInterval = id => {
+          if (!probe.polls.delete(id)) realClearInterval(id);
+        };
+        probe.advance = () => {
+          elapsed += 15000;
+          for (const poll of probe.polls.values()) poll();
         };
         const backend = {
           appVersion: '1.4.1', backendChannel: 'off',
@@ -46,7 +67,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           available: { version: '1.4.2', publishedAt: null, releaseUrl: 'https://example.invalid/release' },
           progress: null, error: null, checkedAt: null,
         };
-        probe.openInstances = () => { updatesTab = 'back-end'; tab = 'updates'; };
+        probe.openInstances = () => { systemTab = 'back-end'; tab = 'system'; };
+        probe.changeBackend = change => Object.assign(backend, change);
         probe.emit = change => {
           Object.assign(frontend, change);
           probe.listener?.(structuredClone(frontend));
@@ -57,7 +79,15 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             probe.providerChanges.push(provider); probe.provider = provider;
             backend.dockerError = provider === 'podman' ? 'Podman is unavailable. Start it, then Retry.' : null;
           },
-          async listInstances() { probe.backendReads++; return structuredClone(backend); },
+          async listInstances() {
+            probe.backendReads++;
+            if (probe.failRefresh) throw new Error('Backend refresh unavailable');
+            const result = structuredClone(backend);
+            if (probe.holdRefresh) await new Promise(resolve => {
+              probe.releaseRefresh = () => { probe.holdRefresh = false; resolve(); };
+            });
+            return result;
+          },
           async setBackendUpdateChannel(channel) {
             probe.backendChannels.push(channel); backend.backendChannel = channel;
             return structuredClone(backend);
@@ -89,7 +119,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         };
       </script>
       <Settings profiles={[]} routing={{}} humanName="Test" credentialStorage="secure"
-        settingsStatus="" saving={false} testingProfileId={null} bind:tab bind:updatesTab {selectedMcpUrl}
+        settingsStatus="" saving={false} testingProfileId={null} bind:tab bind:systemTab {selectedMcpUrl}
         onHumanName={() => {}} onAddProfile={() => {}} onRemoveProfile={() => {}} onTestProfile={async () => {}}
         onChange={() => {}} onFlush={() => {}}
         onMakeCurrent={async url => { selectedMcpUrl = url; probe.operations.push('current:' + url); }}
@@ -144,11 +174,37 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("document.querySelector('.instances-note[role=alert]').textContent.includes('Container image inspection is unavailable')"), true);
           assert.equal(await evaluate("Array.from(document.querySelectorAll('.instance')[0].querySelectorAll('button')).find(button => button.textContent.trim() === 'Back up…').disabled"), false);
           assert.equal(await evaluate(button('Instances') + ' === undefined'), true);
-          assert.equal(await evaluate("document.querySelector('[aria-label=Settings] [aria-selected=true]').textContent"), 'Updates');
-          assert.equal(await evaluate("document.querySelector('[aria-label=Updates] [aria-selected=true]').textContent"), 'Back End');
+          assert.equal(await evaluate("document.querySelector('[aria-label=Settings] [aria-selected=true]').textContent"), 'System');
+          assert.equal(await evaluate("document.querySelector('[aria-label=System] [aria-selected=true]').textContent"), 'Backend');
+          assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[aria-label=System] button')).map(button => button.textContent)"), ['Front End', 'Backend', 'Container Provider']);
+          assert.equal(await evaluate("document.querySelector('.container-provider')"), null);
+          assert.equal(await evaluate("window.__updatesTest.backendReads"), 1);
+          await evaluate(button('Models') + '.click()');
+          await wait("window.__updatesTest.polls.size === 0");
+          await evaluate(button('System') + '.click()');
+          await wait("document.querySelectorAll('.instance').length === 3");
+          assert.equal(await evaluate("window.__updatesTest.backendReads"), 1);
+          assert.equal(await evaluate("document.body.innerText.includes('Loading instances')"), false);
+          await evaluate("window.__updatesTest.changeBackend({ dockerError: null }); window.__updatesTest.advance()");
+          await wait("window.__updatesTest.backendReads === 2 && !document.querySelector('.instances-note[role=alert]')");
+          await evaluate("window.__updatesTest.failRefresh = true; window.__updatesTest.advance()");
+          await wait("document.querySelector('.instances-note[role=alert]')?.textContent.includes('Backend refresh unavailable')");
+          assert.equal(await evaluate("document.querySelectorAll('.instance').length"), 3);
+          await evaluate("window.__updatesTest.failRefresh = false; " + button('Retry') + '.click()');
+          await wait("window.__updatesTest.backendReads === 4 && !document.querySelector('.instances-note[role=alert]')");
+          await evaluate("window.__updatesTest.hidden = true; window.__updatesTest.advance()");
+          assert.equal(await evaluate("window.__updatesTest.backendReads"), 4);
+          await evaluate("window.__updatesTest.hidden = false; document.dispatchEvent(new Event('visibilitychange'))");
+          await wait("window.__updatesTest.backendReads === 5");
           assert.equal(await evaluate("window.__updatesTest.frontendReads"), 0);
+          await evaluate("window.__updatesTest.holdRefresh = true; window.__updatesTest.advance()");
+          await wait("window.__updatesTest.releaseRefresh !== null");
+          await evaluate("window.__updatesTest.advance()");
+          assert.equal(await evaluate("window.__updatesTest.backendReads"), 6);
           await evaluate("(() => { const channel = document.querySelector('.backend-channel select'); channel.value = 'canary'; channel.dispatchEvent(new Event('change', { bubbles: true })); })()");
           await wait("window.__updatesTest.backendChannels[0] === 'canary' && !document.querySelector('.backend-channel select').disabled");
+          await evaluate("window.__updatesTest.releaseRefresh(); new Promise(resolve => setTimeout(resolve, 0))");
+          assert.equal(await evaluate("document.querySelector('.backend-channel select').value"), 'canary');
           await evaluate(button('Start') + '.click()');
           await wait("window.__updatesTest.operations.includes('start:7719') && " + button('Make current') + "?.disabled === false");
           assert.equal(await evaluate("Array.from(document.querySelectorAll('.instance')[1].querySelectorAll('button')).find(button => button.textContent.trim() === 'Back up…').disabled"), false);
@@ -160,6 +216,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("window.__updatesTest.operations.includes('upgrade:7719') && " + button('Update to 1.4.2') + " === undefined");
           assert.equal(await evaluate("document.querySelectorAll('.instance-version strong')[1].textContent"), '1.4.2');
           assert.equal(await evaluate("window.__updatesTest.changes"), 3);
+          await evaluate(button('Container Provider') + '.click()');
+          await wait("document.querySelector('.container-provider select') !== null");
+          assert.equal(await evaluate("document.querySelector('.instance-list')"), null);
           await evaluate("(() => { const provider = document.querySelector('.container-provider select'); provider.value = 'podman'; provider.dispatchEvent(new Event('change', { bubbles: true })); })()");
           await wait("window.__updatesTest.providerChanges[0] === 'podman' && " + button('Retry') + "?.disabled === false");
           assert.equal(await evaluate("document.querySelector('.instances-note[role=alert]').textContent.includes('Podman is unavailable')"), true);
@@ -169,6 +228,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate(button('Front End') + '.click()');
           await wait("document.querySelector('.update-channels') && window.__updatesTest.frontendReads === 1");
           assert.equal(await evaluate("document.querySelector('.instances') === null"), true);
+          const readsWhileAway = await evaluate("window.__updatesTest.backendReads");
+          assert.equal(await evaluate("window.__updatesTest.polls.size"), 0);
+          await evaluate("window.__updatesTest.advance()");
+          assert.equal(await evaluate("window.__updatesTest.backendReads"), readsWhileAway);
           await evaluate("document.querySelector('input[name=desktop-update-channel][value=off]').click()");
           await wait("window.__updatesTest.frontendChannels[0] === 'off'");
           await evaluate("document.querySelector('input[name=desktop-update-channel][value=stable]').click()");
@@ -183,14 +246,31 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait(button('Restart and install') + ' !== undefined');
           await evaluate(button('Models') + '.click()');
           await wait("window.__updatesTest.unsubscriptions === 1");
-          await evaluate(button('Updates') + '.click()');
-          await wait("document.querySelector('[aria-label=Updates] [aria-selected=true]').textContent === 'Front End' && window.__updatesTest.frontendReads === 2");
+          await evaluate(button('System') + '.click()');
+          await wait("document.querySelector('[aria-label=System] [aria-selected=true]').textContent === 'Front End' && window.__updatesTest.frontendReads === 2");
           await evaluate("window.__updatesTest.openInstances()");
           await wait("document.querySelector('.instances') && window.__updatesTest.unsubscriptions === 2");
-          assert.equal(await evaluate("document.querySelector('[aria-label=Updates] [aria-selected=true]').textContent"), 'Back End');
+          assert.equal(await evaluate("document.querySelector('[aria-label=System] [aria-selected=true]').textContent"), 'Backend');
           assert.equal(await evaluate("document.querySelector('.backend-channel select').value"), 'canary');
-          assert.equal(await evaluate("document.querySelector('.container-provider select').value"), 'podman');
+          assert.equal(await evaluate("document.querySelectorAll('.instance-version strong')[1].textContent"), '1.4.2');
           assert.equal(await evaluate("window.__updatesTest.subscriptions"), 2);
+          const readsBeforeDestroyedRefresh = await evaluate("window.__updatesTest.backendReads");
+          await evaluate("window.__updatesTest.releaseRefresh = null; window.__updatesTest.holdRefresh = true; window.__updatesTest.advance()");
+          await wait("window.__updatesTest.releaseRefresh !== null");
+          await evaluate(button('Models') + '.click()');
+          await wait("window.__updatesTest.polls.size === 0");
+          await evaluate("window.__updatesTest.holdRefresh = false; window.__updatesTest.changeBackend({ backendChannel: 'stable', dockerError: null }); window.__updatesTest.advance()");
+          await evaluate(button('System') + '.click()');
+          await wait("window.__updatesTest.backendReads === " + (readsBeforeDestroyedRefresh + 2) + " && document.querySelector('.backend-channel select')?.value === 'stable'");
+          await evaluate("window.__updatesTest.hidden = true; window.__updatesTest.advance(); window.__updatesTest.releaseRefresh(); new Promise(resolve => setTimeout(resolve, 0))");
+          await evaluate(button('Models') + '.click()');
+          await wait("window.__updatesTest.polls.size === 0");
+          await evaluate(button('System') + '.click()');
+          await wait("document.querySelector('.backend-channel select') !== null");
+          assert.equal(await evaluate("document.querySelector('.backend-channel select').value"), 'stable');
+          assert.equal(await evaluate("window.__updatesTest.backendReads"), readsBeforeDestroyedRefresh + 2);
+          await evaluate("window.__updatesTest.hidden = false; document.dispatchEvent(new Event('visibilitychange'))");
+          await wait("window.__updatesTest.backendReads === " + (readsBeforeDestroyedRefresh + 3));
           console.log('updates-settings-browser: subtabs, actions, selection and subscriptions passed');
           window.destroy(); app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });

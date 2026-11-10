@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { Store } from '../../store.js';
 import { WORKSTREAM_KIND, asText } from './shared.js';
 import { Workstream } from './workstream.js';

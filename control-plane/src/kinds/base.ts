@@ -18,7 +18,7 @@
  */
 
 import { z, type ZodTypeAny } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { Store } from '../store.js';
 
 /** The row shape handed to a descriptor's `fts` projection. */

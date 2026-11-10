@@ -2,7 +2,7 @@ import { fetch as authenticatedFetch } from '../../tests/authenticatedFixture';
 import { describe, it, expect } from 'vitest';
 import { startServer } from '../../tests/authenticatedFixture';
 import { SERVICE_VERSION } from '../src/config';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/client';
 import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
 
 interface HealthBody {

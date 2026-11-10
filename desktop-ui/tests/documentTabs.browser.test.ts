@@ -20,6 +20,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       import App from '/src/renderer/App.svelte';
       import '/src/renderer/style.css';
       const state = window.__tabsTest = {};
+      const model = (kind, id) => ({ kind, id, title: state.titles?.[id] ?? id, status: 'open',
+        createdAt: 1, updatedAt: 1, closure: null, resourceVersion: state.version ?? 1, editable: !!state.editable,
+        topics: [], tree: [], agentMessages: [] });
       const environment = { id: 'tab-test', port: 7717, displayName: 'Tab test',
         mcpUrl: 'http://127.0.0.1:7717/mcp', source: 'sandbox' };
       const storageKey = 'working-memory.desktop.document-tabs:v1:tab-test';
@@ -37,10 +40,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           passwordConfigured: true, passwordHint: '', setupAvailable: true, authenticated: true }),
         onInstanceAuthenticationChanged: () => () => {},
         onOpenResource: listener => { state.open = listener; return () => {}; },
-        openResource: async (kind, id) => ({ kind, id, title: id, status: 'open',
-          createdAt: 1, updatedAt: 1, closure: null, resourceVersion: 1, editable: false,
-          topics: [], tree: [], agentMessages: [] }),
-        onDocumentChanges: () => () => {},
+        openResource: async (kind, id) => {
+          (state.reads ??= []).push(id);
+          if (state.hold === id) await new Promise(resolve => { state.release = () => { state.hold = null; resolve(); }; });
+          if (state.fail === id) { state.fail = null; throw new Error('Synthetic refresh failure'); }
+          return model(kind, id);
+        },
+        saveWorkstream: async (id, patch) => {
+          await new Promise(resolve => { state.finishSave = resolve; });
+          (state.titles ??= {})[id] = patch.title;
+          state.version = 2;
+          return model('workstream', id);
+        },
+        onDocumentChanges: listener => { state.change = listener; return () => {}; },
         onResourceDragResult: () => () => {},
         getBackendHealth: async () => ({ state: 'healthy', endpoint: environment.mcpUrl,
           result: 'OK', observedAt: Date.now(), source: 'sandbox' }),
@@ -173,7 +185,63 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate('document.querySelector(".document-tab-close").click()');
           await wait('document.querySelectorAll(".document-tab").length === 1');
           assert.deepEqual(await order(), ['first']);
+          await evaluate('window.__tabsTest.open("workstream", "second")');
+          await wait('document.querySelector(".document-tab.selected .document-tab-select").textContent.trim() === "second"');
+          const change = () => evaluate('window.__tabsTest.change({mcpUrl:"http://127.0.0.1:7717/mcp",change:{resourceVersion:2,reset:false,changes:[{kind:"Workstream",id:"first",resourceVersion:2,deleted:false}]}})');
+          const select = id => evaluate(\`Array.from(document.querySelectorAll(".document-tab-select")).find(tab => tab.textContent.trim() === \${JSON.stringify(id)}).click()\`);
+          await evaluate('window.__tabsTest.reads = []');
+          await change();
+          await wait('window.__tabsTest.reads.length === 1');
+          await delay(150);
+          assert.deepEqual(await evaluate('window.__tabsTest.reads'), ['second']);
+          await evaluate('window.__tabsTest.hold = "first"');
+          await select('first');
+          await wait('document.querySelector(".document-refresh-status") !== null');
+          assert.equal(await selected(), 'first');
+          assert.deepEqual(await evaluate('window.__tabsTest.reads'), ['second', 'first']);
+          await evaluate('window.__tabsTest.release()');
+          await wait('document.querySelector(".document-refresh-status") === null');
+          await select('second');
+          await delay(150);
+          assert.deepEqual(await evaluate('window.__tabsTest.reads'), ['second', 'first']);
+          await evaluate('window.__tabsTest.reads = []');
+          await change();
+          await wait('window.__tabsTest.reads.length === 1');
+          assert.deepEqual(await evaluate('window.__tabsTest.reads'), ['second']);
+          await evaluate('window.__tabsTest.fail = "first"');
+          await select('first');
+          await wait('document.querySelector(".live-update-error")?.textContent.includes("Synthetic refresh failure")');
+          await select('second');
+          await select('first');
+          await wait('window.__tabsTest.reads.filter(id => id === "first").length === 2');
+          await wait('document.querySelector(".document-refresh-status") === null');
+          await wait('document.querySelector(".live-update-error") === null');
+          assert.equal(await selected(), 'first');
+          await evaluate('window.__tabsTest.editable = true');
+          await change();
+          await wait('document.querySelector(".document-host .title-input") !== null');
+          await evaluate(\`(() => {
+            window.__tabsTest.reads = [];
+            const input = document.querySelector('input[aria-label="Workstream title"]');
+            input.value = 'Local draft';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          })()\`);
+          await wait('typeof window.__tabsTest.finishSave === "function"');
+          await change();
+          await delay(250);
+          assert.deepEqual(await evaluate('window.__tabsTest.reads'), []);
+          assert.equal(await evaluate('document.querySelector(".document-host .title-input").value'), 'Local draft');
+          await select('second');
+          await evaluate('window.__tabsTest.finishSave()');
+          await delay(150);
+          assert.deepEqual(await evaluate('window.__tabsTest.reads'), ['second']);
+          await evaluate('window.__tabsTest.open("workstream", "first")');
+          await wait('window.__tabsTest.reads.includes("first")');
+          await wait('document.querySelector(".document-refresh-status") === null');
+          assert.equal(await evaluate('document.querySelector(".document-host .title-input").value'), 'Local draft');
           console.log('tabs-browser: reorder, cancellation, persistence, previews and close actions passed');
+          console.log('tabs-browser: activation refresh, cached content and retry passed');
+          console.log('tabs-browser: unsaved edits and inactive save completion passed');
           window.destroy();
           app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });
@@ -182,6 +250,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         timeout: 60_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '' },
       });
       expect(stdout, stderr).toContain('tabs-browser: reorder, cancellation, persistence, previews and close actions passed');
+      expect(stdout, stderr).toContain('tabs-browser: activation refresh, cached content and retry passed');
+      expect(stdout, stderr).toContain('tabs-browser: unsaved edits and inactive save completion passed');
     } finally {
       await server.close();
       await rm(directory, { recursive: true, force: true });

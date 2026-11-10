@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { Store, UpdateDocumentInput } from '../../store.js';
 import { validateSpec } from '../registry.js';
 import { WORKSTREAM_KIND, asError, asText } from './shared.js';
