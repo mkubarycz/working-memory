@@ -155,7 +155,9 @@ backup are managed outside the app.
 - **Rename** changes the display name shown in the environment picker.
 - **Back up…** writes a consistent SQLite snapshot
   (`working-memory-<name>-<timestamp>.sqlite`) to a folder you choose
-  (default: Desktop). The instance must be running.
+  (default: Desktop). The instance must be running, and you must be signed in
+  as its owner. The backend creates the snapshot using its already-open store;
+  the desktop copies only that finished snapshot from the container.
 
 Managed instances are recorded in the app's `data-tier/instances.json`
 (`~/Library/Application Support/Working Memory` on macOS,
@@ -165,6 +167,20 @@ Managed instances are recorded in the app's `data-tier/instances.json`
   ports use `WorkingMemory-<port>`.
 - Windows: the selected engine's volume `working-memory-data` (SQLite WAL is unreliable
   on Windows bind mounts); other ports use `working-memory-data-<port>`.
+
+On macOS, a separate read-only SQLite process opening a live database on a
+Docker bind mount has reproduced a backend `SIGBUS` (exit 135); database
+corruption was not demonstrated. The managed desktop **Back up…** path now asks
+the owning backend process to create its snapshot. Backend diagnostics and
+incident/heap reports also use that process's existing store handle. The
+resource-ID maintenance command below takes an offline-maintenance marker that
+prevents this version of the backend from starting while it accesses the
+database. These protections cover those supported Working Memory paths only:
+they do not establish that arbitrary SQLite tools, older backend builds, or
+other host/container processes can safely inspect a live bind-mounted database.
+Stop the backend before external inspection or maintenance, and do not copy the
+live database files as a substitute for a snapshot. Existing storage is not
+automatically moved to a Docker volume.
 
 Set `WM_DATA_TIER_AUTOSTART=0` to disable automatic data-tier startup.
 This controls backend containers only, never provider startup.
@@ -1477,6 +1493,15 @@ node scripts/upgrade-resource-ids.mjs --database "/path/to/journal.sqlite" --app
 ```
 
 `--apply` creates a consistent sibling SQLite backup before changing data.
+The command takes an offline-maintenance marker beside the selected data
+directory, and the current control-plane daemon refuses to open that directory
+until the command exits. If the command is interrupted and leaves the marker,
+verify no maintenance process is still running before removing
+`run/offline-maintenance.lock`. A surviving `run/control-plane.lock` also makes
+the command refuse to open the database; verify the backend is stopped before
+removing a stale lock. Keep the backend stopped when using an older build or a
+database path outside the backend's normal data directory; this coordination
+is not a general lock for arbitrary external SQLite clients.
 It rewrites resolvable legacy native, loopback, and VS Code resource URLs to
 ID-based native URLs, excluding immutable `legacy_source` archives. It detaches
 unresolvable relationships, substitutes the existing general Topic type for

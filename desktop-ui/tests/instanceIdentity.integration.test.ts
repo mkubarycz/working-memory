@@ -1,4 +1,8 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { startServer, type RunningServer } from '../../control-plane/src/server';
 import { DesktopInstanceIdentity } from '../src/main/instanceIdentity';
@@ -29,6 +33,36 @@ it('updates queue settings through authenticated HTTP and surfaces rejected save
   fetcher.mockResolvedValueOnce(Response.json({ error: 'Queue settings changed' }, { status: 409 }));
   await expect(identity.updateToolQueueSettings(`${origin}/mcp`, update)).rejects.toThrow('Queue settings changed');
   expect(vault.session(origin)).toBe(token);
+});
+
+it('creates an authenticated SQLite snapshot through the backend-owned database handle', async () => {
+  const bootstrap = randomBytes(32).toString('hex');
+  const server = await startServer({ port: 0, hostTaskAdminCredential: bootstrap });
+  servers.push(server);
+  const vault = new HostTaskCredentialVault({ isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn() }, process.platform, '/not-used');
+  const identity = new DesktopInstanceIdentity(vault, async () => bootstrap, () => true);
+  const mcpUrl = `${server.url}/mcp`, id = randomUUID();
+  const snapshot = join(tmpdir(), `working-memory-${id}.sqlite`);
+  try {
+    const anonymous = await fetch(`${server.url}/identity/v1/backups`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+    });
+    expect(anonymous.status).toBe(401);
+    expect(existsSync(snapshot)).toBe(false);
+
+    await identity.signIn(mcpUrl, 'a private owner password', true);
+    await identity.createDatabaseBackup(mcpUrl, id);
+    expect(existsSync(snapshot)).toBe(true);
+    const database = new DatabaseSync(snapshot, { readOnly: true });
+    try {
+      expect(database.prepare('PRAGMA quick_check').get()?.quick_check).toBe('ok');
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='resources'").get()).toBeTruthy();
+    } finally {
+      database.close();
+    }
+  } finally {
+    rmSync(snapshot, { force: true });
+  }
 });
 
 it('explains identity timeouts without clearing the session, then accepts recovery or authoritative revocation', async () => {

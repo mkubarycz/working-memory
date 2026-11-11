@@ -466,14 +466,27 @@ describe('data tier launcher', () => {
         instances: [{ port: 7720, name: 'My Work!' }],
         containers: { 'working-memory-control-plane-7720': running('2.0.0') },
       });
-      const file = await manager.backup(7720, '/Users/me/Desktop');
+      let snapshotId = '';
+      const createSnapshot = vi.fn(async (id: string) => { snapshotId = id; });
+      const file = await manager.backup(7720, '/Users/me/Desktop', createSnapshot);
       expect(file).toBe(join('/Users/me/Desktop', 'working-memory-my-work-20261016-090507.sqlite'));
-      const exec = calls.find((args) => args[0] === 'exec' && args[2] === 'node');
-      expect(exec?.slice(0, 4)).toEqual(['exec', 'working-memory-control-plane-7720', 'node', '--experimental-sqlite']);
-      expect(exec?.[5]).toContain("VACUUM INTO '/tmp/working-memory-my-work-20261016-090507.sqlite'");
-      expect(exec?.[5]).toContain('/data/journal.sqlite');
-      expect(calls).toContainEqual(['cp', 'working-memory-control-plane-7720:/tmp/working-memory-my-work-20261016-090507.sqlite', file]);
-      expect(calls).toContainEqual(['exec', 'working-memory-control-plane-7720', 'rm', '-f', '/tmp/working-memory-my-work-20261016-090507.sqlite']);
+      expect(snapshotId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(createSnapshot).toHaveBeenCalledWith(snapshotId);
+      const snapshot = `/tmp/working-memory-${snapshotId}.sqlite`;
+      expect(calls).toContainEqual(['cp', `working-memory-control-plane-7720:${snapshot}`, file]);
+      expect(calls).toContainEqual(['exec', 'working-memory-control-plane-7720', 'rm', '-f', snapshot]);
+      expect(calls.some(args => args[0] === 'exec' && args.includes('node'))).toBe(false);
+    });
+
+    it('surfaces backend snapshot errors without copying a database', async () => {
+      const { manager, calls } = harness({
+        instances: [{ port: 7720, name: 'Work' }],
+        containers: { 'working-memory-control-plane-7720': running('2.0.0') },
+      });
+      await expect(manager.backup(7720, '/tmp', async () => { throw new Error('Sign in as the instance owner'); }))
+        .rejects.toThrow('Sign in as the instance owner');
+      expect(calls.some(args => args[0] === 'cp')).toBe(false);
+      expect(calls.some(args => args[0] === 'exec' && args[3] === 'rm')).toBe(false);
     });
 
     it('refuses to back up a stopped instance', async () => {
@@ -481,7 +494,7 @@ describe('data tier launcher', () => {
         instances: [{ port: 7720, name: 'Work' }],
         containers: { 'working-memory-control-plane-7720': { state: 'exited', status: 'Exited', image: 'working-memory-control-plane:2.0.0' } },
       });
-      await expect(manager.backup(7720, '/tmp')).rejects.toMatchObject({ code: 'not-running' });
+      await expect(manager.backup(7720, '/tmp', vi.fn())).rejects.toMatchObject({ code: 'not-running' });
     });
 
     it('at launch, creates the default instance on a fresh install', async () => {

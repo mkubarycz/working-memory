@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { acquireOfflineMaintenanceLock } from '../out/control-plane/lockfile.js';
 import { migrateResourceIds } from '../out/control-plane/resourceIdMigration.js';
 
 const args = process.argv.slice(2);
@@ -12,8 +13,10 @@ if (pathIndex === -1 || !args[pathIndex + 1] ||
 const filename = resolve(args[pathIndex + 1]);
 if (!existsSync(filename)) throw new Error(`Database does not exist: ${filename}`);
 const apply = args.includes('--apply');
-const db = new DatabaseSync(filename);
+const maintenance = acquireOfflineMaintenanceLock(filename);
+let db;
 try {
+  db = new DatabaseSync(filename);
   db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON');
   if (apply) {
     const backup = `${filename}.before-resource-ids-${Date.now()}.sqlite`;
@@ -23,5 +26,6 @@ try {
   const result = migrateResourceIds(db, { repairLegacyData: true, dryRun: !apply });
   console.log(JSON.stringify({ applied: apply, ...result }, null, 2));
 } finally {
-  db.close();
+  db?.close();
+  maintenance.release();
 }

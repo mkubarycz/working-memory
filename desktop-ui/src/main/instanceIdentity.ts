@@ -47,8 +47,15 @@ export class DesktopInstanceIdentity {
     private readonly passwords?: InstancePasswordVault,
   ) {}
 
-  private async request(mcpUrl: string, path: string, input?: object, token?: string, signal?: AbortSignal): Promise<unknown> {
-    const timeout = AbortSignal.timeout(10000);
+  private async request(
+    mcpUrl: string,
+    path: string,
+    input?: object,
+    token?: string,
+    signal?: AbortSignal,
+    timeoutMs = 10_000,
+  ): Promise<unknown> {
+    const timeout = AbortSignal.timeout(timeoutMs);
     let response: Response;
     try {
       response = await this.fetcher(`${hostTaskOrigin(mcpUrl)}${path}`, {
@@ -59,7 +66,7 @@ export class DesktopInstanceIdentity {
       });
     } catch (cause) {
       if (timeout.aborted && !signal?.aborted) {
-        throw new Error(`Instance request timed out after 10 seconds (${input === undefined ? 'GET' : 'POST'} ${path}). `
+        throw new Error(`Instance request timed out after ${timeoutMs / 1000} seconds (${input === undefined ? 'GET' : 'POST'} ${path}). `
           + 'The backend did not respond in time; this does not mean your session expired.', { cause });
       }
       throw cause;
@@ -75,6 +82,10 @@ export class DesktopInstanceIdentity {
       if (path === '/identity/v1/tool-queue/settings') {
         const detail = z.object({ error: z.string().min(1).max(1000) }).safeParse(await response.json());
         throw new InstanceHttpError(response.status, detail.success ? detail.data.error : `Queue settings update failed (HTTP ${response.status}).`);
+      }
+      if (path === '/identity/v1/backups') {
+        const detail = z.object({ error: z.string().min(1).max(1000) }).safeParse(await response.json());
+        throw new InstanceHttpError(response.status, detail.success ? detail.data.error : `Database backup failed (HTTP ${response.status}).`);
       }
       if (response.status === 429) throw new Error(path === '/identity/v1/sessions/gc'
         ? 'Wait one minute before requesting another heap collection.' : 'Too many sign-in attempts. Try again in a minute.');
@@ -233,6 +244,21 @@ export class DesktopInstanceIdentity {
         throw new Error('This backend does not support Diagnostics. Upgrade it to 1.4.1 or newer.');
       }
 
+      throw error;
+    }
+  }
+
+  async createDatabaseBackup(mcpUrl: string, id: string): Promise<void> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to back up the database.');
+    try {
+      const result = await this.request(mcpUrl, '/identity/v1/backups',
+        { id: z.string().uuid().parse(id) }, token, undefined, 10 * 60_000);
+      z.object({ id: z.string().uuid() }).parse(result);
+    } catch (error) {
+      if (error instanceof InstanceHttpError && error.status === 404) {
+        throw new Error('This backend does not support ownership-safe database backups. Upgrade the managed instance, then retry.');
+      }
       throw error;
     }
   }

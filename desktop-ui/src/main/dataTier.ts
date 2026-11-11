@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { homedir as systemHomedir } from 'node:os';
 import { join } from 'node:path';
@@ -99,8 +100,6 @@ export function bundledImage(version: string): string {
 function isBundledImage(image: string): boolean {
   return image.startsWith(`${IMAGE_REPOSITORY}:`);
 }
-const CONTAINER_DATABASE = '/data/journal.sqlite';
-
 /** Docker and host names for one data-tier instance; the default instance keeps the original names. */
 export interface DataTierInstanceNames {
   port: number;
@@ -568,8 +567,8 @@ export class DataTierManager {
     });
   }
 
-  /** Writes a consistent SQLite snapshot of a running instance into the destination folder. */
-  backup(port: number, destinationDirectory: string): Promise<string> {
+  /** Copies a consistent snapshot created by the running backend into the destination folder. */
+  backup(port: number, destinationDirectory: string, createSnapshot: (id: string) => Promise<void>): Promise<string> {
     return this.serialize(async () => {
       const instance = this.require(port);
       const { docker, env } = await this.docker();
@@ -577,16 +576,18 @@ export class DataTierManager {
       const running = (await this.containers(docker, env)).get(container)?.state === 'running';
       if (!running) throw new DataTierError('Start the instance before backing it up.', 'not-running');
       const fileName = `working-memory-${fileId(instance.name)}-${backupTimestamp(this.now())}.sqlite`;
-      const snapshot = `/tmp/${fileName}`;
-      const vacuum = `const { DatabaseSync } = require('node:sqlite');`
-        + `const db = new DatabaseSync(${JSON.stringify(CONTAINER_DATABASE)});`
-        + `db.exec("VACUUM INTO '${snapshot}'"); db.close();`;
-      await this.run(docker, env, ['exec', container, 'node', '--experimental-sqlite', '-e', vacuum], 'start-failed', 'Unable to snapshot the instance database.');
+      const id = randomUUID();
+      const snapshot = `/tmp/working-memory-${id}.sqlite`;
       const destination = join(destinationDirectory, fileName);
+      let snapshotReady = false;
       try {
+        await createSnapshot(id);
+        snapshotReady = true;
         await this.run(docker, env, ['cp', `${container}:${snapshot}`, destination], 'start-failed', 'Unable to copy the database backup.');
       } finally {
-        await this.runner.run(docker, ['exec', container, 'rm', '-f', snapshot], { timeoutMs: this.timeouts.command, env }).catch(() => undefined);
+        if (snapshotReady) {
+          await this.runner.run(docker, ['exec', container, 'rm', '-f', snapshot], { timeoutMs: this.timeouts.command, env }).catch(() => undefined);
+        }
       }
       return destination;
     });

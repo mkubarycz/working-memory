@@ -19,7 +19,7 @@ import {
   runtimeDir,
   storeDir,
 } from './paths.js';
-import { acquireLock, type Lock } from './lockfile.js';
+import { acquireLock, assertNoOfflineMaintenance, type Lock } from './lockfile.js';
 import { removePortFile, writePortFile } from './portfile.js';
 import { openStore, type Store } from './store.js';
 import { startServer, type RunningServer } from './server.js';
@@ -101,12 +101,14 @@ export async function runDaemon(): Promise<Daemon> {
   fs.mkdirSync(storeDir(), { recursive: true });
   fs.mkdirSync(runtimeDir(), { recursive: true });
 
+  assertNoOfflineMaintenance(runtimeDir());
   const lock: Lock = acquireLock(lockPath());
 
   let store: Store | undefined;
   let server: RunningServer | undefined;
 
   try {
+    assertNoOfflineMaintenance(runtimeDir());
     const kinds = await loadKinds();
     store = openStore(dbPath());
     log(`registered kinds: ${kinds.length ? kinds.join(', ') : '(none)'}`);
