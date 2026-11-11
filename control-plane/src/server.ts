@@ -19,6 +19,8 @@
 
 import * as http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { CancelledNotificationSchema } from '@modelcontextprotocol/core';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
@@ -68,6 +70,7 @@ import {
 } from './kinds/registry.js';
 
 const toolExecution = new AsyncLocalStorage<{ failed: boolean }>();
+const databaseBackupInputSchema = z.object({ id: z.string().uuid() }).strict();
 
 export interface StartServerOptions extends HostTaskOptions {
   sessionDiagnostics?: SessionDiagnosticsOptions;
@@ -883,6 +886,30 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       if (!hostTasks.identity.authenticate(token)) { endJson(res, 401, { error: 'Sign in as the instance owner to view diagnostics.' }); return; }
       if (req.method !== 'GET') { endJson(res, 405, { error: 'Diagnostics accepts GET only.' }); return; }
       endJson(res, 200, diagnostics.snapshot(sessions.activeCount));
+      return;
+    }
+    if (url.pathname === '/identity/v1/backups') {
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.headers.origin || url.search) { endJson(res, 400, { error: 'Use the trusted desktop connection without query parameters.' }); return; }
+      if (!hostTasks.identity.authenticate(token)) { endJson(res, 401, { error: 'Sign in as the instance owner to back up the database.' }); return; }
+      if (req.method !== 'POST') { endJson(res, 405, { error: 'Database backup creation accepts POST only.' }); return; }
+      if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') {
+        endJson(res, 415, { error: 'JSON required.' });
+        return;
+      }
+      try {
+        const { id } = databaseBackupInputSchema.parse(await readJsonBody(req));
+        const snapshotPath = join(tmpdir(), `working-memory-${id}.sqlite`);
+        store.db.prepare('VACUUM INTO ?').run(snapshotPath);
+        endJson(res, 200, { id });
+      } catch (error) {
+        if (error instanceof z.ZodError || error instanceof SyntaxError) {
+          endJson(res, 400, { error: 'Provide a valid backup ID.' });
+        } else {
+          console.error('[backup] Database snapshot failed:', error);
+          endJson(res, 500, { error: error instanceof Error ? error.message : 'Database snapshot failed.' });
+        }
+      }
       return;
     }
     if (url.pathname === '/identity/v1/tool-queue' || url.pathname.startsWith('/identity/v1/tool-queue/')) {

@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { acquireLock, AlreadyRunningError, isProcessAlive } from '../src/lockfile';
+import {
+  acquireLock,
+  acquireOfflineMaintenanceLock,
+  AlreadyRunningError,
+  assertNoOfflineMaintenance,
+  isProcessAlive,
+} from '../src/lockfile';
 
 // A pid that is essentially guaranteed not to be alive on any host.
 const DEAD_PID = 2 ** 31 - 1;
@@ -82,5 +88,22 @@ describe('acquireLock', () => {
     const lock = acquireLock(lp);
     lock.release();
     expect(() => lock.release()).not.toThrow();
+  });
+});
+
+describe('offline database maintenance lock', () => {
+  it('excludes daemon startup while held and releases only its own marker', () => {
+    const database = path.join(dir, 'journal.sqlite');
+    const maintenance = acquireOfflineMaintenanceLock(database);
+    expect(() => assertNoOfflineMaintenance(path.join(dir, 'run'))).toThrow('offline database maintenance');
+    maintenance.release();
+    expect(() => assertNoOfflineMaintenance(path.join(dir, 'run'))).not.toThrow();
+  });
+
+  it('refuses to start when the daemon lock already exists', () => {
+    const database = path.join(dir, 'journal.sqlite');
+    const daemon = acquireLock(path.join(dir, 'run', 'control-plane.lock'));
+    expect(() => acquireOfflineMaintenanceLock(database)).toThrow('The control plane is running');
+    daemon.release();
   });
 });

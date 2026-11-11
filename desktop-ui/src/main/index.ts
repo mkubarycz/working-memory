@@ -1304,7 +1304,8 @@ function registerIpc(): void {
     const selection = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     const directory = selection.filePaths[0];
     if (selection.canceled || !directory) return null;
-    return manager.backup(port, directory);
+    return manager.backup(port, directory, id =>
+      identity.createDatabaseBackup(`http://127.0.0.1:${port}/mcp`, id));
   });
   ipcMain.handle('backend:health', async () => {
     const environment = environmentManager.currentEnvironment;
