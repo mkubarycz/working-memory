@@ -244,10 +244,12 @@ describe('data tier launcher', () => {
       platform?: 'darwin' | 'linux';
       version?: string;
       busyPorts?: number[];
+      publishedPorts?: string;
       containers?: Record<string, FakeContainer>;
       instances?: Array<{ port: number; name: string }>;
       inspectionError?: string;
       composeError?: string;
+      cleanupError?: string;
     } = {}) {
       const directory = options.directory ?? stateDirectory();
       const testHost = { ...mac, platform: options.platform ?? mac.platform, homedir: directory };
@@ -267,6 +269,12 @@ describe('data tier launcher', () => {
       const runner: CommandRunner = {
         run: vi.fn(async (_file, args) => {
           calls.push(args);
+          if (options.cleanupError && args[0] === 'exec' && args[2] === 'rm') {
+            throw new CommandExecutionError('cleanup failed', 1, options.cleanupError);
+          }
+          if (args[0] === 'ps' && args[2] === '{{.Ports}}') {
+            return { stdout: options.publishedPorts ?? '', stderr: '' };
+          }
           if (args[0] === 'ps') {
             return {
               stdout: [...containers].map(([name, c]) => `${name}\t${c.state}\t${c.status}\t${c.image}`).join('\n'),
@@ -319,6 +327,20 @@ describe('data tier launcher', () => {
       await expect(manager.create()).resolves.toMatchObject({ port: 7721, name: 'Working Memory 7721' });
       expect(manager.instances.map((instance) => instance.port)).toEqual([7720, 7721]);
       expect(calls.filter((args) => args[0] === 'load')).toHaveLength(1);
+    });
+
+    it('skips Docker-published TCP ports even when the host bind probe reports them free', async () => {
+      const { manager } = harness({
+        containers: { 'working-memory-control-plane': running('latest') },
+        publishedPorts: '0.0.0.0:7719->80/tcp, [::]:7719->80/tcp\n127.0.0.1:7720-7722->8000-8002/tcp\n0.0.0.0:7723->53/udp',
+      });
+      await expect(manager.create('Scratch')).resolves.toMatchObject({ port: 7723 });
+    });
+
+    it('reports exhaustion instead of reusing published ports or leaving the Working Memory range', async () => {
+      const { manager } = harness({ publishedPorts: '0.0.0.0:7717-7799->7717-7799/tcp' });
+      await expect(manager.create()).rejects.toThrow('No free port');
+      expect(manager.instances).toEqual([]);
     });
 
     it('lists only managed instances with state, version, and available upgrades', async () => {
@@ -466,14 +488,42 @@ describe('data tier launcher', () => {
         instances: [{ port: 7720, name: 'My Work!' }],
         containers: { 'working-memory-control-plane-7720': running('2.0.0') },
       });
-      const file = await manager.backup(7720, '/Users/me/Desktop');
+      let snapshotId = '';
+      const createSnapshot = vi.fn(async (id: string) => { snapshotId = id; });
+      const file = await manager.backup(7720, '/Users/me/Desktop', createSnapshot);
       expect(file).toBe(join('/Users/me/Desktop', 'working-memory-my-work-20261016-090507.sqlite'));
-      const exec = calls.find((args) => args[0] === 'exec' && args[2] === 'node');
-      expect(exec?.slice(0, 4)).toEqual(['exec', 'working-memory-control-plane-7720', 'node', '--experimental-sqlite']);
-      expect(exec?.[5]).toContain("VACUUM INTO '/tmp/working-memory-my-work-20261016-090507.sqlite'");
-      expect(exec?.[5]).toContain('/data/journal.sqlite');
-      expect(calls).toContainEqual(['cp', 'working-memory-control-plane-7720:/tmp/working-memory-my-work-20261016-090507.sqlite', file]);
-      expect(calls).toContainEqual(['exec', 'working-memory-control-plane-7720', 'rm', '-f', '/tmp/working-memory-my-work-20261016-090507.sqlite']);
+      expect(snapshotId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(createSnapshot).toHaveBeenCalledWith(snapshotId);
+      const snapshot = `/tmp/working-memory-${snapshotId}.sqlite`;
+      expect(calls).toContainEqual(['cp', `working-memory-control-plane-7720:${snapshot}`, file]);
+      expect(calls).toContainEqual(['exec', 'working-memory-control-plane-7720', 'rm', '-f', snapshot]);
+      expect(calls.some(args => args[0] === 'exec' && args.includes('node'))).toBe(false);
+    });
+
+    it('surfaces backend snapshot errors without copying a database', async () => {
+      const { manager, calls } = harness({
+        instances: [{ port: 7720, name: 'Work' }],
+        containers: { 'working-memory-control-plane-7720': running('2.0.0') },
+      });
+      await expect(manager.backup(7720, '/tmp', async () => { throw new Error('Sign in as the instance owner'); }))
+        .rejects.toThrow('Sign in as the instance owner');
+      expect(calls.some(args => args[0] === 'cp')).toBe(false);
+      expect(calls.some(args => args[0] === 'exec' && args[2] === 'rm')).toBe(false);
+    });
+
+    it('reports temporary snapshot cleanup failures without discarding the completed backup', async () => {
+      const { manager } = harness({
+        instances: [{ port: 7720, name: 'Work' }],
+        containers: { 'working-memory-control-plane-7720': running('2.0.0') },
+        cleanupError: 'container unavailable',
+      });
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await expect(manager.backup(7720, '/tmp', async () => {})).resolves.toMatch(/working-memory-work-.*\.sqlite$/);
+        expect(log).toHaveBeenCalledWith('[data-tier] Database snapshot cleanup failed:', expect.any(Error));
+      } finally {
+        log.mockRestore();
+      }
     });
 
     it('refuses to back up a stopped instance', async () => {
@@ -481,7 +531,7 @@ describe('data tier launcher', () => {
         instances: [{ port: 7720, name: 'Work' }],
         containers: { 'working-memory-control-plane-7720': { state: 'exited', status: 'Exited', image: 'working-memory-control-plane:2.0.0' } },
       });
-      await expect(manager.backup(7720, '/tmp')).rejects.toMatchObject({ code: 'not-running' });
+      await expect(manager.backup(7720, '/tmp', vi.fn())).rejects.toMatchObject({ code: 'not-running' });
     });
 
     it('at launch, creates the default instance on a fresh install', async () => {

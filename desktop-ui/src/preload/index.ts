@@ -31,6 +31,8 @@ const api: DesktopApi = {
     return () => ipcRenderer.removeListener('instance:authentication-changed', handler);
   },
   getInstanceFeatures: () => invoke('instance:features'),
+  getObservability: () => invoke('instance:observability'),
+  openObservability: (source) => invoke('instance:open-observability', source),
   setInstanceFeatures: (input) => invoke('instance:set-features', input),
   signInHostScripts: (input) => invoke('host-scripts:sign-in', input),
   setInstancePasswordHint: (hint) => invoke('host-scripts:password-hint', hint),
@@ -63,6 +65,10 @@ const api: DesktopApi = {
     return () => ipcRenderer.removeListener('documents:changed', handler);
   },
   listContainerApps: () => invoke('container:list'),
+  mountContainerAppSurface: (id, surfaceId, bounds) => invoke('container:mount-surface', id, surfaceId, bounds),
+  resizeContainerAppSurface: (surfaceId, bounds) => invoke('container:resize-surface', surfaceId, bounds),
+  setContainerAppSurfaceVisible: (surfaceId, visible) => invoke('container:surface-visible', surfaceId, visible),
+  closeContainerAppSurface: (surfaceId) => invoke('container:close-surface', surfaceId),
   discoverEnvironments: () => invoke('environment:discover'),
   switchEnvironment: (mcpUrl) => invoke('environment:switch', mcpUrl),
   listInstances: () => invoke('instances:list'),

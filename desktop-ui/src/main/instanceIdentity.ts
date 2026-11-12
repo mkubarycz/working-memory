@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { HostTaskCredentialVault, hostTaskOrigin } from './hostTaskBroker';
-import { instanceFeaturesSchema, type InstanceFeatures, type InstanceFeatureUpdate } from '../../../control-plane/src/instanceFeatures';
+import { instanceFeaturesSchema, instanceFeaturesV3Schema, type InstanceFeatures, type InstanceFeatureUpdate } from '../../../control-plane/src/instanceFeatures';
+import { observabilityStatusSchema, type ObservabilityConfiguration, type ObservabilityStatus } from '../../../control-plane/src/observability';
 import type { InstanceConnectionState, InstanceAccessSnapshot } from '../shared/instanceIdentity';
 import type { InstancePasswordVault } from './instancePasswordVault';
 import { instancePermissionsSchema } from '../../../control-plane/src/instancePermissions';
@@ -47,8 +48,9 @@ export class DesktopInstanceIdentity {
     private readonly passwords?: InstancePasswordVault,
   ) {}
 
-  private async request(mcpUrl: string, path: string, input?: object, token?: string, signal?: AbortSignal): Promise<unknown> {
-    const timeout = AbortSignal.timeout(10000);
+  private async request(mcpUrl: string, path: string, input?: object, token?: string, signal?: AbortSignal,
+    timeoutMs = 10000): Promise<unknown> {
+    const timeout = AbortSignal.timeout(timeoutMs);
     let response: Response;
     try {
       response = await this.fetcher(`${hostTaskOrigin(mcpUrl)}${path}`, {
@@ -59,7 +61,7 @@ export class DesktopInstanceIdentity {
       });
     } catch (cause) {
       if (timeout.aborted && !signal?.aborted) {
-        throw new Error(`Instance request timed out after 10 seconds (${input === undefined ? 'GET' : 'POST'} ${path}). `
+        throw new Error(`Instance request timed out after ${timeoutMs / 1000} seconds (${input === undefined ? 'GET' : 'POST'} ${path}). `
           + 'The backend did not respond in time; this does not mean your session expired.', { cause });
       }
       throw cause;
@@ -75,6 +77,10 @@ export class DesktopInstanceIdentity {
       if (path === '/identity/v1/tool-queue/settings') {
         const detail = z.object({ error: z.string().min(1).max(1000) }).safeParse(await response.json());
         throw new InstanceHttpError(response.status, detail.success ? detail.data.error : `Queue settings update failed (HTTP ${response.status}).`);
+      }
+      if (path === '/identity/v1/backups') {
+        const detail = z.object({ error: z.string().min(1).max(1000) }).safeParse(await response.json());
+        throw new InstanceHttpError(response.status, detail.success ? detail.data.error : `Database backup failed (HTTP ${response.status}).`);
       }
       if (response.status === 429) throw new Error(path === '/identity/v1/sessions/gc'
         ? 'Wait one minute before requesting another heap collection.' : 'Too many sign-in attempts. Try again in a minute.');
@@ -136,6 +142,11 @@ export class DesktopInstanceIdentity {
   async features(mcpUrl: string, signal?: AbortSignal): Promise<InstanceFeatures> {
     const token = this.vault.session(hostTaskOrigin(mcpUrl)) ?? undefined;
     try {
+      return instanceFeaturesV3Schema.parse(await this.request(mcpUrl, '/features/v3', undefined, token, signal));
+    } catch (error) {
+      if (!(error instanceof InstanceHttpError) || error.status !== 404) throw error;
+    }
+    try {
       return instanceFeaturesSchema.parse(await this.request(mcpUrl, '/features/v2', undefined, token, signal));
     } catch (error) {
       if (!(error instanceof InstanceHttpError) || error.status !== 404) throw error;
@@ -150,11 +161,29 @@ export class DesktopInstanceIdentity {
       throw new Error('Sign in as the instance owner to change features.');
     }
     try {
+      return instanceFeaturesV3Schema.parse(await this.request(mcpUrl, '/features/v3', features, token));
+    } catch (error) {
+      if (!(error instanceof InstanceHttpError) || error.status !== 404) throw error;
+      if (features.observability !== undefined) throw new Error('Upgrade this backend to use the Observability Container App.');
+    }
+    try {
       return instanceFeaturesSchema.parse(await this.request(mcpUrl, '/features/v2', features, token));
     } catch (error) {
       if (!(error instanceof InstanceHttpError) || error.status !== 404) throw error;
       if (features.search !== undefined) throw new Error('This instance does not support Search. Upgrade its control plane to 1.4.0.');
       return instanceFeaturesSchema.parse(await this.request(mcpUrl, '/features/v1', features, token));
+    }
+
+  }
+
+  async observability(mcpUrl: string, configuration?: ObservabilityConfiguration): Promise<ObservabilityStatus> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to manage observability.');
+    try {
+      return observabilityStatusSchema.parse(await this.request(mcpUrl, '/identity/v1/observability', configuration, token));
+    } catch (error) {
+      if (error instanceof InstanceHttpError && error.status === 404) throw new Error('Upgrade this backend to use the Observability Container App.');
+      throw error;
     }
   }
 
@@ -233,6 +262,21 @@ export class DesktopInstanceIdentity {
         throw new Error('This backend does not support Diagnostics. Upgrade it to 1.4.1 or newer.');
       }
 
+      throw error;
+    }
+  }
+
+  async createDatabaseBackup(mcpUrl: string, id: string): Promise<void> {
+    const token = this.vault.session(hostTaskOrigin(mcpUrl));
+    if (!token) throw new Error('Sign in as the instance owner to back up the database.');
+    try {
+      const result = await this.request(mcpUrl, '/identity/v1/backups',
+        { id: z.string().uuid().parse(id) }, token, undefined, 10 * 60000);
+      z.object({ id: z.string().uuid() }).parse(result);
+    } catch (error) {
+      if (error instanceof InstanceHttpError && error.status === 404) {
+        throw new Error('This backend does not support ownership-safe database backups. Upgrade the managed instance, then retry.');
+      }
       throw error;
     }
   }

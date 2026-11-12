@@ -48,6 +48,7 @@ import { parseTopicAutocomplete, topicAutocompletePrompt } from './topicAutocomp
 import { addSearchTopicToWorkstream, openSearchWorkstreams, readOnlySearchTools, requireSemanticSearchReady, searchWithMatches, searchInstructions, searchOptionsSchema, SEARCH_TIMEOUT_MS } from './documentSearch';
 declare const __WM_BUILD_TIMESTAMP__: string;
 declare const __WM_BUILD_VERSION__: string;
+export let desktopStartup: Promise<void> = Promise.resolve();
 import {
   DESKTOP_MODEL_REQUEST_TIMEOUT_MS,
   DesktopChatAgent,
@@ -104,6 +105,8 @@ import { spellingMenuItems, watchSpellingDictionaryFailures } from './editorCont
 import { resourceDragFilename } from './resourceDragContext';
 import { DesktopCredentialVault } from './credentialVault';
 import { InstancePasswordVault, NativeInstanceCredentialVault } from './instancePasswordVault';
+import { ObservabilityContainer, isObservabilityClaim, observabilityAppId } from './observabilityContainer';
+import { ObservabilitySurface, openObservabilityWindow } from './observabilityWindow';
 import { InstanceMcpConnector } from './instanceMcpConnector';
 import { HostTaskCredentialVault } from './hostTaskBroker';
 import { assertHostTaskSender, registerHostTaskIpc } from './hostTaskIpc';
@@ -169,6 +172,12 @@ let documentChangeController: AbortController | undefined;
 let instanceVault: HostTaskCredentialVault | null = null;
 let instanceIdentity: DesktopInstanceIdentity | null = null;
 let hostScripts: ReturnType<typeof registerHostScriptIpc> | undefined;
+let observabilityContainer: ObservabilityContainer | undefined;
+const observabilitySurface = new ObservabilitySurface();
+const surfaceBoundsSchema = z.object({
+  x: z.number().finite(), y: z.number().finite(),
+  width: z.number().finite().nonnegative(), height: z.number().finite().nonnegative(),
+}).strict();
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'working-memory-attachment',
@@ -176,13 +185,17 @@ protocol.registerSchemesAsPrivileged([{
 }]);
 
 function instanceUnauthorized(mcpUrl: string, rejectedToken?: string | null): void {
-  if (rejectedToken !== undefined && instanceVault?.session(hostTaskOrigin(mcpUrl)) !== rejectedToken) return;
-  instanceVault?.clearSession(hostTaskOrigin(mcpUrl));
+  const origin = hostTaskOrigin(mcpUrl);
+  if (rejectedToken !== undefined && instanceVault?.session(origin) !== rejectedToken) return;
+  const expired = instanceVault?.sessionExpired(origin) ?? false;
+  if (!expired) instanceVault?.clearSession(origin);
   if (environmentManager.currentEnvironment?.mcpUrl === mcpUrl) {
     documentChangeController?.abort();
     hostScripts?.stop();
   }
-  mainWindow?.webContents.send('instance:authentication-changed', { mcpUrl, authenticated: false });
+  mainWindow?.webContents.send('instance:authentication-changed', {
+    mcpUrl, authenticated: false, ...(expired ? { reason: 'expired' } : {}),
+  });
 }
 
 function startDocumentChanges(): void {
@@ -328,6 +341,12 @@ function createContainerService(): DockerContainerService {
   return new DockerContainerService({
     provider: containerProvider,
     stateDirectory: join(app.getPath('userData'), 'container-app-ownership'),
+    privateEnvironment: async id => {
+      const mcpUrl = environmentManager.currentEnvironment?.mcpUrl;
+      if (!mcpUrl || !observabilityContainer) throw new Error('Select an instance before starting a Container App.');
+      const claim = await liveClaim(id);
+      return observabilityContainer.privateEnvironment(mcpUrl, claim);
+    },
     confirmStorageCreation: async (claim, provider) => {
       const { response } = await dialog.showMessageBox({
         type: 'warning',
@@ -1041,6 +1060,32 @@ function registerIpc(): void {
     'instance-sign-in',
   ), process.platform !== 'win32'));
   instanceIdentity = identity;
+  observabilityContainer = new ObservabilityContainer(new NativeInstanceCredentialVault(safeStorage, process.platform,
+    join(process.platform === 'win32' ? app.getPath('userData') : join(app.getPath('appData'), 'Working Memory'),
+      'observability-secrets')), identity);
+  const changeFeatures = async (mcpUrl: string, flags: import('../../../control-plane/src/instanceFeatures').InstanceFeatureUpdate,
+    ensureCurrent: () => void) => {
+    if (flags.observability === undefined) return identity.setFeatures(mcpUrl, flags);
+    const scope = beginContainerOperation();
+    try { return await observabilityContainer!.change(mcpUrl, flags, scope.client, dockerContainers, ensureCurrent, scope.signal); }
+    finally { scope.end(); }
+  };
+  const observabilityTarget = async (mcpUrl: string, ensureCurrent: () => void, claimId?: string) => {
+    const state = await identity.observability(mcpUrl);
+    if (!state.enabled || !state.claimId) throw new Error('Enable the Observability Container App in Settings > Features first.');
+    if (claimId !== undefined && state.claimId !== claimId) throw new Error("This is not the selected instance's Observability Container App.");
+    const claim = await liveClaim(state.claimId);
+    if (claim.application?.id !== observabilityAppId(mcpUrl)) throw new Error('The Observability Container App does not belong to this instance.');
+    const status = await dockerContainers.inspect(claim);
+    if (!status.ready) throw new Error('OpenObserve is not healthy. Re-enable its feature to start or repair it.');
+    const credentials = await observabilityContainer!.credentials(mcpUrl);
+    ensureCurrent();
+    return { status, credentials };
+  };
+  const openObservability = async (mcpUrl: string, ensureCurrent: () => void, source?: 'http' | 'queue' | 'embeddings') => {
+    const { status, credentials } = await observabilityTarget(mcpUrl, ensureCurrent);
+    await openObservabilityWindow(status.url, credentials, mainWindow ?? undefined, source);
+  };
   const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href;
   const probeInstance = async (target: { mcpUrl: string }): Promise<MonitorProbe> => {
     let dockerEvidence = '', dockerStart: string | null = null;
@@ -1201,6 +1246,7 @@ function registerIpc(): void {
     getEnvironment: () => environmentManager.currentEnvironment,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(bundleDirectory, '../renderer/index.html')).href,
     vault: hostTaskVault, identity, onSessionChanged,
+    setFeatures: changeFeatures, openObservability,
     onFeaturesChanged: features => {
       if (!features.search) {
         for (const search of searches.values()) search.controller.abort(new Error('Search is turned off. Enable it in Settings > Features.'));
@@ -1235,6 +1281,7 @@ function registerIpc(): void {
       ? discoverEnvironments() : environmentManager.initialize()));
   });
   ipcMain.handle('environment:switch', async (_event, mcpUrl: string) => {
+    observabilitySurface.close();
     documentChangeController?.abort();
     for (const search of searches.values()) search.controller.abort(new Error('The selected environment changed. Search again.'));
     containerEnvironmentGeneration += 1;
@@ -1304,7 +1351,8 @@ function registerIpc(): void {
     const selection = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     const directory = selection.filePaths[0];
     if (selection.canceled || !directory) return null;
-    return manager.backup(port, directory);
+    return manager.backup(port, directory, id =>
+      identity.createDatabaseBackup(`http://127.0.0.1:${port}/mcp`, id));
   });
   ipcMain.handle('backend:health', async () => {
     const environment = environmentManager.currentEnvironment;
@@ -1644,11 +1692,51 @@ function registerIpc(): void {
   ipcMain.handle('agent-message:snooze', (_event, id, dueAt) => snoozeAgentMessage(controlPlane(), id, dueAt));
   ipcMain.handle('action:invoke', (_event, workstream, command, args) => invokeAction(workstream, command, args));
   ipcMain.handle('container:list', () => readContainerAppDefinitions());
+  const requireSurfaceSender = (event: Electron.IpcMainInvokeEvent) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+      throw new Error('Container App surfaces can only be opened by the Working Memory window.');
+    }
+    return mainWindow;
+  };
+  ipcMain.handle('container:mount-surface', async (event, rawId: string, rawSurfaceId: unknown, rawBounds: unknown) => {
+    const parent = requireSurfaceSender(event);
+    const surfaceId = z.string().uuid().parse(rawSurfaceId);
+    const bounds = surfaceBoundsSchema.parse(rawBounds);
+    const scope = beginContainerOperation();
+    try {
+      const mcpUrl = environmentManager.currentEnvironment!.mcpUrl;
+      await observabilitySurface.open(surfaceId, parent, bounds, async () => {
+        const { status, credentials } = await observabilityTarget(mcpUrl, () => scope.signal.throwIfAborted(), rawId);
+        return { url: status.url, credentials };
+      });
+    } finally { scope.end(); }
+  });
+  ipcMain.handle('container:resize-surface', (event, surfaceId: string, rawBounds: unknown) => {
+    requireSurfaceSender(event);
+    observabilitySurface.resize(surfaceId, surfaceBoundsSchema.parse(rawBounds));
+  });
+  ipcMain.handle('container:close-surface', (event, surfaceId: string) => {
+    requireSurfaceSender(event);
+    observabilitySurface.close(surfaceId);
+  });
+  ipcMain.handle('container:surface-visible', (event, surfaceId: string, visible: unknown) => {
+    requireSurfaceSender(event);
+    observabilitySurface.setVisible(surfaceId, z.boolean().parse(visible));
+  });
   ipcMain.handle('container:run', async (_event, rawId: string) => {
     const scope = beginContainerOperation();
     try {
+      const claim = await containerAppClaim(scope.client, rawId);
+      if (isObservabilityClaim(claim)) {
+        const mcpUrl = environmentManager.currentEnvironment!.mcpUrl;
+        await changeFeatures(mcpUrl, { observability: true }, () => scope.signal.throwIfAborted());
+        const updated = await containerAppClaim(scope.client, rawId);
+        const status = await dockerContainers.inspect(updated, scope.signal);
+        if (!status.ready) throw new Error('OpenObserve became unavailable after setup.');
+        return { status: 'ready', url: status.url, claim: updated, action: 'reused' };
+      }
       return await dockerContainers.launch(
-        await containerAppClaim(scope.client, rawId),
+        claim,
         scope.signal,
       );
     } finally {
@@ -1669,8 +1757,11 @@ function registerIpc(): void {
   ipcMain.handle('container:stop', async (_event, rawId: string) => {
     const scope = beginContainerOperation();
     try {
+      const claim = await containerAppClaim(scope.client, rawId);
+      if (isObservabilityClaim(claim)) await changeFeatures(environmentManager.currentEnvironment!.mcpUrl,
+        { observability: false }, () => scope.signal.throwIfAborted());
       const result = await dockerContainers.stop(
-        await containerAppClaim(scope.client, rawId),
+        claim,
         scope.signal,
       );
       await appMcp.disconnect(rawId);
@@ -1683,6 +1774,10 @@ function registerIpc(): void {
     const scope = beginContainerOperation();
     try {
       const claim = await containerAppClaim(scope.client, rawId);
+      if (isObservabilityClaim(claim)) {
+        await openObservability(environmentManager.currentEnvironment!.mcpUrl, () => scope.signal.throwIfAborted());
+        return await dockerContainers.inspect(claim, scope.signal);
+      }
       const status = await dockerContainers.inspect(claim, scope.signal);
       if (!status.ready) throw new Error(`${claim.title} is not healthy.`);
       const url = new URL(status.url);
@@ -2042,7 +2137,7 @@ if (!ownsSingleInstanceLock) {
     }
   });
 
-  void app.whenReady().then(async () => {
+  desktopStartup = app.whenReady().then(async () => {
     registerDesktopProtocol();
     configFile = join(app.getPath('userData'), 'config.json');
     credentialVault = new DesktopCredentialVault(

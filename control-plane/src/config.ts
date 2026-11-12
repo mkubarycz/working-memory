@@ -59,7 +59,7 @@ export const PORT_ENV = 'WM_CONTROL_PLANE_PORT';
 export const LISTENING_MARKER = 'WM_CONTROL_PLANE_LISTENING';
 
 /** Runtime-dir filename for the single-instance lock. */
-export const LOCK_FILE = 'control-plane.lock';
+export { LOCK_FILE } from './lockfile.js';
 
 /** Runtime-dir filename for the discovery port file (`{ port, pid }`). */
 export const PORT_FILE = 'control-plane.port.json';

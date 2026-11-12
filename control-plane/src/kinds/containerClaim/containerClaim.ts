@@ -4,8 +4,14 @@ export const CONTAINER_CLAIM_KIND = 'ContainerClaim';
 
 export interface DockerRuntimeSpec {
   type: 'docker';
-  buildContext: string;
-  dockerfile: string;
+  buildContext?: string;
+  dockerfile?: string;
+  imageSource?: 'registry';
+  restartPolicy?: 'unless-stopped';
+  memoryMb?: number;
+  cpus?: number;
+  environment?: Record<string, string>;
+  network?: string;
   imageName: string;
   containerName: string;
   hostPort: number;
@@ -90,8 +96,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isDockerRuntimeSpec(value: unknown): value is DockerRuntimeSpec {
   if (!isRecord(value)) return false;
   return value.type === 'docker'
-    && typeof value.buildContext === 'string'
-    && typeof value.dockerfile === 'string'
+    && (value.imageSource === 'registry'
+      || typeof value.buildContext === 'string' && typeof value.dockerfile === 'string')
     && typeof value.imageName === 'string'
     && typeof value.containerName === 'string'
     && typeof value.hostPort === 'number'

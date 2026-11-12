@@ -22,6 +22,39 @@ function deferred() {
   return { promise, resolve };
 }
 
+it('dispatches immediate calls without waiting entries, queue peaks, or queue timers', async () => {
+  const f = fixture(), gate = deferred(), signal = new AbortController().signal;
+  const calls = Array.from({ length: 4 }, () =>
+    f.queue.run(f.metadata(), { private: 'NOT_QUEUED' }, signal, () => gate.promise));
+  expect(f.queue.state()).toMatchObject({ running: 4, waiting: 0, peakQueueDepth: 0, maxQueueWaitMs: 0 });
+  expect(f.queue.events().map(event => event.event)).toEqual(['started', 'started', 'started', 'started']);
+  expect(vi.getTimerCount()).toBe(0);
+  await vi.advanceTimersByTimeAsync(75);
+  gate.resolve();
+  await Promise.all(calls);
+  expect(f.queue.events().every(event => event.waitMs === 0)).toBe(true);
+  expect(f.queue.processing()).toMatchObject({ processedLastMinute: 4, averageWaitMs: 0, averageRunMs: 75 });
+});
+
+it('counts only genuine waiters when dispatch slots are occupied', async () => {
+  const f = fixture(), gate = deferred(), signal = new AbortController().signal;
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 1 }, f.queue.state().settings);
+  const immediate = f.metadata(), queued = f.metadata();
+  const first = f.queue.run(immediate, {}, signal, () => gate.promise);
+  const next = f.queue.run(queued, {}, signal, async () => {});
+  expect(f.queue.state()).toMatchObject({ running: 1, waiting: 1, peakQueueDepth: 1 });
+  expect(f.queue.events().filter(event => event.event === 'queued').map(event => event.requestId)).toEqual([queued.requestId]);
+  await vi.advanceTimersByTimeAsync(50);
+  gate.resolve();
+  await Promise.all([first, next]);
+  expect(f.queue.events().find(event => event.requestId === immediate.requestId && event.event === 'completed'))
+    .toMatchObject({ waitMs: 0 });
+  expect(f.queue.events().find(event => event.requestId === queued.requestId && event.event === 'completed'))
+    .toMatchObject({ waitMs: 50 });
+  expect(f.queue.state()).toMatchObject({ running: 0, waiting: 0, peakQueueDepth: 1, maxQueueWaitMs: 50 });
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 it('persists validated settings across queue restarts and rejects stale or failed writes without applying them', () => {
   const f = fixture();
   const settings = { ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 2, maxQueueSize: 8, queueTimeoutMs: 10000, heapDispatchPausePercent: 50 };
@@ -229,18 +262,18 @@ it('rejects waiting work during shutdown, allows started work to settle and rele
 
 it('caps lifecycle persistence at 2000 rows and expires events after 24 hours', async () => {
   const f = fixture();
-  for (let index = 0; index < 700; index++) {
+  for (let index = 0; index < 1100; index++) {
     await f.queue.run(f.metadata(), { private: 'NOT_LOGGED' }, new AbortController().signal, async () => {});
   }
   expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(2000);
   expect(f.queue.events()).toHaveLength(100);
   expect(f.queue.events(2000)).toHaveLength(2000);
-  expect(f.queue.state().requestsByTool).toEqual({ 'wm-document-query': 700 });
-  expect(f.queue.state().timingsByTool['wm-document-query'].finished).toBe(700);
-  expect(f.queue.processing()).toMatchObject({ processedPerSecond: 70, processedLastMinute: 700 });
+  expect(f.queue.state().requestsByTool).toEqual({ 'wm-document-query': 1100 });
+  expect(f.queue.state().timingsByTool['wm-document-query'].finished).toBe(1100);
+  expect(f.queue.processing()).toMatchObject({ processedPerSecond: 110, processedLastMinute: 1100 });
   await vi.advanceTimersByTimeAsync(86400001);
   await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
-  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(3);
+  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(2);
   expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -267,7 +300,7 @@ it('samples cumulative per-tool timing totals once per finished request without 
   }, value => value);
   const expected = {
     'wm-document-query': { finished: 2, executed: 2, waitMs: 300, runMs: 70 },
-    'wm-document-read': { finished: 2, executed: 0, waitMs: 100, runMs: 0 },
+    'wm-document-read': { finished: 2, executed: 0, waitMs: 0, runMs: 0 },
   };
   expect(f.queue.state().timingsByTool).toEqual(expected);
   const prior = f.queue.state();
@@ -291,7 +324,7 @@ it('counts arrivals once by tool, including rejected work, without recounting li
 it.each(['state', 'events'] as const)('expires idle lifecycle records through %s without another tool call', async sample => {
   const f = fixture();
   await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
-  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(3);
+  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(2);
   await vi.advanceTimersByTimeAsync(86400001);
   f.queue[sample]();
   expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(0);

@@ -2,13 +2,14 @@ import type { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
-  EMBEDDING_MODEL, EMBEDDING_DOWNLOAD_BYTES, embeddingConfigureSchema,
+  EMBEDDING_MODEL, EMBEDDING_DOWNLOAD_BYTES, EMBEDDING_HISTORY_GUIDANCE, embeddingConfigureSchema,
   embeddingHostSchema, embeddingHostStatusSchema, embeddingInferenceSchema,
   embeddingErrorMessage,
   semanticSearchSchema, EMBEDDING_KINDS, SEMANTIC_SEARCH_INFERENCE_TIMEOUT_MS,
   type EmbeddingDashboard,
 } from './embeddingContract.js';
 import { embeddingStats, nextEmbeddingWork, semanticSearch, submitEmbeddings } from './topicEmbeddings.js';
+import type { Observability, EmbeddingOutcome } from './observability.js';
 
 async function hostFailure(response: Response): Promise<string> {
   let detail: string;
@@ -44,12 +45,16 @@ export class EmbeddingIndexer {
   private running: Promise<void> | undefined;
   private stopped = true;
   private halted = false;
+  private telemetryTimer?: ReturnType<typeof setInterval>;
+  private sampling?: Promise<void>;
   private state: EmbeddingDashboard = {
     endpoint: null, enabled: false, paused: false, phase: 'disabled', model: EMBEDDING_MODEL,
     downloadBytes: 0, downloadTotal: EMBEDDING_DOWNLOAD_BYTES, backend: null, warning: null,
     error: null, rssBytes: null, lastInferenceMs: null, lastSuccessAtMs: null, stats: null,
   };
-  constructor(private db: DatabaseSync, private searchEnabled: () => boolean) {
+  constructor(private db: DatabaseSync, private searchEnabled: () => boolean,
+    private observability?: Pick<Observability, 'enabled' | 'recordEmbeddingSnapshot' | 'recordEmbeddingSnapshotFailure'
+      | 'recordEmbeddingOperation' | 'recordEmbeddingTiming'>) {
     db.exec(`CREATE TABLE IF NOT EXISTS instance_embedding_settings (
       singleton INTEGER PRIMARY KEY CHECK(singleton = 1), enabled INTEGER NOT NULL,
       paused INTEGER NOT NULL, host TEXT
@@ -76,10 +81,21 @@ export class EmbeddingIndexer {
     if (!EMBEDDING_KINDS.some(canReadKind)) throw new Error('Document read permission is unavailable or access was revoked.');
     const status = this.readiness(canReadKind);
     if (!status.enabled) throw new Error('Enable Embeddings in Settings > Features before searching.');
-    if (!status.ready) throw new Error(`Indexing must finish before searching (${status.stats.pending} documents pending). Check Settings > Diagnostics > Embeddings.`);
+    if (!status.ready) throw new Error(`Indexing must finish before searching (${status.stats.pending} documents pending). ${EMBEDDING_HISTORY_GUIDANCE}`);
     return status;
   }
   async search(raw: unknown, canReadKind: (kind: string) => boolean, signal?: AbortSignal) {
+    const started = performance.now();
+    let outcome: EmbeddingOutcome = 'failed';
+    try {
+      const result = await this.executeSearch(raw, canReadKind, signal);
+      outcome = 'completed';
+      return result;
+    } finally {
+      this.observability?.recordEmbeddingOperation('search', signal?.aborted ? 'cancelled' : outcome, performance.now() - started);
+    }
+  }
+  private async executeSearch(raw: unknown, canReadKind: (kind: string) => boolean, signal?: AbortSignal) {
     const input = semanticSearchSchema.parse(raw);
     if (this.requireReady(canReadKind).stats.total === 0) return { count: 0, results: [], limited: false };
     const { host } = this.settings();
@@ -118,13 +134,35 @@ export class EmbeddingIndexer {
     this.requireReady(canReadKind);
     const ranking = performance.now();
     const result = semanticSearch(this.db, input, inference.vectors, canReadKind);
+    const rankingMs = performance.now() - ranking;
+    this.observability?.recordEmbeddingTiming('search', 'inference', inference.durationMs);
+    this.observability?.recordEmbeddingTiming('search', 'host', hostMs);
+    this.observability?.recordEmbeddingTiming('search', 'ranking', rankingMs);
+    if (inference.startupMs !== undefined) this.observability?.recordEmbeddingTiming('search', 'startup', inference.startupMs);
     return { ...result, timings: { ...(inference.startupMs === undefined ? {} : { startupMs: inference.startupMs }),
-      inferenceMs: inference.durationMs, hostMs, rankingMs: performance.now() - ranking } };
+      inferenceMs: inference.durationMs, hostMs, rankingMs } };
   }
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
     this.schedule(0);
+    if (this.observability) {
+      this.telemetryTimer = setInterval(() => this.sampleTelemetry(), 10000);
+      this.telemetryTimer.unref();
+      this.sampleTelemetry();
+    }
+  }
+  private sampleTelemetry(): void {
+    if (this.stopped || !this.observability?.enabled || this.sampling) return;
+    const generation = this.configurationGeneration;
+    this.sampling = this.snapshot().then(state => {
+      if (!this.stopped && generation === this.configurationGeneration) this.observability?.recordEmbeddingSnapshot(state);
+    }).catch(error => {
+      if (!this.stopped && generation === this.configurationGeneration) {
+        console.error('[embeddings] Telemetry sampling failed:', embeddingErrorMessage(error));
+        this.observability?.recordEmbeddingSnapshotFailure();
+      }
+    }).finally(() => { this.sampling = undefined; });
   }
   private schedule(delay: number): void {
     if (this.stopped) return;
@@ -241,11 +279,15 @@ export class EmbeddingIndexer {
     if (!settings.enabled || settings.paused || !settings.host || !this.searchEnabled()) return;
     const controller = new AbortController();
     this.controller = controller;
+    const started = performance.now();
+    let outcome: EmbeddingOutcome | undefined;
     try {
       const batch = nextEmbeddingWork(this.db);
       this.state.stats = batch.stats;
       if (!batch.work) { this.state.phase = 'idle'; this.state.error = null; return; }
+      outcome = 'failed';
       this.state.phase = 'indexing';
+      const hostStarted = performance.now();
       const response = await fetch(`${settings.host.endpoint}/embed`, {
         method: 'POST', redirect: 'error',
         headers: { Authorization: `Bearer ${settings.host.token}`, 'Content-Type': 'application/json' },
@@ -262,10 +304,17 @@ export class EmbeddingIndexer {
         throw new Error('Host inference returned invalid vectors. Check the installed service version and Retry.');
       }
       const inference = parsed.data;
+      const hostMs = performance.now() - hostStarted;
       controller.signal.throwIfAborted();
       if (this.stopped) return;
+      const submitStarted = performance.now();
       const result = submitEmbeddings(this.db, { id: batch.work.id, sourceVersion: batch.work.sourceVersion,
         contentHash: batch.work.contentHash, model: EMBEDDING_MODEL, vectors: inference.vectors });
+      this.observability?.recordEmbeddingTiming('index', 'submit', performance.now() - submitStarted);
+      this.observability?.recordEmbeddingTiming('index', 'inference', inference.durationMs);
+      this.observability?.recordEmbeddingTiming('index', 'host', hostMs);
+      if (inference.startupMs !== undefined) this.observability?.recordEmbeddingTiming('index', 'startup', inference.startupMs);
+      outcome = result.accepted ? 'completed' : 'superseded';
       this.state.lastInferenceMs = inference.durationMs;
       this.state.rssBytes = inference.rssBytes;
       if (result.accepted) this.state.lastSuccessAtMs = Date.now();
@@ -279,13 +328,16 @@ export class EmbeddingIndexer {
         this.state.phase = 'error';
       }
     } finally {
+      if (outcome) this.observability?.recordEmbeddingOperation('index',
+        controller.signal.aborted || this.stopped ? 'cancelled' : outcome, performance.now() - started);
       if (this.controller === controller) this.controller = undefined;
     }
   }
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
+    if (this.telemetryTimer) clearInterval(this.telemetryTimer);
     this.controller?.abort();
-    await this.running;
+    await Promise.all([this.running, this.sampling]);
   }
 }

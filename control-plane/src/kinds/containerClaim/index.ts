@@ -12,8 +12,14 @@ export type { IContainerClaim } from './containerClaim.js';
 
 const dockerRuntime = z.object({
   type: z.literal('docker'),
-  buildContext: z.string().trim().min(1).max(1000),
-  dockerfile: z.string().trim().min(1).max(500),
+  buildContext: z.string().trim().min(1).max(1000).optional(),
+  dockerfile: z.string().trim().min(1).max(500).optional(),
+  imageSource: z.literal('registry').optional(),
+  restartPolicy: z.literal('unless-stopped').optional(),
+  memoryMb: z.number().int().min(256).max(65536).optional(),
+  cpus: z.number().min(0.1).max(64).optional(),
+  environment: z.record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/), z.string().max(4096)).optional(),
+  network: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/).optional(),
   imageName: z.string().trim().min(1).max(255),
   containerName: z.string().trim().min(1).max(255),
   hostPort: z.number().int().min(1).max(65535),
@@ -30,7 +36,8 @@ const dockerRuntime = z.object({
     protocol: z.enum(['tcp', 'udp']),
     hostIp: z.enum(['127.0.0.1', '0.0.0.0']).optional(),
   }).strict()).max(10).optional(),
-}).strict();
+}).strict().refine(runtime => runtime.imageSource === 'registry' || runtime.buildContext && runtime.dockerfile,
+  'Source-built images require buildContext and dockerfile.');
 
 const mcpEndpoint = z.object({
   transport: z.literal('streamable-http'),

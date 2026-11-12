@@ -6,6 +6,7 @@ import { getHeapStatistics } from 'node:v8';
 import { runtimeSampleSchema, type InstanceDiagnostics } from './diagnosticContract.js';
 import { DOCUMENT_CHANGE_POLL_TIMEOUT_MS } from './documentChangeFeed.js';
 import type { ToolQueue } from './toolQueue.js';
+import type { Observability } from './observability.js';
 
 const RETENTION_MS = 7 * 86400000;
 const MAX_BUCKETS = 10000;
@@ -20,13 +21,13 @@ export function diagnosticRoute(raw: string): string {
   if (/^\/attachments\/[^/]+$/.test(path)) return '/attachments/:id';
   if (path.startsWith('/identity/v1/')) return '/identity/v1/*';
   if (path.startsWith('/host-tasks/v1/')) return '/host-tasks/v1/*';
-  if (/^\/features\/v[12]$/.test(path)) return path;
+  if (/^\/features\/v[123]$/.test(path)) return path;
   if (path.startsWith('/oauth/') || path.startsWith('/.well-known/')) return '/oauth/*';
   return '/other';
 }
 
 export class HttpDiagnostics {
-  readonly bootId = randomUUID();
+  readonly bootId: string;
   readonly startedAt: number;
   private activeRequests = 0;
   private bucketCount = 0;
@@ -40,7 +41,8 @@ export class HttpDiagnostics {
   private lastCpuAt = performance.now();
 
   constructor(private readonly db: DatabaseSync, private readonly version: string, private readonly clock = Date.now,
-    private readonly queue?: ToolQueue) {
+    private readonly queue?: ToolQueue, private readonly observability?: Observability) {
+    this.bootId = observability?.bootId ?? randomUUID();
     this.startedAt = clock();
     db.exec(`
       CREATE TABLE IF NOT EXISTS instance_http_minutes (
@@ -64,7 +66,7 @@ export class HttpDiagnostics {
     if (previous && previous.clean === 0) this.event('unclean_restart');
     db.prepare(`INSERT INTO instance_diagnostic_run VALUES(1,?,0)
       ON CONFLICT(singleton) DO UPDATE SET boot_id=excluded.boot_id,clean=0`).run(this.bootId);
-    this.prune();
+    if (!this.observability?.enabled) this.prune();
     this.lag.enable();
     this.gcObserver = new PerformanceObserver(list => {
       for (const entry of list.getEntries()) { this.gcCount += 1; this.gcDurationMs += entry.duration; }
@@ -79,7 +81,7 @@ export class HttpDiagnostics {
           this.event('memory_pressure', null, '/runtime', 503, 0, true);
         }
         this.sample();
-        this.prune();
+        if (!this.observability?.enabled) this.prune();
         this.lag.reset();
       } catch (error) { console.error('[diagnostics] Runtime sampling failed:', error); }
     }, 10000);
@@ -99,6 +101,17 @@ export class HttpDiagnostics {
       this.activeRequests -= 1;
       const duration = Math.max(0, this.clock() - start), status = res.writableFinished ? res.statusCode : 499;
       try {
+        const notificationStream = method === 'GET' && route === '/mcp' && status === 200
+          && String(res.getHeader('content-type') ?? '').split(';', 1)[0].trim().toLowerCase() === 'text/event-stream';
+        const slowThreshold = method === 'GET' && route === '/changes' ? SLOW_CHANGE_POLL_MS : SLOW_REQUEST_MS;
+        if (this.observability?.enabled) {
+          this.observability.recordHttp({ caller: identity, method: method ?? 'OTHER', route, status,
+            durationMs: duration, startedAt: start, streaming: notificationStream });
+          if (status >= 400 || !notificationStream && duration >= slowThreshold) {
+            this.event(status >= 400 ? 'http_error' : 'slow_request', requestId, route, status, duration, true);
+          }
+          return;
+        }
         const at = Math.floor(start / 60000) * 60000;
         const inserted = this.db.prepare('INSERT OR IGNORE INTO instance_http_minutes VALUES(?,?,?,?,1,?,?)')
           .run(at, identity, route, status, duration, duration);
@@ -110,9 +123,6 @@ export class HttpDiagnostics {
             max_ms=MAX(max_ms,?) WHERE at=? AND caller=? AND route=? AND status=?`)
             .run(duration, duration, at, identity, route, status);
         }
-        const notificationStream = method === 'GET' && route === '/mcp' && status === 200
-          && String(res.getHeader('content-type') ?? '').split(';', 1)[0].trim().toLowerCase() === 'text/event-stream';
-        const slowThreshold = method === 'GET' && route === '/changes' ? SLOW_CHANGE_POLL_MS : SLOW_REQUEST_MS;
         if (status >= 400 || !notificationStream && duration >= slowThreshold) {
           this.event(status >= 400 ? 'http_error' : 'slow_request', requestId, route, status, duration, true);
         }
@@ -123,6 +133,10 @@ export class HttpDiagnostics {
   }
 
   event(code: string, requestId: string | null = null, route = '/runtime', status = 0, duration = 0, aggregate = false): void {
+    if (this.observability?.enabled) {
+      this.observability.event(code, requestId, route, status, duration);
+      return;
+    }
     const at = this.clock(), bucket = aggregate ? `${Math.floor(at / 60000)}:${code}:${route}:${status}` : null;
     if (bucket) {
       const updated = this.db.prepare(`UPDATE instance_diagnostic_events SET at=?,count=count+1,
@@ -165,15 +179,19 @@ export class HttpDiagnostics {
       queueDrops: queue?.queueDrops,
       operations: queue?.items.slice(0, 8) ?? [],
     };
-    this.db.prepare('INSERT INTO instance_runtime_samples(at,data) VALUES(?,?)').run(sample.at, JSON.stringify(sample));
+    if (this.observability?.enabled) this.observability.runtime(sample);
+    else {
+      this.db.prepare('INSERT INTO instance_runtime_samples(at,data) VALUES(?,?)').run(sample.at, JSON.stringify(sample));
+      this.db.prepare('DELETE FROM instance_runtime_samples WHERE at<?').run(this.clock() - 86400000);
+      this.db.prepare(`DELETE FROM instance_runtime_samples WHERE sequence IN
+        (SELECT sequence FROM instance_runtime_samples ORDER BY sequence DESC LIMIT -1 OFFSET 8640)`).run();
+    }
     this.queue?.resetSamplingPeaks();
-    this.db.prepare('DELETE FROM instance_runtime_samples WHERE at<?').run(this.clock() - 86400000);
-    this.db.prepare(`DELETE FROM instance_runtime_samples WHERE sequence IN
-      (SELECT sequence FROM instance_runtime_samples ORDER BY sequence DESC LIMIT -1 OFFSET 8640)`).run();
     this.lastCpu = cpu; this.lastCpuAt = now; this.gcCount = 0; this.gcDurationMs = 0;
   }
 
   history(limit = 60) {
+    if (this.observability?.enabled) return this.observability.history(limit);
     return this.db.prepare('SELECT data FROM instance_runtime_samples ORDER BY sequence DESC LIMIT ?').all(limit)
       .map(row => runtimeSampleSchema.parse(JSON.parse(String(row.data))));
   }
@@ -185,6 +203,7 @@ export class HttpDiagnostics {
       runtime: { heapUsedBytes: memory.heapUsed, heapLimitBytes: limit, rssBytes: memory.rss,
         eventLoopMaxMs: this.lag.max / 1e6, activeRequests: this.activeRequests, activeSessions,
         admissionBlocked: memory.heapUsed >= limit * 0.6 },
+      ...(this.observability?.enabled ? this.observability.httpSnapshot() : {
       minutes: this.db.prepare(`SELECT at,SUM(count) AS transactions,
         SUM(CASE WHEN status>=400 THEN count ELSE 0 END) AS errors,
         SUM(total_ms)/SUM(count) AS average_ms,MAX(max_ms) AS max_ms
@@ -203,6 +222,7 @@ export class HttpDiagnostics {
         requestId: row.request_id === null ? null : String(row.request_id), route: String(row.route),
         status: Number(row.status), durationMs: Number(row.duration_ms), count: Number(row.count),
       })),
+      }),
       samples: this.history(),
       workQueue: this.queue ? { ...this.queue.state(), events: this.queue.events().slice(0, 5) } : undefined,
     };

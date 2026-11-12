@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { DEFAULT_TOOL_QUEUE_SETTINGS, toolQueueSettingsSchema, type ToolQueueSettings } from './diagnosticContract.js';
+import type { Observability } from './observability.js';
 
 export const TOOL_QUEUE_LIMITS = {
   running: DEFAULT_TOOL_QUEUE_SETTINGS.maxConcurrency,
@@ -45,7 +46,7 @@ export class ToolQueue {
   private lastProcessingPruneSecond: number | undefined;
 
   constructor(private readonly db: DatabaseSync, private readonly memoryBlocked: (thresholdPercent: number) => boolean,
-    private readonly clock = Date.now) {
+    private readonly clock = Date.now, private readonly observability?: Observability) {
     db.exec(`CREATE TABLE IF NOT EXISTS instance_tool_queue_events (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, request_id TEXT NOT NULL,
       operation TEXT NOT NULL, caller TEXT NOT NULL, event TEXT NOT NULL,
@@ -86,7 +87,7 @@ export class ToolQueue {
     else if (event === 'shutdown') this.drops.shutdown++;
     const now = this.clock();
     const startedAt = event === 'not_executed' ? undefined : item.startedAt;
-    const waitMs = Math.max(0, (startedAt ?? now) - item.queuedAt);
+    const waitMs = Math.max(0, (item.startedAt ?? now) - item.queuedAt);
     if (item.startedAt === undefined || event === 'started') this.peakWaitMs = Math.max(this.peakWaitMs, waitMs);
     const runMs = startedAt === undefined ? 0 : Math.max(0, now - startedAt);
     if (event === 'completed' || event === 'failed' || event === 'not_executed'
@@ -96,6 +97,13 @@ export class ToolQueue {
       totals.waitMs += waitMs;
       if (event === 'completed' || event === 'failed') { totals.executed++; totals.runMs += runMs; }
       this.timingsByTool.set(item.operation, totals);
+    }
+    if (this.observability?.enabled) {
+      this.observability.recordQueue({
+        at: now, requestId: item.requestId, operation: item.operation, caller: item.caller, event,
+        waiting: this.waiting.length, running: this.running.size, waitMs, runMs,
+      });
+      return;
     }
     try {
       this.db.prepare(`INSERT INTO instance_tool_queue_events
@@ -123,6 +131,16 @@ export class ToolQueue {
     this.pump();
   }
 
+  private dispatch(item: Pending, startedAt: number): void {
+    item.startedAt = startedAt;
+    this.running.set(item.requestId, {
+      requestId: item.requestId, operation: item.operation, caller: item.caller,
+      queuedAt: item.queuedAt, startedAt,
+    });
+    this.record(item, 'started');
+    item.start();
+  }
+
   private pump(): void {
     if (this.stopped) return;
     while (this.waiting.length && this.running.size < this.settings.maxConcurrency) {
@@ -134,13 +152,7 @@ export class ToolQueue {
       if (this.memoryBlocked(this.settings.heapDispatchPausePercent)) break;
       this.waiting.shift();
       item.cleanup();
-      item.startedAt = this.clock();
-      this.running.set(item.requestId, {
-        requestId: item.requestId, operation: item.operation, caller: item.caller,
-        queuedAt: item.queuedAt, startedAt: item.startedAt,
-      });
-      this.record(item, 'started');
-      item.start();
+      this.dispatch(item, this.clock());
     }
     if (!this.waiting.length && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }
   }
@@ -149,7 +161,10 @@ export class ToolQueue {
     action: () => Promise<T>, outcome: (value: T) => ToolExecutionOutcome = () => 'completed'): Promise<T> {
     this.requestsByTool.set(metadata.operation, (this.requestsByTool.get(metadata.operation) ?? 0) + 1);
     const queuedAt = this.clock();
-    if (this.stopped || signal.aborted || this.waiting.length >= this.settings.maxQueueSize) {
+    const startImmediately = !this.stopped && !signal.aborted && !this.waiting.length
+      && this.running.size < this.settings.maxConcurrency
+      && !this.memoryBlocked(this.settings.heapDispatchPausePercent);
+    if (this.stopped || signal.aborted || (!startImmediately && this.waiting.length >= this.settings.maxQueueSize)) {
       const code = this.stopped ? 'shutdown' : signal.aborted ? 'cancelled' : 'full';
       this.record({ ...metadata, queuedAt }, code);
       return Promise.reject(new ToolQueueError(code));
@@ -157,10 +172,10 @@ export class ToolQueue {
     const timeoutMs = this.settings.queueTimeoutMs;
     return new Promise<T>((resolve, reject) => {
       const cancel = () => this.remove(item, 'cancelled');
-      const timer = setTimeout(() => this.remove(item, 'expired'), timeoutMs);
-      timer.unref();
+      const timer = startImmediately ? undefined : setTimeout(() => this.remove(item, 'expired'), timeoutMs);
+      timer?.unref();
       const item: Pending = { ...metadata, queuedAt, payload, reject, timeoutMs,
-        cleanup: () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); },
+        cleanup: () => { if (timer) clearTimeout(timer); signal.removeEventListener('abort', cancel); },
         start: () => {
           const finish = (event: string) => {
             this.running.delete(item.requestId);
@@ -173,6 +188,10 @@ export class ToolQueue {
           }).catch(error => { finish('failed'); reject(error); });
         },
       };
+      if (startImmediately) {
+        this.dispatch(item, queuedAt);
+        return;
+      }
       this.waiting.push(item);
       this.peakDepth = Math.max(this.peakDepth, this.waiting.length);
       this.record(item, 'queued');
@@ -200,6 +219,7 @@ export class ToolQueue {
   }
 
   processing() {
+    if (this.observability?.enabled) return this.observability.processing();
     const second = Math.floor(this.clock() / 1000) * 1000;
     const row = this.db.prepare(`SELECT COALESCE(SUM(count),0) AS processed,
       COALESCE(SUM(CASE WHEN at>? THEN count ELSE 0 END),0)/10.0 AS rate,
@@ -214,8 +234,10 @@ export class ToolQueue {
   }
 
   state() {
-    this.prune();
-    this.pruneProcessing(this.clock());
+    if (!this.observability?.enabled) {
+      this.prune();
+      this.pruneProcessing(this.clock());
+    }
     const now = this.clock();
     return {
       observedAt: now, settings: { ...this.settings },
@@ -235,6 +257,7 @@ export class ToolQueue {
   }
 
   events(limit = 100) {
+    if (this.observability?.enabled) return this.observability.queueEvents(limit);
     this.prune();
     return this.db.prepare('SELECT * FROM instance_tool_queue_events ORDER BY sequence DESC LIMIT ?').all(limit).map(row => ({
       sequence: Number(row.sequence), at: Number(row.at), requestId: String(row.request_id),

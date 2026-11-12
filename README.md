@@ -133,7 +133,9 @@ backup are managed outside the app.
 - **Add instance** starts a new, empty data tier. The first instance uses
   `7717` when it is free; others use the next free port from 7719–7799 (7718
   is reserved for the desktop link bridge) and are named
-  `working-memory-control-plane-<port>`.
+  `working-memory-control-plane-<port>`. Port selection skips existing instance
+  storage, host listeners, and TCP ports published by other containers, including
+  Docker Desktop ports that a loopback-only availability check can miss.
 - **Make current** switches the desktop app to that instance.
 - **Start / Stop** controls the container (the current instance cannot be
   stopped).
@@ -155,7 +157,9 @@ backup are managed outside the app.
 - **Rename** changes the display name shown in the environment picker.
 - **Back up…** writes a consistent SQLite snapshot
   (`working-memory-<name>-<timestamp>.sqlite`) to a folder you choose
-  (default: Desktop). The instance must be running.
+  (default: Desktop). The instance must be running, and you must be signed in
+  as its owner. The backend creates the snapshot using its already-open store;
+  the desktop copies only that finished snapshot from the container.
 
 Managed instances are recorded in the app's `data-tier/instances.json`
 (`~/Library/Application Support/Working Memory` on macOS,
@@ -165,6 +169,20 @@ Managed instances are recorded in the app's `data-tier/instances.json`
   ports use `WorkingMemory-<port>`.
 - Windows: the selected engine's volume `working-memory-data` (SQLite WAL is unreliable
   on Windows bind mounts); other ports use `working-memory-data-<port>`.
+
+On macOS, a separate read-only SQLite process opening a live database on a
+Docker bind mount has reproduced a backend `SIGBUS` (exit 135); database
+corruption was not demonstrated. The managed desktop **Back up…** path now asks
+the owning backend process to create its snapshot. Backend diagnostics and
+incident/heap reports also use that process's existing store handle. The
+resource-ID maintenance command below takes an offline-maintenance marker that
+prevents this version of the backend from starting while it accesses the
+database. These protections cover those supported Working Memory paths only:
+they do not establish that arbitrary SQLite tools, older backend builds, or
+other host/container processes can safely inspect a live bind-mounted database.
+Stop the backend before external inspection or maintenance, and do not copy the
+live database files as a substitute for a snapshot. Existing storage is not
+automatically moved to a Docker volume.
 
 Set `WM_DATA_TIER_AUTOSTART=0` to disable automatic data-tier startup.
 This controls backend containers only, never provider startup.
@@ -242,6 +260,14 @@ open document-tab identities and the selected tab per Working Memory
 environment, then reopens current resource data in the same order after a
 restart. CI builds prepare the application bundle but skip the local
 `/Applications` installation.
+
+The desktop installs its main-process error handlers before loading the app.
+Startup failures and uncaught exceptions are logged and exit cleanly rather
+than displaying Electron's raw JavaScript-error popup. Unhandled promise
+rejections are logged without a modal popup. The latest failure is kept in a
+private `main-process-error.log` in Electron's application logs directory;
+errors are also written to stderr, keeping MCP protocol stdout clean.
+`npm start --prefix desktop-ui` uses the same guarded package entry.
 
 For local builds that remember credentials, create an **Apple Development**
 certificate once in **Xcode -> Settings -> Accounts -> Manage Certificates ->
@@ -573,7 +599,9 @@ one; otherwise it asks for an open workstream before opening the normal form.
 Search and Related topics share the result component, topic actions and workstream picker.
 
 Enable local indexing with the **Embeddings** switch in **Settings > Features**.
-Monitor progress and use pause/resume or retry in **Settings > Diagnostics > Embeddings**. Enabling downloads
+Monitor indexing history in **Observability** (enable **Observability Container App**
+in **Settings > Features** if needed). Pause/resume, Retry and local service
+troubleshooting remain in **Settings > Diagnostics > Embeddings**. Enabling downloads
 the pinned Apache-2.0 [MiniLM model](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
 (about 87 MiB) once, verifies file sizes and SHA-256 hashes, and caches it in the
 desktop profile. WM document text is processed locally, not sent to Hugging Face.
@@ -1079,6 +1107,133 @@ no workstream scope and are unchanged.
 
 ## Desktop container apps
 
+### Optional local observability
+
+Enable **Settings > Features > Observability Container App** to pull the pinned
+upstream OpenObserve 1.1.2 image (not bundled in the installer), register a Container
+App, and provision a baseline HTTP/tool/queue/runtime dashboard. This currently
+requires a local container backend on the selected Docker/Podman provider with a
+user-defined network. Each instance has its own loopback UI port and named data
+volume. OpenObserve retains seven days of telemetry; upstream usage telemetry is
+disabled with `ZO_TELEMETRY=false`.
+
+Credentials are generated automatically, encrypted using native secure storage,
+and never put in ContainerClaim documents or returned to the Working Memory
+renderer. **Diagnostics > Open Observability**, the Features dashboard shortcut
+and the reconnect notice open the same dashboard Container App tab.
+If Observability is off, the shortcut opens **Settings > Features** with an
+explicit enable prompt; it never enables the feature automatically. Navigation
+and discovery errors are shown, not replaced with the old diagnostics charts.
+Authentication remains required, including
+for local callers. Clicking the OpenObserve **Container App** opens its frontend
+in a normal Working Memory tab by default, directly on the baseline diagnostics
+dashboard with ten-second refresh, automatic sign-in, and an isolated, sandboxed
+browser session. The tab uses the pinned release's dashboard-only presentation
+mode (`print=true`), which hides OpenObserve's header/sidebar and editing controls
+while retaining live refresh. The embedded view invokes the dashboard's native
+refresh action every ten seconds without reloading or signing in again; hidden
+tabs pause polling. Working Memory owns this timer because the pinned
+OpenObserve presentation mode does not start its auto-refresh timer. A failed
+refresh command is reported explicitly. **Open OpenObserve in a new window** opens the full
+interface in a separate automatically authenticated app-managed browser window;
+credentials are not handed to the system browser. This needs no upstream code
+changes or anonymous/public dashboard access. **App Info** remains available from the
+tab menu. The exporter credential is persisted in the backend's private
+configuration table so export survives backend restarts; protect database files
+and backups as secrets. Container-engine administrators can inspect container
+environment credentials. Losing native credentials does not reset existing volumes.
+
+With the flag on, queue events, HTTP timings and runtime samples are aggregated
+in bounded memory instead of synchronously inserted/pruned in diagnostic SQLite
+tables. Cumulative metrics are exported every ten seconds. HTTP errors/slow
+requests and all queue lifecycle events are exported as source-labeled logs.
+The exporter holds at most 20,000 pending logs and sends batches of up to 2,000;
+full batches drain asynchronously without multiplying metric snapshots. Queue
+payloads and caller identities are not included. Log-rate charts count
+successfully acknowledged records; exporter loss has separate counters from
+queue timeouts, rejections and shutdown drops. Logs remain best-effort diagnostics,
+not an audit trail. Seven-day retention is not a disk-size limit; busy queue
+lifecycle logging can consume substantial storage.
+Long-poll/stream HTTP requests are labeled separately from ordinary transactions.
+Export failures and dropped data are visible in Diagnostics; the backend never
+waits for the collector on a request path. Document content, bodies, query strings
+and authorization tokens are not exported. Queue settings, admission safeguards,
+incident recovery, business documents and audit records keep their existing behavior.
+
+The managed dashboard has **Processing queue** (first and default), **HTTP**,
+**Runtime**, and **Embeddings** tabs. Each chart/table header in Working Memory
+has a compact **i** button: hover for a tooltip or select it for a brief definition
+and collection method. Keyboard activation and Escape dismissal are supported.
+Help uses the saved panel description, displayed as text, and does not change
+queries or stored dashboard content. It is added only to the embedded native
+surface because the pinned dashboard-only mode hides upstream description icons.
+**Legends** retains its native series/color list. Source-filtered **Queue logs**,
+**HTTP logs**, and **Embeddings logs** remain in the Working Memory toolbar,
+alongside chart/row drilldowns; there are no separate metric-guide panels.
+**Total requests over time** uses stacked columns, with a separate color and
+legend entry per tool. It retains rolling one-minute counter increases in
+requests/min, rather than counting lifecycle log records.
+Queue drops are split by reason (`timeouts`, `rejections`, `shutdown`), including
+zero-valued series when no drops occur. Dynamic legends use OpenObserve's
+single-brace label syntax, such as `{reason}`.
+Adjacent charts keep counts/rates and durations in their real units rather than
+normalizing unrelated units onto one scale. HTTP includes transactions, errors,
+average/interval-maximum duration and logs/second. Queue charts include peak
+depth, wait/runtime, throughput, drops, incoming requests by tool and total wait.
+One-minute rates require multiple samples after enabling/restarting. HTTP maximum
+duration is an interval peak, not a lifetime high-water mark.
+
+The **Runtime** tab also carries every series from the previous runtime-history
+graph: average heap/RSS/external memory in MiB, average CPU percent (100% is one
+logical core), maximum event-loop delay, Garbage Collection count and duration
+per minute, and average waiting/running tools. Garbage Collection is observed, never forced;
+cumulative GC counters preserve sampling intervals between exports and prevent
+repeated exports from counting the same collections again. New external-memory
+and GC-counter series begin with the updated backend; existing OpenObserve
+history for the other metrics is retained.
+
+The **Embeddings** tab adds document coverage/backlog, limited coverage,
+indexing/search completion and failure rates, operation/stage durations, shared
+host model RSS, vector disk size, model-download bytes, phase/availability,
+last-indexing age and diagnostic-log rate. Its ten-second backend sampler
+reuses the existing embedding snapshot and stays active while indexing is
+paused or halted and while the desktop is closed. It does not force inference,
+enable Embeddings, resume indexing or change model retention. Host status calls
+remain bounded by a two-second timeout. Observability off skips this sampler's
+queries and host polling.
+
+Embedding logs contain operation outcomes and phase transitions, not queries,
+document passages, vectors, host endpoints, credentials or raw shared host logs.
+**Embeddings logs** and graph drilldowns open source-filtered searches. Stage
+timings overlap (host duration includes inference/startup); do not add them.
+Missing model-memory measurements are omitted rather than reported as zero.
+The host inference process is shared: do not sum its RSS across environments.
+Pause/Retry, retention and the shared host's local troubleshooting log remain in
+Working Memory. Embeddings history starts with this update; no old host log or
+document content is backfilled.
+
+**HTTP logs** and **Queue logs** open authenticated, source-filtered searches
+for the last fifteen minutes. Chart drilldowns use the dashboard's selected
+range. Top-50 wait/runtime tables use finished requests in that range; clicking
+a row and choosing **Request logs** filters by request ID and backend boot ID.
+In-flight requests remain in Working Memory's live queue controls. Same-origin
+log-search popups retain the isolated session and sandbox; other popups are
+blocked. Existing SQLite history is not backfilled, and the flag-off path remains
+available for rollback without dropping old diagnostic tables.
+
+Turning the flag off stops export first, then stops the owned container without
+deleting its volume; legacy SQLite diagnostics resume. Re-enabling reuses its
+credentials and data. A failed stop is reported even though export is already off.
+
+The installer also ships [`deploy/observability/compose.yaml`](deploy/observability/compose.yaml)
+under its data-tier resources for independent deployment. Create a private
+`credentials.env` beside it containing `ZO_ROOT_USER_EMAIL` and
+`ZO_ROOT_USER_PASSWORD`, then use `docker compose up -d`. Do not commit that file.
+Packaging copies only the public Compose template, never local credentials.
+Independent deployment does not automatically connect a Working Memory instance.
+OpenObserve is a separate AGPL-3.0 service; image/source/license details are at
+[the upstream project](https://github.com/openobserve/openobserve/tree/v1.1.2).
+
 The desktop **Container Apps** right-rail tab lists live ContainerClaims with a
 Docker `runtime` in the selected environment. Claims are the persisted app
 catalog, not a compiled-in allowlist: adding an app requires no Working Memory
@@ -1112,6 +1267,12 @@ a codicon `icon` name and `embeddable` boolean; new apps default to a generic
 icon and App Info rather than embedding. There are no app-name-specific
 presentation defaults: icons and embedding preferences belong in each claim's
 `desktop` configuration, including for previously bundled app registrations.
+
+For prebuilt images use `imageSource: "registry"` and omit `buildContext` and
+`dockerfile`. Missing images are pulled; cached images can be restarted offline
+(pin a digest for immutable deployments). Optional `environment` is public
+configuration, not a secret store. `network`, `restartPolicy: "unless-stopped"`,
+`memoryMb` and `cpus` configure container connectivity and resource limits.
 
 For example, Sunset Chess 1.4 can be registered with its dedicated source
 worktree, image `sunset-chess:1.4`, container
@@ -1477,6 +1638,15 @@ node scripts/upgrade-resource-ids.mjs --database "/path/to/journal.sqlite" --app
 ```
 
 `--apply` creates a consistent sibling SQLite backup before changing data.
+The command takes an offline-maintenance marker beside the selected data
+directory, and the current control-plane daemon refuses to open that directory
+until the command exits. If the command is interrupted and leaves the marker,
+verify no maintenance process is still running before removing
+`run/offline-maintenance.lock`. A surviving `run/control-plane.lock` also makes
+the command refuse to open the database; verify the backend is stopped before
+removing a stale lock. Keep the backend stopped when using an older build or a
+database path outside the backend's normal data directory; this coordination
+is not a general lock for arbitrary external SQLite clients.
 It rewrites resolvable legacy native, loopback, and VS Code resource URLs to
 ID-based native URLs, excluding immutable `legacy_source` archives. It detaches
 unresolvable relationships, substitutes the existing general Topic type for
@@ -1819,13 +1989,20 @@ back to another storage scheme. It never gives agents the owner's credentials.
 
 The desktop connection screen appears before instance data is loaded. If no
 password exists, it guides the local owner through setup, including an optional
-public password hint. Otherwise it prompts for sign-in. Expiry, revocation, or
-sign-out returns to that same connection screen. **Manage instances** remains
+public password hint. Otherwise it prompts for sign-in. When an owner session
+is absent, signed-out status notifications still allow the password form to load;
+late status responses cannot replace a newer authenticated connection.
+When an owner session
+expires, an already-open desktop first attempts remembered sign-in, keeping
+the workspace and drafts mounted and restarting live updates after recovery.
+Without a remembered password, or if recovery fails, it returns to sign-in.
+Revocation and explicit sign-out still return directly to the connection screen.
+**Manage instances** remains
 available before sign-in to start, create, or upgrade a managed instance.
 
 Identity checks run every 30 seconds. A timeout or connection failure keeps an
 already-open workspace and its drafts visible, shows a **Reconnecting** notice
-with request details, **Retry connection**, and **Diagnostics**, and retries
+with request details, **Retry connection**, and **Open Observability**, and retries
 automatically. Failed checks never grant a new authenticated session; the backend
 continues enforcing authorization on every request. Explicit authentication
 rejection still returns to sign-in. A failed initial connection also retries
@@ -2021,11 +2198,13 @@ active requests without cancelling the separate session-termination request.
 
 #### Instance monitoring and automatic incident reports (1.4.1)
 
-**Settings -> Diagnostics** shows owner-only HTTP transactions per minute,
+The owner-only `GET /identity/v1/diagnostics` API retains HTTP transactions per minute,
 caller categories (owner, approved client ID, unauthenticated), normalized
 routes, status codes, request durations, V8 heap/RSS, event-loop delay and
-active request/session counts. `GET /identity/v1/diagnostics` is restricted to
-trusted owner requests; older backends show an explicit upgrade message.
+active request/session counts for compatibility and incident evidence. Telemetry
+navigation now opens Observability; **Settings > Diagnostics** retains only Queue
+settings, Automatic incident reports and Embeddings controls/troubleshooting.
+Older backends show an explicit upgrade message.
 Health and MCP advertise the package release version. Health also returns a
 process boot ID so a restart is distinguishable from an unavailable endpoint.
 
@@ -2041,23 +2220,20 @@ request count. Evidence is capped at 20,000 characters with explicit truncation.
 These changes improve future reports; they cannot reconstruct logs already lost
 when an affected container was recreated.
 
-Diagnostics has **Queue**, **HTTP**, **Runtime**, **Automatic incident reports**, and **Embeddings**
-subtabs. HTTP shows transactions, errors,
-average duration and maximum duration as time series, independently scaled to
-0-100% of each series' visible-window peak. Raw peaks remain in the legend and
-original values in point tooltips; gaps in sampling break the traces. The error
-log sits below the graph, with the current caller/route/status breakdown in an
-expandable non-tabular summary. Automatic incident reports has its own subtab,
-including reports queued while the backend is unavailable.
+Diagnostics has **Queue**, **Automatic incident reports**, and **Embeddings**
+subtabs. Queue contains settings only; the old local HTTP/Runtime tabs and Queue
+graphs, rankings and lifecycle table have been removed even when Observability
+is off. Enable Observability for charts and searchable logs. Queue and Embeddings
+provide automatically authenticated links to their respective logs when enabled.
+Embeddings controls and local host troubleshooting remain here. Automatic incident
+reports includes reports queued while the backend is unavailable.
 Diagnostics navigation uses pink, keyboard-accessible secondary tabs under the
 main Settings tabs. Except for Embeddings' explicit Refresh control, there are no manual refresh buttons: only the selected,
 visible diagnostics view polls. Polling stops while the window is hidden and
 resumes immediately when visible again; inactive subtabs do not background poll.
-A shared Refresh selector defaults to 15 seconds and offers 2, 5, 15, 30 and 60
-seconds; changing it applies to the selected diagnostics view without overlapping requests.
-On Queue, Refresh and Bucket size align on one row at the top right above the
-first graph. **Queue Settings** is a collapsed section at the top, replacing
-the old MCP tool queue heading and endpoint text. Drafts survive collapsing
+Incident reports has a Refresh interval selector; Queue settings poll every
+15 seconds without overlapping requests. **Queue Settings** is a collapsed
+section at the top. Drafts survive collapsing
 and polling, and save errors remain visible even when the section is collapsed.
 The owner can save persistent, per-container **Queue Settings**: Max Concurrency
 (1-64, default 4), Max Queue Size (1-1000, default 16), Queue Timeout
@@ -2069,12 +2245,16 @@ Changing the timeout affects new arrivals only. New-session admission retains
 its separate 60% heap cutoff; raising dispatch limits does not change that policy.
 Settings are owner-only, validate the backend boot identity and previous settings,
 and reject stale saves rather than overwriting newer configuration.
-Queue shows only the selected environment: a **Queue Processing**
-chart with aggregation of 10-second samples (latest 30 minutes), a stacked **Tool requests over
-time** chart, and collapsed **Top 50 by wait time**, **Top 50 by runtime**, and
-**Queue log** sections. Rankings and the log use retained lifecycle history
-(up to 2,000 events, at most 24 hours), with one row per request and live items
-included. Unavailable timings are excluded from rankings.
+### Retained legacy telemetry and compatibility
+
+The backend retains its bounded diagnostic contracts for incident evidence and
+older clients. The following describes the legacy telemetry and chart helpers,
+not the current desktop Diagnostics UI. OpenObserve uses the real-unit dashboard
+described above instead of independently normalized local charts.
+
+Legacy rankings and logs use retained lifecycle history (up to 2,000 events,
+at most 24 hours), with one row per request and live items included.
+Unavailable timings are excluded from rankings.
 **Drops**, immediately below Queue Processing, sums queue timeouts, capacity
 rejections and shutdown drops using the same bucket size and time bounds. Counts
 come from cumulative telemetry, not the truncated queue log. A final sample
@@ -2088,8 +2268,11 @@ available even if earlier lifecycle events have left the window. An unfinished
 request no longer in the live list has an unavailable outcome, not a fabricated
 completion time. Hover a request ID for its caller. Queue Processing shows
 **Max queue depth**, **Max wait time**, and average processing rate. Depth is
-captured on enqueue, before dispatch, so even short-lived waiting calls are
-retained between samples. Maximum wait includes elapsed time for currently
+captured only when a call must wait for a dispatch slot or memory headroom.
+Calls that can start immediately bypass the waiting list, record zero queue wait,
+and do not raise queue-depth peaks. Real waiters retain FIFO ordering and their
+peaks between samples; no minimum-wait filter is applied.
+Maximum wait includes elapsed time for currently
 waiting calls and waits ending in dispatch or a drop, not execution runtime.
 Polling does not clear these peaks; they reset only after a runtime sample is
 persisted. Older samples cannot be backfilled with missing waits or depth peaks.
@@ -2163,7 +2346,7 @@ Runtime history records heap/limit/RSS, external/array-buffer memory, process CP
 observed GC count/duration, event-loop delay, queue depth, and up to eight active
 operation identities/timings every ten seconds. CPU 100% means one logical core.
 Samples are persisted for at most 24 hours / 8,640 rows and survive restarts;
-Runtime shows the latest ten minutes as independently peak-normalized traces for
+The legacy Runtime chart helper represents ten-minute independently peak-normalized traces for
 heap, RSS, external memory, CPU, event-loop delay, GC count/duration and waiting/running
 tools, with raw peaks in the legend and original values in point tooltips. Missing
 samples and backend restarts break the traces rather than implying continuity.

@@ -20,7 +20,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       import { LocalEmbeddings } from '/src/main/localEmbeddings';
       import '/src/renderer/style.css';
       const state = window.__featuresTest = {
-        enabled: false, search: false, writes: [], reads: 0, activeReads: 0, maxReads: 0, changes: [],
+        enabled: false, search: false, observability: false, writes: [], reads: 0, activeReads: 0, maxReads: 0, changes: [],
         pauseRead: false, releaseRead: null, failSave: false, failPoll: false,
         embeddings: false, embeddingActions: [], failEmbeddingSave: false, failEmbeddingPoll: false, repairFailure: false,
       };
@@ -59,7 +59,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         async getInstanceFeatures() {
           state.reads++;
           state.maxReads = Math.max(state.maxReads, ++state.activeReads);
-          const result = { hostTasks: state.enabled, search: state.search };
+          const result = { hostTasks: state.enabled, search: state.search, observability: state.observability };
           try {
             if (state.pauseRead) {
               state.pauseRead = false;
@@ -74,7 +74,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           state.writes.push(input);
           if (input.hostTasks !== undefined) state.enabled = input.hostTasks;
           if (input.search !== undefined) state.search = input.search;
-          return { hostTasks: state.enabled, search: state.search };
+          if (input.observability !== undefined) state.observability = input.observability;
+          return { hostTasks: state.enabled, search: state.search, observability: state.observability };
         },
       };
       const target = document.createElement('main');
@@ -129,7 +130,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.querySelector('[role=switch]') && !document.querySelector('[role=switch]').disabled");
           assert.equal(await evaluate("document.querySelectorAll('button').length"), 0);
           assert.equal(await evaluate("document.querySelector('[role=switch]').checked"), false);
-          assert.equal(await evaluate("document.querySelectorAll('[role=switch]').length"), 3);
+          assert.equal(await evaluate("document.querySelectorAll('[role=switch]').length"), 4);
+          await evaluate("document.querySelector('[aria-label=\\"Observability Container App\\"]').click()");
+          await wait("window.__featuresTest.observability && !document.querySelector('[role=switch]').disabled");
+          assert.deepEqual(await evaluate("window.__featuresTest.writes.at(-1)"), { observability: true });
           assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').disabled"), true);
           assert.equal(await evaluate('document.querySelectorAll("[role=switch]")[1].checked'), false);
           assert.equal(await evaluate('document.querySelectorAll("[role=switch]")[1].getAttribute("aria-label")'), 'Working Memory search');

@@ -17,6 +17,8 @@ export interface HostTaskDesktopState {
 
 export interface HostTaskDesktopApi {
   getInstanceFeatures(): Promise<import('../../../control-plane/src/instanceFeatures').InstanceFeatures>;
+  getObservability(): Promise<import('../../../control-plane/src/observability').ObservabilityStatus>;
+  openObservability(source?: 'http' | 'queue' | 'embeddings'): Promise<void>;
   setInstanceFeatures(input: import('../../../control-plane/src/instanceFeatures').InstanceFeatureUpdate): Promise<import('../../../control-plane/src/instanceFeatures').InstanceFeatures>;
   signInHostScripts(input: { password: string; setup: boolean; passwordHint?: string }): Promise<void>;
   setInstancePasswordHint(hint: string): Promise<void>;

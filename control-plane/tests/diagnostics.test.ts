@@ -62,9 +62,9 @@ it('retains transient depths and dispatch waits between samples, includes active
   cleanup.push(() => db.close(), () => diagnostics.close(), () => queue.close());
   const metadata = () => ({ requestId: randomUUID(), operation: 'wm-ping', caller: 'owner' });
   await queue.run(metadata(), {}, new AbortController().signal, async () => {});
-  expect(queue.state()).toMatchObject({ waiting: 0, peakQueueDepth: 1 });
+  expect(queue.state()).toMatchObject({ waiting: 0, peakQueueDepth: 0 });
   diagnostics.sample();
-  expect(diagnostics.history()[0]).toMatchObject({ queueDepth: 0, peakQueueDepth: 1, maxQueueWaitMs: 0 });
+  expect(diagnostics.history()[0]).toMatchObject({ queueDepth: 0, peakQueueDepth: 0, maxQueueWaitMs: 0 });
   expect(queue.state().peakQueueDepth).toBe(0);
   blocked = true;
   let finish: () => void = () => {};

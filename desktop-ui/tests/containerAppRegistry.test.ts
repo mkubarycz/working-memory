@@ -32,6 +32,15 @@ const containerAppRegistration = (id: string) => claimRegistration(id, claims);
 const isRegisteredContainerAppUiUrl = (url: string) => registeredUiUrl(url, containerAppDefinitions());
 
 describe('container app registry', () => {
+  it('opens managed OpenObserve frontends in tabs by default, including previously registered non-embedded claims', () => {
+    const claim: ContainerClaim = { ...claims[0], desktop: { icon: 'pulse', embeddable: false },
+      application: { id: 'wm-observability-existing', contractVersion: '1.0', discovery: { toolName: 'not-supported' },
+        capabilities: [], dataOwnership: 'application', uiUrl: 'http://localhost:5080/web/' } };
+    expect(definitionsFromClaims([claim])[0]).toMatchObject({
+      embeddable: true, nativeSurface: 'observability',
+    });
+    expect(claim.desktop?.embeddable).toBe(false);
+  });
   it('discovers arbitrary persisted Docker claims without a compiled-in app definition', () => {
     const custom: ContainerClaim = {
       ...claims[0],

@@ -235,12 +235,12 @@ it('allows the signed-in owner to change or clear the public hint while Host tas
   const f = await fixture();
   f.dialog.showMessageBox.mockResolvedValue({ response: 1 });
   await f.call('instance:sign-in', { password: 'my private owner password', setup: true });
-  expect(await f.identity.features(f.environment.mcpUrl)).toEqual({ hostTasks: false, search: false });
+  expect(await f.identity.features(f.environment.mcpUrl)).toEqual({ hostTasks: false, search: false, observability: false });
   await f.identity.setPasswordHint(f.environment.mcpUrl, 'A public reminder');
   expect(await f.call('instance:identity')).toMatchObject({ passwordHint: 'A public reminder' });
   await f.identity.setPasswordHint(f.environment.mcpUrl, '');
   expect(await f.call('instance:identity')).toMatchObject({ passwordHint: '' });
-  expect(await f.identity.features(f.environment.mcpUrl)).toEqual({ hostTasks: false, search: false });
+  expect(await f.identity.features(f.environment.mcpUrl)).toEqual({ hostTasks: false, search: false, observability: false });
 });
 
 it('does not let a delayed anonymous status response clear a newly established owner session', async () => {

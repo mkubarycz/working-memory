@@ -2,11 +2,15 @@
   import { onMount } from 'svelte';
   import type { InstanceFeatures } from '../../../../control-plane/src/instanceFeatures';
   import type { EmbeddingDashboard } from '../../shared/embeddings';
+  import { EMBEDDING_HISTORY_GUIDANCE } from '../../../../control-plane/src/embeddingContract';
 
-  let { onChanged }: { onChanged: (features: InstanceFeatures) => void } = $props();
+  let { onChanged, onOpenObservability }: {
+    onChanged: (features: InstanceFeatures) => void; onOpenObservability?: () => Promise<void>;
+  } = $props();
   let features = $state<InstanceFeatures | null>(null);
   let enabled = $state(false);
   let searchEnabled = $state(false);
+  let observabilityEnabled = $state(false);
   let embeddings = $state<EmbeddingDashboard | null>(null);
   let embeddingsEnabled = $state(false);
   let busy = $state(false);
@@ -31,6 +35,7 @@
         features = loaded.value;
         enabled = features.hostTasks;
         searchEnabled = features.search;
+        observabilityEnabled = features.observability ?? false;
         pollError = '';
         onChanged(features);
       } else pollError = loaded.reason instanceof Error ? loaded.reason.message : String(loaded.reason);
@@ -74,6 +79,7 @@
     finally {
       enabled = features?.hostTasks ?? false;
       searchEnabled = features?.search ?? false;
+      observabilityEnabled = features?.observability ?? false;
       busy = false;
     }
   }
@@ -108,11 +114,25 @@
     </tr>
     <tr>
       <th scope="row">Embeddings <small>Experimental</small></th>
-      <td>Enable semantic Search and Related topics with local background indexing. Search waits for complete document indexing. Monitor progress in Diagnostics &gt; Embeddings.</td>
+      <td>Enable semantic Search and Related topics with local background indexing. Search waits for complete document indexing.
+        {EMBEDDING_HISTORY_GUIDANCE} Pause/Retry and host troubleshooting remain in Settings &gt; Diagnostics &gt; Embeddings.</td>
       <td>
         <input class="feature-switch" type="checkbox" role="switch" aria-label="Embeddings" bind:checked={embeddingsEnabled}
           disabled={!features || !embeddings || busy || (!searchEnabled && !embeddingsEnabled)}
           onchange={(event) => void toggleEmbeddings(event.currentTarget.checked)} />
+      </td>
+    </tr>
+    <tr>
+      <th scope="row">Observability Container App <small>Experimental</small></th>
+      <td>Install local OpenObserve dashboards for HTTP, tools, runtime and embeddings telemetry. Sign-in is automatic.
+        {#if observabilityEnabled && onOpenObservability}
+          <button type="button" onclick={() => void onOpenObservability?.()}>Open Observability</button>
+        {/if}
+      </td>
+      <td>
+        <input class="feature-switch" type="checkbox" role="switch" aria-label="Observability Container App"
+          bind:checked={observabilityEnabled} disabled={!features || busy}
+          onchange={(event) => void toggle('observability', event.currentTarget.checked)} />
       </td>
     </tr></tbody>
   </table>
@@ -120,6 +140,9 @@
   <p class="hint">Search is off by default. Turning it off hides Search and stops its requests; documents and workstream memberships are retained.</p>
   <p class="hint">Embeddings requires Working Memory search. Enabling installs the bundled background service and downloads
     a verified 87 MiB model once. Topic content stays local. Disabling stops this instance's indexing but retains cached models and vectors.</p>
+  <p class="hint">Observability downloads the pinned upstream OpenObserve image and stores seven days of telemetry in a dedicated local volume.
+    Turning it off stops export and the container, preserving its data. Native encrypted credential storage is required.</p>
+  {#if busy}<p role="status">Applying feature settings. Container setup may take several minutes.</p>{/if}
   {#if error || pollError || embeddingsPollError}<p role="alert">{error || pollError || embeddingsPollError}</p>{/if}
 </section>
 

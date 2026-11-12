@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -66,6 +66,28 @@ function fixture() {
 }
 
 const nativePackageArgs = ['--package', ...(process.platform === 'win32' ? ['--win'] : process.platform === 'darwin' ? ['--mac'] : [])];
+it('stages only the public observability template, never local credentials or stale files', () => {
+  const { cwd, scripts, env } = fixture();
+  cpSync(new URL('../scripts/prepare-data-tier-bundle.mjs', import.meta.url), join(scripts, 'prepare-data-tier-bundle.mjs'));
+  const source = join(cwd, 'deploy', 'observability');
+  mkdirSync(source, { recursive: true });
+  writeFileSync(join(source, 'compose.yaml'), 'services: {}\n');
+  writeFileSync(join(source, '.gitignore'), 'credentials.env\n');
+  writeFileSync(join(source, 'credentials.env'), 'ZO_ROOT_USER_PASSWORD=test-only-secret\n');
+  const destination = join(cwd, 'desktop-ui', 'build', 'data-tier');
+  mkdirSync(join(destination, 'observability'), { recursive: true });
+  writeFileSync(join(destination, 'observability', 'credentials.env'), 'stale-test-only-secret');
+  const archive = join(cwd, 'image.tar');
+  writeFileSync(archive, 'test-only image archive');
+  const result = spawnSync(process.execPath, [join(scripts, 'prepare-data-tier-bundle.mjs')], {
+    cwd, encoding: 'utf8', env: { ...env, WM_DATA_TIER_IMAGE_ARCHIVE: archive },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(readdirSync(join(destination, 'observability'))).toEqual(['compose.yaml']);
+  expect(readFileSync(join(destination, 'observability', 'compose.yaml'), 'utf8')).toBe('services: {}\n');
+  expect(readFileSync(join(destination, 'image.tar'), 'utf8')).toBe('test-only image archive');
+});
+
 it.each([
   { args: [], ci: false },
   { args: nativePackageArgs, ci: false },

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFile, stat, access } from 'node:fs/promises';
 import {
   CLAIM_LABEL,
   CommandExecutionError,
@@ -59,6 +60,140 @@ function localRunner(
 }
 
 describe('DockerContainerService', () => {
+  it.each(['No such image', 'No such object'])('pulls registry images after %s, applies resources/network and cleans private env files without secrets in arguments', async missingImage => {
+    const calls: string[][] = [];
+    let envFile = '';
+    let imageAvailable = false;
+    const password = 'private generated registry password';
+    const runner = localRunner(async args => {
+      if (args[0] === 'container' && args[1] === 'inspect') throw new CommandExecutionError('missing', 1, 'No such container');
+      if (args[0] === 'image' && args[1] === 'inspect') {
+        if (!imageAvailable) throw new CommandExecutionError('missing', 1, missingImage);
+        return { stdout: 'sha256:registry', stderr: '' };
+      }
+      if (args[0] === 'image' && args[1] === 'pull') imageAvailable = true;
+      if (args[0] === 'container' && args[1] === 'run') {
+        envFile = args[args.indexOf('--env-file') + 1];
+        if (process.platform !== 'win32') expect((await stat(envFile)).mode & 0o777).toBe(0o600);
+        expect(await readFile(envFile, 'utf8')).toContain(`PASSWORD=${password}`);
+      }
+      return { stdout: '', stderr: '' };
+    }, calls);
+    const service = new DockerContainerService({
+      runner, readiness: async () => true, privateEnvironment: async () => ({ PASSWORD: password }),
+    });
+    const runtime = {
+      type: 'docker' as const, imageSource: 'registry' as const, imageName: 'registry.example/collector@sha256:pinned',
+      containerName: 'wm-collector-test', hostPort: 5080, containerPort: 5080, healthPath: '/healthz', entryPath: '/web/',
+      environment: { PUBLIC_SETTING: 'true' }, network: 'wm_default',
+      restartPolicy: 'unless-stopped' as const, memoryMb: 768, cpus: 1,
+    };
+    const result = await service.launch(claim({ runtime }));
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'ready' });
+    expect(calls.some(args => args.includes('build'))).toBe(false);
+    expect(calls).toContainEqual(expect.arrayContaining(['image', 'pull', runtime.imageName]));
+    expect(calls.find(args => args.includes('run'))).toEqual(expect.arrayContaining([
+      '--network', 'wm_default', '--restart', 'unless-stopped', '--memory', '768m', '--cpus', '1',
+    ]));
+    expect(JSON.stringify(calls)).not.toContain(password);
+    await expect(access(envFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    const before = calls.length;
+    expect(await service.launch(claim({ runtime }))).toMatchObject({ status: 'ready' });
+    expect(calls.slice(before).some(args => args.includes('pull'))).toBe(false);
+  });
+
+  it.each([
+    { hostPorts: ['7719', '7720'], expected: 'wm-0' },
+    { hostPorts: ['7720'], expected: null },
+    { hostPorts: ['7719', '7719'], expected: null },
+  ])('selects a unique backend by its published host port: $hostPorts', async ({ hostPorts, expected }) => {
+    const calls: string[][] = [];
+    const containers = hostPorts.map((hostPort, index) => ({
+      Id: `backend-${index}`,
+      HostConfig: { PortBindings: { '7717/tcp': [{ HostIp: '127.0.0.1', HostPort: hostPort }] } },
+      NetworkSettings: { Networks: { bridge: {}, [`wm-${index}`]: {} } },
+    }));
+    const runner = localRunner(async args => {
+      if (args[0] === 'container' && args[1] === 'ls') {
+        expect(args).not.toContain('--filter');
+        return { stdout: containers.map(container => container.Id).join('\n'), stderr: '' };
+      }
+      if (args[0] === 'container' && args[1] === 'inspect') {
+        expect(args.slice(2)).toEqual(containers.map(container => container.Id));
+        return { stdout: JSON.stringify(containers), stderr: '' };
+      }
+      throw new Error(`Unexpected command: ${args.join(' ')}`);
+    }, calls);
+    const service = new DockerContainerService({ runner });
+    const result = service.backendNetwork('http://127.0.0.1:7719/mcp');
+    if (expected) await expect(result).resolves.toBe(expected);
+    else await expect(result).rejects.toThrow('Cannot uniquely identify the selected backend container.');
+    expect(calls).toContainEqual(expect.arrayContaining(['container', 'ls', '--format', '{{.ID}}']));
+  });
+
+  it.each([
+    ['image not known', true],
+    ['permission denied', false],
+    ['connection refused', false],
+  ])('handles Podman registry image inspection failure: %s', async (detail, shouldPull) => {
+    const calls: string[][] = [];
+    let imageAvailable = false;
+    const runtime = {
+      ...desired.runtime!, imageSource: 'registry' as const,
+      imageName: 'registry.example/collector@sha256:pinned',
+    };
+    const runner: CommandRunner = {
+      run: vi.fn(async (file, args) => {
+        expect(file).toBe('podman');
+        if (args[0] === 'system') return {
+          stdout: JSON.stringify([{ Name: 'local', URI: 'unix:///tmp/podman.sock', Default: true }]),
+          stderr: '',
+        };
+        expect(args.slice(0, 2)).toEqual(['--connection', 'local']);
+        const command = args.slice(2);
+        calls.push(command);
+        if (command[0] === 'image' && command[1] === 'inspect') {
+          if (!imageAvailable) throw new CommandExecutionError('inspection failed', 125, `Error: ${runtime.imageName}: ${detail}`);
+          return { stdout: 'sha256:registry', stderr: '' };
+        }
+        if (command[0] === 'image' && command[1] === 'pull') imageAvailable = true;
+        if (command[0] === 'container' && command[1] === 'inspect') {
+          throw new CommandExecutionError('missing', 125, `no container with name or ID "${runtime.containerName}" found: no such container`);
+        }
+        return { stdout: '{}', stderr: '' };
+      }),
+    };
+    const service = new DockerContainerService({ provider: 'podman', runner, readiness: async () => true });
+    const result = await service.launch(claim({ runtime }));
+    if (shouldPull) {
+      expect(result).toMatchObject({ status: 'ready', action: 'created' });
+      expect(calls.filter(args => args[0] === 'image' && args[1] === 'pull'))
+        .toEqual([['image', 'pull', runtime.imageName]]);
+      expect(calls).toContainEqual(expect.arrayContaining(['container', 'run']));
+    } else {
+      expect(result).toMatchObject({ status: 'error', code: 'build_failed', message: expect.stringContaining(detail) });
+      expect(calls.some(args => args[1] === 'pull' || args[1] === 'run')).toBe(false);
+    }
+  });
+
+  it('does not silently reuse a container with stale public environment or network', async () => {
+    const calls: string[][] = [];
+    const runtime = { ...desired.runtime!, environment: { SETTING: 'new' }, network: 'wm_default' };
+    const runner = localRunner(async args => {
+      if (args[0] === 'image') return { stdout: 'sha256:current', stderr: '' };
+      if (args[0] === 'container' && args[1] === 'inspect') return { stdout: JSON.stringify([{
+        Image: 'sha256:current', Config: { Image: runtime.imageName, Env: ['SETTING=old'],
+          Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: desired.id } },
+        State: { Running: true }, NetworkSettings: { Networks: { other: {} } },
+        HostConfig: { PortBindings: { '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '4173' }] } },
+      }]), stderr: '' };
+      return { stdout: '', stderr: '' };
+    }, calls);
+    const service = new DockerContainerService({ runner, readiness: async () => true });
+    expect(await service.launch(claim({ runtime }))).toMatchObject({ status: 'ready', action: 'recreated' });
+    expect(calls).toContainEqual(expect.arrayContaining(['container', 'rm', '--force', runtime.containerName]));
+  });
+
   it('rejects duplicate published ports before building or modifying any container', async () => {
     const calls: string[][] = [];
     const duplicate = {

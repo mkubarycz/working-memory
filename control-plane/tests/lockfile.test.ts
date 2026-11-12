@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { acquireLock, AlreadyRunningError, isProcessAlive } from '../src/lockfile';
+import {
+  acquireLock,
+  acquireOfflineMaintenanceLock,
+  AlreadyRunningError,
+  assertNoOfflineMaintenance,
+  isProcessAlive,
+} from '../src/lockfile';
 
 // A pid that is essentially guaranteed not to be alive on any host.
 const DEAD_PID = 2 ** 31 - 1;
@@ -29,6 +35,29 @@ describe('isProcessAlive', () => {
   it('is false for non-positive pids without signalling a process group', () => {
     expect(isProcessAlive(0)).toBe(false);
     expect(isProcessAlive(-1)).toBe(false);
+  });
+});
+
+describe('offline database maintenance lock', () => {
+  it('excludes daemon startup while held and releases its marker', () => {
+    const maintenance = acquireOfflineMaintenanceLock(path.join(dir, 'journal.sqlite'));
+    expect(() => assertNoOfflineMaintenance(path.join(dir, 'run'))).toThrow('offline database maintenance');
+    expect(() => acquireOfflineMaintenanceLock(path.join(dir, 'journal.sqlite'))).toThrow('Another offline');
+    maintenance.release();
+    expect(() => assertNoOfflineMaintenance(path.join(dir, 'run'))).not.toThrow();
+  });
+
+  it('does not remove a replacement marker', () => {
+    const maintenance = acquireOfflineMaintenanceLock(path.join(dir, 'journal.sqlite'));
+    fs.writeFileSync(maintenance.path, 'another owner');
+    maintenance.release();
+    expect(fs.readFileSync(maintenance.path, 'utf8')).toBe('another owner');
+  });
+
+  it('refuses to start when the daemon lock already exists', () => {
+    const daemon = acquireLock(path.join(dir, 'run', 'control-plane.lock'));
+    expect(() => acquireOfflineMaintenanceLock(path.join(dir, 'journal.sqlite'))).toThrow('The control plane is running');
+    daemon.release();
   });
 });
 

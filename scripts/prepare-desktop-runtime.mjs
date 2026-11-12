@@ -161,7 +161,7 @@ function prepareMacApp(appBundle, deepSign) {
       productName: 'Working Memory',
       version: buildVersion,
       type: 'module',
-      main: 'out/main/index.js',
+      main: 'out/main/bootstrap.js',
       // Local builds update through `npm run build`; their Updates channel defaults to Off.
       workingMemoryBuild: 'local',
     }, null, 2)}\n`,

@@ -227,6 +227,7 @@ describe('agentic document search', () => {
     } })) };
     const dependencies = { ...harness([]), assertEnabled: () => requireSemanticSearchReady(client) };
     await expect(searchByIntent('Find a related subject', dependencies)).rejects.toThrow(state.error);
+    if (state.enabled) await expect(requireSemanticSearchReady(client)).rejects.toThrow('Observability; enable Observability in Settings > Features');
     expect(dependencies.turn).not.toHaveBeenCalled();
     expect(dependencies.callTool).not.toHaveBeenCalled();
     expect(client.callTool).toHaveBeenCalledWith('wm-semantic-status', {}, undefined);

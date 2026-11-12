@@ -4,6 +4,7 @@ export const EMBEDDING_MODEL = 'minilm-l6-v2:1110a243:384:v1';
 export const EMBEDDING_DIMENSIONS = 384;
 export const EMBEDDING_TEXT_LIMIT = 32000;
 export const EMBEDDING_HOST_PORT = 7716;
+export const EMBEDDING_HISTORY_GUIDANCE = 'View indexing history in Observability; enable Observability in Settings > Features if needed.';
 export function embeddingErrorMessage(error: unknown): string {
   const messages: string[] = [];
   for (let depth = 0; depth < 3 && error instanceof Error; depth++) {

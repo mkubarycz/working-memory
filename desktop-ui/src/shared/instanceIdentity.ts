@@ -46,5 +46,5 @@ export interface InstanceIdentityApi {
   inspectQueuedRequest(requestId: string, mcpUrl: string): Promise<{ requestId: string; body: unknown }>;
   recoverInstanceHeap(mcpUrl: string): Promise<HeapRecoveryResult>;
   updateSessionPolicy(policy: SessionPolicy, mcpUrl: string): Promise<SessionSnapshot>;
-  onInstanceAuthenticationChanged(listener: (event: { mcpUrl: string; authenticated: boolean }) => void): () => void;
+  onInstanceAuthenticationChanged(listener: (event: { mcpUrl: string; authenticated: boolean; reason?: 'expired' }) => void): () => void;
 }

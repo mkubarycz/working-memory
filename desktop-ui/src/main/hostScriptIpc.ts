@@ -12,7 +12,7 @@ import {
 import type { HostScriptDesktopState } from '../shared/hostTasks';
 import type { DesktopInstanceIdentity } from './instanceIdentity';
 import type { HostScriptChatService } from './hostScriptChatTools';
-import { instanceFeatureUpdateSchema, type InstanceFeatures } from '../../../control-plane/src/instanceFeatures';
+import { instanceFeatureUpdateSchema, type InstanceFeatures, type InstanceFeatureUpdate } from '../../../control-plane/src/instanceFeatures';
 
 export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   directory: string;
@@ -20,6 +20,8 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
   identity?: DesktopInstanceIdentity;
   onSessionChanged?: (mcpUrl: string, authenticated: boolean) => Promise<void>;
   onFeaturesChanged?: (features: InstanceFeatures) => void;
+  setFeatures?: (mcpUrl: string, flags: InstanceFeatureUpdate, ensureCurrent: () => void) => Promise<InstanceFeatures>;
+  openObservability?: (mcpUrl: string, ensureCurrent: () => void, source?: 'http' | 'queue' | 'embeddings') => Promise<void>;
 }) {
   let running: AbortController | null = null;
   const context = (event: Parameters<typeof assertHostTaskSender>[0]) => {
@@ -70,11 +72,26 @@ export function registerHostScriptIpc(deps: HostTaskIpcDependencies & {
     const ctx = context(event);
     if (!deps.identity) throw new Error('Instance feature settings are unavailable.');
     const flags = instanceFeatureUpdateSchema.parse(raw);
-    const result = await deps.identity.setFeatures(ctx.environment.mcpUrl, flags);
+    const result = deps.setFeatures
+      ? await deps.setFeatures(ctx.environment.mcpUrl, flags, ctx.ensureCurrent)
+      : await deps.identity.setFeatures(ctx.environment.mcpUrl, flags);
     if (!result.hostTasks) running?.abort();
     ctx.ensureCurrent();
     deps.onFeaturesChanged?.(result);
     return result;
+  });
+  deps.ipc.handle('instance:observability', async event => {
+    const ctx = context(event);
+    if (!deps.identity) throw new Error('Instance observability is unavailable.');
+    const status = await deps.identity.observability(ctx.environment.mcpUrl);
+    ctx.ensureCurrent();
+    return status;
+  });
+  deps.ipc.handle('instance:open-observability', async (event, rawSource?: unknown) => {
+    const ctx = context(event);
+    if (!deps.openObservability) throw new Error('Observability is unavailable.');
+    const source = z.enum(['http', 'queue', 'embeddings']).optional().parse(rawSource);
+    await deps.openObservability(ctx.environment.mcpUrl, ctx.ensureCurrent, source);
   });
   deps.ipc.handle('host-scripts:get', async (event): Promise<HostScriptDesktopState> => {
     const ctx = context(event);

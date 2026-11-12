@@ -150,7 +150,7 @@ export class EmbeddingRuntime {
     this.backend = null;
     this.rssBytes = null;
     this.failure = null;
-    this.receive({ error: 'Embedding runtime stopped or timed out. Retry from Diagnostics.' });
+    this.receive({ error: 'Embedding runtime stopped or timed out. Retry from Settings > Diagnostics > Embeddings.' });
     child?.stdin.end();
     child?.kill();
   }

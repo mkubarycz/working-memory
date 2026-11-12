@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
-  import type { RelatedTopics } from '../../../../control-plane/src/embeddingContract';
+  import { EMBEDDING_HISTORY_GUIDANCE, type RelatedTopics } from '../../../../control-plane/src/embeddingContract';
   import { startVisiblePolling } from '../visiblePolling';
   import { TopicLinkDragController, type ActiveResourceDrag, type TopicLinkReference } from '../resourceDrag';
   import SearchResult from './SearchResult.svelte';
@@ -72,7 +72,7 @@
   {:else if result}
     {#if result.state === 'pending'}
       <p role="status">Semantic suggestions are waiting for indexing.
-        Check progress in Settings &gt; Diagnostics &gt; Embeddings.</p>
+        {EMBEDDING_HISTORY_GUIDANCE}</p>
     {/if}
     {#if result.limited}<p role="status">V1 uses the first 32,000 body characters of this topic.</p>{/if}
     {#if result.state === 'ready'}

@@ -49,6 +49,7 @@ it.skipIf(process.env.WM_TEST_BACKGROUND_EMBEDDINGS !== '1')('indexes from a rea
   `;
   let created = false;
   let client: ControlPlaneClient | undefined;
+  let indexProbe: ControlPlaneClient | undefined;
   try {
     await execute('docker', ['run', '-d', '--name', name, '-p', '127.0.0.1::7717',
       '--mount', `type=bind,source=${directory},target=/data`, image, 'node', '--input-type=module', '-e', script]);
@@ -72,15 +73,18 @@ it.skipIf(process.env.WM_TEST_BACKGROUND_EMBEDDINGS !== '1')('indexes from a rea
     await client.dispose();
     client = undefined;
     const indexed = async () => {
-      const result = await execute('docker', ['exec', name, 'node', '--input-type=module', '-e',
-        "import {DatabaseSync} from 'node:sqlite';const db=new DatabaseSync('/data/journal.sqlite',{readOnly:true});console.log(db.prepare(\"SELECT count(*) AS count FROM topic_embedding_index i JOIN resources r ON r.id=i.topic_id WHERE r.kind='Topic'\").get().count);db.close()"]);
-      return Number(result.stdout.trim());
+      indexProbe ??= new ControlPlaneClient({ resolveUrl: () => `${endpoint}/mcp`, getToken: () => session.token });
+      const result = await indexProbe.callTool('wm-embeddings-dashboard', {});
+      if (!result.ok) throw new Error(result.error);
+      return embeddingDashboardSchema.parse(result.result).stats?.indexed ?? 0;
     };
     for (let attempt = 0; attempt < 180; attempt++) {
       if (await indexed() === 3) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     expect(await indexed()).toBe(3);
+    await indexProbe.dispose();
+    indexProbe = undefined;
     client = new ControlPlaneClient({ resolveUrl: () => `${endpoint}/mcp`, getToken: () => session.token });
     const result = await client.callTool('wm-related-topics', { id: source.metadata.id });
     if (!result.ok) throw new Error(result.error);
@@ -121,6 +125,7 @@ it.skipIf(process.env.WM_TEST_BACKGROUND_EMBEDDINGS !== '1')('indexes from a rea
       hostRssMiB: (snapshot.rssBytes ?? 0) / 1048576, inferenceMs: snapshot.lastInferenceMs, startup: 'LaunchAgent running' }));
   } finally {
     await client?.dispose();
+    await indexProbe?.dispose();
     if (created) await execute('docker', ['rm', '-f', name]);
     rmSync(directory, { recursive: true, force: true });
   }

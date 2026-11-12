@@ -1,0 +1,20 @@
+services:
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:v1.1.2@sha256:4a154849432f75c4fb024de32fe34163c02406c905dab22bf8d213d2e3386392
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 1
+    ports:
+      - "127.0.0.1:${WM_OBSERVABILITY_PORT:-5080}:5080"
+    env_file:
+      - credentials.env
+    environment:
+      ZO_DATA_DIR: /data
+      ZO_LOCAL_MODE: "true"
+      ZO_TELEMETRY: "false"
+      ZO_COMPACT_DATA_RETENTION_DAYS: "7"
+      ZO_COOKIE_SAME_SITE_LAX: "true"
+    volumes:
+      - telemetry:/data
+volumes:
+  telemetry:
