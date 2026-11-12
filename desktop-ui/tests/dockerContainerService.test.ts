@@ -60,7 +60,7 @@ function localRunner(
 }
 
 describe('DockerContainerService', () => {
-  it('pulls registry images, applies resources/network and cleans private env files without secrets in arguments', async () => {
+  it.each(['No such image', 'No such object'])('pulls registry images after %s, applies resources/network and cleans private env files without secrets in arguments', async missingImage => {
     const calls: string[][] = [];
     let envFile = '';
     let imageAvailable = false;
@@ -68,7 +68,7 @@ describe('DockerContainerService', () => {
     const runner = localRunner(async args => {
       if (args[0] === 'container' && args[1] === 'inspect') throw new CommandExecutionError('missing', 1, 'No such container');
       if (args[0] === 'image' && args[1] === 'inspect') {
-        if (!imageAvailable) throw new CommandExecutionError('missing', 1, 'No such image');
+        if (!imageAvailable) throw new CommandExecutionError('missing', 1, missingImage);
         return { stdout: 'sha256:registry', stderr: '' };
       }
       if (args[0] === 'image' && args[1] === 'pull') imageAvailable = true;
@@ -99,6 +99,51 @@ describe('DockerContainerService', () => {
     const before = calls.length;
     expect(await service.launch(claim({ runtime }))).toMatchObject({ status: 'ready' });
     expect(calls.slice(before).some(args => args.includes('pull'))).toBe(false);
+  });
+
+  it.each([
+    ['image not known', true],
+    ['permission denied', false],
+    ['connection refused', false],
+  ])('handles Podman registry image inspection failure: %s', async (detail, shouldPull) => {
+    const calls: string[][] = [];
+    let imageAvailable = false;
+    const runtime = {
+      ...desired.runtime!, imageSource: 'registry' as const,
+      imageName: 'registry.example/collector@sha256:pinned',
+    };
+    const runner: CommandRunner = {
+      run: vi.fn(async (file, args) => {
+        expect(file).toBe('podman');
+        if (args[0] === 'system') return {
+          stdout: JSON.stringify([{ Name: 'local', URI: 'unix:///tmp/podman.sock', Default: true }]),
+          stderr: '',
+        };
+        expect(args.slice(0, 2)).toEqual(['--connection', 'local']);
+        const command = args.slice(2);
+        calls.push(command);
+        if (command[0] === 'image' && command[1] === 'inspect') {
+          if (!imageAvailable) throw new CommandExecutionError('inspection failed', 125, `Error: ${runtime.imageName}: ${detail}`);
+          return { stdout: 'sha256:registry', stderr: '' };
+        }
+        if (command[0] === 'image' && command[1] === 'pull') imageAvailable = true;
+        if (command[0] === 'container' && command[1] === 'inspect') {
+          throw new CommandExecutionError('missing', 125, `no container with name or ID "${runtime.containerName}" found: no such container`);
+        }
+        return { stdout: '{}', stderr: '' };
+      }),
+    };
+    const service = new DockerContainerService({ provider: 'podman', runner, readiness: async () => true });
+    const result = await service.launch(claim({ runtime }));
+    if (shouldPull) {
+      expect(result).toMatchObject({ status: 'ready', action: 'created' });
+      expect(calls.filter(args => args[0] === 'image' && args[1] === 'pull'))
+        .toEqual([['image', 'pull', runtime.imageName]]);
+      expect(calls).toContainEqual(expect.arrayContaining(['container', 'run']));
+    } else {
+      expect(result).toMatchObject({ status: 'error', code: 'build_failed', message: expect.stringContaining(detail) });
+      expect(calls.some(args => args[1] === 'pull' || args[1] === 'run')).toBe(false);
+    }
   });
 
   it('does not silently reuse a container with stale public environment or network', async () => {

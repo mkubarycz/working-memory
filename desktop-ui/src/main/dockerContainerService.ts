@@ -265,7 +265,7 @@ export class DockerContainerService {
         try {
           await this.docker(context, ['image', 'inspect', runtime.imageName], this.timeouts.inspect, signal);
         } catch (error) {
-          if (!(error instanceof CommandExecutionError) || !/no such (image|object)/i.test(error.stderr || error.message)) throw error;
+          if (!(error instanceof CommandExecutionError) || !/no such (image|object)|image not known/i.test(error.stderr || error.message)) throw error;
           await this.docker(context, ['image', 'pull', runtime.imageName], this.timeouts.build, signal);
         }
       } else {
