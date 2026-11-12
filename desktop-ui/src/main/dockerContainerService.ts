@@ -215,7 +215,7 @@ export class DockerContainerService {
       throw new Error('Managed observability currently requires a local container backend.');
     }
     const context = await this.resolveDockerContext(signal);
-    const listed = await this.docker(context, ['container', 'ls', '--filter', `publish=${url.port}`, '--format', '{{.ID}}'], this.timeouts.inspect, signal);
+    const listed = await this.docker(context, ['container', 'ls', '--format', '{{.ID}}'], this.timeouts.inspect, signal);
     const ids = listed.stdout.trim().split(/\s+/).filter(Boolean);
     if (!ids.length) throw new Error('No running backend container publishes the selected instance port on this provider.');
     const result = await this.docker(context, ['container', 'inspect', ...ids], this.timeouts.inspect, signal);

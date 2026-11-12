@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "node ../scripts/build-desktop.mjs",
-    "start": "npm run build && electron out/main/index.js",
+    "start": "npm run build && electron .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "package": "node ../scripts/build-desktop.mjs --package",

@@ -250,6 +250,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("!document.querySelector('.instance-session-recovery') && window.__connectionTest.streamStarts === " + (streamsBeforeRenewal + 2));
           assert.equal(await evaluate('window.__connectionTest.maxReads'), 1);
           assert.equal(await evaluate("document.querySelector('.backlog-head').dataset.originalMount"), 'kept');
+          for (const mode of ['timeout', 'unavailable']) {
+            await evaluate("window.__connectionTest.mode = '" + mode + "'; window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false, reason: 'expired' })");
+            await wait("!document.querySelector('.instance-session-recovery') && document.querySelector('.instance-connection-notice')");
+            assert.equal(await evaluate("document.querySelector('.instance-connection')"), null, 'A failed renewal probe must not sign out the workspace');
+            assert.equal(await evaluate("document.querySelector('.backlog-head').dataset.originalMount"), 'kept');
+            assert.equal(await evaluate("document.querySelector('textarea[aria-label=Message]').value"), 'Unsaved diagnostic notes');
+            assert.match(await evaluate("document.querySelector('.instance-connection-notice').textContent"),
+              mode === 'timeout' ? /timed out/ : /HTTP 503/);
+            await evaluate("window.__connectionTest.mode = 'success'; document.querySelector('.instance-connection-notice button').click()");
+            await wait("!document.querySelector('.instance-connection-notice')");
+            assert.equal(await evaluate("document.querySelector('.backlog-head').dataset.originalMount"), 'kept');
+            assert.equal(await evaluate("document.querySelector('textarea[aria-label=Message]').value"), 'Unsaved diagnostic notes');
+          }
           await evaluate("window.__connectionTest.authenticated = false; window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false, reason: 'expired' })");
           await wait("document.querySelector('.instance-connection input[type=password]')");
           const signedOutReads = await evaluate('window.__connectionTest.reads');

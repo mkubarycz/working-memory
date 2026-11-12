@@ -14,8 +14,8 @@ if (suppliedArchive && resolve(suppliedArchive) === join(destination, 'image.tar
   throw new Error('WM_DATA_TIER_IMAGE_ARCHIVE must be outside the staging directory.');
 }
 rmSync(destination, { recursive: true, force: true });
-mkdirSync(destination, { recursive: true });
-cpSync(join(repoRoot, 'deploy', 'observability'), join(destination, 'observability'), { recursive: true });
+mkdirSync(join(destination, 'observability'), { recursive: true });
+cpSync(join(repoRoot, 'deploy', 'observability', 'compose.yaml'), join(destination, 'observability', 'compose.yaml'));
 
 if (suppliedArchive) {
   cpSync(suppliedArchive, join(destination, 'image.tar'));

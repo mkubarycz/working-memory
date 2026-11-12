@@ -1323,7 +1323,6 @@
       const authenticated = await refreshInstanceConnection();
       if (!isCurrent()) return;
       if (authenticated) await startDocumentChanges();
-      else if (instanceConnection) instanceConnection = { ...instanceConnection, authenticated: false };
     })();
     instanceSessionRecovery = pending;
     void pending.finally(() => {

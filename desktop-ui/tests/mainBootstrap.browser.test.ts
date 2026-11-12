@@ -8,6 +8,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+it('routes npm start through the guarded package entry', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  expect(manifest.main).toBe('out/main/bootstrap.js');
+  expect(manifest.scripts.start).toBe('npm run build && electron .');
+});
+
 it('keeps the shared lock helpers importable in an ES-module desktop bundle', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'wm-lock-esm-'));
   try {

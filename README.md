@@ -267,6 +267,7 @@ than displaying Electron's raw JavaScript-error popup. Unhandled promise
 rejections are logged without a modal popup. The latest failure is kept in a
 private `main-process-error.log` in Electron's application logs directory;
 errors are also written to stderr, keeping MCP protocol stdout clean.
+`npm start --prefix desktop-ui` uses the same guarded package entry.
 
 For local builds that remember credentials, create an **Apple Development**
 certificate once in **Xcode -> Settings -> Accounts -> Manage Certificates ->
@@ -1228,6 +1229,7 @@ The installer also ships [`deploy/observability/compose.yaml`](deploy/observabil
 under its data-tier resources for independent deployment. Create a private
 `credentials.env` beside it containing `ZO_ROOT_USER_EMAIL` and
 `ZO_ROOT_USER_PASSWORD`, then use `docker compose up -d`. Do not commit that file.
+Packaging copies only the public Compose template, never local credentials.
 Independent deployment does not automatically connect a Working Memory instance.
 OpenObserve is a separate AGPL-3.0 service; image/source/license details are at
 [the upstream project](https://github.com/openobserve/openobserve/tree/v1.1.2).

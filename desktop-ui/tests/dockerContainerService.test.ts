@@ -74,7 +74,7 @@ describe('DockerContainerService', () => {
       if (args[0] === 'image' && args[1] === 'pull') imageAvailable = true;
       if (args[0] === 'container' && args[1] === 'run') {
         envFile = args[args.indexOf('--env-file') + 1];
-        expect((await stat(envFile)).mode & 0o777).toBe(0o600);
+        if (process.platform !== 'win32') expect((await stat(envFile)).mode & 0o777).toBe(0o600);
         expect(await readFile(envFile, 'utf8')).toContain(`PASSWORD=${password}`);
       }
       return { stdout: '', stderr: '' };
@@ -88,7 +88,8 @@ describe('DockerContainerService', () => {
       environment: { PUBLIC_SETTING: 'true' }, network: 'wm_default',
       restartPolicy: 'unless-stopped' as const, memoryMb: 768, cpus: 1,
     };
-    expect(await service.launch(claim({ runtime }))).toMatchObject({ status: 'ready' });
+    const result = await service.launch(claim({ runtime }));
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'ready' });
     expect(calls.some(args => args.includes('build'))).toBe(false);
     expect(calls).toContainEqual(expect.arrayContaining(['image', 'pull', runtime.imageName]));
     expect(calls.find(args => args.includes('run'))).toEqual(expect.arrayContaining([
@@ -99,6 +100,35 @@ describe('DockerContainerService', () => {
     const before = calls.length;
     expect(await service.launch(claim({ runtime }))).toMatchObject({ status: 'ready' });
     expect(calls.slice(before).some(args => args.includes('pull'))).toBe(false);
+  });
+
+  it.each([
+    { hostPorts: ['7719', '7720'], expected: 'wm-0' },
+    { hostPorts: ['7720'], expected: null },
+    { hostPorts: ['7719', '7719'], expected: null },
+  ])('selects a unique backend by its published host port: $hostPorts', async ({ hostPorts, expected }) => {
+    const calls: string[][] = [];
+    const containers = hostPorts.map((hostPort, index) => ({
+      Id: `backend-${index}`,
+      HostConfig: { PortBindings: { '7717/tcp': [{ HostIp: '127.0.0.1', HostPort: hostPort }] } },
+      NetworkSettings: { Networks: { bridge: {}, [`wm-${index}`]: {} } },
+    }));
+    const runner = localRunner(async args => {
+      if (args[0] === 'container' && args[1] === 'ls') {
+        expect(args).not.toContain('--filter');
+        return { stdout: containers.map(container => container.Id).join('\n'), stderr: '' };
+      }
+      if (args[0] === 'container' && args[1] === 'inspect') {
+        expect(args.slice(2)).toEqual(containers.map(container => container.Id));
+        return { stdout: JSON.stringify(containers), stderr: '' };
+      }
+      throw new Error(`Unexpected command: ${args.join(' ')}`);
+    }, calls);
+    const service = new DockerContainerService({ runner });
+    const result = service.backendNetwork('http://127.0.0.1:7719/mcp');
+    if (expected) await expect(result).resolves.toBe(expected);
+    else await expect(result).rejects.toThrow('Cannot uniquely identify the selected backend container.');
+    expect(calls).toContainEqual(expect.arrayContaining(['container', 'ls', '--format', '{{.ID}}']));
   });
 
   it.each([
