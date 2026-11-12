@@ -228,8 +228,14 @@ export interface WsDeleteInput {
 
 export interface DockerRuntimeSpec {
   type: 'docker';
-  buildContext: string;
-  dockerfile: string;
+  buildContext?: string;
+  dockerfile?: string;
+  imageSource?: 'registry';
+  restartPolicy?: 'unless-stopped';
+  memoryMb?: number;
+  cpus?: number;
+  environment?: Record<string, string>;
+  network?: string;
   imageName: string;
   containerName: string;
   hostPort: number;

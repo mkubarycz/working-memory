@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { homedir as systemHomedir } from 'node:os';
 import { join } from 'node:path';
@@ -99,7 +100,6 @@ export function bundledImage(version: string): string {
 function isBundledImage(image: string): boolean {
   return image.startsWith(`${IMAGE_REPOSITORY}:`);
 }
-const CONTAINER_DATABASE = '/data/journal.sqlite';
 
 /** Docker and host names for one data-tier instance; the default instance keeps the original names. */
 export interface DataTierInstanceNames {
@@ -214,7 +214,7 @@ function defaultPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = createServer();
     server.once('error', () => resolve(false));
-    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
+    server.listen(port, '0.0.0.0', () => server.close(() => resolve(true)));
   });
 }
 
@@ -568,8 +568,8 @@ export class DataTierManager {
     });
   }
 
-  /** Writes a consistent SQLite snapshot of a running instance into the destination folder. */
-  backup(port: number, destinationDirectory: string): Promise<string> {
+  /** Copies a consistent snapshot created by the running backend into the destination folder. */
+  backup(port: number, destinationDirectory: string, createSnapshot: (id: string) => Promise<void>): Promise<string> {
     return this.serialize(async () => {
       const instance = this.require(port);
       const { docker, env } = await this.docker();
@@ -577,16 +577,22 @@ export class DataTierManager {
       const running = (await this.containers(docker, env)).get(container)?.state === 'running';
       if (!running) throw new DataTierError('Start the instance before backing it up.', 'not-running');
       const fileName = `working-memory-${fileId(instance.name)}-${backupTimestamp(this.now())}.sqlite`;
-      const snapshot = `/tmp/${fileName}`;
-      const vacuum = `const { DatabaseSync } = require('node:sqlite');`
-        + `const db = new DatabaseSync(${JSON.stringify(CONTAINER_DATABASE)});`
-        + `db.exec("VACUUM INTO '${snapshot}'"); db.close();`;
-      await this.run(docker, env, ['exec', container, 'node', '--experimental-sqlite', '-e', vacuum], 'start-failed', 'Unable to snapshot the instance database.');
+      const id = randomUUID();
+      const snapshot = `/tmp/working-memory-${id}.sqlite`;
       const destination = join(destinationDirectory, fileName);
+      let snapshotReady = false;
       try {
+        await createSnapshot(id);
+        snapshotReady = true;
         await this.run(docker, env, ['cp', `${container}:${snapshot}`, destination], 'start-failed', 'Unable to copy the database backup.');
       } finally {
-        await this.runner.run(docker, ['exec', container, 'rm', '-f', snapshot], { timeoutMs: this.timeouts.command, env }).catch(() => undefined);
+        if (snapshotReady) {
+          try {
+            await this.run(docker, env, ['exec', container, 'rm', '-f', snapshot], 'start-failed', 'Unable to remove the temporary database snapshot.');
+          } catch (error) {
+            console.error('[data-tier] Database snapshot cleanup failed:', error);
+          }
+        }
       }
       return destination;
     });
@@ -712,6 +718,13 @@ export class DataTierManager {
   private async choosePort(docker: string, env: NodeJS.ProcessEnv): Promise<number> {
     const managed = new Set(this.instances.map((instance) => instance.port));
     const containers = await this.containers(docker, env);
+    const published = await this.run(docker, env, ['ps', '--format', '{{.Ports}}'],
+      'start-failed', 'Unable to check container-published ports.');
+    const publishedPorts = new Set<number>();
+    for (const match of published.matchAll(/:(\d+)(?:-(\d+))?->\d+(?:-\d+)?\/tcp\b/g)) {
+      const first = Number(match[1]), last = Number(match[2] ?? match[1]);
+      for (let port = Math.max(1, first); port <= Math.min(65535, last); port += 1) publishedPorts.add(port);
+    }
     const volumes = this.host.platform === 'win32'
       ? new Set((await this.run(docker, env, ['volume', 'ls', '--format', '{{.Name}}'],
         'start-failed', 'Unable to check existing data volumes.')).trim().split(/\r?\n/))
@@ -720,7 +733,7 @@ export class DataTierManager {
     for (let port = DATA_TIER_INSTANCE_PORT_FIRST; port <= DATA_TIER_INSTANCE_PORT_LAST; port += 1) candidates.push(port);
     for (const port of candidates) {
       const names = dataTierInstanceNames(port);
-      if (managed.has(port) || containers.has(names.container) || volumes.has(names.volume)) continue;
+      if (managed.has(port) || publishedPorts.has(port) || containers.has(names.container) || volumes.has(names.volume)) continue;
       if (this.host.platform !== 'win32'
         && (this.options.dataExists ?? existsSync)(join(dataTierHostDirectory(this.host, port), 'journal.sqlite'))) continue;
       if (await this.portAvailable(port)) return port;

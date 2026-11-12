@@ -43,6 +43,7 @@
     onMakeCurrent: (mcpUrl: string) => Promise<void>;
     onInstancesChanged: () => Promise<void>;
     onFeaturesChanged: (features: InstanceFeatures) => void;
+    onOpenObservability?: () => Promise<void>;
   }
 
   let {
@@ -68,6 +69,7 @@
     onMakeCurrent,
     onInstancesChanged,
     onFeaturesChanged,
+    onOpenObservability,
   }: Props = $props();
 
   const SPEEDS = ['slow', 'medium', 'fast'] as const;
@@ -229,13 +231,13 @@
     </div>
     {#if profileTestStatus}<p role={profileTestError ? 'alert' : 'status'}>{profileTestStatus}</p>{/if}
   {:else if tab === 'features'}
-    {#key selectedMcpUrl}<FeaturesView onChanged={onFeaturesChanged} />{/key}
+    {#key selectedMcpUrl}<FeaturesView onChanged={onFeaturesChanged} {onOpenObservability} />{/key}
   {:else if tab === 'access'}
     {#key selectedMcpUrl}<AccessView />{/key}
   {:else if tab === 'sessions'}
     {#key selectedMcpUrl}<SessionsView mcpUrl={selectedMcpUrl} />{/key}
   {:else if tab === 'diagnostics'}
-    {#key selectedMcpUrl}<DiagnosticsView />{/key}
+    {#key selectedMcpUrl}<DiagnosticsView {onOpenObservability} onOpenFeatures={() => { tab = 'features'; }} />{/key}
   {:else if tab === 'system'}
     <div class="settings-tabs settings-subtabs" role="tablist" aria-label="System">
       <button id="system-front-end-tab" role="tab" aria-selected={systemTab === 'front-end'}

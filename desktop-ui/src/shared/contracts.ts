@@ -83,8 +83,8 @@ export interface ContainerAppStatus {
   claimTitle: string;
   claimId: string;
   repository: string;
-  buildContext: string;
-  dockerfile: string;
+  buildContext?: string;
+  dockerfile?: string;
   image: string;
   containerName: string;
   dockerContext: string | null;
@@ -114,8 +114,16 @@ export interface ContainerAppDefinition {
   displayName: string;
   icon: string;
   embeddable?: boolean;
+  nativeSurface?: 'observability';
   mcp?: AppMcpEndpoint;
   application?: ApplicationContractMetadata;
+}
+
+export interface ContainerAppSurfaceBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface ContainerAppResourceReference {
@@ -423,6 +431,10 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   startDocumentChanges(): Promise<void>;
   onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;
+  mountContainerAppSurface(id: ContainerAppId, surfaceId: string, bounds: ContainerAppSurfaceBounds): Promise<void>;
+  resizeContainerAppSurface(surfaceId: string, bounds: ContainerAppSurfaceBounds): Promise<void>;
+  setContainerAppSurfaceVisible(surfaceId: string, visible: boolean): Promise<void>;
+  closeContainerAppSurface(surfaceId: string): Promise<void>;
   discoverEnvironments(): Promise<DesktopEnvironmentState>;
   switchEnvironment(mcpUrl: string): Promise<DesktopEnvironmentState>;
   /** Null when this build cannot manage data-tier instances (no bundled data tier). */

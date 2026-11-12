@@ -9,6 +9,7 @@
   } from '../shared/contracts';
   import { effectiveContainerAppMcp, type ContainerAppItem } from './containerApps';
   import { parseContainerAppResourceReference } from './resourceDrag';
+  import ContainerAppSurface from './ContainerAppSurface.svelte';
 
   interface Props {
     app: ContainerAppItem;
@@ -43,8 +44,8 @@
     ['Claim title', status.claimTitle],
     ['Claim', status.claimId],
     ['Repository', status.repository],
-    ['Build context', status.buildContext],
-    ['Dockerfile', status.dockerfile],
+    ...(status.buildContext ? [['Build context', status.buildContext]] : []),
+    ...(status.dockerfile ? [['Dockerfile', status.dockerfile]] : []),
     ['Image', status.image],
     ['Container', status.containerName],
     ['Container connection', status.dockerContext ?? 'Unavailable'],
@@ -202,6 +203,10 @@
   {#if view === 'app' && app.embeddable}
     {#if embeddedUrl}
       {#key reloadVersion}
+      {#key app.id}
+      {#if app.nativeSurface === 'observability'}
+        <ContainerAppSurface appId={app.id} title={app.displayName} />
+      {:else}
       <iframe
         bind:this={embeddedFrame}
         class="container-app-frame"
@@ -210,6 +215,8 @@
         sandbox="allow-forms allow-scripts allow-same-origin allow-popups"
         referrerpolicy="no-referrer"
       ></iframe>
+      {/if}
+      {/key}
       {/key}
     {:else}
       <div class="container-app-frame-state">

@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +36,49 @@ it('defaults off and persists each instance choice across database reopening', a
   const another = openStore(':memory:');
   stores.push(another);
   expect(new InstanceFeatureStore(another.db).read()).toEqual({ hostTasks: false, search: false });
+});
+
+it('negotiates v3, configures observability only as owner, and preserves exact legacy response shapes', async () => {
+  const collector = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ code: 200, status: [] }));
+  });
+  await new Promise<void>(resolve => collector.listen(0, '127.0.0.1', resolve));
+  const address = collector.address();
+  if (!address || typeof address === 'string') throw new Error('Collector did not bind.');
+  try {
+    const store = openStore(':memory:');
+    stores.push(store);
+    const owner = await new InstanceIdentity(store.db).initialize('private observability owner password');
+    const server = await startServer({ port: 0, store });
+    servers.push(server);
+    const request = (path: string, body?: object, token = owner.token) => fetch(`${server.url}${path}`, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    expect(await (await request('/features/v3')).json()).toEqual({ hostTasks: false, search: false, observability: false });
+    expect((await request('/features/v3', { observability: true })).status).toBe(409);
+    expect((await request('/features/v2', { observability: true })).status).toBe(400);
+    const configuration = {
+      endpoint: `http://127.0.0.1:${address.port}`, uiUrl: `http://localhost:${address.port}`,
+      username: 'wm@localhost.invalid', password: 'a generated private test password', claimId: randomUUID(),
+    };
+    expect((await request('/identity/v1/observability', configuration, 'unapproved')).status).toBe(401);
+    expect((await request('/identity/v1/observability', configuration)).status).toBe(200);
+    expect(await (await request('/features/v3', { observability: true })).json())
+      .toEqual({ hostTasks: false, search: false, observability: true });
+    const count = () => store.db.prepare('SELECT SUM(count) AS count FROM instance_http_minutes').get()?.count;
+    const before = count();
+    expect((await fetch(`${server.url}/health`)).status).toBe(200);
+    expect(count()).toBe(before);
+    expect(await (await request('/features/v2')).json()).toEqual({ hostTasks: false, search: false });
+    expect(await (await request('/features/v1')).json()).toEqual({ hostTasks: false });
+    const status = await (await request('/identity/v1/observability')).json();
+    expect(status).toMatchObject({ enabled: true, configured: true, claimId: configuration.claimId });
+    expect(JSON.stringify(status)).not.toContain(configuration.password);
+    await request('/features/v3', { observability: false });
+  } finally { await new Promise<void>((resolve, reject) => collector.close(error => error ? reject(error) : resolve())); }
 });
 
 it('blocks all host-task HTTP/MCP usage while off, preserves records, and requires owner auth to toggle', async () => {

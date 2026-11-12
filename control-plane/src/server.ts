@@ -19,6 +19,8 @@
 
 import * as http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { CancelledNotificationSchema } from '@modelcontextprotocol/core';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
@@ -37,6 +39,7 @@ import { openStore, type Store, ConflictError, NotFoundError } from './store.js'
 import { createDocumentChangeFeed } from './documentChangeFeed.js';
 import { HostTaskBroker, HOST_TASK_CLEANUP_INTERVAL_MS, type HostTaskOptions } from './hostTasks.js';
 import { InstanceFeatureStore } from './instanceFeatures.js';
+import { Observability, ObservabilityConnectionError } from './observability.js';
 import { AccessError, InstanceAccess, type InstancePrincipal } from './instanceAccess.js';
 import { serveInstanceAccessMcp } from './instanceAccessMcp.js';
 import { InstanceOAuth } from './instanceOAuth.js';
@@ -68,6 +71,7 @@ import {
 } from './kinds/registry.js';
 
 const toolExecution = new AsyncLocalStorage<{ failed: boolean }>();
+const databaseBackupInputSchema = z.object({ id: z.string().uuid() }).strict();
 
 export interface StartServerOptions extends HostTaskOptions {
   sessionDiagnostics?: SessionDiagnosticsOptions;
@@ -614,7 +618,6 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   // store and own its lifecycle; when absent (tests) we own an ephemeral one.
   const providedStore = opts.store;
   const store = providedStore ?? openStore(':memory:');
-  const embeddings = new EmbeddingIndexer(store.db, () => new InstanceFeatureStore(store.db).read().search);
   try { activateDueReminders(store); }
   catch (error) {
     if (providedStore === undefined) store.close();
@@ -623,8 +626,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
   const hostTasks = new HostTaskBroker(store.db, opts);
   const access = new InstanceAccess(store.db, hostTasks.identity, opts.hostTaskClock);
   const sessions = new McpSessions(store.db, opts.sessionDiagnostics);
-  const toolQueue = new ToolQueue(store.db, percent => sessions.isMemoryBlockedAt(percent / 100), opts.sessionDiagnostics?.clock);
-  const diagnostics = new HttpDiagnostics(store.db, version, Date.now, toolQueue);
+  const observability = new Observability(store.db, () => hostTasks.features.observabilityEnabled);
+  const embeddings = new EmbeddingIndexer(store.db, () => new InstanceFeatureStore(store.db).read().search, observability);
+  const toolQueue = new ToolQueue(store.db, percent => sessions.isMemoryBlockedAt(percent / 100), opts.sessionDiagnostics?.clock, observability);
+  const diagnostics = new HttpDiagnostics(store.db, version, Date.now, toolQueue, observability);
   const queueSnapshot = () => ({
     bootId: diagnostics.bootId, ...toolQueue.state(), events: toolQueue.events(2000),
     history: diagnostics.history(180).map(({ at, bootId, queueDepth, peakQueueDepth, maxQueueWaitMs, runningTools, processing, requestsByTool, timingsByTool, queueDrops }) =>
@@ -885,6 +890,30 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       endJson(res, 200, diagnostics.snapshot(sessions.activeCount));
       return;
     }
+    if (url.pathname === '/identity/v1/backups') {
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.headers.origin || url.search) { endJson(res, 400, { error: 'Use the trusted desktop connection without query parameters.' }); return; }
+      if (!hostTasks.identity.authenticate(token)) { endJson(res, 401, { error: 'Sign in as the instance owner to back up the database.' }); return; }
+      if (req.method !== 'POST') { endJson(res, 405, { error: 'Database backup creation accepts POST only.' }); return; }
+      if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') {
+        endJson(res, 415, { error: 'JSON required.' });
+        return;
+      }
+      try {
+        const { id } = databaseBackupInputSchema.parse(await readJsonBody(req));
+        const snapshotPath = join(tmpdir(), `working-memory-${id}.sqlite`);
+        store.db.prepare('VACUUM INTO ?').run(snapshotPath);
+        endJson(res, 200, { id });
+      } catch (error) {
+        if (error instanceof z.ZodError || error instanceof SyntaxError) {
+          endJson(res, 400, { error: 'Provide a valid backup ID.' });
+        } else {
+          console.error('[backup] Database snapshot failed:', error);
+          endJson(res, 500, { error: error instanceof Error ? error.message : 'Database snapshot failed.' });
+        }
+      }
+      return;
+    }
     if (url.pathname === '/identity/v1/tool-queue' || url.pathname.startsWith('/identity/v1/tool-queue/')) {
       res.setHeader('Cache-Control', 'no-store');
       if (req.headers.origin || url.search) { endJson(res, 400, { error: 'Use the trusted desktop connection without query parameters.' }); return; }
@@ -1017,8 +1046,34 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       }
       return;
     }
-    if (url.pathname === '/features/v1' || url.pathname === '/features/v2') {
+    if (url.pathname === '/identity/v1/observability') {
+      try {
+        if (req.headers.origin || url.search) throw new IdentityError(400, 'Use the trusted desktop connection without query credentials.');
+        if (!hostTasks.identity.authenticate(token)) throw new IdentityError(401, 'Sign in as the instance owner to manage observability.');
+        if (req.method === 'GET') { endJson(res, 200, observability.status()); return; }
+        if (req.method !== 'POST') throw new IdentityError(405, 'Observability accepts GET or POST.');
+        if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') throw new IdentityError(415, 'JSON required.');
+        const status = await observability.configure(await readJsonBody(req), () => {
+          if (!hostTasks.identity.authenticate(token)) throw new IdentityError(401, 'The owner session expired during configuration.');
+        });
+        endJson(res, 200, status);
+      } catch (error) {
+        if (error instanceof IdentityError) endJson(res, error.status, { error: error.message });
+        else if (error instanceof z.ZodError || error instanceof SyntaxError) endJson(res, 400, { error: 'Provide a valid OpenObserve connection configuration.' });
+        else if (error instanceof ObservabilityConnectionError) endJson(res, 502, { error: error.message });
+        else throw error;
+      }
+      return;
+    }
+    if (['/features/v1', '/features/v2', '/features/v3'].includes(url.pathname)) {
       const principal = access.authenticate(token);
+      const beforeWrite = (flags: import('./instanceFeatures.js').InstanceFeatureUpdate) => {
+        if (flags.observability === undefined) return;
+        if (principal?.role !== 'owner') throw new IdentityError(403, 'Only the instance owner can manage the Observability Container App.');
+        if (flags.observability && !observability.status().configured) {
+          throw new IdentityError(409, 'Set up the Observability Container App before enabling telemetry export.');
+        }
+      };
       if (principal?.role === 'client') {
         if (['GET', 'POST'].includes(req.method ?? '') && !permits(principal.permissions, 'settings', req.method === 'GET' ? 'read' : 'update')) {
           denyPermission(req, res, [{ category: 'settings', operation: req.method === 'GET' ? 'read' : 'update' }]); return;
@@ -1028,8 +1083,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           if (!current || !permits(current.permissions, 'settings', req.method === 'GET' ? 'read' : 'update')) {
             throw new IdentityError(403, 'Settings permission required.');
           }
-        });
-      } else await hostTasks.handleFeatures(req, res, url);
+        }, beforeWrite);
+      } else await hostTasks.features.handle(req, res, url, () => {
+        if (!hostTasks.identity.authenticate(token)) throw new IdentityError(401, 'Sign in as the instance owner to access feature settings.');
+      }, beforeWrite);
+      observability.syncEnabled();
       return;
     }
     if (url.pathname.startsWith('/identity/v1/')) {
@@ -1211,10 +1269,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       await sessions.close();
       transports.clear();
       return new Promise<void>((resolve, reject) => {
-        httpServer.close((err) => {
+        httpServer.close((err) => { void (async () => {
           try { diagnostics.sample(); }
           catch (error) { console.error('[diagnostics] Unable to persist final queue sample:', error); }
           diagnostics.close();
+          await observability.close();
           // Only close a store we own; an injected store is the caller's to close.
           if (ownsStore) {
             try {
@@ -1228,7 +1287,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           } else {
             resolve();
           }
-        });
+        })().catch(reject); });
         // Force-drop lingering keep-alive/SSE sockets so close() resolves promptly.
         (httpServer as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
       });

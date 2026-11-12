@@ -1,4 +1,8 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { startServer, type RunningServer } from '../../control-plane/src/server';
 import { DesktopInstanceIdentity } from '../src/main/instanceIdentity';
@@ -29,6 +33,51 @@ it('updates queue settings through authenticated HTTP and surfaces rejected save
   fetcher.mockResolvedValueOnce(Response.json({ error: 'Queue settings changed' }, { status: 409 }));
   await expect(identity.updateToolQueueSettings(`${origin}/mcp`, update)).rejects.toThrow('Queue settings changed');
   expect(vault.session(origin)).toBe(token);
+});
+
+it('creates an authenticated SQLite snapshot through the backend-owned database handle', async () => {
+  const bootstrap = randomBytes(32).toString('hex');
+  const server = await startServer({ port: 0, hostTaskAdminCredential: bootstrap });
+  servers.push(server);
+  const vault = new HostTaskCredentialVault({ isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn() }, process.platform, '/not-used');
+  const identity = new DesktopInstanceIdentity(vault, async () => bootstrap, () => true);
+  const mcpUrl = `${server.url}/mcp`, id = randomUUID();
+  const snapshot = join(tmpdir(), `working-memory-${id}.sqlite`);
+  try {
+    const anonymous = await fetch(`${server.url}/identity/v1/backups`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+    });
+    expect(anonymous.status).toBe(401);
+    expect(existsSync(snapshot)).toBe(false);
+    await expect(identity.createDatabaseBackup(mcpUrl, id)).rejects.toThrow('Sign in as the instance owner');
+    await identity.signIn(mcpUrl, 'a private owner password', true);
+    const token = vault.session(server.url);
+    if (!token) throw new Error('Owner session was not established.');
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    for (const [path, options, expected] of [
+      ['', { method: 'GET', headers }, 405],
+      ['?id=ignored', { method: 'POST', headers, body: JSON.stringify({ id }) }, 400],
+      ['', { method: 'POST', headers: { ...headers, Origin: 'http://localhost' }, body: JSON.stringify({ id }) }, 400],
+      ['', { method: 'POST', headers: { ...headers, 'Content-Type': 'text/plain' }, body: '{}' }, 415],
+      ['', { method: 'POST', headers, body: JSON.stringify({ id: '../journal.sqlite' }) }, 400],
+      ['', { method: 'POST', headers, body: JSON.stringify({ id, path: '/data/journal.sqlite' }) }, 400],
+      ['', { method: 'POST', headers, body: '{' }, 400],
+    ] as const) {
+      expect((await fetch(`${server.url}/identity/v1/backups${path}`, options)).status).toBe(expected);
+      expect(existsSync(snapshot)).toBe(false);
+    }
+    await identity.createDatabaseBackup(mcpUrl, id);
+    expect(existsSync(snapshot)).toBe(true);
+    const database = new DatabaseSync(snapshot, { readOnly: true });
+    try {
+      expect(database.prepare('PRAGMA quick_check').get()?.quick_check).toBe('ok');
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='resources'").get()).toBeTruthy();
+    } finally {
+      database.close();
+    }
+  } finally {
+    rmSync(snapshot, { force: true });
+  }
 });
 
 it('explains identity timeouts without clearing the session, then accepts recovery or authoritative revocation', async () => {
@@ -78,7 +127,7 @@ it('keeps Host tasks working against older backends without enabling unsupported
   vault.setSession('http://127.0.0.1:7717', randomBytes(32).toString('hex'), Date.now() + 60_000);
   let hostTasks = true;
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
-    if (String(url).endsWith('/features/v2')) return new Response('', { status: 404 });
+    if (/\/features\/v[23]$/.test(String(url))) return new Response('', { status: 404 });
     expect(String(url)).toContain('/features/v1');
     if (init?.method === 'POST') hostTasks = JSON.parse(String(init.body)).hostTasks;
     return Response.json({ hostTasks });
@@ -105,9 +154,9 @@ it('connects without Keychain or secret files, keeps the password transient, and
     passwordConfigured: false, passwordHint: '', setupAvailable: true });
   const setup = await identity.signIn(mcpUrl, password, true, 'First owner reminder');
   vault.setSession(server.url, setup.token, setup.expiresAt);
-  expect(await identity.features(mcpUrl)).toEqual({ hostTasks: false, search: false });
+  expect(await identity.features(mcpUrl)).toEqual({ hostTasks: false, search: false, observability: false });
   await expect(new HostScriptAdminClient(mcpUrl, setup.token).scripts()).rejects.toThrow('turned off');
-  expect(await identity.setFeatures(mcpUrl, { hostTasks: true })).toEqual({ hostTasks: true, search: false });
+  expect(await identity.setFeatures(mcpUrl, { hostTasks: true })).toEqual({ hostTasks: true, search: false, observability: false });
   expect(await vault.read(server.url)).toBe(setup.token);
   expect(await new HostScriptAdminClient(mcpUrl, setup.token).scripts()).toMatchObject({ tasks: [] });
   expect(await identity.status(mcpUrl)).toEqual({ environment: server.url, authenticated: true,

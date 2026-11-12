@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { dockerCliPath, dockerEnvironment } from './dockerCli';
 import { ContainerProviderAdapter, type ContainerProvider } from './containerProvider';
 import { checkContainerOwnership } from './containerOwnership';
@@ -60,6 +62,7 @@ export interface DockerContainerServiceOptions {
   dockerContext?: string;
   env?: NodeJS.ProcessEnv;
   confirmStorageCreation?: (claim: ContainerClaim, provider: ContainerProvider) => Promise<boolean>;
+  privateEnvironment?: (claimId: string) => Promise<Record<string, string>>;
   timeouts?: Partial<DockerOperationTimeouts>;
 }
 
@@ -86,8 +89,12 @@ const DEFAULT_TIMEOUTS: DockerOperationTimeouts = {
 interface DockerInspect {
   Image?: string;
   State?: { Running?: boolean; Health?: { Status?: string } };
-  Config?: { Image?: string; Labels?: Record<string, string> | null };
+  Config?: { Image?: string; Labels?: Record<string, string> | null; Env?: string[] };
+  NetworkSettings?: { Networks?: Record<string, unknown> };
   HostConfig?: {
+    RestartPolicy?: { Name?: string };
+    Memory?: number;
+    NanoCpus?: number;
     PortBindings?: Record<string, Array<{ HostIp?: string; HostPort?: string }> | null>;
   };
   Mounts?: Array<{ Type?: string; Name?: string; Destination?: string }>;
@@ -202,6 +209,26 @@ export class DockerContainerService {
     return this.launchClaim(claim, signal);
   }
 
+  async backendNetwork(mcpUrl: string, signal?: AbortSignal): Promise<string> {
+    const url = new URL(mcpUrl);
+    if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(url.hostname) || !url.port) {
+      throw new Error('Managed observability currently requires a local container backend.');
+    }
+    const context = await this.resolveDockerContext(signal);
+    const listed = await this.docker(context, ['container', 'ls', '--filter', `publish=${url.port}`, '--format', '{{.ID}}'], this.timeouts.inspect, signal);
+    const ids = listed.stdout.trim().split(/\s+/).filter(Boolean);
+    if (!ids.length) throw new Error('No running backend container publishes the selected instance port on this provider.');
+    const result = await this.docker(context, ['container', 'inspect', ...ids], this.timeouts.inspect, signal);
+    const candidates = (this.provider.inspect(result.stdout) as DockerInspect[]).filter(container =>
+      Object.values(container.HostConfig?.PortBindings ?? {}).some(bindings =>
+        bindings?.some(binding => binding.HostPort === url.port && ['127.0.0.1', '0.0.0.0', ''].includes(binding.HostIp ?? ''))));
+    if (candidates.length !== 1) throw new Error('Cannot uniquely identify the selected backend container.');
+    const networks = Object.keys(candidates[0].NetworkSettings?.Networks ?? {}).filter(name =>
+      !['bridge', 'host', 'none'].includes(name) && /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name));
+    if (!networks.length) throw new Error('The backend needs a user-defined container network for observability.');
+    return networks.sort()[0];
+  }
+
   private async launchClaim(claim: ContainerClaim, signal?: AbortSignal, newlyCreated = false): Promise<ContainerLaunchResult> {
     if (!claim.runtime || claim.runtime.type !== 'docker') {
       return { status: 'error', code: 'claim_error', message: 'ContainerClaim has no container runtime specification.' };
@@ -234,12 +261,22 @@ export class DockerContainerService {
     }
 
     try {
-      await this.docker(context, [
-        'build', '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=${claim.id}`,
-        '-t', runtime.imageName, '-f', runtime.dockerfile, runtime.buildContext,
-      ], this.timeouts.build, signal);
+      if (runtime.imageSource === 'registry') {
+        try {
+          await this.docker(context, ['image', 'inspect', runtime.imageName], this.timeouts.inspect, signal);
+        } catch (error) {
+          if (!(error instanceof CommandExecutionError) || !/no such (image|object)/i.test(error.stderr || error.message)) throw error;
+          await this.docker(context, ['image', 'pull', runtime.imageName], this.timeouts.build, signal);
+        }
+      } else {
+        if (!runtime.buildContext || !runtime.dockerfile) throw new Error('Source-built images require buildContext and dockerfile.');
+        await this.docker(context, [
+          'build', '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=${claim.id}`,
+          '-t', runtime.imageName, '-f', runtime.dockerfile, runtime.buildContext,
+        ], this.timeouts.build, signal);
+      }
     } catch (error) {
-      return failure('build_failed', `${this.provider.label} image build failed.`, error);
+      return failure('build_failed', `${this.provider.label} image ${runtime.imageSource === 'registry' ? 'pull' : 'build'} failed.`, error);
     }
 
     let imageId: string;
@@ -249,7 +286,7 @@ export class DockerContainerService {
       ], this.timeouts.inspect, signal)).stdout.trim();
       if (!imageId) throw new Error('Docker returned an empty image id.');
     } catch (error) {
-      return failure('build_failed', `Built ${this.provider.label} image could not be inspected.`, error);
+      return failure('build_failed', `${this.provider.label} image could not be inspected.`, error);
     }
 
     let current: DockerInspect | null = null;
@@ -454,15 +491,32 @@ export class DockerContainerService {
     const volumeArgs = (runtime.volumes ?? []).flatMap((volume) => [
       '--mount', `type=volume,source=${volume.name},destination=${volume.mountPath}`,
     ]);
-    await this.docker(context, [
+    const environment = { ...runtime.environment, ...await this.options.privateEnvironment?.(id) };
+    const entries = Object.entries(environment);
+    if (entries.some(([key, value]) => !/^[A-Z_][A-Z0-9_]*$/.test(key) || /[\r\n\0]/.test(value))) {
+      throw new Error('Container environment contains an invalid key or multiline value.');
+    }
+    const directory = entries.length ? await mkdtemp(join(tmpdir(), 'wm-container-env-')) : null;
+    try {
+      const file = directory ? join(directory, 'environment') : null;
+      if (file) await writeFile(file, entries.map(([key, value]) => `${key}=${value}`).join('\n'), { mode: 0o600 });
+      await this.docker(context, [
       'container', 'run', '--detach', '--name', runtime.containerName,
       '--label', `${MANAGED_LABEL}=true`, '--label', `${CLAIM_LABEL}=${id}`,
       ...runtimePorts(runtime).flatMap((port) => [
         '--publish', `${port.hostIp}:${port.hostPort}:${port.containerPort}${port.protocol === 'udp' ? '/udp' : ''}`,
       ]),
       ...volumeArgs,
+      ...(runtime.network ? ['--network', runtime.network] : []),
+      ...(runtime.restartPolicy ? ['--restart', runtime.restartPolicy] : []),
+      ...(runtime.memoryMb ? ['--memory', `${runtime.memoryMb}m`] : []),
+      ...(runtime.cpus ? ['--cpus', String(runtime.cpus)] : []),
+      ...(file ? ['--env-file', file] : []),
       runtime.imageName,
     ], this.timeouts.start, signal);
+    } finally {
+      if (directory) await rm(directory, { recursive: true });
+    }
   }
 
   private async prepareOwnership(
@@ -561,6 +615,11 @@ function containerMatches(
     && inspect.Config?.Image === runtime.imageName
     && inspect.Config?.Labels?.[MANAGED_LABEL] === 'true'
     && inspect.Config?.Labels?.[CLAIM_LABEL] === id
+    && Object.entries(runtime.environment ?? {}).every(([key, value]) => inspect.Config?.Env?.includes(`${key}=${value}`))
+    && (!runtime.network || Object.hasOwn(inspect.NetworkSettings?.Networks ?? {}, runtime.network))
+    && (!runtime.restartPolicy || inspect.HostConfig?.RestartPolicy?.Name === runtime.restartPolicy)
+    && (!runtime.memoryMb || inspect.HostConfig?.Memory === runtime.memoryMb * 1024 * 1024)
+    && (!runtime.cpus || inspect.HostConfig?.NanoCpus === runtime.cpus * 1e9)
     && portsMatch(inspect, runtime)
     && volumesMatch(inspect, runtime);
 }

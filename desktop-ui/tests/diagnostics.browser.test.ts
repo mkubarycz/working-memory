@@ -17,7 +17,6 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
     const directory = await mkdtemp(join(tmpdir(), 'wm-diagnostics-browser-'));
     const fixture = `
       import { mount, unmount } from 'svelte';
-      import { getInstanceByDom } from 'echarts/core';
       import '/src/renderer/style.css';
       import Settings from '/src/renderer/documents/SettingsView.svelte';
       import RelatedTopics from '/src/renderer/documents/RelatedTopics.svelte';
@@ -49,7 +48,6 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       const completedId = '00000000-0000-4000-8000-000000000003';
       const completedAt = Date.now() - 1000;
       const state = window.__diagnosticsTest = { offline: false, calls: 0, queueCalls: 0, inspections: 0, queueGone: false, hidden: true, noRuntimeSamples: false, noToolHistory: false };
-      state.chart = label => getInstanceByDom(document.querySelector('.diagnostics-time-series[aria-label="' + label + '"] .diagnostics-chart'));
       Object.defineProperty(document, 'hidden', { get: () => state.hidden });
       window.__setDiagnosticsVisible = visible => {
         state.hidden = !visible;
@@ -71,7 +69,16 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           if (state.membershipFailure) throw new Error(state.membershipFailure);
           state.addedTopic = { id, workstream };
         },
-        async getInstanceFeatures() { return { hostTasks: false, search: true }; },
+        async getInstanceFeatures() { return { hostTasks: false, search: true, observability: !!state.observability }; },
+        async getObservability() {
+          return { enabled: !!state.observability, configured: true, uiUrl: 'http://localhost:5080',
+            claimId: '00000000-0000-4000-8000-000000000001', retentionDays: 7, exportIntervalMs: 10000,
+            lastSuccessAt: Date.now(), lastError: 'Collector offline', pendingLogs: 0, droppedLogs: 0, droppedSeries: 0 };
+        },
+        async openObservability(source) {
+          if (state.openObservabilityFailure) throw new Error('Unable to open collector');
+          state.observabilityOpened = source || 'dashboard';
+        },
         async getRelatedTopics(id) {
           state.relatedReads = (state.relatedReads || 0) + 1;
           state.relatedRequestId = id;
@@ -201,6 +208,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         testingProfileId: null, onHumanName() {}, onAddProfile() {}, onRemoveProfile() {},
         async onTestProfile() {}, onChange() {}, onFlush() {}, selectedMcpUrl: 'http://127.0.0.1:7719/mcp',
         async onMakeCurrent() {}, async onInstancesChanged() {}, onFeaturesChanged() {}, tab: 'diagnostics',
+        async onOpenObservability() { state.dashboardOpens = (state.dashboardOpens || 0) + 1; },
       } });
     `;
     const server = await createServer({
@@ -251,107 +259,34 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.body.innerText.includes('Queue Settings')");
           assert.ok(await evaluate("document.querySelector('[aria-label=\\"Tool queue\\"]').firstElementChild.matches('details.queue-settings')"));
           assert.equal(await evaluate("document.querySelector('[aria-label=\\"Tool queue\\"]').innerText.includes('MCP tool queue') || document.querySelector('[aria-label=\\"Tool queue\\"]').innerText.includes('http://127.0.0.1:7719/mcp')"), false);
-          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Refresh interval\\"]').value"), '15000');
+          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Refresh interval\\"]')"), null);
           assert.equal(await evaluate("window.__diagnosticsTest.queueCalls"), 0);
           await evaluate("window.__setDiagnosticsVisible(true)");
-          await wait("document.body.innerText.includes('1 waiting / 16')");
+          await wait("document.querySelector('input[aria-label=\\"Max Concurrency\\"]')?.value === '4'");
           assert.equal((await evaluate('document.body.innerText')).includes('Live list refreshes'), false);
           assert.equal((await evaluate('document.body.innerText')).includes('Depth history is sampled'), false);
-          assert.ok((await evaluate('document.body.innerText')).includes('Queue Processing'));
-          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Queue bucket size\\"]').value"), '60000');
-          assert.ok(await evaluate("Boolean(document.querySelector('[aria-label=\\"Refresh interval\\"]').closest('.chart-controls'))"));
-          assert.ok(await evaluate("document.querySelector('.chart-controls').getBoundingClientRect().bottom <= document.querySelector('[aria-label=\\"Queue processing history\\"] .diagnostics-chart').getBoundingClientRect().top"));
-          assert.ok(await evaluate("document.querySelector('.chart-controls').getBoundingClientRect().right > document.querySelector('.graph-header h4').getBoundingClientRect().right"));
-          assert.ok(await evaluate("(() => {const refresh=document.querySelector('[aria-label=\\"Refresh interval\\"]').getBoundingClientRect();const bucket=document.querySelector('[aria-label=\\"Queue bucket size\\"]').getBoundingClientRect();return Math.abs(refresh.top-bucket.top)<=1 && Math.abs(refresh.bottom-bucket.bottom)<=1;})()"), 'Refresh and Bucket size must align within one pixel');
+          assert.equal(await evaluate("document.querySelectorAll('.diagnostics-time-series, table').length"), 0);
+          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Queue bucket size\\"]')"), null);
           assert.deepEqual(await evaluate("['Max Concurrency','Max Queue Size','Queue Timeout','Heap Dispatch Pause Threshold'].map(label=>document.querySelector('input[aria-label=\\"'+label+'\\"]').value)"), ['4','16','5','60']);
           assert.ok(!(await evaluate('document.body.innerText')).includes('One-minute buckets'));
           assert.ok(!(await evaluate('document.body.innerText')).includes('without smoothing'));
-          await wait("window.__diagnosticsTest.chart('Queue processing history')?.getOption().series.length === 3");
-          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().series[2].data.map(point => point[1])"), [100]);
-          assert.equal(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].max - window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].min"), 60000);
-          await wait("window.__diagnosticsTest.chart('Tool request history')?.getOption().series.length === 4");
-          await wait("window.__diagnosticsTest.chart('Queue drops history')?.getOption().series.length === 3");
-          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Queue drops history').getOption().series.map(series=>series.data[0][1])"), [4,6,1]);
-          assert.ok(await evaluate("document.querySelector('[aria-label=\\"Queue processing history\\"]').getBoundingClientRect().top < document.querySelector('[aria-label=\\"Queue drops history\\"]').getBoundingClientRect().top && document.querySelector('[aria-label=\\"Queue drops history\\"]').getBoundingClientRect().top < document.querySelector('[aria-label=\\"Tool request history\\"]').getBoundingClientRect().top"));
-          await evaluate("window.__diagnosticsTest.chart('Queue drops history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
-          await wait("document.body.innerText.includes('Sum Queue Timeouts: 4 drops') && document.body.innerText.includes('Sum Rejections: 6 drops') && document.body.innerText.includes('Sum Shutdown Drops: 1 drops')");
-          assert.ok(!(await evaluate("document.querySelector('[aria-label=\\"Queue processing history\\"] svg').textContent")).includes('%'));
           assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('details summary')).map(item=>item.textContent)"),
-            ['Queue Settings', 'Top 50 by wait time', 'Top 50 by runtime', 'Queue log']);
+            ['Queue Settings']);
           assert.ok(await evaluate("Array.from(document.querySelectorAll('details')).every(item=>!item.open)"));
           assert.equal(await evaluate("document.querySelector('[aria-label=\\"Queue request log\\"]')"), null);
-          await evaluate("(() => { const select = document.querySelector('[aria-label=\\"Queue bucket size\\"]'); select.value = '120000'; select.dispatchEvent(new Event('change', { bubbles: true })); })()");
-          await wait("['Queue processing history','Queue drops history','Tool request history'].every(label=>window.__diagnosticsTest.chart(label).getOption().xAxis[0].minInterval===120000)");
-          assert.equal(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].max - window.__diagnosticsTest.chart('Queue processing history').getOption().xAxis[0].min"), 120000);
-          await evaluate("(() => { const select = document.querySelector('[aria-label=\\"Queue bucket size\\"]'); select.value = '60000'; select.dispatchEvent(new Event('change', { bubbles: true })); })()");
-          await wait("window.__diagnosticsTest.chart('Tool request history').getOption().xAxis[0].minInterval===60000");
           if (process.env.WM_DIAGNOSTICS_SCREENSHOT) {
             require('node:fs').writeFileSync(process.env.WM_DIAGNOSTICS_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
           }
           assert.equal((await evaluate('document.body.innerText')).includes('Live requests'), false);
-          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Tool request history').getOption().series.map(series => series.data[0][1])"), [3, 7, 100, 100]);
-          assert.deepEqual(await evaluate("['Queue processing history', 'Tool request history'].map(label => { const chart = window.__diagnosticsTest.chart(label); return chart.convertToPixel({xAxisIndex: 0}, chart.getOption().xAxis[0].min); })"),
-            [64, 64], 'Both plots must start at the same horizontal pixel');
-          const originalWidth = await evaluate("window.__diagnosticsTest.chart('Queue processing history').getWidth()");
-          window.setSize(650, 1000);
-          await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() < " + originalWidth);
-          const matchesContainer = "['Queue processing history', 'Tool request history'].every(label => { const element = document.querySelector('.diagnostics-time-series[aria-label=\\"' + label + '\\"] .diagnostics-chart'); return window.__diagnosticsTest.chart(label).getWidth() === element.clientWidth && Number(element.querySelector('svg').getAttribute('width')) === element.clientWidth; })";
-          await wait(matchesContainer);
-          const windowWidth = await evaluate("window.__diagnosticsTest.chart('Queue processing history').getWidth()");
-          await evaluate("document.querySelector('main').style.width = '420px'");
-          await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() < " + windowWidth);
-          await wait(matchesContainer);
-          await evaluate("document.querySelector('main').style.width = ''");
-          window.setSize(1200, 1600);
-          await wait("window.__diagnosticsTest.chart('Queue processing history').getWidth() === " + originalWidth);
-          await wait(matchesContainer);
-          await evaluate("window.__diagnosticsTest.chart('Queue processing history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
-          await wait("document.body.innerText.includes('Max queue depth: 6 waiting') && document.body.innerText.includes('Max wait time: ' + (1500).toLocaleString() + ' ms')");
-          assert.equal(await evaluate("document.body.innerText.includes('Peak waiting') || document.body.innerText.includes('Average queue depth')"), false);
-          await evaluate("window.__diagnosticsTest.chart('Tool request history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
-          await wait("document.body.innerText.includes('wm-document-query: 3 requests')");
-          await wait("document.body.innerText.includes('Total wait time: 59 ms') && document.body.innerText.includes('Average runtime: 26 ms')");
-          await evaluate("document.querySelector('[aria-label=\\"Tool request history\\"] .chart-legend button').click()");
-          await wait("window.__diagnosticsTest.chart('Tool request history').getOption().series.length === 3");
-          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Tool request history\\"] .chart-legend button').getAttribute('aria-pressed')"), 'true');
-          await evaluate("window.__diagnosticsTest.chart('Tool request history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
-          await wait("document.body.innerText.includes('Total wait time: 45 ms') && document.body.innerText.includes('Average runtime: 40 ms')");
-          await evaluate("document.querySelector('[aria-label=\\"Tool request history\\"] .chart-legend button').click()");
-          await wait("window.__diagnosticsTest.chart('Tool request history').getOption().series.length === 4");
-          await evaluate("document.querySelector('[aria-label=\\"Queue processing history\\"] .chart-legend button').click()");
-          await wait("window.__diagnosticsTest.chart('Queue processing history').getOption().series.length === 1");
           const defaultCalls = await evaluate("window.__diagnosticsTest.queueCalls");
           await new Promise(resolve => setTimeout(resolve, 2200));
           assert.equal(await evaluate("window.__diagnosticsTest.queueCalls"), defaultCalls);
-          await evaluate("(() => { const select = document.querySelector('[aria-label=\\"Refresh interval\\"]'); select.value = '2000'; select.dispatchEvent(new Event('change', { bubbles: true })); })()");
-          await wait("window.__diagnosticsTest.queueCalls > " + defaultCalls);
-          const fastCalls = await evaluate("window.__diagnosticsTest.queueCalls");
-          await new Promise(resolve => setTimeout(resolve, 2200));
-          assert.ok(await evaluate("window.__diagnosticsTest.queueCalls") > fastCalls);
-          assert.equal(await evaluate("window.__diagnosticsTest.chart('Queue processing history').getOption().series.length"), 1, 'Selection must survive refresh');
-          await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Queue processing history\\"] .chart-legend button')).find(button => button.textContent === 'Show all').click()");
-          await wait("window.__diagnosticsTest.chart('Queue processing history').getOption().series.length === 3");
-          await evaluate("Array.from(document.querySelectorAll('summary')).find(item=>item.textContent==='Top 50 by wait time').click()");
-          await wait("Boolean(document.querySelector('[aria-label=\\"Top 50 by wait time\\"]'))");
-          assert.ok(await evaluate("(() => { const values=Array.from(document.querySelectorAll('[aria-label=\\"Top 50 by wait time\\"] tbody tr')).map(row=>Number(row.cells[4].textContent));return values.every((value,index)=>index===0||value<=values[index-1]); })()"));
-          await evaluate("Array.from(document.querySelectorAll('summary')).find(item=>item.textContent==='Top 50 by runtime').click()");
-          await wait("Boolean(document.querySelector('[aria-label=\\"Top 50 by runtime\\"]'))");
-          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Top 50 by runtime\\"] tbody tr').cells[5].textContent"), '32');
-          await evaluate("Array.from(document.querySelectorAll('summary')).find(item=>item.textContent==='Queue log').click()");
-          await wait("Boolean(document.querySelector('[aria-label=\\"Queue request log\\"]'))");
-          assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Queue request log\\"] th')).map(c => c.textContent)"),
-            ['Time', 'Duration ms', 'Request ID', 'Tool', 'Wait time ms', 'Runtime ms', 'Status']);
-          assert.equal(await evaluate("document.querySelectorAll('[aria-label=\\"Queue request log\\"] tbody tr').length"), 2);
-          const completedCells = await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Queue request log\\"] tbody tr')).find(r => r.textContent.includes('00000000-0000-4000-8000-000000000003')).querySelectorAll('td').length");
-          assert.equal(completedCells, 7);
-          assert.deepEqual(await evaluate("Array.from(Array.from(document.querySelectorAll('[aria-label=\\"Queue request log\\"] tbody tr')).find(r => r.textContent.includes('00000000-0000-4000-8000-000000000003')).querySelectorAll('td')).slice(1).map(c => c.textContent)"),
-            ['34', '00000000-0000-4000-8000-000000000003', 'wm-document-read', '2', '32', 'Completed']);
-          assert.equal(await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Queue request log\\"] td')).find(c => c.textContent === '00000000-0000-4000-8000-000000000003').title"), 'Caller: client:approved-id');
           await evaluate("document.querySelector('.queue-settings summary').click()");
           assert.ok(await evaluate("document.querySelector('input[aria-label=\\"Max Concurrency\\"]').getBoundingClientRect().height>0"));
           await evaluate("['Max Concurrency','Max Queue Size','Queue Timeout','Heap Dispatch Pause Threshold'].forEach((label,index)=>{const input=document.querySelector('input[aria-label=\\"'+label+'\\"]');input.value=['2','8','12','55'][index];input.dispatchEvent(new Event('input',{bubbles:true}));})");
           await evaluate("document.querySelector('.queue-settings summary').click()");
           const collapsedCalls = await evaluate("window.__diagnosticsTest.queueCalls");
+          await evaluate("window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
           await wait("window.__diagnosticsTest.queueCalls > " + collapsedCalls);
           assert.equal(await evaluate("document.querySelector('.queue-settings').open"), false);
           assert.equal(await evaluate("document.querySelector('input[aria-label=\\"Max Concurrency\\"]').value"), '2');
@@ -374,8 +309,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("document.querySelector('input[aria-label=\\"Max Concurrency\\"]').value"),'3');
           await evaluate("document.querySelector('.queue-settings summary').click();window.__diagnosticsTest.queueSettingsFailure=false;Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Discard changes').click()");
           assert.equal(await evaluate("document.querySelector('input[aria-label=\\"Max Concurrency\\"]').value"),'2');
-          await evaluate("document.querySelector('#diagnostics-tab-http').click()");
-          await wait("document.body.innerText.includes('correlated-request-id')");
+          await evaluate("document.querySelector('#diagnostics-tab-incidents').click()");
+          await wait("document.body.innerText.includes('Three health probes failed.')");
           await evaluate("document.querySelector('#diagnostics-tab-queue').click()");
           await wait("document.querySelector('input[aria-label=\\"Max Concurrency\\"]')?.value==='2'");
           await evaluate("document.querySelector('.queue-settings summary').click()");
@@ -390,10 +325,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("Array.from(document.querySelectorAll('button')).some(b => /refresh/i.test(b.textContent))"), false);
           assert.equal(await evaluate("document.querySelectorAll('[aria-label=\\"Diagnostics sections\\"] [tabindex=\\"0\\"]').length"), 1);
           await evaluate("document.querySelector('#diagnostics-tab-queue').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))");
-          await wait("document.body.innerText.includes('correlated-request-id')");
-          assert.equal(await evaluate("document.activeElement.id"), 'diagnostics-tab-http');
-          await evaluate("document.querySelector('#diagnostics-tab-http').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))");
-          await wait("document.body.innerText.includes('1 waiting / 16')");
+          await wait("document.body.innerText.includes('Three health probes failed.')");
+          assert.equal(await evaluate("document.activeElement.id"), 'diagnostics-tab-incidents');
+          await evaluate("document.querySelector('#diagnostics-tab-incidents').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))");
+          await wait("!!document.querySelector('input[aria-label=\\"Max Concurrency\\"]')");
           assert.equal(await evaluate("document.activeElement.id"), 'diagnostics-tab-queue');
           assert.equal((await evaluate('document.body.innerText')).includes('PRIVATE_LIVE_QUERY'), false);
           assert.equal(await evaluate("window.__diagnosticsTest.inspections"), 0);
@@ -402,57 +337,13 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await new Promise(resolve => setTimeout(resolve, 2200));
           assert.equal(await evaluate("window.__diagnosticsTest.queueCalls"), hiddenQueueCalls);
           await evaluate("window.__setDiagnosticsVisible(true)");
-          await wait("document.body.innerText.includes('0 waiting / 16')");
-          await evaluate("window.__diagnosticsTest.chart('Queue processing history').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:0})");
-          await wait("document.body.innerText.includes('Max queue depth: 6 waiting') && document.body.innerText.includes('Max wait time: 500 ms')");
+          await wait("window.__diagnosticsTest.queueCalls > " + hiddenQueueCalls);
           assert.equal((await evaluate('document.body.innerText')).includes('PRIVATE_LIVE_QUERY'), false);
           assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Diagnostics sections\\"] button')).map(b => b.textContent.trim())"),
-            ['Queue', 'HTTP', 'Runtime', 'Automatic incident reports', 'Embeddings']);
-          await evaluate("document.querySelector('#diagnostics-tab-runtime').click()");
-          await wait("window.__diagnosticsTest.chart('Normalized runtime time series')?.getOption().series.length === 9");
-          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Refresh interval\\"]').value"), '2000');
+            ['Queue', 'Automatic incident reports', 'Embeddings']);
           const inactiveQueueCalls = await evaluate("window.__diagnosticsTest.queueCalls");
           assert.equal(await evaluate("document.querySelector('[role=tab][aria-selected=true]').textContent"), 'Diagnostics');
           assert.equal(await evaluate("document.querySelectorAll('table').length"), 0);
-          const runtimeText = await evaluate('document.body.innerText');
-          for (const value of ['60.0 MiB', '1100 ms', '60% heap safety cutoff']) {
-            assert.ok(runtimeText.includes(value), value + ' missing');
-          }
-          assert.equal(runtimeText.includes('correlated-request-id'), false);
-          assert.equal(runtimeText.includes('Three health probes failed.'), false);
-          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Normalized runtime time series').getOption().series[0].data.map(point => point[1])"), [100]);
-          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Normalized runtime time series').getOption().series[3].data.map(point => point[1])"), [100]);
-          await evaluate("document.querySelector('[aria-label=\\"Normalized runtime time series\\"] .chart-legend button').click()");
-          await wait("window.__diagnosticsTest.chart('Normalized runtime time series').getOption().series.length === 1");
-          await evaluate("document.querySelector('[aria-label=\\"Normalized runtime time series\\"] .chart-legend button').click()");
-          await wait("window.__diagnosticsTest.chart('Normalized runtime time series').getOption().series.length === 9");
-          for (const value of ['peak 75 MiB', 'peak 50 %', 'peak 6 /min', 'peak 6 tools']) {
-            assert.ok(runtimeText.includes(value), value + ' missing');
-          }
-          await evaluate("window.__diagnosticsTest.noRuntimeSamples = true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
-          await wait("document.body.innerText.includes('No runtime samples are available for this environment.')");
-          assert.equal(await evaluate("document.querySelector('.diagnostics-chart').style.display"), 'none');
-          await evaluate("window.__diagnosticsTest.noRuntimeSamples = false");
-          await evaluate("Array.from(document.querySelectorAll('[role=tab]')).find(b => b.textContent.trim() === 'HTTP').click()");
-          await wait("document.body.innerText.includes('correlated-request-id')");
-          await wait("window.__diagnosticsTest.chart('Normalized HTTP time series')?.getOption().series.length === 4");
-          assert.deepEqual(await evaluate("window.__diagnosticsTest.chart('Normalized HTTP time series').getOption().series[0].data.map(point => point[1])"), [50, 100]);
-          await evaluate("window.__diagnosticsTest.chart('Normalized HTTP time series').dispatchAction({type:'showTip',seriesIndex:0,dataIndex:1})");
-          await wait("document.body.innerText.includes('Transactions: 42 /min')");
-          await evaluate("document.querySelector('[aria-label=\\"Normalized HTTP time series\\"] .chart-legend button').click()");
-          await wait("window.__diagnosticsTest.chart('Normalized HTTP time series').getOption().series.length === 1");
-          await evaluate("Array.from(document.querySelectorAll('[aria-label=\\"Normalized HTTP time series\\"] .chart-legend button')).find(button => button.textContent === 'Show all').click()");
-          await wait("window.__diagnosticsTest.chart('Normalized HTTP time series').getOption().series.length === 4");
-          assert.equal(await evaluate("document.querySelectorAll('table').length"), 1);
-          assert.equal(await evaluate("document.querySelector('table th').textContent"), 'Time');
-          assert.ok(await evaluate("Boolean(document.querySelector('.diagnostics-chart').compareDocumentPosition(document.querySelector('table')) & Node.DOCUMENT_POSITION_FOLLOWING)"));
-          await evaluate("document.querySelector('details').open = true");
-          const httpText = await evaluate('document.body.innerText');
-          const maximum = await evaluate("(3500).toLocaleString()");
-          for (const value of ['peak 42 /min', 'peak 3 /min', 'peak 100 ms', 'peak ' + maximum + ' ms', '503', 'client:approved-id']) {
-            assert.ok(httpText.includes(value), value + ' missing');
-          }
-          assert.equal(httpText.includes('Three health probes failed.'), false);
           await evaluate("Array.from(document.querySelectorAll('[role=tab]')).find(b => b.textContent.trim() === 'Automatic incident reports').click()");
           await wait("document.body.innerText.includes('Three health probes failed.')");
           assert.equal(await evaluate("document.querySelectorAll('table').length"), 0);
@@ -470,9 +361,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.ok((await evaluate('document.body.innerText')).includes('Waiting for recovery'));
           assert.equal(await evaluate("window.__diagnosticsTest.queueCalls"), inactiveQueueCalls);
           await evaluate("Array.from(document.querySelectorAll('[role=tab]')).find(b => b.textContent.trim() === 'Queue').click()");
-          await wait("document.body.innerText.includes('0 waiting / 16')");
-          await evaluate("window.__diagnosticsTest.noToolHistory = true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
-          await wait("document.body.innerText.includes('Tool-request history is unavailable on this backend.')");
+          await wait("!!document.querySelector('input[aria-label=\\"Max Concurrency\\"]')");
           await evaluate("window.__diagnosticsTest.embeddingDashboardPending=true;document.querySelector('#diagnostics-tab-embeddings').click()");
           await wait("window.__diagnosticsTest.releaseEmbeddingDashboard && document.querySelector('.service-troubleshooting pre')");
           const pendingEmbeddingReads = await evaluate("window.__diagnosticsTest.embeddingReads");
@@ -572,7 +461,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.querySelector('.related-topics')?.innerText.includes('waiting for indexing')");
           assert.equal(await evaluate("document.querySelectorAll('.related-topics article').length"), 0);
           assert.equal((await evaluate("document.querySelector('.related-topics').innerText")).includes('No related topics found'), false);
-          assert.ok((await evaluate("document.querySelector('.related-topics').innerText")).includes('Settings > Diagnostics > Embeddings'));
+          assert.ok((await evaluate("document.querySelector('.related-topics').innerText")).includes('Observability'));
+          assert.ok((await evaluate("document.querySelector('.related-topics').innerText")).includes('Settings > Features'));
           await evaluate("window.__diagnosticsTest.disposeRelated()");
           await evaluate("window.__diagnosticsTest.relatedPending = false");
           await evaluate("window.__diagnosticsTest.mountRelated()");
@@ -644,6 +534,30 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate("window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
           await new Promise(resolve => setTimeout(resolve, 50));
           assert.equal(await evaluate("window.__diagnosticsTest.relatedReads"), relatedReads);
+          await evaluate("window.__diagnosticsTest.observability = true; Array.from(document.querySelectorAll('[role=tab]')).find(b => b.textContent.trim() === 'Diagnostics').click()");
+          await wait("!!document.querySelector('#diagnostics-tab-queue')");
+          await evaluate("window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.body.innerText.includes('Open Observability')");
+          assert.equal(await evaluate("document.querySelectorAll('.diagnostics-time-series').length"), 0);
+          assert.ok(await evaluate("!!document.querySelector('input[aria-label=\\"Max Concurrency\\"]')"));
+          assert.ok(await evaluate("document.body.innerText.includes('Collector offline')"));
+          await evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Open Observability').click()");
+          await wait("window.__diagnosticsTest.dashboardOpens === 1");
+          assert.equal(await evaluate("window.__diagnosticsTest.observabilityOpened"), undefined);
+          await evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Queue logs').click()");
+          await wait("window.__diagnosticsTest.observabilityOpened === 'queue'");
+          await evaluate("window.__diagnosticsTest.openObservabilityFailure = true; Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Queue logs').click()");
+          await wait("document.body.innerText.includes('Unable to open collector')");
+          await evaluate("window.__diagnosticsTest.openObservabilityFailure = false; document.querySelector('#diagnostics-tab-embeddings').click()");
+          await wait("!!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Embeddings logs')");
+          await evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Embeddings logs').click()");
+          await wait("window.__diagnosticsTest.observabilityOpened === 'embeddings'");
+          await evaluate("document.querySelector('#diagnostics-tab-queue').click()");
+          await evaluate("window.__diagnosticsTest.observability = false; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.body.innerText.includes('Enable Observability in Settings > Features')");
+          assert.equal(await evaluate("document.querySelectorAll('.diagnostics-time-series, table').length"), 0);
+          await evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Open Settings > Features').click()");
+          await wait("document.querySelector('[aria-label=\\"Feature flags\\"]')");
           window.destroy();
           console.log('diagnostics-browser-ok');
           app.quit();

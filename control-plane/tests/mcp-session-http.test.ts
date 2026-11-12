@@ -103,6 +103,18 @@ it('configures the real queue only through trusted owner requests, enforcing val
   expect((await f.snapshot()).memory.admissionBlocked).toBe(true);
 });
 
+it('dispatches immediate MCP calls without artificial waiting peaks in the owner endpoint', async () => {
+  const f = await fixture(), { client } = await f.connect();
+  for (let index = 0; index < 10; index++) {
+    expect((await client.callTool({ name: 'wm-ping', arguments: {} })).isError).not.toBe(true);
+  }
+  const snapshot = toolQueueSnapshotSchema.parse(await (await f.request('/identity/v1/tool-queue')).json());
+  expect(snapshot).toMatchObject({ running: 0, waiting: 0, peakQueueDepth: 0, maxQueueWaitMs: 0 });
+  expect(snapshot.events.some(event => event.event === 'queued')).toBe(false);
+  expect(snapshot.requestsByTool?.['wm-ping']).toBe(10);
+  expect(snapshot.processing).toMatchObject({ processedLastMinute: 10, averageWaitMs: 0 });
+});
+
 it('exposes live and retained queue peaks through the real owner endpoint after a short MCP wait', async () => {
   const f = await fixture(), { client } = await f.connect();
   f.memory(650);

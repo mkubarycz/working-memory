@@ -162,12 +162,14 @@
   let instanceConnection = $state<InstanceConnectionState | null>(null);
   let instanceConnectionError = $state('');
   let instanceConnectionRefresh: Promise<boolean> | null = null;
+  let instanceSessionRecovery = $state<Promise<void> | null>(null);
   let instanceAuthenticationGeneration = 0;
   let instanceConnectionPoll: Promise<void> | null = null;
   let managingInstancesBeforeSignIn = $state(false);
   let pendingAccessRequests = $state(0);
   let pendingResource: { kind: DesktopResourceKind; identifier: string } | null = null;
   let featuresError = $state('');
+  let observabilityNavigationError = $state('');
 
   interface ComposerImage {
     attachment: AttachmentRef;
@@ -643,6 +645,31 @@
     await refreshContainerApp(app);
   }
 
+  async function openObservabilityDashboard(): Promise<void> {
+    const generation = environmentGeneration;
+    observabilityNavigationError = '';
+    try {
+      const features = await window.workingMemory.getInstanceFeatures();
+      if (generation !== environmentGeneration) return;
+      applyFeatures(features);
+      if (!features.observability) {
+        openSettings('features');
+        observabilityNavigationError = 'Enable Observability in the Features tab in Settings to view dashboards and searchable logs.';
+        return;
+      }
+      const apps = await window.workingMemory.listContainerApps();
+      if (generation !== environmentGeneration) return;
+      const app = apps.find(candidate => candidate.nativeSurface === 'observability');
+      if (!app) throw new Error('The Observability Container App is missing. Re-enable Observability in Settings > Features to repair it.');
+      containerApps = apps;
+      await openContainerAppDetail(app);
+    } catch (cause) {
+      if (generation === environmentGeneration) {
+        observabilityNavigationError = cause instanceof Error ? cause.message : String(cause);
+      }
+    }
+  }
+
   function containerAppView(app: ContainerAppItem): 'app' | 'info' {
     return containerAppViews[app.id] ?? (app.embeddable ? 'app' : 'info');
   }
@@ -706,6 +733,10 @@
 
   async function runContainerAppAction(app: ContainerAppItem, action: 'run' | 'open' | 'stop' | 'refresh'): Promise<void> {
     if (busyContainerAppId) return;
+    if (action === 'open' && app.nativeSurface === 'observability') {
+      await openContainerAppDetail(app);
+      return;
+    }
     const generation = environmentGeneration;
     busyContainerAppId = app.id;
     containerAppError = '';
@@ -1212,7 +1243,15 @@
       },
     );
     const stopListeningForAuthentication = window.workingMemory.onInstanceAuthenticationChanged(event => {
-      if (event.mcpUrl !== selectedEnvironment?.mcpUrl || event.authenticated) return;
+      if (event.mcpUrl !== selectedEnvironment?.mcpUrl) return;
+      if (event.authenticated) {
+        if (instanceConnection?.authenticated && !instanceSessionRecovery) void startDocumentChanges();
+        return;
+      }
+      if (event.reason === 'expired' && instanceConnection?.authenticated) {
+        void recoverExpiredInstanceConnection();
+        return;
+      }
       instanceAuthenticationGeneration += 1;
       if (instanceConnection) instanceConnection = { ...instanceConnection, authenticated: false };
       instanceConnectionError = '';
@@ -1251,7 +1290,8 @@
       try {
         const state = await window.workingMemory.getInstanceIdentity();
         if (generation !== environmentGeneration || selectedEnvironment?.mcpUrl !== mcpUrl) return false;
-        if (state.authenticated && authenticationGeneration !== instanceAuthenticationGeneration) return false;
+        if (authenticationGeneration !== instanceAuthenticationGeneration
+          && (state.authenticated || instanceConnection?.authenticated)) return false;
         instanceConnection = state;
         instanceConnectionError = '';
         return state.authenticated;
@@ -1266,6 +1306,28 @@
     instanceConnectionRefresh = pending;
     void pending.finally(() => {
       if (instanceConnectionRefresh === pending) instanceConnectionRefresh = null;
+    });
+    return pending;
+  }
+
+  function recoverExpiredInstanceConnection(): Promise<void> {
+    if (instanceSessionRecovery) return instanceSessionRecovery;
+    const generation = environmentGeneration;
+    const authenticationGeneration = ++instanceAuthenticationGeneration;
+    const previous = instanceConnectionRefresh;
+    const isCurrent = () => generation === environmentGeneration
+      && authenticationGeneration === instanceAuthenticationGeneration;
+    const pending = (async () => {
+      if (previous) await previous;
+      if (!isCurrent()) return;
+      const authenticated = await refreshInstanceConnection();
+      if (!isCurrent()) return;
+      if (authenticated) await startDocumentChanges();
+      else if (instanceConnection) instanceConnection = { ...instanceConnection, authenticated: false };
+    })();
+    instanceSessionRecovery = pending;
+    void pending.finally(() => {
+      if (instanceSessionRecovery === pending) instanceSessionRecovery = null;
     });
     return pending;
   }
@@ -1524,6 +1586,7 @@
   function resetEnvironmentState(): void {
     instanceAuthenticationGeneration += 1;
     instanceConnectionRefresh = null;
+    instanceSessionRecovery = null;
     instanceConnectionPoll = null;
     instanceConnection = null;
     instanceConnectionError = '';
@@ -1533,6 +1596,7 @@
     hostTaskDrafts = {};
     instanceFeatures = { hostTasks: false, search: false };
     featuresError = '';
+    observabilityNavigationError = '';
     const reset = emptyEnvironmentBoundRendererState();
     documentSaves.clear();
     documentChanges.clear();
@@ -2718,6 +2782,10 @@
   ></div>
 
   <main class="main" class:connection-interrupted={!!instanceConnectionError}>
+    {#if observabilityNavigationError}<p class="document-error" role="alert">{observabilityNavigationError}</p>{/if}
+    {#if instanceSessionRecovery}
+      <div class="instance-session-recovery" role="status">Restoring sign-in. Your workspace and drafts are still open.</div>
+    {/if}
     {#if instanceConnectionError}
       <div class="instance-connection-notice" role="status">
         <strong>Reconnecting to Working Memory</strong>
@@ -2725,7 +2793,8 @@
         <details><summary>Connection details</summary>{instanceConnectionError}</details>
         <div>
           <button onclick={() => void pollInstanceConnection()}>Retry connection</button>
-          <button onclick={() => openSettings('diagnostics')}>Diagnostics</button>
+          <button onclick={() => void openObservabilityDashboard()}>Open Observability</button>
+          {#if !instanceFeatures.observability}<span>Enable Observability in Settings &gt; Features for dashboards and logs.</span>{/if}
         </div>
       </div>
     {/if}
@@ -2948,6 +3017,7 @@
             onMakeCurrent={makeInstanceCurrent}
             onInstancesChanged={() => discoverEnvironments()}
             onFeaturesChanged={applyFeatures}
+            onOpenObservability={openObservabilityDashboard}
           />
         {:else if activeDocument?.kind === 'container-app' && selectedContainerApp}
           <ContainerAppDetail

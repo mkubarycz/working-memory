@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFile, stat, access } from 'node:fs/promises';
 import {
   CLAIM_LABEL,
   CommandExecutionError,
@@ -59,6 +60,65 @@ function localRunner(
 }
 
 describe('DockerContainerService', () => {
+  it('pulls registry images, applies resources/network and cleans private env files without secrets in arguments', async () => {
+    const calls: string[][] = [];
+    let envFile = '';
+    let imageAvailable = false;
+    const password = 'private generated registry password';
+    const runner = localRunner(async args => {
+      if (args[0] === 'container' && args[1] === 'inspect') throw new CommandExecutionError('missing', 1, 'No such container');
+      if (args[0] === 'image' && args[1] === 'inspect') {
+        if (!imageAvailable) throw new CommandExecutionError('missing', 1, 'No such image');
+        return { stdout: 'sha256:registry', stderr: '' };
+      }
+      if (args[0] === 'image' && args[1] === 'pull') imageAvailable = true;
+      if (args[0] === 'container' && args[1] === 'run') {
+        envFile = args[args.indexOf('--env-file') + 1];
+        expect((await stat(envFile)).mode & 0o777).toBe(0o600);
+        expect(await readFile(envFile, 'utf8')).toContain(`PASSWORD=${password}`);
+      }
+      return { stdout: '', stderr: '' };
+    }, calls);
+    const service = new DockerContainerService({
+      runner, readiness: async () => true, privateEnvironment: async () => ({ PASSWORD: password }),
+    });
+    const runtime = {
+      type: 'docker' as const, imageSource: 'registry' as const, imageName: 'registry.example/collector@sha256:pinned',
+      containerName: 'wm-collector-test', hostPort: 5080, containerPort: 5080, healthPath: '/healthz', entryPath: '/web/',
+      environment: { PUBLIC_SETTING: 'true' }, network: 'wm_default',
+      restartPolicy: 'unless-stopped' as const, memoryMb: 768, cpus: 1,
+    };
+    expect(await service.launch(claim({ runtime }))).toMatchObject({ status: 'ready' });
+    expect(calls.some(args => args.includes('build'))).toBe(false);
+    expect(calls).toContainEqual(expect.arrayContaining(['image', 'pull', runtime.imageName]));
+    expect(calls.find(args => args.includes('run'))).toEqual(expect.arrayContaining([
+      '--network', 'wm_default', '--restart', 'unless-stopped', '--memory', '768m', '--cpus', '1',
+    ]));
+    expect(JSON.stringify(calls)).not.toContain(password);
+    await expect(access(envFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    const before = calls.length;
+    expect(await service.launch(claim({ runtime }))).toMatchObject({ status: 'ready' });
+    expect(calls.slice(before).some(args => args.includes('pull'))).toBe(false);
+  });
+
+  it('does not silently reuse a container with stale public environment or network', async () => {
+    const calls: string[][] = [];
+    const runtime = { ...desired.runtime!, environment: { SETTING: 'new' }, network: 'wm_default' };
+    const runner = localRunner(async args => {
+      if (args[0] === 'image') return { stdout: 'sha256:current', stderr: '' };
+      if (args[0] === 'container' && args[1] === 'inspect') return { stdout: JSON.stringify([{
+        Image: 'sha256:current', Config: { Image: runtime.imageName, Env: ['SETTING=old'],
+          Labels: { [MANAGED_LABEL]: 'true', [CLAIM_LABEL]: desired.id } },
+        State: { Running: true }, NetworkSettings: { Networks: { other: {} } },
+        HostConfig: { PortBindings: { '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '4173' }] } },
+      }]), stderr: '' };
+      return { stdout: '', stderr: '' };
+    }, calls);
+    const service = new DockerContainerService({ runner, readiness: async () => true });
+    expect(await service.launch(claim({ runtime }))).toMatchObject({ status: 'ready', action: 'recreated' });
+    expect(calls).toContainEqual(expect.arrayContaining(['container', 'rm', '--force', runtime.containerName]));
+  });
+
   it('rejects duplicate published ports before building or modifying any container', async () => {
     const calls: string[][] = [];
     const duplicate = {

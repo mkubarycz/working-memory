@@ -6,7 +6,7 @@ import type {
 import { isDocumentSearchResult } from '../../../shared/documentSearch';
 import { appendToolResults, type ModelConversation, type ParsedModelTurn } from './modelTools';
 import { sanitizeForJournal, sanitizeForJournalWithMetadata } from './desktopChatAgent';
-import { semanticSearchSchema, semanticStatusSchema } from '../../../control-plane/src/embeddingContract';
+import { EMBEDDING_HISTORY_GUIDANCE, semanticSearchSchema, semanticStatusSchema } from '../../../control-plane/src/embeddingContract';
 import { abortable } from '../../../shared/abort';
 
 export const SEARCH_MAX_TURNS = 8;
@@ -399,7 +399,7 @@ export async function requireSemanticSearchReady(client: Pick<ControlPlaneClient
   if (!outcome.ok) throw new Error(outcome.error ?? 'Could not check the semantic index. Update the backend and check Embeddings diagnostics.');
   const status = semanticStatusSchema.parse(outcome.result);
   if (!status.enabled) throw new Error('Enable Embeddings in Settings > Features before searching.');
-  if (!status.ready) throw new Error(`Indexing must finish before searching (${status.stats.pending} documents pending). Check Settings > Diagnostics > Embeddings.`);
+  if (!status.ready) throw new Error(`Indexing must finish before searching (${status.stats.pending} documents pending). ${EMBEDDING_HISTORY_GUIDANCE}`);
 }
 
 export async function openSearchWorkstreams(client: Pick<ControlPlaneClient, 'wsRead'>): Promise<SearchWorkstream[]> {

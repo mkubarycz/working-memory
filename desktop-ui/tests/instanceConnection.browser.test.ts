@@ -21,11 +21,12 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       import '/src/renderer/style.css';
       const parameters = new URLSearchParams(location.search);
       const state = window.__connectionTest = {
-        mode: parameters.has('startup') ? 'timeout' : 'success', authenticated: true,
+        mode: parameters.has('startup') ? 'timeout' : 'success', authenticated: !parameters.has('signedOut'),
+        passwordConfigured: parameters.get('signedOut') !== 'setup',
         reads: 0, activeReads: 0, maxReads: 0, pause: false, releases: [],
         streamStarts: 0, current: parameters.has('offline') ? -1 : 0,
         offline: parameters.has('offline'), discoveries: 0, opened: [],
-        pauseWorkspace: false, activeLoads: 0, workspaceReleases: [],
+        pauseWorkspace: false, activeLoads: 0, workspaceReleases: [], observability: false, mounts: [],
       };
       const environments = [7717, 7719].map(port => ({
         id: 'test-' + port, port, displayName: 'Test ' + port,
@@ -63,13 +64,20 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           const mode = state.mode;
           const result = {
             environment: environments[state.current].mcpUrl.replace('/mcp', ''),
-            passwordConfigured: true, passwordHint: '', setupAvailable: true,
+            passwordConfigured: state.passwordConfigured, passwordHint: '', setupAvailable: true,
             authenticated: state.authenticated,
           };
           try {
             if (state.pause) await new Promise(resolve => state.releases.push(resolve));
             if (mode === 'timeout') throw new Error('Instance request timed out after 10 seconds (GET /identity/v1/status).');
             if (mode === 'unavailable') throw new Error('Instance connection failed (HTTP 503).');
+            if (state.renewalEvent) {
+              state.renewalEvent = false;
+              state.authenticationChanged({ mcpUrl: environments[state.current].mcpUrl, authenticated: true });
+            }
+            if (!result.authenticated) {
+              state.authenticationChanged({ mcpUrl: environments[state.current].mcpUrl, authenticated: false });
+            }
             return result;
           } finally { state.activeReads--; }
         },
@@ -104,8 +112,21 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         },
         getChatHistory: async () => ({ journals: [] }),
         getAgentMessages: async () => [],
-        listContainerApps: async () => [],
-        getInstanceFeatures: async () => ({ hostTasks: false, search: false }),
+        listContainerApps: async () => state.observability && !state.missingObservability ? [{
+          id: 'observability-' + state.current, displayName: 'Working Memory Observability', icon: 'pulse',
+          embeddable: true, nativeSurface: 'observability',
+        }] : [],
+        inspectContainerApp: async () => ({ ready: true, url: 'http://localhost:5080/web/' }),
+        getAppMcpStatus: async () => ({ state: 'disconnected' }),
+        mountContainerAppSurface: async (...args) => { state.mounts.push(args); },
+        resizeContainerAppSurface: async () => {},
+        setContainerAppSurfaceVisible: async () => {},
+        closeContainerAppSurface: async () => {},
+        getEmbeddingDashboard: async () => ({ enabled: false }),
+        getInstanceFeatures: async () => {
+          if (state.failFeatures) throw new Error('Feature status unavailable');
+          return { hostTasks: false, search: false, observability: state.observability };
+        },
         getInstanceAccess: async () => ({ requests: [], clients: [] }),
         startDocumentChanges: async () => { state.streamStarts++; },
       };
@@ -182,7 +203,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("document.querySelector('textarea[aria-label=Message]').value"), 'Unsaved diagnostic notes');
           assert.equal(await evaluate("document.querySelector('.backlog-head').dataset.originalMount"), 'kept');
           assert.match(await evaluate("document.querySelector('.instance-connection-notice').textContent"), /10 seconds.*identity\\/v1\\/status/);
-          assert.match(await evaluate("document.querySelector('.instance-connection-notice').textContent"), /Diagnostics/);
+          assert.match(await evaluate("document.querySelector('.instance-connection-notice').textContent"), /Open Observability/);
+          assert.match(await evaluate("document.querySelector('.instance-connection-notice').textContent"), /Settings > Features/);
           await evaluate("window.__connectionTest.mode = 'success'; window.__connectionTest.pause = true; document.querySelector('.instance-connection-notice button').click()");
           await wait('window.__connectionTest.activeReads === 1');
           const reads = await evaluate('window.__connectionTest.reads');
@@ -199,14 +221,43 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.querySelector('.instance-connection-notice')?.textContent.includes('HTTP 503')");
           await evaluate("window.__connectionTest.mode = 'success'; window.__connectionTest.heartbeat()");
           await wait("!document.querySelector('.instance-connection-notice')");
-          await evaluate("window.__connectionTest.authenticated = false; window.__connectionTest.heartbeat()");
+          const streamsBeforeHeartbeatRenewal = await evaluate('window.__connectionTest.streamStarts');
+          await evaluate("window.__connectionTest.renewalEvent = true; window.__connectionTest.heartbeat()");
+          await wait("window.__connectionTest.streamStarts === " + (streamsBeforeHeartbeatRenewal + 1));
+          assert.equal(await evaluate("document.querySelector('.backlog-head').dataset.originalMount"), 'kept');
+          const streamsBeforeRenewal = await evaluate('window.__connectionTest.streamStarts');
+          await evaluate("window.__connectionTest.pause = true; window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false, reason: 'expired' })");
+          await wait("window.__connectionTest.activeReads === 1 && document.querySelector('.instance-session-recovery')");
+          const renewalReads = await evaluate('window.__connectionTest.reads');
+          await evaluate("window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false, reason: 'expired' }); window.__connectionTest.heartbeat()");
+          await delay(100);
+          assert.equal(await evaluate('window.__connectionTest.reads'), renewalReads);
+          assert.equal(await evaluate("document.querySelector('.instance-connection')"), null);
+          assert.equal(await evaluate("document.querySelector('.backlog-head').dataset.originalMount"), 'kept');
+          assert.equal(await evaluate("document.querySelector('textarea[aria-label=Message]').value"), 'Unsaved diagnostic notes');
+          await evaluate("window.__connectionTest.pause = false; window.__connectionTest.releases.shift()()");
+          await wait("!document.querySelector('.instance-session-recovery') && window.__connectionTest.streamStarts === " + (streamsBeforeRenewal + 1));
+          assert.equal(await evaluate("document.querySelector('.backlog-head').dataset.originalMount"), 'kept');
+          assert.equal(await evaluate("document.querySelector('textarea[aria-label=Message]').value"), 'Unsaved diagnostic notes');
+          await evaluate("window.__connectionTest.pause = true; window.__connectionTest.heartbeat()");
+          await wait('window.__connectionTest.activeReads === 1');
+          const readsDuringPoll = await evaluate('window.__connectionTest.reads');
+          await evaluate("window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false, reason: 'expired' })");
+          await wait("document.querySelector('.instance-session-recovery')");
+          await delay(100);
+          assert.equal(await evaluate('window.__connectionTest.reads'), readsDuringPoll, 'Renewal must wait for an in-flight identity check');
+          await evaluate("window.__connectionTest.pause = false; window.__connectionTest.releases.shift()()");
+          await wait("!document.querySelector('.instance-session-recovery') && window.__connectionTest.streamStarts === " + (streamsBeforeRenewal + 2));
+          assert.equal(await evaluate('window.__connectionTest.maxReads'), 1);
+          assert.equal(await evaluate("document.querySelector('.backlog-head').dataset.originalMount"), 'kept');
+          await evaluate("window.__connectionTest.authenticated = false; window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false, reason: 'expired' })");
           await wait("document.querySelector('.instance-connection input[type=password]')");
           const signedOutReads = await evaluate('window.__connectionTest.reads');
           await evaluate('window.__connectionTest.heartbeat()');
           await delay(100);
           assert.equal(await evaluate('window.__connectionTest.reads'), signedOutReads, 'Do not silently reauthenticate a rejected session');
           await signIn();
-          await evaluate("window.__connectionTest.pause = true; window.__connectionTest.heartbeat()");
+          await evaluate("window.__connectionTest.pause = true; window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false, reason: 'expired' })");
           await wait('window.__connectionTest.activeReads === 1');
           await evaluate(\`window.__connectionTest.authenticated = false;
             window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false });\`);
@@ -215,7 +266,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait('window.__connectionTest.activeReads === 0');
           assert.equal(await evaluate("document.querySelector('.shell')"), null, 'A stale authenticated reply must not undo revocation');
           await signIn();
-          await evaluate("window.__connectionTest.pause = true; window.__connectionTest.heartbeat()");
+          await evaluate("window.__connectionTest.pause = true; window.__connectionTest.authenticationChanged({ mcpUrl: 'http://127.0.0.1:7717/mcp', authenticated: false, reason: 'expired' })");
           await wait('window.__connectionTest.activeReads === 1');
           await evaluate("window.__connectionTest.pause = false; window.__connectionTest.authenticated = false");
           await switchTo(7719);
@@ -286,6 +337,36 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await offline.webContents.executeJavaScript("window.__connectionTest.current"), 1, 'Recover the intended target, not the first discovered environment');
           assert.equal(await offline.webContents.executeJavaScript("document.querySelector('textarea[aria-label=Message]').value"), 'Saved destination draft continued');
           assert.equal(await offline.webContents.executeJavaScript("window.__connectionTest.maxReads"), 1);
+          for (const mode of ['setup', 'login']) {
+            const signedOut = new BrowserWindow({ show: false });
+            await signedOut.loadURL('http://127.0.0.1:${address.port}/connection-test.html?signedOut=' + mode);
+            await waitStartup("document.querySelector('.instance-connection input[type=password]')", signedOut);
+            assert.equal(await signedOut.webContents.executeJavaScript("document.querySelectorAll('input[type=password]').length"), mode === 'setup' ? 2 : 1);
+            assert.equal(await signedOut.webContents.executeJavaScript("document.querySelector('.shell')"), null);
+            assert.equal(await signedOut.webContents.executeJavaScript("window.__connectionTest.streamStarts"), 0);
+            signedOut.destroy();
+          }
+          await evaluate("window.__connectionTest.mode = 'timeout'; window.__connectionTest.heartbeat()");
+          await wait("!!document.querySelector('.instance-connection-notice')");
+          const openObservability = "Array.from(document.querySelectorAll('.instance-connection-notice button')).find(button => button.textContent === 'Open Observability').click()";
+          await evaluate(openObservability);
+          await wait("document.querySelector('[aria-label=\\"Feature flags\\"]')");
+          assert.ok(await evaluate("document.body.innerText.includes('Enable Observability in the Features tab in Settings')"));
+          assert.equal(await evaluate("window.__connectionTest.mounts.length"), 0);
+          await evaluate("window.__connectionTest.observability = true");
+          await evaluate(openObservability);
+          await wait("window.__connectionTest.mounts.length === 1");
+          assert.equal(await evaluate("window.__connectionTest.mounts[0][0]"), 'observability-0');
+          assert.ok(await evaluate("!!document.querySelector('.container-app-dashboard')"));
+          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Feature flags\\"]')"), null);
+          await evaluate("window.__connectionTest.missingObservability = true");
+          await evaluate(openObservability);
+          await wait("document.body.innerText.includes('Observability Container App is missing')");
+          assert.equal(await evaluate("window.__connectionTest.mounts.length"), 1);
+          await evaluate("window.__connectionTest.failFeatures = true");
+          await evaluate(openObservability);
+          await wait("document.body.innerText.includes('Feature status unavailable')");
+          assert.equal(await evaluate("window.__connectionTest.mounts.length"), 1);
           offline.destroy();
           startup.destroy();
           window.destroy();

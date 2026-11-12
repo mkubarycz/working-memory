@@ -1,5 +1,6 @@
 import type { ContainerClaim } from '../../../shared/controlPlaneClient';
 import type { ContainerAppDefinition } from '../shared/contracts';
+import { isObservabilityClaim } from './observabilityContainer';
 
 export function containerAppRegistration(id: string, claims: ContainerClaim[]): ContainerClaim {
   const claim = claims.find((candidate) => candidate.id === id && candidate.runtime);
@@ -9,12 +10,14 @@ export function containerAppRegistration(id: string, claims: ContainerClaim[]): 
 
 export function containerAppDefinitions(claims: ContainerClaim[]): ContainerAppDefinition[] {
   return claims.filter((claim) => claim.runtime).map((claim) => {
-    const embeddable = claim.desktop?.embeddable ?? false;
+    const observability = isObservabilityClaim(claim);
+    const embeddable = observability || (claim.desktop?.embeddable ?? false);
     return {
       id: claim.id,
       displayName: claim.title,
       icon: claim.desktop?.icon ?? 'server-environment',
       ...(embeddable ? { embeddable } : {}),
+      ...(observability ? { nativeSurface: 'observability' as const } : {}),
       ...(claim.mcp ? { mcp: claim.mcp } : {}),
       ...(claim.application ? { application: claim.application } : {}),
     };

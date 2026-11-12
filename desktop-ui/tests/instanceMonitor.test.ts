@@ -177,8 +177,8 @@ it('recovers persisted tool activity for a 50-document batch after a real backen
   const report = store.getDocument({ id: incident.topicId!, kind: 'Topic' })!;
   expect(report.spec.body).toContain('Recovery observation');
   expect(report.spec.body).toContain('wm-document-create completed');
-  expect(report.spec.body).toContain('153 lifecycle events, not a complete request count');
-  expect(report.spec.body).toContain('wm-document-create: completed 50, started 50, queued 50');
+  expect(report.spec.body).toContain('102 lifecycle events, not a complete request count');
+  expect(report.spec.body).toContain('wm-document-create: completed 50, started 50');
   expect(report.spec.body).not.toContain('private batch title');
   expect(report.spec.body).not.toContain('private document contents');
   expect(store.listDocuments({ kind: 'Topic' })).toHaveLength(51);

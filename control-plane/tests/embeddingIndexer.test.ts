@@ -11,6 +11,7 @@ import { InstanceFeatureStore } from '../src/instanceFeatures';
 import { EmbeddingIndexer } from '../src/embeddingIndexer';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
 import { LocalEmbeddings } from '../../desktop-ui/src/main/localEmbeddings';
+import { Observability } from '../src/observability';
 
 const stores: Store[] = [];
 const hosts: Server[] = [];
@@ -98,6 +99,71 @@ function fixture() {
   return { store, path };
 }
 describe('container-owned embedding lifecycle', () => {
+  it('exports indexing/search outcomes and samples paused embeddings without a desktop, excluding private data', async () => {
+    const { store } = fixture();
+    store.createDocument({ kind: 'Topic', spec: { title: 'Private topic title', body: 'Private document passage.' } });
+    const inference = await hostFixture();
+    const send = vi.fn<typeof fetch>(async () => Response.json({ code: 200, status: [{ failed: 0 }] }));
+    const exporter = new Observability(store.db, () => true, { fetch: send, intervalMs: 60000 });
+    const indexer = new EmbeddingIndexer(store.db, () => true, exporter);
+    const sample = vi.spyOn(exporter, 'recordEmbeddingSnapshot');
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      await exporter.configure({ endpoint: 'http://collector:5080', uiUrl: 'http://localhost:5080',
+        username: 'test@localhost.invalid', password: 'collector-private-password', claimId: '00000000-0000-4000-8000-000000000001' });
+      await indexer.configure({ action: 'enable', host: inference.host });
+      await exporter.flush();
+      indexer.start();
+      await waitFor(() => embeddingStats(store.db).pending === 0);
+      expect(await indexer.search({ queries: ['Private search query'] }, () => true)).toMatchObject({ count: 1 });
+      await expect(indexer.search({ queries: [] }, () => true)).rejects.toThrow();
+      await indexer.configure({ action: 'pause' });
+      await vi.advanceTimersByTimeAsync(10000);
+      await waitFor(() => sample.mock.calls.some(([state]) => state.phase === 'paused'));
+      await exporter.flush();
+      const calls = send.mock.calls.filter(([url]) => String(url).includes('/ingest/metrics/'));
+      const rows = JSON.parse(String(calls.at(-1)![1]?.body));
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ __name__: 'wm_embeddings_indexed_documents', value: 1 }),
+        expect.objectContaining({ __name__: 'wm_embeddings_pending_documents', value: 0 }),
+        expect.objectContaining({ __name__: 'wm_embeddings_phase', phase: 'paused', value: 1 }),
+        expect.objectContaining({ __name__: 'wm_embeddings_operations_total', operation: 'index', outcome: 'completed', value: 1 }),
+        expect.objectContaining({ __name__: 'wm_embeddings_operations_total', operation: 'search', outcome: 'completed', value: 1 }),
+        expect.objectContaining({ __name__: 'wm_embeddings_operations_total', operation: 'search', outcome: 'failed', value: 1 }),
+        expect.objectContaining({ __name__: 'wm_embeddings_stage_duration_seconds_sum', operation: 'search', stage: 'inference', value: 0.01 }),
+      ]));
+      const exported = send.mock.calls.filter(([url]) => String(url).includes('/api/')).map(([, init]) => String(init?.body)).join('\n');
+      for (const privateValue of ['Private topic title', 'Private document passage.', 'Private search query', inference.host.token, inference.host.endpoint]) {
+        expect(exported).not.toContain(privateValue);
+      }
+    } finally {
+      await indexer.stop();
+      await exporter.close();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('does not poll the embedding host for telemetry when observability is off', async () => {
+    const { store } = fixture();
+    const inference = await hostFixture();
+    const exporter = new Observability(store.db, () => false);
+    const indexer = new EmbeddingIndexer(store.db, () => true, exporter);
+    store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, ?)').run(JSON.stringify(inference.host));
+    const fetches = vi.spyOn(globalThis, 'fetch');
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      indexer.start();
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(fetches).not.toHaveBeenCalled();
+    } finally {
+      await indexer.stop();
+      await exporter.close();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
   it.each((['discovery', 'probe'] as const).flatMap(stage =>
     (['pause', 'disable', 'reconfigure'] as const).map(action => ({ stage, action }))))
     ('preserves a second client $action while automatic route $stage is pending', async ({ stage, action }) => {
@@ -338,7 +404,10 @@ describe('container-owned embedding lifecycle', () => {
       inference.block();
       await client.callTool('wm-embeddings-configure', { action: 'enable', host: inference.host });
       await waitFor(inference.started);
-      expect(await search()).toMatchObject({ ok: false, error: expect.stringContaining('Indexing must finish') });
+      expect(await search()).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/Indexing must finish.*Observability; enable Observability in Settings > Features/),
+      });
       expect(inference.requests()).toBe(1);
       inference.release(); inference.unblock();
       await waitFor(() => embeddingStats(store.db).pending === 0);

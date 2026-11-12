@@ -144,6 +144,47 @@ it('does not require or touch native encryption for session-only sign-in', async
   expect(await readdir(f.directory)).toEqual([]);
 });
 
+it('distinguishes locally expired sessions from cleared or replaced credentials', async () => {
+  const { native, directory } = await storage();
+  const vault = new HostTaskCredentialVault(native, 'darwin', directory);
+  const origin = 'http://127.0.0.1:7717', other = 'http://127.0.0.1:7719';
+  const token = randomBytes(32).toString('base64url'), now = Date.now();
+  vault.setSession(origin, token, now + 100);
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 1000);
+  expect(vault.session(origin)).toBeNull();
+  expect(vault.session(origin)).toBeNull();
+  expect(vault.sessionExpired(origin)).toBe(true);
+  expect(vault.sessionExpired(other)).toBe(false);
+  vault.setSession(origin, randomBytes(32).toString('base64url'), now + 2000);
+  expect(vault.sessionExpired(origin)).toBe(false);
+  clock.mockReturnValue(now + 3000);
+  expect(vault.sessionExpired(origin)).toBe(true);
+  vault.clearSession(origin);
+  expect(vault.sessionExpired(origin)).toBe(false);
+});
+
+it('coalesces concurrent remembered-sign-in recovery after expiry into one login', async () => {
+  const f = await fixture();
+  let logins = 0;
+  const { identity, vault } = f.make((input, init) => {
+    if (String(input).endsWith('/identity/v1/login')) logins++;
+    return fetch(input, init);
+  });
+  await identity.signIn(f.mcpUrl, f.password, true, '', true);
+  await identity.status(f.mcpUrl);
+  const token = vault.session(f.server.url)!;
+  const now = Date.now();
+  vault.setSession(f.server.url, token, now + 100);
+  vi.spyOn(Date, 'now').mockReturnValue(now + 1000);
+  logins = 0;
+  expect(vault.sessionExpired(f.server.url)).toBe(true);
+  const states = await Promise.all([identity.status(f.mcpUrl), identity.status(f.mcpUrl), identity.status(f.mcpUrl)]);
+  expect(states.every(state => state.authenticated)).toBe(true);
+  expect(logins).toBe(1);
+  expect(vault.session(f.server.url)).not.toBe(token);
+  expect(vault.sessionExpired(f.server.url)).toBe(false);
+});
+
 it('removes an existing remembered password when the user signs in without Remember', async () => {
   const f = await fixture();
   await f.make().identity.signIn(f.mcpUrl, f.password, true, '', true);

@@ -10,6 +10,9 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
+
+export const LOCK_FILE = 'control-plane.lock';
 
 export class AlreadyRunningError extends Error {
   constructor(
@@ -28,6 +31,78 @@ export interface Lock {
   readonly path: string;
   readonly pid: number;
   release(): void;
+}
+
+const OFFLINE_MAINTENANCE_FILE = 'offline-maintenance.lock';
+
+function pathExists(filename: string): boolean {
+  try {
+    fs.lstatSync(filename);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+export function assertNoOfflineMaintenance(runtimeDirectory: string): void {
+  if (pathExists(path.join(runtimeDirectory, OFFLINE_MAINTENANCE_FILE))) {
+    throw new Error('An offline database maintenance operation is active; the control plane will not open the database.');
+  }
+}
+
+/** Coordinate explicit offline tools with daemon startup before either opens SQLite. */
+export function acquireOfflineMaintenanceLock(databasePath: string): Lock {
+  const runtimeDirectory = path.join(path.dirname(path.resolve(databasePath)), 'run');
+  const serviceLockPath = path.join(runtimeDirectory, LOCK_FILE);
+  const maintenanceLockPath = path.join(runtimeDirectory, OFFLINE_MAINTENANCE_FILE);
+  fs.mkdirSync(runtimeDirectory, { recursive: true });
+
+  if (pathExists(serviceLockPath)) {
+    throw new Error('The control plane is running. Stop it before opening the database for offline maintenance.');
+  }
+
+  const token = randomUUID();
+  let fd: number;
+  try {
+    fd = fs.openSync(maintenanceLockPath, 'wx', 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new Error('Another offline database maintenance operation is active.');
+    }
+    throw error;
+  }
+  try {
+    fs.writeFileSync(fd, token);
+    fs.fsyncSync(fd);
+  } catch (error) {
+    fs.closeSync(fd);
+    fs.rmSync(maintenanceLockPath, { force: true });
+    throw error;
+  }
+  fs.closeSync(fd);
+
+  if (pathExists(serviceLockPath)) {
+    fs.rmSync(maintenanceLockPath, { force: true });
+    throw new Error('The control plane started while offline maintenance was being prepared; no database was opened.');
+  }
+
+  let released = false;
+  return {
+    path: maintenanceLockPath,
+    pid: process.pid,
+    release(): void {
+      if (released) return;
+      try {
+        if (fs.readFileSync(maintenanceLockPath, 'utf8') === token) {
+          fs.rmSync(maintenanceLockPath, { force: true });
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      released = true;
+    },
+  };
 }
 
 /** True if a process with the given pid is currently alive. */
