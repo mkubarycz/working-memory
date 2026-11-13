@@ -1445,8 +1445,9 @@ before sharing: arbitrary sensitive text cannot be reliably detected. Image
 attachments are references only; other conversations, internal system events,
 hidden reasoning and general application/backend log files are not included.
 Inline tool-result media and embedded resource blobs are omitted before
-truncation, including serialized previews. The selected message snapshot follows
-history updates while the description is being entered; this is a read-only
+truncation, including serialized previews and recognizable JSON embedded in prose
+or code fences. The selected message snapshot follows its original client identity
+through history updates while the description is being entered; this is a read-only
 lookup, not a lifecycle transition. Outstanding local work includes journal
 append/finalization requests as well as model and tool calls.
 Not finding a run on this desktop does not prove a run on another computer has

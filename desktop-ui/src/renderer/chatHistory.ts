@@ -27,6 +27,7 @@ export interface ChatToolRow {
 
 export interface ChatRun {
   key: string;
+  optimisticKey?: string;
   journalId?: string;
   resourceVersion?: number;
   startedAt: number;
@@ -191,7 +192,7 @@ export function mergeHistoryRuns(current: ChatRun[], summaries: CommandJournalSu
     left.startedAt - right.startedAt || (left.journalId ?? left.key).localeCompare(right.journalId ?? right.key));
 }
 
-function sameRequest(run: ChatRun, summary: Pick<CommandJournalSummary, 'request' | 'primaryScope'>): boolean {
+function sameRequest(run: ChatRun, summary: CommandJournalSummary): boolean {
   const runKind = normalizeScopeKind(run.scope.kind);
   const summaryKind = normalizeScopeKind(summary.primaryScope.kind);
   const runIdentifier = run.scope.id;
@@ -203,11 +204,8 @@ function sameRequest(run: ChatRun, summary: Pick<CommandJournalSummary, 'request
 
 export function latestChatRun(selected: ChatRun, runs: ChatRun[]): ChatRun {
   const exact = runs.find(run => run.key === selected.key || selected.journalId && run.journalId === selected.journalId);
-  if (exact) return exact;
-  if (selected.journalId || selected.status !== 'submitting') return selected;
-  return runs.filter(run => run.journalId && Math.abs(run.startedAt - selected.startedAt) <= 30_000
-    && sameRequest(selected, { request: { userText: run.userText }, primaryScope: run.scope }))
-    .sort((left, right) => Math.abs(left.startedAt - selected.startedAt) - Math.abs(right.startedAt - selected.startedAt))[0] ?? selected;
+  if (exact || selected.journalId) return exact ?? selected;
+  return runs.find(run => run.optimisticKey === (selected.optimisticKey ?? selected.key)) ?? selected;
 }
 
 export function refreshLatestRuns(current: ChatRun[], summaries: CommandJournalSummary[]): ChatRun[] {
@@ -239,6 +237,7 @@ export function createLiveRun(
 ): ChatRun {
   return {
     key,
+    optimisticKey: key,
     startedAt,
     status: 'submitting',
     userText,

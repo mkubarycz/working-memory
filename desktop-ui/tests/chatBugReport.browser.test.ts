@@ -25,18 +25,22 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         const initial = {key:'blocked-run',journalId:'journal-1',status:'running',startedAt:Date.now()-86400000,
           userText:'Inspect this resource',assistantText:'Inspecting...',scope:{kind:'Topic',id:'topic-1'},attachments:[],tools:[],entityRefs:[]};
         let runs = $state([initial]);
-        const run = $derived(runs[0]);
+        const run = $derived(runs.at(-1));
         const reportSnapshot = $derived(reporting ? latestChatRun(reporting,runs) : null);
         const test = window.__reportTest = {captures:[],preparations:[],sends:[],hold:false,fail:false};
         test.reset=()=>{reporting=null;};
-        test.beginSubmission=()=>{runs=[createLiveRun('optimistic','Inspect this resource',initial.scope,Date.now())];};
+        test.beginSubmission=()=>{
+          const now=Date.now();
+          runs=[{...initial,startedAt:now-2000,status:'failed'},
+            createLiveRun('optimistic','Inspect this resource',initial.scope,now)];
+        };
         test.persistSubmission=()=>{
-          const current=runs[0];
+          const current=runs.at(-1);
           runs=mergeHistoryRuns(runs,[{id:'new-journal',resourceVersion:1,createdAt:Date.now()/1000,
-            startedAt:current.startedAt+1,status:'running',request:{userText:current.userText},primaryScope:current.scope,
+            startedAt:current.startedAt+5000,status:'running',request:{userText:current.userText},primaryScope:current.scope,
             entityRefs:[],eventSummaries:[{sequence:2,timestamp:Date.now(),toolName:'pending-read',callId:'pending',status:'pending'}]}]);
         };
-        test.sourceStatus=()=>runs[0].status;
+        test.sourceStatus=()=>runs.at(-1).status;
         window.workingMemory = {
           createChatBugReport:async input=>{
             test.captures.push(input);

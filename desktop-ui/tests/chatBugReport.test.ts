@@ -138,6 +138,17 @@ it('omits nested media, serialized media and incomplete serialized previews befo
   expect(report.body).toContain('omitted');
 });
 
+it.each([
+  '```json\n{"type":"image","data":"MEDIA_PAYLOAD"}\n```',
+  'Tool returned: {"type":"audio","data":"MEDIA_PAYLOAD"}',
+  'Tool returned: {"type":"image","data":"MEDIA_PAYLOAD',
+  'Tool returned: "{\\"type\\":\\"image\\",\\"data\\":\\"MEDIA_PAYLOAD\\"}"',
+])('omits recognizable serialized media outside a standalone JSON value: %s', evidence => {
+  const report = buildChatBugReport({ ...input, run: { ...input.run, assistantText: evidence } }, null, reportOptions);
+  expect(report.body).not.toContain('MEDIA_PAYLOAD');
+  expect(report.body).toContain('omitted');
+});
+
 it('retains the newest tool evidence within the exact feedback budget and labels omissions and truncation', () => {
   const events: CommandJournal['events'] = Array.from({ length: 300 }, (_, i) => ({
     id: `result-${i}`, sequence: i + 1, timestamp: now - 300 + i, type: 'tool_result', callId: `call-${i}`,

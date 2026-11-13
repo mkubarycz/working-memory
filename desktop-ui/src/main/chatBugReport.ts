@@ -46,6 +46,8 @@ function reportText(value: string): string {
 
 function omitReportMedia(value: unknown): unknown {
   const seen = new WeakSet<object>();
+  // Recognize escaped JSON embedded in prose as well as plain JSON.
+  const serializedMedia = /"(?:blob|mimeType)\\*"\s*:|"type\\*"\s*:\s*\\*"(?:image|audio|video|resource|blob)\\*"/i;
   const visit = (candidate: unknown, depth = 0, preview = false): unknown => {
     if (depth > 32) return '[Deep evidence omitted before media filtering]';
     if (typeof candidate === 'string') {
@@ -53,12 +55,13 @@ function omitReportMedia(value: unknown): unknown {
         if (candidate.length > 60_000) return '[Oversized serialized evidence omitted before media filtering]';
         let parsed: unknown;
         try { parsed = JSON.parse(candidate); } catch {
-          if (preview || /"(?:blob|mimeType)"\s*:|"type"\s*:\s*"(?:image|audio|video|resource|blob)"/i.test(candidate)) {
+          if (preview || serializedMedia.test(candidate)) {
             return '[Incomplete serialized media/preview omitted before capture]';
           }
         }
         if (parsed !== undefined) return JSON.stringify(visit(parsed, depth + 1));
       }
+      if (preview || serializedMedia.test(candidate)) return '[Serialized media/preview omitted before capture]';
       return /\bdata:[^,\s]*,/i.test(candidate) ? '[Inline data URI omitted before capture]' : reportText(candidate);
     }
     if (!candidate || typeof candidate !== 'object') return candidate;

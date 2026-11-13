@@ -32,6 +32,23 @@ function summary(overrides: Partial<CommandJournalSummary> = {}): CommandJournal
 }
 
 describe('chat history presentation', () => {
+  it('keeps the merge/reconciliation association when a quick identical retry is nearer the older journal', () => {
+    const previous = summaryToChatRun(summary({ id: 'previous', startedAt: 10000, status: 'failed' }));
+    const selected = createLiveRun('retry-key', previous.userText, previous.scope, 12000);
+    const merged = mergeHistoryRuns([previous, selected], [
+      summary({ id: 'previous', startedAt: 10000, status: 'failed' }),
+      summary({ id: 'retry-journal', startedAt: 18000, status: 'running', completion: undefined }),
+    ]);
+    expect(latestChatRun(selected, merged).journalId).toBe('retry-journal');
+    const reconciled = reconcileLiveRun([previous, selected], selected.key, {
+      journalId: 'retry-journal', status: 'running', message: '', mutated: false,
+    });
+    expect(latestChatRun(selected, reconciled).journalId).toBe('retry-journal');
+    expect(latestChatRun(selected, [previous])).toBe(selected);
+    expect(previous.status).toBe('failed');
+    expect(selected.status).toBe('submitting');
+  });
+
   it('looks up the selected optimistic run after journal creation without resolving its lifecycle', () => {
     const selected = createLiveRun('optimistic-key', 'Show roadmap', { kind: 'Workstream', id: 'roadmap-id' }, 10);
     const history = mergeHistoryRuns([selected], [summary({ status: 'running', completion: undefined, startedAt: 14 })]);
