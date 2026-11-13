@@ -19,14 +19,16 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       <script>
         import MessageEntry from '/src/renderer/MessageEntry.svelte';
         import ReportChatBugDialog from '/src/renderer/ReportChatBugDialog.svelte';
-        import {createLiveRun,mergeHistoryRuns,latestChatRun} from '/src/renderer/chatHistory.ts';
+        import {createLiveRun,mergeHistoryRuns,latestChatRun,reconcileLiveRun,summaryToChatRun} from '/src/renderer/chatHistory.ts';
+        import {mergeScopedHistory} from '/src/renderer/scopedChat.ts';
         import '/src/renderer/style.css';
         let reporting = $state(null);
         const initial = {key:'blocked-run',journalId:'journal-1',status:'running',startedAt:Date.now()-86400000,
           userText:'Inspect this resource',assistantText:'Inspecting...',scope:{kind:'Topic',id:'topic-1'},attachments:[],tools:[],entityRefs:[]};
         let runs = $state([initial]);
+        let cached = $state([]);
         const run = $derived(runs.at(-1));
-        const reportSnapshot = $derived(reporting ? latestChatRun(reporting,runs) : null);
+        const reportSnapshot = $derived(reporting ? latestChatRun(reporting,mergeScopedHistory(runs,cached)) : null);
         const test = window.__reportTest = {captures:[],preparations:[],sends:[],hold:false,fail:false};
         test.reset=()=>{reporting=null;};
         test.beginSubmission=()=>{
@@ -41,6 +43,15 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             entityRefs:[],eventSummaries:[{sequence:2,timestamp:Date.now(),toolName:'pending-read',callId:'pending',status:'pending'}]}]);
         };
         test.sourceStatus=()=>runs.at(-1).status;
+        test.stageLiveFailure=()=>{
+          const current=runs.at(-1);
+          const persisted={id:current.journalId,resourceVersion:5,createdAt:Date.now()/1000,
+            startedAt:current.startedAt,status:'running',request:{userText:current.userText},primaryScope:current.scope,
+            entityRefs:[],eventSummaries:[]};
+          cached=[persisted];
+          runs=reconcileLiveRun([summaryToChatRun(persisted)],persisted.id,{
+            journalId:persisted.id,status:'failed',message:'Confirmation request failed: connection lost'});
+        };
         window.workingMemory = {
           createChatBugReport:async input=>{
             test.captures.push(input);
@@ -151,6 +162,16 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('window.__reportTest.sourceStatus()'),'running');
           await click('Cancel');
           await wait('!document.querySelector("dialog")');
+          await evaluate('window.__reportTest.stageLiveFailure()');
+          await click('Report a bug');
+          await describe();
+          await click('Create report');
+          await wait('window.__reportTest.preparations.length===3');
+          assert.equal(await evaluate('window.__reportTest.captures[2].run.status'),'failed');
+          assert.equal(await evaluate('window.__reportTest.captures[2].run.assistantText'),'Confirmation request failed: connection lost');
+          assert.equal(await evaluate('window.__reportTest.sourceStatus()'),'failed');
+          await click('Cancel');
+          await wait('!document.querySelector("dialog")');
           await evaluate('window.__reportTest.hold=true');
           await click('Report a bug');
           await describe();
@@ -159,7 +180,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate('window.__reportTest.reset();window.__reportTest.release()');
           await wait('!document.querySelector("dialog")');
           await new Promise(resolve=>setTimeout(resolve,100));
-          assert.equal(await evaluate('window.__reportTest.preparations.length'),2);
+          assert.equal(await evaluate('window.__reportTest.preparations.length'),3);
           assert.equal(await evaluate('document.querySelectorAll(".report-bug-link").length'),1);
           console.log('CHAT_REPORT_UI_OK'); win.destroy(); app.exit(0);
         }).catch(error=>{console.error(error);app.exit(1);});

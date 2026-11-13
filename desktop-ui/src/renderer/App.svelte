@@ -200,7 +200,7 @@
   let sharingTopic = $state<TopicVM | null>(null);
   let reportingChatRun = $state<ChatRun | null>(null);
   const reportChatSnapshot = $derived(reportingChatRun
-    ? latestChatRun(reportingChatRun, mergeHistoryRuns(chatRuns, scopedHistory)) : null);
+    ? latestChatRun(reportingChatRun, scopedConversationRuns) : null);
   let movingToNewWorkstream = $state<TopicDragSource | null>(null);
   let unreadEnvironment = $state<string | null>(null);
   let liveUpdateError = $state('');
