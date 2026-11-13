@@ -130,6 +130,7 @@
     formatDetailValue,
     isRetryableRun,
     journalToSummary,
+    latestChatRun,
     mergeHistoryRuns,
     reconcileLiveRun,
     refreshLatestRuns,
@@ -198,6 +199,8 @@
   let unreadResponses = $state<UnreadResponse[]>([]);
   let sharingTopic = $state<TopicVM | null>(null);
   let reportingChatRun = $state<ChatRun | null>(null);
+  const reportChatSnapshot = $derived(reportingChatRun
+    ? latestChatRun(reportingChatRun, mergeHistoryRuns(chatRuns, scopedHistory)) : null);
   let movingToNewWorkstream = $state<TopicDragSource | null>(null);
   let unreadEnvironment = $state<string | null>(null);
   let liveUpdateError = $state('');
@@ -3293,10 +3296,10 @@
     {#if sharingTopic}
       <ShareTopicDialog topic={sharingTopic} beforeShare={() => documentSaves.flushAll()} onClose={() => { sharingTopic = null; }} />
     {/if}
-    {#if reportingChatRun}
-      <ReportChatBugDialog run={reportingChatRun}
-        conversationBlocked={runBlocked(reportingChatRun)}
-        localRequestActive={activeChatContexts.includes(chatContextKey(chatContextForScope(reportingChatRun.scope)))}
+    {#if reportChatSnapshot}
+      <ReportChatBugDialog run={reportChatSnapshot}
+        conversationBlocked={runBlocked(reportChatSnapshot)}
+        localRequestActive={activeChatContexts.includes(chatContextKey(chatContextForScope(reportChatSnapshot.scope)))}
         onClose={() => { reportingChatRun = null; }} />
     {/if}
     {#if movingToNewWorkstream}

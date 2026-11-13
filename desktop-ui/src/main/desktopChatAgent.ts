@@ -874,7 +874,7 @@ export class DesktopChatAgent {
     await previous;
     try {
       if (!allowCancelled) this.assertCurrent(session.run);
-      await operation();
+      await this.external(session.run, operation());
       if (!allowCancelled) this.assertCurrent(session.run);
     } catch (error) {
       if (isEnvironmentChanged(error)) throw error;

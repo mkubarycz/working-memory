@@ -19,12 +19,24 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       <script>
         import MessageEntry from '/src/renderer/MessageEntry.svelte';
         import ReportChatBugDialog from '/src/renderer/ReportChatBugDialog.svelte';
+        import {createLiveRun,mergeHistoryRuns,latestChatRun} from '/src/renderer/chatHistory.ts';
         import '/src/renderer/style.css';
         let reporting = $state(null);
-        const run = {key:'blocked-run',journalId:'journal-1',status:'running',startedAt:Date.now()-86400000,
+        const initial = {key:'blocked-run',journalId:'journal-1',status:'running',startedAt:Date.now()-86400000,
           userText:'Inspect this resource',assistantText:'Inspecting...',scope:{kind:'Topic',id:'topic-1'},attachments:[],tools:[],entityRefs:[]};
+        let runs = $state([initial]);
+        const run = $derived(runs[0]);
+        const reportSnapshot = $derived(reporting ? latestChatRun(reporting,runs) : null);
         const test = window.__reportTest = {captures:[],preparations:[],sends:[],hold:false,fail:false};
         test.reset=()=>{reporting=null;};
+        test.beginSubmission=()=>{runs=[createLiveRun('optimistic','Inspect this resource',initial.scope,Date.now())];};
+        test.persistSubmission=()=>{
+          const current=runs[0];
+          runs=mergeHistoryRuns(runs,[{id:'new-journal',resourceVersion:1,createdAt:Date.now()/1000,
+            startedAt:current.startedAt+1,status:'running',request:{userText:current.userText},primaryScope:current.scope,
+            entityRefs:[],eventSummaries:[{sequence:2,timestamp:Date.now(),toolName:'pending-read',callId:'pending',status:'pending'}]}]);
+        };
+        test.sourceStatus=()=>runs[0].status;
         window.workingMemory = {
           createChatBugReport:async input=>{
             test.captures.push(input);
@@ -49,8 +61,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         onSetAgentMessageStatus={noop} attachmentUrl={()=>''} assistantFallback={()=>'Running'}
         onRetry={noop} runBlocked={()=>true}
         onReportBug={value=>{reporting=value;}} />
-      {#if reporting}
-        <ReportChatBugDialog run={reporting} conversationBlocked={true} localRequestActive={false}
+      {#if reportSnapshot}
+        <ReportChatBugDialog run={reportSnapshot} conversationBlocked={true} localRequestActive={false}
           onClose={()=>{reporting=null;}} />
       {/if}
     `;
@@ -124,6 +136,17 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(sends[0].id,'report-1');
           await click('Done');
           await wait('!document.querySelector("dialog")');
+          await evaluate('window.__reportTest.beginSubmission()');
+          await click('Report a bug');
+          await describe();
+          await evaluate('window.__reportTest.persistSubmission()');
+          await click('Create report');
+          await wait('window.__reportTest.preparations.length===2');
+          assert.equal(await evaluate('window.__reportTest.captures[1].run.journalId'),'new-journal');
+          assert.equal(await evaluate('window.__reportTest.captures[1].run.tools[0].toolName'),'pending-read');
+          assert.equal(await evaluate('window.__reportTest.sourceStatus()'),'running');
+          await click('Cancel');
+          await wait('!document.querySelector("dialog")');
           await evaluate('window.__reportTest.hold=true');
           await click('Report a bug');
           await describe();
@@ -132,7 +155,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate('window.__reportTest.reset();window.__reportTest.release()');
           await wait('!document.querySelector("dialog")');
           await new Promise(resolve=>setTimeout(resolve,100));
-          assert.equal(await evaluate('window.__reportTest.preparations.length'),1);
+          assert.equal(await evaluate('window.__reportTest.preparations.length'),2);
           assert.equal(await evaluate('document.querySelectorAll(".report-bug-link").length'),1);
           console.log('CHAT_REPORT_UI_OK'); win.destroy(); app.exit(0);
         }).catch(error=>{console.error(error);app.exit(1);});

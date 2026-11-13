@@ -94,6 +94,50 @@ it('redacts known credentials and structured secret fields, and never turns diag
   expect(report.body).toContain('wm-attachment (reference):');
 });
 
+it('redacts the entire URL authority userinfo, including literal @ characters in passwords', () => {
+  const url = 'https://report-user:pa@PASSWORD_FRAGMENT@example.test/path';
+  const report = buildChatBugReport({
+    ...input, description: `Problem with ${url}`,
+    run: { ...input.run, userText: url, assistantText: url },
+  }, null, reportOptions);
+  expect(JSON.stringify(report)).not.toContain('PASSWORD_FRAGMENT');
+  expect(JSON.stringify(report)).not.toContain('report-user');
+  expect(report.body).toContain('https://[redacted]@example.test/path');
+  const longUrl = `https://report-user:PRIVATE_PREFIX${'x'.repeat(40000)}@PASSWORD_FRAGMENT@example.test/path`;
+  const longReport = buildChatBugReport({ ...input, run: { ...input.run, userText: longUrl } }, null, reportOptions);
+  expect(longReport.body).not.toContain('PRIVATE_PREFIX');
+  expect(longReport.body).toContain('https://[redacted]@example.test/path');
+});
+
+it('omits nested media, serialized media and incomplete serialized previews before truncation', () => {
+  const bytes = Buffer.from('PRIVATE_IMAGE_BYTES').toString('base64');
+  const blob = Buffer.from('PRIVATE_RESOURCE_BYTES').toString('base64');
+  const preview = Buffer.from('PRIVATE_PREVIEW_BYTES').toString('base64');
+  const journal: CommandJournal = {
+    id: 'media-journal', schemaVersion: 2, resourceVersion: 1, status: 'running', createdAt: 0, updatedAt: 0,
+    startedAt: input.run.startedAt, provider: { endpoint: 'copilot://local', mode: 'copilot', model: 'fixture' },
+    request: { userText: input.run.userText }, primaryScope: input.run.scope, entityRefs: [],
+    events: [{
+      id: 'media-result', sequence: 1, timestamp: now, type: 'tool_result', callId: 'image-tool', status: 'success', durationMs: 1,
+      result: { content: [
+        { type: 'image', data: bytes, mimeType: 'image/png' },
+        { type: 'resource', resource: { uri: 'file:///screenshot.png', mimeType: 'image/png', blob } },
+        { type: 'text', text: JSON.stringify({ content: [{ type: 'image', data: bytes, mimeType: 'image/png' }] }) },
+        { type: 'text', text: JSON.stringify({ truncated: true, preview: `{"content":[{"data":"${preview}` }) },
+        { type: 'text', text: `data:image/png;base64,${bytes}` },
+        { type: 'audio', data: bytes, mimeType: 'audio/wav' },
+      ], truncated: true, preview: `{"content":[{"data":"${preview}` },
+    }],
+  };
+  const report = buildChatBugReport({
+    ...input, description: `data:image/png;base64,${bytes}`, run: { ...input.run, assistantText: `data:image/png;base64,${bytes}` },
+  }, journal, reportOptions);
+  for (const payload of [bytes, blob, preview]) expect(JSON.stringify(report)).not.toContain(payload);
+  expect(report.body).toContain('file:///screenshot.png');
+  expect(report.body).toContain('image/png');
+  expect(report.body).toContain('omitted');
+});
+
 it('retains the newest tool evidence within the exact feedback budget and labels omissions and truncation', () => {
   const events: CommandJournal['events'] = Array.from({ length: 300 }, (_, i) => ({
     id: `result-${i}`, sequence: i + 1, timestamp: now - 300 + i, type: 'tool_result', callId: `call-${i}`,

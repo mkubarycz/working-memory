@@ -14,6 +14,8 @@ describe('desktop chat history IPC contract', () => {
     const dialog = readFileSync(resolve(desktopRoot, 'src/renderer/ReportChatBugDialog.svelte'), 'utf8');
     expect(app.match(/onReportBug=\{/g)).toHaveLength(2);
     expect(app).toContain('reportingChatRun = null;');
+    expect(app).toContain('latestChatRun(reportingChatRun, mergeHistoryRuns(chatRuns, scopedHistory))');
+    expect(app).toContain('<ReportChatBugDialog run={reportChatSnapshot}');
     expect(preload).toContain("createChatBugReport: (input) => invoke('chat:report-bug', input)");
     expect(main).toMatch(/ipcMain.handle\('chat:report-bug', async \(event, input: unknown\) => \{\s*assertHostTaskSender\(event, mainWindow, rendererUrl\)/);
     expect(entry).toContain('class="report-bug-link" onclick={() => onReportBug(run)}');
