@@ -73,6 +73,7 @@ export class Observability {
   private gcTotals = { count: 0, durationSeconds: 0 };
   private scheduledFlush: ReturnType<typeof setImmediate> | undefined;
   private closing = false;
+  private generation = 0;
   private sequence = 0;
   private droppedLogs = 0;
   private droppedSeries = 0;
@@ -103,6 +104,7 @@ export class Observability {
   }
 
   get enabled(): boolean { return this.isEnabled(); }
+  get collectionGeneration(): number | undefined { return this.enabled ? this.generation : undefined; }
   private now(): number { return (this.options.clock ?? Date.now)(); }
 
   status(): ObservabilityStatus {
@@ -140,9 +142,19 @@ export class Observability {
 
   syncEnabled(): void {
     if (!this.enabled) {
+      this.generation++;
       this.controller?.abort();
       this.droppedLogs += this.logs.length;
       this.logs.length = 0;
+      this.http.clear();
+      this.queueRows.clear();
+      this.seconds.clear();
+      this.diagnosticEvents.clear();
+      this.samples.length = 0;
+      this.gauges.clear();
+      this.embeddingPhase = undefined;
+      this.httpPeak = 0;
+      for (const histogram of this.histograms.values()) histogram.max = 0;
     }
   }
 
@@ -169,6 +181,7 @@ export class Observability {
   recordHttp(input: {
     caller: string; method: string; route: string; status: number; durationMs: number; startedAt: number; streaming: boolean;
   }): void {
+    if (!this.enabled) return;
     this.httpTotals.requests++;
     if (input.status >= 400) this.httpTotals.errors++;
     this.httpTotals.durationSeconds += input.durationMs / 1000;
@@ -189,6 +202,7 @@ export class Observability {
   }
 
   recordQueue(input: Omit<QueueEvent, 'sequence'>): void {
+    if (!this.enabled) return;
     const row = { ...input, caller: role(input.caller), sequence: ++this.sequence };
     this.queueRows.set(row.sequence, row);
     if (this.queueRows.size > 2000) this.queueRows.delete(this.queueRows.keys().next().value!);
@@ -225,6 +239,7 @@ export class Observability {
   }
 
   event(code: string, requestId: string | null, route: string, status: number, durationMs: number): void {
+    if (!this.enabled) return;
     const row = { sequence: ++this.sequence, at: this.now(), code, requestId, route, status, durationMs, count: 1 };
     this.diagnosticEvents.set(row.sequence, row);
     if (this.diagnosticEvents.size > 1000) this.diagnosticEvents.delete(this.diagnosticEvents.keys().next().value!);
@@ -296,6 +311,7 @@ export class Observability {
   }
 
   runtime(sample: RuntimeSample): void {
+    if (!this.enabled) return;
     this.samples.unshift(sample);
     this.samples.length = Math.min(this.samples.length, 180);
     this.gcTotals.count += sample.gcCount;
@@ -359,7 +375,8 @@ export class Observability {
 
   flush(forceMetrics = true): Promise<void> {
     if (this.flushing) return this.flushing;
-    if (!this.enabled) { this.syncEnabled(); return Promise.resolve(); }
+    const generation = this.collectionGeneration;
+    if (generation === undefined) { this.syncEnabled(); return Promise.resolve(); }
     const configuration = this.configuration;
     if (!configuration) {
       this.lastError = 'Observability is enabled but its OpenObserve connection is not configured.';
@@ -434,7 +451,7 @@ export class Observability {
         this.lastSuccessAt = this.now(); this.lastError = null;
         succeeded = true;
       } catch (error) {
-        if (!metricsSent) {
+        if (!metricsSent && generation === this.collectionGeneration) {
           for (const peak of peaks) peak.histogram.max = Math.max(peak.histogram.max, peak.max);
           if (exportMetrics) this.httpPeak = Math.max(this.httpPeak, httpPeak);
         }
@@ -442,7 +459,7 @@ export class Observability {
         const detail = error instanceof z.ZodError ? 'Invalid ingestion acknowledgement.'
           : error instanceof Error && /^OpenObserve (ingestion|rejected)/.test(error.message) ? error.message
             : 'Collector connection failed or timed out.';
-        this.lastError = this.enabled
+        this.lastError = generation === this.collectionGeneration
           ? `OpenObserve export failed. ${detail} Diagnostic logs in this batch were dropped; cumulative metrics will be retried.`
           : null;
         if (this.lastError && this.now() - this.lastWarningAt >= 60000) {

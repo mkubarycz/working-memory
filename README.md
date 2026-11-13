@@ -1144,8 +1144,15 @@ and backups as secrets. Container-engine administrators can inspect container
 environment credentials. Losing native credentials does not reset existing volumes.
 
 With the flag on, queue events, HTTP timings and runtime samples are aggregated
-in bounded memory instead of synchronously inserted/pruned in diagnostic SQLite
-tables. Cumulative metrics are exported every ten seconds. HTTP errors/slow
+in bounded memory and exported to OpenObserve, never stored in diagnostic SQLite
+tables. With the flag off, analytics collection and export are skipped; live health,
+request correlation, queue state and queue settings remain available.
+Upgrading permanently drops the five legacy HTTP/event/runtime/queue analytics
+tables in a one-time transactional migration. Back up the instance before upgrading
+if you need that old history. Documents, authored incident reports, attachments,
+credentials, feature flags, queue settings and the clean-shutdown marker are preserved.
+This is a logical table purge, not secure erasure or a database compaction.
+Cumulative metrics are exported every ten seconds. HTTP errors/slow
 requests and all queue lifecycle events are exported as source-labeled logs.
 The exporter holds at most 20,000 pending logs and sends batches of up to 2,000;
 full batches drain asynchronously without multiplying metric snapshots. Queue
@@ -1218,12 +1225,17 @@ range. Top-50 wait/runtime tables use finished requests in that range; clicking
 a row and choosing **Request logs** filters by request ID and backend boot ID.
 In-flight requests remain in Working Memory's live queue controls. Same-origin
 log-search popups retain the isolated session and sandbox; other popups are
-blocked. Existing SQLite history is not backfilled, and the flag-off path remains
-available for rollback without dropping old diagnostic tables.
+blocked. Existing SQLite history is not backfilled.
 
 Turning the flag off stops export first, then stops the owned container without
-deleting its volume; legacy SQLite diagnostics resume. Re-enabling reuses its
+deleting its volume; analytics collection stops and local history buffers are cleared.
+Disabled diagnostic APIs return empty history arrays and omit optional queue analytics,
+while live health and queue controls remain available. Re-enabling reuses its
 credentials and data. A failed stop is reported even though export is already off.
+Re-enabling starts a fresh observation interval: HTTP requests and tool calls
+admitted while off, or still in flight when collection was disabled, do not add
+completion timings to the new interval. Interval latency peaks are reset;
+previously observed cumulative counters are preserved.
 
 The installer also ships [`deploy/observability/compose.yaml`](deploy/observability/compose.yaml)
 under its data-tier resources for independent deployment. Create a private
@@ -2214,8 +2226,9 @@ both at detection and after an outage recovers. Container commands are bounded,
 and failures or unsupported evidence are reported explicitly. Arbitrary log
 messages, document bodies, credentials, and request payloads are not included.
 Reports retain the last successful runtime sample and add recovery-time diagnostics
-and persisted tool lifecycle history (including events from before a container
-restart). Lifecycle summaries describe the retained event window, not a complete
+and enabled, current-session tool lifecycle history. Backend-local analytics do not
+survive restarts; previously captured report evidence and OpenObserve history remain.
+Lifecycle summaries describe the retained event window, not a complete
 request count. Evidence is capped at 20,000 characters with explicit truncation.
 These changes improve future reports; they cannot reconstruct logs already lost
 when an affected container was recreated.
@@ -2252,8 +2265,8 @@ older clients. The following describes the legacy telemetry and chart helpers,
 not the current desktop Diagnostics UI. OpenObserve uses the real-unit dashboard
 described above instead of independently normalized local charts.
 
-Legacy rankings and logs use retained lifecycle history (up to 2,000 events,
-at most 24 hours), with one row per request and live items included.
+Legacy chart helpers use enabled, in-memory lifecycle history (up to 2,000 events
+from the current backend session), with one row per request and live items included.
 Unavailable timings are excluded from rankings.
 **Drops**, immediately below Queue Processing, sums queue timeouts, capacity
 rejections and shutdown drops using the same bucket size and time bounds. Counts
@@ -2331,10 +2344,11 @@ queue. Authorization is checked again after waiting. This is overload protection
 not a guarantee against a single operation exhausting memory or blocking the
 event loop. It does not force GC, restart processes, or interrupt running writes.
 
-Queue lifecycle logging retains at most 2,000 content-free events for 24 hours.
-Periodic state sampling and event reads expire old events even while the instance is idle.
-`GET /identity/v1/tool-queue` is owner-only and returns queue metadata, history and
-events. Clicking a waiting request uses owner-only
+When Observability is enabled, queue lifecycle logging retains at most 2,000
+content-free events in memory from the current backend session.
+`GET /identity/v1/tool-queue` is owner-only and always returns live queue metadata;
+history and optional analytics are available only while Observability is enabled.
+Clicking a waiting request uses owner-only
 `GET /identity/v1/tool-queue/<request-id>` to inspect the exact JSON request body
 that will be dispatched, **in memory only**. This explicitly separate live
 inspector does not include HTTP authorization headers, does not persist payloads,
@@ -2342,10 +2356,10 @@ uses `Cache-Control: no-store`, and becomes unavailable when dispatch starts or
 the request leaves the queue. The desktop clears inspected data on queue exit,
 environment changes, errors, or closing the Queue tab.
 
-Runtime history records heap/limit/RSS, external/array-buffer memory, process CPU,
+Enabled runtime history records heap/limit/RSS, external/array-buffer memory, process CPU,
 observed GC count/duration, event-loop delay, queue depth, and up to eight active
 operation identities/timings every ten seconds. CPU 100% means one logical core.
-Samples are persisted for at most 24 hours / 8,640 rows and survive restarts;
+At most 180 samples are retained in backend memory and do not survive restarts.
 The legacy Runtime chart helper represents ten-minute independently peak-normalized traces for
 heap, RSS, external memory, CPU, event-loop delay, GC count/duration and waiting/running
 tools, with raw peaks in the legend and original values in point tooltips. Missing
@@ -2355,19 +2369,19 @@ runtime samples and current queue activity. Sampling cannot run during a blocked
 event loop, so external health and Docker evidence remain necessary.
 
 Every HTTP response has a server-generated `X-Request-Id`. HTTP errors and
-ordinary requests taking at least three seconds are persisted, along with admission
+ordinary requests taking at least three seconds are collected only while Observability
+is enabled and exported to OpenObserve, along with admission
 rejections, sampled heap pressure at the 60% admission threshold, event-loop
-delays of at least one second, and unclean backend restarts. Repeated events
-are grouped by route/status/minute, retaining the latest request ID and maximum
-duration. Telemetry is retained for seven days, capped at 10,000 minute/caller
-buckets and 1,000 events; the view shows the latest hour and 100 events.
+delays of at least one second, and unclean backend restarts. Backend memory retains
+at most 10,000 minute/caller buckets and 1,000 events; the diagnostic API shows the
+latest hour and 100 events. OpenObserve retains exported telemetry for seven days.
 Successful `GET /changes` long polls normally wait up to 25 seconds; they are
 flagged as slow only at 28 seconds or longer. Successful MCP notification-stream
 GETs are not flagged for their connection lifetime. Both still count as HTTP
 transactions with their actual elapsed durations, so aggregate durations include
 intentional waiting and are not a measure of processing or handshake latency.
 Errors, including HTTP 499 client cancellations, remain visible; historical
-events are not rewritten or deleted by this change. Incident evidence includes
+OpenObserve events are not rewritten or deleted by this change. Incident evidence includes
 each event's normalized route to distinguish long polls from ordinary work.
 HTTP 401 can be normal OAuth negotiation;
 the log does not interpret it as an authentication defect.

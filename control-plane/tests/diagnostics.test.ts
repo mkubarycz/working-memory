@@ -12,15 +12,30 @@ import { loadKinds } from '../src/kinds/loader';
 import { SERVICE_VERSION } from '../src/config';
 import { DOCUMENT_CHANGE_POLL_TIMEOUT_MS } from '../src/documentChangeFeed';
 import { ToolQueue } from '../src/toolQueue';
+import { Observability } from '../src/observability';
+import { InstanceFeatureStore } from '../src/instanceFeatures';
+import { PerformanceObserver } from 'node:perf_hooks';
 
 const cleanup: Array<() => Promise<void> | void> = [];
 beforeAll(() => loadKinds());
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.useRealTimers(); });
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.useRealTimers(); vi.restoreAllMocks(); });
+
+function observer(db: DatabaseSync, clock = Date.now) {
+  const flags = { enabled: true };
+  const exporter = new Observability(db, () => flags.enabled, { clock, intervalMs: 2_000_000_000 });
+  cleanup.push(() => {
+    flags.enabled = false;
+    exporter.syncEnabled();
+    return exporter.close();
+  });
+  return exporter;
+}
 
 it('records runtime and operation trends without request arguments, and accepts legacy diagnostics without the new fields', async () => {
   const db = new DatabaseSync(':memory:'), controller = new AbortController();
-  const queue = new ToolQueue(db, () => true);
-  const diagnostics = new HttpDiagnostics(db, '1.4.1', Date.now, queue);
+  const exporter = observer(db);
+  const queue = new ToolQueue(db, () => true, Date.now, exporter);
+  const diagnostics = new HttpDiagnostics(db, '1.4.1', Date.now, queue, exporter);
   cleanup.push(() => db.close(), () => diagnostics.close(), () => queue.close());
   const pending = queue.run({ requestId: randomUUID(), operation: 'wm-document-query', caller: 'owner' },
     { query: 'PRIVATE_QUERY', body: 'PRIVATE_DOCUMENT', token: 'PRIVATE_TOKEN' }, controller.signal, async () => {});
@@ -36,10 +51,9 @@ it('records runtime and operation trends without request arguments, and accepts 
   expect(snapshot.samples?.[0].rssBytes).toBeGreaterThan(0);
   for (const value of ['PRIVATE_QUERY', 'PRIVATE_DOCUMENT', 'PRIVATE_TOKEN']) {
     expect(JSON.stringify(snapshot)).not.toContain(value);
-    expect(JSON.stringify(db.prepare('SELECT * FROM instance_runtime_samples').all())).not.toContain(value);
-    expect(JSON.stringify(db.prepare('SELECT * FROM instance_tool_queue_events').all())).not.toContain(value);
-    expect(JSON.stringify(db.prepare('SELECT * FROM instance_tool_queue_seconds').all())).not.toContain(value);
+    expect(JSON.stringify(exporter.queueEvents(100))).not.toContain(value);
   }
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('instance_runtime_samples','instance_tool_queue_events','instance_tool_queue_seconds')").all()).toEqual([]);
   const { samples, workQueue, ...legacy } = snapshot;
   expect(diagnosticsSchema.parse(legacy).samples).toBeUndefined();
   expect(samples).toHaveLength(2);
@@ -57,8 +71,9 @@ it('retains transient depths and dispatch waits between samples, includes active
   vi.useFakeTimers();
   const db = new DatabaseSync(':memory:');
   let blocked = false;
-  const queue = new ToolQueue(db, () => blocked);
-  const diagnostics = new HttpDiagnostics(db, '1.4.1', Date.now, queue);
+  const exporter = observer(db);
+  const queue = new ToolQueue(db, () => blocked, Date.now, exporter);
+  const diagnostics = new HttpDiagnostics(db, '1.4.1', Date.now, queue, exporter);
   cleanup.push(() => db.close(), () => diagnostics.close(), () => queue.close());
   const metadata = () => ({ requestId: randomUUID(), operation: 'wm-ping', caller: 'owner' });
   await queue.run(metadata(), {}, new AbortController().signal, async () => {});
@@ -72,10 +87,9 @@ it('retains transient depths and dispatch waits between samples, includes active
   const pending = queue.run(metadata(), {}, new AbortController().signal, () => work);
   await vi.advanceTimersByTimeAsync(750);
   expect(queue.state()).toMatchObject({ waiting: 1, peakQueueDepth: 1, maxQueueWaitMs: 750 });
-  db.exec("CREATE TEMP TRIGGER reject_sample BEFORE INSERT ON instance_runtime_samples BEGIN SELECT RAISE(ABORT,'sample rejected'); END");
+  vi.spyOn(exporter, 'runtime').mockImplementationOnce(() => { throw new Error('sample rejected'); });
   expect(() => diagnostics.sample()).toThrow('sample rejected');
   expect(queue.state()).toMatchObject({ peakQueueDepth: 1, maxQueueWaitMs: 750 });
-  db.exec('DROP TRIGGER reject_sample');
   diagnostics.sample();
   expect(diagnostics.history()[0]).toMatchObject({ queueDepth: 1, peakQueueDepth: 1, maxQueueWaitMs: 750 });
   blocked = false;
@@ -90,25 +104,22 @@ it('retains transient depths and dispatch waits between samples, includes active
   expect(diagnostics.history()[0]).toMatchObject({ queueDepth: 0, peakQueueDepth: 0, maxQueueWaitMs: 0 });
 });
 
-it('bounds persistent runtime history to 24 hours and 8640 samples across restarts', async () => {
+it('bounds enabled runtime history in memory and never carries it across backend restarts', async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-11-04T18:00:00Z'));
-  const db = new DatabaseSync(':memory:'), diagnostics = new HttpDiagnostics(db, '1.4.1');
+  const db = new DatabaseSync(':memory:');
+  const diagnostics = new HttpDiagnostics(db, '1.4.1', Date.now, undefined, observer(db));
   cleanup.push(() => db.close());
-  const data = JSON.stringify(diagnostics.history()[0]);
-  db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<8650)
-    INSERT INTO instance_runtime_samples(at,data) SELECT ?,? FROM n`).run(Date.now(), data);
-  db.prepare('INSERT INTO instance_runtime_samples(at,data) VALUES(?,?)').run(Date.now() - 86400001, data);
-  await vi.advanceTimersByTimeAsync(10000);
-  expect(db.prepare('SELECT COUNT(*) AS count FROM instance_runtime_samples').get()?.count).toBe(8640);
-  expect(db.prepare('SELECT COUNT(*) AS count FROM instance_runtime_samples WHERE at<?').get(Date.now() - 86400000)?.count).toBe(0);
+  for (let i = 0; i < 185; i++) diagnostics.sample();
+  expect(diagnostics.history(1000)).toHaveLength(180);
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE name='instance_runtime_samples'").all()).toEqual([]);
   expect(diagnostics.history()).toHaveLength(60);
   diagnostics.close();
-  const restarted = new HttpDiagnostics(db, '1.4.1');
+  const restarted = new HttpDiagnostics(db, '1.4.1', Date.now, undefined, observer(db));
   cleanup.push(() => restarted.close());
-  expect(db.prepare('SELECT COUNT(*) AS count FROM instance_runtime_samples').get()?.count).toBe(8640);
+  expect(restarted.history()).toHaveLength(1);
   expect(restarted.history()[0].bootId).toBe(restarted.bootId);
-  expect(restarted.history().some(sample => sample.bootId === diagnostics.bootId)).toBe(true);
+  expect(restarted.history().some(sample => sample.bootId === diagnostics.bootId)).toBe(false);
 });
 
 it.each([
@@ -127,7 +138,7 @@ it.each([
 ])('classifies $method $path after $duration ms with HTTP $status as $code', async ({ method, path, duration, status, contentType, code }) => {
   const db = new DatabaseSync(':memory:');
   let now = 1793733600000;
-  const diagnostics = new HttpDiagnostics(db, '1.4.1', () => now);
+  const diagnostics = new HttpDiagnostics(db, '1.4.1', () => now, undefined, observer(db, () => now));
   const server = createServer((req, res) => {
     diagnostics.track(req, res, () => 'owner');
     now += duration;
@@ -144,11 +155,12 @@ it.each([
   expect(snapshot.events.map(event => event.code)).toEqual(code ? [code] : []);
   expect(snapshot.minutes).toMatchObject([{ transactions: 1, maxMs: duration }]);
   expect(snapshot.runtime.activeRequests).toBe(0);
-  expect(db.prepare('SELECT count,max_ms FROM instance_http_minutes').get()).toMatchObject({ count: 1, max_ms: duration });
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE name='instance_http_minutes'").all()).toEqual([]);
 });
 
 it('records top-level HTTP transactions and correlations without credentials, bodies or arbitrary URLs', async () => {
   const store = openStore(':memory:');
+  new InstanceFeatureStore(store.db).write({ observability: true });
   const identity = new InstanceIdentity(store.db);
   const owner = await identity.initialize('a private monitoring test password');
   const access = new InstanceAccess(store.db, identity);
@@ -180,7 +192,7 @@ it('records top-level HTTP transactions and correlations without credentials, bo
     code: 'http_error', route: '/other', status: 404, requestId,
   })]));
   expect(snapshot.callers).toEqual(expect.arrayContaining([expect.objectContaining({
-    caller: `client:${access.authenticate(issued.token)!.clientId}`, route: '/other', status: 404, transactions: 1,
+    caller: 'client', route: '/other', status: 404, transactions: 1,
   })]));
   expect(snapshot.minutes.reduce((sum, minute) => sum + minute.transactions, 0)).toBeGreaterThanOrEqual(7);
   expect(snapshot.runtime.activeRequests).toBe(1);
@@ -190,40 +202,37 @@ it('records top-level HTTP transactions and correlations without credentials, bo
   }
 });
 
-it('normalizes user-controlled routes and distinguishes clean from unclean restarts with bounded persistence', () => {
+it('normalizes routes, bounds enabled events in memory and retains only the operational clean-shutdown marker', () => {
   expect(diagnosticRoute('/attachments/private-id?token=secret')).toBe('/attachments/:id');
   expect(diagnosticRoute('/identity/v1/login?password=secret')).toBe('/identity/v1/*');
   const db = new DatabaseSync(':memory:');
   let now = 1793733600000;
-  const diagnostics = new HttpDiagnostics(db, '1.4.1', () => now);
+  const diagnostics = new HttpDiagnostics(db, '1.4.1', () => now, undefined, observer(db, () => now));
   cleanup.push(() => db.close());
-  diagnostics.event('http_error', 'request-one', '/mcp', 503, 3200, true);
-  diagnostics.event('http_error', 'request-two', '/mcp', 503, 4000, true);
-  expect(diagnostics.snapshot(0).events[0]).toMatchObject({ count: 2, requestId: 'request-two', durationMs: 4000 });
+  diagnostics.event('http_error', 'request-one', '/mcp', 503, 3200);
+  diagnostics.event('http_error', 'request-two', '/mcp', 503, 4000);
+  expect(diagnostics.snapshot(0).events[0]).toMatchObject({ count: 1, requestId: 'request-two', durationMs: 4000 });
   for (let i = 0; i < 1100; i++) diagnostics.event('bounded_test');
-  expect(db.prepare('SELECT COUNT(*) AS count FROM instance_diagnostic_events').get()?.count).toBe(1000);
+  expect(diagnostics.snapshot(0).events).toHaveLength(100);
   diagnostics.close();
-  const second = new HttpDiagnostics(db, '1.4.1', () => now);
+  const second = new HttpDiagnostics(db, '1.4.1', () => now, undefined, observer(db, () => now));
   expect(second.snapshot(0).events.some(event => event.code === 'unclean_restart')).toBe(false);
   expect(second.bootId).not.toBe(diagnostics.bootId);
   second.close();
   db.prepare('UPDATE instance_diagnostic_run SET clean=0').run();
-  for (let i = 0; i < 1100; i++) {
-    db.prepare(`INSERT INTO instance_diagnostic_events
-      (at,code,request_id,route,status,duration_ms,count,bucket) VALUES(?,'test',NULL,'/runtime',0,0,1,NULL)`).run(now);
-  }
-  const third = new HttpDiagnostics(db, '1.4.1', () => now);
+  const third = new HttpDiagnostics(db, '1.4.1', () => now, undefined, observer(db, () => now));
   expect(third.snapshot(0).events.some(event => event.code === 'unclean_restart')).toBe(true);
-  expect(db.prepare('SELECT COUNT(*) AS count FROM instance_diagnostic_events').get()?.count).toBe(1000);
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE name='instance_diagnostic_events'").all()).toEqual([]);
   third.close();
   now += 8 * 86400000;
-  const fourth = new HttpDiagnostics(db, '1.4.1', () => now);
+  const fourth = new HttpDiagnostics(db, '1.4.1', () => now, undefined, observer(db, () => now));
   expect(fourth.snapshot(0).events).toHaveLength(0);
   fourth.close();
 });
 
 it('retains the authenticated caller when logout revokes the token before the response finishes', async () => {
   const store = openStore(':memory:');
+  new InstanceFeatureStore(store.db).write({ observability: true });
   const identity = new InstanceIdentity(store.db);
   const owner = await identity.initialize('private logout diagnostics password');
   const server = await startServer({ port: 0, store });
@@ -234,6 +243,111 @@ it('retains the authenticated caller when logout revokes the token before the re
   expect(response.status).toBe(200);
   await response.body?.cancel();
   expect(identity.authenticate(owner.token)).toBe(false);
-  expect(store.db.prepare("SELECT caller,count FROM instance_http_minutes WHERE route='/identity/v1/*' AND status=200").get())
-    .toMatchObject({ caller: 'owner', count: 1 });
+  const refreshed = await identity.login({ password: 'private logout diagnostics password' });
+  const snapshot = diagnosticsSchema.parse(await (await fetch(`${server.url}/identity/v1/diagnostics`, {
+    headers: { Authorization: `Bearer ${refreshed.token}` },
+  })).json());
+  expect(snapshot.callers).toEqual(expect.arrayContaining([
+    expect.objectContaining({ caller: 'owner', route: '/identity/v1/*', status: 200 }),
+  ]));
+});
+
+it('collects no disabled analytics while keeping health and live queue state', async () => {
+  const observe = vi.spyOn(PerformanceObserver.prototype, 'observe');
+  const db = new DatabaseSync(':memory:'), flags = { enabled: false };
+  const exporter = new Observability(db, () => flags.enabled);
+  const queue = new ToolQueue(db, () => true, Date.now, exporter);
+  const diagnostics = new HttpDiagnostics(db, 'test', Date.now, queue, exporter);
+  cleanup.push(() => db.close(), () => exporter.close(), () => diagnostics.close(), () => queue.close());
+  const controller = new AbortController();
+  const pending = queue.run({ requestId: randomUUID(), operation: 'wm-ping', caller: 'owner' }, {},
+    controller.signal, async () => {});
+  const cancelled = expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+  db.exec('PRAGMA query_only=ON');
+  diagnostics.sample();
+  diagnostics.event('ignored');
+  expect(observe).not.toHaveBeenCalled();
+  const snapshot = diagnosticsSchema.parse(diagnostics.snapshot(1));
+  expect(snapshot).toMatchObject({ minutes: [], callers: [], events: [], samples: [], workQueue: { waiting: 1 } });
+  expect(snapshot.runtime.heapUsedBytes).toBeGreaterThan(0);
+  controller.abort();
+  await cancelled;
+  flags.enabled = true;
+  diagnostics.syncEnabled();
+  expect(observe).toHaveBeenCalledTimes(1);
+  expect(diagnostics.history()).toHaveLength(1);
+  flags.enabled = false;
+  exporter.syncEnabled();
+  diagnostics.syncEnabled();
+  diagnostics.sample();
+  expect(diagnostics.history()).toEqual([]);
+  expect(exporter.history(100)).toEqual([]);
+  db.exec('PRAGMA query_only=OFF');
+});
+
+it('keeps request correlation while disabled and does not retroactively observe a request when enabled before its response', async () => {
+  const db = new DatabaseSync(':memory:'), flags = { enabled: false };
+  const exporter = new Observability(db, () => flags.enabled);
+  const diagnostics = new HttpDiagnostics(db, 'test', Date.now, undefined, exporter);
+  const caller = vi.fn(() => 'owner');
+  const server = createServer((req, res) => {
+    diagnostics.track(req, res, caller);
+    flags.enabled = true;
+    diagnostics.syncEnabled();
+    res.end('done');
+  });
+  cleanup.push(() => db.close(), () => exporter.close(), () => diagnostics.close(),
+    () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Test server did not bind a TCP port.');
+  const response = await fetch(`http://127.0.0.1:${address.port}/mcp`);
+  await response.text();
+  expect(response.headers.get('X-Request-Id')).toMatch(/^[0-9a-f-]{36}$/);
+  expect(caller).not.toHaveBeenCalled();
+  expect(diagnostics.snapshot(0)).toMatchObject({ minutes: [], callers: [], events: [], runtime: { activeRequests: 0 } });
+  await (await fetch(`http://127.0.0.1:${address.port}/mcp`)).text();
+  expect(caller).toHaveBeenCalledTimes(1);
+  expect(diagnostics.snapshot(0).minutes).toMatchObject([{ transactions: 1 }]);
+  flags.enabled = false;
+  exporter.syncEnabled();
+});
+
+it('invalidates a pending HTTP observation across a disable/re-enable collection boundary', async () => {
+  const db = new DatabaseSync(':memory:'), flags = { enabled: true };
+  let now = Date.now(), release = () => {}, arrived = () => {};
+  const received = new Promise<void>(resolve => { arrived = resolve; });
+  const exporter = new Observability(db, () => flags.enabled, { clock: () => now });
+  const diagnostics = new HttpDiagnostics(db, 'test', () => now, undefined, exporter);
+  const caller = vi.fn(() => 'owner');
+  const server = createServer((req, res) => {
+    diagnostics.track(req, res, caller);
+    if (req.url === '/fresh') { now += 10; res.end('fresh'); }
+    else { release = () => res.end('old'); arrived(); }
+  });
+  cleanup.push(() => db.close(), () => exporter.close(), () => diagnostics.close(),
+    () => new Promise<void>((resolve, reject) => { release(); server.close(error => error ? reject(error) : resolve()); }));
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Test server did not bind a TCP port.');
+  const url = `http://127.0.0.1:${address.port}`;
+  const pending = fetch(`${url}/changes`);
+  await received;
+  expect(diagnostics.snapshot(0).runtime.activeRequests).toBe(1);
+  now += 1000;
+  flags.enabled = false;
+  exporter.syncEnabled(); diagnostics.syncEnabled();
+  now += 60000;
+  flags.enabled = true;
+  exporter.syncEnabled(); diagnostics.syncEnabled();
+  release();
+  const response = await pending;
+  await response.text();
+  expect(response.headers.get('X-Request-Id')).toMatch(/^[0-9a-f-]{36}$/);
+  expect(diagnostics.snapshot(0)).toMatchObject({ minutes: [], callers: [], events: [], runtime: { activeRequests: 0 } });
+  await (await fetch(`${url}/fresh`)).text();
+  expect(diagnostics.snapshot(0).minutes).toMatchObject([{ transactions: 1, maxMs: 10 }]);
+  expect(caller).toHaveBeenCalledTimes(2);
+  flags.enabled = false;
+  exporter.syncEnabled();
 });

@@ -50,6 +50,41 @@ it('rechecks authorization before saving a connection after its network await', 
   expect(exporter.status().configured).toBe(false);
 });
 
+it('skips all disabled collection and export, and exports only newly observed work after enabling', async () => {
+  const { exporter, flags, fetcher } = setup(false);
+  await exporter.configure(configuration);
+  vi.mocked(fetcher).mockClear();
+  const http = { caller: 'owner', method: 'POST', route: '/mcp', status: 200,
+    durationMs: 100, startedAt: Date.now(), streaming: false };
+  const queue = { at: Date.now(), requestId: randomUUID(), operation: 'wm-ping', caller: 'owner',
+    event: 'completed', waiting: 0, running: 0, waitMs: 100, runMs: 100 };
+  exporter.recordHttp(http);
+  exporter.recordQueue(queue);
+  exporter.event('ignored', null, '/mcp', 500, 100);
+  exporter.runtime({
+    at: Date.now(), bootId: exporter.bootId, heapUsedBytes: 1024, heapLimitBytes: 4096, rssBytes: 2048,
+    eventLoopMaxMs: 1, gcCount: 1, gcDurationMs: 1, queueDepth: 0, runningTools: 0, operations: [],
+  });
+  await exporter.flush();
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(exporter.status().pendingLogs).toBe(0);
+  expect(exporter.httpSnapshot()).toEqual({ minutes: [], callers: [], events: [] });
+  expect(exporter.queueEvents(100)).toEqual([]);
+  expect(exporter.history(100)).toEqual([]);
+  flags.enabled = true;
+  exporter.recordHttp(http);
+  exporter.recordQueue(queue);
+  await exporter.flush();
+  expect(metricRows(fetcher).at(-1)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ __name__: 'wm_http_requests_total', value: 1 }),
+    expect.objectContaining({ __name__: 'wm_tool_execution_seconds_count', value: 1 }),
+  ]));
+  flags.enabled = false;
+  exporter.syncEnabled();
+  expect(exporter.httpSnapshot()).toEqual({ minutes: [], callers: [], events: [] });
+  expect(exporter.queueEvents(100)).toEqual([]);
+});
+
 it('skips queue/runtime diagnostic SQLite inserts and pruning while retaining operational state', async () => {
   const { db, exporter, flags } = setup();
   const queue = new ToolQueue(db, () => false, Date.now, exporter);
@@ -97,6 +132,43 @@ function metricRows(fetcher: typeof fetch) {
   return vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes('/ingest/metrics/'))
     .map(([, init]) => JSON.parse(String(init?.body)) as Array<Record<string, unknown>>);
 }
+
+it.each(['idle', 'in-flight'] as const)('resets interval peaks across a collection boundary with an %s exporter while preserving cumulative counts', async state => {
+  const { exporter, flags, fetcher } = setup();
+  await exporter.configure(configuration);
+  const http = { caller: 'owner', method: 'POST', route: '/mcp', status: 200,
+    durationMs: 1000, startedAt: Date.now(), streaming: false };
+  const queue = { at: Date.now(), requestId: randomUUID(), operation: 'wm-ping', caller: 'owner',
+    event: 'completed', waiting: 0, running: 0, waitMs: 1000, runMs: 500 };
+  exporter.recordHttp(http); exporter.recordQueue(queue);
+  let rejectExport: (error: Error) => void = () => { throw new Error('No export is pending.'); };
+  let pending: Promise<void> | undefined;
+  if (state === 'in-flight') {
+    vi.mocked(fetcher).mockImplementationOnce(() => new Promise<Response>((_resolve, reject) => { rejectExport = reject; }));
+    pending = exporter.flush();
+  }
+  flags.enabled = false; exporter.syncEnabled();
+  flags.enabled = true; exporter.syncEnabled();
+  exporter.recordHttp({ ...http, durationMs: 10 });
+  exporter.recordQueue({ ...queue, requestId: randomUUID(), waitMs: 30, runMs: 20 });
+  if (pending) {
+    rejectExport(new Error('Delayed failure from the invalidated export.'));
+    await pending;
+    expect(exporter.status().lastError).toBeNull();
+  }
+  await exporter.flush();
+  expect(metricRows(fetcher).at(-1)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ __name__: 'wm_http_max_duration_seconds', value: 0.01 }),
+    expect.objectContaining({ __name__: 'wm_http_request_duration_seconds_max', value: 0.01 }),
+    expect.objectContaining({ __name__: 'wm_tool_queue_wait_seconds_max', value: 0.03 }),
+    expect.objectContaining({ __name__: 'wm_tool_execution_seconds_max', value: 0.02 }),
+    expect.objectContaining({ __name__: 'wm_http_requests_total', value: 2 }),
+    expect.objectContaining({ __name__: 'wm_http_request_duration_seconds_count', value: 2 }),
+    expect.objectContaining({ __name__: 'wm_tool_execution_seconds_count', value: 2 }),
+  ]));
+  flags.enabled = false;
+  exporter.syncEnabled();
+});
 
 it('omits unavailable embeddings gauges and explicitly marks failed snapshots instead of retaining stale state', async () => {
   const { exporter, fetcher } = setup();
