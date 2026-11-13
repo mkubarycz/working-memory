@@ -1430,6 +1430,29 @@ every historical response unread.
 
 ### Local Send Feedback prototype
 
+Every chat message also has **Report a bug**, including messages still running.
+Answer **What was the bug?** to create a separate local report topic, then review
+the captured report in the existing Feedback dialog and explicitly click **Send**.
+The local report remains if discovery fails or you cancel delivery; the original
+message and resource are not changed.
+
+Reports include the selected prompt/response, journal state and timing, tool
+arguments/results, journal errors, confirmation state, desktop/platform details,
+and whether this desktop still tracks the run. The latest 100 shareable journal
+events are included within a bounded report size; omissions and truncation are
+marked. Recognized secrets and configured credentials are redacted. Always review
+before sharing: arbitrary sensitive text cannot be reliably detected. Image
+attachments are references only; other conversations, internal system events,
+hidden reasoning and general application/backend log files are not included.
+Inline tool-result media and embedded resource blobs are omitted before
+truncation, including serialized previews and recognizable JSON embedded in prose
+or code fences. The selected message snapshot follows its original client identity
+through history updates while the description is being entered; this is a read-only
+lookup, not a lifecycle transition. Outstanding local work includes journal
+append/finalization requests as well as model and tool calls.
+Not finding a run on this desktop does not prove a run on another computer has
+stopped. Reporting does not automatically fail, interrupt or unblock it.
+
 An existing topic's square **Send Feedback** control prepares a copy and discovers
 Feedback servers on the local network. Review the desktop version/build timestamp
 and the selected backend's reported version, then click **Send**. One server is

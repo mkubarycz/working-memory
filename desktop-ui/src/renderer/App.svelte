@@ -8,6 +8,7 @@
   import MessageTimeline from './MessageTimeline.svelte';
   import { loadAllAgentMessages, mergeMessageRows } from './agentMessages';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
+  import ReportChatBugDialog from './ReportChatBugDialog.svelte';
   import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
   import type { TopicVM } from './documents/types';
   import ContainerAppDetail from './ContainerAppDetail.svelte';
@@ -129,6 +130,7 @@
     formatDetailValue,
     isRetryableRun,
     journalToSummary,
+    latestChatRun,
     mergeHistoryRuns,
     reconcileLiveRun,
     refreshLatestRuns,
@@ -196,6 +198,9 @@
   let toolInspectorElement = $state<HTMLElement | null>(null);
   let unreadResponses = $state<UnreadResponse[]>([]);
   let sharingTopic = $state<TopicVM | null>(null);
+  let reportingChatRun = $state<ChatRun | null>(null);
+  const reportChatSnapshot = $derived(reportingChatRun
+    ? latestChatRun(reportingChatRun, scopedConversationRuns) : null);
   let movingToNewWorkstream = $state<TopicDragSource | null>(null);
   let unreadEnvironment = $state<string | null>(null);
   let liveUpdateError = $state('');
@@ -1638,6 +1643,8 @@
     scopedHistoryError = '';
     scopedHistoryLoading = false;
     selectedTool = reset.selectedTool;
+    reportingChatRun = null;
+    sharingTopic = null;
     activePanel = reset.activePanel;
     activeLoading = reset.activeLoading;
     activeError = reset.activeError;
@@ -3144,6 +3151,7 @@
         onViewed={markResponseViewed}
         onFocus={(run) => void focusChatRun(run)}
         onRetry={(run) => void retryRun(run)}
+        onReportBug={(run) => { reportingChatRun = run; }}
         {runBlocked}
         onInspect={(tool) => void openToolDetail(tool)}
         onOpen={(target) => void openResource(target.kind, target.identifier)}
@@ -3287,6 +3295,12 @@
       </div>
     {#if sharingTopic}
       <ShareTopicDialog topic={sharingTopic} beforeShare={() => documentSaves.flushAll()} onClose={() => { sharingTopic = null; }} />
+    {/if}
+    {#if reportChatSnapshot}
+      <ReportChatBugDialog run={reportChatSnapshot}
+        conversationBlocked={runBlocked(reportChatSnapshot)}
+        localRequestActive={activeChatContexts.includes(chatContextKey(chatContextForScope(reportChatSnapshot.scope)))}
+        onClose={() => { reportingChatRun = null; }} />
     {/if}
     {#if movingToNewWorkstream}
       <MoveToNewWorkstreamDialog
@@ -3445,6 +3459,7 @@
         onViewed={markResponseViewed}
         onFocus={(run) => void focusChatRun(run)}
         onRetry={(run) => void retryRun(run)}
+        onReportBug={(run) => { reportingChatRun = run; }}
         {runBlocked}
         onInspect={(tool) => void openToolDetail(tool)}
         onOpen={(target) => void openResource(target.kind, target.identifier)}

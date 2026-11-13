@@ -3,7 +3,9 @@
   import type { TopicVM } from './documents/types';
   import type { FeedbackContext, FeedbackServer } from '../shared/contracts';
 
-  let { topic, beforeShare, onClose }: { topic: TopicVM; beforeShare: () => Promise<void>; onClose: () => void } = $props();
+  let { topic, beforeShare, onClose, preview }: {
+    topic: Pick<TopicVM, 'id' | 'title'>; beforeShare: () => Promise<void>; onClose: () => void; preview?: string;
+  } = $props();
   let dialog: HTMLDialogElement;
   let servers = $state<FeedbackServer[]>([]);
   let context = $state<FeedbackContext | null>(null);
@@ -58,6 +60,9 @@
 <dialog bind:this={dialog} aria-labelledby="share-topic-title" oncancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
   <h2 id="share-topic-title">Send Feedback</h2>
   <p><strong>{topic.title}</strong></p>
+  {#if preview}
+    <details><summary>Review the report before sharing</summary><pre>{preview}</pre></details>
+  {/if}
   <p>{phase === 'preparing' ? 'Preparing screenshots and discovering Feedback servers...'
     : phase === 'sending' ? 'Sending feedback over encrypted HTTPS...'
     : sent ? 'A copy was sent and a dated tracking link was added to the original topic.'
@@ -101,4 +106,5 @@
   label { display: block; margin: 8px 0; font-size: 13px; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 12px; }
   dd { margin: 0; overflow-wrap: anywhere; }
+  pre { max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 </style>

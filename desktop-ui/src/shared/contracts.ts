@@ -18,6 +18,8 @@ import type {
   CommandJournalHistoryInput,
   CommandJournalHistoryPage,
   CommandJournalStatus,
+  CommandJournalScopeRef,
+  CommandJournalAttachment,
 } from '../../../shared/controlPlaneClient';
 import type { AgentMessageVM } from '../../../shared/viewModels/agentMessageVms';
 import type { SearchOptions, SearchResponse, SearchTrace, SearchWorkstream } from '../../../shared/documentSearch';
@@ -412,6 +414,27 @@ export interface FeedbackContext {
 export interface FeedbackPreparation { servers: FeedbackServer[]; context: FeedbackContext }
 export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt } | { status: 'choose'; servers: FeedbackServer[] };
 
+export interface ChatBugReportInput {
+  description: string;
+  run: {
+    key: string;
+    journalId?: string;
+    resourceVersion?: number;
+    status: CommandJournalStatus | 'submitting';
+    startedAt: number;
+    completedAt?: number;
+    userText: string;
+    assistantText?: string;
+    scope: CommandJournalScopeRef;
+    attachments: CommandJournalAttachment[];
+    progress?: ToolProgress[];
+    pendingConfirmation?: PendingConfirmation;
+    unpersistedResult?: boolean;
+  };
+  renderer: { conversationBlocked: boolean; localRequestActive: boolean };
+}
+export interface ChatBugReportDraft { id: string; title: string; body: string }
+
 export interface DesktopBuildInfo {
   version: string;
   development: boolean;
@@ -428,6 +451,7 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   getDesktopBuildInfo(): Promise<DesktopBuildInfo>;
   prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
   sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
+  createChatBugReport(input: ChatBugReportInput): Promise<ChatBugReportDraft>;
   startDocumentChanges(): Promise<void>;
   onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;

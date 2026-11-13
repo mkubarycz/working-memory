@@ -245,6 +245,23 @@ export class DesktopChatAgent {
     this.createId = options.createId ?? (() => crypto.randomUUID());
   }
 
+  diagnostics(journalId?: string) {
+    const run = journalId ? [...this.active].find(candidate => candidate.session?.journal.id === journalId) : undefined;
+    const session = run?.session;
+    return {
+      activeRunsOnThisDesktop: this.active.size,
+      localRun: !journalId ? 'unidentified' : run ? 'tracked' : 'not tracked on this desktop',
+      ownershipNote: 'Absence from this desktop does not prove a run on another device has stopped.',
+      limits: { maxIterations: this.maxIterations, totalTimeoutMs: this.totalTimeoutMs, requestTimeoutMs: this.requestTimeoutMs },
+      ...(run && session ? {
+        cancelled: run.cancelled, aborted: run.controller.signal.aborted,
+        outstandingOperations: run.external.size, iterations: session.iterations,
+        awaitingConfirmation: Boolean(session.suspended), finalizing: Boolean(session.finalization),
+        elapsedMs: Math.max(0, this.now() - session.startedAt), progress: session.progress,
+      } : {}),
+    };
+  }
+
   async reset(): Promise<void> {
     this.generation += 1;
     const active = [...this.active];
@@ -857,7 +874,7 @@ export class DesktopChatAgent {
     await previous;
     try {
       if (!allowCancelled) this.assertCurrent(session.run);
-      await operation();
+      await this.external(session.run, operation());
       if (!allowCancelled) this.assertCurrent(session.run);
     } catch (error) {
       if (isEnvironmentChanged(error)) throw error;

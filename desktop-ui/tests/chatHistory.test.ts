@@ -5,6 +5,7 @@ import {
   createLiveRun,
   isRetryableRun,
   journalToSummary,
+  latestChatRun,
   mergeHistoryRuns,
   reconcileLiveRun,
   refreshLatestRuns,
@@ -31,6 +32,37 @@ function summary(overrides: Partial<CommandJournalSummary> = {}): CommandJournal
 }
 
 describe('chat history presentation', () => {
+  it('keeps the merge/reconciliation association when a quick identical retry is nearer the older journal', () => {
+    const previous = summaryToChatRun(summary({ id: 'previous', startedAt: 10000, status: 'failed' }));
+    const selected = createLiveRun('retry-key', previous.userText, previous.scope, 12000);
+    const merged = mergeHistoryRuns([previous, selected], [
+      summary({ id: 'previous', startedAt: 10000, status: 'failed' }),
+      summary({ id: 'retry-journal', startedAt: 18000, status: 'running', completion: undefined }),
+    ]);
+    expect(latestChatRun(selected, merged).journalId).toBe('retry-journal');
+    const reconciled = reconcileLiveRun([previous, selected], selected.key, {
+      journalId: 'retry-journal', status: 'running', message: '', mutated: false,
+    });
+    expect(latestChatRun(selected, reconciled).journalId).toBe('retry-journal');
+    expect(latestChatRun(selected, [previous])).toBe(selected);
+    expect(previous.status).toBe('failed');
+    expect(selected.status).toBe('submitting');
+  });
+
+  it('looks up the selected optimistic run after journal creation without resolving its lifecycle', () => {
+    const selected = createLiveRun('optimistic-key', 'Show roadmap', { kind: 'Workstream', id: 'roadmap-id' }, 10);
+    const history = mergeHistoryRuns([selected], [summary({ status: 'running', completion: undefined, startedAt: 14 })]);
+    const latest = latestChatRun(selected, history);
+    expect(latest).toMatchObject({ journalId: 'journal-1', status: 'running' });
+    expect(latest.tools).toHaveLength(1);
+    expect(selected).toMatchObject({ key: 'optimistic-key', status: 'submitting', tools: [] });
+    expect(selected.journalId).toBeUndefined();
+    const updated = mergeHistoryRuns(history, [summary({ resourceVersion: 2, status: 'awaiting_confirmation', completion: undefined })]);
+    expect(latestChatRun(latest, updated)).toMatchObject({ resourceVersion: 2, status: 'awaiting_confirmation' });
+    expect(latest.status).toBe('running');
+    expect(latestChatRun(latest, [summaryToChatRun(summary({ id: 'other-journal' }))])).toBe(latest);
+  });
+
   it('restores host-task context and opens host-task entities without treating them as Topic documents', () => {
     const ref = { kind: 'HostTask', id: 'task-id', title: 'Greeting' };
     expect(targetForRef(ref)).toEqual({ kind: 'host-task', identifier: 'task-id' });

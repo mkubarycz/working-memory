@@ -27,6 +27,7 @@ export interface ChatToolRow {
 
 export interface ChatRun {
   key: string;
+  optimisticKey?: string;
   journalId?: string;
   resourceVersion?: number;
   startedAt: number;
@@ -201,6 +202,12 @@ function sameRequest(run: ChatRun, summary: CommandJournalSummary): boolean {
     && runIdentifier === summaryIdentifier;
 }
 
+export function latestChatRun(selected: ChatRun, runs: ChatRun[]): ChatRun {
+  const exact = runs.find(run => run.key === selected.key || selected.journalId && run.journalId === selected.journalId);
+  if (exact || selected.journalId) return exact ?? selected;
+  return runs.find(run => run.optimisticKey === (selected.optimisticKey ?? selected.key)) ?? selected;
+}
+
 export function refreshLatestRuns(current: ChatRun[], summaries: CommandJournalSummary[]): ChatRun[] {
   return mergeHistoryRuns(current, summaries);
 }
@@ -230,6 +237,7 @@ export function createLiveRun(
 ): ChatRun {
   return {
     key,
+    optimisticKey: key,
     startedAt,
     status: 'submitting',
     userText,

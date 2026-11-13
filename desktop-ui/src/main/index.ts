@@ -40,6 +40,7 @@ import {
 import { checkConfiguredModel } from './modelHealth';
 import { LocalCopilotProvider } from './copilotProvider';
 import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
+import { createChatBugReport } from './chatBugReport';
 import { InstanceMonitor, deliverIncident, formatIncidentToolQueue, type MonitorProbe } from './instanceMonitor';
 import { recoverHeap } from './heapRecovery';
 import { z } from 'zod';
@@ -1270,6 +1271,25 @@ function registerIpc(): void {
   ipcMain.handle('feedback:send', (_event, id: string, requestId: string, serverId?: string) => {
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
     return feedbackSender.send(id, requestId, serverId);
+  });
+  ipcMain.handle('chat:report-bug', async (event, input: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const generation = containerEnvironmentGeneration;
+    const environment = environmentManager.currentEnvironment;
+    if (!environment) throw new Error('Select a Working Memory environment first.');
+    const client = controlPlane();
+    const config = await readStoredConfig(configFile);
+    const token = instanceVault?.session(hostTaskOrigin(environment.mcpUrl));
+    return createChatBugReport(input, {
+      client,
+      environment: { desktopVersion: desktopVersion(), desktopBuild: __WM_BUILD_TIMESTAMP__,
+        backendUrl: environment.mcpUrl, platform: process.platform, arch: process.arch, processId: process.pid },
+      diagnostics: id => chatAgent.diagnostics(id),
+      secrets: [...modelProfiles(config).map(profile => decryptApiKey(profile)), ...(token ? [token] : [])],
+      assertCurrent: () => {
+        if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed. Reopen Report a bug.');
+      },
+    });
   });
   ipcMain.handle('documents:watch', () => startDocumentChanges());
   ipcMain.on('app:restart', () => {

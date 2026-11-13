@@ -87,6 +87,50 @@ function deferred<T>() {
 }
 
 describe('DesktopChatAgent', () => {
+  it.each(['append', 'finalize'] as const)('counts a blocked journal %s as outstanding without changing the run', async stage => {
+    const journal = journalHarness();
+    const waiting = deferred<void>();
+    const operation = journal[stage].getMockImplementation()!;
+    journal[stage].mockImplementationOnce(async input => {
+      await waiting.promise;
+      return operation(input);
+    });
+    const agent = new DesktopChatAgent(options(vi.fn(async () => ({
+      choices: [{ message: { content: 'Done' }, finish_reason: 'stop' }],
+    })), undefined, journal));
+    const pending = agent.start({
+      mode: 'chat-completions', url: 'http://localhost/v1/chat/completions', model: 'test', headers: {}, message: 'Inspect',
+    });
+    try {
+      await vi.waitFor(() => expect(journal[stage]).toHaveBeenCalledOnce());
+      expect(agent.diagnostics('journal-1')).toMatchObject({
+        localRun: 'tracked', outstandingOperations: 1, cancelled: false, aborted: false,
+      });
+      expect(journal.current()?.status).toBe('running');
+    } finally { waiting.resolve(); await pending; }
+    expect(agent.diagnostics('journal-1').activeRunsOnThisDesktop).toBe(0);
+  });
+
+  it('reports local run ownership and outstanding work without cancelling or exposing request headers', async () => {
+    const model = deferred<unknown>();
+    const journal = journalHarness();
+    const agent = new DesktopChatAgent(options(vi.fn(() => model.promise), undefined, journal));
+    const pending = agent.start({
+      mode: 'chat-completions', url: 'http://localhost/v1/chat/completions', model: 'test',
+      headers: { Authorization: 'Bearer PRIVATE_MODEL_CREDENTIAL' }, message: 'Inspect this resource',
+    });
+    await vi.waitFor(() => expect(agent.diagnostics('journal-1').outstandingOperations).toBe(1));
+    expect(agent.diagnostics('journal-1')).toMatchObject({
+      localRun: 'tracked', cancelled: false, aborted: false, awaitingConfirmation: false,
+    });
+    expect(JSON.stringify(agent.diagnostics('journal-1'))).not.toContain('PRIVATE_MODEL_CREDENTIAL');
+    expect(agent.diagnostics('another-journal').localRun).toBe('not tracked on this desktop');
+    expect(agent.diagnostics().localRun).toBe('unidentified');
+    expect(journal.finalize).not.toHaveBeenCalled();
+    model.resolve({ choices: [{ message: { content: 'Done' }, finish_reason: 'stop' }] });
+    expect((await pending).status).toBe('succeeded');
+    expect(agent.diagnostics('journal-1')).toMatchObject({ activeRunsOnThisDesktop: 0, localRun: 'not tracked on this desktop' });
+  });
   it.each([
     'ws-topic-close-tree',
     'ws-agent-message-snooze',
