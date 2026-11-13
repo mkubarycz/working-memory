@@ -7,6 +7,20 @@ const entry = readFileSync(resolve(desktopRoot, 'src/renderer/MessageEntry.svelt
 const timeline = readFileSync(resolve(desktopRoot, 'src/renderer/MessageTimeline.svelte'), 'utf8');
 
 describe('desktop chat history IPC contract', () => {
+  it('wires trusted bug reporting from scoped and global history independently of the busy composer', () => {
+    const app = readFileSync(resolve(desktopRoot, 'src/renderer/App.svelte'), 'utf8');
+    const preload = readFileSync(resolve(desktopRoot, 'src/preload/index.ts'), 'utf8');
+    const main = readFileSync(resolve(desktopRoot, 'src/main/index.ts'), 'utf8');
+    const dialog = readFileSync(resolve(desktopRoot, 'src/renderer/ReportChatBugDialog.svelte'), 'utf8');
+    expect(app.match(/onReportBug=\{/g)).toHaveLength(2);
+    expect(app).toContain('reportingChatRun = null;');
+    expect(preload).toContain("createChatBugReport: (input) => invoke('chat:report-bug', input)");
+    expect(main).toMatch(/ipcMain.handle\('chat:report-bug', async \(event, input: unknown\) => \{\s*assertHostTaskSender\(event, mainWindow, rendererUrl\)/);
+    expect(entry).toContain('class="report-bug-link" onclick={() => onReportBug(run)}');
+    expect(dialog).toContain('What was the bug?');
+    expect(dialog).toContain('if (mounted) report = captured');
+    expect(dialog).toContain('preview={report.body}');
+  });
   it('exposes typed history pages and full journal detail through preload IPC', () => {
     const contracts = readFileSync(resolve(desktopRoot, 'src/shared/contracts.ts'), 'utf8');
     const preload = readFileSync(resolve(desktopRoot, 'src/preload/index.ts'), 'utf8');

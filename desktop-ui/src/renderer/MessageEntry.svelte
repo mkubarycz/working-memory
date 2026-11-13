@@ -17,6 +17,7 @@
     onViewed: (key: string) => void;
     onFocus: (run: ChatRun) => void;
     onRetry: (run: ChatRun) => void;
+    onReportBug: (run: ChatRun) => void;
     runBlocked: (run: ChatRun) => boolean;
     onInspect: (tool: ChatToolRow) => void;
     onOpen: (target: ChatTarget) => void;
@@ -45,7 +46,7 @@
 
   let {
     row, expanded = $bindable(true), latest = false, showScope = true, showInLog = false,
-    attachRunIds = false, humanName, documents = [], unreadResponses, onViewed, onFocus, onRetry, runBlocked,
+    attachRunIds = false, humanName, documents = [], unreadResponses, onViewed, onFocus, onRetry, onReportBug, runBlocked,
     onInspect, onOpen, attachmentUrl, attachmentBaseUrl = '', assistantFallback, onResolve,
     onSetAgentMessageStatus, onRecordDecision, onSnooze,
   }: MessageEntryProps = $props();
@@ -142,6 +143,9 @@
             {/if}
           </div>
         </section>
+        <div class="run-actions">
+          <button class="report-bug-link" onclick={() => onReportBug(run)}>Report a bug</button>
+        </div>
         {#if isRetryableRun(run)}
           <div class="run-actions">
             <button class="retry-button" disabled={runBlocked(run)} onclick={() => onRetry(run)}>Retry</button>

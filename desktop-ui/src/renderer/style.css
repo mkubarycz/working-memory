@@ -181,6 +181,7 @@ button { cursor: pointer; }
 .retry-button { align-self: center; min-height: 24px; margin: 4px 6px; padding: 2px 7px; border: 1px solid #a8a5aa; border-radius: 4px; background: transparent; color: var(--desktop-accent-strong); font-size: 10px; font-weight: 700; }
 .retry-button:hover:not(:disabled) { border-color: var(--desktop-accent-strong); background: rgba(255, 255, 255, .55); }
 .retry-button:disabled { cursor: default; opacity: .5; }
+.report-bug-link { padding: 2px 0; border: 0; background: transparent; color: var(--desktop-accent-strong); font-size: 11px; text-decoration: underline; cursor: pointer; }
 .assistant-markdown { overflow-wrap: anywhere; font-size: 12px; line-height: 1.45; }
 .assistant-markdown > :first-child { margin-top: 0; }
 .assistant-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 10px 0 5px; font-size: 13px; line-height: 1.35; }

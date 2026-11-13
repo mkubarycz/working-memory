@@ -58,6 +58,7 @@ const api: DesktopApi = {
   denyHostTaskJob: (id) => invoke('host-tasks:deny', id),
   prepareFeedback: (id, requestId) => invoke('feedback:prepare', id, requestId),
   sendFeedback: (id, requestId, serverId) => invoke('feedback:send', id, requestId, serverId),
+  createChatBugReport: (input) => invoke('chat:report-bug', input),
   startDocumentChanges: () => invoke('documents:watch'),
   onDocumentChanges: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
