@@ -143,6 +143,13 @@ export class Observability {
       this.controller?.abort();
       this.droppedLogs += this.logs.length;
       this.logs.length = 0;
+      this.http.clear();
+      this.queueRows.clear();
+      this.seconds.clear();
+      this.diagnosticEvents.clear();
+      this.samples.length = 0;
+      this.gauges.clear();
+      this.embeddingPhase = undefined;
     }
   }
 
@@ -169,6 +176,7 @@ export class Observability {
   recordHttp(input: {
     caller: string; method: string; route: string; status: number; durationMs: number; startedAt: number; streaming: boolean;
   }): void {
+    if (!this.enabled) return;
     this.httpTotals.requests++;
     if (input.status >= 400) this.httpTotals.errors++;
     this.httpTotals.durationSeconds += input.durationMs / 1000;
@@ -189,6 +197,7 @@ export class Observability {
   }
 
   recordQueue(input: Omit<QueueEvent, 'sequence'>): void {
+    if (!this.enabled) return;
     const row = { ...input, caller: role(input.caller), sequence: ++this.sequence };
     this.queueRows.set(row.sequence, row);
     if (this.queueRows.size > 2000) this.queueRows.delete(this.queueRows.keys().next().value!);
@@ -225,6 +234,7 @@ export class Observability {
   }
 
   event(code: string, requestId: string | null, route: string, status: number, durationMs: number): void {
+    if (!this.enabled) return;
     const row = { sequence: ++this.sequence, at: this.now(), code, requestId, route, status, durationMs, count: 1 };
     this.diagnosticEvents.set(row.sequence, row);
     if (this.diagnosticEvents.size > 1000) this.diagnosticEvents.delete(this.diagnosticEvents.keys().next().value!);
@@ -296,6 +306,7 @@ export class Observability {
   }
 
   runtime(sample: RuntimeSample): void {
+    if (!this.enabled) return;
     this.samples.unshift(sample);
     this.samples.length = Math.min(this.samples.length, 180);
     this.gcTotals.count += sample.gcCount;

@@ -50,6 +50,41 @@ it('rechecks authorization before saving a connection after its network await', 
   expect(exporter.status().configured).toBe(false);
 });
 
+it('skips all disabled collection and export, and exports only newly observed work after enabling', async () => {
+  const { exporter, flags, fetcher } = setup(false);
+  await exporter.configure(configuration);
+  vi.mocked(fetcher).mockClear();
+  const http = { caller: 'owner', method: 'POST', route: '/mcp', status: 200,
+    durationMs: 100, startedAt: Date.now(), streaming: false };
+  const queue = { at: Date.now(), requestId: randomUUID(), operation: 'wm-ping', caller: 'owner',
+    event: 'completed', waiting: 0, running: 0, waitMs: 100, runMs: 100 };
+  exporter.recordHttp(http);
+  exporter.recordQueue(queue);
+  exporter.event('ignored', null, '/mcp', 500, 100);
+  exporter.runtime({
+    at: Date.now(), bootId: exporter.bootId, heapUsedBytes: 1024, heapLimitBytes: 4096, rssBytes: 2048,
+    eventLoopMaxMs: 1, gcCount: 1, gcDurationMs: 1, queueDepth: 0, runningTools: 0, operations: [],
+  });
+  await exporter.flush();
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(exporter.status().pendingLogs).toBe(0);
+  expect(exporter.httpSnapshot()).toEqual({ minutes: [], callers: [], events: [] });
+  expect(exporter.queueEvents(100)).toEqual([]);
+  expect(exporter.history(100)).toEqual([]);
+  flags.enabled = true;
+  exporter.recordHttp(http);
+  exporter.recordQueue(queue);
+  await exporter.flush();
+  expect(metricRows(fetcher).at(-1)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ __name__: 'wm_http_requests_total', value: 1 }),
+    expect.objectContaining({ __name__: 'wm_tool_execution_seconds_count', value: 1 }),
+  ]));
+  flags.enabled = false;
+  exporter.syncEnabled();
+  expect(exporter.httpSnapshot()).toEqual({ minutes: [], callers: [], events: [] });
+  expect(exporter.queueEvents(100)).toEqual([]);
+});
+
 it('skips queue/runtime diagnostic SQLite inserts and pruning while retaining operational state', async () => {
   const { db, exporter, flags } = setup();
   const queue = new ToolQueue(db, () => false, Date.now, exporter);

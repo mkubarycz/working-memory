@@ -11,13 +11,16 @@ import { DEFAULT_SESSION_POLICY, sessionSnapshotSchema } from '../src/sessionPol
 import { ControlPlaneClient } from '../../shared/controlPlaneClient';
 import { DEFAULT_TOOL_QUEUE_SETTINGS, toolQueueSnapshotSchema } from '../src/diagnosticContract';
 import { z } from 'zod';
+import { InstanceFeatureStore } from '../src/instanceFeatures';
+import { Observability } from '../src/observability';
 
 const cleanup: Array<() => Promise<void>> = [];
 beforeAll(async () => { await loadKinds(); });
 afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice(0).reverse()) await close(); });
 
-async function fixture() {
+async function fixture(observability = true) {
   const store = openStore(':memory:');
+  new InstanceFeatureStore(store.db).write({ observability });
   let now = Date.now(), used = 100;
   const identity = new InstanceIdentity(store.db, () => now);
   const owner = await identity.initialize('private session test password');
@@ -70,8 +73,11 @@ async function fixture() {
 }
 
 it('configures the real queue only through trusted owner requests, enforcing validation and stale-state guards', async () => {
-  const f = await fixture(), issued = f.enroll();
+  const f = await fixture(false), issued = f.enroll();
   const current = toolQueueSnapshotSchema.parse(await (await f.request('/identity/v1/tool-queue')).json());
+  expect(current.events).toEqual([]);
+  expect(current.processing).toBeUndefined();
+  expect(current.requestsByTool).toBeUndefined();
   const settings = { ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 2, maxQueueSize: 8, queueTimeoutMs: 10000, heapDispatchPausePercent: 50 };
   const body = { expectedBootId: current.bootId, expectedSettings: current.settings, settings };
   const post: RequestInit = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
@@ -129,8 +135,10 @@ it('exposes live and retained queue peaks through the real owner endpoint after 
   expect(await queue()).toMatchObject({ waiting: 0, peakQueueDepth: 1, maxQueueWaitMs: 750 });
 });
 
-it('persists a final shutdown-drop sample before closing diagnostics', async () => {
+it('collects a final enabled shutdown-drop sample without persisting analytics', async () => {
   const store = openStore(':memory:');
+  new InstanceFeatureStore(store.db).write({ observability: true });
+  const runtime = vi.spyOn(Observability.prototype, 'runtime');
   const owner = await new InstanceIdentity(store.db).initialize('private shutdown test password');
   let used = 100, closed = false;
   const server = await startServer({ port: 0, store, sessionDiagnostics: { memory: () => ({ used, limit: 1000 }) } });
@@ -139,14 +147,19 @@ it('persists a final shutdown-drop sample before closing diagnostics', async () 
   await client.listTools();
   used = 650;
   const pending = client.callTool('wm-ping', {});
-  await vi.waitFor(() => expect(store.db.prepare("SELECT count(*) AS count FROM instance_tool_queue_events WHERE event='queued'").get()?.count).toBe(1));
+  await vi.waitFor(async () => {
+    const response = await fetch(`${server.url}/identity/v1/tool-queue`, {
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    expect((await response.json()).waiting).toBe(1);
+  });
   await server.close();
   closed = true;
   await pending;
-  const samples = store.db.prepare('SELECT data FROM instance_runtime_samples ORDER BY sequence DESC').all()
-    .map(row => JSON.parse(String(row.data)));
+  const samples = runtime.mock.calls.map(([sample]) => sample).reverse();
   expect(samples[0].queueDrops).toEqual({ timeouts: 0, rejections: 0, shutdown: 1 });
   expect(samples.some(sample => sample.queueDrops?.shutdown === 0)).toBe(true);
+  expect(store.db.prepare("SELECT name FROM sqlite_master WHERE name='instance_runtime_samples'").all()).toEqual([]);
 });
 
 it('restricts diagnostics and policy to trusted owner requests and hides all protocol credentials', async () => {
@@ -364,7 +377,7 @@ it('provides an owner-only live payload inspector while persisting only bounded,
     release();
     await Promise.all(calls);
     expect((await f.request(path)).status).toBe(404);
-    const log = f.store.db.prepare('SELECT * FROM instance_tool_queue_events').all();
+    const log = (await (await f.request('/identity/v1/tool-queue')).json()).events as Array<{ event: string }>;
     expect(log.filter(event => event.event === 'completed')).toHaveLength(5);
     expect(JSON.stringify(log)).not.toContain('PRIVATE_QUEUED_CONTENT');
   } finally { release(); await Promise.allSettled(calls); kind.registerApi = original; }

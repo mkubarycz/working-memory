@@ -783,7 +783,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           managed = sessions.admit(principal, body.params.clientInfo.name);
         } catch (error) {
           if (!(error instanceof SessionAdmissionError)) throw error;
-          diagnostics.event('mcp_admission_rejected', String(res.getHeader('X-Request-Id')), '/mcp', error.status, 0, true);
+          diagnostics.event('mcp_admission_rejected', String(res.getHeader('X-Request-Id')), '/mcp', error.status, 0);
           res.setHeader('Retry-After', String(error.retryAfter));
           endJson(res, error.status, { jsonrpc: '2.0', error: { code: -32000, message: error.message },
             id: 'id' in body && (typeof body.id === 'number' || typeof body.id === 'string') ? body.id : null });
@@ -1088,6 +1088,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         if (!hostTasks.identity.authenticate(token)) throw new IdentityError(401, 'Sign in as the instance owner to access feature settings.');
       }, beforeWrite);
       observability.syncEnabled();
+      diagnostics.syncEnabled();
       return;
     }
     if (url.pathname.startsWith('/identity/v1/')) {
@@ -1208,7 +1209,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     });
     void handleRequest(req, res).catch(() => {
       console.error('[control-plane] HTTP request failed.');
-      try { diagnostics.event('http_handler_failed', String(res.getHeader('X-Request-Id')), diagnosticRoute(req.url ?? '/'), 500, 0, true); }
+      try { diagnostics.event('http_handler_failed', String(res.getHeader('X-Request-Id')), diagnosticRoute(req.url ?? '/'), 500, 0); }
       catch (error) { console.error('[diagnostics] Unable to record HTTP handler failure:', error); }
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' });
@@ -1271,7 +1272,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       return new Promise<void>((resolve, reject) => {
         httpServer.close((err) => { void (async () => {
           try { diagnostics.sample(); }
-          catch (error) { console.error('[diagnostics] Unable to persist final queue sample:', error); }
+          catch (error) { console.error('[diagnostics] Unable to collect final queue sample:', error); }
           diagnostics.close();
           await observability.close();
           // Only close a store we own; an injected store is the caller's to close.

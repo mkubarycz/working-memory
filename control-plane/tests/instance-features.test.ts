@@ -68,16 +68,20 @@ it('negotiates v3, configures observability only as owner, and preserves exact l
     expect((await request('/identity/v1/observability', configuration)).status).toBe(200);
     expect(await (await request('/features/v3', { observability: true })).json())
       .toEqual({ hostTasks: false, search: false, observability: true });
-    const count = () => store.db.prepare('SELECT SUM(count) AS count FROM instance_http_minutes').get()?.count;
-    const before = count();
     expect((await fetch(`${server.url}/health`)).status).toBe(200);
-    expect(count()).toBe(before);
+    expect(store.db.prepare("SELECT name FROM sqlite_master WHERE name='instance_http_minutes'").all()).toEqual([]);
+    expect((await (await request('/identity/v1/diagnostics')).json()).samples.length).toBeGreaterThan(0);
     expect(await (await request('/features/v2')).json()).toEqual({ hostTasks: false, search: false });
     expect(await (await request('/features/v1')).json()).toEqual({ hostTasks: false });
     const status = await (await request('/identity/v1/observability')).json();
     expect(status).toMatchObject({ enabled: true, configured: true, claimId: configuration.claimId });
     expect(JSON.stringify(status)).not.toContain(configuration.password);
     await request('/features/v3', { observability: false });
+    expect((await (await request('/identity/v1/diagnostics')).json())).toMatchObject({
+      minutes: [], callers: [], events: [], samples: [],
+    });
+    expect((await (await request('/identity/v1/tool-queue')).json())).toMatchObject({ running: 0, waiting: 0, events: [] });
+    expect((await (await request('/identity/v1/tool-queue')).json()).processing).toBeUndefined();
   } finally { await new Promise<void>((resolve, reject) => collector.close(error => error ? reject(error) : resolve())); }
 });
 

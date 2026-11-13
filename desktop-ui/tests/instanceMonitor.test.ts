@@ -130,7 +130,7 @@ it('never appends or delivers capture results after the selected environment cha
   expect(monitor.incidents('http://127.0.0.1:7721/mcp')).toEqual([]);
 });
 
-it('recovers persisted tool activity for a 50-document batch after a real backend restart', async () => {
+it('preserves a 50-document batch and reports recovery without backend analytics history after restart', async () => {
   const f = fixture();
   const database = join(dirname(f.file), 'batch.sqlite');
   let store = openStore(database);
@@ -176,9 +176,10 @@ it('recovers persisted tool activity for a 50-document batch after a real backen
   const incident = monitor.incidents(url)[0];
   const report = store.getDocument({ id: incident.topicId!, kind: 'Topic' })!;
   expect(report.spec.body).toContain('Recovery observation');
-  expect(report.spec.body).toContain('wm-document-create completed');
-  expect(report.spec.body).toContain('102 lifecycle events, not a complete request count');
-  expect(report.spec.body).toContain('wm-document-create: completed 50, started 50');
+  expect(report.spec.body).not.toContain('wm-document-create completed');
+  expect(report.spec.body).not.toContain('wm-document-create: completed 50, started 50');
+  expect(diagnostics.samples).toEqual([]);
+  expect((await identity.toolQueue(url)).events).toEqual([]);
   expect(report.spec.body).not.toContain('private batch title');
   expect(report.spec.body).not.toContain('private document contents');
   expect(store.listDocuments({ kind: 'Topic' })).toHaveLength(51);

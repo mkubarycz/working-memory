@@ -26,6 +26,7 @@ import { ensureHostTaskSchema } from './hostTasks.js';
 import { migrateResourceIds } from './resourceIdMigration.js';
 import { ensureDocumentSearch, registerDocumentSearchFunctions } from './documentSearch.js';
 import { ensureTopicEmbeddingSchema } from './topicEmbeddings.js';
+import { migrateLegacyAnalytics } from './legacyAnalyticsMigration.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -359,6 +360,7 @@ export function openStore(dbFilePath: string): Store {
     registerDocumentSearchFunctions(db);
     migrateAgentMessages(db);
     migrateResourceIds(db);
+    migrateLegacyAnalytics(db);
     ensureHostTaskSchema(db);
     ensureDocumentSearch(db);
     ensureTopicEmbeddingSchema(db);

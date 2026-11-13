@@ -3,18 +3,26 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ToolQueue, TOOL_QUEUE_LIMITS } from '../src/toolQueue';
 import { DEFAULT_TOOL_QUEUE_SETTINGS } from '../src/diagnosticContract';
+import { Observability } from '../src/observability';
 
-const cleanup: Array<() => void> = [];
-afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); vi.useRealTimers(); });
-function fixture() {
+const cleanup: Array<() => void | Promise<void>> = [];
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.useRealTimers(); });
+function fixture(enabled = true) {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-11-04T18:00:00Z'));
   const db = new DatabaseSync(':memory:');
   let blocked = false;
-  const queue = new ToolQueue(db, () => blocked);
-  cleanup.push(() => db.close(), () => queue.close());
+  const flags = { enabled };
+  const exporter = new Observability(db, () => flags.enabled, { intervalMs: 2_000_000_000 });
+  const queue = new ToolQueue(db, () => blocked, Date.now, exporter);
+  cleanup.push(() => db.close(), () => {
+    flags.enabled = false;
+    exporter.syncEnabled();
+    return exporter.close();
+  }, () => queue.close());
   const metadata = () => ({ requestId: randomUUID(), operation: 'wm-document-query', caller: 'owner' });
-  return { db, queue, metadata, block: (value: boolean) => { blocked = value; } };
+  return { db, queue, exporter, flags, timerCount: vi.getTimerCount(), metadata,
+    block: (value: boolean) => { blocked = value; } };
 }
 function deferred() {
   let resolve: () => void = () => {};
@@ -28,7 +36,7 @@ it('dispatches immediate calls without waiting entries, queue peaks, or queue ti
     f.queue.run(f.metadata(), { private: 'NOT_QUEUED' }, signal, () => gate.promise));
   expect(f.queue.state()).toMatchObject({ running: 4, waiting: 0, peakQueueDepth: 0, maxQueueWaitMs: 0 });
   expect(f.queue.events().map(event => event.event)).toEqual(['started', 'started', 'started', 'started']);
-  expect(vi.getTimerCount()).toBe(0);
+  expect(vi.getTimerCount()).toBe(f.timerCount);
   await vi.advanceTimersByTimeAsync(75);
   gate.resolve();
   await Promise.all(calls);
@@ -52,7 +60,7 @@ it('counts only genuine waiters when dispatch slots are occupied', async () => {
   expect(f.queue.events().find(event => event.requestId === queued.requestId && event.event === 'completed'))
     .toMatchObject({ waitMs: 50 });
   expect(f.queue.state()).toMatchObject({ running: 0, waiting: 0, peakQueueDepth: 1, maxQueueWaitMs: 50 });
-  expect(vi.getTimerCount()).toBe(0);
+  expect(vi.getTimerCount()).toBe(f.timerCount);
 });
 
 it('persists validated settings across queue restarts and rejects stale or failed writes without applying them', () => {
@@ -187,7 +195,7 @@ it('runs four calls, bounds the FIFO queue at sixteen, and never executes reject
   f.queue.resetSamplingPeaks();
   expect(f.queue.state().peakQueueDepth).toBe(0);
   expect(JSON.stringify(f.queue.events())).not.toContain('PRIVATE_REQUEST');
-  expect(JSON.stringify(f.db.prepare('SELECT * FROM instance_tool_queue_events').all())).not.toContain('PRIVATE_REQUEST');
+  expect(JSON.stringify(f.queue.events())).not.toContain('PRIVATE_REQUEST');
 });
 
 it('pauses dispatch under memory pressure, exposes only waiting payloads, and resumes without forced GC', async () => {
@@ -256,25 +264,25 @@ it('rejects waiting work during shutdown, allows started work to settle and rele
   gate.resolve();
   await started;
   expect(f.queue.state()).toMatchObject({ running: 0, waiting: 0 });
-  expect(vi.getTimerCount()).toBe(0);
+  expect(vi.getTimerCount()).toBe(f.timerCount);
   expect(TOOL_QUEUE_LIMITS).toEqual({ running: 4, waiting: 16, waitMs: 5000 });
 });
 
-it('caps lifecycle persistence at 2000 rows and expires events after 24 hours', async () => {
+it('caps enabled in-memory lifecycle history at 2000 rows without creating analytics tables', async () => {
   const f = fixture();
   for (let index = 0; index < 1100; index++) {
     await f.queue.run(f.metadata(), { private: 'NOT_LOGGED' }, new AbortController().signal, async () => {});
   }
-  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(2000);
+  expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name='instance_tool_queue_events'").all()).toEqual([]);
   expect(f.queue.events()).toHaveLength(100);
   expect(f.queue.events(2000)).toHaveLength(2000);
   expect(f.queue.state().requestsByTool).toEqual({ 'wm-document-query': 1100 });
-  expect(f.queue.state().timingsByTool['wm-document-query'].finished).toBe(1100);
+  expect(f.queue.state().timingsByTool?.['wm-document-query'].finished).toBe(1100);
   expect(f.queue.processing()).toMatchObject({ processedPerSecond: 110, processedLastMinute: 1100 });
   await vi.advanceTimersByTimeAsync(86400001);
   await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
-  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(2);
-  expect(vi.getTimerCount()).toBe(0);
+  expect(f.queue.events(2000)).toHaveLength(2000);
+  expect(vi.getTimerCount()).toBe(f.timerCount);
 });
 
 it('samples cumulative per-tool timing totals once per finished request without diluting executed runtimes with denials', async () => {
@@ -304,9 +312,10 @@ it('samples cumulative per-tool timing totals once per finished request without 
   };
   expect(f.queue.state().timingsByTool).toEqual(expected);
   const prior = f.queue.state();
+  if (!prior.timingsByTool) throw new Error('Enabled analytics timing totals are missing.');
   prior.timingsByTool['wm-document-query'].waitMs = 999;
   expect(f.queue.state().timingsByTool).toEqual(expected);
-  expect(f.queue.processing().processedLastMinute).toBe(2);
+  expect(f.queue.processing()?.processedLastMinute).toBe(2);
 });
 
 it('counts arrivals once by tool, including rejected work, without recounting lifecycle events or snapshots', async () => {
@@ -321,15 +330,15 @@ it('counts arrivals once by tool, including rejected work, without recounting li
   expect(f.queue.state().requestsByTool).toEqual(expected);
 });
 
-it.each(['state', 'events'] as const)('expires idle lifecycle records through %s without another tool call', async sample => {
+it.each(['state', 'events'] as const)('reads bounded in-memory lifecycle records through %s without SQLite', async sample => {
   const f = fixture();
   await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
-  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(2);
+  expect(f.queue.events()).toHaveLength(2);
   await vi.advanceTimersByTimeAsync(86400001);
   f.queue[sample]();
-  expect(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_events').get()?.count).toBe(0);
-  expect(f.queue.events()).toEqual([]);
-  expect(vi.getTimerCount()).toBe(0);
+  expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name='instance_tool_queue_events'").all()).toEqual([]);
+  expect(f.queue.events()).toHaveLength(2);
+  expect(vi.getTimerCount()).toBe(f.timerCount);
 });
 
 it('records explicit tool failures and excludes pre-execution denials from processing metrics', async () => {
@@ -396,7 +405,7 @@ it('measures completed and failed work, excludes unfinished/rejected calls, and 
   });
 });
 
-it('weights minute averages by processed requests rather than by second buckets and bounds aggregate storage', async () => {
+it('weights minute averages by processed requests without SQLite aggregate storage', async () => {
   const f = fixture();
   for (const duration of [10, 10, 70]) {
     if (duration === 70) await vi.advanceTimersByTimeAsync(2000);
@@ -410,5 +419,32 @@ it('weights minute averages by processed requests rather than by second buckets 
     await vi.advanceTimersByTimeAsync(1000);
     await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
   }
-  expect(Number(f.db.prepare('SELECT COUNT(*) AS count FROM instance_tool_queue_seconds').get()?.count)).toBeLessThanOrEqual(61);
+  expect(f.db.prepare("SELECT name FROM sqlite_master WHERE name='instance_tool_queue_seconds'").all()).toEqual([]);
+  expect(f.queue.processing()?.processedLastMinute).toBe(60);
+});
+
+it('keeps live queue controls but collects no analytics while disabled, including after a toggle', async () => {
+  const f = fixture(false), gate = deferred();
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 1 }, f.queue.state().settings);
+  const first = f.queue.run(f.metadata(), {}, new AbortController().signal, () => gate.promise);
+  const next = f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
+  await vi.advanceTimersByTimeAsync(100);
+  expect(f.queue.state()).toMatchObject({ running: 1, waiting: 1, maxQueueWaitMs: 100 });
+  expect(f.queue.state().requestsByTool).toBeUndefined();
+  expect(f.queue.state().timingsByTool).toBeUndefined();
+  expect(f.queue.state().queueDrops).toBeUndefined();
+  expect(f.queue.processing()).toBeUndefined();
+  expect(f.queue.events()).toEqual([]);
+  gate.resolve();
+  await Promise.all([first, next]);
+  expect(f.exporter.queueEvents(10)).toEqual([]);
+  f.flags.enabled = true;
+  await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
+  expect(f.queue.state().requestsByTool).toEqual({ 'wm-document-query': 1 });
+  f.flags.enabled = false;
+  f.exporter.syncEnabled();
+  await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
+  expect(f.queue.events()).toEqual([]);
+  expect(f.queue.state().processing).toBeUndefined();
+  expect(f.exporter.queueEvents(10)).toEqual([]);
 });

@@ -26,7 +26,7 @@ export function formatIncidentToolQueue(queue: NonNullable<InstanceDiagnostics['
       + `${item.startedAt === undefined ? 'waiting' : 'running'} ${Math.max(0, observedAt - (item.startedAt ?? item.queuedAt))} ms`).join('\n')
     + `\nRetained tool activity summary (${queue.events.length} lifecycle events, not a complete request count):\n`
     + [...counts].map(([operation, events]) => `${operation}: ${[...events].map(([event, count]) => `${event} ${count}`).join(', ')}`).join('\n')
-    + '\nRecent tool activity (persisted history, including previous processes):\n'
+    + '\nRecent tool activity (current backend session; available when Observability is enabled):\n'
     + queue.events.slice(0, 25).map(event =>
       `${new Date(event.at).toISOString()}: ${event.requestId} ${event.operation} ${event.event}, wait ${Math.round(event.waitMs)} ms, run ${Math.round(event.runMs)} ms`).join('\n');
 }
