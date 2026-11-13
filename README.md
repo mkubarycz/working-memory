@@ -1232,6 +1232,10 @@ deleting its volume; analytics collection stops and local history buffers are cl
 Disabled diagnostic APIs return empty history arrays and omit optional queue analytics,
 while live health and queue controls remain available. Re-enabling reuses its
 credentials and data. A failed stop is reported even though export is already off.
+Re-enabling starts a fresh observation interval: HTTP requests and tool calls
+admitted while off, or still in flight when collection was disabled, do not add
+completion timings to the new interval. Interval latency peaks are reset;
+previously observed cumulative counters are preserved.
 
 The installer also ships [`deploy/observability/compose.yaml`](deploy/observability/compose.yaml)
 under its data-tier resources for independent deployment. Create a private

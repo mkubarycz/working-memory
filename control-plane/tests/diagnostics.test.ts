@@ -312,3 +312,42 @@ it('keeps request correlation while disabled and does not retroactively observe 
   flags.enabled = false;
   exporter.syncEnabled();
 });
+
+it('invalidates a pending HTTP observation across a disable/re-enable collection boundary', async () => {
+  const db = new DatabaseSync(':memory:'), flags = { enabled: true };
+  let now = Date.now(), release = () => {}, arrived = () => {};
+  const received = new Promise<void>(resolve => { arrived = resolve; });
+  const exporter = new Observability(db, () => flags.enabled, { clock: () => now });
+  const diagnostics = new HttpDiagnostics(db, 'test', () => now, undefined, exporter);
+  const caller = vi.fn(() => 'owner');
+  const server = createServer((req, res) => {
+    diagnostics.track(req, res, caller);
+    if (req.url === '/fresh') { now += 10; res.end('fresh'); }
+    else { release = () => res.end('old'); arrived(); }
+  });
+  cleanup.push(() => db.close(), () => exporter.close(), () => diagnostics.close(),
+    () => new Promise<void>((resolve, reject) => { release(); server.close(error => error ? reject(error) : resolve()); }));
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Test server did not bind a TCP port.');
+  const url = `http://127.0.0.1:${address.port}`;
+  const pending = fetch(`${url}/changes`);
+  await received;
+  expect(diagnostics.snapshot(0).runtime.activeRequests).toBe(1);
+  now += 1000;
+  flags.enabled = false;
+  exporter.syncEnabled(); diagnostics.syncEnabled();
+  now += 60000;
+  flags.enabled = true;
+  exporter.syncEnabled(); diagnostics.syncEnabled();
+  release();
+  const response = await pending;
+  await response.text();
+  expect(response.headers.get('X-Request-Id')).toMatch(/^[0-9a-f-]{36}$/);
+  expect(diagnostics.snapshot(0)).toMatchObject({ minutes: [], callers: [], events: [], runtime: { activeRequests: 0 } });
+  await (await fetch(`${url}/fresh`)).text();
+  expect(diagnostics.snapshot(0).minutes).toMatchObject([{ transactions: 1, maxMs: 10 }]);
+  expect(caller).toHaveBeenCalledTimes(2);
+  flags.enabled = false;
+  exporter.syncEnabled();
+});

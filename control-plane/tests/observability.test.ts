@@ -133,6 +133,43 @@ function metricRows(fetcher: typeof fetch) {
     .map(([, init]) => JSON.parse(String(init?.body)) as Array<Record<string, unknown>>);
 }
 
+it.each(['idle', 'in-flight'] as const)('resets interval peaks across a collection boundary with an %s exporter while preserving cumulative counts', async state => {
+  const { exporter, flags, fetcher } = setup();
+  await exporter.configure(configuration);
+  const http = { caller: 'owner', method: 'POST', route: '/mcp', status: 200,
+    durationMs: 1000, startedAt: Date.now(), streaming: false };
+  const queue = { at: Date.now(), requestId: randomUUID(), operation: 'wm-ping', caller: 'owner',
+    event: 'completed', waiting: 0, running: 0, waitMs: 1000, runMs: 500 };
+  exporter.recordHttp(http); exporter.recordQueue(queue);
+  let rejectExport: (error: Error) => void = () => { throw new Error('No export is pending.'); };
+  let pending: Promise<void> | undefined;
+  if (state === 'in-flight') {
+    vi.mocked(fetcher).mockImplementationOnce(() => new Promise<Response>((_resolve, reject) => { rejectExport = reject; }));
+    pending = exporter.flush();
+  }
+  flags.enabled = false; exporter.syncEnabled();
+  flags.enabled = true; exporter.syncEnabled();
+  exporter.recordHttp({ ...http, durationMs: 10 });
+  exporter.recordQueue({ ...queue, requestId: randomUUID(), waitMs: 30, runMs: 20 });
+  if (pending) {
+    rejectExport(new Error('Delayed failure from the invalidated export.'));
+    await pending;
+    expect(exporter.status().lastError).toBeNull();
+  }
+  await exporter.flush();
+  expect(metricRows(fetcher).at(-1)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ __name__: 'wm_http_max_duration_seconds', value: 0.01 }),
+    expect.objectContaining({ __name__: 'wm_http_request_duration_seconds_max', value: 0.01 }),
+    expect.objectContaining({ __name__: 'wm_tool_queue_wait_seconds_max', value: 0.03 }),
+    expect.objectContaining({ __name__: 'wm_tool_execution_seconds_max', value: 0.02 }),
+    expect.objectContaining({ __name__: 'wm_http_requests_total', value: 2 }),
+    expect.objectContaining({ __name__: 'wm_http_request_duration_seconds_count', value: 2 }),
+    expect.objectContaining({ __name__: 'wm_tool_execution_seconds_count', value: 2 }),
+  ]));
+  flags.enabled = false;
+  exporter.syncEnabled();
+});
+
 it('omits unavailable embeddings gauges and explicitly marks failed snapshots instead of retaining stale state', async () => {
   const { exporter, fetcher } = setup();
   await exporter.configure(configuration);

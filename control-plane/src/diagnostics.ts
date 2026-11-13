@@ -89,8 +89,9 @@ export class HttpDiagnostics {
 
   track(req: IncomingMessage, res: ServerResponse, caller: () => string): void {
     const requestId = randomUUID();
-    const observation = this.observability?.enabled
-      ? { start: this.clock(), route: diagnosticRoute(req.url ?? '/'), identity: caller() } : undefined;
+    const generation = this.observability?.collectionGeneration;
+    const observation = generation === undefined ? undefined
+      : { generation, start: this.clock(), route: diagnosticRoute(req.url ?? '/'), identity: caller() };
     const method = req.method;
     res.setHeader('X-Request-Id', requestId);
     this.activeRequests += 1;
@@ -99,7 +100,7 @@ export class HttpDiagnostics {
       if (done) return;
       done = true;
       this.activeRequests -= 1;
-      if (!observation || !this.observability?.enabled) return;
+      if (!observation || !this.observability || observation.generation !== this.observability.collectionGeneration) return;
       const { start, route, identity } = observation;
       const duration = Math.max(0, this.clock() - start), status = res.writableFinished ? res.statusCode : 499;
       try {

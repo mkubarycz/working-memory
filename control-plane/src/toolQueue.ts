@@ -21,7 +21,10 @@ export class ToolQueueError extends Error {
     super(`Tool call not executed: queue ${code}. ${code === 'full' || code === 'expired' ? 'Try again when the instance has capacity.' : ''}`.trim());
   }
 }
-interface Pending extends QueuedTool {
+interface ObservedTool extends QueuedTool {
+  collectionGeneration: number | undefined;
+}
+interface Pending extends ObservedTool {
   timeoutMs: number;
   payload: unknown;
   start: () => void;
@@ -64,8 +67,9 @@ export class ToolQueue {
     this.pump();
   }
 
-  private record(item: QueuedTool, event: string): void {
-    if (!this.observability?.enabled) return;
+  private record(item: ObservedTool, event: string): void {
+    if (!this.observability || item.collectionGeneration === undefined
+      || item.collectionGeneration !== this.observability.collectionGeneration) return;
     if (event === 'expired') this.drops.timeouts++;
     else if (event === 'full') this.drops.rejections++;
     else if (event === 'shutdown') this.drops.shutdown++;
@@ -126,7 +130,8 @@ export class ToolQueue {
 
   run<T>(metadata: Omit<QueuedTool, 'queuedAt' | 'startedAt'>, payload: unknown, signal: AbortSignal,
     action: () => Promise<T>, outcome: (value: T) => ToolExecutionOutcome = () => 'completed'): Promise<T> {
-    if (this.observability?.enabled) {
+    const collectionGeneration = this.observability?.collectionGeneration;
+    if (collectionGeneration !== undefined) {
       this.requestsByTool.set(metadata.operation, (this.requestsByTool.get(metadata.operation) ?? 0) + 1);
     }
     const queuedAt = this.clock();
@@ -135,7 +140,7 @@ export class ToolQueue {
       && !this.memoryBlocked(this.settings.heapDispatchPausePercent);
     if (this.stopped || signal.aborted || (!startImmediately && this.waiting.length >= this.settings.maxQueueSize)) {
       const code = this.stopped ? 'shutdown' : signal.aborted ? 'cancelled' : 'full';
-      this.record({ ...metadata, queuedAt }, code);
+      this.record({ ...metadata, queuedAt, collectionGeneration }, code);
       return Promise.reject(new ToolQueueError(code));
     }
     const timeoutMs = this.settings.queueTimeoutMs;
@@ -143,7 +148,7 @@ export class ToolQueue {
       const cancel = () => this.remove(item, 'cancelled');
       const timer = startImmediately ? undefined : setTimeout(() => this.remove(item, 'expired'), timeoutMs);
       timer?.unref();
-      const item: Pending = { ...metadata, queuedAt, payload, reject, timeoutMs,
+      const item: Pending = { ...metadata, queuedAt, collectionGeneration, payload, reject, timeoutMs,
         cleanup: () => { if (timer) clearTimeout(timer); signal.removeEventListener('abort', cancel); },
         start: () => {
           const finish = (event: string) => {
@@ -162,7 +167,9 @@ export class ToolQueue {
         return;
       }
       this.waiting.push(item);
-      if (this.observability?.enabled) this.peakDepth = Math.max(this.peakDepth, this.waiting.length);
+      if (collectionGeneration !== undefined && collectionGeneration === this.observability?.collectionGeneration) {
+        this.peakDepth = Math.max(this.peakDepth, this.waiting.length);
+      }
       this.record(item, 'queued');
       signal.addEventListener('abort', cancel, { once: true });
       this.ticker ??= setInterval(() => this.pump(), 100);

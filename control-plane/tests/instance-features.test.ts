@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { InstanceFeatureStore } from '../src/instanceFeatures';
 import { InstanceIdentity } from '../src/instanceIdentity';
 import { HostTaskBroker } from '../src/hostTasks';
@@ -76,6 +76,27 @@ it('negotiates v3, configures observability only as owner, and preserves exact l
     const status = await (await request('/identity/v1/observability')).json();
     expect(status).toMatchObject({ enabled: true, configured: true, claimId: configuration.claimId });
     expect(JSON.stringify(status)).not.toContain(configuration.password);
+    const controller = new AbortController();
+    const version = store.db.prepare("SELECT value FROM store_meta WHERE key='resource_version'").get()?.value;
+    const pending = fetch(`${server.url}/changes?since=${version}`, {
+      headers: { Authorization: `Bearer ${owner.token}` }, signal: controller.signal,
+    });
+    const cancelled = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    try {
+      await vi.waitFor(async () => {
+        expect((await (await request('/identity/v1/diagnostics')).json()).runtime.activeRequests).toBe(2);
+      });
+      await request('/features/v3', { observability: false });
+      await request('/features/v3', { observability: true });
+      controller.abort();
+      await cancelled;
+      await vi.waitFor(async () => {
+        const snapshot = await (await request('/identity/v1/diagnostics')).json();
+        expect(snapshot.runtime.activeRequests).toBe(1);
+        expect(snapshot.callers.some((row: { route: string }) => row.route === '/changes')).toBe(false);
+        expect(snapshot.events.some((row: { route: string }) => row.route === '/changes')).toBe(false);
+      });
+    } finally { controller.abort(); await cancelled; }
     await request('/features/v3', { observability: false });
     expect((await (await request('/identity/v1/diagnostics')).json())).toMatchObject({
       minutes: [], callers: [], events: [], samples: [],

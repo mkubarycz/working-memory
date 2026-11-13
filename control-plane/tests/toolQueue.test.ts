@@ -448,3 +448,45 @@ it('keeps live queue controls but collects no analytics while disabled, includin
   expect(f.queue.state().processing).toBeUndefined();
   expect(f.exporter.queueEvents(10)).toEqual([]);
 });
+
+it.each(['running', 'waiting'] as const)('preserves %s calls admitted while disabled without retroactive admission analytics', async state => {
+  const f = fixture(false), gate = deferred(), metadata = f.metadata();
+  const payload = { private: 'LIVE_ONLY' };
+  f.block(state === 'waiting');
+  const action = vi.fn(() => gate.promise);
+  const pending = f.queue.run(metadata, payload, new AbortController().signal, action);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.queue.state()[state]).toBe(1);
+  if (state === 'waiting') expect(f.queue.inspect(metadata.requestId)).toEqual(payload);
+  f.flags.enabled = true; f.exporter.syncEnabled();
+  f.block(false);
+  await vi.advanceTimersByTimeAsync(100);
+  gate.resolve();
+  await pending;
+  expect(action).toHaveBeenCalledTimes(1);
+  expect(f.queue.state()).toMatchObject({ running: 0, waiting: 0, requestsByTool: {}, timingsByTool: {} });
+  expect(f.queue.events()).toEqual([]);
+  expect(f.queue.processing()?.processedLastMinute).toBe(0);
+  await f.queue.run(f.metadata(), {}, new AbortController().signal, async () => {});
+  expect(f.queue.state().requestsByTool).toEqual({ 'wm-document-query': 1 });
+  expect(f.queue.processing()?.processedLastMinute).toBe(1);
+});
+
+it('invalidates running and waiting admission analytics across an off/on collection boundary', async () => {
+  const f = fixture(), gate = deferred();
+  f.queue.configure({ ...DEFAULT_TOOL_QUEUE_SETTINGS, maxConcurrency: 1 }, f.queue.state().settings);
+  const first = f.queue.run(f.metadata(), {}, new AbortController().signal, () => gate.promise);
+  const queued = f.metadata(), payload = { private: 'STILL_INSPECTABLE' };
+  const next = f.queue.run(queued, payload, new AbortController().signal, async () => {});
+  await vi.advanceTimersByTimeAsync(100);
+  f.flags.enabled = false; f.exporter.syncEnabled();
+  f.flags.enabled = true; f.exporter.syncEnabled();
+  expect(f.queue.inspect(queued.requestId)).toEqual(payload);
+  expect(JSON.stringify(f.queue.state().items)).not.toContain('collectionGeneration');
+  gate.resolve();
+  await Promise.all([first, next]);
+  expect(f.queue.events()).toEqual([]);
+  expect(f.queue.state().timingsByTool).toEqual({});
+  expect(f.queue.processing()?.processedLastMinute).toBe(0);
+  expect(f.queue.state().requestsByTool).toEqual({ 'wm-document-query': 2 });
+});
