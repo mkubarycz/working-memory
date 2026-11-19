@@ -934,10 +934,43 @@ export class DataTierManager {
       }
     }
     const composeFile = this.writeComposeFile(port, image);
+    const recordDeployedImage = () => {
+      const instances = this.instances;
+      const deployed = registration ?? instances.find(instance => instance.port === port);
+      if (deployed) {
+        this.writeInstances([...instances.filter(instance => instance.port !== port), { ...deployed, image }]);
+        if (pending?.instance.port === port) unlinkSync(join(this.options.stateDirectory, PENDING_INSTANCE_FILE));
+      }
+    };
+    let stoppedForReplacement = false;
+    if (existing && this.provider.provider === 'podman') {
+      const current = (await this.containers(docker, env)).get(dataTierInstanceNames(port).container);
+      if (current?.state === 'running') {
+        await this.verifyInstanceContainer(docker, env, existing);
+        await this.run(docker, env, ['stop', dataTierInstanceNames(port).container],
+          'start-failed', 'Unable to stop the existing backend before replacing it. The upgrade was not started.');
+        stoppedForReplacement = true;
+      }
+    }
     try {
       await this.provider.composeUp(docker, composeFile, { timeoutMs: this.timeouts.composeUp, env });
     } catch (error) {
-      throw new DataTierError(`Unable to start the Working Memory data tier with ${this.provider.label} Compose.\n${commandDetail(error)}`, 'start-failed', error);
+      let reconciliation = '';
+      if (existing && this.provider.provider === 'podman') {
+        try {
+          // An explicit image stays strict; stopped containers expose only configured ports.
+          await this.verifyInstanceContainer(docker, env, { ...existing, image }, true);
+          recordDeployedImage();
+          reconciliation = '\nThe replacement matches the requested image and registered settings; its image registration was updated.';
+        } catch (reconcileError) {
+          console.error('[data-tier] Could not reconcile the replacement registration:', commandDetail(reconcileError));
+          reconciliation = `\nCould not reconcile the replacement registration: ${commandDetail(reconcileError)}`;
+        }
+      }
+      const handoff = stoppedForReplacement
+        ? '\nThe previous backend was stopped to release its port. Its data storage was preserved. Check its status and use Start or retry the update after resolving this error.'
+        : '';
+      throw new DataTierError(`Unable to start the Working Memory data tier with ${this.provider.label} Compose.\n${commandDetail(error)}${handoff}${reconciliation}`, 'start-failed', error);
     } finally {
       if (this.host.platform !== 'win32' && pending?.instance.port === port
         && !pending.databaseInitialized && dataExists(database)) {
@@ -947,13 +980,7 @@ export class DataTierManager {
     }
     // Persist the deployed image before health polling so an unhealthy upgrade
     // cannot revert to the installer image after the desktop restarts.
-    const instances = this.instances;
-    const deployed = registration ?? instances.find(instance => instance.port === port);
-    if (deployed) {
-      deployed.image = image;
-      this.writeInstances([...instances.filter(instance => instance.port !== port), deployed]);
-      if (pending?.instance.port === port) unlinkSync(join(this.options.stateDirectory, PENDING_INSTANCE_FILE));
-    }
+    recordDeployedImage();
     await this.waitHealthy(port);
   }
 
