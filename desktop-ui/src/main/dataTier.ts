@@ -16,7 +16,12 @@ import {
 import { parseBackendImage } from './updateChannels';
 import { defaultFileExists, type DockerHost as DataTierHost } from './dockerCli';
 import { ContainerProviderAdapter, type ContainerProvider } from './containerProvider';
-import { checkContainerOwnership } from './containerOwnership';
+import { checkContainerOwnership, ownershipFileName, readContainerOwnership } from './containerOwnership';
+import {
+  assertNoInterruptedRecovery, commitRecoveryMetadata, ContainerOwnershipConflict,
+  isRawImageId, metadataFile, restoreInterruptedRecovery, sameImageId,
+  type ConfirmContainerRecovery,
+} from './containerRecovery';
 import { summarizeContainerLogs, summarizeContainerStats } from './containerIncidentEvidence';
 import type {
   BackendUpdateTarget,
@@ -350,16 +355,19 @@ export class DataTierManager {
     env: NodeJS.ProcessEnv,
     instance: ManagedDataTierInstance,
     legacy = false,
-  ): Promise<string> {
+    recovery = false,
+  ): Promise<{ image: string; fingerprint: string }> {
     const { port } = instance, names = dataTierInstanceNames(port);
     const raw = await this.runner.run(docker, ['inspect', names.container], { timeoutMs: this.timeouts.command, env });
     const parsed = this.provider.inspect(raw.stdout, instance.image ?? (legacy ? undefined : this.bundledTarget.image));
     const portBindings = z.record(z.string(),
       z.array(z.object({ HostIp: z.string(), HostPort: z.string() })).nullable());
     const schema = z.array(z.object({
+      Id: z.string().optional(), Image: z.string().optional(), Name: z.string().optional(),
       Config: z.object({
         Image: z.string(),
         Labels: z.record(z.string(), z.string()),
+        Env: z.array(z.string()).optional(),
       }),
       Mounts: z.array(z.object({
         Destination: z.string(), Source: z.string(),
@@ -370,6 +378,24 @@ export class DataTierManager {
       NetworkSettings: z.object({ Ports: portBindings }),
     })).length(1);
     const [container] = schema.parse(parsed);
+    const expectedImage = instance.image ?? this.bundledTarget.image;
+    if (recovery && (!container.Id || !container.State?.Running || container.Name?.replace(/^\//, '') !== names.container)) {
+      throw new Error('Recovery requires the existing registered container to be running with its original name.');
+    }
+    const storeHomes = container.Config.Env?.filter(value => value.startsWith('WM_CONTROL_PLANE_HOME=')) ?? [];
+    if (recovery && (container.Mounts.length !== 1 || storeHomes.length !== 1 || storeHomes[0] !== 'WM_CONTROL_PLANE_HOME=/data')) {
+      throw new Error('Recovery requires only the registered /data mount and WM_CONTROL_PLANE_HOME=/data. Restore the generated backend storage configuration before retrying.');
+    }
+    if (recovery || isRawImageId(container.Config.Image)) {
+      const image = await this.runner.run(docker, ['image', 'inspect', '--format', '{{.Id}}', expectedImage],
+        { timeoutMs: this.timeouts.info, env });
+      if (!sameImageId(container.Image, image.stdout.trim())) {
+        throw new Error('The existing container image does not match the registered image. Restore the verified image reference first.');
+      }
+      if (isRawImageId(container.Config.Image) && sameImageId(container.Config.Image, image.stdout.trim())) {
+        container.Config.Image = expectedImage;
+      }
+    }
     const mount = container.Mounts.filter(mount => mount.Destination === '/data');
     const bindings = legacy && container.State?.Running === false
       ? container.HostConfig?.PortBindings : container.NetworkSettings.Ports;
@@ -386,7 +412,61 @@ export class DataTierManager {
       || binding[0].HostIp !== '127.0.0.1' || binding[0].HostPort !== String(port)) {
       throw new Error('Owner setup refused: this container does not match the managed instance image, labels, data mount, and loopback port. Repair its registration before retrying.');
     }
-    return container.Config.Image;
+    return { image: container.Config.Image, fingerprint: JSON.stringify(container) };
+  }
+
+  recover(confirm: ConfirmContainerRecovery): Promise<boolean> {
+    return this.serialize(async () => {
+      const directory = this.options.stateDirectory;
+      if (!await restoreInterruptedRecovery(directory, confirm)) return false;
+      const instances = this.instances;
+      if (!instances.length) throw new Error('No registered backends were found to recover.');
+      if (this.pendingInstance()) throw new Error('Finish or repair the pending instance on its original connection before recovering backend ownership.');
+      this.assertProviderRegistrations();
+      const docker = await this.provider.resolve();
+      const owner = { provider: this.provider.provider, connection: this.provider.identity(docker) };
+      const oldOwner = readContainerOwnership(join(directory, 'ownership'), 'data-tier');
+      if (oldOwner && oldOwner.provider !== owner.provider) throw new Error('Recovery cannot transfer data between providers. Select the original provider.');
+      const files = [
+        metadataFile(directory, `ownership/${ownershipFileName('data-tier')}`, `${JSON.stringify(owner)}\n`),
+        metadataFile(directory, DATA_TIER_STATE_FILE, `${JSON.stringify({ instances: instances.map(instance => ({
+          ...instance, image: instance.image ?? this.bundledTarget.image, ...owner,
+        })) }, null, 2)}\n`),
+      ];
+      const scan = async () => {
+        const listed = await this.runner.run(docker,
+          ['ps', '--all', '--filter', `label=com.docker.compose.service=${DATA_TIER_SERVICE}`, '--format', '{{.Names}}'],
+          { timeoutMs: this.timeouts.info, env: this.host.env });
+        const names = listed.stdout.trim().split(/\r?\n/);
+        const fingerprints: string[] = [];
+        for (const instance of instances) {
+          const name = dataTierInstanceNames(instance.port).container;
+          if (names.filter(candidate => candidate === name).length !== 1) {
+            throw new Error(`No unique existing backend "${name}" was found on the selected connection. No replacement will be created.`);
+          }
+          fingerprints.push((await this.verifyInstanceContainer(docker, this.host.env, instance, false, true)).fingerprint);
+          await this.verifyInstanceStorage(docker, this.host.env, instance.port);
+          await this.runner.run(docker, ['exec', name, 'node', '-e',
+            "const fs=require('node:fs');const s=fs.statSync('/data/journal.sqlite');if(!s.isFile()||s.size===0)throw Error('Existing database missing or empty');"],
+          { timeoutMs: this.timeouts.info, env: this.host.env });
+          if (!await this.healthy(healthUrl(instance.port))) throw new Error(`Backend on port ${instance.port} is not healthy. Recovery has not changed metadata.`);
+        }
+        return JSON.stringify(fingerprints);
+      };
+      const before = await scan();
+      if (!await confirm({
+        title: 'Recover existing backend management?',
+        detail: `Selected: ${owner.provider} / ${owner.connection}\nRecorded: ${oldOwner ? `${oldOwner.provider} / ${oldOwner.connection}` : 'No global owner'}\n\n`
+          + instances.map(instance => `${instance.name}: ${dataTierInstanceNames(instance.port).container}\nData: ${this.host.platform === 'win32' ? dataTierInstanceNames(instance.port).volume : dataTierHostDirectory(this.host, instance.port)}; port ${instance.port}`).join('\n\n')
+          + '\n\nRecover management for ALL listed registered backends. Only desktop ownership metadata changes; rollback copies are retained. Containers, databases, credentials and data permissions are not changed. This does not upgrade or migrate data.',
+      })) return false;
+      if (this.provider.identity(await this.provider.resolve()) !== owner.connection || before !== await scan()) {
+        throw new Error('The selected connection or containers changed during confirmation. Search again.');
+      }
+      const backup = commitRecoveryMetadata(directory, files);
+      console.info(`[data-tier] Ownership metadata recovered; rollback copy: ${backup}`);
+      return true;
+    });
   }
 
   /**
@@ -411,12 +491,22 @@ export class DataTierManager {
         try {
           const result = await this.runner.run(docker, ['inspect', ...unresolved], { timeoutMs: this.timeouts.info, env });
           const inspected = z.array(z.object({
-            Name: z.string(), Config: z.object({ Image: z.string() }),
+            Name: z.string(), Image: z.string().optional(), Config: z.object({ Image: z.string() }),
           })).parse(this.provider.inspect(result.stdout));
           for (const name of unresolved) {
             const container = inspected.find(container => container.Name.replace(/^\//, '') === name);
             if (!container) throw new Error(`Container image information is unavailable for ${name}. Retry to check for updates.`);
-            containers.get(name)!.image = container.Config.Image;
+            let reference = container.Config.Image;
+            const instance = instances.find(instance => dataTierInstanceNames(instance.port).container === name);
+            if (isRawImageId(reference) && container.Image && instance?.image) {
+              const image = await this.runner.run(docker, ['image', 'inspect', '--format', '{{.Id}}', instance.image],
+                { timeoutMs: this.timeouts.info, env });
+              if (!sameImageId(container.Image, image.stdout.trim()) || !sameImageId(reference, image.stdout.trim())) {
+                throw new Error(`The raw image for ${name} does not match its registered image. Update availability cannot be determined.`);
+              }
+              reference = instance.image;
+            }
+            containers.get(name)!.image = reference;
           }
         } catch (error) {
           dependencyErrors.push(commandDetail(error));
@@ -428,7 +518,9 @@ export class DataTierManager {
         dependencyErrors.push(commandDetail(error));
       }
     } catch (error) {
-      return { ...base, dockerError: commandDetail(error), instances: instances.map((instance) => this.status(instance, target)) };
+      return { ...base, dockerError: commandDetail(error),
+        recoveryAvailable: error instanceof DataTierError && error.code === 'provider-conflict',
+        instances: instances.map((instance) => this.status(instance, target)) };
     }
     return {
       ...base,
@@ -643,6 +735,7 @@ export class DataTierManager {
     this.assertProviderRegistrations();
     try {
       const docker = await this.provider.resolve(signal);
+      assertNoInterruptedRecovery(this.options.stateDirectory);
       this.ownership(docker);
       const instances = this.instances;
       const connection = this.provider.identity(docker);
@@ -659,7 +752,7 @@ export class DataTierManager {
             continue;
           }
           try {
-            const image = await this.verifyInstanceContainer(docker, this.host.env, instance, true);
+            const { image } = await this.verifyInstanceContainer(docker, this.host.env, instance, true);
             if (this.host.platform === 'win32') {
               await this.run(docker, this.host.env, ['volume', 'inspect', dataTierInstanceNames(instance.port).volume],
                 'provider-conflict', 'The legacy instance data volume is unavailable.');
@@ -679,6 +772,7 @@ export class DataTierManager {
       return { docker, env: this.host.env };
     } catch (error) {
       if (error instanceof DataTierError) throw error;
+      if (error instanceof ContainerOwnershipConflict) throw new DataTierError(error.message, 'provider-conflict');
       const missing = error instanceof Error && 'code' in error && error.code === 'ENOENT';
       throw new DataTierError(`${this.provider.label} is ${missing ? 'not installed' : 'unavailable'}. Start the selected provider and ensure Compose is installed, then Retry.\n${commandDetail(error)}`, missing ? 'docker-missing' : 'docker-unavailable');
     }
@@ -859,6 +953,7 @@ export class DataTierManager {
   }
 
   private writeInstances(instances: ManagedDataTierInstance[]): void {
+    assertNoInterruptedRecovery(this.options.stateDirectory);
     mkdirSync(this.options.stateDirectory, { recursive: true });
     const sorted = [...instances].sort((left, right) => left.port - right.port);
     writeFileSync(

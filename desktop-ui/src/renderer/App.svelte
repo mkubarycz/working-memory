@@ -703,7 +703,7 @@
 
   function runContainerAppTabAction(
     app: ContainerAppItem,
-    action: 'app' | 'info' | 'reload' | 'run' | 'open' | 'stop' | 'refresh',
+    action: 'app' | 'info' | 'reload' | 'run' | 'open' | 'stop' | 'refresh' | 'recover',
   ): void {
     containerAppTabMenu = null;
     if (action === 'app' || action === 'info') {
@@ -736,7 +736,7 @@
     items[next]?.focus();
   }
 
-  async function runContainerAppAction(app: ContainerAppItem, action: 'run' | 'open' | 'stop' | 'refresh'): Promise<void> {
+  async function runContainerAppAction(app: ContainerAppItem, action: 'run' | 'open' | 'stop' | 'refresh' | 'recover'): Promise<void> {
     if (busyContainerAppId) return;
     if (action === 'open' && app.nativeSurface === 'observability') {
       await openContainerAppDetail(app);
@@ -746,7 +746,12 @@
     busyContainerAppId = app.id;
     containerAppError = '';
     try {
-      if (action === 'run') {
+      if (action === 'recover') {
+        const status = await window.workingMemory.recoverContainerApp(app.id);
+        if (generation !== environmentGeneration) return;
+        containerAppStatuses[app.id] = status;
+        if (status.error) containerAppError = status.error;
+      } else if (action === 'run') {
         const result = await window.workingMemory.runContainerApp(app.id);
         const status = await window.workingMemory.inspectContainerApp(app.id);
         if (generation !== environmentGeneration) return;
@@ -2956,6 +2961,11 @@
               <button role="menuitem" disabled={busyContainerAppId !== null} onclick={() => runContainerAppTabAction(menuApp, 'refresh')}>
                 <span aria-hidden="true" class="codicon codicon-sync"></span><span>Refresh Status</span>
               </button>
+              {#if menuStatus?.recoveryAvailable}
+                <button role="menuitem" disabled={busyContainerAppId !== null} onclick={() => runContainerAppTabAction(menuApp, 'recover')}>
+                  <span aria-hidden="true" class="codicon codicon-history"></span><span>Recover…</span>
+                </button>
+              {/if}
               <button role="menuitem" disabled={busyContainerAppId !== null} onclick={() => runContainerAppTabAction(menuApp, 'stop')}>
                 <span aria-hidden="true" class="codicon codicon-debug-stop"></span><span>Stop</span>
               </button>
@@ -3032,6 +3042,8 @@
             view={containerAppView(selectedContainerApp)}
             reloadVersion={containerAppReloadVersions[selectedContainerApp.id] ?? 0}
             onAttachResource={(reference) => void attachContainerAppResource(reference)}
+            onRecover={() => { if (selectedContainerApp) void runContainerAppAction(selectedContainerApp, 'recover'); }}
+            recovering={busyContainerAppId !== null}
           />
         {:else if activeDocument?.kind === 'workstream'}
           <WorkstreamView

@@ -23,6 +23,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         enabled: false, search: false, observability: false, writes: [], reads: 0, activeReads: 0, maxReads: 0, changes: [],
         pauseRead: false, releaseRead: null, failSave: false, failPoll: false,
         embeddings: false, embeddingActions: [], failEmbeddingSave: false, failEmbeddingPoll: false, repairFailure: false,
+        ownershipConflict: false, recoveries: 0,
       };
       const localEmbeddings = new LocalEmbeddings(() => ({
         endpoint: 'http://127.0.0.1:7717/mcp',
@@ -70,12 +71,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           } finally { state.activeReads--; }
         },
         async setInstanceFeatures(input) {
+          if (input.observability !== undefined && state.ownershipConflict) throw new Error('Container App ownership conflict');
           if (state.failSave) { state.failSave = false; throw new Error('Feature save failed'); }
           state.writes.push(input);
           if (input.hostTasks !== undefined) state.enabled = input.hostTasks;
           if (input.search !== undefined) state.search = input.search;
           if (input.observability !== undefined) state.observability = input.observability;
           return { hostTasks: state.enabled, search: state.search, observability: state.observability };
+        },
+        async listContainerApps() { return [{ id: 'observability-claim', nativeSurface: 'observability' }]; },
+        async inspectContainerApp() { return { id: 'observability-claim', recoveryAvailable: state.ownershipConflict }; },
+        async recoverContainerApp() {
+          state.recoveries++; state.ownershipConflict = false;
+          return { id: 'observability-claim', recoveryAvailable: false, error: null };
         },
       };
       const target = document.createElement('main');
@@ -90,7 +98,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
     `;
     const server = await createServer({
       configFile: false, root: new URL('..', import.meta.url).pathname,
-      cacheDir: join(directory, 'vite-cache'), optimizeDeps: { include: ['svelte'] },
+      cacheDir: join(directory, 'vite-cache'), optimizeDeps: { include: ['svelte', 'zod'] },
       plugins: [svelte(), {
         name: 'features-browser-fixture',
         resolveId: id => id === '/features-fixture.js' ? '\0features-fixture' : undefined,
@@ -115,7 +123,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         const assert = require('node:assert/strict');
         app.setPath('userData', ${JSON.stringify(join(directory, 'profile'))});
         app.whenReady().then(async () => {
-          const window = new BrowserWindow({ show: false });
+          const window = new BrowserWindow({ show: false, webPreferences: { backgroundThrottling: false } });
           const evaluate = code => window.webContents.executeJavaScript(code);
           const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
           async function wait(code) {
@@ -188,6 +196,15 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("!document.querySelector('[role=alert]') && !document.querySelector('[role=switch]').checked");
           assert.equal(await evaluate("window.__featuresTest.maxReads"), 1);
           assert.equal(await evaluate("window.__featuresTest.search"), true);
+          await evaluate("window.__featuresTest.observability = false");
+          await wait("!document.querySelector('[aria-label=\\"Observability Container App\\"]').checked");
+          await evaluate("window.__featuresTest.ownershipConflict = true; document.querySelector('[aria-label=\\"Observability Container App\\"]').click()");
+          await wait("Array.from(document.querySelectorAll('button')).some(button => button.textContent === 'Recover…' && !button.disabled)");
+          await evaluate("Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Recover…').click()");
+          await wait("window.__featuresTest.recoveries === 1 && document.querySelector('[role=alert]')?.textContent.includes('Enable Observability')");
+          assert.equal(await evaluate("window.__featuresTest.observability"), false);
+          await evaluate("document.querySelector('[aria-label=\\"Observability Container App\\"]').click()");
+          await wait("window.__featuresTest.observability && !document.querySelector('[role=alert]')");
           await evaluate("window.__featuresTest.dispose()");
           const finalReads = await evaluate("window.__featuresTest.reads");
           await delay(2200);
@@ -197,13 +214,13 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });
       `);
-      const { stdout } = await promisify(execFile)(executable, [script], {
-        timeout: 25_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '' },
+      const { stdout, stderr } = await promisify(execFile)(executable, [script], {
+        timeout: 40_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '' },
       });
-      expect(stdout).toContain('features-browser: automatic refresh, no overlap, stale guards, rollback, errors and cleanup passed');
+      expect(stdout, stderr).toContain('features-browser: automatic refresh, no overlap, stale guards, rollback, errors and cleanup passed');
     } finally {
       await server.close();
       await rm(directory, { recursive: true, force: true });
     }
-  }, 30_000,
+  }, 45_000,
 );

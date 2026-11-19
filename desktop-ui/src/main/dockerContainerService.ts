@@ -4,7 +4,11 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dockerCliPath, dockerEnvironment } from './dockerCli';
 import { ContainerProviderAdapter, type ContainerProvider } from './containerProvider';
-import { checkContainerOwnership } from './containerOwnership';
+import { checkContainerOwnership, ownershipFileName, readContainerOwnership } from './containerOwnership';
+import {
+  commitRecoveryMetadata, ContainerOwnershipConflict, isRawImageId, metadataFile,
+  restoreInterruptedRecovery, sameImageId, type ConfirmContainerRecovery,
+} from './containerRecovery';
 import type {
   ContainerClaim,
   ContainerClaimCreateInput,
@@ -48,6 +52,7 @@ export type DockerErrorCode =
   | 'source_not_found'
   | 'claim_error'
   | 'container_conflict'
+  | 'provider_conflict'
   | 'build_failed'
   | 'start_failed'
   | 'readiness_timeout';
@@ -87,6 +92,8 @@ const DEFAULT_TIMEOUTS: DockerOperationTimeouts = {
 };
 
 interface DockerInspect {
+  Id?: string;
+  Name?: string;
   Image?: string;
   State?: { Running?: boolean; Health?: { Status?: string } };
   Config?: { Image?: string; Labels?: Record<string, string> | null; Env?: string[] };
@@ -154,6 +161,7 @@ export class ExecFileCommandRunner implements CommandRunner {
 }
 
 export class DockerContainerService {
+  private recovering = false;
   private readonly provider: ContainerProviderAdapter;
   private readonly runner: CommandRunner;
   private readonly readiness: (url: string) => Promise<boolean>;
@@ -230,6 +238,7 @@ export class DockerContainerService {
   }
 
   private async launchClaim(claim: ContainerClaim, signal?: AbortSignal, newlyCreated = false): Promise<ContainerLaunchResult> {
+    if (this.recovering) return { status: 'error', code: 'container_conflict', message: 'Wait for ownership recovery to finish.' };
     if (!claim.runtime || claim.runtime.type !== 'docker') {
       return { status: 'error', code: 'claim_error', message: 'ContainerClaim has no container runtime specification.' };
     }
@@ -252,6 +261,7 @@ export class DockerContainerService {
         this.reserveStorage(context, claim);
       }
     } catch (error) {
+      if (error instanceof ContainerOwnershipConflict) return failure('provider_conflict', 'Container App ownership differs from the selected connection.', error);
       const missing = error instanceof CommandExecutionError && error.code === 'ENOENT';
       return failure(
         missing ? 'docker_missing' : 'docker_unavailable',
@@ -297,7 +307,7 @@ export class DockerContainerService {
         this.timeouts.inspect,
         signal,
       );
-      const parsed = this.provider.inspect(result.stdout, runtime.imageName) as DockerInspect[];
+      const parsed = await this.verifiedInspection(context, result.stdout, runtime.imageName, signal, this.ownership(context, claim.id));
       current = parsed[0] ?? null;
     } catch (error) {
       if (!isMissingContainer(error)) {
@@ -332,6 +342,11 @@ export class DockerContainerService {
           code: 'container_conflict',
           message: `Container "${runtime.containerName}" exists but is not managed by this claim.`,
         };
+      }
+      if (isRawImageId(current.Config?.Image ?? '') && (!portsMatch(current, runtime) || !volumesMatch(current, runtime)
+        || (current.Mounts?.length ?? 0) !== (runtime.volumes?.length ?? 0))) {
+        return { status: 'error', code: 'container_conflict',
+          message: 'The existing raw-ID container has different ports or data mounts. Restore the registered configuration before rebuilding.' };
       }
       try {
         await this.docker(
@@ -386,6 +401,7 @@ export class DockerContainerService {
   }
 
   async inspect(desired: ContainerClaimCreateInput & { id: string }, signal?: AbortSignal): Promise<ContainerAppStatus> {
+    if (this.recovering) return appStatus(desired, null, 'error', false, 'Recovery in progress', 'Wait for ownership recovery to finish.');
     const runtime = desired.runtime;
     if (!runtime || runtime.type !== 'docker') return appStatus(desired, null, 'error', false, 'Status failed', 'ContainerClaim has no container runtime specification.');
     try {
@@ -398,12 +414,13 @@ export class DockerContainerService {
       context = await this.resolveDockerContext(signal);
       this.ownership(context, desired.id);
     } catch (error) {
-      return appStatus(desired, null, 'error', false, 'Status failed', errorDetail(error));
+      return { ...appStatus(desired, null, 'error', false, 'Status failed', errorDetail(error)),
+        recoveryAvailable: error instanceof ContainerOwnershipConflict };
     }
     let current: DockerInspect;
     try {
       const result = await this.docker(context, ['container', 'inspect', runtime.containerName], this.timeouts.inspect, signal);
-      current = (this.provider.inspect(result.stdout, runtime.imageName) as DockerInspect[])[0] ?? {};
+      current = (await this.verifiedInspection(context, result.stdout, runtime.imageName, signal))[0] ?? {};
     } catch (error) {
       if (isMissingContainer(error)) return appStatus(desired, context, 'missing', false, 'Status refreshed', null);
       return appStatus(desired, context, 'error', false, 'Status failed', errorDetail(error));
@@ -414,7 +431,8 @@ export class DockerContainerService {
     try {
       await this.prepareOwnership(context, runtime, desired.id, current, false, signal);
     } catch (error) {
-      return appStatus(desired, context, 'error', false, 'Status refused', errorDetail(error));
+      return { ...appStatus(desired, context, 'error', false, 'Status refused', errorDetail(error)),
+        recoveryAvailable: error instanceof ContainerOwnershipConflict };
     }
     if (!current.State?.Running) return appStatus(desired, context, 'stopped', false, 'Status refreshed', null);
     const health = current.State.Health?.Status;
@@ -425,6 +443,90 @@ export class DockerContainerService {
       ready = false;
     }
     return appStatus(desired, context, ready ? 'healthy' : 'unhealthy', ready, 'Status refreshed', ready ? null : 'The managed container is running but its health endpoint is not ready.');
+  }
+
+  async recover(claim: ContainerClaim, confirm: ConfirmContainerRecovery, signal?: AbortSignal): Promise<boolean> {
+    if (this.recovering) throw new Error('Wait for ownership recovery to finish.');
+    this.recovering = true;
+    try {
+      const directory = this.options.stateDirectory;
+      const runtime = claim.runtime;
+      if (!directory || !runtime) throw new Error('Recovery requires a registered Container App and local ownership metadata.');
+      if (!await restoreInterruptedRecovery(directory, confirm)) return false;
+      validateVolumes(runtime.volumes);
+      runtimePorts(runtime);
+      const context = await this.resolveDockerContext(signal);
+      const owner = { provider: this.provider.provider, connection: this.provider.identity(context) };
+      const resources = [claim.id, ...(runtime.volumes ?? []).flatMap(volume => [
+        `volume:${volume.name}`, `pending-volume:${claim.id}:${volume.name}`,
+      ])];
+      const files = resources.flatMap(resource => {
+        const old = readContainerOwnership(directory, resource);
+        if (old && old.provider !== owner.provider) throw new Error('Recovery does not migrate data between providers. Select the original provider.');
+        if (!old && resource.startsWith('pending-volume:')) return [];
+        return [metadataFile(directory, ownershipFileName(resource), `${JSON.stringify(owner)}\n`)];
+      });
+      const privateEnvironment = await this.options.privateEnvironment?.(claim.id) ?? {};
+      const scan = async () => {
+        const listed = await this.docker(context, ['container', 'ls', '--all', '--filter',
+          `label=${CLAIM_LABEL}=${claim.id}`, '--format', '{{.ID}}'], this.timeouts.inspect, signal);
+        const ids = listed.stdout.trim().split(/\s+/).filter(Boolean);
+        if (ids.length !== 1) throw new Error('Recovery needs exactly one existing container labelled for this claim. No container or data will be created.');
+        const result = await this.docker(context, ['container', 'inspect', ids[0]], this.timeouts.inspect, signal);
+        const [current] = await this.verifiedInspection(context, result.stdout, runtime.imageName, signal);
+        const image = await this.docker(context, ['image', 'inspect', '--format', '{{.Id}}', runtime.imageName], this.timeouts.inspect, signal);
+        if (!current?.Id || current.Name?.replace(/^\//, '') !== runtime.containerName
+          || !sameImageId(current.Image, image.stdout.trim())
+          || !containerMatches(current, claim.id, runtime, image.stdout.trim())
+          || !Object.entries(privateEnvironment).every(([key, value]) => current.Config?.Env?.includes(`${key}=${value}`))
+          || current.Mounts?.length !== (runtime.volumes?.length ?? 0)) {
+          throw new Error('Recovery refused: the existing container does not match the registered image, labels, environment, network, limits, ports and data mounts. Restore the expected configuration first.');
+        }
+        for (const volume of runtime.volumes ?? []) {
+          await this.docker(context, ['volume', 'inspect', volume.name], this.timeouts.inspect, signal);
+        }
+        return JSON.stringify({ Id: current.Id, Image: current.Image, Config: current.Config,
+          HostConfig: current.HostConfig, Mounts: current.Mounts, NetworkSettings: current.NetworkSettings });
+      };
+      const before = await scan();
+      const old = readContainerOwnership(directory, claim.id);
+      if (!await confirm({
+        title: `Recover "${claim.title}"?`,
+        detail: `Container: ${runtime.containerName}\nImage: ${runtime.imageName}\nSelected: ${owner.provider} / ${owner.connection}\nRecorded: ${old ? `${old.provider} / ${old.connection}` : 'No claim owner'}\n`
+          + `Ports: ${runtimePorts(runtime).map(port => `${port.hostIp}:${port.hostPort} -> ${port.containerPort}/${port.protocol}`).join(', ')}\n`
+          + `Existing data volumes: ${(runtime.volumes ?? []).map(volume => `${volume.name} -> ${volume.mountPath}`).join(', ') || 'None'}\n\n`
+          + "Only this app's desktop ownership metadata will change; rollback copies are retained. The container will not be started or recreated. Data, saved credentials and permissions are not changed. This does not migrate or initialize storage.",
+      })) return false;
+      signal?.throwIfAborted();
+      if (this.provider.identity(await this.resolveDockerContext(signal)) !== owner.connection || before !== await scan()) {
+        throw new Error('The selected connection or container changed during confirmation. Search again.');
+      }
+      const backup = commitRecoveryMetadata(directory, files);
+      console.info(`[container-app] Ownership metadata recovered; rollback copy: ${backup}`);
+      return true;
+    } finally {
+      this.recovering = false;
+    }
+  }
+
+  private async verifiedInspection(
+    context: string, raw: string, expectedImage: string, signal?: AbortSignal, allowImageDrift = false,
+  ): Promise<DockerInspect[]> {
+    const containers = this.provider.inspect(raw, expectedImage) as DockerInspect[];
+    for (const container of containers) {
+      const reference = container.Config?.Image;
+      if (!reference || !isRawImageId(reference)) continue;
+      const image = await this.docker(context, ['image', 'inspect', '--format', '{{.Id}}', expectedImage], this.timeouts.inspect, signal);
+      if (!sameImageId(container.Image, reference)) {
+        throw new Error('The raw container image ID does not match the registered image. Restore a verified image reference.');
+      }
+      if (!sameImageId(container.Image, image.stdout.trim())) {
+        if (allowImageDrift) continue;
+        throw new Error('The raw container image ID does not match the registered image. Restore a verified image reference.');
+      }
+      container.Config!.Image = expectedImage;
+    }
+    return containers;
   }
 
   async stop(desired: ContainerClaimCreateInput & { id: string }, signal?: AbortSignal): Promise<ContainerStopResult> {

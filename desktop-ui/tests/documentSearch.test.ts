@@ -648,7 +648,7 @@ describe('agentic document search', () => {
       expect(body).not.toContain(hit.excerpt);
       expect(body).not.toContain('<blockquote');
       expect(body).not.toContain('<summary>Evidence</summary>');
-      expect(body).toContain('Relevance 0.81');
+      expect(body).toContain('Similarity 0.81');
       expect(body).toContain('aria-expanded="false"');
       expect(body).not.toContain('<footer');
       expect(body).toContain('placeholder="Describe what you want to find"');

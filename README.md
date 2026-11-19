@@ -130,6 +130,40 @@ create (for example one started from this repo's `compose.yaml`) are listed as
 **Self-hosted**: you can make them current, but start, stop, upgrade, and
 backup are managed outside the app.
 
+After an external machine migration, an **ownership conflict** is not a provider
+outage. Use **Recover...** in Backend settings or the affected Container App
+(also offered after an Observability feature ownership failure). Recovery searches
+only the selected, validated local provider. It requires a unique existing
+container matching the registration, verified local image content, labels, ports
+and storage; Container Apps also require their environment, network and resource
+settings to match. Backend recovery verifies all registered backends together;
+they must be running with their existing databases and healthy endpoints, with
+only the generated `/data` mount and `WM_CONTROL_PLANE_HOME=/data`. Extra or nested
+mounts and alternate database homes must be restored externally before recovery. Missing
+images must be restored locally before recovery; recovery never pulls an image.
+
+Review the native confirmation before approving. Recovery changes only desktop
+ownership metadata, including registered backend connections and the app's recorded
+volume/provisioning bindings. It never starts/recreates containers, initializes or
+copies data, changes credentials, or upgrades anything. It cannot transfer data
+between providers. Keep your normal database/volume backups: recovery backs up
+**metadata only**, under `recovery-backups` beside the ownership state. Interrupted
+metadata commits block management and registration edits, including renames;
+**Recover...** first offers to restore the saved
+pre-recovery metadata, then searches again. Do not delete ownership files to force
+legacy adoption. After recovery, explicitly retry the desired operation (including
+Observability enablement). The recovery journal is published atomically before
+ownership metadata is changed.
+
+Podman may omit a redundant tag from a digest-pinned image name. The desktop
+accepts that exact same-repository, same-digest form without relaxing claim or
+credential checks. A raw image ID is not a version: it is resolved against the
+registered local image and accepted only when the full image IDs match. Otherwise
+version/update discovery stays unknown. If an already-owned Container App uses a
+verified raw ID from an older local build, **Run** can recreate it with the current
+image after checking claim labels, ports and data mounts. Status and recovery
+checks still reject that image drift.
+
 - **Add instance** starts a new, empty data tier. The first instance uses
   `7717` when it is free; others use the next free port from 7719–7799 (7718
   is reserved for the desktop link bridge) and are named
@@ -462,9 +496,19 @@ Open results to browse and return to Search without losing the request, original
 scope, results or completed retrieval trace.
 Closing the Search tab clears that session; reopen Search from another document
 to start fresh with that document's context.
+The renderer snapshots the reactive search scope before passing it through
+Electron's context bridge. Preload IPC normalization runs after that boundary
+and cannot make renderer proxies transferable; browser tests exercise the bridge.
+
 Search and Related topics use the same compact tree-style result widget with
-separate **Relevance** and **Confidence** labels and supporting Markdown quotes,
-collapsed by default. Relevance is raw cosine similarity, not a probability.
+separate **Similarity** and **Confidence** labels and supporting Markdown quotes.
+Similarity is raw vector cosine similarity, not a probability or an exact-match
+score; a literal identifier can have low semantic similarity and still be a
+verified High-confidence term match ranked first.
+Excerpts are collapsed by default. Search automatically expands a sole
+High-confidence result; in the retrieved list, other results follow in separate
+Medium/Low-confidence (or unavailable) sections with their excerpts collapsed.
+When multiple High-confidence results exist, none is automatically expanded.
 Confidence is a local, transparent evidence-strength heuristic: High means a
 verified exact word/phrase occurrence, or passage cosine >= 0.65 and document
 cosine >= 0.50 with complete coverage; Medium means passage cosine >= 0.45 and
@@ -1431,10 +1475,20 @@ every historical response unread.
 ### Local Send Feedback prototype
 
 Every chat message also has **Report a bug**, including messages still running.
+Search also has **Report a bug** at the top right, available before, during, or
+after a search. It snapshots the search text, scope, displayed results and excerpts,
+scores and confidence reasons, answer blocks, activity timings, and errors when
+clicked. Evidence is bounded with explicit truncation/omission markers and uses
+the same credential/media redaction, local report preview, and explicit Feedback
+Send flow as chat reports; it does not rerun or cancel the search.
 Answer **What was the bug?** to create a separate local report topic, then review
 the captured report in the existing Feedback dialog and explicitly click **Send**.
 The local report remains if discovery fails or you cancel delivery; the original
 message and resource are not changed.
+Embedded Container App dashboards are hidden while HTML dialogs are open,
+including report capture and Feedback, and restored after the last overlay closes.
+This prevents Electron's native dashboard view from covering the popup or taking
+its clicks; it does not stop the app or interrupt the chat run.
 
 Reports include the selected prompt/response, journal state and timing, tool
 arguments/results, journal errors, confirmation state, desktop/platform details,

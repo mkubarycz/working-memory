@@ -12,17 +12,24 @@ describe('desktop chat history IPC contract', () => {
     const preload = readFileSync(resolve(desktopRoot, 'src/preload/index.ts'), 'utf8');
     const main = readFileSync(resolve(desktopRoot, 'src/main/index.ts'), 'utf8');
     const dialog = readFileSync(resolve(desktopRoot, 'src/renderer/ReportChatBugDialog.svelte'), 'utf8');
+    const sharedDialog = readFileSync(resolve(desktopRoot, 'src/renderer/ReportBugDialog.svelte'), 'utf8');
     expect(app.match(/onReportBug=\{/g)).toHaveLength(2);
     expect(app).toContain('reportingChatRun = null;');
     expect(app).toContain('latestChatRun(reportingChatRun, scopedConversationRuns)');
     expect(app).toContain('scopedConversationRuns = $derived(mergeScopedHistory(chatRuns,');
     expect(app).toContain('<ReportChatBugDialog run={reportChatSnapshot}');
     expect(preload).toContain("createChatBugReport: (input) => invoke('chat:report-bug', input)");
-    expect(main).toMatch(/ipcMain.handle\('chat:report-bug', async \(event, input: unknown\) => \{\s*assertHostTaskSender\(event, mainWindow, rendererUrl\)/);
+    expect(main).toContain("['chat:report-bug', createChatBugReport]");
+    expect(main).toContain("['search:report-bug', createSearchBugReport]");
+    expect(main).toMatch(/ipcMain.handle\(channel, async \(event, input: unknown\) => \{\s*assertHostTaskSender\(event, mainWindow, rendererUrl\)/);
+    expect(main).toContain('return createReport(input, {');
     expect(entry).toContain('class="report-bug-link" onclick={() => onReportBug(run)}');
-    expect(dialog).toContain('What was the bug?');
-    expect(dialog).toContain('if (mounted) report = captured');
-    expect(dialog).toContain('preview={report.body}');
+    expect(dialog).toContain('<ReportBugDialog');
+    expect(dialog).toContain('capture={description => window.workingMemory.createChatBugReport({');
+    expect(dialog).toContain('run: $state.snapshot(run)');
+    expect(sharedDialog).toContain('What was the bug?');
+    expect(sharedDialog).toContain('if (mounted) report = captured');
+    expect(sharedDialog).toContain('preview={report.body}');
   });
   it('exposes typed history pages and full journal detail through preload IPC', () => {
     const contracts = readFileSync(resolve(desktopRoot, 'src/shared/contracts.ts'), 'utf8');
