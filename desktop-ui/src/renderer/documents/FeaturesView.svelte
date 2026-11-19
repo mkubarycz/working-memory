@@ -11,6 +11,7 @@
   let enabled = $state(false);
   let searchEnabled = $state(false);
   let observabilityEnabled = $state(false);
+  let recoveryAppId = $state<string | null>(null);
   let embeddings = $state<EmbeddingDashboard | null>(null);
   let embeddingsEnabled = $state(false);
   let busy = $state(false);
@@ -75,13 +76,36 @@
       if (!active) return;
       features = saved;
       onChanged(features);
-    } catch (cause) { if (active) error = cause instanceof Error ? cause.message : String(cause); }
-    finally {
+    } catch (cause) {
+      if (active) error = cause instanceof Error ? cause.message : String(cause);
+      if (feature === 'observability' && active) {
+        try {
+          const apps = (await window.workingMemory.listContainerApps()).filter(app => app.nativeSurface === 'observability');
+          const status = apps.length === 1 ? await window.workingMemory.inspectContainerApp(apps[0].id) : null;
+          if (active) recoveryAppId = status?.recoveryAvailable ? status.id : null;
+        } catch (discoveryError) {
+          if (active) error += ` Recovery discovery failed: ${discoveryError instanceof Error ? discoveryError.message : String(discoveryError)}`;
+        }
+      }
+    } finally {
       enabled = features?.hostTasks ?? false;
       searchEnabled = features?.search ?? false;
       observabilityEnabled = features?.observability ?? false;
       busy = false;
     }
+  }
+  async function recoverObservability(): Promise<void> {
+    if (!active || busy || !recoveryAppId) return;
+    busy = true;
+    generation += 1;
+    try {
+      const status = await window.workingMemory.recoverContainerApp(recoveryAppId);
+      if (!active) return;
+      recoveryAppId = status.recoveryAvailable ? status.id : null;
+      error = status.error ?? 'Management recovered. Enable Observability to finish setup.';
+    } catch (cause) {
+      if (active) error = cause instanceof Error ? cause.message : String(cause);
+    } finally { busy = false; }
   }
   onMount(() => {
     active = true;
@@ -127,6 +151,9 @@
       <td>Install local OpenObserve dashboards for HTTP, tools, runtime and embeddings telemetry. Sign-in is automatic.
         {#if observabilityEnabled && onOpenObservability}
           <button type="button" onclick={() => void onOpenObservability?.()}>Open Observability</button>
+        {/if}
+        {#if recoveryAppId}
+          <button type="button" disabled={busy} onclick={() => void recoverObservability()}>Recover…</button>
         {/if}
       </td>
       <td>

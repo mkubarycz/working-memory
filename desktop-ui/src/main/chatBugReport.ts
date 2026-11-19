@@ -87,16 +87,24 @@ function omitReportMedia(value: unknown): unknown {
   return visit(value);
 }
 
+export function bugReportSection(heading: string, value: unknown, secrets: string[], limit = 32768): string {
+  const sanitized = sanitizeForJournalWithMetadata(omitReportMedia(value), secrets);
+  const text = reportText(typeof sanitized.value === 'string' ? sanitized.value : JSON.stringify(sanitized.value, null, 2));
+  const truncated = sanitized.truncated || text.length > limit;
+  return `\n## ${heading}\n\n${text.slice(0, limit).split('\n').map(line => `    ${line}`).join('\n')}\n`
+    + (truncated ? '\n[Evidence truncated at the diagnostic size limit.]\n' : '');
+}
+
+export function bugReportTitle(prefix: string, description: string, secrets: string[]): string {
+  return reportText(`${prefix}: ${String(sanitizeForJournal(omitReportMedia(description), secrets)).split('\n')[0]}`).slice(0, 120);
+}
+
 export function buildChatBugReport(
   input: ChatBugReportInput, journal: CommandJournal | null, dependencies: Omit<ChatBugReportDependencies, 'client' | 'assertCurrent'>,
 ): Omit<ChatBugReportDraft, 'id'> {
   const now = dependencies.now?.() ?? Date.now();
   const section = (heading: string, value: unknown, limit = 32768): string => {
-    const sanitized = sanitizeForJournalWithMetadata(omitReportMedia(value), dependencies.secrets);
-    const text = reportText(typeof sanitized.value === 'string' ? sanitized.value : JSON.stringify(sanitized.value, null, 2));
-    const truncated = sanitized.truncated || text.length > limit;
-    return `\n## ${heading}\n\n${text.slice(0, limit).split('\n').map(line => `    ${line}`).join('\n')}\n`
-      + (truncated ? '\n[Evidence truncated at the diagnostic size limit.]\n' : '');
+    return bugReportSection(heading, value, dependencies.secrets, limit);
   };
   const events = journal?.events ?? [];
   const shareableEvents = events.filter(event => event.type !== 'model_turn' || event.role === 'assistant');
@@ -140,7 +148,7 @@ export function buildChatBugReport(
     + (events.length > shareableEvents.length ? `${events.length - shareableEvents.length} internal system events excluded.\n` : '')
     + 'General application/backend log files, other conversations, credentials and hidden model reasoning are not collected.\n'
     + eventSections.join('');
-  const title = reportText(`Chat bug: ${String(sanitizeForJournal(omitReportMedia(input.description), dependencies.secrets)).split('\n')[0]}`).slice(0, 120);
+  const title = bugReportTitle('Chat bug', input.description, dependencies.secrets);
   return { title, body };
 }
 

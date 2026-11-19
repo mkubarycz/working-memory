@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { build } from 'esbuild';
 import { createServer } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { createRequire } from 'node:module';
@@ -15,6 +16,21 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
     const executable: unknown = createRequire(import.meta.url)('electron');
     if (typeof executable !== 'string') throw new Error('Electron executable is unavailable.');
     const directory = await mkdtemp(join(tmpdir(), 'wm-search-browser-'));
+    const preload = join(directory, 'search-preload.cjs');
+    await build({
+      stdin: {
+        contents: `
+          const {contextBridge,ipcRenderer}=require('electron');
+          const {toIpcPayload}=require(${JSON.stringify(fileURLToPath(new URL('../src/preload/ipcPayload.ts', import.meta.url)))});
+          contextBridge.exposeInMainWorld('searchTestBridge', {
+            accept: (query,options) => ipcRenderer.invoke('search-test:payload',query,toIpcPayload(options)),
+            report: input => ipcRenderer.invoke('search-test:report',toIpcPayload(input)),
+          });
+        `,
+        resolveDir: fileURLToPath(new URL('..', import.meta.url)),
+      },
+      outfile: preload, bundle: true, platform: 'node', format: 'cjs', external: ['electron'],
+    });
     const fixture = `
       <script>
         import SearchView from '/src/renderer/documents/SearchView.svelte';
@@ -25,11 +41,22 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         session.context={document:{id:'workstream-1',kind:'workstream',title:'Connection reliability'},workstreams:[{id:'workstream-1',title:'Connection reliability'}]};
         let active = $state('search');
         let activeDrag = $state(null);
-        const test = window.__searchTest = { searches: [], adds: [], children: [], opened: [], refreshes: 0, preparations: [], nativeDrags: [], dragListeners: [] };
+        const test = window.__searchTest = { searches: [], adds: [], children: [], opened: [], refreshes: 0, preparations: [], nativeDrags: [], dragListeners: [], reports:[], sends:[] };
         test.readDrag=()=>activeDrag;
         test.browse=()=>{active='topic';};
         test.readTrace=()=>session.trace;
+        test.readContext=()=>session.context;
+        test.setContext=context=>{session.context=context;};
+        test.changePrompt=()=>{session.prompt='Edited after report opened';};
         window.workingMemory = {
+          createSearchBugReport: async input => {
+            const captured=await window.searchTestBridge.report(input);test.reports.push(captured);
+            if(test.failReport)throw new Error('Report storage unavailable');
+            return {id:'search-report',title:'Search bug: wrong confidence',body:'Captured search and result diagnostics'};
+          },
+          prepareFeedback:async()=>({servers:[{id:'local',name:'Feedback',address:'127.0.0.1',port:7720}],
+            context:{desktop:{version:'fixture',build:'fixture'},backend:{version:'fixture'}}}),
+          sendFeedback:async(...args)=>{test.sends.push(args);return {status:'sent',receipt:{title:'Search report',duplicate:false}};},
           onDocumentSearchTrace: listener => {test.traceListener=listener;return ()=>{test.traceListener=null;};},
           onDocumentSearchResults: listener => {test.resultsListener=listener;return ()=>{test.resultsListener=null;};},
           cancelDocumentSearch: async () => {},
@@ -45,6 +72,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           openResource: async () => ({kind:'topic',workstreams:[{id:'workstream-1',title:'Connection reliability'}]}),
           startResourceDrag: prepared => {test.nativeDrags.push(prepared);},
           searchDocuments: async (query,options) => {
+            test.bridgePayload=await window.searchTestBridge.accept(query,options);
             test.searches.push(query);
             test.options=options;
             if(test.holdSearch) await new Promise(resolve=>{test.releaseSearch=resolve;});
@@ -54,6 +82,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
               excerpt:'The connector authenticates through a handshake.',
               reason:'Explains connection reliability and authentication.', score:0.81,similarity:0.81,status:'open',
               confidence:{level:'high',reason:'Strong passage and document evidence agree.'}
+              ,...test.primary
             },...(test.extraResults??[])]};
           },
           listSearchWorkstreams: async () => {
@@ -113,11 +142,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       if (!address || typeof address === 'string') throw new Error('Search fixture did not bind a TCP port.');
       const script = join(directory, 'search-test.cjs');
       await writeFile(script, `
-        const {app,BrowserWindow}=require('electron');
+        const {app,BrowserWindow,ipcMain}=require('electron');
         const assert=require('node:assert/strict');
         app.setPath('userData',${JSON.stringify(join(directory, 'profile'))});
         app.whenReady().then(async()=>{
-          const win=new BrowserWindow({show:false,width:1100,height:850});
+          ipcMain.handle('search-test:payload',(_event,query,options)=>({query,options}));
+          ipcMain.handle('search-test:report',(_event,input)=>input);
+          const win=new BrowserWindow({show:false,width:1100,height:850,
+            webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false}});
           const evaluate=async code=>{
             try{return await win.webContents.executeJavaScript(code);}
             catch(error){throw new Error('Renderer evaluation failed: '+code,{cause:error});}
@@ -163,6 +195,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('(()=>{const t=document.querySelector("textarea").getBoundingClientRect();const b=document.querySelector(".compose-toggle").getBoundingClientRect();return b.top>=t.top&&b.bottom<=t.bottom&&b.right<=t.right&&t.right-b.right<=24&&b.top-t.top<=12;})()'),true);
           assert.ok(await evaluate('parseFloat(getComputedStyle(document.querySelector("textarea")).paddingRight)>=document.querySelector(".compose-toggle").getBoundingClientRect().width+20'));
           assert.ok(await evaluate('document.querySelector(".context").textContent.includes("Connection reliability")'));
+          assert.equal(await evaluate('(()=>{try{structuredClone(window.__searchTest.readContext());return false;}catch(error){return error.name==="DataCloneError";}})()'),true);
           await evaluate('(()=>{const t=document.querySelector("textarea");t.value="First line";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
           await enter(['shift']);
           assert.equal(await evaluate('document.querySelector("textarea").value'),'First line\\n');
@@ -189,18 +222,25 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait('document.querySelector("[data-search-result]")');
           assert.equal(await evaluate('window.__searchTest.searches[0]'),'Find work on reliable sign in');
           assert.equal(await evaluate('window.__searchTest.options.context.workstreams[0].id'),'workstream-1');
+          assert.equal(await evaluate('window.__searchTest.bridgePayload.query'),'Find work on reliable sign in');
+          assert.deepEqual(await evaluate('window.__searchTest.bridgePayload.options.context'),{
+            document:{id:'workstream-1',kind:'workstream',title:'Connection reliability'},
+            workstreams:[{id:'workstream-1',title:'Connection reliability'}],
+          });
           assert.ok(await evaluate('document.querySelector("article").getBoundingClientRect().height<150'));
           assert.equal(await evaluate('document.querySelector("article .topic-link").getAttribute("title")'),'OAuth connections');
-          assert.equal(await evaluate('document.querySelector(".relevance").textContent.trim()'),'Relevance 0.81');
+          assert.equal(await evaluate('document.querySelector(".relevance").textContent.trim()'),'Similarity 0.81');
           assert.equal(await evaluate('document.querySelector(".confidence").textContent.trim()'),'Confidence High');
           assert.ok((await evaluate('document.querySelector(".confidence").title')).includes('not a calibrated probability'));
           assert.equal(await evaluate('document.querySelector(".reason").textContent'),'Explains connection reliability and authentication.');
           assert.equal(await evaluate('document.querySelector("article details")'),null);
-          assert.equal(await evaluate('document.querySelector("article blockquote")'),null);
-          assert.equal(await evaluate('document.querySelector("article").textContent.includes("The connector authenticates through a handshake.")'),false);
+          await wait('document.querySelector("article blockquote")');
+          assert.equal(await evaluate('document.querySelector("article .twistie").getAttribute("aria-expanded")'),'true');
+          assert.equal(await evaluate('document.querySelector("article blockquote").textContent.trim()'),'The connector authenticates through a handshake.');
+          await click('Collapse excerpt for OAuth connections');
+          await wait('!document.querySelector("article blockquote")');
           await click('Expand excerpt for OAuth connections');
           await wait('document.querySelector("article blockquote")');
-          assert.equal(await evaluate('document.querySelector("article blockquote").textContent.trim()'),'The connector authenticates through a handshake.');
           await click('Collapse excerpt for OAuth connections');
           assert.equal(await evaluate('document.querySelector("article .topic-link").draggable'),true);
           const fallback=await drag('article .topic-link');
@@ -342,6 +382,60 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await click('Back to search');
           await wait('document.querySelector("textarea")');
           assert.equal(await evaluate('window.__searchTest.readTrace()[0].id'),'while-away');
+          await evaluate('window.__searchTest.holdSearch=false;window.__searchTest.setContext(undefined);(()=>{const t=document.querySelector("textarea");t.value="040";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
+          await submit();await wait('!document.querySelector("textarea").disabled');
+          assert.equal(await evaluate('window.__searchTest.bridgePayload.query'),'040');
+          assert.equal(await evaluate('window.__searchTest.bridgePayload.options.context'),undefined);
+          await evaluate('window.__searchTest.setContext({document:{id:"topic-040",kind:"topic",title:"Jibberish Topic 040"},workstreams:[{id:"test",title:"test"}]})');
+          await submit();await wait('!document.querySelector("textarea").disabled');
+          assert.deepEqual(await evaluate('window.__searchTest.bridgePayload.options.context'),{
+            document:{id:'topic-040',kind:'topic',title:'Jibberish Topic 040'},workstreams:[{id:'test',title:'test'}],
+          });
+          await evaluate('window.__searchTest.trace=[];window.__searchTest.limited=true;window.__searchTest.primary={score:0.28,similarity:0.28,literalMatch:true};window.__searchTest.extraResults=[{id:"low",kind:"Topic",title:"Weak number match",excerpt:"weak evidence",reason:"Similar supporting passage",score:0.43,similarity:0.43,confidence:{level:"low",reason:"Weak evidence"}},{id:"medium",kind:"Topic",title:"Medium match",excerpt:"medium evidence",reason:"Related",score:0.5,similarity:0.5,confidence:{level:"medium",reason:"Some evidence"}},...Array.from({length:17},(_,i)=>({id:"other-"+i,kind:"Topic",title:"Other match "+i,excerpt:"weak evidence",reason:"Similar supporting passage",score:0.4,similarity:0.4,confidence:{level:"low",reason:"Weak evidence"}}))]');
+          await submit();await wait('!document.querySelector("textarea").disabled');
+          assert.equal(await evaluate('document.querySelector("[data-search-result=topic-1] .twistie").getAttribute("aria-expanded")'),'true');
+          assert.equal(await evaluate('document.querySelector("[aria-label^=Low] [data-search-result=low] .twistie").getAttribute("aria-expanded")'),'false');
+          assert.equal(await evaluate('document.querySelector("[aria-label^=Medium] [data-search-result=medium] .twistie").getAttribute("aria-expanded")'),'false');
+          assert.equal(await evaluate('document.querySelectorAll("article blockquote").length'),1);
+          assert.equal(await evaluate('document.querySelectorAll("article[data-search-result]").length'),20);
+          assert.equal(await evaluate('document.querySelectorAll("[aria-label^=Low] .twistie[aria-expanded=false]").length'),18);
+          assert.ok(await evaluate('document.querySelector("[data-search-result=topic-1]").textContent.includes("Similarity 0.28")'));
+          assert.ok(await evaluate('document.querySelector("[data-search-result=topic-1]").textContent.includes("Term match")'));
+          assert.equal(await evaluate('(()=>{const h=document.querySelector(".search-view header").getBoundingClientRect();const b=document.querySelector(".search-view header .report-bug-link").getBoundingClientRect();return Math.abs(h.right-b.right)<2;})()'),true);
+          await click('Report a bug');
+          await wait('document.querySelector("dialog:modal")');
+          await evaluate('window.__searchTest.changePrompt();window.__searchTest.failReport=true;(()=>{const t=document.querySelector("dialog textarea");t.value="Wrong confidence";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
+          await click('Create report');
+          await wait('document.querySelector("dialog [role=alert]")?.textContent.includes("Report storage unavailable")');
+          await evaluate('window.__searchTest.failReport=false');
+          await click('Create report');
+          await wait('document.querySelector("details pre")');
+          const captured=await evaluate('window.__searchTest.reports.at(-1)');
+          assert.equal(captured.search.prompt,'040');
+          assert.equal(captured.search.response.query,'040');
+          assert.equal(captured.search.response.results.length,20);
+          assert.equal(captured.search.response.results.at(-1).id,'other-16');
+          assert.equal(captured.search.response.limited,true);
+          assert.equal(captured.search.response.results[0].similarity,0.28);
+          assert.equal(captured.search.response.results[0].literalMatch,true);
+          assert.equal(captured.search.response.results[1].confidence.level,'low');
+          assert.equal(captured.search.context.document.id,'topic-040');
+          assert.equal(captured.description,'Wrong confidence');
+          assert.equal(await evaluate('window.__searchTest.sends.length'),0);
+          await click('Send');await wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Done")');
+          await click('Done');await wait('!document.querySelector("dialog")');
+          await evaluate('window.__searchTest.extraResults=[{id:"second-high",kind:"Topic",title:"Another strong match",excerpt:"strong evidence",reason:"Related",score:0.8,similarity:0.8,confidence:{level:"high",reason:"Strong evidence"}}]');
+          await submit();await wait('!document.querySelector("textarea").disabled');
+          assert.equal(await evaluate('document.querySelectorAll("article blockquote").length'),0);
+          await evaluate('window.__searchTest.primary={confidence:{level:"low",reason:"Weak"}};window.__searchTest.extraResults=[]');
+          await submit();await wait('!document.querySelector("textarea").disabled');
+          assert.equal(await evaluate('document.querySelectorAll("article blockquote").length'),0);
+          await evaluate('window.__searchTest.holdSearch=true;window.__searchTest.releaseSearch=null');
+          await submit();await wait('typeof window.__searchTest.releaseSearch==="function"');
+          await click('Report a bug');await wait('document.querySelector("dialog:modal")');
+          await click('Cancel');await wait('!document.querySelector("dialog")');
+          assert.equal(await evaluate('document.querySelector("#document-search-prompt").disabled'),true);
+          await evaluate('window.__searchTest.releaseSearch()');await wait('!document.querySelector("#document-search-prompt").disabled');
           console.log('search-browser: intent, navigation, persistence, native dialog, errors and explicit membership passed');
           win.destroy();app.exit(0);
         }).catch(error=>{console.error(error);app.exit(1);});

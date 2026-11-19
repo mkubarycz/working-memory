@@ -37,7 +37,7 @@
     let visible = true;
     const updateVisibility = () => {
       // Native child views sit above HTML; hide them while app menus or dialogs are open.
-      const next = !Array.from(document.querySelectorAll('[role="menu"], [role="dialog"], .document-tab-menu'))
+      const next = !Array.from(document.querySelectorAll('dialog[open], [role="menu"], [role="dialog"], [role="alertdialog"], .document-tab-menu'))
         .some(overlay => overlay.checkVisibility());
       if (next === visible) return;
       visible = next;

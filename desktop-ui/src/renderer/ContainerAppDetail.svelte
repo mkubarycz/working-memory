@@ -17,9 +17,11 @@
     view: 'app' | 'info';
     reloadVersion: number;
     onAttachResource: (reference: ContainerAppResourceReference) => void;
+    onRecover: () => void;
+    recovering: boolean;
   }
 
-  let { app, status, view, reloadVersion, onAttachResource }: Props = $props();
+  let { app, status, view, reloadVersion, onAttachResource, onRecover, recovering }: Props = $props();
   let embeddedFrame = $state<HTMLIFrameElement | null>(null);
   let mcpStatus = $state<AppMcpStatus | null>(null);
   let tools = $state<AppMcpTool[]>([]);
@@ -200,6 +202,12 @@
   class:container-app-surface={view === 'app' && app.embeddable}
   aria-label={view === 'app' ? `${app.displayName} application` : `${app.displayName} information`}
 >
+  {#if status?.recoveryAvailable}
+    <div role="alert">
+      <p>{status.error}</p>
+      <button disabled={recovering} onclick={onRecover}>{recovering ? 'Searching…' : 'Recover…'}</button>
+    </div>
+  {/if}
   {#if view === 'app' && app.embeddable}
     {#if embeddedUrl}
       {#key reloadVersion}

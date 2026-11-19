@@ -4,14 +4,19 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { ContainerProvider } from './containerProvider';
 import type { ContainerClaim } from '../../../shared/controlPlaneClient';
+import { assertNoInterruptedRecovery, ContainerOwnershipConflict } from './containerRecovery';
 
 const ownershipSchema = z.object({
   provider: z.enum(['docker', 'podman']),
   connection: z.string().min(1),
 });
 
+export function ownershipFileName(resource: string): string {
+  return `${createHash('sha256').update(resource).digest('hex')}.json`;
+}
+
 function ownershipFile(directory: string, resource: string): string {
-  return join(directory, `${createHash('sha256').update(resource).digest('hex')}.json`);
+  return join(directory, ownershipFileName(resource));
 }
 
 export function readContainerOwnership(directory: string, resource: string): z.infer<typeof ownershipSchema> | undefined {
@@ -46,11 +51,12 @@ export function checkContainerOwnership(
   owner: { provider: ContainerProvider; connection: string },
   reserve = false,
 ): boolean {
+  assertNoInterruptedRecovery(directory);
   const file = ownershipFile(directory, resource);
   const existing = readContainerOwnership(directory, resource);
   if (existing) {
     if (existing.provider !== owner.provider || existing.connection !== owner.connection) {
-      throw new Error('This resource belongs to another container provider or connection. Restore the original provider and connection. Data is never migrated or replaced automatically.');
+      throw new ContainerOwnershipConflict(`This resource belongs to another container provider or connection.\nRecorded: ${existing.provider} / ${existing.connection}\nSelected: ${owner.provider} / ${owner.connection}\nRestore the original provider and connection, or choose Recover to verify an existing container. Data is never migrated or replaced automatically.`);
     }
     return true;
   }

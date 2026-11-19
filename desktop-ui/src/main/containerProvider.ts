@@ -167,6 +167,10 @@ export class ContainerProviderAdapter {
 
   imageReference(image: string, expectedImage?: string): string {
     const unqualified = image.startsWith('localhost/') ? image.slice('localhost/'.length) : image;
+    if (this.provider === 'podman' && expectedImage) {
+      const pinned = /^(.+):([^/:@]+)@(sha256:[a-f0-9]{64})$/.exec(expectedImage);
+      if (pinned && image === `${pinned[1]}@${pinned[3]}`) return expectedImage;
+    }
     return this.provider === 'podman'
       && (expectedImage ? unqualified === expectedImage : !unqualified.includes('/')) ? unqualified : image;
   }

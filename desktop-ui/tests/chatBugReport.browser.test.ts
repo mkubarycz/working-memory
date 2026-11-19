@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { build } from 'esbuild';
 import { createServer } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { createRequire } from 'node:module';
@@ -10,27 +11,48 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
-  'reports a blocked running message, previews evidence, retries Feedback and discards stale capture UI',
+  'reports over a real native dashboard, previews evidence, retries Feedback and discards stale capture UI',
   async () => {
     const executable: unknown = createRequire(import.meta.url)('electron');
     if (typeof executable !== 'string') throw new Error('Electron executable is unavailable.');
     const directory = await mkdtemp(join(tmpdir(), 'wm-chat-report-'));
+    const preload = join(directory, 'native-surface-preload.cjs');
+    await build({
+      stdin: {
+        contents: `
+          const {contextBridge,ipcRenderer}=require('electron');
+          contextBridge.exposeInMainWorld('nativeSurfaceTest',{
+            mount:(id,bounds)=>ipcRenderer.invoke('surface-test:mount',id,bounds),
+            resize:(id,bounds)=>ipcRenderer.invoke('surface-test:resize',id,bounds),
+            visible:(id,visible)=>ipcRenderer.invoke('surface-test:visible',id,visible),
+            close:id=>ipcRenderer.invoke('surface-test:close',id),
+          });
+        `,
+      },
+      outfile: preload, bundle: true, platform: 'node', format: 'cjs', external: ['electron'],
+    });
     const fixture = `
       <script>
         import MessageEntry from '/src/renderer/MessageEntry.svelte';
         import ReportChatBugDialog from '/src/renderer/ReportChatBugDialog.svelte';
+        import ContainerAppSurface from '/src/renderer/ContainerAppSurface.svelte';
+        import {tick} from 'svelte';
         import {createLiveRun,mergeHistoryRuns,latestChatRun,reconcileLiveRun,summaryToChatRun} from '/src/renderer/chatHistory.ts';
         import {mergeScopedHistory} from '/src/renderer/scopedChat.ts';
         import '/src/renderer/style.css';
         let reporting = $state(null);
+        let showSurface = $state(true);
         const initial = {key:'blocked-run',journalId:'journal-1',status:'running',startedAt:Date.now()-86400000,
           userText:'Inspect this resource',assistantText:'Inspecting...',scope:{kind:'Topic',id:'topic-1'},attachments:[],tools:[],entityRefs:[]};
         let runs = $state([initial]);
         let cached = $state([]);
         const run = $derived(runs.at(-1));
         const reportSnapshot = $derived(reporting ? latestChatRun(reporting,mergeScopedHistory(runs,cached)) : null);
-        const test = window.__reportTest = {captures:[],preparations:[],sends:[],hold:false,fail:false};
+        const test = window.__reportTest = {captures:[],preparations:[],sends:[],hold:false,fail:false,surfaceVisible:true,surfaceMounted:false};
         test.reset=()=>{reporting=null;};
+        test.remountSurface=async()=>{
+          showSurface=false;await tick();test.surfaceMounted=false;showSurface=true;await tick();
+        };
         test.beginSubmission=()=>{
           const now=Date.now();
           runs=[{...initial,startedAt:now-2000,status:'failed'},
@@ -53,6 +75,15 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             journalId:persisted.id,status:'failed',message:'Confirmation request failed: connection lost'});
         };
         window.workingMemory = {
+          mountContainerAppSurface:async(_appId,id,bounds)=>{
+            await window.nativeSurfaceTest.mount(id,bounds);
+            test.surfaceMounted=true;
+          },
+          resizeContainerAppSurface:(id,bounds)=>window.nativeSurfaceTest.resize(id,bounds),
+          setContainerAppSurfaceVisible:async(id,visible)=>{
+            await window.nativeSurfaceTest.visible(id,visible);test.surfaceVisible=visible;
+          },
+          closeContainerAppSurface:id=>window.nativeSurfaceTest.close(id),
           createChatBugReport:async input=>{
             test.captures.push(input);
             if(test.hold) await new Promise(resolve=>{test.release=resolve;});
@@ -71,6 +102,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         };
         const noop=()=>{};
       </script>
+      <div style="height:250px;width:700px">
+        {#if showSurface}<ContainerAppSurface appId="observability" title="Test OpenObserve" />{/if}
+      </div>
       <MessageEntry row={{kind:'run',key:run.key,timestamp:run.startedAt,run}} humanName="You" unreadResponses={[]}
         onOpen={noop} onInspect={noop} onResolve={noop} onFocus={noop} onViewed={noop}
         onSetAgentMessageStatus={noop} attachmentUrl={()=>''} assistantFallback={()=>'Running'}
@@ -105,11 +139,28 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       if (!address || typeof address === 'string') throw new Error('Chat report fixture did not bind.');
       const script = join(directory, 'report-test.cjs');
       await writeFile(script, `
-        const {app,BrowserWindow}=require('electron');
+        const {app,BrowserWindow,WebContentsView,ipcMain}=require('electron');
         const assert=require('node:assert/strict');
         app.setPath('userData',${JSON.stringify(join(directory, 'profile'))});
         app.whenReady().then(async()=>{
-          const win=new BrowserWindow({show:false,width:1000,height:850});
+          const win=new BrowserWindow({show:false,width:1000,height:850,
+            webPreferences:{preload:${JSON.stringify(preload)},contextIsolation:true,nodeIntegration:false}});
+          let native;
+          let nativeId;
+          const bounds=value=>({x:Math.round(value.x),y:Math.round(value.y),width:Math.round(value.width),height:Math.round(value.height)});
+          ipcMain.handle('surface-test:mount',async(_event,id,rect)=>{
+            nativeId=id;
+            native=new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});
+            native.setBounds(bounds(rect));
+            await native.webContents.loadURL('data:text/html,<body style="background:%2388aa88">Synthetic OpenObserve native surface</body>');
+            win.contentView.addChildView(native);
+          });
+          ipcMain.handle('surface-test:resize',(_event,id,rect)=>{if(nativeId===id)native.setBounds(bounds(rect));});
+          ipcMain.handle('surface-test:visible',(_event,id,visible)=>{if(nativeId===id)native.setVisible(visible);});
+          ipcMain.handle('surface-test:close',(_event,id)=>{
+            if(nativeId!==id)return;
+            win.contentView.removeChildView(native);native.webContents.close();nativeId=null;
+          });
           win.webContents.on('console-message',(_event,level,message)=>{if(level>=2)console.error(message);});
           const evaluate=code=>win.webContents.executeJavaScript(code);
           const button=label=>'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==='+JSON.stringify(label)+')';
@@ -124,16 +175,31 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           const describe=()=>evaluate('(()=>{const t=document.querySelector("textarea");t.value="Stalled for hours";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
           await win.loadURL('http://127.0.0.1:${address.port}/report-test.html');
           await wait('document.querySelector(".report-bug-link")');
+          await wait('window.__reportTest.surfaceMounted');
+          assert.equal(native.getVisible(),true);
           assert.equal(await evaluate('document.querySelector(".report-bug-link").disabled'),false);
           await click('Report a bug');
           await wait('document.querySelector("dialog:modal")');
+          await wait('window.__reportTest.surfaceVisible===false');
+          assert.equal(native.getVisible(),false);
           assert(await evaluate('document.body.innerText.includes("What was the bug?")'));
           assert.equal(await evaluate(button('Create report')+'.disabled'),true);
+          await evaluate('window.__reportTest.remountSurface()');
+          await wait('window.__reportTest.surfaceMounted');
+          assert.equal(native.getVisible(),false);
+          await click('Cancel');
+          await wait('!document.querySelector("dialog")');
+          await wait('window.__reportTest.surfaceVisible===true');
+          assert.equal(native.getVisible(),true);
+          await click('Report a bug');
+          await wait('window.__reportTest.surfaceVisible===false');
+          assert.equal(native.getVisible(),false);
           await describe();
           await wait('!'+button('Create report')+'.disabled');
           await click('Create report');
           await wait('window.__reportTest.preparations.length===1');
           await wait('document.querySelector("details pre")');
+          assert.equal(native.getVisible(),false);
           assert.equal(await evaluate('document.querySelector("details pre").querySelector("em")'),null);
           assert.equal(await evaluate('window.__reportTest.captures[0].run.status'),'running');
           assert.equal(await evaluate('window.__reportTest.captures[0].renderer.conversationBlocked'),true);
@@ -151,6 +217,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(sends[0].id,'report-1');
           await click('Done');
           await wait('!document.querySelector("dialog")');
+          await wait('window.__reportTest.surfaceVisible===true');
+          assert.equal(native.getVisible(),true);
           await evaluate('window.__reportTest.beginSubmission()');
           await click('Report a bug');
           await describe();
@@ -162,6 +230,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('window.__reportTest.sourceStatus()'),'running');
           await click('Cancel');
           await wait('!document.querySelector("dialog")');
+          await wait('window.__reportTest.surfaceVisible===true');
+          assert.equal(native.getVisible(),true);
           await evaluate('window.__reportTest.stageLiveFailure()');
           await click('Report a bug');
           await describe();

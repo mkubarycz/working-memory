@@ -88,6 +88,12 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             });
             return result;
           },
+          async recoverInstances() {
+            probe.operations.push('recover');
+            backend.dockerError = null;
+            backend.recoveryAvailable = false;
+            return structuredClone(backend);
+          },
           async setBackendUpdateChannel(channel) {
             probe.backendChannels.push(channel); backend.backendChannel = channel;
             return structuredClone(backend);
@@ -271,6 +277,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("window.__updatesTest.backendReads"), readsBeforeDestroyedRefresh + 2);
           await evaluate("window.__updatesTest.hidden = false; document.dispatchEvent(new Event('visibilitychange'))");
           await wait("window.__updatesTest.backendReads === " + (readsBeforeDestroyedRefresh + 3));
+          await evaluate("window.__updatesTest.changeBackend({ recoveryAvailable: true, dockerError: 'Ownership conflict' }); window.__updatesTest.advance()");
+          await wait(button('Recover…') + "?.disabled === false");
+          await evaluate(button('Recover…') + '.click()');
+          await wait("window.__updatesTest.operations.includes('recover') && !document.querySelector('.instances-note[role=alert]')");
+          assert.equal(await evaluate(button('Recover…') + ' === undefined'), true);
           console.log('updates-settings-browser: subtabs, actions, selection and subscriptions passed');
           window.destroy(); app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });

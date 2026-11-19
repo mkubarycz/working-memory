@@ -75,7 +75,7 @@
     {#if hit.alreadyLinked}<span class="linked">Already linked</span>{/if}
     {#if hit.literalMatch}<span class="linked" title="Contains the search word or phrase. Term matches are shown before semantic-only matches.">Term match</span>{/if}
       <span class="relevance" title="Vector cosine similarity (-1 to 1). Higher is closer in meaning, not a confidence percentage.">
-        Relevance {hit.similarity == null ? 'unavailable' : hit.similarity.toFixed(2)}
+        Similarity {hit.similarity == null ? 'unavailable' : hit.similarity.toFixed(2)}
       </span>
     <span class="confidence" title={`Evidence strength, not a calibrated probability. ${hit.confidence?.reason ?? 'No matching evidence score is available.'}`}>
       Confidence {hit.confidence ? hit.confidence.level[0].toUpperCase() + hit.confidence.level.slice(1) : 'unavailable'}

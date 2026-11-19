@@ -204,6 +204,11 @@
     {#if snapshot?.dockerError}
       <p class="instances-note" role="alert">
         {snapshot.dockerError}
+        {#if snapshot.recoveryAvailable}
+          <button disabled={busy !== null || loading}
+            onclick={() => void run('recover', 'Searching for existing backends…',
+              () => window.workingMemory.recoverInstances(), 'Recovery check finished. No containers or data were replaced.')}>Recover…</button>
+        {/if}
         <button disabled={busy !== null || loading} onclick={() => void refresh()}>Retry</button>
       </p>
     {/if}
@@ -216,6 +221,11 @@
     {#if snapshot?.dockerError}
       <p class="instances-note" role="alert">
         {snapshot.dockerError}
+        {#if snapshot.recoveryAvailable}
+          <button disabled={busy !== null || loading}
+            onclick={() => void run('recover', 'Searching for existing backends…',
+              () => window.workingMemory.recoverInstances(), 'Recovery check finished. No containers or data were replaced.')}>Recover…</button>
+        {/if}
         <button disabled={busy !== null || loading} onclick={() => void refresh()}>Retry</button>
       </p>
     {/if}

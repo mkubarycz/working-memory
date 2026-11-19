@@ -473,7 +473,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.ok((await evaluate("document.querySelector('.related-topics').innerText")).includes('Already linked'));
           assert.equal((await evaluate("document.querySelector('.related-topics').innerText")).includes('Suggestions, not authored relationships'), false);
           assert.equal((await evaluate("document.querySelector('.related-topics').innerText")).includes('Meaning'), false);
-          assert.equal(await evaluate("document.querySelector('.related-topics .relevance').textContent.trim()"), 'Relevance 0.80');
+          assert.equal(await evaluate("document.querySelector('.related-topics .relevance').textContent.trim()"), 'Similarity 0.80');
           assert.equal(await evaluate("document.querySelector('.related-topics .confidence').textContent.trim()"), 'Confidence High');
           assert.ok((await evaluate("document.querySelector('.related-topics .confidence').title")).includes('not a calibrated probability'));
           assert.ok((await evaluate("document.querySelector('.related-topics .relevance').title")).includes('not a confidence percentage'));

@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import type { ExplainedSearchHit } from '../../../../shared/documentSearch';
-  import type { DesktopResourceKind } from '../../shared/contracts';
+  import type { DesktopResourceKind, SearchBugReportInput } from '../../shared/contracts';
   import { desktopDeepLink } from '../../shared/deepLink';
   import type { SearchViewState } from '../documentSearch';
   import { ResourceDragPreparationCache, setResourceDragData, TopicLinkDragController, type ActiveResourceDrag, type TopicLinkReference } from '../resourceDrag';
   import SearchResult from './SearchResult.svelte';
+  import ReportBugDialog from '../ReportBugDialog.svelte';
 
   let { state: session = $bindable(), activeDrag = $bindable(null), onOpen, onAdded, onAddChild, attachmentBaseUrl = '' }: {
     state: SearchViewState;
@@ -16,6 +17,14 @@
     attachmentBaseUrl?: string;
   } = $props();
   const sources = $derived(new Map(session.response?.results.map(hit => [hit.id, hit]) ?? []));
+  const highConfidence = $derived(session.response?.results.filter(hit => hit.confidence?.level === 'high') ?? []);
+  const singleHigh = $derived(highConfidence.length === 1 ? highConfidence[0] : null);
+  const otherGroups = $derived([
+    { label: 'Medium confidence', hits: session.response?.results.filter(hit => hit.confidence?.level === 'medium') ?? [] },
+    { label: 'Low confidence', hits: session.response?.results.filter(hit => hit.confidence?.level === 'low') ?? [] },
+    { label: 'Confidence unavailable', hits: session.response?.results.filter(hit => !hit.confidence) ?? [] },
+  ]);
+  let reporting = $state<SearchBugReportInput['search'] | null>(null);
   const resourceDrags = new ResourceDragPreparationCache(
     (openUri, label) => window.workingMemory.prepareResourceDrag(openUri, label),
     error => { session.error = `Unable to prepare drag context: ${error instanceof Error ? error.message : String(error)}`; },
@@ -112,7 +121,7 @@
     session.notice = '';
     session.response = null;
     try {
-      const response = await window.workingMemory.searchDocuments(query, { requestId, context: current.context });
+      const response = await window.workingMemory.searchDocuments(query, { requestId, context: $state.snapshot(current.context) });
       if (session === current && current.requestId === requestId) {
         current.response = response;
         current.trace = response.trace ?? current.trace;
@@ -148,6 +157,7 @@
 
 {#snippet resultRow(hit: ExplainedSearchHit, description: string = '')}
   <SearchResult {hit} kind={hit.kind} {description} {attachmentBaseUrl} {onAddChild} {onAdded}
+    expanded={singleHigh?.id === hit.id}
     topicDrag={topicDrags ?? undefined} href={desktopDeepLink(route(hit), hit.id)} onOpen={() => void openHit(hit)}
     onPrepare={() => resourceDrags.prepare(dragUri(hit), hit.title)}
     onDragStart={event => startDrag(event, hit)} onDragEnd={finishDrag} />
@@ -156,6 +166,12 @@
 <section class="search-view" aria-label="Search documents">
   <header>
     <h1><span class="codicon codicon-search" aria-hidden="true"></span> Search</h1>
+    <button class="report-bug-link" onclick={() => {
+      reporting = $state.snapshot({
+        prompt: session.prompt, context: session.context, response: session.response, trace: session.trace,
+        loading: session.loading, error: session.error, notice: session.notice, requestId: session.requestId,
+      });
+    }}>Report a bug</button>
   </header>
   {#if session.context?.document}
     <p class="context">Scope: {session.context.document.title}
@@ -204,6 +220,7 @@
     <section aria-label="Search results">
       <h2>{session.response.blocks ? 'Answer' : `${session.response.results.length} ${session.response.results.length === 1 ? 'match' : 'matches'}`}</h2>
       <p class="searched-for">Results for: {session.response.query}</p>
+      <p class="searched-for">Similarity measures meaning, not exact text. Term matches rank first; confidence describes the supporting evidence.</p>
       {#if session.response.limited && !session.response.blocks}
         <p class="searched-for">Showing top matches from indexed text. Add to your search to narrow the results.</p>
       {/if}
@@ -255,6 +272,17 @@
         {/each}
       {:else if session.response.results.length === 0}
         <p>No relevant documents found. Try describing the problem differently or including another related concept.</p>
+      {:else if singleHigh}
+        <h3 class="group-heading">High confidence</h3>
+        {@render resultRow(singleHigh, singleHigh.reason)}
+        {#each otherGroups as group}
+          {#if group.hits.length}
+            <section aria-label={group.label}>
+              <h3 class="group-heading">{group.label}</h3>
+              {#each group.hits as hit (hit.id)}{@render resultRow(hit, hit.reason)}{/each}
+            </section>
+          {/if}
+        {/each}
       {:else}
         {#each session.response.results as hit (hit.id)}{@render resultRow(hit, hit.reason)}{/each}
       {/if}
@@ -279,10 +307,18 @@
   {/if}
 </section>
 
+{#if reporting}
+  <ReportBugDialog onClose={() => { reporting = null; }}
+    evidenceDescription="Includes the search text, scope, returned results and excerpts, similarity and confidence scores, answer, activity timings, and errors as captured when you clicked Report a bug. You can report an in-progress or failed search."
+    capture={description => window.workingMemory.createSearchBugReport({ description, search: $state.snapshot(reporting!) })} />
+{/if}
+
 <style>
   .search-view { padding: 12px 16px 16px; color: var(--vscode-foreground); }
   h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 21px; }
   h1 .codicon { font-size: 24px; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .report-bug-link { border: none; padding: 0; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline; font-size: 12px; }
   .context, .searched-for { color: var(--vscode-descriptionForeground); margin: 6px 0; font-size: 12px; }
   p { line-height: 1.5; overflow-wrap: anywhere; }
   form { display: grid; gap: 8px; }

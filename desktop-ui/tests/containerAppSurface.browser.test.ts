@@ -19,7 +19,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       import Detail from '/src/renderer/ContainerAppDetail.svelte';
       import '/src/renderer/style.css';
       const state = window.__surfaceTest = { mounts: [], closes: [], resizes: [], visibility: [], fail: false,
-        opens: 0, sources: [], failOpen: false, releaseOpen: null };
+        opens: 0, sources: [], failOpen: false, releaseOpen: null, recoveries: 0 };
       window.workingMemory = {
         async getAppMcpStatus() { return { state: 'disconnected' }; },
         async mountContainerAppSurface(...args) {
@@ -42,12 +42,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       const app = { id: 'claim-id', displayName: 'Working Memory Observability', icon: 'pulse',
         embeddable: true, nativeSurface: 'observability' };
       const status = { ready: true, url: 'http://localhost:5080/web/' };
+      state.conflict = () => Object.assign(status, { ready: false, recoveryAvailable: true, error: 'Ownership conflict' });
       let component;
       state.open = async (view = 'app', native = true) => {
         if (component) await unmount(component);
         component = mount(Detail, { target, props: {
           app: { ...app, nativeSurface: native ? 'observability' : undefined },
-          status, view, reloadVersion: 0, onAttachResource() {},
+          status: { ...status }, view, reloadVersion: 0, onAttachResource() {},
+          onRecover() { state.recoveries++; }, recovering: false,
         } });
       };
       state.dispose = () => unmount(component);
@@ -133,6 +135,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate('window.__surfaceTest.open("app", false)');
           await wait('!!document.querySelector("iframe")');
           assert.equal(await evaluate('document.querySelector("iframe").src'), 'http://localhost:5080/web/');
+          await evaluate('window.__surfaceTest.conflict(); window.__surfaceTest.open()');
+          await wait('document.querySelector("[role=alert]")?.textContent.includes("Ownership conflict")');
+          await evaluate('Array.from(document.querySelectorAll("button")).find(button => button.textContent === "Recover…").click()');
+          assert.equal(await evaluate('window.__surfaceTest.recoveries'), 1);
           await evaluate('window.__surfaceTest.dispose()');
           console.log('container-surface-browser-ok');
           app.exit(0);

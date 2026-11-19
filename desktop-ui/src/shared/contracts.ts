@@ -22,7 +22,7 @@ import type {
   CommandJournalAttachment,
 } from '../../../shared/controlPlaneClient';
 import type { AgentMessageVM } from '../../../shared/viewModels/agentMessageVms';
-import type { SearchOptions, SearchResponse, SearchTrace, SearchWorkstream } from '../../../shared/documentSearch';
+import type { SearchContext, SearchOptions, SearchResponse, SearchTrace, SearchWorkstream } from '../../../shared/documentSearch';
 
 export type ContainerAppId = string;
 export type WorkstreamPatch = Pick<import('../../../shared/controlPlaneClient').WsUpdateInput,
@@ -80,6 +80,7 @@ export interface AppResourceContract {
 export type ContainerAppState = 'missing' | 'stopped' | 'running' | 'healthy' | 'unhealthy' | 'error';
 
 export interface ContainerAppStatus {
+  recoveryAvailable?: boolean;
   id: ContainerAppId;
   displayName: string;
   claimTitle: string;
@@ -379,6 +380,7 @@ export interface DataTierInstanceStatus extends ManagedDataTierInstance {
 }
 
 export interface DataTierInstancesSnapshot {
+  recoveryAvailable?: boolean;
   appVersion: string;
   backendChannel: UpdateChannel;
   /** Version instances should run for the backend channel; Off targets the bundled image. */
@@ -435,6 +437,20 @@ export interface ChatBugReportInput {
 }
 export interface ChatBugReportDraft { id: string; title: string; body: string }
 
+export interface SearchBugReportInput {
+  description: string;
+  search: {
+    prompt: string;
+    context?: SearchContext;
+    response: SearchResponse | null;
+    trace: SearchTrace[];
+    loading: boolean;
+    error: string;
+    notice: string;
+    requestId: string | null;
+  };
+}
+
 export interface DesktopBuildInfo {
   version: string;
   development: boolean;
@@ -452,6 +468,7 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
   sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
   createChatBugReport(input: ChatBugReportInput): Promise<ChatBugReportDraft>;
+  createSearchBugReport(input: SearchBugReportInput): Promise<ChatBugReportDraft>;
   startDocumentChanges(): Promise<void>;
   onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;
@@ -463,6 +480,7 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   switchEnvironment(mcpUrl: string): Promise<DesktopEnvironmentState>;
   /** Null when this build cannot manage data-tier instances (no bundled data tier). */
   listInstances(): Promise<DataTierInstancesSnapshot | null>;
+  recoverInstances(): Promise<DataTierInstancesSnapshot | null>;
   createInstance(name?: string): Promise<DataTierInstancesSnapshot | null>;
   startInstance(port: number): Promise<DataTierInstancesSnapshot | null>;
   stopInstance(port: number): Promise<DataTierInstancesSnapshot | null>;
@@ -523,6 +541,7 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   invokeAction(workstream: string, command: string, args: unknown[]): Promise<DocumentVM>;
   runContainerApp(id: ContainerAppId): Promise<ContainerLaunchResult>;
   inspectContainerApp(id: ContainerAppId): Promise<ContainerAppStatus>;
+  recoverContainerApp(id: ContainerAppId): Promise<ContainerAppStatus>;
   stopContainerApp(id: ContainerAppId): Promise<ContainerStopResult>;
   openContainerApp(id: ContainerAppId): Promise<ContainerAppStatus>;
   getAppMcpStatus(id: ContainerAppId): Promise<AppMcpStatus>;

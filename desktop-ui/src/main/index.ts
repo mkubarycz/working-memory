@@ -41,6 +41,7 @@ import { checkConfiguredModel } from './modelHealth';
 import { LocalCopilotProvider } from './copilotProvider';
 import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
 import { createChatBugReport } from './chatBugReport';
+import { createSearchBugReport } from './searchBugReport';
 import { InstanceMonitor, deliverIncident, formatIncidentToolQueue, type MonitorProbe } from './instanceMonitor';
 import { recoverHeap } from './heapRecovery';
 import { z } from 'zod';
@@ -78,6 +79,7 @@ import {
   isRegisteredContainerAppUiUrl,
 } from './containerAppRegistry';
 import { DockerContainerService } from './dockerContainerService';
+import type { ContainerRecoveryPreview } from './containerRecovery';
 import { createGracefulShutdown } from './gracefulShutdown';
 import {
   readWindowBounds,
@@ -361,6 +363,19 @@ function createContainerService(): DockerContainerService {
       return response === 1;
     },
   });
+}
+
+async function confirmContainerRecovery(preview: ContainerRecoveryPreview): Promise<boolean> {
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    title: preview.title,
+    message: preview.title,
+    detail: preview.detail,
+    buttons: ['Cancel', 'Recover'],
+    defaultId: 0,
+    cancelId: 0,
+  });
+  return response === 1;
 }
 
 async function changeContainerProvider(value: unknown): Promise<void> {
@@ -1272,7 +1287,9 @@ function registerIpc(): void {
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
     return feedbackSender.send(id, requestId, serverId);
   });
-  ipcMain.handle('chat:report-bug', async (event, input: unknown) => {
+  for (const [channel, createReport] of [
+    ['chat:report-bug', createChatBugReport], ['search:report-bug', createSearchBugReport],
+  ] as const) ipcMain.handle(channel, async (event, input: unknown) => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
     const generation = containerEnvironmentGeneration;
     const environment = environmentManager.currentEnvironment;
@@ -1280,7 +1297,7 @@ function registerIpc(): void {
     const client = controlPlane();
     const config = await readStoredConfig(configFile);
     const token = instanceVault?.session(hostTaskOrigin(environment.mcpUrl));
-    return createChatBugReport(input, {
+    return createReport(input, {
       client,
       environment: { desktopVersion: desktopVersion(), desktopBuild: __WM_BUILD_TIMESTAMP__,
         backendUrl: environment.mcpUrl, platform: process.platform, arch: process.arch, processId: process.pid },
@@ -1312,6 +1329,10 @@ function registerIpc(): void {
     return environmentState(environmentManager.availableEnvironments);
   });
   ipcMain.handle('instances:list', () => dataTierSnapshot());
+  ipcMain.handle('instances:recover', async () => {
+    await requireDataTier().recover(confirmContainerRecovery);
+    return dataTierSnapshot();
+  });
   ipcMain.handle('container-provider:get', () => containerProvider);
   ipcMain.handle('container-provider:set', async (_event, value: unknown) => {
     await dataTierLaunch;
@@ -1770,6 +1791,23 @@ function registerIpc(): void {
         await containerAppClaim(scope.client, rawId),
         scope.signal,
       );
+    } finally {
+      scope.end();
+    }
+  });
+  ipcMain.handle('container:recover', async (_event, rawId: string) => {
+    if (containerOperations.size) throw new Error('Wait for container operations to finish before recovering ownership.');
+    const scope = beginContainerOperation();
+    try {
+      const claim = await containerAppClaim(scope.client, rawId);
+      await dockerContainers.recover(claim, async preview => {
+        const approved = await confirmContainerRecovery(preview);
+        scope.signal.throwIfAborted();
+        const current = await containerAppClaim(scope.client, rawId);
+        if (JSON.stringify(current) !== JSON.stringify(claim)) throw new Error('The Container App registration changed. Search again.');
+        return approved;
+      }, scope.signal);
+      return await dockerContainers.inspect(claim, scope.signal);
     } finally {
       scope.end();
     }
