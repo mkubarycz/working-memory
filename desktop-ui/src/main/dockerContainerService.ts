@@ -307,7 +307,7 @@ export class DockerContainerService {
         this.timeouts.inspect,
         signal,
       );
-      const parsed = await this.verifiedInspection(context, result.stdout, runtime.imageName, signal);
+      const parsed = await this.verifiedInspection(context, result.stdout, runtime.imageName, signal, this.ownership(context, claim.id));
       current = parsed[0] ?? null;
     } catch (error) {
       if (!isMissingContainer(error)) {
@@ -342,6 +342,11 @@ export class DockerContainerService {
           code: 'container_conflict',
           message: `Container "${runtime.containerName}" exists but is not managed by this claim.`,
         };
+      }
+      if (isRawImageId(current.Config?.Image ?? '') && (!portsMatch(current, runtime) || !volumesMatch(current, runtime)
+        || (current.Mounts?.length ?? 0) !== (runtime.volumes?.length ?? 0))) {
+        return { status: 'error', code: 'container_conflict',
+          message: 'The existing raw-ID container has different ports or data mounts. Restore the registered configuration before rebuilding.' };
       }
       try {
         await this.docker(
@@ -504,13 +509,19 @@ export class DockerContainerService {
     }
   }
 
-  private async verifiedInspection(context: string, raw: string, expectedImage: string, signal?: AbortSignal): Promise<DockerInspect[]> {
+  private async verifiedInspection(
+    context: string, raw: string, expectedImage: string, signal?: AbortSignal, allowImageDrift = false,
+  ): Promise<DockerInspect[]> {
     const containers = this.provider.inspect(raw, expectedImage) as DockerInspect[];
     for (const container of containers) {
       const reference = container.Config?.Image;
       if (!reference || !isRawImageId(reference)) continue;
       const image = await this.docker(context, ['image', 'inspect', '--format', '{{.Id}}', expectedImage], this.timeouts.inspect, signal);
-      if (!sameImageId(container.Image, image.stdout.trim()) || !sameImageId(reference, image.stdout.trim())) {
+      if (!sameImageId(container.Image, reference)) {
+        throw new Error('The raw container image ID does not match the registered image. Restore a verified image reference.');
+      }
+      if (!sameImageId(container.Image, image.stdout.trim())) {
+        if (allowImageDrift) continue;
         throw new Error('The raw container image ID does not match the registered image. Restore a verified image reference.');
       }
       container.Config!.Image = expectedImage;

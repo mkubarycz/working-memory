@@ -89,7 +89,7 @@ export function commitRecoveryMetadata(directory: string, files: z.infer<typeof 
   const backup = join(directory, 'recovery-backups', `${Date.now()}-${randomUUID()}.json`);
   mkdirSync(dirname(backup), { recursive: true });
   writeFileSync(backup, `${JSON.stringify(transaction)}\n`, { flag: 'wx', mode: 0o600 });
-  writeFileSync(join(directory, JOURNAL), `${JSON.stringify(transaction)}\n`, { flag: 'wx', mode: 0o600 });
+  atomicWrite(join(directory, JOURNAL), `${JSON.stringify(transaction)}\n`);
   try {
     for (const file of files) atomicWrite(join(directory, file.name), file.after);
     unlinkSync(join(directory, JOURNAL));

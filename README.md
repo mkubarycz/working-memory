@@ -137,7 +137,9 @@ only the selected, validated local provider. It requires a unique existing
 container matching the registration, verified local image content, labels, ports
 and storage; Container Apps also require their environment, network and resource
 settings to match. Backend recovery verifies all registered backends together;
-they must be running with their existing databases and healthy endpoints. Missing
+they must be running with their existing databases and healthy endpoints, with
+only the generated `/data` mount and `WM_CONTROL_PLANE_HOME=/data`. Extra or nested
+mounts and alternate database homes must be restored externally before recovery. Missing
 images must be restored locally before recovery; recovery never pulls an image.
 
 Review the native confirmation before approving. Recovery changes only desktop
@@ -146,16 +148,21 @@ volume/provisioning bindings. It never starts/recreates containers, initializes 
 copies data, changes credentials, or upgrades anything. It cannot transfer data
 between providers. Keep your normal database/volume backups: recovery backs up
 **metadata only**, under `recovery-backups` beside the ownership state. Interrupted
-metadata commits block management; **Recover...** first offers to restore the saved
+metadata commits block management and registration edits, including renames;
+**Recover...** first offers to restore the saved
 pre-recovery metadata, then searches again. Do not delete ownership files to force
 legacy adoption. After recovery, explicitly retry the desired operation (including
-Observability enablement).
+Observability enablement). The recovery journal is published atomically before
+ownership metadata is changed.
 
 Podman may omit a redundant tag from a digest-pinned image name. The desktop
 accepts that exact same-repository, same-digest form without relaxing claim or
 credential checks. A raw image ID is not a version: it is resolved against the
 registered local image and accepted only when the full image IDs match. Otherwise
-version/update discovery stays unknown.
+version/update discovery stays unknown. If an already-owned Container App uses a
+verified raw ID from an older local build, **Run** can recreate it with the current
+image after checking claim labels, ports and data mounts. Status and recovery
+checks still reject that image drift.
 
 - **Add instance** starts a new, empty data tier. The first instance uses
   `7717` when it is free; others use the next free port from 7719–7799 (7718

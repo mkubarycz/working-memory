@@ -367,6 +367,7 @@ export class DataTierManager {
       Config: z.object({
         Image: z.string(),
         Labels: z.record(z.string(), z.string()),
+        Env: z.array(z.string()).optional(),
       }),
       Mounts: z.array(z.object({
         Destination: z.string(), Source: z.string(),
@@ -380,6 +381,10 @@ export class DataTierManager {
     const expectedImage = instance.image ?? this.bundledTarget.image;
     if (recovery && (!container.Id || !container.State?.Running || container.Name?.replace(/^\//, '') !== names.container)) {
       throw new Error('Recovery requires the existing registered container to be running with its original name.');
+    }
+    const storeHomes = container.Config.Env?.filter(value => value.startsWith('WM_CONTROL_PLANE_HOME=')) ?? [];
+    if (recovery && (container.Mounts.length !== 1 || storeHomes.length !== 1 || storeHomes[0] !== 'WM_CONTROL_PLANE_HOME=/data')) {
+      throw new Error('Recovery requires only the registered /data mount and WM_CONTROL_PLANE_HOME=/data. Restore the generated backend storage configuration before retrying.');
     }
     if (recovery || isRawImageId(container.Config.Image)) {
       const image = await this.runner.run(docker, ['image', 'inspect', '--format', '{{.Id}}', expectedImage],
@@ -948,6 +953,7 @@ export class DataTierManager {
   }
 
   private writeInstances(instances: ManagedDataTierInstance[]): void {
+    assertNoInterruptedRecovery(this.options.stateDirectory);
     mkdirSync(this.options.stateDirectory, { recursive: true });
     const sorted = [...instances].sort((left, right) => left.port - right.port);
     writeFileSync(

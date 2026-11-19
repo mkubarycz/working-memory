@@ -12,6 +12,11 @@ import { ObservabilityContainer, OPENOBSERVE_IMAGE, observabilityAppId } from '.
 import type { ObservabilityStatus } from '../../control-plane/src/observability';
 import type { ClaimClient } from '../src/main/dockerContainerService';
 
+vi.mock('node:fs', async importOriginal => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  return { ...fs, writeFileSync: vi.fn(fs.writeFileSync) };
+});
+
 const directories: string[] = [];
 function directory(): string {
   const path = mkdtempSync(join(tmpdir(), 'wm-recovery-test-'));
@@ -78,11 +83,18 @@ function appFixture(privateEnvironment?: (claim: ContainerClaim) => Promise<Reco
     NetworkSettings: { Networks: { wm_default: {} } },
   };
   let candidates = 'container-id';
+  let localImageId = imageId;
   const { runner, calls } = providerRunner(args => {
     if (args[0] === 'container' && args[1] === 'ls') return candidates;
     if (args[0] === 'container' && args[1] === 'inspect') return JSON.stringify([current]);
-    if (args[0] === 'image' && args[1] === 'inspect') return imageId;
+    if (args[0] === 'image' && args[1] === 'inspect') return localImageId;
     if (args[0] === 'volume' && args[1] === 'inspect') return '[{}]';
+    if (args[0] === 'build' || (args[0] === 'container' && args[1] === 'rm')) return '';
+    if (args[0] === 'container' && args[1] === 'run') {
+      current.Image = localImageId;
+      current.Config.Image = claim.runtime!.imageName;
+      return current.Id;
+    }
     throw new Error(`Unexpected command: ${args.join(' ')}`);
   });
   const resources = [claim.id, 'volume:wm-test-app-data', `pending-volume:${claim.id}:wm-test-app-data`];
@@ -91,7 +103,8 @@ function appFixture(privateEnvironment?: (claim: ContainerClaim) => Promise<Reco
     provider: 'podman', stateDirectory: dir, runner, readiness: async () => true,
     privateEnvironment: () => privateEnvironment?.(claim) ?? Promise.resolve({ PRIVATE_SETTING: 'retained-secret' }),
   });
-  return { dir, claim, current, calls, resources, service, candidates: (value: string) => { candidates = value; } };
+  return { dir, claim, current, calls, resources, service, candidates: (value: string) => { candidates = value; },
+    localImage: (value: string) => { localImageId = value; } };
 }
 
 describe('explicit Container App recovery', () => {
@@ -173,6 +186,40 @@ describe('explicit Container App recovery', () => {
     expect(await f.service.inspect(f.claim)).toMatchObject({ ready: false, error: expect.stringContaining('does not match') });
   });
 
+  it.each(['registry', 'source'] as const)('recreates an owned raw-ID app after its %s image changes', async source => {
+    const f = appFixture();
+    await f.service.recover(f.claim, async () => true);
+    f.current.Config.Image = imageId.replace('sha256:', '');
+    f.localImage(`sha256:${'c'.repeat(64)}`);
+    Object.assign(f.claim.runtime!, { imageSource: source, buildContext: '/fixture/app', dockerfile: '/fixture/app/Dockerfile' });
+    expect(await f.service.inspect(f.claim)).toMatchObject({ ready: false, error: expect.stringContaining('does not match') });
+    const confirm = vi.fn(async () => true);
+    await expect(f.service.recover(f.claim, confirm)).rejects.toThrow('does not match');
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await f.service.launch(f.claim)).toMatchObject({ status: 'ready', action: 'recreated' });
+    expect(f.calls.filter(args => args[0] === 'container' && args[1] === 'rm')).toHaveLength(1);
+    expect(f.calls.find(args => args[0] === 'container' && args[1] === 'run')).toContain(
+      'type=volume,source=wm-test-app-data,destination=/data');
+    expect(f.calls.some(args => args[0] === 'volume' && ['create', 'rm'].includes(args[1]))).toBe(false);
+    expect(f.calls.some(args => args[0] === 'build')).toBe(source === 'source');
+  });
+
+  it.each(['label', 'volume', 'extra-mount', 'port', 'raw-id', 'owner'] as const)(
+    'does not recreate a drifted raw-ID app with unverified %s', async fault => {
+      const f = appFixture();
+      await f.service.recover(f.claim, async () => true);
+      f.current.Config.Image = imageId;
+      f.localImage(`sha256:${'c'.repeat(64)}`);
+      if (fault === 'label') f.current.Config.Labels[CLAIM_LABEL] = 'other-claim';
+      if (fault === 'volume') f.current.Mounts[0].Name = 'other-data';
+      if (fault === 'extra-mount') f.current.Mounts.push({ Type: 'volume', Name: 'other-data', Destination: '/data/active' });
+      if (fault === 'port') f.current.HostConfig.PortBindings['5080/tcp'][0].HostIp = '0.0.0.0';
+      if (fault === 'raw-id') f.current.Config.Image = 'd'.repeat(64);
+      if (fault === 'owner') writeFileSync(join(f.dir, ownershipFileName(f.claim.id)), JSON.stringify(oldOwner));
+      expect(await f.service.launch(f.claim)).toMatchObject({ status: 'error' });
+      expect(f.calls.some(args => args[0] === 'container' && ['rm', 'run', 'start', 'stop'].includes(args[1]))).toBe(false);
+    });
+
   it('completes observability enablement after recovery through real service matching and authenticated bootstrap', async () => {
     const url = 'http://127.0.0.1:7719/mcp';
     const credentials = { username: 'test@example.invalid', password: 'a-retained-password-with-at-least-32-characters' };
@@ -241,7 +288,7 @@ function backendFixture() {
       Id: `backend-${instance.port}`, Name: `/${names.container}`, Image: imageId,
       Config: { Image: imageId.replace('sha256:', ''), Labels: {
         'com.docker.compose.project': names.project, 'com.docker.compose.service': 'control-plane',
-      } },
+      }, Env: ['WM_CONTROL_PLANE_HOME=/data'] },
       Mounts: [{ Type: 'volume', Name: names.volume, Source: '/engine/volume', Destination: '/data' }],
       State: { Running: true },
       NetworkSettings: { Ports: { [`${instance.port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(instance.port) }] } },
@@ -294,7 +341,8 @@ describe('explicit backend recovery', () => {
     expect(f.manager.instances[0].connection).toBe(oldOwner.connection);
   });
 
-  it.each(['volume', 'image', 'label', 'loopback', 'missing', 'changed'] as const)(
+  it.each(['volume', 'image', 'label', 'loopback', 'missing', 'changed',
+    'nested-mount', 'extra-mount', 'store-home', 'missing-home', 'duplicate-home'] as const)(
     'refuses unsafe backend recovery without changing registrations: %s', async fault => {
       const f = backendFixture();
       if (fault === 'volume') f.containers[1].Mounts[0].Name = 'other';
@@ -302,17 +350,56 @@ describe('explicit backend recovery', () => {
       if (fault === 'label') f.containers[1].Config.Labels['com.docker.compose.project'] = 'other';
       if (fault === 'loopback') f.containers[1].NetworkSettings.Ports['7720/tcp'][0].HostIp = '0.0.0.0';
       if (fault === 'missing') f.containers.pop();
+      if (fault === 'nested-mount' || fault === 'extra-mount') f.containers[1].Mounts.push({
+        Type: 'volume', Name: 'other-data', Source: '/engine/other-data',
+        Destination: fault === 'nested-mount' ? '/data/active' : '/other',
+      });
+      if (fault === 'store-home') f.containers[1].Config.Env = ['WM_CONTROL_PLANE_HOME=/data/active'];
+      if (fault === 'missing-home') f.containers[1].Config.Env = [];
+      if (fault === 'duplicate-home') f.containers[1].Config.Env.push('WM_CONTROL_PLANE_HOME=/data/active');
       const registrations = readFileSync(join(f.dir, 'instances.json'), 'utf8');
-      await expect(f.manager.recover(async () => {
+      const confirm = vi.fn(async () => {
         if (fault === 'changed') f.containers[0].Id = 'changed-container';
         return true;
-      })).rejects.toThrow();
+      });
+      await expect(f.manager.recover(confirm)).rejects.toThrow();
+      if (fault !== 'changed') expect(confirm).not.toHaveBeenCalled();
       expect(readFileSync(join(f.dir, 'instances.json'), 'utf8')).toBe(registrations);
       expect(readContainerOwnership(join(f.dir, 'ownership'), 'data-tier')).toEqual(oldOwner);
     });
+
+  it('blocks renaming until interrupted recovery restores the saved registrations', async () => {
+    const f = backendFixture();
+    const name = f.manager.instances[0].name;
+    const registrations = readFileSync(join(f.dir, 'instances.json'), 'utf8');
+    const files = [metadataFile(f.dir, 'instances.json', registrations)];
+    writeFileSync(join(f.dir, 'ownership-recovery.json'), JSON.stringify({ files }));
+    await expect(f.manager.rename(7719, 'Changed during recovery')).rejects.toThrow('interrupted');
+    expect(readFileSync(join(f.dir, 'instances.json'), 'utf8')).toBe(registrations);
+    expect(f.manager.instances[0].name).toBe(name);
+    expect(await f.manager.recover(async () => true)).toBe(true);
+    expect(await f.manager.rename(7719, 'Renamed after recovery')).toMatchObject({ name: 'Renamed after recovery' });
+  });
 });
 
 describe('recoverable metadata commits', () => {
+  it('does not publish a partial journal or change metadata when its write fails', async () => {
+    const dir = directory();
+    writeFileSync(join(dir, 'instances.json'), 'before');
+    const files = [metadataFile(dir, 'instances.json', 'after')];
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    vi.mocked(writeFileSync).mockImplementationOnce(fs.writeFileSync).mockImplementationOnce(path => {
+      fs.writeFileSync(path, '{"files":');
+      throw new Error('simulated disk full');
+    });
+    expect(() => commitRecoveryMetadata(dir, files)).toThrow('simulated disk full');
+    expect(existsSync(join(dir, 'ownership-recovery.json'))).toBe(false);
+    expect(readFileSync(join(dir, 'instances.json'), 'utf8')).toBe('before');
+    expect(readdirSync(join(dir, 'recovery-backups'))).toHaveLength(1);
+    expect(() => commitRecoveryMetadata(dir, files)).not.toThrow();
+    expect(readFileSync(join(dir, 'instances.json'), 'utf8')).toBe('after');
+  });
+
   it('retains the original metadata backup and requires approval to roll back an interrupted commit', async () => {
     const dir = directory();
     writeFileSync(join(dir, 'instances.json'), 'before');
