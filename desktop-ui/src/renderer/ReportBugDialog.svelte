@@ -3,10 +3,11 @@
   import type { ChatBugReportDraft } from '../shared/contracts';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
 
-  let { capture, evidenceDescription, onClose }: {
+  let { capture, evidenceDescription, onClose, sessionOnly = false }: {
     capture: (description: string) => Promise<ChatBugReportDraft>;
     evidenceDescription: string;
     onClose: () => void;
+    sessionOnly?: boolean;
   } = $props();
   let dialog = $state<HTMLDialogElement>();
   let description = $state('');
@@ -34,7 +35,7 @@
 </script>
 
 {#if report}
-  <ShareTopicDialog topic={report} preview={report.body} beforeShare={() => Promise.resolve()} {onClose} />
+  <ShareTopicDialog topic={report} preview={report.body} sessionOnly={report.sessionOnly ?? false} beforeShare={() => Promise.resolve()} {onClose} />
 {:else}
   <dialog bind:this={dialog} aria-labelledby="report-bug-title"
     oncancel={event => { event.preventDefault(); if (!creating) onClose(); }}>
@@ -45,7 +46,9 @@
     <p>{evidenceDescription}</p>
     <p>Known credentials and recognized secret fields are redacted. Review the report before sharing.
       Prompt images are referenced, not uploaded; other conversations and general log files are not included.</p>
-    <p>A local report topic is created first and kept even if you cancel sending. Reporting does not interrupt or change the operation.</p>
+    <p>{sessionOnly
+      ? 'This report can be sent even when the backend is offline. It is not saved as a topic; canceling discards the preview. Click Send on the next screen to publish it.'
+      : 'A local report topic is created first and kept even if you cancel sending. Reporting does not interrupt or change the operation.'}</p>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <footer>
       <button onclick={onClose} disabled={creating}>Cancel</button>

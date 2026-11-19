@@ -23,7 +23,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         enabled: false, search: false, observability: false, writes: [], reads: 0, activeReads: 0, maxReads: 0, changes: [],
         pauseRead: false, releaseRead: null, failSave: false, failPoll: false,
         embeddings: false, embeddingActions: [], failEmbeddingSave: false, failEmbeddingPoll: false, repairFailure: false,
-        ownershipConflict: false, recoveries: 0,
+        ownershipConflict: false, recoveries: 0, inspections: 0, timeout: false,
+        reports: [], sends: [], failReport: false,
       };
       const localEmbeddings = new LocalEmbeddings(() => ({
         endpoint: 'http://127.0.0.1:7717/mcp',
@@ -71,6 +72,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           } finally { state.activeReads--; }
         },
         async setInstanceFeatures(input) {
+          if (state.timeout) throw new Error('podman info did not respond within 30s. This does not confirm that Podman is stopped.');
           if (input.observability !== undefined && state.ownershipConflict) throw new Error('Container App ownership conflict');
           if (state.failSave) { state.failSave = false; throw new Error('Feature save failed'); }
           state.writes.push(input);
@@ -80,11 +82,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           return { hostTasks: state.enabled, search: state.search, observability: state.observability };
         },
         async listContainerApps() { return [{ id: 'observability-claim', nativeSurface: 'observability' }]; },
-        async inspectContainerApp() { return { id: 'observability-claim', recoveryAvailable: state.ownershipConflict }; },
+        async inspectContainerApp() { state.inspections++; return { id: 'observability-claim', recoveryAvailable: state.ownershipConflict }; },
         async recoverContainerApp() {
           state.recoveries++; state.ownershipConflict = false;
           return { id: 'observability-claim', recoveryAvailable: false, error: null };
         },
+        async createFeatureBugReport(input) {
+          state.reports.push(input);
+          if (state.failReport) throw new Error('Report storage unavailable');
+          return { id: 'feature-report', title: 'Feature settings bug', body: 'podman info timeout with command timings' };
+        },
+        async prepareFeedback() { return { servers: [{ id: 'feedback', name: 'Feedback', address: '127.0.0.1', port: 7720 }],
+          context: { desktop: { version: 'fixture', build: 'fixture' }, backend: { version: 'fixture' } } }; },
+        async sendFeedback(...args) { state.sends.push(args); return { status: 'sent', receipt: { title: 'Feature report', duplicate: false } }; },
       };
       const target = document.createElement('main');
       target.className = 'settings';
@@ -124,7 +134,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         app.setPath('userData', ${JSON.stringify(join(directory, 'profile'))});
         app.whenReady().then(async () => {
           const window = new BrowserWindow({ show: false, webPreferences: { backgroundThrottling: false } });
-          const evaluate = code => window.webContents.executeJavaScript(code);
+          const evaluate = async code => {
+            try { return await window.webContents.executeJavaScript(code); }
+            catch (error) { throw new Error('Renderer evaluation failed: ' + code, { cause: error }); }
+          };
           const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
           async function wait(code) {
             const until = Date.now() + 7000;
@@ -137,6 +150,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await window.loadURL('http://127.0.0.1:${address.port}/features-test.html');
           await wait("document.querySelector('[role=switch]') && !document.querySelector('[role=switch]').disabled");
           assert.equal(await evaluate("document.querySelectorAll('button').length"), 0);
+          assert.equal(await evaluate("document.querySelectorAll('.hint').length"), 0);
           assert.equal(await evaluate("document.querySelector('[role=switch]').checked"), false);
           assert.equal(await evaluate("document.querySelectorAll('[role=switch]').length"), 4);
           await evaluate("document.querySelector('[aria-label=\\"Observability Container App\\"]').click()");
@@ -154,7 +168,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("window.__featuresTest.embeddings && !document.querySelector('[aria-label=Embeddings]').disabled");
           assert.deepEqual(await evaluate("window.__featuresTest.embeddingActions"), ['enable']);
           await evaluate("window.__featuresTest.failEmbeddingSave = true; document.querySelector('[aria-label=Embeddings]').click()");
-          await wait("document.querySelector('[role=alert]')?.textContent === 'Embedding enable failed'");
+          await wait("document.querySelector('.feature-error-message')?.textContent === 'Embedding enable failed'");
           assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').checked"), true);
           await evaluate("window.__featuresTest.repairFailure = true; window.__featuresTest.remount()");
           await wait("document.querySelector('[role=alert]')?.textContent.includes('Automatic WSL route repair failed: Private WSL route blocked')");
@@ -164,7 +178,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("!window.__featuresTest.embeddings && !document.querySelector('[role=alert]')");
           assert.deepEqual(await evaluate("window.__featuresTest.embeddingActions"), ['enable', 'disable']);
           await evaluate("window.__featuresTest.failEmbeddingPoll = true");
-          await wait("document.querySelector('[role=alert]')?.textContent === 'Embedding feature unavailable'");
+          await wait("document.querySelector('.feature-error-message')?.textContent === 'Embedding feature unavailable'");
           assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').disabled"), true);
           assert.equal(await evaluate("document.querySelector('[aria-label=\\"Host tasks\\"]').disabled"), false);
           await evaluate("window.__featuresTest.failEmbeddingPoll = false");
@@ -184,24 +198,51 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("document.querySelector('[role=switch]').checked"), false);
           assert.equal(await evaluate("window.__featuresTest.changes.at(-1)"), false);
           await evaluate("window.__featuresTest.failSave = true; document.querySelector('[role=switch]').click()");
-          await wait("document.querySelector('[role=alert]')?.textContent === 'Feature save failed'");
+          await wait("document.querySelector('.feature-error-message')?.textContent === 'Feature save failed'");
           assert.equal(await evaluate("document.querySelector('[role=switch]').checked"), false);
           await delay(2200);
-          assert.equal(await evaluate("document.querySelector('[role=alert]').textContent"), 'Feature save failed');
+          assert.equal(await evaluate("document.querySelector('.feature-error-message').textContent"), 'Feature save failed');
           await evaluate("document.querySelector('[role=switch]').click()");
           await wait("!document.querySelector('[role=alert]') && window.__featuresTest.enabled");
           await evaluate("window.__featuresTest.failPoll = true");
-          await wait("document.querySelector('[role=alert]')?.textContent === 'Feature refresh failed'");
+          await wait("document.querySelector('.feature-error-message')?.textContent === 'Feature refresh failed'");
           await evaluate("window.__featuresTest.failPoll = false; window.__featuresTest.enabled = false");
           await wait("!document.querySelector('[role=alert]') && !document.querySelector('[role=switch]').checked");
           assert.equal(await evaluate("window.__featuresTest.maxReads"), 1);
           assert.equal(await evaluate("window.__featuresTest.search"), true);
           await evaluate("window.__featuresTest.observability = false");
           await wait("!document.querySelector('[aria-label=\\"Observability Container App\\"]').checked");
+          const inspectionsBeforeTimeout = await evaluate("window.__featuresTest.inspections");
+          await evaluate("window.__featuresTest.timeout = true; document.querySelector('[aria-label=\\"Observability Container App\\"]').click()");
+          await wait("document.querySelector('.feature-error-message')?.textContent.includes('podman info did not respond')");
+          await wait("!document.querySelector('[aria-label=\\"Observability Container App\\"]').disabled");
+          assert.equal(await evaluate("window.__featuresTest.inspections"), inspectionsBeforeTimeout);
+          assert.equal(await evaluate("document.querySelector('[aria-label=\\"Observability Container App\\"]').checked"), false);
+          assert.equal(await evaluate("(()=>{const c=getComputedStyle(document.querySelector('.feature-error')).color.match(/[0-9]+/g).map(Number);return c[0]>c[1]*2&&c[0]>c[2]*2;})()"), true);
+          await evaluate("document.querySelector('.feature-error .report-bug-link').click()");
+          await wait("document.querySelector('dialog:modal textarea')");
+          await evaluate("window.__featuresTest.timeout=false;window.__featuresTest.observability=true;window.__featuresTest.failReport=true;(()=>{const t=document.querySelector('dialog textarea');t.value='Observability is stuck';t.dispatchEvent(new Event('input',{bubbles:true}));})()");
+          await evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Create report').click()");
+          await wait("document.querySelector('dialog [role=alert]')?.textContent.includes('Report storage unavailable')");
+          await evaluate("window.__featuresTest.failReport=false;Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Create report').click()");
+          await wait("document.querySelector('details pre')");
+          const report = await evaluate("window.__featuresTest.reports.at(-1)");
+          assert.equal(report.failure.error.includes('podman info'), true);
+          assert.equal(report.failure.operation, 'instance:set-features');
+          assert.equal(report.failure.features.observability, false);
+          assert.deepEqual(report.failure.requested, {feature:'observability',enabled:true});
+          assert.equal(await evaluate("window.__featuresTest.sends.length"), 0);
+          await evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Send').click()");
+          await wait("window.__featuresTest.sends.length===1 && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Done')");
+          await evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Done').click()");
+          await wait("!document.querySelector('dialog')");
+          await evaluate("window.__featuresTest.observability=false;window.__featuresTest.remount()");
+          await wait("document.querySelector('[aria-label=\\"Observability Container App\\"]')?.disabled===false");
           await evaluate("window.__featuresTest.ownershipConflict = true; document.querySelector('[aria-label=\\"Observability Container App\\"]').click()");
           await wait("Array.from(document.querySelectorAll('button')).some(button => button.textContent === 'Recover…' && !button.disabled)");
           await evaluate("Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Recover…').click()");
-          await wait("window.__featuresTest.recoveries === 1 && document.querySelector('[role=alert]')?.textContent.includes('Enable Observability')");
+          await wait("window.__featuresTest.recoveries === 1 && Array.from(document.querySelectorAll('[role=status]')).some(e=>e.textContent.includes('Enable Observability'))");
+          assert.equal(await evaluate("document.querySelector('.feature-error')"), null);
           assert.equal(await evaluate("window.__featuresTest.observability"), false);
           await evaluate("document.querySelector('[aria-label=\\"Observability Container App\\"]').click()");
           await wait("window.__featuresTest.observability && !document.querySelector('[role=alert]')");

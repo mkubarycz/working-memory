@@ -7,6 +7,7 @@ import { X509Certificate } from 'node:crypto';
 import { createServer, type Server } from 'node:https';
 import { serializeFeedback, postFeedback, FeedbackSender, recordFeedbackReceipt } from '../src/main/topicSharing';
 import { discoverFeedbackServers } from '../src/main/feedbackDiscovery';
+import { BackendBugReports } from '../src/main/backendBugReport';
 import type { FeedbackDestination } from '../src/main/feedbackDiscovery';
 
 vi.mock('../src/main/feedbackDiscovery', () => ({ discoverFeedbackServers: vi.fn() }));
@@ -57,6 +58,33 @@ async function receiver(onBody: (body: string) => void = () => {}): Promise<Feed
 }
 
 describe('automatic encrypted feedback', () => {
+  it('sends an offline backend report through Feedback without querying or writing the failed backend', async () => {
+    let payload: { topic: { body: string }; attachments: unknown[] } | undefined;
+    const destination = await receiver(body => { payload = JSON.parse(body); });
+    vi.mocked(discoverFeedbackServers).mockResolvedValue([destination]);
+    const backendFetch = vi.fn().mockRejectedValue(new Error('Backend is offline'));
+    vi.stubGlobal('fetch', backendFetch);
+    const reports = new BackendBugReports();
+    const draft = reports.create({
+      description: 'Cannot upgrade', failure: { error: 'bind: address already in use', operation: '7717:upgrade',
+        capturedAt: '2026-11-19T15:00:00.000Z', provider: 'podman',
+        instance: null, backendChannel: 'stable', backendTarget: { version: '2.0.0', image: 'backend:2.0.0' } },
+    }, { secrets: [], environment: { desktopVersion: '1.0.0', desktopBuild: 'fixture',
+      backendUrl: 'http://127.0.0.1:7717/mcp', platform: 'win32', arch: 'x64', processId: 123 },
+    upgradeFailure: () => undefined });
+    const sender = new FeedbackSender(async id => {
+      const source = reports.feedbackSource(id);
+      if (!source) throw new Error('Missing backend report');
+      return source;
+    });
+    await sender.prepare(draft.id, requestId);
+    expect(payload).toBeUndefined();
+    expect(await sender.send(draft.id, requestId, destination.id)).toEqual({ status: 'sent', receipt: received(destination) });
+    expect(payload?.topic.body).toContain('bind: address already in use');
+    expect(payload?.attachments).toEqual([]);
+    expect(backendFetch).not.toHaveBeenCalled();
+  });
+
   it('serializes screenshot bytes and stable request identity without modifying source Markdown', async () => {
     const topic = { title: 'A bug', body: `![Shot](wm-attachment:${imageId})`, topicType: 'bug' };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(Buffer.from('image'), { headers: { 'content-type': 'image/png' } })));

@@ -41,6 +41,14 @@ export class ContainerProviderAdapter {
   readonly provider: ContainerProvider;
   readonly label: string;
   private readonly connections = new Map<string, Connection>();
+  private readonly commands: Array<{
+    command: string; startedAt: string; durationMs: number; timeoutMs: number; status: 'success' | 'error';
+    code?: string;
+  }> = [];
+
+  diagnostics() {
+    return { provider: this.provider, commands: this.commands.map(command => ({ ...command })) };
+  }
 
   constructor(private readonly options: ContainerProviderOptions) {
     this.provider = options.provider ?? 'docker';
@@ -66,13 +74,39 @@ export class ContainerProviderAdapter {
     return { file, env };
   }
 
+  private async execute(file: string, args: string[], options: CommandRunOptions, commandArgs = args): Promise<CommandResult> {
+    const operation = ['system', 'machine', 'context', 'container', 'image', 'volume', 'compose'].includes(commandArgs[0])
+      ? commandArgs.slice(0, 2).join(' ') : commandArgs[0];
+    const command = `${this.provider} ${operation}`;
+    const startedAt = new Date().toISOString();
+    const start = performance.now();
+    let status: 'success' | 'error' = 'success';
+    let code: string | undefined;
+    try {
+      return await this.options.runner.run(file, args, options);
+    } catch (error) {
+      status = 'error';
+      code = error instanceof Error && 'code' in error ? String(error.code) : undefined;
+      if (code === 'ETIMEDOUT') {
+        throw Object.assign(new Error(`${command} did not respond within ${options.timeoutMs / 1000}s. `
+          + `This does not confirm that ${this.label} is stopped. Retry when the machine is responsive, or report this error.`, { cause: error }),
+        { code, timeoutMs: options.timeoutMs });
+      }
+      throw error;
+    } finally {
+      this.commands.push({ command, startedAt, durationMs: Math.round(performance.now() - start),
+        timeoutMs: options.timeoutMs, status, ...(code ? { code } : {}) });
+      if (this.commands.length > 32) this.commands.shift();
+    }
+  }
+
   private raw(args: string[], options: CommandRunOptions): Promise<CommandResult> {
     const { file, env } = this.executable();
-    return this.options.runner.run(file, args, { ...options, env });
+    return this.execute(file, args, { ...options, env });
   }
 
   async resolve(signal?: AbortSignal): Promise<string> {
-    const options = { timeoutMs: 10_000, signal };
+    const options = { timeoutMs: this.provider === 'podman' ? 30_000 : 10_000, signal };
     const { env } = this.executable();
     if (this.provider === 'podman') {
       const result = await this.raw(['system', 'connection', 'list', '--format', 'json'], options);
@@ -146,7 +180,7 @@ export class ContainerProviderAdapter {
     const selected = this.connections.get(connection);
     if (!selected) throw new Error(`${this.label} connection has not been validated.`);
     const { file } = this.executable();
-    return this.options.runner.run(file, [...selected.args, ...args], { ...options, env: selected.env });
+    return this.execute(file, [...selected.args, ...args], { ...options, env: selected.env }, args);
   }
 
   identity(connection: string): string {
@@ -195,7 +229,7 @@ export class ContainerProviderAdapter {
     try {
       await this.run(connection, ['compose', 'version'], options);
     } catch (error) {
-      throw new Error(`${this.label} Compose is missing or unavailable. Install working Compose support for ${this.label}, then Retry. ${detail(error)}`);
+      throw new Error(`${this.label} Compose is missing or unavailable. Install working Compose support for ${this.label}, then Retry. ${detail(error)}`, { cause: error });
     }
   }
 
@@ -205,7 +239,7 @@ export class ContainerProviderAdapter {
       // checked over HTTP by the caller, not delegated to Compose's optional --wait.
       await this.run(connection, ['compose', '--file', file, 'up', '--detach', '--no-build'], options);
     } catch (error) {
-      throw new Error(`${this.label} Compose could not start the backend. Retry after correcting the reported error. ${detail(error)}`);
+      throw new Error(`${this.label} Compose could not start the backend. Retry after correcting the reported error. ${detail(error)}`, { cause: error });
     }
   }
 }

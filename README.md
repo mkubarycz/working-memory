@@ -1481,6 +1481,31 @@ scores and confidence reasons, answer blocks, activity timings, and errors when
 clicked. Evidence is bounded with explicit truncation/omission markers and uses
 the same credential/media redaction, local report preview, and explicit Feedback
 Send flow as chat reports; it does not rerun or cancel the search.
+Settings > Features keeps help text in the feature rows rather than paragraphs
+below the switches. Failures appear in a red error panel with **Report a bug**.
+The report snapshots the selected error, feature state and requested change, plus
+the latest failed Observability operation's provider commands, durations and timeout
+limits. Command output, environment variables and private credentials are not
+collected by these command timings. Reporting uses the same local preview and
+explicit Feedback Send flow; it does not retry feature setup or run more provider
+checks.
+
+Settings > System > Backend shows failed operations in a red error panel with
+**Report a bug**. Upgrade reports include the selected error, pre-operation
+instance/version and port, requested target, generated Compose configuration,
+bounded original Compose error output, and provider command timings. Reporting
+does not retry the upgrade, stop containers, change ports, or modify storage.
+Backend reports are previewed in the desktop session rather than written to
+the affected backend, so they can be sent while that backend is offline.
+Canceling discards the preview; explicit **Send** publishes it to a discovered
+Feedback server and provides a status link. No source topic is created or edited.
+
+Podman connection discovery and engine probes allow up to 30 seconds per command
+(Docker remains at 10 seconds). A timeout identifies the command that did not
+respond; it is not proof that the provider is stopped or that Compose is missing.
+After a timeout, the Features page does not immediately repeat container discovery
+to look for ownership recovery. Ownership-conflict errors still offer recovery.
+
 Answer **What was the bug?** to create a separate local report topic, then review
 the captured report in the existing Feedback dialog and explicitly click **Send**.
 The local report remains if discovery fails or you cancel delivery; the original

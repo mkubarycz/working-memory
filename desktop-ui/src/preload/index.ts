@@ -60,6 +60,8 @@ const api: DesktopApi = {
   sendFeedback: (id, requestId, serverId) => invoke('feedback:send', id, requestId, serverId),
   createChatBugReport: (input) => invoke('chat:report-bug', input),
   createSearchBugReport: (input) => invoke('search:report-bug', input),
+  createFeatureBugReport: (input) => invoke('features:report-bug', input),
+  createBackendBugReport: (input) => invoke('backend:report-bug', input),
   startDocumentChanges: () => invoke('documents:watch'),
   onDocumentChanges: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);

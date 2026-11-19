@@ -569,7 +569,7 @@ describe('DockerContainerService', () => {
     }).ensure(client(), desired)).resolves.toMatchObject({
       status: 'error',
       code: 'docker_timeout',
-      message: expect.stringContaining('123ms'),
+      message: expect.stringContaining('docker build did not respond within 0.123s'),
     });
 
     const runner = localRunner(async (args) => {

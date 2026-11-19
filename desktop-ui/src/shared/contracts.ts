@@ -435,7 +435,32 @@ export interface ChatBugReportInput {
   };
   renderer: { conversationBlocked: boolean; localRequestActive: boolean };
 }
-export interface ChatBugReportDraft { id: string; title: string; body: string }
+export interface ChatBugReportDraft { id: string; title: string; body: string; sessionOnly?: boolean }
+
+export interface BackendBugReportInput {
+  description: string;
+  failure: {
+    error: string;
+    operation: string;
+    capturedAt: string;
+    provider: 'docker' | 'podman';
+    instance: DataTierInstanceStatus | null;
+    backendChannel: UpdateChannel | null;
+    backendTarget: BackendUpdateTarget | null;
+  };
+}
+
+export interface FeatureBugReportInput {
+  description: string;
+  failure: {
+    error: string;
+    operation: string;
+    capturedAt: string;
+    features: import('../../../control-plane/src/instanceFeatures').InstanceFeatures | null;
+    requested?: { feature: string; enabled: boolean };
+    embeddingsEnabled: boolean;
+  };
+}
 
 export interface SearchBugReportInput {
   description: string;
@@ -469,6 +494,8 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
   createChatBugReport(input: ChatBugReportInput): Promise<ChatBugReportDraft>;
   createSearchBugReport(input: SearchBugReportInput): Promise<ChatBugReportDraft>;
+  createFeatureBugReport(input: FeatureBugReportInput): Promise<ChatBugReportDraft>;
+  createBackendBugReport(input: BackendBugReportInput): Promise<ChatBugReportDraft>;
   startDocumentChanges(): Promise<void>;
   onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;

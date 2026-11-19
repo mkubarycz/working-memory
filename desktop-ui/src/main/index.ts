@@ -42,6 +42,8 @@ import { LocalCopilotProvider } from './copilotProvider';
 import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
 import { createChatBugReport } from './chatBugReport';
 import { createSearchBugReport } from './searchBugReport';
+import { createFeatureBugReport } from './featureBugReport';
+import { BackendBugReports } from './backendBugReport';
 import { InstanceMonitor, deliverIncident, formatIncidentToolQueue, type MonitorProbe } from './instanceMonitor';
 import { recoverHeap } from './heapRecovery';
 import { z } from 'zod';
@@ -151,6 +153,7 @@ const WINDOW_STATE_SAVE_DELAY_MS = 250;
 let configFile = '';
 let credentialVault: DesktopCredentialVault | null = null;
 let feedbackSender: FeedbackSender | undefined;
+const backendBugReports = new BackendBugReports();
 let instanceMonitor: InstanceMonitor | undefined;
 let credentialMigrationError = '';
 let environmentFile = '';
@@ -176,6 +179,11 @@ let instanceVault: HostTaskCredentialVault | null = null;
 let instanceIdentity: DesktopInstanceIdentity | null = null;
 let hostScripts: ReturnType<typeof registerHostScriptIpc> | undefined;
 let observabilityContainer: ObservabilityContainer | undefined;
+let featureFailure: {
+  mcpUrl: string; capturedAt: string; durationMs: number; error: string;
+  requested: import('../../../control-plane/src/instanceFeatures').InstanceFeatureUpdate;
+  diagnostics: ReturnType<DockerContainerService['diagnostics']>;
+} | undefined;
 const observabilitySurface = new ObservabilitySurface();
 const surfaceBoundsSchema = z.object({
   x: z.number().finite(), y: z.number().finite(),
@@ -1083,7 +1091,17 @@ function registerIpc(): void {
     ensureCurrent: () => void) => {
     if (flags.observability === undefined) return identity.setFeatures(mcpUrl, flags);
     const scope = beginContainerOperation();
-    try { return await observabilityContainer!.change(mcpUrl, flags, scope.client, dockerContainers, ensureCurrent, scope.signal); }
+    const service = dockerContainers;
+    const startedAt = Date.now();
+    featureFailure = undefined;
+    try { return await observabilityContainer!.change(mcpUrl, flags, scope.client, service, ensureCurrent, scope.signal); }
+    catch (error) {
+      const diagnostics = service.diagnostics();
+      featureFailure = { mcpUrl, capturedAt: new Date().toISOString(), durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error), requested: flags,
+        diagnostics: { ...diagnostics, commands: diagnostics.commands.filter(command => Date.parse(command.startedAt) >= startedAt) } };
+      throw error;
+    }
     finally { scope.end(); }
   };
   const observabilityTarget = async (mcpUrl: string, ensureCurrent: () => void, claimId?: string) => {
@@ -1287,8 +1305,24 @@ function registerIpc(): void {
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
     return feedbackSender.send(id, requestId, serverId);
   });
+  ipcMain.handle('backend:report-bug', async (event, input: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const config = await readStoredConfig(configFile);
+    return backendBugReports.create(input, {
+      environment: { desktopVersion: desktopVersion(), desktopBuild: __WM_BUILD_TIMESTAMP__,
+        backendUrl: environmentManager.currentEnvironment?.mcpUrl ?? null,
+        platform: process.platform, arch: process.arch, processId: process.pid },
+      secrets: [...modelProfiles(config).map(profile => decryptApiKey(profile)),
+        ...environmentManager.availableEnvironments.flatMap(environment => {
+          const token = instanceVault?.session(hostTaskOrigin(environment.mcpUrl));
+          return token ? [token] : [];
+        })],
+      upgradeFailure: port => dataTier?.upgradeFailure(port),
+    });
+  });
   for (const [channel, createReport] of [
     ['chat:report-bug', createChatBugReport], ['search:report-bug', createSearchBugReport],
+    ['features:report-bug', createFeatureBugReport],
   ] as const) ipcMain.handle(channel, async (event, input: unknown) => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
     const generation = containerEnvironmentGeneration;
@@ -1302,6 +1336,7 @@ function registerIpc(): void {
       environment: { desktopVersion: desktopVersion(), desktopBuild: __WM_BUILD_TIMESTAMP__,
         backendUrl: environment.mcpUrl, platform: process.platform, arch: process.arch, processId: process.pid },
       diagnostics: id => chatAgent.diagnostics(id),
+      featureDiagnostics: featureFailure?.mcpUrl === environment.mcpUrl ? featureFailure : undefined,
       secrets: [...modelProfiles(config).map(profile => decryptApiKey(profile)), ...(token ? [token] : [])],
       assertCurrent: () => {
         if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed. Reopen Report a bug.');
@@ -2204,6 +2239,8 @@ if (!ownsSingleInstanceLock) {
       join(app.getPath('userData'), 'credential-vault.key'),
     );
     feedbackSender = new FeedbackSender(async (id) => {
+      const backendReport = backendBugReports.feedbackSource(id);
+      if (backendReport) return backendReport;
       const client = controlPlane();
       const environment = environmentManager.currentEnvironment;
       if (!environment) throw new Error('No Working Memory environment is selected.');
