@@ -1490,6 +1490,15 @@ collected by these command timings. Reporting uses the same local preview and
 explicit Feedback Send flow; it does not retry feature setup or run more provider
 checks.
 
+When replacing a registered running Podman backend, Working Memory prepares the
+new image first, verifies the existing container's ownership, image, data mount
+and loopback port, then explicitly stops that container before Compose starts
+its replacement on the same port. The existing external data volume or bind mount
+is retained. If replacement fails after the stop, the error says so; check the
+instance status and use **Start** or retry the update after resolving the error.
+Working Memory does not kill unrelated listeners, choose a different port, or
+remove data volumes to make an upgrade succeed.
+
 Settings > System > Backend shows failed operations in a red error panel with
 **Report a bug**. Upgrade reports include the selected error, pre-operation
 instance/version and port, requested target, generated Compose configuration,

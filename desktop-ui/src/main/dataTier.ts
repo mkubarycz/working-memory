@@ -934,10 +934,23 @@ export class DataTierManager {
       }
     }
     const composeFile = this.writeComposeFile(port, image);
+    let stoppedForReplacement = false;
+    if (existing && this.provider.provider === 'podman') {
+      const current = (await this.containers(docker, env)).get(dataTierInstanceNames(port).container);
+      if (current?.state === 'running') {
+        await this.verifyInstanceContainer(docker, env, existing);
+        await this.run(docker, env, ['stop', dataTierInstanceNames(port).container],
+          'start-failed', 'Unable to stop the existing backend before replacing it. The upgrade was not started.');
+        stoppedForReplacement = true;
+      }
+    }
     try {
       await this.provider.composeUp(docker, composeFile, { timeoutMs: this.timeouts.composeUp, env });
     } catch (error) {
-      throw new DataTierError(`Unable to start the Working Memory data tier with ${this.provider.label} Compose.\n${commandDetail(error)}`, 'start-failed', error);
+      const handoff = stoppedForReplacement
+        ? '\nThe previous backend was stopped to release its port. Its data storage was preserved. Check its status and use Start or retry the update after resolving this error.'
+        : '';
+      throw new DataTierError(`Unable to start the Working Memory data tier with ${this.provider.label} Compose.\n${commandDetail(error)}${handoff}`, 'start-failed', error);
     } finally {
       if (this.host.platform !== 'win32' && pending?.instance.port === port
         && !pending.databaseInitialized && dataExists(database)) {

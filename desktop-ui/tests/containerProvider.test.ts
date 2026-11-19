@@ -348,21 +348,30 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     };
   }
 
-  function backend() {
+  function backend(port = 7717) {
     const dir = directory();
+    const names = dataTierInstanceNames(port);
     let up = false;
     let loadedImage = 'working-memory-control-plane:1.7.0';
     let volumePresent = false;
     const calls: string[][] = [];
     const runner = podmanRunner(async args => {
       calls.push(args);
-      if (args[0] === 'ps') return { stdout: up ? `working-memory-control-plane\trunning\tUp (healthy)\t${loadedImage.startsWith('ghcr.io/') ? loadedImage : `localhost/${loadedImage}`}` : '', stderr: '' };
+      if (args[0] === 'ps') return { stdout: up ? `${names.container}\trunning\tUp (healthy)\t${loadedImage.startsWith('ghcr.io/') ? loadedImage : `localhost/${loadedImage}`}` : '', stderr: '' };
+      if (args[0] === 'inspect') {
+        const inspected = legacyContainer(port);
+        inspected.Config.Image = loadedImage;
+        inspected.State.Running = up;
+        return { stdout: JSON.stringify([inspected]), stderr: '' };
+      }
       if (args[0] === 'volume' && args[1] === 'inspect' && !volumePresent) throw new CommandExecutionError('no such volume', 1);
       if (args[0] === 'volume' && args[1] === 'create') volumePresent = true;
       if (args[0] === 'compose' && args[1] === '--file') {
         expect(volumePresent).toBe(true);
+        if (up) throw new CommandExecutionError('Compose failed', 1,
+          `rootlessport listen tcp 127.0.0.1:${port}: bind: address already in use`);
         const compose = JSON.parse(readFileSync(args[2], 'utf8'));
-        expect(compose.volumes['working-memory-data'].external).toBe(true);
+        expect(compose.volumes[names.volume].external).toBe(true);
         loadedImage = compose.services['control-plane'].image;
         up = true;
       }
@@ -370,13 +379,96 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
       if (args[0] === 'start') up = true;
       return { stdout: '', stderr: '' };
     });
-    const manager = () => new DataTierManager({
-      ...host, provider: 'podman', buildContext: dir, stateDirectory: dir, version: '1.7.0',
+    const manager = (version = '1.7.0') => new DataTierManager({
+      ...host, provider: 'podman', buildContext: dir, stateDirectory: dir, version,
       fileExists: path => path.endsWith('podman.exe'), runner, healthy: async () => up,
-      portAvailable: async () => true,
+      portAvailable: async candidate => candidate === port,
     });
     return { dir, manager, calls, runner, loseContainer: () => { up = false; }, loseVolume: () => { volumePresent = false; } };
   }
+
+  it('releases the registered backend port before replacing build 178 with build 183', async () => {
+    const fixture = backend(7719);
+    await fixture.manager('1.10.1-build.178').create();
+    fixture.calls.length = 0;
+    const manager = fixture.manager('1.10.1-build.183');
+    await manager.upgrade(7719, {
+      version: '1.10.1-build.183', image: 'ghcr.io/mkubarycz/working-memory-control-plane:1.10.1-build.183',
+    });
+    const operations = fixture.calls.map(args => args[0] === 'compose' && args[1] === '--file' ? 'compose-up' : args[0]);
+    expect(operations.indexOf('load')).toBeLessThan(operations.indexOf('stop'));
+    expect(operations.indexOf('inspect')).toBeLessThan(operations.indexOf('stop'));
+    expect(operations.indexOf('stop')).toBeLessThan(operations.indexOf('compose-up'));
+    expect(fixture.calls.filter(args => args[0] === 'stop')).toEqual([['stop', 'working-memory-control-plane-7719']]);
+    expect(fixture.calls.some(args => args.includes('rm') || args.includes('--volumes') || args.includes('down'))).toBe(false);
+    expect(manager.instances[0].image).toBe('working-memory-control-plane:1.10.1-build.183');
+    expect((await manager.list()).instances[0]).toMatchObject({ state: 'running', version: '1.10.1-build.183' });
+  });
+
+  it.each(['load', 'pull'])('does not stop the running backend if image preparation fails during %s', async operation => {
+    const fixture = backend(7719);
+    await fixture.manager().create();
+    fixture.calls.length = 0;
+    const original = vi.mocked(fixture.runner.run).getMockImplementation()!;
+    vi.mocked(fixture.runner.run).mockImplementation(async (file, args, options) => {
+      if (args[2] === operation) throw new CommandExecutionError('Image preparation failed', 1);
+      return original(file, args, options);
+    });
+    const manager = fixture.manager('1.10.1-build.183');
+    await expect(manager.upgrade(7719, {
+      version: operation === 'load' ? '1.10.1-build.183' : '1.10.1-build.184',
+      image: 'ghcr.io/test/backend:next',
+    })).rejects.toThrow('Image preparation failed');
+    expect(fixture.calls.some(args => args[0] === 'stop' || args.includes('up'))).toBe(false);
+    expect((await manager.list()).instances[0].state).toBe('running');
+  });
+
+  it.each(['image', 'labels', 'mount', 'port'])('refuses to stop a backend with mismatched %s', async fault => {
+    const fixture = backend(7719);
+    await fixture.manager().create();
+    fixture.calls.length = 0;
+    const inspected = legacyContainer(7719);
+    inspected.Config.Image = fault === 'image' ? 'unrelated:local' : 'working-memory-control-plane:1.7.0';
+    if (fault === 'labels') inspected.Config.Labels['com.docker.compose.project'] = 'another-project';
+    if (fault === 'mount') inspected.Mounts[0].Name = 'another-volume';
+    if (fault === 'port') inspected.NetworkSettings.Ports['7719/tcp'][0].HostIp = '0.0.0.0';
+    const original = vi.mocked(fixture.runner.run).getMockImplementation()!;
+    vi.mocked(fixture.runner.run).mockImplementation(async (file, args, options) => args[2] === 'inspect'
+      ? { stdout: JSON.stringify([inspected]), stderr: '' } : original(file, args, options));
+    await expect(fixture.manager().upgrade(7719)).rejects.toThrow('does not match');
+    expect(fixture.calls.some(args => args[0] === 'stop' || args.includes('up'))).toBe(false);
+  });
+
+  it('does not start replacement if stopping the verified old backend fails', async () => {
+    const fixture = backend(7719);
+    await fixture.manager().create();
+    fixture.calls.length = 0;
+    const original = vi.mocked(fixture.runner.run).getMockImplementation()!;
+    vi.mocked(fixture.runner.run).mockImplementation(async (file, args, options) => {
+      if (args[2] === 'stop') throw new CommandExecutionError('Stop failed', 1);
+      return original(file, args, options);
+    });
+    await expect(fixture.manager().upgrade(7719)).rejects.toThrow('Unable to stop the existing backend');
+    expect(fixture.calls.some(args => args.includes('up'))).toBe(false);
+    expect((await fixture.manager().list()).instances[0].state).toBe('running');
+  });
+
+  it('reports a replacement failure after the stop without deleting data or hiding the original error', async () => {
+    const fixture = backend(7719);
+    await fixture.manager().create();
+    fixture.calls.length = 0;
+    const original = vi.mocked(fixture.runner.run).getMockImplementation()!;
+    vi.mocked(fixture.runner.run).mockImplementation(async (file, args, options) => {
+      if (args.includes('up')) throw new CommandExecutionError('Compose failed', 1, 'rootlessport bind: address already in use');
+      return original(file, args, options);
+    });
+    const manager = fixture.manager('1.10.1-build.183');
+    await expect(manager.upgrade(7719)).rejects.toThrow('previous backend was stopped to release its port');
+    expect(manager.upgradeFailure(7719)?.error.stderr).toBe('rootlessport bind: address already in use');
+    expect(manager.instances[0].image).toBe('working-memory-control-plane:1.7.0');
+    expect(fixture.calls.filter(args => args[0] === 'stop')).toEqual([['stop', 'working-memory-control-plane-7719']]);
+    expect(fixture.calls.some(args => args.includes('rm') || args.includes('--volumes') || args.includes('down') || args[0] === 'start')).toBe(false);
+  });
 
   it('loads a bundled image, creates external data storage, starts/stops, and persists upgrades across app restarts', async () => {
     const fixture = backend();
