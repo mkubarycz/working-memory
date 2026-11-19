@@ -470,14 +470,30 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     expect(fixture.calls.some(args => args.includes('rm') || args.includes('--volumes') || args.includes('down') || args[0] === 'start')).toBe(false);
   });
 
-  it.each(['exit', 'timeout'])('reconciles a verified partial replacement after Compose %s and allows retry after app restart', async failure => {
+  it.each([
+    { failure: 'exit', running: true }, { failure: 'timeout', running: true },
+    { failure: 'exit', running: false }, { failure: 'timeout', running: false },
+  ])('reconciles a partial replacement after $failure (running: $running) and allows Start then upgrade', async ({ failure, running }) => {
     const fixture = backend(7719);
     await fixture.manager('1.10.1-build.178').create();
     const original = vi.mocked(fixture.runner.run).getMockImplementation()!;
     let fail = true;
+    let stopped = false;
     vi.mocked(fixture.runner.run).mockImplementation(async (file, args, options) => {
+      if (stopped && args[2] === 'ps') {
+        return { stdout: 'working-memory-control-plane-7719\texited\tExited\tworking-memory-control-plane:1.10.1-build.183', stderr: '' };
+      }
+      if (stopped && args[2] === 'inspect') {
+        const inspected = legacyContainer(7719);
+        inspected.Config.Image = 'working-memory-control-plane:1.10.1-build.183';
+        inspected.State.Running = false;
+        inspected.NetworkSettings.Ports = {};
+        return { stdout: JSON.stringify([inspected]), stderr: '' };
+      }
+      if (args[2] === 'start') stopped = false;
       const result = await original(file, args, options);
       if (fail && args.includes('up')) {
+        if (!running) { fixture.loseContainer(); stopped = true; }
         if (failure === 'timeout') throw new CommandTimeoutError(options!.timeoutMs);
         throw new CommandExecutionError('Compose failed after start', 1, 'Connection closed after replacement started');
       }
@@ -489,11 +505,17 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     expect(manager.upgradeFailure(7719)?.instance.image).toBe('working-memory-control-plane:1.10.1-build.178');
     fail = false;
     const restarted = fixture.manager('1.10.1-build.183');
+    await expect(restarted.start(7719)).resolves.toBeUndefined();
     await expect(restarted.upgrade(7719)).resolves.toBeUndefined();
     expect((await restarted.list()).instances[0]).toMatchObject({ state: 'running', version: '1.10.1-build.183' });
   });
 
-  it.each(['image', 'labels', 'mount', 'port'])('does not adopt a partial replacement with mismatched %s', async fault => {
+  it.each([
+    { fault: 'image', running: true }, { fault: 'labels', running: true },
+    { fault: 'mount', running: true }, { fault: 'port', running: true },
+    { fault: 'image', running: false }, { fault: 'labels', running: false },
+    { fault: 'mount', running: false }, { fault: 'port', running: false },
+  ])('does not adopt a partial replacement with mismatched $fault (running: $running)', async ({ fault, running }) => {
     const fixture = backend(7719);
     await fixture.manager('1.10.1-build.178').create();
     const original = vi.mocked(fixture.runner.run).getMockImplementation()!;
@@ -505,7 +527,12 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
         inspected.Config.Image = fault === 'image' ? 'unrelated:local' : 'working-memory-control-plane:1.10.1-build.183';
         if (fault === 'labels') inspected.Config.Labels['com.docker.compose.project'] = 'another-project';
         if (fault === 'mount') inspected.Mounts[0].Name = 'another-volume';
-        if (fault === 'port') inspected.NetworkSettings.Ports['7719/tcp'][0].HostIp = '0.0.0.0';
+        if (fault === 'port') {
+          inspected.NetworkSettings.Ports['7719/tcp'][0].HostIp = '0.0.0.0';
+          inspected.HostConfig.PortBindings['7719/tcp'][0].HostIp = '0.0.0.0';
+        }
+        inspected.State.Running = running;
+        if (!running) inspected.NetworkSettings.Ports = {};
         return { stdout: JSON.stringify([inspected]), stderr: '' };
       }
       if (args.includes('up')) {

@@ -958,7 +958,8 @@ export class DataTierManager {
       let reconciliation = '';
       if (existing && this.provider.provider === 'podman') {
         try {
-          await this.verifyInstanceContainer(docker, env, { ...existing, image });
+          // An explicit image stays strict; stopped containers expose only configured ports.
+          await this.verifyInstanceContainer(docker, env, { ...existing, image }, true);
           recordDeployedImage();
           reconciliation = '\nThe replacement matches the requested image and registered settings; its image registration was updated.';
         } catch (reconcileError) {
