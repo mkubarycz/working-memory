@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import type { DataTierInstanceStatus, DataTierInstancesSnapshot, UpdateChannel } from '../../shared/contracts';
+  import type { BackendBugReportInput, DataTierInstanceStatus, DataTierInstancesSnapshot, UpdateChannel } from '../../shared/contracts';
 
   const REFRESH_INTERVAL_MS = 15_000;
   let cached: {
@@ -12,6 +12,7 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
+  import ReportBugDialog from '../ReportBugDialog.svelte';
 
   interface Props {
     section?: 'backend' | 'provider' | 'all';
@@ -36,6 +37,8 @@
   let loading = $state(cached === undefined);
   let busy = $state<string | null>(null);
   let status = $state('');
+  let failure = $state<BackendBugReportInput['failure'] | null>(null);
+  let reportFailure = $state<BackendBugReportInput['failure'] | null>(null);
   let newName = $state('');
   let provider = $state<'docker' | 'podman'>(cached?.provider ?? 'docker');
   let refreshError = $state('');
@@ -104,6 +107,13 @@
     revision += 1;
     busy = key;
     status = progress;
+    failure = null;
+    const port = Number(key.split(':')[0]);
+    const before = structuredClone($state.snapshot({
+      operation: key, capturedAt: new Date().toISOString(), provider,
+      instance: snapshot?.instances.find(instance => instance.port === port) ?? null,
+      backendChannel: snapshot?.backendChannel ?? null, backendTarget: snapshot?.backendTarget ?? null,
+    }));
     try {
       applySnapshot(await operation());
       refreshError = '';
@@ -111,8 +121,9 @@
       await onInstancesChanged();
       return true;
     } catch (error) {
-      status = message(error);
-      await refresh();
+      status = '';
+      failure = { ...before, error: message(error) };
+      void refresh(true);
       return false;
     } finally {
       busy = null;
@@ -354,4 +365,26 @@
     <button disabled={busy !== null || loading} onclick={() => void refresh()}>Retry</button>
   </p>{/if}
   {#if status}<p class="instances-status" role="status">{status}</p>{/if}
+  {#if failure}
+    <div class="operation-error" role="alert">
+      <span>{failure.error}</span>
+      <button onclick={() => { reportFailure = structuredClone($state.snapshot(failure)); }}>Report a bug</button>
+    </div>
+  {/if}
 </div>
+
+{#if reportFailure}
+  <ReportBugDialog sessionOnly
+    evidenceDescription="Includes the selected error, backend version, port, update target, and captured upgrade diagnostics. Does not retry the upgrade or change containers."
+    capture={description => {
+      if (!reportFailure) throw new Error('The selected failure is no longer available. Reopen Report a bug.');
+      return window.workingMemory.createBackendBugReport({ description, failure: $state.snapshot(reportFailure) });
+    }}
+    onClose={() => { reportFailure = null; }} />
+{/if}
+
+<style>
+  .operation-error { display: flex; align-items: flex-start; gap: 12px; color: #a12121; background: #ffeded; border: 1px solid #d88a8a; border-left: 4px solid #b3261e; padding: 12px; margin-top: 12px; }
+  .operation-error span { flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .operation-error button { color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; white-space: nowrap; }
+</style>

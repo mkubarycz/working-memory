@@ -249,6 +249,7 @@ describe('data tier launcher', () => {
       instances?: Array<{ port: number; name: string }>;
       inspectionError?: string;
       composeError?: string;
+      composeUpError?: string;
       cleanupError?: string;
     } = {}) {
       const directory = options.directory ?? stateDirectory();
@@ -288,6 +289,7 @@ describe('data tier launcher', () => {
             }))), stderr: '' };
           }
           if (args[0] === 'compose') {
+            if (options.composeUpError) throw new CommandExecutionError('compose failed', 1, options.composeUpError);
             const compose = JSON.parse(readFileSync(args[2], 'utf8'));
             const service = compose.services['control-plane'];
             containers.set(service.container_name, { state: 'running', status: 'Up (healthy)', image: service.image });
@@ -420,6 +422,32 @@ describe('data tier launcher', () => {
         ],
       });
       if (composeError) expect(snapshot.dockerError).toContain(composeError);
+    });
+
+    it('preserves bind-conflict diagnostics from a failed upgrade without changing registration or stopping containers', async () => {
+      const stderr = 'Error: bind: address already in use\n' + Array.from({ length: 10 }, (_, index) => `Compose detail ${index}`).join('\n');
+      const options = {
+        instances: [{ port: 7720, name: 'Work' }],
+        containers: { 'working-memory-control-plane-7720': running('1.0.0') },
+        composeUpError: stderr,
+      };
+      const { manager, calls } = harness(options);
+      const before = manager.instances;
+      const target = { version: '2.1.0', image: 'ghcr.io/test/control-plane:2.1.0' };
+      await expect(manager.upgrade(7720, target)).rejects.toThrow('Unable to start');
+      const failure = manager.upgradeFailure(7720);
+      expect(failure).toMatchObject({
+        instance: { port: 7720, name: 'Work' }, target,
+        error: { code: 'start-failed', stderr },
+        configuration: { services: { 'control-plane': {
+          ports: ['127.0.0.1:7720:7720'], image: target.image,
+        } } },
+      });
+      expect(manager.instances).toEqual(before);
+      expect(calls.some(args => ['stop', 'rm', 'kill'].includes(args[0]))).toBe(false);
+      options.composeUpError = '';
+      await manager.upgrade(7720, target);
+      expect(manager.upgradeFailure(7720)).toBeUndefined();
     });
 
     it('starts, stops, upgrades, and renames managed instances', async () => {

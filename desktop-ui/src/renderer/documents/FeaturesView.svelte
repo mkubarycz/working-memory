@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import type { InstanceFeatures } from '../../../../control-plane/src/instanceFeatures';
   import type { EmbeddingDashboard } from '../../shared/embeddings';
-  import { EMBEDDING_HISTORY_GUIDANCE } from '../../../../control-plane/src/embeddingContract';
+  import type { FeatureBugReportInput } from '../../shared/contracts';
+  import ReportBugDialog from '../ReportBugDialog.svelte';
 
   let { onChanged, onOpenObservability }: {
     onChanged: (features: InstanceFeatures) => void; onOpenObservability?: () => Promise<void>;
@@ -18,6 +19,11 @@
   let error = $state('');
   let pollError = $state('');
   let embeddingsPollError = $state('');
+  let notice = $state('');
+  let operation = $state('');
+  let requestedChange = $state<FeatureBugReportInput['failure']['requested']>();
+  let reporting = $state<FeatureBugReportInput['failure'] | null>(null);
+  const displayedError = $derived(error || pollError || embeddingsPollError);
   let active = false;
   let refreshing = false;
   let generation = 0;
@@ -57,6 +63,9 @@
     busy = true;
     generation += 1;
     error = '';
+    notice = '';
+    operation = 'embeddings:action';
+    requestedChange = { feature: 'embeddings', enabled: requested };
     try {
       const saved = await window.workingMemory.setEmbeddingAction(requested ? 'enable' : 'disable');
       if (active) embeddings = saved;
@@ -71,6 +80,10 @@
     busy = true;
     generation += 1;
     error = '';
+    notice = '';
+    recoveryAppId = null;
+    operation = 'instance:set-features';
+    requestedChange = { feature, enabled: requested };
     try {
       const saved = await window.workingMemory.setInstanceFeatures({ [feature]: requested });
       if (!active) return;
@@ -78,7 +91,8 @@
       onChanged(features);
     } catch (cause) {
       if (active) error = cause instanceof Error ? cause.message : String(cause);
-      if (feature === 'observability' && active) {
+      if (feature === 'observability' && active
+        && /ownership conflict|belongs to another container provider or connection|selected connection differs|ownership recovery was interrupted/i.test(error)) {
         try {
           const apps = (await window.workingMemory.listContainerApps()).filter(app => app.nativeSurface === 'observability');
           const status = apps.length === 1 ? await window.workingMemory.inspectContainerApp(apps[0].id) : null;
@@ -98,11 +112,16 @@
     if (!active || busy || !recoveryAppId) return;
     busy = true;
     generation += 1;
+    error = '';
+    notice = '';
+    operation = 'container:recover';
+    requestedChange = undefined;
     try {
       const status = await window.workingMemory.recoverContainerApp(recoveryAppId);
       if (!active) return;
       recoveryAppId = status.recoveryAvailable ? status.id : null;
-      error = status.error ?? 'Management recovered. Enable Observability to finish setup.';
+      error = status.error ?? '';
+      if (!status.error) notice = 'Recovery check finished. Enable Observability to retry setup.';
     } catch (cause) {
       if (active) error = cause instanceof Error ? cause.message : String(cause);
     } finally { busy = false; }
@@ -138,8 +157,7 @@
     </tr>
     <tr>
       <th scope="row">Embeddings <small>Experimental</small></th>
-      <td>Enable semantic Search and Related topics with local background indexing. Search waits for complete document indexing.
-        {EMBEDDING_HISTORY_GUIDANCE} Pause/Retry and host troubleshooting remain in Settings &gt; Diagnostics &gt; Embeddings.</td>
+      <td>Enable semantic Search and Related topics with local background indexing. Requires Working Memory search.</td>
       <td>
         <input class="feature-switch" type="checkbox" role="switch" aria-label="Embeddings" bind:checked={embeddingsEnabled}
           disabled={!features || !embeddings || busy || (!searchEnabled && !embeddingsEnabled)}
@@ -163,15 +181,27 @@
       </td>
     </tr></tbody>
   </table>
-  <p class="hint">Turning off Host tasks hides its UI and blocks new requests. Existing scripts, permissions, and history are retained.</p>
-  <p class="hint">Search is off by default. Turning it off hides Search and stops its requests; documents and workstream memberships are retained.</p>
-  <p class="hint">Embeddings requires Working Memory search. Enabling installs the bundled background service and downloads
-    a verified 87 MiB model once. Topic content stays local. Disabling stops this instance's indexing but retains cached models and vectors.</p>
-  <p class="hint">Observability downloads the pinned upstream OpenObserve image and stores seven days of telemetry in a dedicated local volume.
-    Turning it off stops export and the container, preserving its data. Native encrypted credential storage is required.</p>
   {#if busy}<p role="status">Applying feature settings. Container setup may take several minutes.</p>{/if}
-  {#if error || pollError || embeddingsPollError}<p role="alert">{error || pollError || embeddingsPollError}</p>{/if}
+  {#if notice}<p role="status">{notice}</p>{/if}
+  {#if displayedError}
+    <div class="feature-error" role="alert">
+      <span class="feature-error-message">{displayedError}</span>
+      <button class="report-bug-link" onclick={() => {
+        reporting = $state.snapshot({
+          error: displayedError, operation: error ? operation : pollError ? 'instance:features' : 'embeddings:dashboard',
+          capturedAt: new Date().toISOString(), features, embeddingsEnabled,
+          ...(error && requestedChange ? { requested: requestedChange } : {}),
+        });
+      }}>Report a bug</button>
+    </div>
+  {/if}
 </section>
+
+{#if reporting}
+  <ReportBugDialog onClose={() => { reporting = null; }}
+    evidenceDescription="Includes the selected error, feature settings, requested change, and the latest failed container setup's command timings and timeout limits. Review the report, then Send it through Feedback."
+    capture={description => window.workingMemory.createFeatureBugReport({ description, failure: $state.snapshot(reporting!) })} />
+{/if}
 
 <style>
   section { display: grid; gap: 12px; }
@@ -179,7 +209,11 @@
   th, td { padding: 12px; border-bottom: 1px solid var(--vscode-panel-border, #444); vertical-align: middle; }
   th:last-child, td:last-child { text-align: center; width: 80px; }
   small { display: block; font-weight: normal; color: var(--desktop-chat-muted); }
-  .hint { font-size: 12px; color: var(--desktop-chat-muted); }
+  .feature-error { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px;
+    padding: 10px 12px; color: #a12121; background: #ffeded; border: 1px solid #d88a8a; border-left: 4px solid #b3261e;
+    border-radius: 4px; overflow-wrap: anywhere; }
+  .report-bug-link { border: none; padding: 0; color: inherit; background: transparent; cursor: pointer;
+    text-decoration: underline; font: inherit; white-space: nowrap; }
   .feature-switch {
     appearance: none; box-sizing: border-box; display: inline-block; vertical-align: middle;
     width: 40px; height: 24px; padding: 0; margin: 0;

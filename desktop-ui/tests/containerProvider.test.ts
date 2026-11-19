@@ -7,7 +7,7 @@ import { ContainerProviderAdapter } from '../src/main/containerProvider';
 import { assertContainerProviderForClaims, checkContainerOwnership, readContainerOwnership } from '../src/main/containerOwnership';
 import { dockerCliPath, dockerEnvironment } from '../src/main/dockerCli';
 import { readContainerProvider, writeContainerProvider } from '../src/main/containerProviderSettings';
-import { CommandExecutionError, DockerContainerService, MANAGED_LABEL, CLAIM_LABEL, type CommandRunner } from '../src/main/dockerContainerService';
+import { CommandExecutionError, CommandTimeoutError, DockerContainerService, MANAGED_LABEL, CLAIM_LABEL, type CommandRunner } from '../src/main/dockerContainerService';
 import { DataTierManager, dataTierHostDirectory, dataTierInstanceNames } from '../src/main/dataTier';
 import type { ContainerClaim } from '../../shared/controlPlaneClient';
 import { localDockerRunner } from './fixtures/localContainerRunner';
@@ -51,6 +51,41 @@ function podmanRunner(
 }
 
 describe('shared container provider adapter', () => {
+  it('allows a slow Podman response within the 30s discovery bound and records each probe without credentials', async () => {
+    vi.useFakeTimers();
+    try {
+      const runner = podmanRunner(async () => {
+        await new Promise(resolve => setTimeout(resolve, 15000));
+        return { stdout: 'private engine info that must not be captured', stderr: '' };
+      });
+      const adapter = new ContainerProviderAdapter({ provider: 'podman', host, runner });
+      const pending = adapter.resolve();
+      await vi.advanceTimersByTimeAsync(15000);
+      await expect(pending).resolves.toContain(connection.Name);
+      expect(vi.mocked(runner.run).mock.calls.every(([, , options]) => options?.timeoutMs === 30000)).toBe(true);
+      expect(adapter.diagnostics().commands.map(command => command.command)).toEqual([
+        'podman system connection', 'podman machine inspect', 'podman info',
+      ]);
+      expect(adapter.diagnostics().commands.at(-1)).toMatchObject({ durationMs: 15000, status: 'success', timeoutMs: 30000 });
+      expect(JSON.stringify(adapter.diagnostics())).not.toContain('private engine info');
+      expect(JSON.stringify(adapter.diagnostics())).not.toContain(connection.Identity);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['system', 'machine', 'info'])('identifies a timed out Podman %s probe without claiming the provider is down', async stage => {
+    const runner = podmanRunner();
+    const original = vi.mocked(runner.run).getMockImplementation()!;
+    vi.mocked(runner.run).mockImplementation(async (file, args, options) => {
+      if (args[0] === stage || args[2] === stage) throw new CommandTimeoutError(options!.timeoutMs);
+      return original(file, args, options);
+    });
+    const adapter = new ContainerProviderAdapter({ provider: 'podman', host, runner });
+    await expect(adapter.resolve()).rejects.toMatchObject({
+      code: 'ETIMEDOUT', timeoutMs: 30000, message: expect.stringContaining('This does not confirm that Podman is stopped'),
+    });
+    expect(adapter.diagnostics().commands.at(-1)).toMatchObject({ status: 'error', code: 'ETIMEDOUT', timeoutMs: 30000 });
+  });
+
   it('identifies the validated selected VM rather than inferring WSL from Windows or another machine', async () => {
     const runner = podmanRunner();
     const adapter = new ContainerProviderAdapter({ provider: 'podman', host, runner });

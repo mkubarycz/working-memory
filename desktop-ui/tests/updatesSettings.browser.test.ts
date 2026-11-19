@@ -28,6 +28,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           frontendReads: 0, frontendChannels: [], frontendActions: [],
           subscriptions: 0, unsubscriptions: 0, listener: null, provider: 'docker', providerChanges: [],
           hidden: false, failRefresh: false, holdRefresh: false, releaseRefresh: null, polls: new Map(),
+          failUpgrade: true, failReport: true, reports: [], preparations: [], sends: [],
         };
         Object.defineProperty(document, 'hidden', { get: () => probe.hidden });
         const realNow = Date.now;
@@ -69,6 +70,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         };
         probe.openInstances = () => { systemTab = 'back-end'; tab = 'system'; };
         probe.changeBackend = change => Object.assign(backend, change);
+        probe.restoreUpgrade = () => {
+          probe.failUpgrade = false;
+          Object.assign(backend.instances[1], { state: 'running', version: '1.4.0', updateAvailable: true });
+        };
         probe.emit = change => {
           Object.assign(frontend, change);
           probe.listener?.(structuredClone(frontend));
@@ -106,8 +111,27 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           async upgradeInstance(port) {
             probe.operations.push('upgrade:' + port);
             const instance = backend.instances.find(instance => instance.port === port);
+            if (probe.failUpgrade) {
+              instance.state = 'missing'; instance.version = null;
+              throw new Error("Error invoking remote method 'instances:upgrade': Error: bind: address already in use");
+            }
             instance.version = backend.backendTarget.version; instance.updateAvailable = false;
             return structuredClone(backend);
+          },
+          async createBackendBugReport(input) {
+            probe.reports.push(structuredClone(input));
+            if (probe.failReport) { probe.failReport = false; throw new Error('Report capture failed. Retry.'); }
+            return { id: 'report-id', title: 'Backend settings bug', body: JSON.stringify(input), sessionOnly: true };
+          },
+          async prepareFeedback(id, requestId) {
+            probe.preparations.push({ id, requestId });
+            return { servers: [{ id: 'feedback', name: 'Feedback', address: '127.0.0.1' }],
+              context: { desktop: { version: '1.4.1', build: 'fixture' }, backend: { version: '1.4.0' } } };
+          },
+          async sendFeedback(id, requestId, serverId) {
+            probe.sends.push({ id, requestId, serverId });
+            return { status: 'sent', receipt: { title: 'Backend settings bug', duplicate: false,
+              statusUrl: 'https://feedback.invalid/submissions/report' } };
           },
           onDesktopUpdate(listener) {
             probe.subscriptions++; probe.listener = listener;
@@ -219,7 +243,36 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.querySelectorAll('.instance')[1].classList.contains('current')");
           assert.equal(await evaluate("Array.from(document.querySelectorAll('.instance')[1].querySelectorAll('button')).find(button => button.textContent.trim() === 'Stop').disabled"), true);
           await evaluate(button('Update to 1.4.2') + '.click()');
+          await wait("document.querySelector('.operation-error[role=alert]')?.textContent.includes('bind: address already in use') && document.querySelectorAll('.instance-version strong')[1].textContent === 'Unknown'");
+          assert.equal(await evaluate("getComputedStyle(document.querySelector('.operation-error')).backgroundColor"), 'rgb(255, 237, 237)');
+          assert.equal(await evaluate("document.querySelector('.instances-status')"), null);
+          await evaluate("document.querySelector('.operation-error button').click()");
+          await wait("document.querySelector('#bug-description')");
+          assert.equal(await evaluate("document.querySelector('dialog').innerText.includes('even when the backend is offline')"), true);
+          await evaluate("(() => { const input = document.querySelector('#bug-description'); input.value = 'Upgrade fails with a port conflict'; input.dispatchEvent(new Event('input', { bubbles: true })); })()");
+          await evaluate(button('Create report') + '.click()');
+          await wait("document.querySelector('dialog [role=alert]')?.textContent.includes('Report capture failed')");
+          await evaluate(button('Create report') + '.click()');
+          await wait("document.querySelector('#share-topic-title') && " + button('Send') + "?.disabled === false");
+          assert.equal(await evaluate("window.__updatesTest.sends.length"), 0);
+          assert.deepEqual(await evaluate("window.__updatesTest.reports[1].failure.instance"), {
+            port: 7719, name: 'Test', createdAt: '', mcpUrl: 'http://127.0.0.1:7719/mcp',
+            container: 'working-memory-control-plane-7719', state: 'running', version: '1.4.0', updateAvailable: true,
+          });
+          assert.equal(await evaluate("window.__updatesTest.reports[1].failure.backendTarget.version"), '1.4.2');
+          assert.equal(await evaluate("document.querySelector('dialog pre').textContent.includes('bind: address already in use')"), true);
+          await evaluate(button('Send') + '.click()');
+          await wait(button('Done') + ' !== undefined');
+          assert.equal(await evaluate("window.__updatesTest.sends.length"), 1);
+          assert.equal(await evaluate("window.__updatesTest.sends[0].requestId === window.__updatesTest.preparations[0].requestId"), true);
+          assert.equal(await evaluate("document.querySelector('dialog a').href"), 'https://feedback.invalid/submissions/report');
+          assert.equal(await evaluate("document.querySelector('dialog').innerText.includes('No topic was created')"), true);
+          await evaluate(button('Done') + '.click()');
+          await evaluate("window.__updatesTest.restoreUpgrade(); window.__updatesTest.advance()");
+          await wait(button('Update to 1.4.2') + "?.disabled === false");
+          await evaluate(button('Update to 1.4.2') + '.click()');
           await wait("window.__updatesTest.operations.includes('upgrade:7719') && " + button('Update to 1.4.2') + " === undefined");
+          assert.equal(await evaluate("document.querySelector('.operation-error')"), null);
           assert.equal(await evaluate("document.querySelectorAll('.instance-version strong')[1].textContent"), '1.4.2');
           assert.equal(await evaluate("window.__updatesTest.changes"), 3);
           await evaluate(button('Container Provider') + '.click()');

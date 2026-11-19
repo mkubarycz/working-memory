@@ -171,6 +171,10 @@ export class DockerContainerService {
   private readonly env: NodeJS.ProcessEnv;
   private readonly timeouts: DockerOperationTimeouts;
 
+  diagnostics() {
+    return this.provider.diagnostics();
+  }
+
   constructor(private readonly options: DockerContainerServiceOptions = {}) {
     this.runner = options.runner ?? new ExecFileCommandRunner();
     this.readiness = options.readiness ?? defaultReadiness;
@@ -808,11 +812,11 @@ async function defaultReadiness(url: string): Promise<boolean> {
 }
 
 function failure(code: DockerErrorCode, prefix: string, error: unknown): ContainerLaunchResult {
-  if (error instanceof CommandTimeoutError) {
+  if (error instanceof Error && 'code' in error && error.code === 'ETIMEDOUT') {
     return {
       status: 'error',
       code: 'docker_timeout',
-      message: `${prefix} Docker operation timed out after ${error.timeoutMs}ms.`,
+      message: error.message,
     };
   }
   const detail = error instanceof CommandExecutionError

@@ -74,8 +74,8 @@ const DEFAULT_TIMEOUTS: DataTierTimeouts = {
 };
 
 export class DataTierError extends Error {
-  constructor(message: string, readonly code: 'docker-missing' | 'docker-unavailable' | 'start-failed' | 'unhealthy' | 'not-found' | 'not-running' | 'provider-conflict') {
-    super(message);
+  constructor(message: string, readonly code: 'docker-missing' | 'docker-unavailable' | 'start-failed' | 'unhealthy' | 'not-found' | 'not-running' | 'provider-conflict', cause?: unknown) {
+    super(message, { cause });
     this.name = 'DataTierError';
   }
 }
@@ -273,6 +273,16 @@ function fileId(name: string): string {
  * Operations run one at a time so Compose never races itself over shared state.
  */
 export class DataTierManager {
+  private readonly upgradeFailures = new Map<number, {
+    startedAt: string; failedAt: string; instance: ManagedDataTierInstance; target: BackendUpdateTarget;
+    configuration: Record<string, unknown>; provider: ReturnType<ContainerProviderAdapter['diagnostics']>;
+    error: { message: string; code?: string; commandCode?: string | number; stderr?: string; stderrTruncated?: boolean };
+  }>();
+
+  upgradeFailure(port: number) {
+    return this.upgradeFailures.get(port);
+  }
+
   private readonly provider: ContainerProviderAdapter;
   private readonly host: DataTierHost;
   private readonly runner: CommandRunner;
@@ -640,10 +650,32 @@ export class DataTierManager {
    */
   upgrade(port: number, target: BackendUpdateTarget = this.bundledTarget): Promise<void> {
     return this.serialize(async () => {
-      this.require(port);
+      const instance = this.require(port);
       const image = target.version === this.options.version ? this.bundledTarget.image : target.image;
-      const { docker, env } = await this.docker();
-      await this.composeUp(docker, env, port, image);
+      const startedAt = new Date().toISOString();
+      this.upgradeFailures.delete(port);
+      try {
+        const { docker, env } = await this.docker();
+        await this.composeUp(docker, env, port, image);
+      } catch (error) {
+        let command: CommandExecutionError | undefined;
+        for (let cause: unknown = error, depth = 0; cause instanceof Error && depth < 8; cause = cause.cause, depth += 1) {
+          if (cause instanceof CommandExecutionError) { command = cause; break; }
+        }
+        const provider = this.provider.diagnostics();
+        this.upgradeFailures.set(port, {
+          startedAt, failedAt: new Date().toISOString(), instance: { ...instance }, target: { ...target, image },
+          configuration: dataTierCompose(this.host, image, port),
+          provider: { ...provider, commands: provider.commands.filter(command => command.startedAt >= startedAt) },
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+            ...(error instanceof DataTierError ? { code: error.code } : {}),
+            ...(command ? { commandCode: command.code, stderr: command.stderr.slice(-32768),
+              stderrTruncated: command.stderr.length > 32768 } : {}),
+          },
+        });
+        throw error;
+      }
     });
   }
 
@@ -891,21 +923,21 @@ export class DataTierManager {
           });
           this.bundledImageLoaded = true;
         } catch (error) {
-          throw new DataTierError(`Unable to load the bundled Working Memory backend image.\n${commandDetail(error)}`, 'start-failed');
+          throw new DataTierError(`Unable to load the bundled Working Memory backend image.\n${commandDetail(error)}`, 'start-failed', error);
         }
       }
     } else {
       try {
         await this.runner.run(docker, ['pull', image], { timeoutMs: this.timeouts.composeUp, env });
       } catch (error) {
-        throw new DataTierError(`Unable to download the Working Memory backend image ${image}.\n${commandDetail(error)}`, 'start-failed');
+        throw new DataTierError(`Unable to download the Working Memory backend image ${image}.\n${commandDetail(error)}`, 'start-failed', error);
       }
     }
     const composeFile = this.writeComposeFile(port, image);
     try {
       await this.provider.composeUp(docker, composeFile, { timeoutMs: this.timeouts.composeUp, env });
     } catch (error) {
-      throw new DataTierError(`Unable to start the Working Memory data tier with ${this.provider.label} Compose.\n${commandDetail(error)}`, 'start-failed');
+      throw new DataTierError(`Unable to start the Working Memory data tier with ${this.provider.label} Compose.\n${commandDetail(error)}`, 'start-failed', error);
     } finally {
       if (this.host.platform !== 'win32' && pending?.instance.port === port
         && !pending.databaseInitialized && dataExists(database)) {
