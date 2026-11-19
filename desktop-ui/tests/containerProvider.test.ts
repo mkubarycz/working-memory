@@ -470,6 +470,56 @@ describe('Podman data tier lifecycle (mocked Windows)', () => {
     expect(fixture.calls.some(args => args.includes('rm') || args.includes('--volumes') || args.includes('down') || args[0] === 'start')).toBe(false);
   });
 
+  it.each(['exit', 'timeout'])('reconciles a verified partial replacement after Compose %s and allows retry after app restart', async failure => {
+    const fixture = backend(7719);
+    await fixture.manager('1.10.1-build.178').create();
+    const original = vi.mocked(fixture.runner.run).getMockImplementation()!;
+    let fail = true;
+    vi.mocked(fixture.runner.run).mockImplementation(async (file, args, options) => {
+      const result = await original(file, args, options);
+      if (fail && args.includes('up')) {
+        if (failure === 'timeout') throw new CommandTimeoutError(options!.timeoutMs);
+        throw new CommandExecutionError('Compose failed after start', 1, 'Connection closed after replacement started');
+      }
+      return result;
+    });
+    const manager = fixture.manager('1.10.1-build.183');
+    await expect(manager.upgrade(7719)).rejects.toThrow(failure === 'timeout' ? 'did not respond' : 'Connection closed');
+    expect(manager.instances[0].image).toBe('working-memory-control-plane:1.10.1-build.183');
+    expect(manager.upgradeFailure(7719)?.instance.image).toBe('working-memory-control-plane:1.10.1-build.178');
+    fail = false;
+    const restarted = fixture.manager('1.10.1-build.183');
+    await expect(restarted.upgrade(7719)).resolves.toBeUndefined();
+    expect((await restarted.list()).instances[0]).toMatchObject({ state: 'running', version: '1.10.1-build.183' });
+  });
+
+  it.each(['image', 'labels', 'mount', 'port'])('does not adopt a partial replacement with mismatched %s', async fault => {
+    const fixture = backend(7719);
+    await fixture.manager('1.10.1-build.178').create();
+    const original = vi.mocked(fixture.runner.run).getMockImplementation()!;
+    let replaced = false;
+    vi.mocked(fixture.runner.run).mockImplementation(async (file, args, options) => {
+      const result = await original(file, args, options);
+      if (replaced && args[2] === 'inspect') {
+        const inspected = legacyContainer(7719);
+        inspected.Config.Image = fault === 'image' ? 'unrelated:local' : 'working-memory-control-plane:1.10.1-build.183';
+        if (fault === 'labels') inspected.Config.Labels['com.docker.compose.project'] = 'another-project';
+        if (fault === 'mount') inspected.Mounts[0].Name = 'another-volume';
+        if (fault === 'port') inspected.NetworkSettings.Ports['7719/tcp'][0].HostIp = '0.0.0.0';
+        return { stdout: JSON.stringify([inspected]), stderr: '' };
+      }
+      if (args.includes('up')) {
+        replaced = true;
+        throw new CommandExecutionError('Compose failed after start', 1, 'Original Compose failure');
+      }
+      return result;
+    });
+    const manager = fixture.manager('1.10.1-build.183');
+    await expect(manager.upgrade(7719)).rejects.toThrow('Original Compose failure');
+    expect(manager.instances[0].image).toBe('working-memory-control-plane:1.10.1-build.178');
+    expect(manager.upgradeFailure(7719)?.error.message).toContain('Could not reconcile');
+  });
+
   it('loads a bundled image, creates external data storage, starts/stops, and persists upgrades across app restarts', async () => {
     const fixture = backend();
     const instance = await fixture.manager().create();
