@@ -1486,7 +1486,8 @@ instead of recapturing or rediscovering it. If delivery succeeded but the local
 tracking note failed, retry saves the cached receipt without resending, even if
 the receiver has gone offline. Collected evidence remains
 inspectable in the dialog; do not include private information in the description.
-SAS credential redaction covers literal and HTML/XML-escaped query delimiters.
+SAS credential redaction covers literal query delimiters and named, decimal,
+or hexadecimal HTML/XML ampersand entities.
 Reporting never retries or changes the original operation.
 
 The shared dialogs also distinguish a queued upload result from confirmed
