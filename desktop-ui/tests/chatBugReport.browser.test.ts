@@ -48,7 +48,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         let cached = $state([]);
         const run = $derived(runs.at(-1));
         const reportSnapshot = $derived(reporting ? latestChatRun(reporting,mergeScopedHistory(runs,cached)) : null);
-        const test = window.__reportTest = {captures:[],preparations:[],sends:[],hold:false,fail:false,surfaceVisible:true,surfaceMounted:false};
+        const test = window.__reportTest = {captures:[],preparations:[],sends:[],deliveries:[],hold:false,fail:false,discoveryUnavailable:false,surfaceVisible:true,surfaceMounted:false};
         test.reset=()=>{reporting=null;};
         test.remountSurface=async()=>{
           showSurface=false;await tick();test.surfaceMounted=false;showSurface=true;await tick();
@@ -91,12 +91,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           },
           prepareFeedback:async(id,requestId)=>{
             test.preparations.push({id,requestId});
+            if(test.discoveryUnavailable) throw new Error('No Feedback servers found.');
             return {servers:[{id:'feedback',name:'Local feedback',address:'127.0.0.1',port:7720}],
               context:{desktop:{version:'1.11.0-dev',build:'fixture'},backend:{version:'fixture'}}};
           },
           sendFeedback:async(id,requestId,serverId)=>{
             test.sends.push({id,requestId,serverId});
-            if(test.fail) throw new Error('Delivery unavailable; retry');
+            if(!test.deliveries.includes(requestId)) test.deliveries.push(requestId);
+            if(test.fail) throw new Error('Feedback was delivered, but its tracking note could not be saved. Click Send again to retry saving the note without resending.');
             if(test.queue) return {status:'queued',requestId,uploadedAt:new Date().toISOString(),destination:'test.blob.core.windows.net'};
             return {status:'sent',receipt:{statusUrl:'http://localhost:7722/status/report-1',topicId:'received',title:'Stalled',duplicate:false}};
           },
@@ -184,6 +186,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait('window.__reportTest.surfaceVisible===false');
           assert.equal(native.getVisible(),false);
           assert(await evaluate('document.body.innerText.includes("What was the bug?")'));
+          assert(await evaluate('document.querySelector("dialog").innerText.includes("Trusted LAN only.")'));
+          assert(await evaluate('document.querySelector("dialog").innerText.includes("servers and senders are not authenticated.")'));
           assert.equal(await evaluate(button('Send bug report')+'.disabled'),true);
           await evaluate('window.__reportTest.remountSurface()');
           await wait('window.__reportTest.surfaceMounted');
@@ -206,15 +210,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('window.__reportTest.captures[0].run.status'),'running');
           assert.equal(await evaluate('window.__reportTest.captures[0].renderer.conversationBlocked'),true);
           assert.equal(await evaluate('window.__reportTest.captures[0].renderer.localRequestActive'),false);
-          await wait('document.querySelector("[role=alert]")?.textContent.includes("Delivery unavailable")');
-          await evaluate('window.__reportTest.fail=false');
+          await wait('document.querySelector("[role=alert]")?.textContent.includes("tracking note could not be saved")');
+          await evaluate('window.__reportTest.fail=false;window.__reportTest.discoveryUnavailable=true');
           await click('Send bug report');
           await wait(button('Done'));
           const sends=await evaluate('window.__reportTest.sends');
           assert.equal(sends.length,2);
           assert.equal(sends[0].requestId,sends[1].requestId);
           assert.equal(sends[0].id,'report-1');
+          assert.equal(sends[0].serverId,sends[1].serverId);
           assert.equal(await evaluate('window.__reportTest.captures.length'),1);
+          assert.equal(await evaluate('window.__reportTest.preparations.length'),1);
+          assert.equal(await evaluate('window.__reportTest.deliveries.length'),1);
+          await evaluate('window.__reportTest.discoveryUnavailable=false');
           await click('Done');
           await wait('!document.querySelector("dialog")');
           await wait('window.__reportTest.surfaceVisible===true');
@@ -250,7 +258,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate('window.__reportTest.reset();window.__reportTest.release()');
           await wait('!document.querySelector("dialog")');
           await new Promise(resolve=>setTimeout(resolve,100));
-          assert.equal(await evaluate('window.__reportTest.preparations.length'),4);
+          assert.equal(await evaluate('window.__reportTest.preparations.length'),3);
           assert.equal(await evaluate('document.querySelectorAll(".report-bug-link").length'),1);
           await evaluate('window.__reportTest.hold=false');
           const sentBeforePreview=await evaluate('window.__reportTest.sends.length');

@@ -1479,9 +1479,14 @@ wrong, then select **Send bug report**. The shared dialog gathers bounded,
 redacted evidence and submits to a single discovered destination without a
 mandatory second preview-and-send screen. Multiple LAN receivers still require
 a choice; **Preview report** keeps the optional review and explicit Send
-workflow. Failed delivery retains the captured report and request identity for
-retry instead of recapturing or duplicating it. Collected evidence remains
+workflow. The trusted-LAN warning is shown before direct Send as well as in the
+preview: discovered receivers and senders are not authenticated. Failed delivery
+retains the captured report, request identity and prepared receiver for retry
+instead of recapturing or rediscovering it. If delivery succeeded but the local
+tracking note failed, retry saves the cached receipt without resending, even if
+the receiver has gone offline. Collected evidence remains
 inspectable in the dialog; do not include private information in the description.
+SAS credential redaction covers literal and HTML/XML-escaped query delimiters.
 Reporting never retries or changes the original operation.
 
 The shared dialogs also distinguish a queued upload result from confirmed

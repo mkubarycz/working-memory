@@ -16,6 +16,7 @@
   let report = $state<ChatBugReportDraft | null>(null);
   let result = $state<Exclude<FeedbackSendResult, { status: 'choose' }> | null>(null);
   let chooseServer = $state(false);
+  let preparedServerId = '';
   const requestId = crypto.randomUUID();
   let mounted = true;
   onMount(() => {
@@ -36,13 +37,16 @@
         chooseServer = true;
         return;
       }
-      const preparation = await window.workingMemory.prepareFeedback(captured.id, requestId);
-      if (!mounted) return;
-      if (preparation.servers.length !== 1) {
-        chooseServer = true;
-        return;
+      if (!preparedServerId) {
+        const preparation = await window.workingMemory.prepareFeedback(captured.id, requestId);
+        if (!mounted) return;
+        if (preparation.servers.length !== 1) {
+          chooseServer = true;
+          return;
+        }
+        preparedServerId = preparation.servers[0].id;
       }
-      const sent = await window.workingMemory.sendFeedback(captured.id, requestId, preparation.servers[0].id);
+      const sent = await window.workingMemory.sendFeedback(captured.id, requestId, preparedServerId);
       if (!mounted) return;
       if (sent.status === 'choose') chooseServer = true;
       else result = sent;
@@ -76,6 +80,7 @@
       Known credentials and recognized secret fields are redacted. Do not include private information in your description.
       Use Preview report to inspect evidence before sharing.
       Prompt images are referenced, not uploaded; other conversations and general log files are not included.</p>
+    <p class="warning">Trusted LAN only. Traffic is encrypted with the discovered server's self-signed certificate; servers and senders are not authenticated.</p>
     <p>{sessionOnly
       ? 'This report can be sent even when the backend is offline. It is not saved as a topic; canceling discards the preview.'
       : 'A local report topic is kept if sending fails. Reporting does not interrupt or change the operation.'}</p>
@@ -105,6 +110,7 @@
   label { display: block; font-weight: 600; margin-bottom: 8px; }
   textarea { box-sizing: border-box; width: 100%; padding: 8px; resize: vertical; font: inherit; }
   p { font-size: 13px; line-height: 1.5; }
+  .warning { color: #765014; }
   .error { color: #91251f; }
   pre { max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
   footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }

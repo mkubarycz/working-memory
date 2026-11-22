@@ -109,6 +109,18 @@ it('redacts the entire URL authority userinfo, including literal @ characters in
   expect(longReport.body).toContain('https://[redacted]@example.test/path');
 });
 
+it('redacts SAS credentials in HTML/XML-escaped URLs across the report and title', () => {
+  const url = 'https://inbox.blob.core.windows.net/reports?sp=c&amp;sig=PRIVATE_SAS_SIGNATURE&amp;se=2099';
+  const report = buildChatBugReport({
+    ...input, description: `Problem with ${url}`,
+    run: { ...input.run, userText: url, assistantText: url,
+      pendingConfirmation: { id: 'confirm', tool: 'test', arguments: { evidence: url } } },
+  }, null, reportOptions);
+  expect(JSON.stringify(report)).not.toContain('PRIVATE_SAS_SIGNATURE');
+  expect(report.title).toContain('&amp;sig=[redacted]&amp;se=2099');
+  expect(report.body).toContain('&amp;sig=[redacted]&amp;se=2099');
+});
+
 it('omits nested media, serialized media and incomplete serialized previews before truncation', () => {
   const bytes = Buffer.from('PRIVATE_IMAGE_BYTES').toString('base64');
   const blob = Buffer.from('PRIVATE_RESOURCE_BYTES').toString('base64');
