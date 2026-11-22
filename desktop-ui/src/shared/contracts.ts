@@ -414,7 +414,9 @@ export interface FeedbackContext {
   backend: { version: string };
 }
 export interface FeedbackPreparation { servers: FeedbackServer[]; context: FeedbackContext }
-export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt } | { status: 'choose'; servers: FeedbackServer[] };
+export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt }
+  | { status: 'queued'; requestId: string; uploadedAt: string; destination: string }
+  | { status: 'choose'; servers: FeedbackServer[] };
 
 export interface ChatBugReportInput {
   description: string;

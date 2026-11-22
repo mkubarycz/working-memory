@@ -84,10 +84,10 @@ it('captures submitting messages and partial evidence without claiming a remote 
 it('redacts known credentials and structured secret fields, and never turns diagnostic attachment references into uploads', () => {
   const report = buildChatBugReport({
     ...input, description: 'Failure with PRIVATE_MODEL_KEY and sk-thisIsASecret123',
-    run: { ...input.run, userText: 'Bearer abc123secret\npassword=private-value\nhttps://user:pass@host/path\nBasic c2VjcmV0\nwm-attachment:00000000-0000-4000-8000-000000000001',
+    run: { ...input.run, userText: 'Bearer abc123secret\npassword=private-value\nhttps://user:pass@host/path\nhttps://inbox.blob.core.windows.net/reports?sp=c&sig=PRIVATE_SAS_SIGNATURE&se=2099\nBasic c2VjcmV0\nwm-attachment:00000000-0000-4000-8000-000000000001',
       pendingConfirmation: { id: 'confirm', tool: 'test', arguments: { nested: { token: 'private-token' } } } },
   }, null, reportOptions);
-  for (const secret of ['PRIVATE_MODEL_KEY', 'sk-thisIsASecret123', 'abc123secret', 'private-value', 'user:pass@', 'c2VjcmV0', 'private-token']) {
+  for (const secret of ['PRIVATE_MODEL_KEY', 'sk-thisIsASecret123', 'abc123secret', 'private-value', 'user:pass@', 'c2VjcmV0', 'private-token', 'PRIVATE_SAS_SIGNATURE']) {
     expect(JSON.stringify(report)).not.toContain(secret);
   }
   expect(report.body).not.toContain('wm-attachment:');

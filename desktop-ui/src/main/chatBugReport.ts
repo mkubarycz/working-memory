@@ -41,6 +41,7 @@ function reportText(value: string): string {
     .replace(/\bBasic\s+[A-Za-z0-9+/]+=*/gi, 'Basic [redacted]')
     .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, '[redacted]')
     .replace(/(https?:\/\/)[^\s/?#]*@/gi, '$1[redacted]@')
+    .replace(/([?&](?:sig|sas|signature)=)[^&\s"'<>]+/gi, '$1[redacted]')
     .replace(/wm-attachment:/gi, 'wm-attachment (reference):');
 }
 

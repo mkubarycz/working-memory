@@ -1472,22 +1472,36 @@ merely switching tabs does not clear it. Unread state is retained separately
 for each selected data environment, and loading old history does not mark
 every historical response unread.
 
-### Local Send Feedback prototype
+### Bug Report and Feedback delivery
 
-Every chat message also has **Report a bug**, including messages still running.
-Search also has **Report a bug** at the top right, available before, during, or
+Chat, Search and feature/backend errors share **Bug Report**: enter what went
+wrong, then select **Send bug report**. The shared dialog gathers bounded,
+redacted evidence and submits to a single discovered destination without a
+mandatory second preview-and-send screen. Multiple LAN receivers still require
+a choice; **Preview report** keeps the optional review and explicit Send
+workflow. Failed delivery retains the captured report and request identity for
+retry instead of recapturing or duplicating it. Collected evidence remains
+inspectable in the dialog; do not include private information in the description.
+Reporting never retries or changes the original operation.
+
+The shared dialogs also distinguish a queued upload result from confirmed
+delivery: a queued result does not offer a status link or claim an import.
+This result compatibility does not enable or configure a public inbox sender.
+
+Every chat message has **Bug Report**, including messages still running.
+Search also has **Bug Report** at the top right, available before, during, or
 after a search. It snapshots the search text, scope, displayed results and excerpts,
 scores and confidence reasons, answer blocks, activity timings, and errors when
 clicked. Evidence is bounded with explicit truncation/omission markers and uses
-the same credential/media redaction, local report preview, and explicit Feedback
-Send flow as chat reports; it does not rerun or cancel the search.
+the same credential/media redaction and shared Feedback delivery flow as chat
+reports, with optional preview; it does not rerun or cancel the search.
 Settings > Features keeps help text in the feature rows rather than paragraphs
-below the switches. Failures appear in a red error panel with **Report a bug**.
+below the switches. Failures appear in a red error panel with **Bug Report**.
 The report snapshots the selected error, feature state and requested change, plus
 the latest failed Observability operation's provider commands, durations and timeout
 limits. Command output, environment variables and private credentials are not
 collected by these command timings. Reporting uses the same local preview and
-explicit Feedback Send flow; it does not retry feature setup or run more provider
+shared Feedback delivery flow; it does not retry feature setup or run more provider
 checks.
 
 When replacing a registered running Podman backend, Working Memory prepares the
@@ -1506,14 +1520,15 @@ Working Memory does not kill unrelated listeners, choose a different port, or
 remove data volumes to make an upgrade succeed.
 
 Settings > System > Backend shows failed operations in a red error panel with
-**Report a bug**. Upgrade reports include the selected error, pre-operation
+**Bug Report**. Upgrade reports include the selected error, pre-operation
 instance/version and port, requested target, generated Compose configuration,
 bounded original Compose error output, and provider command timings. Reporting
 does not retry the upgrade, stop containers, change ports, or modify storage.
 Backend reports are previewed in the desktop session rather than written to
 the affected backend, so they can be sent while that backend is offline.
-Canceling discards the preview; explicit **Send** publishes it to a discovered
-Feedback server and provides a status link. No source topic is created or edited.
+Canceling discards the session report; explicit **Send bug report** submits to
+a discovered Feedback server and provides a status link. No source topic is
+created or edited.
 
 Podman connection discovery and engine probes allow up to 30 seconds per command
 (Docker remains at 10 seconds). A timeout identifies the command that did not
@@ -1521,9 +1536,9 @@ respond; it is not proof that the provider is stopped or that Compose is missing
 After a timeout, the Features page does not immediately repeat container discovery
 to look for ownership recovery. Ownership-conflict errors still offer recovery.
 
-Answer **What was the bug?** to create a separate local report topic, then review
-the captured report in the existing Feedback dialog and explicitly click **Send**.
-The local report remains if discovery fails or you cancel delivery; the original
+Answer **What was the bug?** and explicitly select **Send bug report**. Chat,
+Search and feature reports create a separate local report topic, which remains
+if discovery or delivery fails or you cancel delivery after preview; the original
 message and resource are not changed.
 Embedded Container App dashboards are hidden while HTML dialogs are open,
 including report capture and Feedback, and restored after the last overlay closes.
@@ -1534,8 +1549,9 @@ Reports include the selected prompt/response, journal state and timing, tool
 arguments/results, journal errors, confirmation state, desktop/platform details,
 and whether this desktop still tracks the run. The latest 100 shareable journal
 events are included within a bounded report size; omissions and truncation are
-marked. Recognized secrets and configured credentials are redacted. Always review
-before sharing: arbitrary sensitive text cannot be reliably detected. Image
+marked. Recognized secrets and configured credentials are redacted. Arbitrary
+sensitive text cannot be reliably detected: only describe information you may
+share, and use the optional preview to review captured evidence. Image
 attachments are references only; other conversations, internal system events,
 hidden reasoning and general application/backend log files are not included.
 Inline tool-result media and embedded resource blobs are omitted before

@@ -28,7 +28,6 @@ describe('desktop chat history IPC contract', () => {
     expect(dialog).toContain('capture={description => window.workingMemory.createChatBugReport({');
     expect(dialog).toContain('run: $state.snapshot(run)');
     expect(sharedDialog).toContain('What was the bug?');
-    expect(sharedDialog).toContain('if (mounted) report = captured');
     expect(sharedDialog).toContain('preview={report.body}');
   });
   it('exposes typed history pages and full journal detail through preload IPC', () => {

@@ -1339,7 +1339,7 @@ function registerIpc(): void {
       featureDiagnostics: featureFailure?.mcpUrl === environment.mcpUrl ? featureFailure : undefined,
       secrets: [...modelProfiles(config).map(profile => decryptApiKey(profile)), ...(token ? [token] : [])],
       assertCurrent: () => {
-        if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed. Reopen Report a bug.');
+        if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed. Reopen Bug Report.');
       },
     });
   });

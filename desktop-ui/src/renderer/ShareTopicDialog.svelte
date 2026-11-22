@@ -3,9 +3,10 @@
   import type { TopicVM } from './documents/types';
   import type { FeedbackContext, FeedbackServer } from '../shared/contracts';
 
-  let { topic, beforeShare, onClose, preview, sessionOnly = false }: {
+  let { topic, beforeShare, onClose, preview, sessionOnly = false, requestId = crypto.randomUUID() }: {
     topic: Pick<TopicVM, 'id' | 'title'>; beforeShare: () => Promise<void>; onClose: () => void; preview?: string;
     sessionOnly?: boolean;
+    requestId?: string;
   } = $props();
   let dialog: HTMLDialogElement;
   let servers = $state<FeedbackServer[]>([]);
@@ -16,8 +17,8 @@
   let error = $state('');
   let message = $state('');
   let sent = $state(false);
+  let queued = $state(false);
   let receiptUrl = $state('');
-  const requestId = crypto.randomUUID();
 
   onMount(() => {
     dialog.showModal();
@@ -52,6 +53,11 @@
       const result = await window.workingMemory.sendFeedback(topic.id, requestId, selectedServerId);
       if (result.status === 'choose') { servers = result.servers; selectedServerId = ''; return; }
       sent = true;
+      if (result.status === 'queued') {
+        queued = true;
+        message = `Report uploaded to ${result.destination}. Queued for the Feedback receiver; import and topic status are not confirmed.`;
+        return;
+      }
       receiptUrl = result.receipt.statusUrl;
       message = `${result.receipt.duplicate ? 'Already received' : 'Feedback sent'} to Inbox: ${result.receipt.title}`;
     } catch (reason) {
@@ -68,6 +74,7 @@
   {/if}
   <p>{phase === 'preparing' ? 'Preparing screenshots and discovering Feedback servers...'
     : phase === 'sending' ? 'Sending feedback over encrypted HTTPS...'
+    : queued ? 'The encrypted report is queued in the public inbox. No tracking link is available.'
     : sessionOnly ? sent ? 'The report was delivered. No topic was created on the affected backend.' : 'Click Send to publish this report. Nothing is written to the affected backend.'
     : sent ? 'A copy was sent and a dated tracking link was added to the original topic.'
     : 'Click Send to send a copy. A dated tracking link will be added to the original topic after delivery.'}</p>
@@ -87,7 +94,7 @@
   <p class="warning">Trusted LAN only. Traffic is encrypted with the discovered server's self-signed certificate; servers and senders are not authenticated.</p>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
-  {#if sessionOnly && sent}<p><a href={receiptUrl} target="_blank" rel="noreferrer">Check report status</a></p>{/if}
+  {#if sessionOnly && sent && receiptUrl}<p><a href={receiptUrl} target="_blank" rel="noreferrer">Check report status</a></p>{/if}
   <footer>
     {#if !sent}<button onclick={onClose} disabled={busy}>Cancel</button>{/if}
     {#if error}<button onclick={() => void prepare()} disabled={busy}>Refresh servers</button>{/if}

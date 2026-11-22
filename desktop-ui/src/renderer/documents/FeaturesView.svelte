@@ -192,7 +192,7 @@
           capturedAt: new Date().toISOString(), features, embeddingsEnabled,
           ...(error && requestedChange ? { requested: requestedChange } : {}),
         });
-      }}>Report a bug</button>
+      }}>Bug Report</button>
     </div>
   {/if}
 </section>

@@ -171,7 +171,7 @@
         prompt: session.prompt, context: session.context, response: session.response, trace: session.trace,
         loading: session.loading, error: session.error, notice: session.notice, requestId: session.requestId,
       });
-    }}>Report a bug</button>
+    }}>Bug Report</button>
   </header>
   {#if session.context?.document}
     <p class="context">Scope: {session.context.document.title}
@@ -309,7 +309,7 @@
 
 {#if reporting}
   <ReportBugDialog onClose={() => { reporting = null; }}
-    evidenceDescription="Includes the search text, scope, returned results and excerpts, similarity and confidence scores, answer, activity timings, and errors as captured when you clicked Report a bug. You can report an in-progress or failed search."
+    evidenceDescription="Includes the search text, scope, returned results and excerpts, similarity and confidence scores, answer, activity timings, and errors as captured when you clicked Bug Report. You can report an in-progress or failed search."
     capture={description => window.workingMemory.createSearchBugReport({ description, search: $state.snapshot(reporting!) })} />
 {/if}
 
