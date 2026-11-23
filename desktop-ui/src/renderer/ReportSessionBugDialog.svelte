@@ -6,7 +6,7 @@
   let captured: ChatBugReportDraft | null = null;
 </script>
 
-<ReportBugDialog {onClose} sessionOnly
+<ReportBugDialog {onClose} sessionOnly compact
   evidenceDescription={`Includes bounded desktop-session diagnostics${snapshot.operation
     ? ` and the selected ${snapshot.operation.kind} operation's evidence` : '; no operation is selected'}.
     No document drafts, unrelated conversations, files, attachment bytes or general logs are collected.`}

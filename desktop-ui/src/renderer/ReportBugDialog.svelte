@@ -3,17 +3,21 @@
   import type { ChatBugReportDraft, FeedbackPreparation, FeedbackSendResult, PublicFeedbackSettings } from '../shared/contracts';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
 
-  let { capture, evidenceDescription, supportingEvidence, onClose, sessionOnly = false, prepareCapture }: {
+  let { capture, evidenceDescription, supportingEvidence, onClose, sessionOnly = false, prepareCapture, compact = false }: {
     capture: (description: string) => Promise<ChatBugReportDraft>;
     evidenceDescription: string;
     supportingEvidence?: string;
     onClose: () => void;
     sessionOnly?: boolean;
     prepareCapture?: () => Promise<void>;
+    compact?: boolean;
   } = $props();
   let dialog = $state<HTMLDialogElement>();
   let description = $state('');
   let creating = $state(false);
+  let copying = $state(false);
+  let copied = $state(false);
+  const busy = $derived(creating || copying);
   let error = $state('');
   let report = $state<ChatBugReportDraft | null>(null);
   let result = $state<Exclude<FeedbackSendResult, { status: 'choose' }> | null>(null);
@@ -58,8 +62,9 @@
   }
 
   async function createReport(previewOnly = false): Promise<void> {
-    if (creating || !description.trim() || !captureReady || !deliverySettings) return;
+    if (busy || result || !description.trim() || !captureReady || !deliverySettings) return;
     creating = true;
+    copied = false;
     error = '';
     try {
       const captured = report ?? await capture(description);
@@ -81,23 +86,42 @@
       }
       const sent = await window.workingMemory.sendFeedback(captured.id, requestId, preparedServerId);
       if (!mounted) return;
-      if (sent.status === 'choose') chooseServer = true;
+      if (sent.status === 'choose') {
+        if (!preparation) throw new Error('The report delivery route is unavailable. Retry sending the report.');
+        preparation = { ...preparation, servers: sent.servers };
+        preparedServerId = '';
+        chooseServer = true;
+      }
       else result = sent;
     } catch (reason) {
       if (mounted) error = reason instanceof Error ? reason.message : String(reason);
     } finally { if (mounted) creating = false; }
   }
+
+  async function copyReport(): Promise<void> {
+    if (busy || !description.trim() || !captureReady) return;
+    copying = true;
+    copied = false;
+    error = '';
+    try {
+      const captured = report ?? await capture(description);
+      await navigator.clipboard.writeText(captured.body);
+      if (mounted) copied = true;
+    } catch (reason) {
+      if (mounted) error = `Could not copy bug report: ${reason instanceof Error ? reason.message : String(reason)}`;
+    } finally { if (mounted) copying = false; }
+  }
 </script>
 
-{#if report && chooseServer}
+{#if report && chooseServer && !compact}
   <ShareTopicDialog topic={report} preview={report.body} {requestId}
     {preparation} preferredServerId={preparedServerId}
     sessionOnly={report.sessionOnly ?? false} beforeShare={() => Promise.resolve()} {onClose} />
 {:else}
   <dialog bind:this={dialog} aria-labelledby="report-bug-title"
-    oncancel={event => { event.preventDefault(); if (!creating) onClose(); }}>
+    oncancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
     <h2 id="report-bug-title">Bug Report</h2>
-    {#if result}
+    {#if result && !compact}
       <p role="status">{result.status === 'queued'
         ? `Report uploaded to ${result.destination}. Queued for the Feedback receiver; import and topic status are not confirmed.`
         : `Bug report sent to Inbox: ${result.receipt.title}`}</p>
@@ -108,17 +132,26 @@
     {:else}
     <label for="bug-description">What was the bug?</label>
     <textarea id="bug-description" bind:value={description} maxlength="8000" rows="5"
-      disabled={creating || !!report} placeholder="What went wrong, and what did you expect to happen?"></textarea>
+      disabled={busy || !!report} oninput={() => { copied = false; }} placeholder="What went wrong, and what did you expect to happen?"></textarea>
     {#if preparingCapture}<p role="status">Collecting session diagnostics…</p>{/if}
     {#if captureError}<p class="error" role="alert">{captureError}
       <button onclick={() => void initializeCapture()}>Retry diagnostic capture</button></p>{/if}
-    {#if supportingEvidence}
+    {#if supportingEvidence && !compact}
       <section class="supporting-evidence" aria-label="Supporting evidence">
         <h3>Supporting evidence</h3>
         <pre>{supportingEvidence}</pre>
       </section>
     {/if}
     <div class="warning" role="note">
+      {#if compact}
+        {#if deliverySettings?.enabled}
+          Encrypted public inbox: {deliverySettings.destination}
+        {:else if deliverySettings}
+          Trusted LAN only. Servers and senders are not authenticated.
+        {:else}
+          Checking delivery route…
+        {/if}
+      {:else}
       {#if deliverySettings?.enabled}
         Public delivery is enabled: reports are uploaded to Azure at {deliverySettings.destination},
         encrypted for the configured recipient, and queued until the receiver imports them.
@@ -130,10 +163,19 @@
       {/if}
       Trusted LAN only. Traffic is encrypted with the discovered server's self-signed certificate;
       servers and senders are not authenticated.
+      {/if}
     </div>
     {#if deliveryError}<p class="error" role="alert">{deliveryError}
       <button onclick={() => void loadDeliverySettings()}>Retry delivery settings</button></p>{/if}
-    <details class="report-details">
+    {#if compact && chooseServer && preparation}
+      <fieldset disabled={busy || !!result}>
+        <legend>Feedback server</legend>
+        {#each preparation.servers as server (server.id)}
+          <label><input type="radio" bind:group={preparedServerId} value={server.id} /> {server.name} — {server.address}</label>
+        {/each}
+      </fieldset>
+    {/if}
+    {#if !compact}<details class="report-details">
       <summary>Report details</summary>
       <div>{evidenceDescription}</div>
       <div>Known credentials and recognized secret fields are redacted. Do not include private information.
@@ -141,14 +183,25 @@
       <div>{sessionOnly
         ? 'This report can be sent even when the backend is offline. It is not saved as a topic; canceling discards the preview.'
         : 'A local report topic is kept if sending fails. Reporting does not interrupt or change the operation.'}</div>
-    </details>
+    </details>{/if}
     {/if}
-    {#if report}
+    {#if report && !compact}
       <details><summary>Collected report</summary><pre>{report.body}</pre></details>
     {/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
+    {#if compact && result}<p role="status">{result.status === 'queued' ? 'Bug report queued.' : 'Bug report sent.'}</p>{/if}
+    {#if compact && copied}<p role="status">Copied to clipboard.</p>{/if}
     <footer>
-      {#if result}
+      {#if compact}
+        <button onclick={onClose} disabled={busy}>Cancel</button>
+        <button onclick={() => void copyReport()} disabled={busy || !description.trim() || !captureReady}>
+          {copying ? 'Copying…' : 'Copy to clipboard'}
+        </button>
+        <button class="primary" onclick={() => void createReport()}
+          disabled={busy || !!result || !description.trim() || !deliverySettings || !captureReady || (chooseServer && !preparedServerId)}>
+          {creating ? 'Sending bug report…' : 'Send bug report'}
+        </button>
+      {:else if result}
         <button class="primary" onclick={onClose}>Done</button>
       {:else}
         <button onclick={onClose} disabled={creating}>Cancel</button>

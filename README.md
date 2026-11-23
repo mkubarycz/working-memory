@@ -1663,9 +1663,12 @@ Search/placement/feature/backend operation, or the selected tool/latest message
 in the visible chat. It never collects document drafts, unrelated conversations,
 files, attachment bytes or general logs. The snapshot is session-only and requires
 no live backend query or local topic creation. Capture/settings errors block sending
-and offer retry; canceling leaves unsaved work untouched. Sending uses the same
-disclosure, optional preview, redaction and cached delivery/receipt retry as other
-reports. Changing screens or environments after capture does not change its source.
+and offer retry; canceling leaves unsaved work untouched. The compact dialog has
+the bug-details input, **Send bug report**, **Copy to clipboard** and **Cancel**,
+plus a one-line delivery destination/trust notice. It shows no report-data preview
+or explanatory paragraphs. Copying uses the redacted report without transmitting
+it and remains available if delivery settings cannot load. Sending preserves cached
+delivery/receipt retry. Changing screens or environments after capture does not change its source.
 The obsolete topic-header **Send Feedback** action has been removed.
 
 Every chat message has **Bug Report**, including messages still running.

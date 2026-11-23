@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
-  'uses the actual global footer offline and with a selected search, snapshots through IPC, retries and preserves drafts',
+  'uses the compact global dialog, copies redacted evidence without sending, retries and preserves drafts',
   async () => {
     const executable: unknown = createRequire(import.meta.url)('electron');
     if (typeof executable !== 'string') throw new Error('Electron executable is unavailable.');
@@ -34,7 +34,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       import '/src/renderer/style.css';
       const connected=new URL(location.href).searchParams.has('connected');
       const environment={id:'session-test',port:7717,displayName:'Session test',mcpUrl:'http://127.0.0.1:7717/mcp',source:'sandbox'};
-      const test=window.__sessionTest={captures:[],descriptions:[],preparations:[],sends:[],failSend:false,captureError:false,settingsError:false,saves:[]};
+      const test=window.__sessionTest={captures:[],descriptions:[],preparations:[],sends:[],copies:[],failCopy:false,failSend:false,captureError:false,settingsError:false,multipleServers:false,saves:[]};
+      Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{
+        if(test.failCopy)throw new Error('Clipboard unavailable');test.copies.push(text);
+      }}});
       if(connected)localStorage.setItem('working-memory.desktop.document-tabs:v1:session-test',JSON.stringify({
         version:1,tabs:[{kind:'search',identifier:'document-search'}],selectedKey:'search:document-search'}));
       const model={kind:'topic',id:'topic-1',title:'Original title',body:'UNSAVED_PRIVATE_DOCUMENT',
@@ -58,14 +61,16 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         openResource:async()=>model,
         saveTopic:async(id,patch)=>{test.saves.push({id,patch});await new Promise(resolve=>{test.finishSave=()=>resolve(model);});return model;},
         onDocumentSearchTrace:()=>()=>{},onDocumentSearchResults:()=>()=>{},
-        getPublicFeedbackSettings:async()=>{if(test.settingsError)throw new Error('Settings unavailable');return {enabled:true,destination:'https://fixture.blob.core.windows.net/feedback'};},
+        getPublicFeedbackSettings:async()=>{if(test.settingsError)throw new Error('Settings unavailable');return {enabled:!test.multipleServers,destination:test.multipleServers?null:'https://fixture.blob.core.windows.net/feedback'};},
         captureSessionBugReport:async input=>{
           test.captures.push(input);
           if(test.captureError)throw new Error('Diagnostic capture unavailable');
           return window.sessionReportBridge.capture(input);
         },
         describeSessionBugReport:async(id,text)=>{const draft=await window.sessionReportBridge.describe(id,text);test.descriptions.push(draft);return draft;},
-        prepareFeedback:async(id,requestId)=>{test.preparations.push({id,requestId});return {servers:[{id:'public',name:'Feedback',address:'fixture.blob.core.windows.net',delivery:'public-inbox'}],
+        prepareFeedback:async(id,requestId)=>{test.preparations.push({id,requestId});return {servers:test.multipleServers
+          ? [{id:'lan-1',name:'First receiver',address:'first.local'},{id:'lan-2',name:'Second receiver',address:'second.local'}]
+          : [{id:'public',name:'Feedback',address:'fixture.blob.core.windows.net',delivery:'public-inbox'}],
           context:{desktop:{version:'fixture',build:'fixture'},backend:{version:'Unknown'}}};},
         sendFeedback:async(id,requestId,serverId)=>{test.sends.push({id,requestId,serverId});if(test.failSend)throw new Error('Upload unavailable');return {status:'queued',requestId,uploadedAt:new Date().toISOString(),destination:'fixture.blob.core.windows.net'};},
       };
@@ -131,39 +136,80 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('window.__sessionTest.captures[0].renderer.authenticated'),false);
           assert.equal(await evaluate('window.__sessionTest.descriptions.length'),0);
           assert.equal(await evaluate('window.__sessionTest.sends.length'),0);
-          await wait('document.querySelector("dialog .warning").innerText.includes("reports are uploaded to Azure")');
+          await wait('document.querySelector("dialog .warning").innerText.includes("Encrypted public inbox:")');
+          assert.deepEqual(await evaluate('Array.from(document.querySelectorAll("dialog button")).map(b=>b.textContent.trim())'),
+            ['Cancel','Copy to clipboard','Send bug report']);
+          assert.equal(await evaluate('document.querySelector("dialog details, dialog pre")'),null);
           assert.equal(await evaluate(button('Send bug report')+'.disabled'),true);
+          assert.equal(await evaluate(button('Copy to clipboard')+'.disabled'),true);
           await describe('Cannot connect PRIVATE_MODEL_KEY wm-attachment:abc');
           await wait('!'+button('Send bug report')+'.disabled');
+          await evaluate('window.__sessionTest.failCopy=true');
+          await click('Copy to clipboard');
+          await wait('document.querySelector("dialog [role=alert]")?.textContent.includes("Clipboard unavailable")');
+          assert.equal(await evaluate('window.__sessionTest.sends.length+window.__sessionTest.preparations.length'),0);
+          await evaluate('window.__sessionTest.failCopy=false');
+          await click('Copy to clipboard');
+          await wait('window.__sessionTest.copies.length===1 && document.querySelector("dialog [role=status]")?.textContent.includes("Copied to clipboard")');
+          const copied=await evaluate('window.__sessionTest.copies[0]');
+          assert(copied.includes('Cannot connect'));assert(!copied.includes('PRIVATE_MODEL_KEY'));assert(!copied.includes('wm-attachment:'));
+          assert.equal(await evaluate('document.querySelector("#bug-description").disabled'),false);
+          assert.equal(await evaluate('window.__sessionTest.sends.length+window.__sessionTest.preparations.length'),0);
+          await describe('Edited description PRIVATE_MODEL_KEY wm-attachment:abc');
+          const descriptionsBeforeSend=await evaluate('window.__sessionTest.descriptions.length');
           await evaluate('window.__sessionTest.failSend=true');
           await click('Send bug report');
           await wait('document.querySelector("dialog [role=alert]")?.textContent.includes("Upload unavailable")');
           await evaluate('window.__sessionTest.failSend=false');
           await click('Send bug report');
-          await wait(button('Done'));
+          await wait('document.querySelector("dialog [role=status]")?.textContent==="Bug report queued."');
           const sends=await evaluate('window.__sessionTest.sends');
           assert.deepEqual(sends[0],sends[1]);
           assert.equal(await evaluate('window.__sessionTest.preparations.length'),1);
-          assert.equal(await evaluate('window.__sessionTest.descriptions.length'),1);
-          assert.equal(await evaluate('document.querySelector("dialog").innerText.includes("Queued for the Feedback receiver")'),true);
-          assert.equal(await evaluate('document.querySelector("dialog").innerText.includes("No topic was created")'),true);
+          assert.equal(await evaluate('window.__sessionTest.descriptions.length'),descriptionsBeforeSend+1);
+          assert.equal(await evaluate('window.__sessionTest.descriptions.at(-1).body.includes("Edited description")'),true);
+          assert.equal(await evaluate('window.__sessionTest.descriptions.at(-1).body.includes("Cannot connect")'),false);
+          assert.equal(await evaluate(button('Send bug report')+'.disabled'),true);
+          assert.equal(await evaluate('document.querySelector("dialog details, dialog pre")'),null);
           const body=await evaluate('window.__sessionTest.descriptions[0].body');
           assert(!body.includes('PRIVATE_MODEL_KEY'));assert(!body.includes('wm-attachment:'));
-          await click('Done');
+          await click('Cancel');
           await wait('!document.querySelector("dialog")');
           await evaluate('window.__sessionTest.settingsError=true;window.__sessionTest.captureError=true');
           await click('Report Bug');
           await wait('document.querySelector("dialog").innerText.includes("Diagnostic capture unavailable") && document.querySelector("dialog").innerText.includes("Settings unavailable")');
           await describe('Test retry');
           assert.equal(await evaluate(button('Send bug report')+'.disabled'),true);
-          await evaluate('window.__sessionTest.settingsError=false;window.__sessionTest.captureError=false');
-          await click('Retry delivery settings');await click('Retry diagnostic capture');
+          await evaluate('window.__sessionTest.captureError=false');
+          await click('Retry diagnostic capture');
+          await wait('!'+button('Copy to clipboard')+'.disabled');
+          assert.equal(await evaluate(button('Send bug report')+'.disabled'),true);
+          const sendsBeforeCopy=await evaluate('window.__sessionTest.sends.length');
+          await click('Copy to clipboard');
+          await wait('window.__sessionTest.copies.length===2');
+          assert.equal(await evaluate('window.__sessionTest.sends.length'),sendsBeforeCopy);
+          await evaluate('window.__sessionTest.settingsError=false');
+          await click('Retry delivery settings');
           await wait('!'+button('Send bug report')+'.disabled');
-          const sendsBeforePreview=await evaluate('window.__sessionTest.sends.length');
-          await click('Preview report');
-          await wait('document.querySelector("#share-topic-title") && !'+button('Send')+'.disabled');
-          assert.equal(await evaluate('window.__sessionTest.sends.length'),sendsBeforePreview);
-          assert.equal(await evaluate('document.querySelector("dialog").innerText.includes("Nothing is written to the affected backend")'),true);
+          assert.equal(await evaluate('document.querySelector("#share-topic-title")'),null);
+          await click('Cancel');await wait('!document.querySelector("dialog")');
+          await evaluate('window.__sessionTest.multipleServers=true');
+          await click('Report Bug');
+          await wait('document.querySelector("dialog .warning")?.textContent.includes("Trusted LAN only")');
+          await describe('Choose the correct receiver');
+          await wait('!'+button('Send bug report')+'.disabled');
+          const sendsBeforeSelection=await evaluate('window.__sessionTest.sends.length');
+          await click('Send bug report');
+          await wait('document.querySelectorAll("dialog input[type=radio]").length===2');
+          assert.equal(await evaluate('window.__sessionTest.sends.length'),sendsBeforeSelection);
+          assert.equal(await evaluate('document.querySelector("#share-topic-title")'),null);
+          assert.equal(await evaluate('document.querySelector("dialog details, dialog pre")'),null);
+          await evaluate('document.querySelectorAll("dialog input[type=radio]")[1].click()');
+          await wait('!'+button('Send bug report')+'.disabled');
+          await click('Send bug report');
+          await wait('window.__sessionTest.sends.length==='+String(sendsBeforeSelection+1));
+          assert.equal(await evaluate('window.__sessionTest.sends.at(-1).serverId'),'lan-2');
+          await wait('document.querySelector("dialog [role=status]")?.textContent==="Bug report queued."');
           await click('Cancel');await wait('!document.querySelector("dialog")');
           await win.loadURL('http://127.0.0.1:${address.port}/session-test.html?connected=1');
           await wait('document.querySelector("#document-search-prompt")');
@@ -173,11 +219,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('window.__sessionTest.captures[0].operation.kind'),'search');
           await evaluate('(()=>{const t=document.querySelector("#document-search-prompt");t.value="Changed after capture";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
           await describe('Wrong search result');
-          await click('Send bug report');await wait(button('Done'));
+          await click('Send bug report');await wait('document.querySelector("dialog [role=status]")?.textContent==="Bug report queued."');
           assert.equal(await evaluate('window.__sessionTest.descriptions[0].body.includes("Selected search")'),true);
           assert.equal(await evaluate('window.__sessionTest.descriptions[0].body.includes("PRIVATE_MODEL_KEY")'),false);
           assert.equal(await evaluate('window.__sessionTest.descriptions[0].body.includes("Changed after capture")'),false);
-          await click('Done');await wait('!document.querySelector("dialog")');
+          await click('Cancel');await wait('!document.querySelector("dialog")');
           await evaluate('window.__sessionTest.open({kind:"topic",identifier:"topic-1"})');
           await wait('document.querySelector(".title-input")');
           assert.equal(await evaluate('document.querySelector(".feedback-button")'),null);
