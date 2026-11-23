@@ -17,6 +17,15 @@ export function placementBugContext(
     prompt: 'Suggest Placement',
     context: { document: { id: source.id, title: source.title, kind: 'Topic' } },
     response: null,
+    ...(selected ? { supportingEvidence: [
+      `Suggested parent: ${selected.parent?.title ?? 'No new parent recommended'}`,
+      `Suggested workstream: ${selected.workstream.title}`,
+      `Similarity: ${selected.similarity.toFixed(2)}`,
+      `Confidence: ${selected.confidence.level} - ${selected.confidence.reason}`,
+      selected.evidence === 'parent-membership' ? 'Evidence: similar topic in this workstream.' : 'Evidence: similar workstream content.',
+      ...(result?.limited ? ['Only the first 32,000 body characters were indexed.'] : []),
+      `Supporting excerpt:\n${selected.excerpt}`,
+    ].join('\n') } : {}),
     trace: [{
       id: 'topic-placement', tool: 'wm-topic-suggest-placement', durationMs: 0,
       status: error ? 'error' : 'success', ...(error ? { error } : {}),

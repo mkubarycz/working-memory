@@ -26,7 +26,18 @@ describe('topic placement UI actions', () => {
     expect(report.trace[0]).toMatchObject({ status: 'error', error: 'Conflict: parent changed',
       arguments: { selectedSuggestion: result.suggestions[0], result } });
     expect(report.context?.document).toEqual({ id: 'topic', title: 'Topic', kind: 'Topic' });
+    expect(report.supportingEvidence).toContain('Suggested parent: Parent');
+    expect(report.supportingEvidence).toContain('Suggested workstream: Workstream');
+    expect(report.supportingEvidence).toContain('Supporting evidence');
+    expect(report.supportingEvidence).toContain('Embedding evidence');
     expect(placementBugContext({ id: 'topic', title: 'Topic', resourceVersion: 3 }, null, null, '', true).loading).toBe(true);
+  });
+  it('explains a workstream-only recommendation and limited indexing without inventing a parent', () => {
+    const selected = { ...result.suggestions[0], parent: null };
+    const report = placementBugContext({ id: 'topic', title: 'Topic', resourceVersion: 3 },
+      { ...result, limited: true }, selected, '', false);
+    expect(report.supportingEvidence).toContain('Suggested parent: No new parent recommended');
+    expect(report.supportingEvidence).toContain('Only the first 32,000 body characters were indexed.');
   });
   it('compiles the production placement component with explicit selection/apply and shared reporting', () => {
     const source = readFileSync(new URL('../src/renderer/documents/TopicPlacement.svelte', import.meta.url), 'utf8');

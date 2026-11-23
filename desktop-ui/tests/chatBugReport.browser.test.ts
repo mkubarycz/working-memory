@@ -186,6 +186,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait('window.__reportTest.surfaceVisible===false');
           assert.equal(native.getVisible(),false);
           assert(await evaluate('document.body.innerText.includes("What was the bug?")'));
+          assert.equal(await evaluate('document.querySelector("dialog .report-details").open'), false);
+          assert.equal(await evaluate('document.querySelectorAll("dialog > p").length'), 0);
+          assert.equal(await evaluate('document.querySelector("dialog").innerText.includes("Trusted LAN only.")'), true);
           assert(await evaluate('document.querySelector("dialog").innerText.includes("Trusted LAN only.")'));
           assert(await evaluate('document.querySelector("dialog").innerText.includes("servers and senders are not authenticated.")'));
           assert.equal(await evaluate(button('Send bug report')+'.disabled'),true);

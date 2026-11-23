@@ -472,6 +472,7 @@ export interface SearchBugReportInput {
     context?: SearchContext;
     response: SearchResponse | null;
     trace: SearchTrace[];
+    supportingEvidence?: string;
     loading: boolean;
     error: string;
     notice: string;

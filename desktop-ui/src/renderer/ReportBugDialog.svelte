@@ -3,9 +3,10 @@
   import type { ChatBugReportDraft, FeedbackSendResult } from '../shared/contracts';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
 
-  let { capture, evidenceDescription, onClose, sessionOnly = false }: {
+  let { capture, evidenceDescription, supportingEvidence, onClose, sessionOnly = false }: {
     capture: (description: string) => Promise<ChatBugReportDraft>;
     evidenceDescription: string;
+    supportingEvidence?: string;
     onClose: () => void;
     sessionOnly?: boolean;
   } = $props();
@@ -75,15 +76,22 @@
     <label for="bug-description">What was the bug?</label>
     <textarea id="bug-description" bind:value={description} maxlength="8000" rows="5"
       disabled={creating || !!report} placeholder="What went wrong, and what did you expect to happen?"></textarea>
-    <p>{evidenceDescription}</p>
-    <p>Click Send bug report to collect this context and submit it through Feedback.
-      Known credentials and recognized secret fields are redacted. Do not include private information in your description.
-      Use Preview report to inspect evidence before sharing.
-      Prompt images are referenced, not uploaded; other conversations and general log files are not included.</p>
-    <p class="warning">Trusted LAN only. Traffic is encrypted with the discovered server's self-signed certificate; servers and senders are not authenticated.</p>
-    <p>{sessionOnly
-      ? 'This report can be sent even when the backend is offline. It is not saved as a topic; canceling discards the preview.'
-      : 'A local report topic is kept if sending fails. Reporting does not interrupt or change the operation.'}</p>
+    {#if supportingEvidence}
+      <section class="supporting-evidence" aria-label="Supporting evidence">
+        <h3>Supporting evidence</h3>
+        <pre>{supportingEvidence}</pre>
+      </section>
+    {/if}
+    <div class="warning" role="note">Trusted LAN only. Traffic is encrypted with the discovered server's self-signed certificate; servers and senders are not authenticated.</div>
+    <details class="report-details">
+      <summary>Report details</summary>
+      <div>{evidenceDescription}</div>
+      <div>Known credentials and recognized secret fields are redacted. Do not include private information.
+        Preview the report before sharing. Prompt images are referenced, not uploaded; other conversations and general log files are not included.</div>
+      <div>{sessionOnly
+        ? 'This report can be sent even when the backend is offline. It is not saved as a topic; canceling discards the preview.'
+        : 'A local report topic is kept if sending fails. Reporting does not interrupt or change the operation.'}</div>
+    </details>
     {/if}
     {#if report}
       <details><summary>Collected report</summary><pre>{report.body}</pre></details>
@@ -110,7 +118,11 @@
   label { display: block; font-weight: 600; margin-bottom: 8px; }
   textarea { box-sizing: border-box; width: 100%; padding: 8px; resize: vertical; font: inherit; }
   p { font-size: 13px; line-height: 1.5; }
-  .warning { color: #765014; }
+  h3 { margin: 12px 0 6px; font-size: 14px; }
+  .supporting-evidence pre { margin: 0; max-height: 24vh; }
+  .report-details { margin-top: 12px; font-size: 12px; line-height: 1.5; }
+  .report-details div { margin-top: 8px; }
+  .warning { margin-top: 12px; color: #765014; font-size: 12px; line-height: 1.5; }
   .error { color: #91251f; }
   pre { max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
   footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }

@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
-  import { EMBEDDING_HISTORY_GUIDANCE } from '../../../../control-plane/src/embeddingContract';
   import type { TopicPlacement } from '../../../../control-plane/src/topicPlacementContract';
   import type { SearchBugReportInput } from '../../shared/contracts';
   import ReportBugDialog from '../ReportBugDialog.svelte';
@@ -8,11 +7,12 @@
   import { placementApplyInput, placementBugContext } from './topicPlacementActions';
 
   let { id, title, resourceVersion, editable, autoLoad = false, environment = '', saved = true,
-    onOpenTopic, onOpenWorkstream, onApplied }: {
+    onOpenTopic, onOpenWorkstream, onApplied, onClose }: {
     id: string; title: string; resourceVersion: number; editable: boolean;
     autoLoad?: boolean; environment?: string; saved?: boolean;
     onOpenTopic: (id: string) => void; onOpenWorkstream: (id: string) => void;
     onApplied?: () => Promise<void>;
+    onClose?: () => void;
   } = $props();
   let result = $state<TopicPlacement | null>(null);
   const selected = $derived(result?.state === 'ready' ? result.suggestions[0] ?? null : null);
@@ -80,21 +80,29 @@
 </script>
 
 <section class="topic-placement" aria-label="Topic placement">
-  <h3>Topic placement</h3>
-  <p>Advisory only. Nothing changes until you apply.</p>
-  <button disabled={loading || applying || !saved} onclick={suggest}>{loading ? 'Suggesting placement…' : result ? 'Refresh placement' : 'Suggest Placement'}</button>
-  {#if result || error || loading || notice}<button onclick={report}>Bug Report</button>{/if}
+  <header class="placement-heading">
+    <h2>Placement suggestion</h2>
+    <div class="placement-actions">
+      <button disabled={loading || applying || !saved} onclick={suggest} title="Refresh placement suggestions">Refresh</button>
+      <button disabled={!selected || applying || !editable || !saved} onclick={apply}
+        title="Add the suggested placement without removing existing relationships or moving descendants">{applying ? 'Applying…' : 'Apply'}</button>
+      <button onclick={report}>Bug Report</button>
+      {#if onClose}<button onclick={onClose} aria-label="Close placement suggestions"><span class="codicon codicon-close" aria-hidden="true"></span></button>{/if}
+    </div>
+  </header>
+  <div class="placement-content">
+  {#if loading}<p role="status">Suggesting placement…</p>{/if}
   {#if error}<p role="alert">{error}</p>{/if}
   {#if notice}<p role="status">{notice}</p>{/if}
   {#if result?.state === 'disabled'}
-    <p role="status">Placement suggestions are unavailable while Search or Embeddings is disabled. Enable them in Settings &gt; Features.</p>
+    <p role="status">Search and Embeddings must be enabled in Settings &gt; Features.</p>
   {:else if result?.state === 'pending'}
-    <p role="status">Placement suggestions are waiting for topic and workstream indexing. Retry when indexing is ready. {EMBEDDING_HISTORY_GUIDANCE}</p>
+    <p role="status">Placement suggestions are waiting for indexing. Refresh when ready.</p>
   {:else if result?.state === 'ready'}
     {#if selected}
       <article>
         <div class="placement-relation">
-          <span class="relation-label">Parent</span>
+          <span class="relation-label">Suggested parent</span>
           {#if selected.parent}<TopicLink topic={selected.parent} onOpen={onOpenTopic} />
           {:else}<span>No new parent recommended</span>{/if}
         </div>
@@ -105,34 +113,30 @@
             <span class="ws-chip-title">{selected.workstream.title}</span>
           </button>
         </div>
-        <details><summary>Supporting evidence</summary>
-          <p title={selected.confidence.reason}>Similarity {selected.similarity.toFixed(2)} · Confidence {selected.confidence.level}</p>
-          <p>{selected.confidence.reason}</p>
-          <p>{selected.evidence === 'parent-membership' ? 'Similar topic in this workstream.' : 'Similar workstream content.'}</p>
-          {#if result.limited}<p>Only the first 32,000 body characters were indexed.</p>{/if}
-          <blockquote>{selected.excerpt}</blockquote>
-          <p>Applying adds this placement; it does not remove existing relationships or move descendants.</p>
-        </details>
       </article>
-      <button disabled={applying || !editable || !saved} onclick={apply}>{applying ? 'Applying…' : 'Apply placement'}</button>
     {:else}<p>No sufficiently similar eligible placement found. You can place the topic manually.</p>{/if}
   {/if}
+  </div>
 </section>
 
 {#if reporting}
   <ReportBugDialog onClose={() => { reporting = null; }}
-    evidenceDescription="Includes the source topic, embedding readiness, returned suggestions, selected parent and workstream, versions, similarity, supporting excerpts, and errors captured when you clicked Report a bug."
+    supportingEvidence={reporting.supportingEvidence}
+    evidenceDescription="The report includes the displayed supporting evidence, source topic, selected parent and workstream, captured versions, readiness and errors."
     capture={description => window.workingMemory.createSearchBugReport({ description, search: $state.snapshot(reporting!) })} />
 {/if}
 
 <style>
-  .topic-placement { margin: 20px 0; padding: 16px; border: 1px solid var(--border-color, #444); border-radius: 6px; }
-  h3 { margin: 0; }
-  article { margin: 12px 0; padding: 12px; border: 1px solid var(--border-color, #444); border-radius: 4px; }
-  blockquote { white-space: pre-wrap; }
-  button { margin-right: 6px; }
+  .topic-placement { padding: 10px 12px; min-width: 0; background: var(--vscode-editor-background); }
+  .placement-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  h2 { margin: 0; font-size: 0.95em; }
+  .placement-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .placement-actions button { padding: 3px 6px; font-size: 0.85em; white-space: nowrap; }
+  .placement-content { overflow: auto; min-width: 0; }
+  article { margin-top: 8px; }
+  p { margin: 8px 0 0; font-size: 0.9em; }
   .placement-relation { display: flex; align-items: center; gap: 8px; margin: 8px 0; min-width: 0; }
-  .relation-label { min-width: 84px; color: var(--desktop-chat-muted); }
+  .relation-label { min-width: 104px; color: var(--desktop-chat-muted); font-size: 0.85em; }
   .ws-chip {
     display: flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0;
     text-align: left; padding: 2px 6px; border: none; border-radius: 4px; background: transparent;

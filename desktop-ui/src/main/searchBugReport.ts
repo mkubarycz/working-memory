@@ -14,6 +14,7 @@ const inputSchema = z.object({
       partial: z.boolean().optional(), limited: z.boolean().optional(),
     }).nullable(),
     trace: z.array(z.unknown()).max(1000),
+    supportingEvidence: z.string().max(16000).optional(),
     loading: z.boolean(), error: z.string(), notice: z.string(), requestId: z.string().nullable(),
   }),
 });
@@ -30,6 +31,7 @@ export async function createSearchBugReport(
   const { results = [], trace: responseTrace, ...response } = search.response ?? {};
   const body = '# Search bug report\n'
     + section('What was the bug?', description)
+    + (search.supportingEvidence ? section('Supporting evidence', search.supportingEvidence, 16000) : '')
     + section('Search request', { prompt: search.prompt, context: search.context })
     + section('Search state', { capturedAt: new Date(dependencies.now?.() ?? Date.now()).toISOString(),
       requestId: search.requestId, loading: search.loading, error: search.error, notice: search.notice })

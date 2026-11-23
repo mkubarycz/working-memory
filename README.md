@@ -688,7 +688,15 @@ the v1-v3 endpoint shapes are unchanged.
 Working Memory compares the topic's
 indexed embeddings with readable topics and workstreams and proposes a parent
 and workstream, showing only the highest-ranked eligible recommendation with normal
-topic/workstream links and optional supporting evidence. A workstream-only recommendation
+topic/workstream links. For saved topics without a family tree, placement replaces the
+empty family-tree cell beside the status/attributes section in an equal-width split.
+Existing family trees have **Suggest parent / workstream**, opening the same placement
+component in a popup. **Refresh**, **Apply** and **Bug Report** sit at the top right;
+the placement body contains only the proposed parent/workstream. Supporting evidence
+is shown in the bug-report dialog and included in the report explanation. Bug-report
+privacy/delivery details are collapsed rather than four default paragraphs.
+The trusted-LAN warning remains visible before sending and retrying a report.
+A workstream-only recommendation
 remains usable when no parent is eligible. Similarity is not certainty or an authored
 relationship. Select **Apply** to add the proposed relationships; nothing is moved,
 closed or linked automatically. Self/descendant parents are excluded, and changed

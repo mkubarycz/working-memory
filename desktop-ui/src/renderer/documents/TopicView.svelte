@@ -196,6 +196,24 @@
   // Family-tree scroll cues: show top/bottom fades only when there's more to
   // scroll in that direction, so the lineage reads as scrollable.
   let scrollEl = $state<HTMLDivElement | null>(null);
+  let placementPopup = $state(false);
+  let placementDialog = $state<HTMLDialogElement>();
+  let placementSource = $state<{ id: string; resourceVersion: number; environment: string } | null>(null);
+  const hasFamily = $derived(topic.parents.length > 0 || topic.children.length > 0);
+  const inlinePlacement = $derived(!draft && !!topic.id && !hasFamily);
+  $effect(() => {
+    if (placementPopup && (!placementSource || draft || !hasFamily || topic.id !== placementSource.id
+      || topic.resourceVersion !== placementSource.resourceVersion || placementEnvironment !== placementSource.environment)) {
+      placementPopup = false;
+    }
+  });
+  $effect(() => {
+    if (placementPopup && placementDialog && !placementDialog.open) placementDialog.showModal();
+  });
+  function openPlacementPopup(): void {
+    placementSource = { id: topic.id, resourceVersion: topic.resourceVersion, environment: placementEnvironment };
+    placementPopup = true;
+  }
   let canUp = $state(false);
   let canDown = $state(false);
 
@@ -275,7 +293,7 @@
   </div>
 {/if}
 
-<div class="header-grid">
+<div class="header-grid" class:with-placement={inlinePlacement}>
 <section class="attrs" aria-label="Topic attributes">
   <div class="attr">
     <span class="k">Status</span>
@@ -328,11 +346,23 @@
   {/each}
 </section>
 
+  {#if inlinePlacement}
+    <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
+      autoLoad={placementAutoLoad} environment={placementEnvironment}
+      saved={saveState === 'idle' || saveState === 'saved'}
+      editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream} onApplied={onTopicAdded} />
+  {:else}
   <aside class="family" aria-label="Family tree">
+    <div class="family-heading">
     <h2 class="family-title">
       <span class="codicon codicon-type-hierarchy"></span>
       Family tree
     </h2>
+    {#if !draft && topic.id}
+      <button class="suggest-placement" disabled={saveState !== 'idle' && saveState !== 'saved'}
+        onclick={openPlacementPopup}>Suggest parent / workstream</button>
+    {/if}
+    </div>
     <div class="family-scroll" bind:this={scrollEl} onscroll={updateScrollCues}>
       {#if topic.parents.length > 0}
         <div class="fam-group">
@@ -379,7 +409,19 @@
       <span class="codicon codicon-chevron-down fam-fade-chevron"></span>
     </div>
   </aside>
+  {/if}
 </div>
+
+{#if placementPopup && !draft && topic.id && hasFamily}
+  <dialog class="placement-dialog" bind:this={placementDialog} aria-label="Suggest parent and workstream"
+    oncancel={event => { event.preventDefault(); placementPopup = false; }}>
+    <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
+      autoLoad environment={placementEnvironment} saved={saveState === 'idle' || saveState === 'saved'}
+      editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream}
+      onClose={() => { placementPopup = false; }}
+      onApplied={async () => { await onTopicAdded?.(); placementPopup = false; }} />
+  </dialog>
+{/if}
 
 <AgentMessageCallouts agentMessages={topic.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {onSnooze} {attachmentBaseUrl} />
 
@@ -454,14 +496,6 @@
   </div>
 </section>
 
-{#if !draft && topic.id}
-  {#key topic.id}
-    <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
-      autoLoad={placementAutoLoad} environment={placementEnvironment}
-      saved={saveState === 'idle' || saveState === 'saved'}
-      editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream} onApplied={onTopicAdded} />
-  {/key}
-{/if}
 {#if showRelatedTopics && !draft && topic.id}
   <RelatedTopics id={topic.id} resourceVersion={topic.resourceVersion} {onOpenTopic} {attachmentBaseUrl}
     bind:activeDrag {onAddChild} onAdded={onTopicAdded} />
@@ -817,10 +851,17 @@
     max-height: 160px;
   }
 
+  .family-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .suggest-placement { margin-left: auto; padding: 3px 6px; font-size: 0.85em; }
+  .placement-dialog {
+    width: min(680px, 90vw); padding: 0; border: 1px solid var(--vscode-widget-border);
+    border-radius: 6px; color: var(--vscode-foreground); background: var(--vscode-editor-background);
+  }
+  .placement-dialog::backdrop { background: #0006; }
+
   @media (min-width: 720px) {
-    .header-grid {
-      grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-    }
+    .header-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+    .header-grid.with-placement { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); max-height: none; }
   }
 
   @media (max-width: 719px) {
