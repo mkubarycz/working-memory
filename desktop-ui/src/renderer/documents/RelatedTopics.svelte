@@ -76,8 +76,8 @@
     {/if}
     {#if result.limited}<p role="status">V1 uses the first 32,000 body characters of this topic.</p>{/if}
     {#if result.state === 'ready'}
-    {#each result.results.filter(hit => hit.evidence !== 'keyword') as hit (hit.id)}
-      <SearchResult {hit} topicDrag={topicDrags} onOpen={onOpenTopic}
+    {#each result.results.filter(hit => hit.evidence !== 'keyword' || hit.confidence?.level === 'high') as hit (hit.id)}
+      <SearchResult hit={{ ...hit, literalMatch: hit.evidence !== 'semantic' }} topicDrag={topicDrags} onOpen={onOpenTopic}
         {attachmentBaseUrl} {onAddChild} {onAdded}
         expanded={expanded.includes(hit.id)} onToggle={() => toggleExcerpt(hit.id)} />
     {:else}<p>No related topics found yet.</p>{/each}

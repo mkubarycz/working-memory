@@ -1,12 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadKinds } from '../src/kinds/loader';
 import { openStore, type Store } from '../src/store';
-import { EMBEDDING_KINDS, EMBEDDING_MODEL, embeddingBatchSchema, matchConfidence } from '../src/embeddingContract';
+import { EMBEDDING_KINDS, EMBEDDING_MODEL, embeddingBatchSchema, matchConfidence, relatedTopicsSchema } from '../src/embeddingContract';
 import { embeddingStats, nextEmbeddingWork, relatedTopics, semanticSearch, submitEmbeddings } from '../src/topicEmbeddings';
 import { getKind } from '../src/kinds/registry';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
 import { InstanceFeatureStore } from '../src/instanceFeatures';
 import { instanceToolPermissions } from '../src/instanceAuthorization';
+import { topicPlacementSchema } from '../src/topicPlacementContract';
 
 const stores: Store[] = [];
 beforeAll(async () => { await loadKinds(); });
@@ -20,6 +21,63 @@ function submit(store: Store, direction = 0) {
 }
 
 describe('topic embeddings', () => {
+  it.each(['title', 'body'] as const)('shows the shared case reference from the source %s across Related topics and placement MCP paths', async field => {
+    const store = fixture();
+    const caseId = '20261411192068475308';
+    const sourceWs = store.createDocument({ kind: 'Workstream', spec: { title: 'Email' } });
+    const targetWs = store.createDocument({ kind: 'Workstream', spec: { title: 'test' } });
+    const source = store.createDocument({ kind: 'Topic', spec: {
+      title: field === 'title' ? `Re: ${caseId}` : 'Email follow-up',
+      body: `${field === 'body' ? 'A'.repeat(33000) : ''}\n${caseId} This is an email aoub tthis ticket number`,
+      workstreams: [sourceWs.metadata.id],
+    } });
+    const target = store.createDocument({ kind: 'Topic', spec: {
+      title: `jubberish topic ${caseId}`, body: 'The curious kettle collected raindrops in a thimble.',
+      workstreams: [targetWs.metadata.id],
+    } });
+    for (let index = 0; index < 41; index++) {
+      store.createDocument({ kind: 'Topic', spec: {
+        title: `jubberish topic ${String(index).padStart(20, '0')}`,
+        body: 'The blue beetle sent a postcard to a marmalade star.', workstreams: [targetWs.metadata.id],
+      } });
+    }
+    new InstanceFeatureStore(store.db).write({ search: true });
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+      for (;;) {
+        const work = nextEmbeddingWork(store.db).work;
+        if (!work) break;
+        submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+          model: EMBEDDING_MODEL, vectors: work.passages.map(() => unit(work.id === target.metadata.id ? 1 : 0)) });
+      }
+      const placement = await client.topicSuggestPlacement(source.metadata.id);
+      expect(topicPlacementSchema.parse(placement).suggestions[0]).toMatchObject({
+        parent: { id: target.metadata.id }, workstream: { id: targetWs.metadata.id }, similarity: 0,
+        confidence: { level: 'high' },
+      });
+      const response = await client.callTool('wm-related-topics', { id: source.metadata.id, limit: 1 });
+      if (!response.ok) throw new Error(response.error);
+      expect(relatedTopicsSchema.parse(response.result)).toMatchObject({ state: 'ready', results: [{
+        id: target.metadata.id, title: target.spec.title, similarity: 0, evidence: 'keyword',
+        alreadyLinked: false, excerpt: expect.stringContaining(caseId),
+        confidence: { level: 'high', reason: expect.stringContaining('verifies the text match') },
+      }] });
+      expect(relatedTopics(store.db, { id: source.metadata.id, limit: 10 }, true).results[0].id).toBe(target.metadata.id);
+      expect(relatedTopics(store.db, { id: source.metadata.id, workstream: targetWs.metadata.id, limit: 1 }, true).results[0].id)
+        .toBe(target.metadata.id);
+      expect(relatedTopics(store.db, { id: source.metadata.id, workstream: sourceWs.metadata.id }, true).results).toEqual([]);
+      expect(relatedTopics(store.db, { id: source.metadata.id }, false).results).toEqual([]);
+      expect(store.getDocument({ id: source.metadata.id })).toEqual(source);
+      const pending = store.createDocument({ kind: 'Topic', spec: { title: `Re: ${caseId}` } });
+      expect(relatedTopics(store.db, { id: pending.metadata.id }, true)).toMatchObject({ state: 'pending', results: [] });
+      store.updateDocument({ id: target.metadata.id, expectedResourceVersion: target.metadata.resourceVersion,
+        spec: { ...target.spec, body: 'Updated case notes' } });
+      expect(relatedTopics(store.db, { id: source.metadata.id }, true).results.some(hit => hit.id === target.metadata.id)).toBe(false);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it.each([
     ['BANK account', 'bank', true],
     ['Banking services', 'bank', false],

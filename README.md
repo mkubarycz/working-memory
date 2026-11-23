@@ -662,7 +662,14 @@ rows show a relevance score (vector cosine similarity, not a confidence
 percentage). Supporting Markdown passages are quoted beneath the title when
 expanded; they start collapsed. The section is hidden
 when Embeddings is disabled, without running related-topic retrieval. Pending
-source topics show an indexing message, not keyword substitutes. Ordinary
+source topics show an indexing message, not keyword substitutes.
+Exact standalone 20-digit case references shared with the source title or full
+body are ranked before semantic-only candidates, including before the candidate
+cap. Verified references show **Term match** and High literal-evidence confidence,
+even when their measured cosine similarity is low; that does not prove shared
+meaning or authorize a relationship. Related topics and placement use the same
+reference matcher. Existing workstream filters and current-index requirements
+still apply. Ordinary
 keyword MCP search remains available separately; desktop Search uses semantic retrieval.
 
 Related topic handles share drag handling with the workstream tree: drag to the

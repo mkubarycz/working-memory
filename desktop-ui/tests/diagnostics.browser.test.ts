@@ -84,7 +84,13 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           state.relatedRequestId = id;
           if (state.relatedFailure) throw new Error(state.relatedFailure);
           if (!state.embeddingEnabled) return { state: 'disabled', limited: false, results: [] };
-          return { state: state.relatedPending ? 'pending' : 'ready', limited: false, results: [{
+          return { state: state.relatedPending ? 'pending' : 'ready', limited: false, results: [
+          ...(state.caseReferences ? [{
+            id: 'same-case-topic', title: 'jubberish topic 20261411192068475308',
+            excerpt: 'Case 20261411192068475308. The curious kettle collected raindrops in a thimble.',
+            similarity: 0, alreadyLinked: false, evidence: 'keyword',
+            confidence: { level: 'high', reason: 'The exact case reference occurs in this document, not proof of shared meaning.' },
+          }] : []), {
             id: 'related-topic', title: 'Connectivity recovery',
             excerpt: 'Restore **routing** and investigate dropped packets.\\n\\n- Check the gateway\\n- [Open the source](working-memory://open/topic/source-topic)\\n\\n<script>window.__unsafeExcerpt = true</script>',
             similarity: 0.8, alreadyLinked: true, evidence: 'semantic',
@@ -525,6 +531,18 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("window.__diagnosticsTest.nativeDrag.filePath"), '/tmp/related.md');
           await evaluate("window.__diagnosticsTest.dragResult({filePath: '/tmp/related.md', status: 'failed', error: 'Native test failure'})");
           await wait("document.querySelector('.related-topics [role=alert]')?.textContent.includes('Native test failure')");
+          await evaluate("window.__diagnosticsTest.caseReferences = true; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
+          await wait("document.querySelector('.related-topics')?.innerText.includes('jubberish topic 20261411192068475308')");
+          assert.equal(await evaluate("document.querySelectorAll('.related-topics article').length"), 2);
+          assert.equal(await evaluate("document.querySelector('.related-topics article').getAttribute('data-search-result')"), 'same-case-topic');
+          assert.equal(await evaluate("document.querySelector('.related-topics article .relevance').textContent.trim()"), 'Similarity 0.00');
+          assert.equal(await evaluate("document.querySelector('.related-topics article .confidence').textContent.trim()"), 'Confidence High');
+          assert.ok((await evaluate("document.querySelector('.related-topics article').innerText")).includes('Term match'));
+          assert.equal((await evaluate("document.querySelector('.related-topics').innerText")).includes('Unrelated keyword substitute'), false);
+          await evaluate("document.querySelector('.related-topics article .twistie').click()");
+          await wait("document.querySelector('.related-topics article .excerpt')?.innerText.includes('20261411192068475308')");
+          await evaluate("document.querySelector('.related-topics article .topic-link').click()");
+          assert.equal(await evaluate("window.__diagnosticsTest.openedTopic"), 'same-case-topic');
           await evaluate("window.__diagnosticsTest.embeddingEnabled = false; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");
           await wait("!document.querySelector('.related-topics')");
           await evaluate("window.__diagnosticsTest.relatedFailure = 'Related topics unavailable'; window.__setDiagnosticsVisible(false); window.__setDiagnosticsVisible(true)");

@@ -1,6 +1,6 @@
 import type { Store, DocumentEnvelope } from './store.js';
 import { EMBEDDING_MODEL, EMBEDDING_TEXT_LIMIT, matchConfidence } from './embeddingContract.js';
-import { caseIdentifiers, literalDocumentMatches, refreshDocumentSearch } from './documentSearch.js';
+import { caseReferenceMatches, refreshDocumentSearch } from './documentSearch.js';
 import { similarity, vector } from './topicEmbeddings.js';
 import { validateSpec } from './kinds/registry.js';
 import { stringArray } from './kinds/topic/topic.js';
@@ -47,9 +47,7 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
     WHERE r.kind IN ('Topic', 'Workstream') AND r.deleted_at IS NULL
     AND (i.topic_id IS NULL OR i.model_id != ? OR i.source_version != r.resource_version) LIMIT 1`).get(EMBEDDING_MODEL)) return result;
   refreshDocumentSearch(store.db);
-  const text = store.db.prepare('SELECT title || char(10) || body AS text FROM document_search WHERE id = ?').get(input.id);
-  if (!text) throw new Error('The topic search projection is unavailable. Retry after indexing.');
-  const literalMatches = literalDocumentMatches(store.db, caseIdentifiers(String(text.text)), ['Topic']);
+  const literalMatches = caseReferenceMatches(store.db, input.id);
   const source = vector(indexed.centroid);
   const forbidden = forbiddenParents(store, input.id);
   const suggestions: Array<Omit<TopicPlacementSuggestion, 'confidence'> & { limited: boolean; literalMatch: boolean }> = [];

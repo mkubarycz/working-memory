@@ -5,7 +5,7 @@ import {
   embeddingSubmitSchema, relatedTopicsInputSchema,
   type EmbeddingStats, type EmbeddingWork, type RelatedTopics,
 } from './embeddingContract.js';
-import { caseIdentifiers, literalDocumentMatches, refreshDocumentSearch, type DocumentSearchHit } from './documentSearch.js';
+import { caseIdentifiers, caseReferenceMatches, literalDocumentMatches, refreshDocumentSearch, type DocumentSearchHit } from './documentSearch.js';
 
 const indexedKinds = EMBEDDING_KINDS.map(kind => `'${kind}'`).join(',');
 const projectedBody = "CASE WHEN r.kind = 'Topic' THEN substr(s.body, length(s.title) + 2) ELSE s.body END";
@@ -172,7 +172,8 @@ export function relatedTopics(db: DatabaseSync, raw: unknown, enabled: boolean):
   const indexed = db.prepare('SELECT * FROM topic_embedding_index WHERE topic_id = ? AND model_id = ? AND source_version = ?')
     .get(input.id, EMBEDDING_MODEL, Number(current.resource_version));
   const sourceVector = indexed ? vector(indexed.centroid) : null;
-  const best: Array<{ id: string; score: number }> = [];
+  const best: Array<{ id: string; score: number; literalMatch: boolean }> = [];
+  const literalMatches = sourceVector ? caseReferenceMatches(db, input.id) : new Map<string, string>();
   if (sourceVector) {
     for (const row of db.prepare(`SELECT r.id, i.centroid FROM topic_embedding_index i JOIN resources r ON r.id = i.topic_id
       WHERE r.kind = 'Topic' AND r.deleted_at IS NULL AND r.id != ?
@@ -180,30 +181,31 @@ export function relatedTopics(db: DatabaseSync, raw: unknown, enabled: boolean):
       AND (? IS NULL OR EXISTS (SELECT 1 FROM json_each(r.spec, '$.workstreams') WHERE value = ?))`)
       .iterate(input.id, EMBEDDING_MODEL, input.workstream ?? null, input.workstream ?? null)) {
       const score = similarity(sourceVector, vector(row.centroid));
-      if (score < 0.35) continue;
-      best.push({ id: String(row.id), score });
-      best.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+      const literalMatch = literalMatches.has(String(row.id));
+      if (score < 0.35 && !literalMatch) continue;
+      best.push({ id: String(row.id), score, literalMatch });
+      best.sort((a, b) => Number(b.literalMatch) - Number(a.literalMatch) || b.score - a.score || a.id.localeCompare(b.id));
       if (best.length > 40) best.pop();
     }
 
   }
   const parents: string[] = JSON.parse(String(current.parents));
-  const results = best.slice(0, input.limit).map(({ id, score }) => {
+  const results = best.slice(0, input.limit).map(({ id, score, literalMatch }) => {
       const doc = source(db, id);
       const candidateParents: string[] = JSON.parse(String(doc.parents));
-      let excerpt = String(doc.body).slice(0, 600);
+      let excerpt = literalMatches.get(id) ?? String(doc.body).slice(0, 600);
       let passageScore = -1;
       if (sourceVector) {
         for (const passage of db.prepare('SELECT excerpt, vector FROM topic_embedding_passages WHERE topic_id = ?').iterate(id)) {
           const score = similarity(sourceVector, vector(passage.vector));
-          if (score > passageScore) { passageScore = score; excerpt = String(passage.excerpt); }
+          if (score > passageScore) { passageScore = score; if (!literalMatch) excerpt = String(passage.excerpt); }
         }
       }
       return { id, title: String(doc.title), excerpt, similarity: score,
-        confidence: matchConfidence(passageScore, score, false,
+        confidence: matchConfidence(passageScore, score, literalMatch,
           Number(indexed?.limited) === 1 || Number(doc.body_length) > EMBEDDING_TEXT_LIMIT),
         alreadyLinked: parents.includes(id) || candidateParents.includes(input.id),
-        evidence: 'semantic' as const };
+        evidence: literalMatch ? score >= 0.35 ? 'both' as const : 'keyword' as const : 'semantic' as const };
     });
   return { state: indexed ? 'ready' : 'pending', limited: Number(current.body_length) > EMBEDDING_TEXT_LIMIT, results };
 }

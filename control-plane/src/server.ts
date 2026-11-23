@@ -501,7 +501,7 @@ export function createMcpServer(
   }, async input => features.read().search
     ? asText(submitEmbeddings(store.db, input)) : asError('Search is turned off.'));
   server.registerTool('wm-related-topics', {
-    title: 'Topics: Related Topics', description: 'Read semantic suggestions with evidence when Embeddings is enabled. Similarity is not an authored relationship.',
+    title: 'Topics: Related Topics', description: 'Read semantic suggestions and exact shared 20-digit case references with evidence when Embeddings is enabled. Similarity is not an authored relationship.',
     inputSchema: relatedTopicsInputSchema, annotations: { readOnlyHint: true },
   }, async input => {
     if (!features.read().search || !canReadKind('Topic')) return asError('Search is disabled or Topic read permission is unavailable.');

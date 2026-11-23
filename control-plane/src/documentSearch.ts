@@ -236,6 +236,13 @@ export function literalDocumentMatches(db: DatabaseSync, phrases: string[], kind
   return matches;
 }
 
+export function caseReferenceMatches(db: DatabaseSync, id: string): Map<string, string> {
+  refreshDocumentSearch(db);
+  const source = db.prepare('SELECT title || char(10) || body AS text FROM document_search WHERE id = ?').get(id);
+  if (!source) throw new Error('The document search projection is unavailable. Retry after indexing.');
+  return literalDocumentMatches(db, caseIdentifiers(String(source.text)), ['Topic']);
+}
+
 export function searchDocuments(
   db: DatabaseSync,
   input: DocumentSearchInput,
