@@ -29,8 +29,17 @@ describe('topic placement UI actions', () => {
     expect(report.supportingEvidence).toContain('Suggested parent: Parent');
     expect(report.supportingEvidence).toContain('Suggested workstream: Workstream');
     expect(report.supportingEvidence).toContain('Supporting evidence');
+    expect(report.supportingEvidence).toContain('Evidence: parent belongs to this workstream.');
     expect(report.supportingEvidence).toContain('Embedding evidence');
     expect(placementBugContext({ id: 'topic', title: 'Topic', resourceVersion: 3 }, null, null, '', true).loading).toBe(true);
+  });
+  it('preserves structural evidence without relabeling neighbor similarity as parent similarity', () => {
+    const selected = { ...result.suggestions[0], similarity: 0.1,
+      confidence: { level: 'medium' as const, reason: 'Authored neighborhood support: 2 of 2 similar organized topics. Not a probability.' } };
+    const report = placementBugContext({ id: 'topic', title: 'Topic', resourceVersion: 3 }, result, selected, '', false);
+    expect(report.supportingEvidence).toContain('Similarity: 0.10');
+    expect(report.supportingEvidence).toContain(selected.confidence.reason);
+    expect(report.trace[0].arguments).toMatchObject({ selectedSuggestion: selected });
   });
   it('explains a workstream-only recommendation and limited indexing without inventing a parent', () => {
     const selected = { ...result.suggestions[0], parent: null };

@@ -22,7 +22,7 @@ export function placementBugContext(
       `Suggested workstream: ${selected.workstream.title}`,
       `Similarity: ${selected.similarity.toFixed(2)}`,
       `Confidence: ${selected.confidence.level} - ${selected.confidence.reason}`,
-      selected.evidence === 'parent-membership' ? 'Evidence: similar topic in this workstream.' : 'Evidence: similar workstream content.',
+      selected.evidence === 'parent-membership' ? 'Evidence: parent belongs to this workstream.' : 'Evidence: similar workstream content.',
       ...(result?.limited ? ['Only the first 32,000 body characters were indexed.'] : []),
       `Supporting excerpt:\n${selected.excerpt}`,
     ].join('\n') } : {}),

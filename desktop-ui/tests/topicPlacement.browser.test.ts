@@ -40,7 +40,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             suggestions: state.phase === 'ready' || state.phase === 'fallback' ? [{
               parent: state.phase === 'fallback' ? null : {id: 'parent', title: 'Recommended parent', resourceVersion: 5},
               workstream: {id: 'ws', title: 'Recommended workstream', resourceVersion: 7},
-              similarity: 0.8, confidence: {level: 'high', reason: 'Supporting passage agrees'},
+              similarity: 0.1, confidence: {level: 'medium', reason: 'Authored neighborhood support: 2 of 2 similar organized topics. Not a probability.'},
               excerpt: 'Matched authored content', evidence: 'parent-membership'
             }, {
               parent: {id: 'second', title: 'Lower-ranked parent', resourceVersion: 8},
@@ -205,6 +205,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             await evaluate(button('Send bug report') + '.click()');
             await wait('window.__placementTest.reports.length === 1 && document.querySelector("dialog [role=status]")');
             assert.ok(await evaluate('window.__placementTest.reports[0].search.supportingEvidence.includes("Matched authored content")'));
+            assert.ok(await evaluate('window.__placementTest.reports[0].search.supportingEvidence.includes("Authored neighborhood support: 2 of 2")'));
+            assert.ok(await evaluate('window.__placementTest.reports[0].search.supportingEvidence.includes("Similarity: 0.10")'));
+            assert.ok(await evaluate('window.__placementTest.reports[0].search.supportingEvidence.includes("Evidence: parent belongs to this workstream.")'));
             await evaluate('document.querySelector("dialog").dispatchEvent(new Event("cancel", {cancelable: true}))');
             await wait('!document.querySelector("dialog")');
             await evaluate('window.__placementTest.failApply = false; ' + button('Apply') + '.click()');

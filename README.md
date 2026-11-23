@@ -801,6 +801,24 @@ Similarity remains the actual cosine score; literal confidence is not approval
 to create a relationship. Parents must still be open, non-descendants and members
 of an open workstream; a matching unplaced topic remains searchable but is not
 an eligible parent/workstream pair.
+Placement also uses up to 50 hybrid-ranked, open, non-descendant topic neighbors
+as examples of authored organization. A neighbor votes only for its existing
+parents in workstreams shared by that neighbor and parent; unorganized duplicates
+do not invent a destination. Each example's vote is its source-to-neighbor cosine
+(or unit weight for verified lexical evidence), divided equally among its eligible
+parent/workstream pairs. Pair support is multiplied by its share of all organized
+vote weight, so disagreement and multiple destinations dilute support. This is
+added to the direct hybrid rank normalized to the best direct candidate.
+Multiple strong agreeing examples can therefore recommend a container whose own
+text is less similar; direct and exact-reference matches remain eligible candidates.
+Lone, weak or conflicting examples remain Low confidence; at least two strong
+semantic examples with undivided agreement and complete coverage can reach Medium,
+never a calibrated probability. The existing supporting-evidence report names up
+to three examples and reports weighted support. Similarity and excerpt still
+describe the proposed parent (or direct workstream), not its supporting children.
+Relationships are read fresh on every suggestion, with no learned persisted state,
+additional model call, body hydration or re-embedding for the query. Existing
+eligibility, explicit additive Apply and version checks are unchanged.
 
 Enable local indexing with the **Embeddings** switch in **Settings > Features**.
 Monitor indexing history in **Observability** (enable **Observability Container App**

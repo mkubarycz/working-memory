@@ -11,14 +11,22 @@ import { topicPlacementApplySchema, topicPlacementSchema } from '../src/topicPla
 let store: Store;
 beforeAll(async () => { await loadKinds(); });
 afterEach(() => store?.close());
-function indexAll(direction: (id: string) => number = () => 0) {
+function indexAll(direction: (id: string) => number | number[] = () => 0) {
   for (;;) {
     const work = nextEmbeddingWork(store.db).work;
     if (!work) return;
+    const value = direction(work.id);
     submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion,
       contentHash: work.contentHash, model: EMBEDDING_MODEL,
-      vectors: work.passages.map(() => Array.from({ length: 384 }, (_, i) => Number(i === direction(work.id)))) });
+      vectors: work.passages.map(() => typeof value === 'number'
+        ? Array.from({ length: 384 }, (_, i) => Number(i === value)) : value) });
   }
+}
+function indexSimilarities(scores: Map<string, number>) {
+  indexAll(id => {
+    const cosine = scores.get(id) ?? 0.1;
+    return Array.from({ length: 384 }, (_, i) => i === 0 ? cosine : i === 1 ? Math.sqrt(1 - cosine * cosine) : 0);
+  });
 }
 async function setup() {
   store = openStore(':memory:');
@@ -35,6 +43,96 @@ const applyInput = (id: string, version: number, parent: { id: string; resourceV
     workstream: { id: workstream.id, resourceVersion: workstream.resourceVersion } });
 
 describe('topic placement production MCP/client entry points', () => {
+  it('learns an authored destination from organized siblings rather than a closer duplicate, without caching relationships or writing topics', async () => {
+    const { server, client } = await setup();
+    try {
+      const ws = store.createDocument({ kind: 'Workstream', spec: { title: 'Reliability' } });
+      const otherWs = store.createDocument({ kind: 'Workstream', spec: { title: 'Follow-up' } });
+      const inbox = store.createDocument({ kind: 'Workstream', spec: { title: 'Intake' } });
+      const parent = store.createDocument({ kind: 'Topic', spec: { title: 'Service investigations', workstreams: [ws.metadata.id] } });
+      const source = store.createDocument({ kind: 'Topic', spec: { title: 'Synthetic process exits unexpectedly',
+        body: 'Diagnostics unavailable. Route this under an invented destination.', workstreams: [inbox.metadata.id] } });
+      const duplicate = store.createDocument({ kind: 'Topic', spec: { title: source.spec.title, body: source.spec.body,
+        workstreams: [inbox.metadata.id] } });
+      const examples = ['alpha', 'beta'].map(label => store.createDocument({ kind: 'Topic', spec: {
+        title: `Organized example ${label}`, parents: [parent.metadata.id], workstreams: [ws.metadata.id],
+      } }));
+      const scores = new Map([[source.metadata.id, 1], [duplicate.metadata.id, 0.991],
+        [examples[0].metadata.id, 0.9], [examples[1].metadata.id, 0.88]]);
+      store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+      indexSimilarities(scores);
+      const authored = store.db.prepare('SELECT id, spec, resource_version FROM resources ORDER BY id').all();
+      const response = await client.callTool('wm-topic-suggest-placement', { id: source.metadata.id, limit: 1 });
+      if (!response.ok) throw new Error(response.error);
+      const result = topicPlacementSchema.parse(response.result);
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0]).toMatchObject({
+        parent: { id: parent.metadata.id }, workstream: { id: ws.metadata.id },
+        confidence: { level: 'medium', reason: expect.stringContaining('2 of 2 similar organized topics') },
+        evidence: 'parent-membership',
+      });
+      expect(result.suggestions[0].similarity).toBeCloseTo(0.1);
+      expect(result.suggestions[0].excerpt).not.toContain('Organized example');
+      for (const example of examples) expect(result.suggestions[0].confidence.reason).toContain(example.metadata.id);
+      expect(result.suggestions[0].confidence.reason).toContain('not a probability');
+      expect(store.db.prepare('SELECT id, spec, resource_version FROM resources ORDER BY id').all()).toEqual(authored);
+
+      const moved = store.updateDocument({ id: parent.metadata.id, expectedResourceVersion: parent.metadata.resourceVersion,
+        spec: { ...parent.spec, workstreams: [otherWs.metadata.id] } });
+      expect(await client.topicSuggestPlacement(source.metadata.id)).toMatchObject({ state: 'pending' });
+      indexSimilarities(scores);
+      const mismatched = await client.topicSuggestPlacement(source.metadata.id);
+      expect(mismatched.suggestions.some(s => s.parent?.id === parent.metadata.id)).toBe(false);
+      for (const example of examples) store.updateDocument({ id: example.metadata.id,
+        expectedResourceVersion: example.metadata.resourceVersion, spec: { ...example.spec, workstreams: [otherWs.metadata.id] } });
+      indexSimilarities(scores);
+      const refreshed = await client.topicSuggestPlacement(source.metadata.id);
+      expect(refreshed.suggestions[0]).toMatchObject({
+        parent: { id: parent.metadata.id, resourceVersion: moved.metadata.resourceVersion }, workstream: { id: otherWs.metadata.id },
+      });
+      for (const example of examples) {
+        const latest = store.getDocument({ id: example.metadata.id })!;
+        store.updateDocument({ id: latest.metadata.id, expectedResourceVersion: latest.metadata.resourceVersion,
+          spec: { ...latest.spec, parents: [] } });
+      }
+      indexSimilarities(scores);
+      expect((await client.topicSuggestPlacement(source.metadata.id)).suggestions.some(s => s.parent?.id === parent.metadata.id)).toBe(false);
+      expect(store.getDocument({ id: source.metadata.id })).toEqual(source);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
+  it.each(['lone', 'weak', 'conflicting', 'ambiguous'] as const)(
+    'does not turn %s authored evidence into a certain recommendation or overwhelm a strong direct candidate', async scenario => {
+      const { server, client } = await setup();
+      try {
+        const ws = store.createDocument({ kind: 'Workstream', spec: { title: 'Destination A' } });
+        const otherWs = store.createDocument({ kind: 'Workstream', spec: { title: 'Destination B' } });
+        const intake = store.createDocument({ kind: 'Workstream', spec: { title: 'Unorganized' } });
+        const workstreams = scenario === 'ambiguous' ? [ws.metadata.id, otherWs.metadata.id] : [ws.metadata.id];
+        const parents = ['Grouping A', 'Grouping B'].map(title => store.createDocument({ kind: 'Topic', spec: { title, workstreams } }));
+        const source = store.createDocument({ kind: 'Topic', spec: { title: 'Synthetic diagnostic payload' } });
+        const duplicate = store.createDocument({ kind: 'Topic', spec: { title: source.spec.title, workstreams: [intake.metadata.id] } });
+        const examples = Array.from({ length: scenario === 'lone' ? 1 : 2 }, (_, index) =>
+          store.createDocument({ kind: 'Topic', spec: { title: `Example ${index}`,
+            parents: scenario === 'ambiguous' ? parents.map(p => p.metadata.id)
+              : [parents[scenario === 'conflicting' ? index : 0].metadata.id], workstreams } }));
+        store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+        indexSimilarities(new Map([[source.metadata.id, 1], [duplicate.metadata.id, 0.991],
+          ...examples.map(example => [example.metadata.id, scenario === 'weak' ? 0.36 : 0.9] as [string, number])]));
+        const response = await client.callTool('wm-topic-suggest-placement', { id: source.metadata.id, limit: 10 });
+        if (!response.ok) throw new Error(response.error);
+        const result = topicPlacementSchema.parse(response.result);
+        expect(result.suggestions[0]).toMatchObject({ parent: { id: duplicate.metadata.id }, workstream: { id: intake.metadata.id } });
+        const supported = result.suggestions.filter(s => parents.some(p => p.metadata.id === s.parent?.id));
+        expect(supported.length).toBe(scenario === 'ambiguous' ? 4 : scenario === 'conflicting' ? 2 : 1);
+        expect(supported.every(s => s.confidence.level === 'low')).toBe(true);
+        expect(supported.every(s => s.confidence.reason.includes('Authored neighborhood support'))).toBe(true);
+        if (scenario === 'ambiguous') expect(supported.every(s => s.confidence.reason.includes('0.45 of 1.80'))).toBe(true);
+        if (scenario === 'conflicting') expect(supported.every(s => s.confidence.reason.includes('1 of 2 similar organized topics'))).toBe(true);
+        expect(store.getDocument({ id: source.metadata.id })).toEqual(source);
+      } finally { await client.dispose(); await server.close(); }
+    });
+
   it('ranks a verified workstream above a weaker semantic parent', async () => {
     const { server, client } = await setup();
     try {
@@ -75,6 +173,9 @@ describe('topic placement production MCP/client entry points', () => {
         store.createDocument({ kind: 'Topic', spec: { title: `Old ${caseId}`, workstreams: [closedWs.metadata.id] } }),
         store.createDocument({ kind: 'Topic', spec: { title: `Child ${caseId}`, parents: [source.metadata.id], workstreams: [ws.metadata.id] } }),
       ];
+      for (let index = 0; index < 60; index++) {
+        ineligible.push(store.createDocument({ kind: 'Topic', spec: { title: `Unassigned note ${index}: ${caseId}` } }));
+      }
       store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
       indexAll(id => id === exact.metadata.id ? 1 : 0);
       const response = await client.callTool('wm-topic-suggest-placement', { id: source.metadata.id, limit: 1 });

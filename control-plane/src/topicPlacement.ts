@@ -1,6 +1,6 @@
 import type { Store, DocumentEnvelope } from './store.js';
 import { EMBEDDING_MODEL, EMBEDDING_TEXT_LIMIT, matchConfidence } from './embeddingContract.js';
-import { hybridRanks, lexicalCandidates, lexicalConfidence, refreshDocumentSearch } from './documentSearch.js';
+import { HYBRID_CANDIDATE_LIMIT, hybridRanks, lexicalCandidates, lexicalConfidence, refreshDocumentSearch } from './documentSearch.js';
 import { similarity, vector } from './topicEmbeddings.js';
 import { validateSpec } from './kinds/registry.js';
 import { stringArray } from './kinds/topic/topic.js';
@@ -52,12 +52,14 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
   const source = vector(indexed.centroid);
   const forbidden = forbiddenParents(store, input.id);
   const suggestions: Array<Omit<TopicPlacementSuggestion, 'confidence'> & { limited: boolean }> = [];
+  const neighbors = new Map<string, { title: string; similarity: number; parents: string[]; workstreams: string[]; limited: boolean }>();
   const liveWorkstreams = new Map(store.listDocuments({ kind: 'Workstream' })
     .filter(document => document.spec.status !== 'closed').map(document => [document.metadata.id, document]));
   for (const row of store.db.prepare(`SELECT r.id, r.kind, r.resource_version, i.centroid, i.limited,
     s.title, substr(s.body, 1, 600) AS excerpt,
     json_extract(r.spec, '$.status') AS status,
-    COALESCE(json_extract(r.spec, '$.workstreams'), '[]') AS workstreams
+    COALESCE(json_extract(r.spec, '$.workstreams'), '[]') AS workstreams,
+    COALESCE(json_extract(r.spec, '$.parents'), '[]') AS parents
     FROM topic_embedding_index i JOIN resources r ON r.id = i.topic_id
     JOIN document_search s ON s.rowid = r.rowid
     WHERE r.kind IN ('Topic', 'Workstream') AND r.deleted_at IS NULL
@@ -69,7 +71,10 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
     const excerpt = String(row.excerpt);
     const limited = !!indexed.limited || !!row.limited;
     if (row.kind === 'Topic') {
-      for (const workstreamId of stringArray(JSON.parse(String(row.workstreams)))) {
+      const workstreams = stringArray(JSON.parse(String(row.workstreams)));
+      neighbors.set(id, { title: String(row.title), similarity: score,
+        parents: stringArray(JSON.parse(String(row.parents))), workstreams, limited });
+      for (const workstreamId of workstreams) {
         const workstream = liveWorkstreams.get(workstreamId);
         if (!workstream) continue;
         if (stringArray(topic.spec.parents).includes(id) && stringArray(topic.spec.workstreams).includes(workstreamId)) continue;
@@ -86,18 +91,63 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
   const eligible = new Map(suggestions.map(suggestion => [evidenceId(suggestion), suggestion.similarity]));
   const lexical = lexicalCandidates(store.db, new Set(eligible.keys()), { sourceId: input.id });
   const ranks = hybridRanks(eligible, lexical);
-  const ranked = suggestions.filter(suggestion => ranks.has(evidenceId(suggestion)));
-  ranked.sort((a, b) => ranks.get(evidenceId(b))! - ranks.get(evidenceId(a))!
+  const neighborLexical = new Map([...lexical].filter(([id]) => neighbors.has(id)));
+  const neighborRanks = hybridRanks(new Map([...neighbors].map(([id, neighbor]) => [id, neighbor.similarity])), neighborLexical);
+  const pairKey = (parent: string, workstream: string) => JSON.stringify([parent, workstream]);
+  const pairs = new Set(suggestions.filter(s => s.parent).map(s => pairKey(s.parent!.id, s.workstream.id)));
+  const support = new Map<string, { weight: number; examples: Array<{ id: string; title: string }>; strong: number; limited: boolean }>();
+  let totalWeight = 0, organized = 0;
+  for (const [id] of [...neighborRanks].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, HYBRID_CANDIDATE_LIMIT)) {
+    const neighbor = neighbors.get(id)!;
+    const destinations = new Set(neighbor.parents.flatMap(parent => neighbor.workstreams
+      .map(workstream => pairKey(parent, workstream)).filter(key => pairs.has(key))));
+    if (!destinations.size) continue;
+    // Each authored example has one vote budget, divided across its eligible pairs.
+    const weight = neighborLexical.has(id) ? 1 : neighbor.similarity;
+    totalWeight += weight;
+    organized++;
+    for (const key of destinations) {
+      const evidence = support.get(key) ?? { weight: 0, examples: [], strong: 0, limited: false };
+      evidence.weight += weight / destinations.size;
+      evidence.examples.push({ id, title: neighbor.title });
+      evidence.strong += Number(neighbor.similarity >= 0.65);
+      evidence.limited ||= neighbor.limited;
+      support.set(key, evidence);
+    }
+  }
+  const maxDirectRank = Math.max(0, ...ranks.values());
+  const structural = (suggestion: typeof suggestions[number]) =>
+    suggestion.parent ? support.get(pairKey(suggestion.parent.id, suggestion.workstream.id)) : undefined;
+  const placementRank = (suggestion: typeof suggestions[number]) => {
+    const direct = (ranks.get(evidenceId(suggestion)) ?? 0) / (maxDirectRank || 1);
+    const weight = structural(suggestion)?.weight ?? 0;
+    // Agreement discounts conflicting or ambiguous votes; these are ranking units, not probabilities.
+    return direct + (totalWeight ? weight * weight / totalWeight : 0);
+  };
+  const ranked = suggestions.filter(suggestion => ranks.has(evidenceId(suggestion)) || structural(suggestion));
+  ranked.sort((a, b) => placementRank(b) - placementRank(a)
     || Number(b.parent !== null) - Number(a.parent !== null)
     || (a.parent?.id ?? '').localeCompare(b.parent?.id ?? '') || a.workstream.id.localeCompare(b.workstream.id));
-  const selected = ranked.slice(0, input.limit).map(({ limited, ...suggestion }) => {
+  const selected = ranked.slice(0, input.limit).map(candidate => {
+    const { limited, ...suggestion } = candidate;
     const literal = lexical.get(evidenceId(suggestion));
     let excerpt = literal?.excerpt ?? suggestion.excerpt, passageScore = -1;
     for (const passage of store.db.prepare('SELECT excerpt, vector FROM topic_embedding_passages WHERE topic_id = ?').iterate(evidenceId(suggestion))) {
       const score = similarity(source, vector(passage.vector));
       if (score > passageScore) { passageScore = score; if (!literal) excerpt = String(passage.excerpt); }
     }
-    return { ...suggestion, excerpt, confidence: literal ? lexicalConfidence(literal) : matchConfidence(passageScore, suggestion.similarity, false, limited) };
+    const evidence = structural(candidate);
+    const directConfidence = literal ? lexicalConfidence(literal) : matchConfidence(passageScore, suggestion.similarity, false, limited);
+    const confidence = evidence ? {
+      level: evidence.strong >= 2 && evidence.weight === totalWeight && !evidence.limited ? 'medium' as const : 'low' as const,
+      reason: `Authored neighborhood support: ${evidence.examples.length} of ${organized} similar organized topics support this parent/workstream pair. `
+        + `Weighted support: ${evidence.weight.toFixed(2)} of ${totalWeight.toFixed(2)} organized vote weight. `
+        + `Votes are similarity-weighted (verified lexical matches have unit weight), split across eligible authored pairs, and discounted by disagreement. `
+        + `Examples: ${evidence.examples.slice(0, 3).map(example => `${JSON.stringify(example.title)} (${example.id})`).join(', ')}. `
+        + `This is structural evidence, not a probability or routing instruction. Similarity and excerpt describe the proposed parent, not these examples. `
+        + `Direct evidence: ${directConfidence.reason}`,
+    } : directConfidence;
+    return { ...suggestion, excerpt, confidence };
   });
   return { ...result, state: 'ready', suggestions: selected };
 }
