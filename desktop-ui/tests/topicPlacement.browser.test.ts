@@ -154,10 +154,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             assert.equal(await evaluate('document.querySelector("article details")'), null);
             assert.deepEqual(await evaluate('[...document.querySelectorAll(".relation-label")].map(label=>label.textContent.trim())'), ['Parent', 'Workstream']);
             assert.equal(await evaluate('document.body.innerText.includes("Matched authored content")'), false);
-            const iconOnlyActions = '(() => { const icons={"Refresh":"refresh","Apply":"check","Bug Report":"bug","Suggest parent / workstream":"type-hierarchy","Close placement suggestions":"close"}; return [...document.querySelectorAll(".placement-action-button")].every(button => { const icon=button.querySelector(".codicon"); return button.textContent.trim()==="" && button.title!=="" && icon?.classList.contains("codicon-"+icons[button.getAttribute("aria-label")]) && icon.getAttribute("aria-hidden")==="true" && button.getBoundingClientRect().width===30 && button.getBoundingClientRect().height===30 && getComputedStyle(icon,"::before").content!=="none"; }); })()';
-            assert.deepEqual(await evaluate('[...document.querySelectorAll(".placement-actions button")].map(b=>b.getAttribute("aria-label"))'), ['Refresh', 'Apply', 'Bug Report']);
+            const iconOnlyActions = '(() => { const icons={"Refresh":"refresh","Apply":"check","Bug Report":"bug","Suggest parent / workstream":"type-hierarchy","Close placement suggestions":"close"}; return [...document.querySelectorAll(".placement-action-button,.popup-action-button")].every(button => { const icon=button.querySelector(".codicon"); return button.textContent.trim()==="" && button.title!=="" && icon?.classList.contains("codicon-"+icons[button.getAttribute("aria-label")]) && icon.getAttribute("aria-hidden")==="true" && button.getBoundingClientRect().width===30 && button.getBoundingClientRect().height===30 && getComputedStyle(icon,"::before").content!=="none"; }); })()';
+            assert.deepEqual(await evaluate('[...document.querySelectorAll(".popup-actions button")].map(b=>b.getAttribute("aria-label"))'), ['Refresh', 'Apply', 'Bug Report']);
             assert.equal(await evaluate(iconOnlyActions), true);
-            assert.equal(await evaluate('document.querySelector(".placement-actions").getBoundingClientRect().left > document.querySelector(".placement-heading h2").getBoundingClientRect().left'), true);
+            assert.equal(await evaluate('document.querySelector(".popup-actions").getBoundingClientRect().left > document.querySelector(".popup-heading h2").getBoundingClientRect().left'), true);
             await evaluate('document.querySelector(".topic-link").click(); document.querySelector(".ws-chip").click()');
             assert.deepEqual(await evaluate('[...window.__placementTest.opened]'), ['parent', 'ws']);
             await new Promise(resolve => setTimeout(resolve, 100));
@@ -265,7 +265,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             assert.equal(await evaluate('document.querySelector(".topic-placement").parentElement.classList.contains("header-grid")'), true);
             assert.equal(await evaluate('document.querySelector(".family")'), null);
             assert.equal(await evaluate('Math.abs(document.querySelector(".attrs").getBoundingClientRect().width - document.querySelector(".topic-placement").getBoundingClientRect().width) <= 1'), true);
-            assert.equal(await evaluate('(()=>{const section=document.querySelector(".topic-placement");return Math.abs(document.querySelector(".placement-actions").getBoundingClientRect().right - (section.getBoundingClientRect().right - parseFloat(getComputedStyle(section).paddingRight))) <= 1;})()'), true);
+            assert.equal(await evaluate('(()=>{const section=document.querySelector(".topic-placement");return Math.abs(document.querySelector(".popup-actions").getBoundingClientRect().right - (section.getBoundingClientRect().right - parseFloat(getComputedStyle(section).paddingRight))) <= 1;})()'), true);
             window.setBounds({width: 600});
             await wait('window.innerWidth < 720');
             assert.equal(await evaluate('document.querySelector(".topic-placement").getBoundingClientRect().top >= document.querySelector(".attrs").getBoundingClientRect().bottom'), true);
@@ -297,6 +297,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             assert.equal(await evaluate('document.querySelector(".family").innerText.includes("Existing parent")'), true);
             await evaluate('window.__placementTest.releases.shift()()');
             await wait('document.querySelector(".placement-dialog article")');
+            assert.equal(await evaluate('document.querySelectorAll(".placement-dialog.popup-dialog > .popup-frame > .popup-heading > .popup-actions").length'),1);
+            assert.deepEqual(await evaluate('[...document.querySelectorAll(".placement-dialog .popup-actions button")].map(b=>b.getAttribute("aria-label"))'),['Refresh','Apply','Bug Report','Close placement suggestions']);
+            assert.equal(await evaluate('getComputedStyle(document.querySelector(".placement-dialog .popup-actions button:last-child")).color'),'rgb(189, 31, 102)');
             assert.equal(await evaluate(iconOnlyActions), true);
             assert.equal(await evaluate('document.querySelectorAll(".topic-placement").length'), 1);
             assert.equal(await evaluate('window.__placementTest.calls'), beforeFamily + 1);

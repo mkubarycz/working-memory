@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import type { ChatBugReportDraft, FeedbackPreparation, FeedbackSendResult, PublicFeedbackSettings } from '../shared/contracts';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
+  import PopupFrame from './PopupFrame.svelte';
 
   let { capture, evidenceDescription, supportingEvidence, onClose, sessionOnly = false, prepareCapture, compact = false }: {
     capture: (description: string) => Promise<ChatBugReportDraft>;
@@ -113,14 +114,7 @@
   }
 </script>
 
-{#if report && chooseServer && !compact}
-  <ShareTopicDialog topic={report} preview={report.body} {requestId}
-    {preparation} preferredServerId={preparedServerId}
-    sessionOnly={report.sessionOnly ?? false} beforeShare={() => Promise.resolve()} {onClose} />
-{:else}
-  <dialog bind:this={dialog} aria-labelledby="report-bug-title"
-    oncancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
-    <h2 id="report-bug-title">Bug Report</h2>
+{#snippet reportContent()}
     {#if result && !compact}
       <p role="status">{result.status === 'queued'
         ? `Report uploaded to ${result.destination}. Queued for the Feedback receiver; import and topic status are not confirmed.`
@@ -191,17 +185,8 @@
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if compact && result}<p role="status">{result.status === 'queued' ? 'Bug report queued.' : 'Bug report sent.'}</p>{/if}
     {#if compact && copied}<p role="status">Copied to clipboard.</p>{/if}
-    <footer>
-      {#if compact}
-        <button onclick={onClose} disabled={busy}>Cancel</button>
-        <button onclick={() => void copyReport()} disabled={busy || !description.trim() || !captureReady}>
-          {copying ? 'Copying…' : 'Copy to clipboard'}
-        </button>
-        <button class="primary" onclick={() => void createReport()}
-          disabled={busy || !!result || !description.trim() || !deliverySettings || !captureReady || (chooseServer && !preparedServerId)}>
-          {creating ? 'Sending bug report…' : 'Send bug report'}
-        </button>
-      {:else if result}
+    {#if !compact}<footer>
+      {#if result}
         <button class="primary" onclick={onClose}>Done</button>
       {:else}
         <button onclick={onClose} disabled={creating}>Cancel</button>
@@ -210,15 +195,50 @@
           {creating ? 'Sending bug report…' : 'Send bug report'}
         </button>
       {/if}
-    </footer>
+    </footer>{/if}
+{/snippet}
+
+{#snippet reportActions()}
+  <button class="popup-action-button" onclick={() => void copyReport()} aria-label="Copy to clipboard"
+    title={copying ? 'Copying…' : 'Copy to clipboard'} aria-busy={copying}
+    disabled={busy || !description.trim() || !captureReady}>
+    <span class="codicon" class:codicon-loading={copying} class:codicon-copy={!copying}
+      class:codicon-modifier-spin={copying} aria-hidden="true"></span>
+  </button>
+  <button class="popup-action-button" onclick={() => void createReport()} aria-label="Send bug report"
+    title={creating ? 'Sending bug report…' : 'Send bug report'} aria-busy={creating}
+    disabled={busy || !!result || !description.trim() || !deliverySettings || !captureReady || (chooseServer && !preparedServerId)}>
+    <span class="codicon" class:codicon-loading={creating} class:codicon-send={!creating}
+      class:codicon-modifier-spin={creating} aria-hidden="true"></span>
+  </button>
+{/snippet}
+
+{#if report && chooseServer && !compact}
+  <ShareTopicDialog topic={report} preview={report.body} {requestId}
+    {preparation} preferredServerId={preparedServerId}
+    sessionOnly={report.sessionOnly ?? false} beforeShare={() => Promise.resolve()} {onClose} />
+{:else}
+  <dialog bind:this={dialog} aria-labelledby="report-bug-title"
+    class:popup-dialog={compact} class:legacy-report-dialog={!compact}
+    oncancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
+    {#if compact}
+      <PopupFrame title="Bug Report" titleId="report-bug-title" {onClose} closeLabel="Close bug report"
+        {busy} actions={reportActions}>
+        {@render reportContent()}
+      </PopupFrame>
+    {:else}
+      <h2 id="report-bug-title">Bug Report</h2>
+      {@render reportContent()}
+    {/if}
   </dialog>
 {/if}
 
 <style>
-  dialog { width: min(560px, 85vw); border: 1px solid #bcb7bc; border-radius: 8px; padding: 22px; color: #29252a; background: #faf9f7; }
-  dialog::backdrop { background: #0006; }
+  .legacy-report-dialog { width: min(560px, 85vw); border: 1px solid #bcb7bc; border-radius: 8px; padding: 22px; color: #29252a; background: #faf9f7; }
+  .legacy-report-dialog::backdrop { background: #0006; }
   h2 { margin-top: 0; }
   label { display: block; font-weight: 600; margin-bottom: 8px; }
+  label[for="bug-description"] { margin-top: 8px; }
   textarea { box-sizing: border-box; width: 100%; padding: 8px; resize: vertical; font: inherit; }
   p { font-size: 13px; line-height: 1.5; }
   h3 { margin: 12px 0 6px; font-size: 14px; }
@@ -229,7 +249,7 @@
   .error { color: #91251f; }
   pre { max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
   footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
-  button { padding: 7px 14px; }
+  footer button, .error button { padding: 7px 14px; }
   .primary { background: var(--desktop-accent-strong, #51465c); color: white; border: 1px solid transparent; border-radius: 4px; }
   .primary:disabled { opacity: 0.5; }
 </style>

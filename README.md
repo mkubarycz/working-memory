@@ -1678,9 +1678,11 @@ in the visible chat. It never collects document drafts, unrelated conversations,
 files, attachment bytes or general logs. The snapshot is session-only and requires
 no live backend query or local topic creation. Capture/settings errors block sending
 and offer retry; canceling leaves unsaved work untouched. The compact dialog has
-the bug-details input, **Send bug report**, **Copy to clipboard** and **Cancel**,
-plus a one-line delivery destination/trust notice. It shows no report-data preview
-or explanatory paragraphs. Copying uses the redacted report without transmitting
+the bug-details input and the placement popup's shared layout and pink header icons:
+**Copy to clipboard**, **Send bug report**, then the top-right **X**. There is no
+bottom Cancel button, report-data preview or explanatory paragraphs; a one-line
+delivery destination/trust notice remains. Close and Escape wait for pending copy/send
+operations to finish. Copying uses the redacted report without transmitting
 it and remains available if delivery settings cannot load. Sending preserves cached
 delivery/receipt retry. Changing screens or environments after capture does not change its source.
 The obsolete topic-header **Send Feedback** action has been removed.

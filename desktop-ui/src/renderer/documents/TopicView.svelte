@@ -411,7 +411,7 @@
 </div>
 
 {#if placementPopup && !draft && topic.id && hasFamily}
-  <dialog class="placement-dialog" bind:this={placementDialog} aria-label="Suggest parent and workstream"
+  <dialog class="popup-dialog placement-dialog" bind:this={placementDialog} aria-label="Suggest parent and workstream"
     oncancel={event => { event.preventDefault(); placementPopup = false; }}>
     <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
       autoLoad environment={placementEnvironment} saved={saveState === 'idle' || saveState === 'saved'}
@@ -852,11 +852,6 @@
 
   .family-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .suggest-placement { margin-left: auto; }
-  .placement-dialog {
-    width: min(680px, 90vw); padding: 0; border: 1px solid var(--vscode-widget-border);
-    border-radius: 6px; color: var(--vscode-foreground); background: var(--vscode-editor-background);
-  }
-  .placement-dialog::backdrop { background: #0006; }
 
   @media (min-width: 720px) {
     .header-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }

@@ -3,6 +3,7 @@
   import type { TopicPlacement } from '../../../../control-plane/src/topicPlacementContract';
   import type { SearchBugReportInput } from '../../shared/contracts';
   import ReportBugDialog from '../ReportBugDialog.svelte';
+  import PopupFrame from '../PopupFrame.svelte';
   import TopicLink from './TopicLink.svelte';
   import { placementApplyInput, placementBugContext } from './topicPlacementActions';
   import { useSessionBugReportOperation } from '../sessionBugReportOperation';
@@ -85,10 +86,7 @@
   }
 </script>
 
-<section class="topic-placement" aria-label="Topic placement">
-  <header class="placement-heading">
-    <h2>Placement suggestion</h2>
-    <div class="placement-actions">
+{#snippet placementActions()}
       <button class="placement-action-button" aria-label="Refresh" disabled={loading || applying || !saved} onclick={suggest} title="Refresh placement suggestions">
         <span class="codicon codicon-refresh" class:codicon-modifier-spin={loading} aria-hidden="true"></span>
       </button>
@@ -100,10 +98,10 @@
       <button class="placement-action-button" onclick={report} aria-label="Bug Report" title="Bug Report">
         <span class="codicon codicon-bug" aria-hidden="true"></span>
       </button>
-      {#if onClose}<button class="placement-action-button" onclick={onClose} aria-label="Close placement suggestions" title="Close placement suggestions"><span class="codicon codicon-close" aria-hidden="true"></span></button>{/if}
-    </div>
-  </header>
-  <div class="placement-content">
+{/snippet}
+
+<PopupFrame class="topic-placement" title="Placement suggestion" label="Topic placement"
+  actions={placementActions} {onClose} closeLabel="Close placement suggestions">
   {#if loading}<p role="status">Suggesting placement…</p>{/if}
   {#if error}<p role="alert">{error}</p>{/if}
   {#if notice}<p role="status">{notice}</p>{/if}
@@ -129,8 +127,7 @@
       </article>
     {:else}<p>No sufficiently similar eligible placement found. You can place the topic manually.</p>{/if}
   {/if}
-  </div>
-</section>
+</PopupFrame>
 
 {#if reporting}
   <ReportBugDialog onClose={() => { reporting = null; }}
@@ -140,11 +137,6 @@
 {/if}
 
 <style>
-  .topic-placement { padding: 10px 12px; min-width: 0; background: var(--vscode-editor-background); }
-  .placement-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  h2 { margin: 0; font-size: 0.95em; }
-  .placement-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
-  .placement-content { overflow: auto; min-width: 0; }
   article { margin-top: 8px; }
   p { margin: 8px 0 0; font-size: 0.9em; }
   .placement-relation { display: flex; align-items: center; gap: 8px; margin: 8px 0; min-width: 0; }
