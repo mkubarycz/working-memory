@@ -109,7 +109,7 @@
     {#if selected}
       <article>
         <div class="placement-relation">
-          <span class="relation-label">Suggested parent</span>
+          <span class="relation-label">Parent</span>
           {#if selected.parent}<TopicLink topic={selected.parent} onOpen={onOpenTopic} />
           {:else}<span>No new parent recommended</span>{/if}
         </div>

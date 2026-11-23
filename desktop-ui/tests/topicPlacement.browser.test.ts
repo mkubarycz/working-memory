@@ -152,6 +152,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             assert.equal(await evaluate('!!document.querySelector(".topic-link .codicon-symbol-key")'), true);
             assert.equal(await evaluate('!!document.querySelector(".ws-chip .codicon-briefcase")'), true);
             assert.equal(await evaluate('document.querySelector("article details")'), null);
+            assert.deepEqual(await evaluate('[...document.querySelectorAll(".relation-label")].map(label=>label.textContent.trim())'), ['Parent', 'Workstream']);
             assert.equal(await evaluate('document.body.innerText.includes("Matched authored content")'), false);
             const iconOnlyActions = '(() => { const icons={"Refresh":"refresh","Apply":"check","Bug Report":"bug","Suggest parent / workstream":"type-hierarchy","Close placement suggestions":"close"}; return [...document.querySelectorAll(".placement-action-button")].every(button => { const icon=button.querySelector(".codicon"); return button.textContent.trim()==="" && button.title!=="" && icon?.classList.contains("codicon-"+icons[button.getAttribute("aria-label")]) && icon.getAttribute("aria-hidden")==="true" && button.getBoundingClientRect().width===30 && button.getBoundingClientRect().height===30 && getComputedStyle(icon,"::before").content!=="none"; }); })()';
             assert.deepEqual(await evaluate('[...document.querySelectorAll(".placement-actions button")].map(b=>b.getAttribute("aria-label"))'), ['Refresh', 'Apply', 'Bug Report']);
