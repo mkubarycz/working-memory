@@ -13,6 +13,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ReportBugDialog from '../ReportBugDialog.svelte';
+  import { useSessionBugReportOperation } from '../sessionBugReportOperation';
 
   interface Props {
     section?: 'backend' | 'provider' | 'all';
@@ -43,6 +44,7 @@
   let provider = $state<'docker' | 'podman'>(cached?.provider ?? 'docker');
   let refreshError = $state('');
   let refreshing = false;
+  useSessionBugReportOperation(() => failure ? { kind: 'backend', failure: $state.snapshot(failure) } : null);
 
   onMount(() => {
     const poll = (force = false) => {

@@ -67,6 +67,8 @@ const api: DesktopApi = {
   createSearchBugReport: (input) => invoke('search:report-bug', input),
   createFeatureBugReport: (input) => invoke('features:report-bug', input),
   createBackendBugReport: (input) => invoke('backend:report-bug', input),
+  captureSessionBugReport: (input) => invoke('session:report-bug-capture', input),
+  describeSessionBugReport: (id, description) => invoke('session:report-bug-describe', id, description),
   startDocumentChanges: () => invoke('documents:watch'),
   onDocumentChanges: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);

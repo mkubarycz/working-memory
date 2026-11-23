@@ -3,7 +3,7 @@ import type { ChatBugReportDependencies } from './chatBugReport';
 import { bugReportSection, bugReportTitle } from './chatBugReport';
 import type { ChatBugReportDraft } from '../shared/contracts';
 
-const inputSchema = z.object({
+export const searchBugReportInputSchema = z.object({
   description: z.string().trim().min(1, 'Describe what went wrong.').max(8000),
   search: z.object({
     prompt: z.string().max(2000),
@@ -24,7 +24,7 @@ export async function createSearchBugReport(
     client: Pick<ChatBugReportDependencies['client'], 'topicCreate'>;
   },
 ): Promise<ChatBugReportDraft> {
-  const { description, search } = inputSchema.parse(input);
+  const { description, search } = searchBugReportInputSchema.parse(input);
   dependencies.assertCurrent();
   const section = (heading: string, value: unknown, limit?: number) =>
     bugReportSection(heading, value, dependencies.secrets, limit);

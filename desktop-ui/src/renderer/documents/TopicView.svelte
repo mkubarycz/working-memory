@@ -16,7 +16,6 @@
 
   interface Props {
     unreadResponses?: UnreadResponse[];
-    onShare?: (topic: TopicVM) => void;
     topic: TopicVM;
     saveState: SaveState;
     onSaveTopic: (patch: TopicPatch) => void;
@@ -43,7 +42,6 @@
 
   let {
     unreadResponses = [],
-    onShare,
     topic,
     saveState,
     onSaveTopic,
@@ -279,11 +277,6 @@
     <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id)} />
     <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
     <SaveStatus state={saveState} />
-    {#if onShare && topic.id}
-      <button class="feedback-button" type="button" onclick={() => onShare(topic)} title="Send Feedback" aria-label="Send Feedback">
-        <span class="codicon codicon-feedback" aria-hidden="true"></span>
-      </button>
-    {/if}
   {/if}
 </header>
 

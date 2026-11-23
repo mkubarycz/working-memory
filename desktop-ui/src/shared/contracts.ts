@@ -440,6 +440,27 @@ export interface ChatBugReportInput {
 }
 export interface ChatBugReportDraft { id: string; title: string; body: string; sessionOnly?: boolean }
 
+export type SessionBugReportOperation =
+  | { kind: 'chat'; input: Omit<ChatBugReportInput, 'description'>; toolDetail?: unknown }
+  | { kind: 'search' | 'placement'; search: SearchBugReportInput['search'] }
+  | { kind: 'features'; failure: FeatureBugReportInput['failure'] }
+  | { kind: 'backend'; failure: BackendBugReportInput['failure'] };
+
+export interface SessionBugReportInput {
+  renderer: {
+    capturedAt: string;
+    screen: string;
+    authenticated: boolean;
+    backendHealth: BackendHealth | null;
+    aiHealth: { state: 'healthy' | 'degraded' | 'unreachable'; result: string; observedAt: number };
+    features: import('../../../control-plane/src/instanceFeatures').InstanceFeatures;
+    openDocuments: number;
+    activeChatContexts: number;
+    errors: Record<string, string>;
+  };
+  operation: SessionBugReportOperation | null;
+}
+
 export interface BackendBugReportInput {
   description: string;
   failure: {
@@ -505,6 +526,8 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   createSearchBugReport(input: SearchBugReportInput): Promise<ChatBugReportDraft>;
   createFeatureBugReport(input: FeatureBugReportInput): Promise<ChatBugReportDraft>;
   createBackendBugReport(input: BackendBugReportInput): Promise<ChatBugReportDraft>;
+  captureSessionBugReport(input: SessionBugReportInput): Promise<ChatBugReportDraft>;
+  describeSessionBugReport(id: string, description: string): Promise<ChatBugReportDraft>;
   startDocumentChanges(): Promise<void>;
   onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;

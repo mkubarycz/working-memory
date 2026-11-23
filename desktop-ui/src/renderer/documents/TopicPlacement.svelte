@@ -5,6 +5,7 @@
   import ReportBugDialog from '../ReportBugDialog.svelte';
   import TopicLink from './TopicLink.svelte';
   import { placementApplyInput, placementBugContext } from './topicPlacementActions';
+  import { useSessionBugReportOperation } from '../sessionBugReportOperation';
 
   let { id, title, resourceVersion, editable, autoLoad = false, environment = '', saved = true,
     onOpenTopic, onOpenWorkstream, onBeforeApply, onApplied, onClose }: {
@@ -23,6 +24,9 @@
   let notice = $state('');
   let reporting = $state<SearchBugReportInput['search'] | null>(null);
   let generation = 0;
+  useSessionBugReportOperation(() => result || loading || error
+    ? { kind: 'placement', search: $state.snapshot(placementBugContext({ id, title, resourceVersion }, result, selected, error, loading)) }
+    : null);
   $effect(() => {
     void id; void resourceVersion; void environment; void saved;
     const automatic = autoLoad && saved;

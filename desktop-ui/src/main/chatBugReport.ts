@@ -4,7 +4,7 @@ import type { ChatBugReportDraft, ChatBugReportInput } from '../shared/contracts
 import { sanitizeForJournal, sanitizeForJournalWithMetadata } from './desktopChatAgent';
 
 const scope = z.object({ kind: z.string().max(100), id: z.string().max(1000), title: z.string().max(10000).optional() });
-const inputSchema: z.ZodType<ChatBugReportInput> = z.object({
+export const chatBugReportInputSchema = z.object({
   description: z.string().trim().min(1, 'Describe what went wrong.').max(8000),
   run: z.object({
     key: z.string().min(1).max(1000), journalId: z.string().min(1).max(1000).optional(),
@@ -154,7 +154,7 @@ export function buildChatBugReport(
 }
 
 export async function createChatBugReport(input: unknown, dependencies: ChatBugReportDependencies): Promise<ChatBugReportDraft> {
-  const parsed = inputSchema.parse(input);
+  const parsed: ChatBugReportInput = chatBugReportInputSchema.parse(input);
   dependencies.assertCurrent();
   const journal = parsed.run.journalId ? await dependencies.client.commandJournalRead({ id: parsed.run.journalId }) : null;
   if (parsed.run.journalId && !journal) throw new Error('The selected message journal is unavailable. Refresh the message and try again.');

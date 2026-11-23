@@ -8,6 +8,7 @@ import { createServer, type Server } from 'node:https';
 import { serializeFeedback, postFeedback, FeedbackSender, recordFeedbackReceipt } from '../src/main/topicSharing';
 import { discoverFeedbackServers } from '../src/main/feedbackDiscovery';
 import { BackendBugReports } from '../src/main/backendBugReport';
+import { SessionBugReports } from '../src/main/sessionBugReport';
 import type { FeedbackDestination } from '../src/main/feedbackDiscovery';
 
 vi.mock('../src/main/feedbackDiscovery', () => ({ discoverFeedbackServers: vi.fn() }));
@@ -58,6 +59,38 @@ async function receiver(onBody: (body: string) => void = () => {}): Promise<Feed
 }
 
 describe('automatic encrypted feedback', () => {
+  it('delivers a global session report through the real TLS sender with no backend reads and an idempotent receipt', async () => {
+    const bodies: string[] = [];
+    const destination = await receiver(body => bodies.push(body));
+    vi.mocked(discoverFeedbackServers).mockResolvedValue([destination]);
+    const backendFetch = vi.fn().mockRejectedValue(new Error('Backend is offline'));
+    vi.stubGlobal('fetch', backendFetch);
+    const reports = new SessionBugReports();
+    const captured = reports.capture({ renderer: {
+      capturedAt: '2026-11-23T14:00:00.000Z', screen: 'sign-in', authenticated: false,
+      backendHealth: null, aiHealth: { state: 'unreachable', result: 'No model', observedAt: 0 },
+      features: { hostTasks: false, search: false }, openDocuments: 0, activeChatContexts: 0, errors: {},
+    }, operation: null }, { secrets: [], uptimeSeconds: 10, diagnostics: () => ({ activeRunsOnThisDesktop: 0 }),
+      environment: { desktopVersion: '1.0.0', desktopBuild: 'fixture', backendUrl: null,
+        platform: 'darwin', arch: 'arm64', processId: 123 }, upgradeFailure: () => undefined });
+    reports.describe(captured.id, 'Cannot connect to my environment');
+    const sender = new FeedbackSender(async id => {
+      const source = reports.feedbackSource(id);
+      if (!source) throw new Error('Missing session report');
+      return source;
+    });
+    await sender.prepare(captured.id, requestId);
+    expect(bodies).toEqual([]);
+    expect(await sender.send(captured.id, requestId, destination.id)).toEqual({ status: 'sent', receipt: received(destination) });
+    vi.mocked(discoverFeedbackServers).mockRejectedValue(new Error('Receiver now offline'));
+    await sender.send(captured.id, requestId, destination.id);
+    expect(bodies).toHaveLength(1);
+    expect(JSON.parse(bodies[0]).attachments).toEqual([]);
+    expect(JSON.parse(bodies[0]).topic.body).toContain('Cannot connect to my environment');
+    expect(backendFetch).not.toHaveBeenCalled();
+    expect(reports.feedbackSource(captured.id)?.topic.body.split(received(destination).statusUrl)).toHaveLength(2);
+  });
+
   it('sends an offline backend report through Feedback without querying or writing the failed backend', async () => {
     let payload: { topic: { body: string }; attachments: unknown[] } | undefined;
     const destination = await receiver(body => { payload = JSON.parse(body); });

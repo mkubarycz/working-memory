@@ -4,6 +4,7 @@
   import type { EmbeddingDashboard } from '../../shared/embeddings';
   import type { FeatureBugReportInput } from '../../shared/contracts';
   import ReportBugDialog from '../ReportBugDialog.svelte';
+  import { useSessionBugReportOperation } from '../sessionBugReportOperation';
 
   let { onChanged, onOpenObservability }: {
     onChanged: (features: InstanceFeatures) => void; onOpenObservability?: () => Promise<void>;
@@ -25,6 +26,10 @@
   let requestedChange = $state<FeatureBugReportInput['failure']['requested']>();
   let reporting = $state<FeatureBugReportInput['failure'] | null>(null);
   const displayedError = $derived(error || pollError || embeddingsPollError);
+  useSessionBugReportOperation(() => ({ kind: 'features', failure: $state.snapshot({
+    error: displayedError || 'No displayed error.', operation: operation || 'features:status',
+    capturedAt: new Date().toISOString(), features, requested: requestedChange, embeddingsEnabled,
+  }) }));
   let active = false;
   let refreshing = false;
   let generation = 0;

@@ -3,12 +3,13 @@
   import type { ChatBugReportDraft, FeedbackPreparation, FeedbackSendResult, PublicFeedbackSettings } from '../shared/contracts';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
 
-  let { capture, evidenceDescription, supportingEvidence, onClose, sessionOnly = false }: {
+  let { capture, evidenceDescription, supportingEvidence, onClose, sessionOnly = false, prepareCapture }: {
     capture: (description: string) => Promise<ChatBugReportDraft>;
     evidenceDescription: string;
     supportingEvidence?: string;
     onClose: () => void;
     sessionOnly?: boolean;
+    prepareCapture?: () => Promise<void>;
   } = $props();
   let dialog = $state<HTMLDialogElement>();
   let description = $state('');
@@ -21,14 +22,30 @@
   let preparation = $state<FeedbackPreparation | null>(null);
   let deliverySettings = $state<PublicFeedbackSettings | null>(null);
   let deliveryError = $state('');
+  let captureInitialized = $state(false);
+  const captureReady = $derived(!prepareCapture || captureInitialized);
+  let captureError = $state('');
+  let preparingCapture = $state(false);
   const requestId = crypto.randomUUID();
   let mounted = true;
   onMount(() => {
     if (!dialog) throw new Error('The bug report dialog is unavailable.');
     dialog.showModal();
     void loadDeliverySettings();
+    if (prepareCapture) void initializeCapture();
     return () => { mounted = false; };
   });
+
+  async function initializeCapture(): Promise<void> {
+    preparingCapture = true;
+    captureError = '';
+    try {
+      await prepareCapture?.();
+      if (mounted) captureInitialized = true;
+    } catch (cause) {
+      if (mounted) captureError = `Could not capture session diagnostics: ${cause instanceof Error ? cause.message : String(cause)}`;
+    } finally { if (mounted) preparingCapture = false; }
+  }
 
   async function loadDeliverySettings(): Promise<void> {
     deliveryError = '';
@@ -41,7 +58,7 @@
   }
 
   async function createReport(previewOnly = false): Promise<void> {
-    if (creating || !description.trim()) return;
+    if (creating || !description.trim() || !captureReady || !deliverySettings) return;
     creating = true;
     error = '';
     try {
@@ -92,6 +109,9 @@
     <label for="bug-description">What was the bug?</label>
     <textarea id="bug-description" bind:value={description} maxlength="8000" rows="5"
       disabled={creating || !!report} placeholder="What went wrong, and what did you expect to happen?"></textarea>
+    {#if preparingCapture}<p role="status">Collecting session diagnostics…</p>{/if}
+    {#if captureError}<p class="error" role="alert">{captureError}
+      <button onclick={() => void initializeCapture()}>Retry diagnostic capture</button></p>{/if}
     {#if supportingEvidence}
       <section class="supporting-evidence" aria-label="Supporting evidence">
         <h3>Supporting evidence</h3>
@@ -132,8 +152,8 @@
         <button class="primary" onclick={onClose}>Done</button>
       {:else}
         <button onclick={onClose} disabled={creating}>Cancel</button>
-        <button onclick={() => void createReport(true)} disabled={creating || !description.trim() || !deliverySettings}>Preview report</button>
-        <button class="primary" onclick={() => void createReport()} disabled={creating || !description.trim() || !deliverySettings}>
+        <button onclick={() => void createReport(true)} disabled={creating || !description.trim() || !deliverySettings || !captureReady}>Preview report</button>
+        <button class="primary" onclick={() => void createReport()} disabled={creating || !description.trim() || !deliverySettings || !captureReady}>
           {creating ? 'Sending bug report…' : 'Send bug report'}
         </button>
       {/if}

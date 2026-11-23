@@ -7,7 +7,8 @@
   import RecentMessages from './RecentMessages.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import { loadAllAgentMessages, mergeMessageRows } from './agentMessages';
-  import ShareTopicDialog from './ShareTopicDialog.svelte';
+  import ReportSessionBugDialog from './ReportSessionBugDialog.svelte';
+  import { createSessionBugReportOperationCollector } from './sessionBugReportOperation';
   import ReportChatBugDialog from './ReportChatBugDialog.svelte';
   import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
   import type { TopicVM } from './documents/types';
@@ -54,6 +55,8 @@
     ModelRouting,
     DocumentChangeEvent,
     PublicConfig,
+    SessionBugReportInput,
+    SessionBugReportOperation,
   } from '../shared/contracts';
   import {
     CONTAINER_APP_RESOURCE_MIME,
@@ -198,7 +201,8 @@
   let toolDetailRequest = 0;
   let toolInspectorElement = $state<HTMLElement | null>(null);
   let unreadResponses = $state<UnreadResponse[]>([]);
-  let sharingTopic = $state<TopicVM | null>(null);
+  let sessionReportSnapshot = $state<SessionBugReportInput | null>(null);
+  const collectSessionOperation = createSessionBugReportOperationCollector();
   let reportingChatRun = $state<ChatRun | null>(null);
   const reportChatSnapshot = $derived(reportingChatRun
     ? latestChatRun(reportingChatRun, scopedConversationRuns) : null);
@@ -997,6 +1001,36 @@
   const scopedConversationRuns = $derived(mergeScopedHistory(chatRuns,
     loadedScopeKey === scopedHistoryKey ? scopedHistory : []));
 
+  function openSessionBugReport(): void {
+    let operation: SessionBugReportOperation | null = selectedTool ? null : collectSessionOperation();
+    const selectedRun = selectedTool
+      ? scopedConversationRuns.find(run => run.journalId === selectedTool.row.journalId)
+      : !chatRailCollapsed || scopePreviewExpanded
+        ? scopedConversationRuns.filter(run => !currentChatContext || matchesChatContext(run.scope, currentChatContext)).at(-1)
+        : undefined;
+    if (!operation && selectedRun && instanceConnection?.authenticated) {
+      operation = { kind: 'chat', input: {
+        run: selectedRun, renderer: { conversationBlocked: runBlocked(selectedRun),
+          localRequestActive: activeChatContexts.includes(chatContextKey(chatContextForScope(selectedRun.scope))) },
+      }, toolDetail: selectedTool?.detail };
+    }
+    sessionReportSnapshot = $state.snapshot({
+      renderer: {
+        capturedAt: new Date().toISOString(),
+        screen: !instanceConnection?.authenticated ? managingInstancesBeforeSignIn ? 'manage-instances' : 'sign-in'
+          : activeDocument?.kind === 'settings' ? `settings:${settingsTab}${settingsTab === 'system' ? `:${systemTab}` : ''}`
+          : activeDocument?.kind ?? 'workspace',
+        authenticated: instanceConnection?.authenticated ?? false,
+        backendHealth, aiHealth: openAiHealth, features: instanceFeatures,
+        openDocuments: documents.length, activeChatContexts: activeChatContexts.length,
+        errors: { environment: environmentError, connection: instanceConnectionError, features: featuresError,
+          history: historyError, scopedHistory: scopedHistoryError, liveUpdates: liveUpdateError,
+          document: documentError, build: buildInfoError },
+      },
+      operation,
+    });
+  }
+
   $effect(() => {
     const key = scopedHistoryKey;
     const revision = scopedHistoryRevision;
@@ -1618,7 +1652,6 @@
     const reset = emptyEnvironmentBoundRendererState();
     documentSaves.clear();
     documentChanges.clear();
-    sharingTopic = null;
     movingToNewWorkstream = null;
     searchState = createSearchViewState();
     deferredDocumentRefreshes.clear();
@@ -1659,7 +1692,6 @@
     scopedHistoryLoading = false;
     selectedTool = reset.selectedTool;
     reportingChatRun = null;
-    sharingTopic = null;
     activePanel = reset.activePanel;
     activeLoading = reset.activeLoading;
     activeError = reset.activeError;
@@ -2714,9 +2746,39 @@
   }}
 />
 
+{#snippet statusBar()}
+  <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
+    <span
+      class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
+      title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"
+    >
+      <span class="status-dot"></span>
+      Working Memory: {backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}
+    </span>
+    <span
+      class="backend-status state-{openAiHealth.state}"
+      title="Provider: {modelProfiles.find((profile) => profile.id === modelRouting['complex:medium'])?.provider === 'copilot' ? 'Local GitHub Copilot' : endpoint || 'not configured'}&#10;Signal: startup connectivity test or normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
+    >
+      <span class="status-dot"></span>
+      AI: {openAiHealth.state}
+    </span>
+    {#if featuresError}<span role="alert">Features: {featuresError}</span>{/if}
+    {#if instanceConnectionError}<span>Connection: reconnecting</span>{/if}
+    {#if pendingAccessRequests}
+      <button onclick={() => openSettings('access')}>{pendingAccessRequests} access request{pendingAccessRequests === 1 ? '' : 's'} - Review</button>
+    {/if}
+    {#if buildInfoError}<span role="alert">Build information: {buildInfoError}</span>{/if}
+    <button class="session-report-link" onclick={openSessionBugReport}>
+      <span class="codicon codicon-bug" aria-hidden="true"></span> Report Bug
+    </button>
+    <span class="desktop-build-status">{desktopBuildLabel}</span>
+  </footer>
+{/snippet}
+
 {#if !instanceConnection?.authenticated}
+  <div class="disconnected-shell">
   {#if managingInstancesBeforeSignIn}
-    <main class="connection-instances" style="padding: 24px; height: 100vh; overflow: auto;">
+    <main class="connection-instances" style="padding: 24px; overflow: auto;">
       <button onclick={() => { managingInstancesBeforeSignIn = false; void refreshInstanceConnection(); }}>Back to sign-in</button>
       <h1>Manage instances</h1>
       <InstancesView selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
@@ -2732,6 +2794,8 @@
         onManage={() => { managingInstancesBeforeSignIn = true; }} />
     {/key}
   {/if}
+  {@render statusBar()}
+  </div>
 {:else}
 <div
   class="shell"
@@ -3098,7 +3162,6 @@
             onBeforePlacementApply={id => promoteDocument(`topic:${id}`)}
             {unreadResponses}
             topic={activeDocument}
-            onShare={(topic) => { sharingTopic = topic; }}
             {saveState}
             onSaveTopic={saveTopic.bind(null, activeDocument)}
             onOpenTopic={(id) => void openResource('topic', id)}
@@ -3290,9 +3353,6 @@
           </button>
         </form>
       </div>
-    {#if sharingTopic}
-      <ShareTopicDialog topic={sharingTopic} beforeShare={() => documentSaves.flushAll()} onClose={() => { sharingTopic = null; }} />
-    {/if}
     {#if reportChatSnapshot}
       <ReportChatBugDialog run={reportChatSnapshot}
         conversationBlocked={runBlocked(reportChatSnapshot)}
@@ -3575,28 +3635,9 @@
     {/if}
   </aside>
 
-  <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
-    <span
-      class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
-      title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"
-    >
-      <span class="status-dot"></span>
-      Working Memory: {backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}
-    </span>
-    <span
-      class="backend-status state-{openAiHealth.state}"
-      title="Provider: {modelProfiles.find((profile) => profile.id === modelRouting['complex:medium'])?.provider === 'copilot' ? 'Local GitHub Copilot' : endpoint || 'not configured'}&#10;Signal: startup connectivity test or normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
-    >
-      <span class="status-dot"></span>
-      AI: {openAiHealth.state}
-    </span>
-    {#if featuresError}<span role="alert">Features: {featuresError}</span>{/if}
-    {#if instanceConnectionError}<span>Connection: reconnecting</span>{/if}
-    {#if pendingAccessRequests}
-      <button onclick={() => openSettings('access')}>{pendingAccessRequests} access request{pendingAccessRequests === 1 ? '' : 's'} - Review</button>
-    {/if}
-    {#if buildInfoError}<span role="alert">Build information: {buildInfoError}</span>{/if}
-    <span class="desktop-build-status">{desktopBuildLabel}</span>
-  </footer>
+  {@render statusBar()}
 </div>
+{/if}
+{#if sessionReportSnapshot}
+  <ReportSessionBugDialog snapshot={sessionReportSnapshot} onClose={() => { sessionReportSnapshot = null; }} />
 {/if}

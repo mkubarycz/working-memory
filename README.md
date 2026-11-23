@@ -1588,6 +1588,20 @@ decimal, or hexadecimal HTML/XML ampersand entities. Collected
 evidence remains inspectable in the dialog; do not include private information in
 the description. Reporting never retries or changes the original operation.
 
+The bottom status bar's **Report Bug** link is available throughout the desktop,
+including sign-in and when no topic, chat or backend is selected. Opening it
+captures bounded session diagnostics (desktop/build/platform, connection and AI
+health, current screen, feature/error state and active-work counts), then prompts
+for the bug details. Where available, it also snapshots the currently displayed
+Search/placement/feature/backend operation, or the selected tool/latest message
+in the visible chat. It never collects document drafts, unrelated conversations,
+files, attachment bytes or general logs. The snapshot is session-only and requires
+no live backend query or local topic creation. Capture/settings errors block sending
+and offer retry; canceling leaves unsaved work untouched. Sending uses the same
+disclosure, optional preview, redaction and cached delivery/receipt retry as other
+reports. Changing screens or environments after capture does not change its source.
+The obsolete topic-header **Send Feedback** action has been removed.
+
 Every chat message has **Bug Report**, including messages still running.
 Search also has **Bug Report** at the top right, available before, during, or
 after a search. It snapshots the search text, scope, displayed results and excerpts,
@@ -1662,16 +1676,16 @@ append/finalization requests as well as model and tool calls.
 Not finding a run on this desktop does not prove a run on another computer has
 stopped. Reporting does not automatically fail, interrupt or unblock it.
 
-An existing topic's square **Send Feedback** control prepares a copy and discovers
-Feedback servers on the local network. Review the desktop version/build timestamp
-and the selected backend's reported version, then click **Send**. One server is
-preselected; multiple servers require a choice. Preparing or choosing a server
-does not transmit topic content. After success, **Send** becomes **Done**.
+The optional report preview's **Send Feedback** dialog discovers Feedback servers
+on the local network. Review the desktop version/build timestamp and the selected
+backend's version (explicitly unknown for session snapshots), then click **Send**.
+One server is preselected; multiple servers require a choice. Preparing or choosing
+a server does not transmit topic content. After success, **Send** becomes **Done**.
 No receiver URL or secret is required. Discovery probes IPv4 LAN broadcasts and
 loopback using UDP 7721; topic content travels only over HTTPS on TCP 7720.
 
-Pending edits must save successfully before sharing. The title, Markdown,
-topic type, and referenced screenshot images are copied, but relationships,
+The Feedback transport can copy a topic's title, Markdown and referenced
+screenshot images, but relationships,
 Agent Messages, history, and lifecycle status are not. The receiver creates an open
 topic in its **Inbox** workstream and remaps image IDs into that environment.
 After delivery, the source topic receives an appended, dated **Sent as feedback

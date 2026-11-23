@@ -42,6 +42,7 @@ import { LocalCopilotProvider } from './copilotProvider';
 import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
 import { PublicFeedbackConfigStore } from './publicFeedbackConfig';
 import { createChatBugReport } from './chatBugReport';
+import { SessionBugReports, sessionBugReportInputSchema } from './sessionBugReport';
 import { createSearchBugReport } from './searchBugReport';
 import { createFeatureBugReport } from './featureBugReport';
 import { BackendBugReports } from './backendBugReport';
@@ -156,6 +157,8 @@ let credentialVault: DesktopCredentialVault | null = null;
 let feedbackSender: FeedbackSender | undefined;
 let publicFeedbackConfig: PublicFeedbackConfigStore | undefined;
 const backendBugReports = new BackendBugReports();
+const sessionBugReports = new SessionBugReports();
+let sessionBugCaptureGeneration = 0;
 let instanceMonitor: InstanceMonitor | undefined;
 let credentialMigrationError = '';
 let environmentFile = '';
@@ -1333,6 +1336,39 @@ function registerIpc(): void {
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
     return feedbackSender.send(id, requestId, serverId);
   });
+  ipcMain.handle('session:report-bug-capture', async (event, input: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    const captureGeneration = ++sessionBugCaptureGeneration;
+    const generation = containerEnvironmentGeneration;
+    const environment = environmentManager.currentEnvironment;
+    const parsed = sessionBugReportInputSchema.parse(input);
+    const diagnostics = chatAgent.diagnostics();
+    const chatDiagnostics = parsed.operation?.kind === 'chat'
+      ? chatAgent.diagnostics(parsed.operation.input.run.journalId) : diagnostics;
+    const upgradeFailure = parsed.operation?.kind === 'backend' && parsed.operation.failure.instance
+      ? dataTier?.upgradeFailure(parsed.operation.failure.instance.port) : undefined;
+    const selectedFeatureFailure = featureFailure?.mcpUrl === environment?.mcpUrl ? featureFailure : undefined;
+    const config = await readStoredConfig(configFile);
+    if (captureGeneration !== sessionBugCaptureGeneration) throw new Error('A newer session report was opened. Reopen Report Bug.');
+    if (generation !== containerEnvironmentGeneration) throw new Error('The selected environment changed. Reopen Report Bug.');
+    return sessionBugReports.capture(parsed, {
+      environment: { desktopVersion: desktopVersion(), desktopBuild: __WM_BUILD_TIMESTAMP__,
+        backendUrl: environment?.mcpUrl ?? null, platform: process.platform, arch: process.arch, processId: process.pid },
+      uptimeSeconds: process.uptime(),
+      diagnostics: id => id ? chatDiagnostics : diagnostics,
+      featureDiagnostics: selectedFeatureFailure,
+      upgradeFailure: () => upgradeFailure,
+      secrets: [...modelProfiles(config).map(profile => decryptApiKey(profile)),
+        ...environmentManager.availableEnvironments.flatMap(candidate => {
+          const token = instanceVault?.session(hostTaskOrigin(candidate.mcpUrl));
+          return token ? [token] : [];
+        })],
+    });
+  });
+  ipcMain.handle('session:report-bug-describe', (event, id: unknown, description: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    return sessionBugReports.describe(id, description);
+  });
   ipcMain.handle('backend:report-bug', async (event, input: unknown) => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
     const config = await readStoredConfig(configFile);
@@ -2268,6 +2304,8 @@ if (!ownsSingleInstanceLock) {
     );
     publicFeedbackConfig = new PublicFeedbackConfigStore(join(app.getPath('userData'), 'public-feedback.json'), credentialVault);
     feedbackSender = new FeedbackSender(async (id) => {
+      const sessionReport = sessionBugReports.feedbackSource(id);
+      if (sessionReport) return sessionReport;
       const backendReport = backendBugReports.feedbackSource(id);
       if (backendReport) return backendReport;
       const client = controlPlane();
