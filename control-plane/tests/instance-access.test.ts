@@ -379,7 +379,7 @@ it('prevents a pending renewal from restoring removed permissions and keeps acce
 it('blocks every instance-MCP task operation for an authenticated owner until Host Tasks is explicitly enabled', async () => {
   const { owner, connect, store } = await fixture();
   const broker = new HostTaskBroker(store.db);
-  expect(broker.features.read()).toEqual({ hostTasks: false, search: false });
+  expect(broker.features.read()).toEqual({ hostTasks: false, search: false, topicPlacementAutoLoad: true });
   const agent = await connect(owner!.token);
   const id = randomUUID();
   const definition = { name: 'Blocked task', description: '', hostId: randomUUID(),
@@ -399,7 +399,7 @@ it('blocks every instance-MCP task operation for an authenticated owner until Ho
   }
   expect(store.db.prepare('SELECT COUNT(*) AS count FROM host_script_tasks').get()?.count).toBe(0);
   expect(store.db.prepare('SELECT COUNT(*) AS count FROM host_script_jobs').get()?.count).toBe(0);
-  expect(broker.features.read()).toEqual({ hostTasks: false, search: false });
+  expect(broker.features.read()).toEqual({ hostTasks: false, search: false, topicPlacementAutoLoad: true });
 });
 
 it('requires Tools Run and exact-version grants, keeps edits as drafts, and invalidates grants on publish or downgrade', async () => {

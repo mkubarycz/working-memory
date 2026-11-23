@@ -20,8 +20,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       import { LocalEmbeddings } from '/src/main/localEmbeddings';
       import '/src/renderer/style.css';
       const state = window.__featuresTest = {
-        enabled: false, search: false, observability: false, writes: [], reads: 0, activeReads: 0, maxReads: 0, changes: [],
+        enabled: false, search: false, observability: false, topicPlacementAutoLoad: true, writes: [], reads: 0, activeReads: 0, maxReads: 0, changes: [],
         pauseRead: false, releaseRead: null, failSave: false, failPoll: false,
+        featurePollError: 'Feature refresh failed', featureSaveError: 'Feature save failed',
         embeddings: false, embeddingActions: [], failEmbeddingSave: false, failEmbeddingPoll: false, repairFailure: false,
         ownershipConflict: false, recoveries: 0, inspections: 0, timeout: false,
         reports: [], sends: [], failReport: false,
@@ -61,25 +62,28 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         async getInstanceFeatures() {
           state.reads++;
           state.maxReads = Math.max(state.maxReads, ++state.activeReads);
-          const result = { hostTasks: state.enabled, search: state.search, observability: state.observability };
+          const result = { hostTasks: state.enabled, search: state.search, observability: state.observability,
+            topicPlacementAutoLoad: state.topicPlacementAutoLoad };
           try {
             if (state.pauseRead) {
               state.pauseRead = false;
               await new Promise(resolve => state.releaseRead = resolve);
             }
-            if (state.failPoll) throw new Error('Feature refresh failed');
+            if (state.failPoll) throw new Error(state.featurePollError);
             return result;
           } finally { state.activeReads--; }
         },
         async setInstanceFeatures(input) {
           if (state.timeout) throw new Error('podman info did not respond within 30s. This does not confirm that Podman is stopped.');
           if (input.observability !== undefined && state.ownershipConflict) throw new Error('Container App ownership conflict');
-          if (state.failSave) { state.failSave = false; throw new Error('Feature save failed'); }
+          if (state.failSave) { state.failSave = false; throw new Error(state.featureSaveError); }
           state.writes.push(input);
           if (input.hostTasks !== undefined) state.enabled = input.hostTasks;
           if (input.search !== undefined) state.search = input.search;
           if (input.observability !== undefined) state.observability = input.observability;
-          return { hostTasks: state.enabled, search: state.search, observability: state.observability };
+          if (input.topicPlacementAutoLoad !== undefined) state.topicPlacementAutoLoad = input.topicPlacementAutoLoad;
+          return { hostTasks: state.enabled, search: state.search, observability: state.observability,
+            topicPlacementAutoLoad: state.topicPlacementAutoLoad };
         },
         async listContainerApps() { return [{ id: 'observability-claim', nativeSurface: 'observability' }]; },
         async inspectContainerApp() { state.inspections++; return { id: 'observability-claim', recoveryAvailable: state.ownershipConflict }; },
@@ -152,14 +156,32 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("document.querySelectorAll('button').length"), 0);
           assert.equal(await evaluate("document.querySelectorAll('.hint').length"), 0);
           assert.equal(await evaluate("document.querySelector('[role=switch]').checked"), false);
-          assert.equal(await evaluate("document.querySelectorAll('[role=switch]').length"), 4);
+          assert.equal(await evaluate("document.querySelectorAll('[role=switch]').length"), 5);
+          const search = "document.querySelector('[aria-label=\\"Working Memory search\\"]')";
+          const embeddings = "document.querySelector('[aria-label=Embeddings]')";
+          assert.equal(await evaluate(search + '.checked'), false);
+          assert.equal(await evaluate(search + '.disabled'), false);
+          assert.equal(await evaluate(embeddings + '.checked'), false);
+          assert.equal(await evaluate(embeddings + '.disabled'), true);
+          const placement = "document.querySelector('[aria-label=\\"Automatic topic placement suggestions\\"]')";
+          assert.equal(await evaluate(placement + '.checked'), true);
+          await evaluate(placement + '.click()');
+          await wait("!window.__featuresTest.topicPlacementAutoLoad && !document.querySelector('[role=switch]').disabled");
+          assert.deepEqual(await evaluate("window.__featuresTest.writes.at(-1)"), { topicPlacementAutoLoad: false });
+          assert.equal(await evaluate("window.__featuresTest.search"), false);
+          assert.equal(await evaluate("window.__featuresTest.embeddings"), false);
+          await evaluate("window.__featuresTest.failSave = true; " + placement + '.click()');
+          await wait("document.querySelector('.feature-error-message')?.textContent === 'Feature save failed'");
+          assert.equal(await evaluate(placement + '.checked'), false);
+          await evaluate(placement + '.click()');
+          await wait("window.__featuresTest.topicPlacementAutoLoad && !document.querySelector('[role=alert]')");
           await evaluate("document.querySelector('[aria-label=\\"Observability Container App\\"]').click()");
           await wait("window.__featuresTest.observability && !document.querySelector('[role=switch]').disabled");
           assert.deepEqual(await evaluate("window.__featuresTest.writes.at(-1)"), { observability: true });
           assert.equal(await evaluate("document.querySelector('[aria-label=Embeddings]').disabled"), true);
-          assert.equal(await evaluate('document.querySelectorAll("[role=switch]")[1].checked'), false);
-          assert.equal(await evaluate('document.querySelectorAll("[role=switch]")[1].getAttribute("aria-label")'), 'Working Memory search');
-          await evaluate('document.querySelectorAll("[role=switch]")[1].click()');
+          assert.equal(await evaluate(search + '.checked'), false);
+          assert.equal(await evaluate(search + '.disabled'), false);
+          await evaluate(search + '.click()');
           await wait("window.__featuresTest.search && !document.querySelector('[role=switch]').disabled");
           assert.deepEqual(await evaluate("window.__featuresTest.writes.at(-1)"), { search: true });
           assert.equal(await evaluate("window.__featuresTest.enabled"), false);
@@ -244,6 +266,27 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("window.__featuresTest.observability"), false);
           await evaluate("document.querySelector('[aria-label=\\"Observability Container App\\"]').click()");
           await wait("window.__featuresTest.observability && !document.querySelector('[role=alert]')");
+          // Failed initialization is explicit; recovery still allows Search first, then Embeddings.
+          const embeddingActionsBeforeRecovery = await evaluate("window.__featuresTest.embeddingActions.length");
+          await evaluate("Object.assign(window.__featuresTest, { enabled:false, search:false, embeddings:false, failPoll:true, featurePollError:'Sign in to this instance again.' }); window.__featuresTest.remount()");
+          await wait("document.querySelector('.feature-error-message')?.textContent === 'Sign in to this instance again.'");
+          assert.equal(await evaluate(search + '.disabled'), true);
+          assert.equal(await evaluate(embeddings + '.disabled'), true);
+          await evaluate("window.__featuresTest.failPoll=false; window.__featuresTest.failEmbeddingPoll=true");
+          await wait("document.querySelector('.feature-error-message')?.textContent === 'Embedding feature unavailable' && !document.querySelector('[aria-label=\\"Working Memory search\\"]').disabled");
+          assert.equal(await evaluate(search + '.checked'), false);
+          assert.equal(await evaluate(embeddings + '.disabled'), true);
+          await evaluate(search + '.click()');
+          await wait("window.__featuresTest.search && !document.querySelector('[aria-label=\\"Working Memory search\\"]').disabled");
+          assert.equal(await evaluate("window.__featuresTest.embeddingActions.length"), embeddingActionsBeforeRecovery);
+          await evaluate("window.__featuresTest.failEmbeddingPoll=false");
+          await wait("!document.querySelector('[role=alert]') && !document.querySelector('[aria-label=Embeddings]').disabled");
+          await evaluate(embeddings + '.click()');
+          await wait("window.__featuresTest.embeddings && !document.querySelector('[aria-label=Embeddings]').disabled");
+          assert.equal(await evaluate("window.__featuresTest.embeddingActions.at(-1)"), 'enable');
+          await evaluate("window.__featuresTest.failSave=true; window.__featuresTest.featureSaveError='Sign in as the instance owner to change features.'; " + search + '.click()');
+          await wait("document.querySelector('.feature-error-message')?.textContent === 'Sign in as the instance owner to change features.'");
+          assert.equal(await evaluate(search + '.checked'), true);
           await evaluate("window.__featuresTest.dispose()");
           const finalReads = await evaluate("window.__featuresTest.reads");
           await delay(2200);

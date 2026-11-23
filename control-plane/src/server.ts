@@ -1086,7 +1086,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       }
       return;
     }
-    if (['/features/v1', '/features/v2', '/features/v3'].includes(url.pathname)) {
+    if (['/features/v1', '/features/v2', '/features/v3', '/features/v4'].includes(url.pathname)) {
       const principal = access.authenticate(token);
       const beforeWrite = (flags: import('./instanceFeatures.js').InstanceFeatureUpdate) => {
         if (flags.observability === undefined) return;

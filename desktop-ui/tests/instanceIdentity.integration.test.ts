@@ -127,7 +127,7 @@ it('keeps Host tasks working against older backends without enabling unsupported
   vault.setSession('http://127.0.0.1:7717', randomBytes(32).toString('hex'), Date.now() + 60_000);
   let hostTasks = true;
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
-    if (/\/features\/v[23]$/.test(String(url))) return new Response('', { status: 404 });
+    if (/\/features\/v[234]$/.test(String(url))) return new Response('', { status: 404 });
     expect(String(url)).toContain('/features/v1');
     if (init?.method === 'POST') hostTasks = JSON.parse(String(init.body)).hostTasks;
     return Response.json({ hostTasks });
@@ -139,6 +139,50 @@ it('keeps Host tasks working against older backends without enabling unsupported
   const calls = fetcher.mock.calls.length;
   fetcher.mockResolvedValueOnce(new Response('', { status: 503 }));
   await expect(identity.features('http://127.0.0.1:7717/mcp')).rejects.toThrow('HTTP 503');
+  expect(fetcher.mock.calls.length).toBe(calls + 1);
+});
+
+it('negotiates Features v4 only on 404 and never downgrades malformed or denied responses', async () => {
+  const origin = 'http://127.0.0.1:7717';
+  const vault = new HostTaskCredentialVault({ isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn() }, process.platform, '/not-used');
+  vault.setSession(origin, randomBytes(32).toString('hex'), Date.now() + 60_000);
+  let version = 4;
+  const flags = { hostTasks: false, search: true, observability: false, topicPlacementAutoLoad: true };
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    const requested = Number(String(url).split('/v').at(-1));
+    if (requested > version) return new Response('', { status: 404 });
+    if (init?.body) Object.assign(flags, JSON.parse(String(init.body)));
+    return Response.json(requested === 4 ? flags : requested === 3
+      ? { hostTasks: flags.hostTasks, search: flags.search, observability: flags.observability }
+      : { hostTasks: flags.hostTasks, search: flags.search });
+  });
+  const identity = new DesktopInstanceIdentity(vault, async () => '', () => false, fetcher);
+  expect(await identity.features(`${origin}/mcp`)).toEqual(flags);
+  expect(await identity.setFeatures(`${origin}/mcp`, { topicPlacementAutoLoad: false })).toEqual({
+    ...flags, topicPlacementAutoLoad: false,
+  });
+  for (const supported of [3, 2]) {
+    version = supported;
+    expect((await identity.features(`${origin}/mcp`)).topicPlacementAutoLoad).toBeUndefined();
+    await expect(identity.setFeatures(`${origin}/mcp`, { topicPlacementAutoLoad: true })).rejects.toThrow('Upgrade this backend');
+    expect(flags.topicPlacementAutoLoad).toBe(false);
+    expect((await identity.setFeatures(`${origin}/mcp`, { hostTasks: true })).hostTasks).toBe(true);
+  }
+  for (const response of [
+    Response.json({ error: 'denied' }, { status: 403 }),
+    Response.json({ error: 'unavailable' }, { status: 503 }),
+    Response.json({ hostTasks: false, search: true, observability: false }),
+    Response.json({ ...flags, extra: true }),
+    Response.json({ ...flags, topicPlacementAutoLoad: 'true' }),
+  ]) {
+    const calls = fetcher.mock.calls.length;
+    fetcher.mockResolvedValueOnce(response);
+    await expect(identity.features(`${origin}/mcp`)).rejects.toThrow();
+    expect(fetcher.mock.calls.length).toBe(calls + 1);
+  }
+  fetcher.mockResolvedValueOnce(Response.json({ error: 'denied' }, { status: 403 }));
+  const calls = fetcher.mock.calls.length;
+  await expect(identity.setFeatures(`${origin}/mcp`, { topicPlacementAutoLoad: true })).rejects.toThrow('HTTP 403');
   expect(fetcher.mock.calls.length).toBe(calls + 1);
 });
 
@@ -154,9 +198,9 @@ it('connects without Keychain or secret files, keeps the password transient, and
     passwordConfigured: false, passwordHint: '', setupAvailable: true });
   const setup = await identity.signIn(mcpUrl, password, true, 'First owner reminder');
   vault.setSession(server.url, setup.token, setup.expiresAt);
-  expect(await identity.features(mcpUrl)).toEqual({ hostTasks: false, search: false, observability: false });
+  expect(await identity.features(mcpUrl)).toEqual({ hostTasks: false, search: false, observability: false, topicPlacementAutoLoad: true });
   await expect(new HostScriptAdminClient(mcpUrl, setup.token).scripts()).rejects.toThrow('turned off');
-  expect(await identity.setFeatures(mcpUrl, { hostTasks: true })).toEqual({ hostTasks: true, search: false, observability: false });
+  expect(await identity.setFeatures(mcpUrl, { hostTasks: true })).toEqual({ hostTasks: true, search: false, observability: false, topicPlacementAutoLoad: true });
   expect(await vault.read(server.url)).toBe(setup.token);
   expect(await new HostScriptAdminClient(mcpUrl, setup.token).scripts()).toMatchObject({ tasks: [] });
   expect(await identity.status(mcpUrl)).toEqual({ environment: server.url, authenticated: true,

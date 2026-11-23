@@ -3090,6 +3090,8 @@
         {:else if activeDocument?.kind === 'topic'}
           <TopicView
             showRelatedTopics={instanceFeatures.search}
+            placementAutoLoad={instanceFeatures.search && instanceFeatures.topicPlacementAutoLoad === true}
+            placementEnvironment={selectedEnvironment?.mcpUrl ?? ''}
             bind:activeDrag={activeTreeDrag}
             onAddChild={(parent, workstream) => startTopicCreation(workstream.id, workstream.title, parent)}
             onTopicAdded={refreshTopicMemberships}

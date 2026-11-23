@@ -4,7 +4,7 @@
 
   let { topic, drag, onOpen, onAddChild, onAddToWorkstream, icon = FALLBACK_TOPIC_ICON }: {
     topic: TopicLinkReference;
-    drag: TopicLinkDragController;
+    drag?: TopicLinkDragController;
     onOpen: (id: string) => void;
     onAddChild?: (topic: TopicLinkReference) => void;
     onAddToWorkstream?: (topic: TopicLinkReference) => void;
@@ -12,7 +12,7 @@
   } = $props();
   let menu = $state<{ x: number; y: number } | null>(null);
   let menuEl = $state<HTMLDivElement | undefined>();
-  $effect(() => { drag.prepare(topic.id, topic.title); });
+  $effect(() => { drag?.prepare(topic.id, topic.title); });
   $effect(() => {
     if (!menu) return;
     function dismiss(event: MouseEvent): void {
@@ -35,11 +35,11 @@
   }
 </script>
 
-<button class="topic-link" title={topic.title} draggable="true"
-  onpointerdown={() => drag.prepare(topic.id, topic.title)}
-  ondragstart={event => drag.start(event, topic.id, topic.title)}
-  ondragend={() => drag.finish()}
-  oncontextmenu={openMenu} onclick={() => onOpen(topic.id)}>
+<button class="topic-link" title={topic.title} draggable={!!drag}
+  onpointerdown={() => drag?.prepare(topic.id, topic.title)}
+  ondragstart={event => drag?.start(event, topic.id, topic.title)}
+  ondragend={() => drag?.finish()}
+  oncontextmenu={drag || onAddChild || onAddToWorkstream ? openMenu : undefined} onclick={() => onOpen(topic.id)}>
   <span aria-hidden="true" class="codicon codicon-{icon}"></span>
   <span class="topic-title">{topic.title}</span>
 </button>

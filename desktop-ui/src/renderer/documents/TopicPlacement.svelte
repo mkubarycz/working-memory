@@ -1,18 +1,21 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { EMBEDDING_HISTORY_GUIDANCE } from '../../../../control-plane/src/embeddingContract';
-  import type { TopicPlacement, TopicPlacementSuggestion } from '../../../../control-plane/src/topicPlacementContract';
+  import type { TopicPlacement } from '../../../../control-plane/src/topicPlacementContract';
   import type { SearchBugReportInput } from '../../shared/contracts';
   import ReportBugDialog from '../ReportBugDialog.svelte';
+  import TopicLink from './TopicLink.svelte';
   import { placementApplyInput, placementBugContext } from './topicPlacementActions';
 
-  let { id, title, resourceVersion, editable, onOpenTopic, onOpenWorkstream, onApplied }: {
+  let { id, title, resourceVersion, editable, autoLoad = false, environment = '', saved = true,
+    onOpenTopic, onOpenWorkstream, onApplied }: {
     id: string; title: string; resourceVersion: number; editable: boolean;
+    autoLoad?: boolean; environment?: string; saved?: boolean;
     onOpenTopic: (id: string) => void; onOpenWorkstream: (id: string) => void;
     onApplied?: () => Promise<void>;
   } = $props();
   let result = $state<TopicPlacement | null>(null);
-  let selected = $state<TopicPlacementSuggestion | null>(null);
+  const selected = $derived(result?.state === 'ready' ? result.suggestions[0] ?? null : null);
   let loading = $state(false);
   let applying = $state(false);
   let error = $state('');
@@ -20,8 +23,14 @@
   let reporting = $state<SearchBugReportInput['search'] | null>(null);
   let generation = 0;
   $effect(() => {
-    void id; void resourceVersion;
-    generation++; result = null; selected = null; error = ''; notice = ''; loading = false; applying = false;
+    void id; void resourceVersion; void environment; void saved;
+    const automatic = autoLoad && saved;
+    const current = ++generation;
+    untrack(() => { result = null; error = ''; notice = ''; loading = false; applying = false; });
+    const timer = automatic ? setTimeout(() => {
+      if (current === generation) void suggest();
+    }, 0) : undefined;
+    return () => { generation++; clearTimeout(timer); };
   });
   onDestroy(() => { generation++; });
 
@@ -30,27 +39,35 @@
     const current = ++generation;
     const topicId = id;
     const version = resourceVersion;
-    loading = true; error = ''; notice = ''; result = null; selected = null;
+    const sourceEnvironment = environment;
+    const automatic = autoLoad;
+    const sourceSaved = saved;
+    const isCurrent = () => current === generation && id === topicId && resourceVersion === version
+      && environment === sourceEnvironment && autoLoad === automatic && saved === sourceSaved;
+    loading = true; error = ''; notice = ''; result = null;
     try {
       const value = await window.workingMemory.suggestTopicPlacement(topicId);
-      if (current === generation) {
+      if (isCurrent()) {
         if (value.sourceVersion !== version) throw new Error('The topic changed. Refresh it and suggest placement again.');
         result = value;
       }
     } catch (cause) {
-      if (current === generation) error = cause instanceof Error ? cause.message : String(cause);
-    } finally { if (current === generation) loading = false; }
+      if (isCurrent()) error = cause instanceof Error ? cause.message : String(cause);
+    } finally { if (isCurrent()) loading = false; }
   }
 
   async function apply(): Promise<void> {
-    if (!result || !selected || applying || !editable) return;
+    if (!result || !selected || applying || !editable || !saved) return;
     const current = generation;
-    const input = placementApplyInput(id, result, selected);
+    const topicId = id;
+    const version = resourceVersion;
+    const sourceEnvironment = environment;
+    const input = placementApplyInput(topicId, result, selected);
     applying = true; error = '';
     try {
       await window.workingMemory.applyTopicPlacement(input);
-      if (current !== generation) return;
-      result = null; selected = null;
+      if (current !== generation || id !== topicId || resourceVersion !== version || environment !== sourceEnvironment) return;
+      result = null;
       notice = 'Placement applied. Existing relationships and topic status were preserved.';
       await onApplied?.();
     } catch (cause) {
@@ -64,8 +81,8 @@
 
 <section class="topic-placement" aria-label="Topic placement">
   <h3>Topic placement</h3>
-  <p>Compare this saved topic with existing topic and workstream embeddings. Nothing changes until you apply a selection.</p>
-  <button disabled={loading || applying} onclick={suggest}>{loading ? 'Suggesting placement…' : 'Suggest Placement'}</button>
+  <p>Advisory only. Nothing changes until you apply.</p>
+  <button disabled={loading || applying || !saved} onclick={suggest}>{loading ? 'Suggesting placement…' : result ? 'Refresh placement' : 'Suggest Placement'}</button>
   {#if result || error || loading || notice}<button onclick={report}>Bug Report</button>{/if}
   {#if error}<p role="alert">{error}</p>{/if}
   {#if notice}<p role="status">{notice}</p>{/if}
@@ -74,25 +91,31 @@
   {:else if result?.state === 'pending'}
     <p role="status">Placement suggestions are waiting for topic and workstream indexing. Retry when indexing is ready. {EMBEDDING_HISTORY_GUIDANCE}</p>
   {:else if result?.state === 'ready'}
-    {#if result.limited}<p>Only the first 32,000 body characters were indexed.</p>{/if}
-    {#each result.suggestions as suggestion, index}
+    {#if selected}
       <article>
-        <label><input type="radio" name={`placement-${id}`} checked={selected === suggestion}
-          onchange={() => { selected = suggestion; }} disabled={applying} /> Select placement {index + 1}</label>
-        <p>Parent:
-          {#if suggestion.parent}<button onclick={() => onOpenTopic(suggestion.parent!.id)}>{suggestion.parent.title}</button>
-          {:else}No new parent recommended{/if}
-          · Workstream: <button onclick={() => onOpenWorkstream(suggestion.workstream.id)}>{suggestion.workstream.title}</button>
-        </p>
-        <p title={suggestion.confidence.reason}>Similarity {suggestion.similarity.toFixed(2)} · Confidence {suggestion.confidence.level}</p>
-        <p>{suggestion.evidence === 'parent-membership' ? 'Similar topic in this workstream.' : 'Similar workstream content.'}</p>
-        <details><summary>Supporting excerpt</summary><blockquote>{suggestion.excerpt}</blockquote></details>
+        <div class="placement-relation">
+          <span class="relation-label">Parent</span>
+          {#if selected.parent}<TopicLink topic={selected.parent} onOpen={onOpenTopic} />
+          {:else}<span>No new parent recommended</span>{/if}
+        </div>
+        <div class="placement-relation">
+          <span class="relation-label">Workstream</span>
+          <button class="ws-chip" title={selected.workstream.title} onclick={() => onOpenWorkstream(selected!.workstream.id)}>
+            <span aria-hidden="true" class="codicon codicon-briefcase"></span>
+            <span class="ws-chip-title">{selected.workstream.title}</span>
+          </button>
+        </div>
+        <details><summary>Supporting evidence</summary>
+          <p title={selected.confidence.reason}>Similarity {selected.similarity.toFixed(2)} · Confidence {selected.confidence.level}</p>
+          <p>{selected.confidence.reason}</p>
+          <p>{selected.evidence === 'parent-membership' ? 'Similar topic in this workstream.' : 'Similar workstream content.'}</p>
+          {#if result.limited}<p>Only the first 32,000 body characters were indexed.</p>{/if}
+          <blockquote>{selected.excerpt}</blockquote>
+          <p>Applying adds this placement; it does not remove existing relationships or move descendants.</p>
+        </details>
       </article>
-    {:else}<p>No sufficiently similar eligible placement found. You can place the topic manually.</p>{/each}
-    {#if result.suggestions.length}
-      <p>Applying adds the selected parent and workstream; it does not remove existing relationships or move descendants.</p>
-      <button disabled={!selected || applying || !editable} onclick={apply}>{applying ? 'Applying…' : 'Apply selected placement'}</button>
-    {/if}
+      <button disabled={applying || !editable || !saved} onclick={apply}>{applying ? 'Applying…' : 'Apply placement'}</button>
+    {:else}<p>No sufficiently similar eligible placement found. You can place the topic manually.</p>{/if}
   {/if}
 </section>
 
@@ -108,4 +131,14 @@
   article { margin: 12px 0; padding: 12px; border: 1px solid var(--border-color, #444); border-radius: 4px; }
   blockquote { white-space: pre-wrap; }
   button { margin-right: 6px; }
+  .placement-relation { display: flex; align-items: center; gap: 8px; margin: 8px 0; min-width: 0; }
+  .relation-label { min-width: 84px; color: var(--desktop-chat-muted); }
+  .ws-chip {
+    display: flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0;
+    text-align: left; padding: 2px 6px; border: none; border-radius: 4px; background: transparent;
+    color: var(--vscode-textLink-foreground); cursor: pointer; font-size: 0.95em;
+  }
+  .ws-chip:hover { background: var(--vscode-list-hoverBackground); text-decoration: underline; }
+  .ws-chip:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .ws-chip-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

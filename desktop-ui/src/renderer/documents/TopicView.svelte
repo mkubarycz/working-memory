@@ -31,6 +31,8 @@
     titlePlaceholder?: string;
     draft?: boolean;
     showRelatedTopics?: boolean;
+    placementAutoLoad?: boolean;
+    placementEnvironment?: string;
     activeDrag?: ActiveResourceDrag | null;
     onAddChild?: (parent: TopicLinkReference, workstream: TopicLinkReference) => Promise<void>;
     onTopicAdded?: () => Promise<void>;
@@ -55,6 +57,8 @@
     titlePlaceholder = '',
     draft = false,
     showRelatedTopics = false,
+    placementAutoLoad = false,
+    placementEnvironment = '',
     activeDrag = $bindable(null),
     onAddChild,
     onTopicAdded,
@@ -453,6 +457,8 @@
 {#if !draft && topic.id}
   {#key topic.id}
     <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
+      autoLoad={placementAutoLoad} environment={placementEnvironment}
+      saved={saveState === 'idle' || saveState === 'saved'}
       editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream} onApplied={onTopicAdded} />
   {/key}
 {/if}

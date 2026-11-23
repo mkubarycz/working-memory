@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { HostTaskCredentialVault, hostTaskOrigin } from './hostTaskBroker';
-import { instanceFeaturesSchema, instanceFeaturesV3Schema, type InstanceFeatures, type InstanceFeatureUpdate } from '../../../control-plane/src/instanceFeatures';
+import { instanceFeaturesSchema, instanceFeaturesV3Schema, instanceFeaturesV4Schema, type InstanceFeatures, type InstanceFeatureUpdate } from '../../../control-plane/src/instanceFeatures';
 import { observabilityStatusSchema, type ObservabilityConfiguration, type ObservabilityStatus } from '../../../control-plane/src/observability';
 import type { InstanceConnectionState, InstanceAccessSnapshot } from '../shared/instanceIdentity';
 import type { InstancePasswordVault } from './instancePasswordVault';
@@ -142,6 +142,11 @@ export class DesktopInstanceIdentity {
   async features(mcpUrl: string, signal?: AbortSignal): Promise<InstanceFeatures> {
     const token = this.vault.session(hostTaskOrigin(mcpUrl)) ?? undefined;
     try {
+      return instanceFeaturesV4Schema.parse(await this.request(mcpUrl, '/features/v4', undefined, token, signal));
+    } catch (error) {
+      if (!(error instanceof InstanceHttpError) || error.status !== 404) throw error;
+    }
+    try {
       return instanceFeaturesV3Schema.parse(await this.request(mcpUrl, '/features/v3', undefined, token, signal));
     } catch (error) {
       if (!(error instanceof InstanceHttpError) || error.status !== 404) throw error;
@@ -159,6 +164,12 @@ export class DesktopInstanceIdentity {
     if (!token) {
       this.onUnauthorized(mcpUrl);
       throw new Error('Sign in as the instance owner to change features.');
+    }
+    try {
+      return instanceFeaturesV4Schema.parse(await this.request(mcpUrl, '/features/v4', features, token));
+    } catch (error) {
+      if (!(error instanceof InstanceHttpError) || error.status !== 404) throw error;
+      if (features.topicPlacementAutoLoad !== undefined) throw new Error('Upgrade this backend to configure automatic topic placement suggestions.');
     }
     try {
       return instanceFeaturesV3Schema.parse(await this.request(mcpUrl, '/features/v3', features, token));

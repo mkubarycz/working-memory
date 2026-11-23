@@ -17,25 +17,56 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
-it('defaults off and persists each instance choice across database reopening', async () => {
+it('defaults automatic placement on, other features off, and persists independent instance choices', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'wm-features-'));
   directories.push(directory);
   const filename = join(directory, 'journal.sqlite');
   const first = openStore(filename);
   const flags = new InstanceFeatureStore(first.db);
-  expect(flags.read()).toEqual({ hostTasks: false, search: false });
+  expect(flags.read()).toEqual({ hostTasks: false, search: false, topicPlacementAutoLoad: true });
   flags.write({ hostTasks: true });
-  expect(flags.write({ search: true })).toEqual({ hostTasks: true, search: true });
-  expect(flags.write({ hostTasks: false })).toEqual({ hostTasks: false, search: true });
+  expect(flags.write({ search: true })).toEqual({ hostTasks: true, search: true, topicPlacementAutoLoad: true });
+  expect(flags.write({ hostTasks: false })).toEqual({ hostTasks: false, search: true, topicPlacementAutoLoad: true });
+  expect(flags.write({ topicPlacementAutoLoad: false })).toEqual({ hostTasks: false, search: true, topicPlacementAutoLoad: false });
   first.close();
   const reopened = openStore(filename);
   stores.push(reopened);
-  expect(new InstanceFeatureStore(reopened.db).read()).toEqual({ hostTasks: false, search: true });
+  expect(new InstanceFeatureStore(reopened.db).read()).toEqual({ hostTasks: false, search: true, topicPlacementAutoLoad: false });
   new InstanceFeatureStore(reopened.db).write({ hostTasks: false });
   expect(() => new HostTaskBroker(reopened.db).dispatch('GET', '/admin', '')).toThrow('host_tasks_feature_disabled');
   const another = openStore(':memory:');
   stores.push(another);
-  expect(new InstanceFeatureStore(another.db).read()).toEqual({ hostTasks: false, search: false });
+  expect(new InstanceFeatureStore(another.db).read()).toEqual({ hostTasks: false, search: false, topicPlacementAutoLoad: true });
+});
+
+it('exposes the default-on switch only in v4 and rejects unauthorized or legacy updates without changing Search', async () => {
+  const store = openStore(':memory:');
+  stores.push(store);
+  const owner = await new InstanceIdentity(store.db).initialize('private placement owner password');
+  const server = await startServer({ port: 0, store });
+  servers.push(server);
+  const request = (version: number, body?: object, token = owner.token) => fetch(`${server.url}/features/v${version}`, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  expect(await (await request(4)).json()).toEqual({
+    hostTasks: false, search: false, observability: false, topicPlacementAutoLoad: true,
+  });
+  expect((await request(4, { topicPlacementAutoLoad: false }, 'unapproved')).status).toBe(401);
+  for (const version of [1, 2, 3]) {
+    expect((await request(version, { topicPlacementAutoLoad: false })).status).toBe(400);
+  }
+  expect((await request(4, { topicPlacementAutoLoad: 'false' })).status).toBe(400);
+  expect((await request(4, { topicPlacementAutoLoad: false, unknown: true })).status).toBe(400);
+  expect(await (await request(4, { topicPlacementAutoLoad: false })).json()).toEqual({
+    hostTasks: false, search: false, observability: false, topicPlacementAutoLoad: false,
+  });
+  await request(2, { search: true });
+  expect(await (await request(3)).json()).toEqual({ hostTasks: false, search: true, observability: false });
+  expect(await (await request(2)).json()).toEqual({ hostTasks: false, search: true });
+  expect(await (await request(1)).json()).toEqual({ hostTasks: false });
+  expect((await (await request(4)).json()).topicPlacementAutoLoad).toBe(false);
 });
 
 it('negotiates v3, configures observability only as owner, and preserves exact legacy response shapes', async () => {

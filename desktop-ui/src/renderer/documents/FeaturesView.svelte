@@ -12,6 +12,7 @@
   let enabled = $state(false);
   let searchEnabled = $state(false);
   let observabilityEnabled = $state(false);
+  let placementAutoLoadEnabled = $state(false);
   let recoveryAppId = $state<string | null>(null);
   let embeddings = $state<EmbeddingDashboard | null>(null);
   let embeddingsEnabled = $state(false);
@@ -43,6 +44,7 @@
         enabled = features.hostTasks;
         searchEnabled = features.search;
         observabilityEnabled = features.observability ?? false;
+        placementAutoLoadEnabled = features.topicPlacementAutoLoad ?? false;
         pollError = '';
         onChanged(features);
       } else pollError = loaded.reason instanceof Error ? loaded.reason.message : String(loaded.reason);
@@ -105,6 +107,7 @@
       enabled = features?.hostTasks ?? false;
       searchEnabled = features?.search ?? false;
       observabilityEnabled = features?.observability ?? false;
+      placementAutoLoadEnabled = features?.topicPlacementAutoLoad ?? false;
       busy = false;
     }
   }
@@ -178,6 +181,18 @@
         <input class="feature-switch" type="checkbox" role="switch" aria-label="Observability Container App"
           bind:checked={observabilityEnabled} disabled={!features || busy}
           onchange={(event) => void toggle('observability', event.currentTarget.checked)} />
+      </td>
+    </tr>
+    <tr>
+      <th scope="row">Automatic topic placement suggestions</th>
+      <td>Suggest one placement in the background when opening a saved topic. Requires Search and Embeddings.
+        Manual Suggest Placement remains available when off.
+        {#if features && features.topicPlacementAutoLoad === undefined}Upgrade this backend to configure automatic suggestions.{/if}
+      </td>
+      <td>
+        <input class="feature-switch" type="checkbox" role="switch" aria-label="Automatic topic placement suggestions"
+          bind:checked={placementAutoLoadEnabled} disabled={!features || features.topicPlacementAutoLoad === undefined || busy}
+          onchange={(event) => void toggle('topicPlacementAutoLoad', event.currentTarget.checked)} />
       </td>
     </tr></tbody>
   </table>

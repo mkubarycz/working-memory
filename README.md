@@ -679,9 +679,17 @@ or pinning. Child creation uses the parent's workstream when there is exactly
 one; otherwise it asks for an open workstream before opening the normal form.
 Search and Related topics share the result component, topic actions and workstream picker.
 
-Saved topics also offer **Suggest Placement**. Working Memory compares the topic's
+Saved topics lazily load an advisory placement by default, without blocking the
+document. **Settings > Features > Automatic topic placement suggestions** turns
+automatic requests off instance-wide; **Suggest Placement** / **Refresh placement**
+still works manually. Search and Embeddings must be enabled separately. Older
+backends retain manual suggestions until upgraded to the Features v4 contract;
+the v1-v3 endpoint shapes are unchanged.
+Working Memory compares the topic's
 indexed embeddings with readable topics and workstreams and proposes a parent
-and workstream with supporting evidence. Similarity is not certainty or an authored
+and workstream, showing only the highest-ranked eligible recommendation with normal
+topic/workstream links and optional supporting evidence. A workstream-only recommendation
+remains usable when no parent is eligible. Similarity is not certainty or an authored
 relationship. Select **Apply** to add the proposed relationships; nothing is moved,
 closed or linked automatically. Self/descendant parents are excluded, and changed
 source/candidate versions require fresh suggestions before applying. Disabled or
