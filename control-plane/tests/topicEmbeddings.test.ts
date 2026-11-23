@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadKinds } from '../src/kinds/loader';
 import { openStore, type Store } from '../src/store';
 import { EMBEDDING_KINDS, EMBEDDING_MODEL, embeddingBatchSchema, matchConfidence, relatedTopicsSchema } from '../src/embeddingContract';
-import { embeddingStats, nextEmbeddingWork, relatedTopics, semanticSearch, submitEmbeddings } from '../src/topicEmbeddings';
+import { embeddingStats, nextEmbeddingWork, relatedTopics, semanticSearch, submitEmbeddings, vector, similarity } from '../src/topicEmbeddings';
 import { getKind } from '../src/kinds/registry';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
 import { InstanceFeatureStore } from '../src/instanceFeatures';
@@ -21,6 +21,42 @@ function submit(store: Store, direction = 0) {
 }
 
 describe('topic embeddings', () => {
+  it('keeps vector-byte totals permission-scoped through passage replacement and deletion', () => {
+    const store = fixture();
+    const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Long evidence', body: 'Evidence '.repeat(180) } });
+    const workstream = store.createDocument({ kind: 'Workstream', spec: { title: 'Workspace' } });
+    const passageCounts = new Map<string, number>();
+    for (;;) {
+      const work = nextEmbeddingWork(store.db).work;
+      if (!work) break;
+      passageCounts.set(work.id, work.passages.length);
+      submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+        model: EMBEDDING_MODEL, vectors: work.passages.map(() => unit()) });
+    }
+    const topicBytes = passageCounts.get(topic.metadata.id)! * 384 * 4;
+    const workstreamBytes = passageCounts.get(workstream.metadata.id)! * 384 * 4;
+    expect(embeddingStats(store.db, kind => kind === 'Topic')).toMatchObject({ total: 1, indexed: 1, vectorBytes: topicBytes });
+    expect(embeddingStats(store.db, kind => kind === 'Workstream')).toMatchObject({ total: 1, indexed: 1, vectorBytes: workstreamBytes });
+    store.updateDocument({ id: topic.metadata.id, expectedResourceVersion: topic.metadata.resourceVersion,
+      spec: { ...topic.spec, body: 'Replacement evidence' } });
+    expect(embeddingStats(store.db)).toMatchObject({ total: 2, indexed: 1, pending: 1, vectorBytes: topicBytes + workstreamBytes });
+    submit(store);
+    expect(embeddingStats(store.db)).toMatchObject({ indexed: 2, pending: 0, vectorBytes: 384 * 4 + workstreamBytes });
+    store.deleteDocument({ id: workstream.metadata.id });
+    expect(embeddingStats(store.db, kind => kind === 'Workstream')).toMatchObject({ total: 0, indexed: 0, vectorBytes: 0 });
+    expect(embeddingStats(store.db)).toMatchObject({ total: 1, indexed: 1, vectorBytes: 384 * 4 });
+  });
+
+  it.each([0, 1, 4])('decodes little-endian vectors at byte offset %s without changing cosine values', offset => {
+    const encoded = Buffer.alloc(384 * 4 + offset + 8);
+    const expected = Array.from({ length: 384 }, (_, index) => index % 2 ? -0.125 : 0.25);
+    expected.forEach((value, index) => encoded.writeFloatLE(value, offset + index * 4));
+    const decoded = vector(encoded.subarray(offset, offset + 384 * 4));
+    expect(Array.from(decoded)).toEqual(expected);
+    expect(similarity(unit(), decoded)).toBe(0.25);
+    expect(() => vector(encoded.subarray(offset, offset + 384 * 4 - 1))).toThrow('Stored embedding is invalid');
+  });
+
   it.each(['title', 'body'] as const)('shows the shared case reference from the source %s across Related topics and placement MCP paths', async field => {
     const store = fixture();
     const caseId = '20261411192068475308';

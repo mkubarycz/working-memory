@@ -441,20 +441,12 @@ export function createMcpServer(
       if (kind && !canReadKind(kind === 'Alert' ? 'AgentMessage' : kind)) {
         return asText({ count: 0, documents: [] });
       }
-      const bounded = !!kind && (query === undefined || query.trim() === '');
-      const paging = bounded ? { limit, offset } : {};
-      let documents = kind === 'Alert' || kind === 'AgentMessage'
-        ? store.listDocumentsByCreation({ kind, includeDeleted, ...paging }).map(({ document }) => document)
-        : store.listDocuments({ kind, includeDeleted, ...paging });
-      documents = documents.filter(doc => canReadKind(doc.kind));
-      if (query !== undefined && query.trim() !== '') {
-        // Basic placeholder search: case-insensitive substring over the whole
-        // envelope's JSON (covers ID, spec title/body, labels). Real FTS is a
-        // separate story and deliberately not built here.
-        const needle = query.toLowerCase();
-        documents = documents.filter((doc) => JSON.stringify(doc).toLowerCase().includes(needle));
-      }
-      if (!bounded) documents = documents.slice(offset, limit === undefined ? undefined : offset + limit);
+      const kinds = kind ? undefined : store.db.prepare('SELECT DISTINCT kind FROM resources').all()
+        .map(row => String(row.kind)).filter(canReadKind);
+      const input = { kind, kinds, includeDeleted, query, limit, offset };
+      const documents = kind === 'Alert' || kind === 'AgentMessage'
+        ? store.listDocumentsByCreation(input).map(({ document }) => document)
+        : store.listDocuments(input);
       return asText({ count: documents.length, documents });
     },
   );

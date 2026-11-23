@@ -356,6 +356,72 @@ without an Apple Team ID is **not** enough to avoid repeat prompts: macOS may
 record a per-build code hash even when its designated requirement is stable.
 Identity lookup failures stop the build rather than silently changing signers.
 
+### Isolated large-store performance checks
+
+`scripts/benchmark-documents.mjs` uses production HTTP/MCP entry points in a
+disposable Docker backend with exactly 1 CPU, 1 GiB memory and no additional
+swap allowance. It creates a labelled private volume and dedicated network,
+verifies their identities and the effective limits, publishes an ephemeral
+loopback port (never 7717/7719), and removes only its own resources. It accepts
+no live target URL and never opens SQLite on the host.
+
+After compiling the control plane, use an existing local image and embedding
+helper/model installation:
+
+```bash
+node scripts/benchmark-documents.mjs --image <local-image> \
+  --backend-dir out/control-plane --realistic --scales 10000,30000 \
+  --samples 20 --first-samples 3 --output <report.json> \
+  --embedding-runtime <existing-wm-embeddings-executable> \
+  --embedding-model-directory <existing-minilm-1110a243-directory>
+node --test scripts/benchmark-documents.test.mjs
+```
+
+The seeded workload varies Markdown body lengths, vocabulary, references,
+Unicode, parent fanout and workstream memberships. It measures creates,
+reads/search/query, ready semantic search, Related and placement suggestions.
+First-request samples restart only the disposable backend: **not OS-cold**.
+Reports include sample counts, p50/p95, throughput, cgroup lifetime peak/cache,
+process RSS and OOM counters. Failed attempts remain in all-attempt latency
+and elapsed-time/throughput totals; successful latency and failed-request
+elapsed time are also reported separately. Bounded transport diagnostics
+capture cause/code/timing and HTTP lifecycle settings, never authorization
+headers or request bodies. Host model startup, CPU and sampled RSS are
+separate from the backend's limit. Indexing uses real production passages and
+a bounded exact-text vector cache; query inference does not use that cache.
+Indexing wall time is therefore not an uncached host-inference estimate.
+
+For attribution, `--compare-backend-dir <other-compiled-control-plane-directory>`
+compares compiled code on byte-identical copies of the stopped disposable
+store, including its IDs and vectors, in the same image. Separate labelled
+volumes prevent new indexes from contaminating the baseline. File hashes are
+verified inside each container before its SQLite owner opens the restored store;
+both variants must retain true index readiness. Temporary file
+copies are private, never opened with host SQLite, and removed after controls.
+The harness verifies code hashes and compares responses except timings. Keep
+code snapshots unchanged during a run. Small first-request sample sets and shared
+host scheduling are explicit limitations, not latency guarantees.
+
+Generic document reads apply readable-kind restrictions before pagination.
+Substring reads preserve case-insensitive matching over the exact envelope
+JSON, but sort row identities and hydrate only through the requested matched
+page. An absent or sparse substring can still require a full scan; a small
+result limit is not a bound on execution work. Embedding ranking reads the
+existing little-endian float32 vectors through typed views, with alignment and
+endianness handling; model, passage coverage and scoring semantics are unchanged.
+An expression index on passage topic ID and vector length lets coverage/byte
+statistics use a small index instead of repeatedly reading large vector and
+excerpt rows. It adds index storage/write maintenance, not cached counters or
+new document state; permission and current-version checks are unchanged.
+
+In the paired 30k-topic run, serial warm p50 improved from 656 to 69 ms for
+unscoped pages and 4,962 to 2,630 ms for semantic search. This was **not a clean
+acceptance pass**: concurrency-four Related/placement still had 4/3 failures,
+and semantic successful p95 was 37.6 seconds. Reliability remains tracked in
+[#122](https://github.com/mkubarycz/working-memory/issues/122); indexing scaling
+and unmeasured write overhead remain in
+[#123](https://github.com/mkubarycz/working-memory/issues/123).
+
 ## Desktop AI providers
 
 Settings > Models supports **OpenAI-compatible / Azure Foundry** and

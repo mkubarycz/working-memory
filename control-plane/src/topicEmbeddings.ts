@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { endianness } from 'node:os';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, EMBEDDING_TEXT_LIMIT, EMBEDDING_KINDS, semanticSearchSchema, matchConfidence,
@@ -9,6 +10,7 @@ import { hybridRanks, lexicalCandidates, lexicalConfidence, refreshDocumentSearc
 
 const indexedKinds = EMBEDDING_KINDS.map(kind => `'${kind}'`).join(',');
 const projectedBody = "CASE WHEN r.kind = 'Topic' THEN substr(s.body, length(s.title) + 2) ELSE s.body END";
+const littleEndian = endianness() === 'LE';
 
 export function ensureTopicEmbeddingSchema(db: DatabaseSync): void {
   db.exec(`
@@ -23,6 +25,8 @@ export function ensureTopicEmbeddingSchema(db: DatabaseSync): void {
       position INTEGER NOT NULL, excerpt TEXT NOT NULL, vector BLOB NOT NULL,
       PRIMARY KEY (topic_id, position)
     );
+    CREATE INDEX IF NOT EXISTS idx_topic_embedding_passage_bytes
+      ON topic_embedding_passages(topic_id, length(vector));
     CREATE TRIGGER IF NOT EXISTS topic_embedding_index_delete AFTER DELETE ON topic_embedding_index BEGIN
       DELETE FROM topic_embedding_passages WHERE topic_id = OLD.topic_id;
     END;
@@ -118,12 +122,16 @@ function bytes(vector: number[]): Buffer {
   return buffer;
 }
 
-export function vector(value: unknown): number[] {
+export function vector(value: unknown): Float32Array {
   if (!(value instanceof Uint8Array) || value.byteLength !== EMBEDDING_DIMENSIONS * 4) {
     throw new Error('Stored embedding is invalid. Rebuild the embedding index.');
   }
-  const buffer = Buffer.from(value);
-  return Array.from({ length: EMBEDDING_DIMENSIONS }, (_, index) => buffer.readFloatLE(index * 4));
+  if (!littleEndian) {
+    const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+    return Float32Array.from({ length: EMBEDDING_DIMENSIONS }, (_, index) => view.getFloat32(index * 4, true));
+  }
+  const aligned = value.byteOffset % 4 === 0 ? value : Uint8Array.from(value);
+  return new Float32Array(aligned.buffer, aligned.byteOffset, EMBEDDING_DIMENSIONS);
 }
 
 export function submitEmbeddings(db: DatabaseSync, raw: unknown): { accepted: boolean } {
@@ -158,7 +166,7 @@ export function submitEmbeddings(db: DatabaseSync, raw: unknown): { accepted: bo
   }
 }
 
-export function similarity(a: number[], b: number[]): number {
+export function similarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
   let sum = 0;
   for (let i = 0; i < EMBEDDING_DIMENSIONS; i++) sum += a[i] * b[i];
   return Math.max(-1, Math.min(1, sum));
