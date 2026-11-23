@@ -249,9 +249,14 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             await evaluate('window.__placementTest.pause = true; window.__placementTest.editable = false; window.__placementTest.fullView = true');
             await wait('window.__placementTest.calls === ' + (beforeTopicView + 1) + ' && window.__placementTest.releases.length === 1');
             assert.equal(await evaluate('document.querySelector("h1.title").textContent'), 'Saved topic');
-            assert.equal(await evaluate('getComputedStyle(document.querySelector(".feedback-button")).borderTopWidth'), '0px');
-            assert.equal(await evaluate('(() => { const reference=document.createElement("span"); reference.style.color="var(--desktop-chat-muted)"; document.body.append(reference); const matches=getComputedStyle(document.querySelector(".feedback-button")).color===getComputedStyle(reference).color; reference.remove(); return matches; })()'), true);
-            assert.equal(await evaluate('document.querySelector(".feedback-button").getBoundingClientRect().width'), 26);
+            const matchingAccentButtons = '(() => { const reference=getComputedStyle(document.querySelector(".feedback-button")); return [...document.querySelectorAll(".placement-action-button")].every(button => { const style=getComputedStyle(button); return ["color","borderTopWidth","borderTopColor","borderRadius","backgroundColor"].every(property=>style[property]===reference[property]); }); })()';
+            assert.equal(await evaluate('getComputedStyle(document.querySelector(".feedback-button")).borderTopWidth'), '1px');
+            assert.equal(await evaluate('(() => { const reference=document.createElement("span"); reference.style.color="var(--desktop-accent-strong)"; document.body.append(reference); const matches=getComputedStyle(document.querySelector(".feedback-button")).color===getComputedStyle(reference).color; reference.remove(); return matches; })()'), true);
+            assert.equal(await evaluate('document.querySelector(".feedback-button").getBoundingClientRect().width'), 30);
+            assert.equal(await evaluate(matchingAccentButtons), true);
+            await evaluate(button('Bug Report') + '.focus()');
+            assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Bug Report');
+            assert.equal(await evaluate('getComputedStyle(' + button('Apply') + ').opacity'), '0.48');
             await evaluate('document.querySelector(".feedback-button").focus()');
             assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), 'Send Feedback');
             await evaluate('document.querySelector(".feedback-button").click()');
@@ -288,6 +293,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             const beforeFamily = await evaluate('window.__placementTest.calls');
             await evaluate('window.__placementTest.autoLoad=false; window.__placementTest.parents=[{id:"existing",title:"Existing parent",agentMessageCount:0}]');
             await wait('document.querySelector(".family") && !document.querySelector(".topic-placement")');
+            assert.equal(await evaluate(matchingAccentButtons), true);
             assert.equal(await evaluate('window.__placementTest.calls'), beforeFamily);
             assert.equal(await evaluate('Math.abs(document.querySelector(".attrs").getBoundingClientRect().width - 2 * document.querySelector(".family").getBoundingClientRect().width) <= 2'), true);
             await evaluate('window.__placementTest.pause=true; ' + button('Suggest parent / workstream') + '.click()');
@@ -295,6 +301,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             assert.equal(await evaluate('document.querySelector(".family").innerText.includes("Existing parent")'), true);
             await evaluate('window.__placementTest.releases.shift()()');
             await wait('document.querySelector(".placement-dialog article")');
+            assert.equal(await evaluate(matchingAccentButtons), true);
             assert.equal(await evaluate('document.querySelectorAll(".topic-placement").length'), 1);
             assert.equal(await evaluate('window.__placementTest.calls'), beforeFamily + 1);
             assert.equal(await evaluate(button('Apply') + '.disabled'), true);

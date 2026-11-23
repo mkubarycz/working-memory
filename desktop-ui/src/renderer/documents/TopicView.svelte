@@ -359,7 +359,7 @@
       Family tree
     </h2>
     {#if !draft && topic.id}
-      <button class="suggest-placement" disabled={saveState !== 'idle' && saveState !== 'saved'}
+      <button class="suggest-placement placement-action-button" disabled={saveState !== 'idle' && saveState !== 'saved'}
         onclick={openPlacementPopup}>Suggest parent / workstream</button>
     {/if}
     </div>
@@ -852,7 +852,7 @@
   }
 
   .family-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .suggest-placement { margin-left: auto; padding: 3px 6px; font-size: 0.85em; }
+  .suggest-placement { margin-left: auto; }
   .placement-dialog {
     width: min(680px, 90vw); padding: 0; border: 1px solid var(--vscode-widget-border);
     border-radius: 6px; color: var(--vscode-foreground); background: var(--vscode-editor-background);

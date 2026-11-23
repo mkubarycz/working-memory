@@ -83,11 +83,11 @@
   <header class="placement-heading">
     <h2>Placement suggestion</h2>
     <div class="placement-actions">
-      <button disabled={loading || applying || !saved} onclick={suggest} title="Refresh placement suggestions">Refresh</button>
-      <button disabled={!selected || applying || !editable || !saved} onclick={apply}
+      <button class="placement-action-button" disabled={loading || applying || !saved} onclick={suggest} title="Refresh placement suggestions">Refresh</button>
+      <button class="placement-action-button" disabled={!selected || applying || !editable || !saved} onclick={apply}
         title="Add the suggested placement without removing existing relationships or moving descendants">{applying ? 'Applying…' : 'Apply'}</button>
-      <button onclick={report}>Bug Report</button>
-      {#if onClose}<button onclick={onClose} aria-label="Close placement suggestions"><span class="codicon codicon-close" aria-hidden="true"></span></button>{/if}
+      <button class="placement-action-button" onclick={report}>Bug Report</button>
+      {#if onClose}<button class="placement-action-button" onclick={onClose} aria-label="Close placement suggestions"><span class="codicon codicon-close" aria-hidden="true"></span></button>{/if}
     </div>
   </header>
   <div class="placement-content">
@@ -131,7 +131,6 @@
   .placement-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   h2 { margin: 0; font-size: 0.95em; }
   .placement-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
-  .placement-actions button { padding: 3px 6px; font-size: 0.85em; white-space: nowrap; }
   .placement-content { overflow: auto; min-width: 0; }
   article { margin-top: 8px; }
   p { margin: 8px 0 0; font-size: 0.9em; }

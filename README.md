@@ -713,6 +713,7 @@ topic/workstream links. For saved topics without a family tree, placement replac
 empty family-tree cell beside the status/attributes section in an equal-width split.
 Existing family trees have **Suggest parent / workstream**, opening the same placement
 component in a popup. **Refresh**, **Apply** and **Bug Report** sit at the top right;
+placement actions share the outlined pink-accent style of the header feedback button.
 the placement body contains only the proposed parent/workstream. Supporting evidence
 is shown in the bug-report dialog and included in the report explanation. Bug-report
 privacy/delivery details are collapsed rather than four default paragraphs.
