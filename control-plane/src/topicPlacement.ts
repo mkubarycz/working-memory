@@ -1,6 +1,6 @@
 import type { Store, DocumentEnvelope } from './store.js';
 import { EMBEDDING_MODEL, EMBEDDING_TEXT_LIMIT, matchConfidence } from './embeddingContract.js';
-import { refreshDocumentSearch } from './documentSearch.js';
+import { caseIdentifiers, literalDocumentMatches, refreshDocumentSearch } from './documentSearch.js';
 import { similarity, vector } from './topicEmbeddings.js';
 import { validateSpec } from './kinds/registry.js';
 import { stringArray } from './kinds/topic/topic.js';
@@ -47,9 +47,12 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
     WHERE r.kind IN ('Topic', 'Workstream') AND r.deleted_at IS NULL
     AND (i.topic_id IS NULL OR i.model_id != ? OR i.source_version != r.resource_version) LIMIT 1`).get(EMBEDDING_MODEL)) return result;
   refreshDocumentSearch(store.db);
+  const text = store.db.prepare('SELECT title || char(10) || body AS text FROM document_search WHERE id = ?').get(input.id);
+  if (!text) throw new Error('The topic search projection is unavailable. Retry after indexing.');
+  const literalMatches = literalDocumentMatches(store.db, caseIdentifiers(String(text.text)), ['Topic']);
   const source = vector(indexed.centroid);
   const forbidden = forbiddenParents(store, input.id);
-  const suggestions: Array<Omit<TopicPlacementSuggestion, 'confidence'> & { limited: boolean }> = [];
+  const suggestions: Array<Omit<TopicPlacementSuggestion, 'confidence'> & { limited: boolean; literalMatch: boolean }> = [];
   const liveWorkstreams = new Map(store.listDocuments({ kind: 'Workstream' })
     .filter(document => document.spec.status !== 'closed').map(document => [document.metadata.id, document]));
   for (const row of store.db.prepare(`SELECT r.id, r.kind, r.resource_version, i.centroid, i.limited,
@@ -63,9 +66,10 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
     const id = String(row.id);
     if (row.kind === 'Topic' && forbidden.has(id)) continue;
     const score = similarity(source, vector(row.centroid));
-    if (score < 0.35) continue;
+    const literalMatch = literalMatches.has(id);
+    if (score < 0.35 && !literalMatch) continue;
     if (row.kind === 'Topic' && row.status === 'closed') continue;
-    const excerpt = String(row.excerpt);
+    const excerpt = literalMatches.get(id) ?? String(row.excerpt);
     const limited = !!indexed.limited || !!row.limited;
     if (row.kind === 'Topic') {
       for (const workstreamId of stringArray(JSON.parse(String(row.workstreams)))) {
@@ -73,24 +77,25 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
         if (!workstream) continue;
         if (stringArray(topic.spec.parents).includes(id) && stringArray(topic.spec.workstreams).includes(workstreamId)) continue;
         suggestions.push({ parent: { id, title: String(row.title), resourceVersion: Number(row.resource_version) },
-          workstream: reference(workstream), similarity: score, limited, excerpt, evidence: 'parent-membership' });
+          workstream: reference(workstream), similarity: score, limited, literalMatch, excerpt, evidence: 'parent-membership' });
       }
     } else if (liveWorkstreams.has(id) && !stringArray(topic.spec.workstreams).includes(id)) {
       suggestions.push({ parent: null, workstream: reference(liveWorkstreams.get(id)!),
-        similarity: score, limited, excerpt, evidence: 'workstream-semantic' });
+        similarity: score, limited, literalMatch, excerpt, evidence: 'workstream-semantic' });
     }
   }
-  suggestions.sort((a, b) => Number(b.parent !== null) - Number(a.parent !== null)
+  suggestions.sort((a, b) => Number(b.literalMatch) - Number(a.literalMatch)
+    || Number(b.parent !== null) - Number(a.parent !== null)
     || b.similarity - a.similarity
     || (a.parent?.id ?? '').localeCompare(b.parent?.id ?? '') || a.workstream.id.localeCompare(b.workstream.id));
-  const selected = suggestions.slice(0, input.limit).map(({ limited, ...suggestion }) => {
+  const selected = suggestions.slice(0, input.limit).map(({ limited, literalMatch, ...suggestion }) => {
     let excerpt = suggestion.excerpt, passageScore = -1;
     const evidenceId = suggestion.parent?.id ?? suggestion.workstream.id;
     for (const passage of store.db.prepare('SELECT excerpt, vector FROM topic_embedding_passages WHERE topic_id = ?').iterate(evidenceId)) {
       const score = similarity(source, vector(passage.vector));
-      if (score > passageScore) { passageScore = score; excerpt = String(passage.excerpt); }
+      if (score > passageScore) { passageScore = score; if (!literalMatch) excerpt = String(passage.excerpt); }
     }
-    return { ...suggestion, excerpt, confidence: matchConfidence(passageScore, suggestion.similarity, false, limited) };
+    return { ...suggestion, excerpt, confidence: matchConfidence(passageScore, suggestion.similarity, literalMatch, limited) };
   });
   return { ...result, state: 'ready', suggestions: selected };
 }

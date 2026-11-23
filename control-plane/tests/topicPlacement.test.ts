@@ -6,18 +6,18 @@ import { nextEmbeddingWork, submitEmbeddings } from '../src/topicEmbeddings';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
 import { InstanceFeatureStore } from '../src/instanceFeatures';
 import { instanceToolPermissions } from '../src/instanceAuthorization';
-import { topicPlacementApplySchema } from '../src/topicPlacementContract';
+import { topicPlacementApplySchema, topicPlacementSchema } from '../src/topicPlacementContract';
 
 let store: Store;
 beforeAll(async () => { await loadKinds(); });
 afterEach(() => store?.close());
-function indexAll() {
+function indexAll(direction: (id: string) => number = () => 0) {
   for (;;) {
     const work = nextEmbeddingWork(store.db).work;
     if (!work) return;
     submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion,
       contentHash: work.contentHash, model: EMBEDDING_MODEL,
-      vectors: work.passages.map(() => Array.from({ length: 384 }, (_, i) => Number(i === 0))) });
+      vectors: work.passages.map(() => Array.from({ length: 384 }, (_, i) => Number(i === direction(work.id)))) });
   }
 }
 async function setup() {
@@ -35,6 +35,46 @@ const applyInput = (id: string, version: number, parent: { id: string; resourceV
     workstream: { id: workstream.id, resourceVersion: workstream.resourceVersion } });
 
 describe('topic placement production MCP/client entry points', () => {
+  it.each(['title', 'body'] as const)('prioritizes exact case identity from the source %s before cosine limits without bypassing parent eligibility', async field => {
+    const { server, client } = await setup();
+    try {
+      const caseId = '20261411192068475308';
+      const ws = store.createDocument({ kind: 'Workstream', spec: { title: 'Cases' } });
+      const closedWs = store.createDocument({ kind: 'Workstream', spec: { title: 'Old cases', status: 'closed' } });
+      const source = store.createDocument({ kind: 'Topic', spec: field === 'title'
+        ? { title: `Re: ${caseId}` } : { title: 'Follow-up', body: `${'A'.repeat(33000)}\nRe: ${caseId}` } });
+      const exact = store.createDocument({ kind: 'Topic', spec: { title: 'Case file',
+        body: `${'B'.repeat(33000)}\nCase ${caseId}`, workstreams: [ws.metadata.id] } });
+      const different = store.createDocument({ kind: 'Topic', spec: { title: 'jubberish topic 20261411192068475309',
+        body: 'The blue beetle sent a postcard to a marmalade star.', workstreams: [ws.metadata.id] } });
+      for (const title of [`X${caseId}`, `${caseId}0`, `${caseId}_notes`]) {
+        store.createDocument({ kind: 'Topic', spec: { title, workstreams: [ws.metadata.id] } });
+      }
+      const ineligible = [
+        store.createDocument({ kind: 'Topic', spec: { title: `Unplaced ${caseId}` } }),
+        store.createDocument({ kind: 'Topic', spec: { title: `Closed ${caseId}`, status: 'closed', workstreams: [ws.metadata.id] } }),
+        store.createDocument({ kind: 'Topic', spec: { title: `Old ${caseId}`, workstreams: [closedWs.metadata.id] } }),
+        store.createDocument({ kind: 'Topic', spec: { title: `Child ${caseId}`, parents: [source.metadata.id], workstreams: [ws.metadata.id] } }),
+      ];
+      store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+      indexAll(id => id === exact.metadata.id ? 1 : 0);
+      const response = await client.callTool('wm-topic-suggest-placement', { id: source.metadata.id, limit: 1 });
+      if (!response.ok) throw new Error(response.error);
+      const capped = topicPlacementSchema.parse(response.result);
+      expect(capped).toMatchObject({ state: 'ready', sourceVersion: source.metadata.resourceVersion,
+        suggestions: [{ parent: { id: exact.metadata.id, resourceVersion: exact.metadata.resourceVersion },
+          workstream: { id: ws.metadata.id }, similarity: 0,
+          confidence: { level: 'high', reason: expect.stringContaining('verifies the text match') },
+          excerpt: expect.stringContaining(caseId), evidence: 'parent-membership' }] });
+      const all = await client.topicSuggestPlacement(source.metadata.id);
+      expect(all.suggestions[0].parent?.id).toBe(exact.metadata.id);
+      expect(all.suggestions.some(s => s.parent?.id === different.metadata.id && s.similarity === 1)).toBe(true);
+      expect(all.suggestions.some(s => ineligible.some(doc => doc.metadata.id === s.parent?.id))).toBe(false);
+      expect(all.suggestions.slice(1).every(s => !s.confidence.reason.includes('verifies the text match'))).toBe(true);
+      expect(store.getDocument({ id: source.metadata.id })).toEqual(source);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it('transparently reports readiness, suggests parent/workstream pairs, and only applies explicitly', async () => {
     const { server, client } = await setup();
     try {

@@ -622,6 +622,10 @@ search, call `wm-semantic-search` with
 evidence confidence and source IDs. Use `wm-document-query` for literal filters,
 exact counts, workstream membership or full source reads. Conversational AI
 interpretation remains desktop-owned, not an extra MCP or HTTP search endpoint.
+Standalone 20-digit case numbers in search phrases are also verified against the
+full indexed text and ranked before semantic-only matches, even without
+`literalQuery`. They remain strings and do not match parts of longer identifiers.
+Their High confidence verifies the literal reference, not semantic similarity.
 
 Agents can call the read-only `wm-document-search` tool with
 `{ "queries": ["authentication", "sign in"], "kinds": ["Topic"], "limit": 20 }`.
@@ -676,6 +680,12 @@ closed or linked automatically. Self/descendant parents are excluded, and change
 source/candidate versions require fresh suggestions before applying. Disabled or
 pending embeddings are reported explicitly. **Bug Report** captures the placement
 snapshot so an incorrect recommendation can be reported without rerunning it.
+Placement also prioritizes exact standalone 20-digit case references shared with
+the saved topic's title or body, including text beyond embedding coverage.
+Similarity remains the actual cosine score; literal confidence is not approval
+to create a relationship. Parents must still be open, non-descendants and members
+of an open workstream; a matching unplaced topic remains searchable but is not
+an eligible parent/workstream pair.
 
 Enable local indexing with the **Embeddings** switch in **Settings > Features**.
 Monitor indexing history in **Observability** (enable **Observability Container App**

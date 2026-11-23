@@ -5,7 +5,7 @@ import {
   embeddingSubmitSchema, relatedTopicsInputSchema,
   type EmbeddingStats, type EmbeddingWork, type RelatedTopics,
 } from './embeddingContract.js';
-import { refreshDocumentSearch, type DocumentSearchHit } from './documentSearch.js';
+import { caseIdentifiers, literalDocumentMatches, refreshDocumentSearch, type DocumentSearchHit } from './documentSearch.js';
 
 const indexedKinds = EMBEDDING_KINDS.map(kind => `'${kind}'`).join(',');
 const projectedBody = "CASE WHEN r.kind = 'Topic' THEN substr(s.body, length(s.title) + 2) ELSE s.body END";
@@ -219,24 +219,10 @@ export function semanticSearch(
     WHERE r.deleted_at IS NULL AND r.kind IN (${kinds.map(() => '?').join(',')})
     AND i.model_id = ? AND i.source_version = r.resource_version AND i.limited = 1 LIMIT 1`).get(...kinds, EMBEDDING_MODEL);
   const candidates = new Map<string, DocumentSearchHit>();
-  const literalMatches = new Map<string, string>();
-  if (input.literalQuery) {
-    const phrase = input.literalQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const expression = new RegExp(`(?<![\\p{L}\\p{N}_])${phrase}(?![\\p{L}\\p{N}_])`, 'iu');
-    for (const row of db.prepare(`SELECT r.id, document_search.title || char(10) || document_search.body AS text FROM resources r
-      JOIN document_search ON document_search.rowid = r.rowid
-      WHERE r.deleted_at IS NULL AND r.kind IN (${kinds.map(() => '?').join(',')})
-      AND document_search MATCH ?`).iterate(...kinds, `"${input.literalQuery.replaceAll('"', '""')}"`)) {
-      const text = String(row.text);
-      const match = expression.exec(text);
-      if (!match) continue;
-      let start = Math.max(0, match.index - 160);
-      if (start && /[\uDC00-\uDFFF]/.test(text[start])) start--;
-      let end = Math.min(text.length, match.index + 1200);
-      if (end < text.length && /[\uDC00-\uDFFF]/.test(text[end])) end--;
-      literalMatches.set(String(row.id), Array.from(text.slice(start, end)).slice(0, 600).join(''));
-    }
-  }
+  const literalMatches = literalDocumentMatches(db, [
+    ...caseIdentifiers([input.literalQuery ?? '', ...input.queries].join('\n')),
+    ...(input.literalQuery ? [input.literalQuery] : []),
+  ], kinds);
   const documentScores = new Map<string, number[]>();
   for (const row of db.prepare(`SELECT r.id, r.kind, r.resource_version, s.title, p.excerpt, p.vector, i.centroid, i.limited FROM resources r
     JOIN topic_embedding_index i ON i.topic_id = r.id JOIN document_search s ON s.rowid = r.rowid

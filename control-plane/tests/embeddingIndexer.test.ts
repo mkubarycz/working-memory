@@ -12,6 +12,7 @@ import { EmbeddingIndexer } from '../src/embeddingIndexer';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
 import { LocalEmbeddings } from '../../desktop-ui/src/main/localEmbeddings';
 import { Observability } from '../src/observability';
+import { isDocumentSearchResult } from '../../shared/documentSearch';
 
 const stores: Store[] = [];
 const hosts: Server[] = [];
@@ -336,6 +337,51 @@ describe('container-owned embedding lifecycle', () => {
         }).toMatchObject({ phase: 'error', error: expect.stringContaining('Error details unavailable') });
       } finally { await client.dispose(); await server.close(); }
     });
+  it.each([false, true])('finds exact case references inside Re: search phrases ahead of different case numbers through authenticated MCP (literalQuery=%s)', async includeLiteralQuery => {
+    const { store } = fixture();
+    const caseId = '20261411192068475308';
+    const exact = store.createDocument({ kind: 'Topic', spec: { title: 'Case file',
+      body: `${'A'.repeat(33000)}\nCase ${caseId}` } });
+    const semantic = store.createDocument({ kind: 'Topic', spec: { title: 'jubberish topic 20261411192068475309',
+      body: 'The orange beetle wrote a postcard to Saturn.' } });
+    for (const title of [`X${caseId}`, `${caseId}0`, `${caseId}_notes`]) {
+      store.createDocument({ kind: 'Topic', spec: { title } });
+    }
+    for (;;) {
+      const work = nextEmbeddingWork(store.db).work;
+      if (!work) break;
+      submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+        model: EMBEDDING_MODEL, vectors: work.passages.map(() => Array.from({ length: 384 },
+          (_, index) => Number(index === (work.id === exact.metadata.id ? 1 : 0)))) });
+    }
+    const inference = await hostFixture();
+    new EmbeddingIndexer(store.db, () => true);
+    store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, ?)').run(JSON.stringify(inference.host));
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      expect(await client.callTool('wm-semantic-search', {
+        queries: [`Re: ${caseId}`], ...(includeLiteralQuery ? { literalQuery: `Re: ${caseId}` } : {}), kinds: ['Topic'], limit: 1,
+      })).toMatchObject({ ok: true, result: { count: 1, limited: true, results: [{
+        id: exact.metadata.id, resourceVersion: exact.metadata.resourceVersion, literalMatch: true,
+        similarity: 0, confidence: { level: 'high' }, excerpt: expect.stringContaining(caseId),
+      }] } });
+      const all = await client.callTool('wm-semantic-search', { queries: [`Re: ${caseId}`], kinds: ['Topic'], limit: 40 });
+      expect(all).toMatchObject({ ok: true, result: { results: [
+        expect.objectContaining({ id: exact.metadata.id, literalMatch: true }), ...Array(4).fill(expect.any(Object)),
+      ] } });
+      if (!all.ok) throw new Error(all.error);
+      if (!isDocumentSearchResult(all.result)) throw new Error('Invalid search result');
+      const results = all.result.results;
+      expect(results.filter(hit => hit.literalMatch).map(hit => hit.id)).toEqual([exact.metadata.id]);
+      expect(results.find(hit => hit.id === semantic.metadata.id)?.similarity).toBe(1);
+      expect(await client.callTool('wm-semantic-search', { queries: ['2026'], kinds: ['Topic'], limit: 40 }))
+        .toMatchObject({ ok: true, result: { count: 4 } });
+      expect(await client.callTool('wm-semantic-search', { queries: [`Re: X${caseId}`], kinds: ['Topic'], limit: 40 }))
+        .toMatchObject({ ok: true, result: { count: 4 } });
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it('allows cold inference beyond thirty seconds through authenticated MCP', async () => {
     const { store } = fixture();
     const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Nanites', body: 'Nanite model research.' } });

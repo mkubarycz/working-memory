@@ -208,6 +208,34 @@ export function refreshDocumentSearch(db: DatabaseSync): void {
   }
 }
 
+export function caseIdentifiers(text: string): string[] {
+  return [...new Set((text.match(/[\p{L}\p{N}_]+/gu) ?? []).filter(token => /^\d{20}$/.test(token)))];
+}
+
+export function literalDocumentMatches(db: DatabaseSync, phrases: string[], kinds: readonly string[]): Map<string, string> {
+  const matches = new Map<string, string>();
+  if (!kinds.length || !phrases.length) return matches;
+  refreshDocumentSearch(db);
+  for (const phrase of new Set(phrases)) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const expression = new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'iu');
+    for (const row of db.prepare(`SELECT r.id, document_search.title || char(10) || document_search.body AS text FROM resources r
+      JOIN document_search ON document_search.rowid = r.rowid
+      WHERE r.deleted_at IS NULL AND r.kind IN (${kinds.map(() => '?').join(',')})
+      AND document_search MATCH ?`).iterate(...kinds, `"${phrase.replaceAll('"', '""')}"`)) {
+      const text = String(row.text);
+      const match = expression.exec(text);
+      if (!match || matches.has(String(row.id))) continue;
+      let start = Math.max(0, match.index - 160);
+      if (start && /[\uDC00-\uDFFF]/.test(text[start])) start--;
+      let end = Math.min(text.length, match.index + 1200);
+      if (end < text.length && /[\uDC00-\uDFFF]/.test(text[end])) end--;
+      matches.set(String(row.id), Array.from(text.slice(start, end)).slice(0, 600).join(''));
+    }
+  }
+  return matches;
+}
+
 export function searchDocuments(
   db: DatabaseSync,
   input: DocumentSearchInput,

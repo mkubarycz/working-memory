@@ -510,7 +510,7 @@ export function createMcpServer(
   });
   server.registerTool('wm-topic-suggest-placement', {
     title: 'Topic: Suggest Placement',
-    description: 'Compare indexed topic embeddings with existing topics and workstreams. Suggest parent/workstream pairs without changing authored relationships. Disabled or pending indexing is explicit.',
+    description: 'Compare indexed topic embeddings with existing topics and workstreams, prioritizing exact shared 20-digit case references in eligible parent topics. Suggest parent/workstream pairs without changing authored relationships. Disabled or pending indexing is explicit.',
     inputSchema: topicPlacementInputSchema, annotations: { readOnlyHint: true },
   }, async input => {
     try {
@@ -533,7 +533,7 @@ export function createMcpServer(
   }, async () => embeddings ? asText(embeddings.readiness(canReadKind)) : asError('Background indexing is unavailable.'));
   server.registerTool('wm-semantic-search', {
     title: 'Search: Semantic Documents',
-    description: 'Find WM documents by meaning using local embeddings. Requires Embeddings enabled and complete indexing. Similarity is not confidence or proof of a relationship. Config and connected-app data are excluded.',
+    description: 'Find WM documents by meaning using local embeddings, prioritizing exact standalone 20-digit case references in queries. Requires Embeddings enabled and complete indexing. Similarity is not confidence or proof of a relationship. Config and connected-app data are excluded.',
     inputSchema: semanticSearchSchema, annotations: { readOnlyHint: true },
   }, async (input, ctx) => {
     if (!features.read().search) return asError('Search is turned off.');

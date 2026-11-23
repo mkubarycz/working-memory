@@ -57,6 +57,23 @@ describe('topic embeddings', () => {
     expect(relatedTopics(store.db, { id: exact.metadata.id }, true).results[0].confidence?.level).toBe('medium');
   });
 
+  it('keeps case-reference evidence inside kind permissions and current embedding versions', () => {
+    const store = fixture();
+    const query = 'Re: 20261411192068475308';
+    const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Case 20261411192068475308' } });
+    submit(store, 1);
+    expect(semanticSearch(store.db, { queries: [query] }, [unit()], () => false).results).toEqual([]);
+    expect(semanticSearch(store.db, { queries: [query], kinds: ['Workstream'] }, [unit()], () => true).results).toEqual([]);
+    expect(semanticSearch(store.db, { queries: [query] }, [unit()], () => true).results)
+      .toMatchObject([{ id: topic.metadata.id, literalMatch: true, similarity: 0 }]);
+    store.updateDocument({ id: topic.metadata.id, expectedResourceVersion: topic.metadata.resourceVersion,
+      spec: { ...topic.spec, body: 'Changed case notes' } });
+    expect(semanticSearch(store.db, { queries: [query] }, [unit()], () => true).results).toEqual([]);
+    submit(store, 1);
+    store.deleteDocument({ id: topic.metadata.id });
+    expect(semanticSearch(store.db, { queries: [query] }, [unit()], () => true).results).toEqual([]);
+  });
+
   it.each([
     [0.65, 0.5, false, false, 'high'],
     [0.65, 0.5, false, true, 'medium'],

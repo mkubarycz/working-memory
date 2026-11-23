@@ -204,6 +204,28 @@ describe('agentic document search', () => {
     expect(response.blocks?.[0]).toMatchObject({ type: 'list', items: [{ sourceId: hit.id }] });
   });
 
+  it('retains the exact case-number match when AI selects only a different case', async () => {
+    const caseId = '20261411192068475308';
+    const exact = { ...hit, title: 'Case file', excerpt: `Case ${caseId}`, literalMatch: true,
+      score: 0, similarity: 0, confidence: { level: 'high' as const, reason: 'Exact reference, not semantic similarity.' } };
+    const other = { ...hit, id: 'different-case', title: 'jubberish topic 20261411192068475309', score: 0.95, similarity: 0.95 };
+    const dependencies = { ...harness([answer([{ type: 'list', items: [{ sourceId: other.id, text: 'A related concept.' }] }])]),
+      onResults: vi.fn() };
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 2, results: [exact, other] } });
+    const response = await searchWithMatches(`Re: ${caseId}`, dependencies);
+    expect(dependencies.callTool).toHaveBeenCalledWith('wm-semantic-search', expect.objectContaining({
+      queries: [`Re: ${caseId}`], literalQuery: `Re: ${caseId}`,
+    }));
+    expect(dependencies.onResults).toHaveBeenCalledWith(expect.objectContaining({ results: [
+      expect.objectContaining({ id: exact.id, literalMatch: true, similarity: 0 }),
+      expect.objectContaining({ id: other.id }),
+    ] }));
+    expect(response.results.map(result => result.id)).toEqual([exact.id, other.id]);
+    expect(response.results[0]).toMatchObject({ resourceVersion: exact.resourceVersion, score: 0, similarity: 0,
+      confidence: exact.confidence, excerpt: exact.excerpt });
+    expect(response.blocks?.[0]).toMatchObject({ type: 'list', items: [{ sourceId: exact.id }] });
+  });
+
   it('does not ask the model when initial retrieval fails or the request is cancelled', async () => {
     const dependencies = harness([]);
     dependencies.callTool.mockRejectedValue(new Error('Backend unavailable'));
