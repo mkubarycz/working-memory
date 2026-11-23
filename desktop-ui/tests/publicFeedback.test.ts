@@ -78,6 +78,8 @@ describe('public Feedback delivery', () => {
   });
 
   it('reports queued rather than imported, retains retry identity, and never writes a fabricated receipt', async () => {
+    const started = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(started);
     const recordReceipt = vi.fn();
     const sender = new FeedbackSender(async () => ({
       topic: { title: 'Test report', body: 'Harmless test evidence' }, sourceUrl: 'http://127.0.0.1/mcp',
@@ -90,6 +92,7 @@ describe('public Feedback delivery', () => {
       expect(preview.servers).toMatchObject([{ delivery: 'public-inbox' }]);
       expect(fetcher).not.toHaveBeenCalled();
       await expect(sender.send('topic', requestId, preview.servers[0].id)).rejects.toThrow('could not be confirmed');
+      clock.mockReturnValue(started + 6 * 60_000);
       const result = await sender.send('topic', requestId, preview.servers[0].id);
       expect(result).toMatchObject({ status: 'queued', requestId });
       expect(result).not.toHaveProperty('receipt');
@@ -99,7 +102,24 @@ describe('public Feedback delivery', () => {
       expect(fetcher.mock.calls[0][1].body).toBe(fetcher.mock.calls[1][1].body);
       expect(fetcher.mock.calls[0][1].headers).toEqual(fetcher.mock.calls[1][1].headers);
       expect(recordReceipt).not.toHaveBeenCalled();
-    } finally { vi.unstubAllGlobals(); }
+    } finally { clock.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
+  it('still expires a prepared public snapshot when no upload was attempted', async () => {
+    const started = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(started);
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const sender = new FeedbackSender(async () => ({
+      topic: { title: 'Unsent report', body: 'Captured evidence' }, sourceUrl: 'http://127.0.0.1/mcp',
+      context: { desktop: { version: 'fixture', build: 'fixture' }, backend: { version: 'fixture' } }, recordReceipt: vi.fn(),
+    }), async () => configuration);
+    try {
+      await sender.prepare('topic', requestId);
+      clock.mockReturnValue(started + 6 * 60_000);
+      await expect(sender.send('topic', requestId)).rejects.toThrow('Feedback snapshot expired');
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); vi.unstubAllGlobals(); }
   });
 
   it('accepts only confirmed uploads or exact Azure duplicate conditions', async () => {

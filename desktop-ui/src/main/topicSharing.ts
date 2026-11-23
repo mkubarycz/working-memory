@@ -164,7 +164,7 @@ export class FeedbackSender {
     try { snapshot = await this.pending; }
     catch (error) { this.pending = undefined; throw error; }
     if (snapshot.id !== id) throw new Error('This feedback request belongs to a different topic.');
-    if (!snapshot.receipt && !snapshot.queued && Date.now() - snapshot.createdAt > 5 * 60_000) throw new Error('Feedback snapshot expired. Close this dialog and try again.');
+    if (!snapshot.receipt && !snapshot.queued && !snapshot.publicPayload && Date.now() - snapshot.createdAt > 5 * 60_000) throw new Error('Feedback snapshot expired. Close this dialog and try again.');
     return snapshot;
   }
 

@@ -321,29 +321,37 @@ export function lexicalCandidates(
     if (!source) throw new Error('The document search projection is unavailable. Retry after indexing.');
     const weights = new Map<string, { text: string; weight: number }>();
     const total = Number(db.prepare('SELECT count(*) AS count FROM document_search').get()?.count);
-    const frequency = db.prepare(`SELECT min(doc) AS frequency FROM document_search_vocabulary
-      WHERE term >= ? AND term < ? AND doc > 1`);
-    const exactFrequency = db.prepare('SELECT doc FROM document_search_vocabulary WHERE term = ?');
+    const normalize = (part: string) => part.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
     const prefixes = new Map<string, number | null>();
     const words = new Map<string, number | null>();
+    for (const column of ['title', 'body'] as const) {
+      for (const atom of String(source[column]).matchAll(atomPattern)) {
+        for (const part of atom[0].match(/[\p{L}\p{N}\p{M}]+/gu) ?? []) words.set(normalize(part), null);
+      }
+    }
+    for (const row of db.prepare(`SELECT term, doc FROM json_each(?) requested
+      CROSS JOIN document_search_vocabulary ON term = requested.value`).all(JSON.stringify([...words.keys()]))) {
+      words.set(String(row.term), Number(row.doc));
+    }
+    for (const [word, exact] of words) {
+      if (exact !== null) continue;
+      const characters = Array.from(word);
+      prefixes.set(characters.slice(0, 3).join(''), null);
+      prefixes.set(characters[0], null);
+    }
+    for (const row of db.prepare(`SELECT value AS prefix,
+      (SELECT min(doc) FROM document_search_vocabulary
+        WHERE term >= requested.value AND term < requested.value || char(65535) AND doc > 1) AS frequency
+      FROM json_each(?) requested`).all(JSON.stringify([...prefixes.keys()]))) {
+      prefixes.set(String(row.prefix), row.frequency == null ? null : Number(row.frequency));
+    }
     const rarity = (part: string) => {
       // Stem-prefix frequency only proposes anchors; authored text establishes identity below.
-      const normalized = part.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+      const normalized = normalize(part);
       const prefix = Array.from(normalized).slice(0, 3).join('');
-      const lookup = (key: string) => {
-        if (!prefixes.has(key)) {
-          const value = frequency.get(key, `${key}\uffff`)?.frequency;
-          prefixes.set(key, value == null ? null : Number(value));
-        }
-        return prefixes.get(key);
-      };
-      if (!words.has(normalized)) {
-        const value = exactFrequency.get(normalized)?.doc;
-        words.set(normalized, value == null ? null : Number(value));
-      }
       const exact = words.get(normalized);
       if (exact === 1) return -Infinity;
-      const estimate = exact ?? lookup(prefix) ?? lookup(Array.from(prefix)[0]) ?? total;
+      const estimate = exact ?? prefixes.get(prefix) ?? prefixes.get(Array.from(prefix)[0]) ?? total;
       return Math.log((total + 1) / (estimate + 0.5));
     };
     for (const column of ['title', 'body'] as const) {

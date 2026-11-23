@@ -64,7 +64,7 @@ describe('topic embeddings', () => {
     const targetWs = store.createDocument({ kind: 'Workstream', spec: { title: 'test' } });
     const source = store.createDocument({ kind: 'Topic', spec: {
       title: field === 'title' ? `Re: ${caseId}` : 'Email follow-up',
-      body: `${field === 'body' ? 'A'.repeat(33000) : ''}\n${caseId} This is an email aoub tthis ticket number`,
+      body: `${field === 'body' ? Array.from({ length: 4000 }, (_, index) => `distinctword${index}`).join(' ') : ''}\n${caseId} This is an email aoub tthis ticket number`,
       workstreams: [sourceWs.metadata.id],
     } });
     const target = store.createDocument({ kind: 'Topic', spec: {
@@ -88,6 +88,17 @@ describe('topic embeddings', () => {
         submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
           model: EMBEDDING_MODEL, vectors: work.passages.map(() => unit(work.id === target.metadata.id ? 1 : 0)) });
       }
+      const vocabularyCalls: (() => number)[] = [];
+      const prepare = store.db.prepare.bind(store.db);
+      const preparation = vi.spyOn(store.db, 'prepare').mockImplementation(sql => {
+        const statement = prepare(sql);
+        if (sql.includes('document_search_vocabulary')) {
+          const get = vi.spyOn(statement, 'get');
+          const all = vi.spyOn(statement, 'all');
+          vocabularyCalls.push(() => get.mock.calls.length + all.mock.calls.length);
+        }
+        return statement;
+      });
       const placement = await client.topicSuggestPlacement(source.metadata.id);
       expect(topicPlacementSchema.parse(placement).suggestions[0]).toMatchObject({
         parent: { id: target.metadata.id }, workstream: { id: targetWs.metadata.id }, similarity: 0,
@@ -100,6 +111,9 @@ describe('topic embeddings', () => {
         alreadyLinked: false, excerpt: expect.stringContaining(caseId),
         confidence: { level: 'high', reason: expect.stringContaining('verifies the text match') },
       }] });
+      expect(vocabularyCalls.reduce((sum, calls) => sum + calls(), 0)).toBeGreaterThan(0);
+      expect(vocabularyCalls.reduce((sum, calls) => sum + calls(), 0)).toBeLessThanOrEqual(4);
+      preparation.mockRestore();
       expect(relatedTopics(store.db, { id: source.metadata.id, limit: 10 }, true).results[0].id).toBe(target.metadata.id);
       expect(relatedTopics(store.db, { id: source.metadata.id, workstream: targetWs.metadata.id, limit: 1 }, true).results[0].id)
         .toBe(target.metadata.id);

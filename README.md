@@ -1762,6 +1762,9 @@ not overwritten. Keep the dialog open when retrying an uncertain delivery:
 retries use the same request ID and do not create duplicate topics. If delivery
 succeeds but the note cannot save, the error says so; clicking **Send** again
 retries the note without reposting the feedback.
+An uncertain public-inbox upload retains its encrypted bytes and request ID for
+retry while the dialog remains open, including after five minutes. Prepared
+snapshots with no upload attempt still expire after five minutes.
 The incoming copy includes a **Feedback environment** section with the desktop
 version, exact build timestamp, and version reported by the selected backend's
 `wm-ping` response, not the bundled image or update-channel target. These details
