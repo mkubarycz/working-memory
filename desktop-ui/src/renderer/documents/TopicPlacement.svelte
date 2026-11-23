@@ -83,11 +83,18 @@
   <header class="placement-heading">
     <h2>Placement suggestion</h2>
     <div class="placement-actions">
-      <button class="placement-action-button" disabled={loading || applying || !saved} onclick={suggest} title="Refresh placement suggestions">Refresh</button>
+      <button class="placement-action-button" aria-label="Refresh" disabled={loading || applying || !saved} onclick={suggest} title="Refresh placement suggestions">
+        <span class="codicon codicon-refresh" class:codicon-modifier-spin={loading} aria-hidden="true"></span>
+      </button>
       <button class="placement-action-button" disabled={!selected || applying || !editable || !saved} onclick={apply}
-        title="Add the suggested placement without removing existing relationships or moving descendants">{applying ? 'Applying…' : 'Apply'}</button>
-      <button class="placement-action-button" onclick={report}>Bug Report</button>
-      {#if onClose}<button class="placement-action-button" onclick={onClose} aria-label="Close placement suggestions"><span class="codicon codicon-close" aria-hidden="true"></span></button>{/if}
+        aria-label={applying ? 'Applying placement' : 'Apply'}
+        title="Apply the suggested placement without removing existing relationships or moving descendants">
+        <span class="codicon codicon-check" aria-hidden="true"></span>
+      </button>
+      <button class="placement-action-button" onclick={report} aria-label="Bug Report" title="Bug Report">
+        <span class="codicon codicon-bug" aria-hidden="true"></span>
+      </button>
+      {#if onClose}<button class="placement-action-button" onclick={onClose} aria-label="Close placement suggestions" title="Close placement suggestions"><span class="codicon codicon-close" aria-hidden="true"></span></button>{/if}
     </div>
   </header>
   <div class="placement-content">

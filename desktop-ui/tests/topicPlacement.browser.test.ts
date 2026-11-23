@@ -137,7 +137,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             throw new Error('Timed out: ' + text + '\\n' + await evaluate('document.body.innerText')
               + '\\n' + await evaluate('JSON.stringify(performance.getEntriesByType("resource").filter(e=>e.responseStatus>=400).map(e=>({name:e.name,status:e.responseStatus})))'));
           };
-          const button = label => '[...document.querySelectorAll("button")].find(b => b.textContent.trim() === ' + JSON.stringify(label) + ')';
+          const button = label => '[...document.querySelectorAll("button")].find(b => (b.getAttribute("aria-label") || b.textContent.trim()) === ' + JSON.stringify(label) + ')';
           try {
             await window.loadURL('http://127.0.0.1:${address.port}/placement-test');
             await wait('window.__placementTest?.calls === 1 && document.querySelector(".topic-placement")');
@@ -153,7 +153,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             assert.equal(await evaluate('!!document.querySelector(".ws-chip .codicon-briefcase")'), true);
             assert.equal(await evaluate('document.querySelector("article details")'), null);
             assert.equal(await evaluate('document.body.innerText.includes("Matched authored content")'), false);
-            assert.deepEqual(await evaluate('[...document.querySelectorAll(".placement-actions button")].map(b=>b.textContent.trim())'), ['Refresh', 'Apply', 'Bug Report']);
+            const iconOnlyActions = '(() => { const icons={"Refresh":"refresh","Apply":"check","Bug Report":"bug","Suggest parent / workstream":"type-hierarchy","Close placement suggestions":"close"}; return [...document.querySelectorAll(".placement-action-button")].every(button => { const icon=button.querySelector(".codicon"); return button.textContent.trim()==="" && button.title!=="" && icon?.classList.contains("codicon-"+icons[button.getAttribute("aria-label")]) && icon.getAttribute("aria-hidden")==="true" && button.getBoundingClientRect().width===30 && button.getBoundingClientRect().height===30 && getComputedStyle(icon,"::before").content!=="none"; }); })()';
+            assert.deepEqual(await evaluate('[...document.querySelectorAll(".placement-actions button")].map(b=>b.getAttribute("aria-label"))'), ['Refresh', 'Apply', 'Bug Report']);
+            assert.equal(await evaluate(iconOnlyActions), true);
             assert.equal(await evaluate('document.querySelector(".placement-actions").getBoundingClientRect().left > document.querySelector(".placement-heading h2").getBoundingClientRect().left'), true);
             await evaluate('document.querySelector(".topic-link").click(); document.querySelector(".ws-chip").click()');
             assert.deepEqual(await evaluate('[...window.__placementTest.opened]'), ['parent', 'ws']);
@@ -255,7 +257,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             assert.equal(await evaluate('document.querySelector(".feedback-button").getBoundingClientRect().width'), 30);
             assert.equal(await evaluate(matchingAccentButtons), true);
             await evaluate(button('Bug Report') + '.focus()');
-            assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Bug Report');
+            assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), 'Bug Report');
             assert.equal(await evaluate('getComputedStyle(' + button('Apply') + ').opacity'), '0.48');
             await evaluate('document.querySelector(".feedback-button").focus()');
             assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), 'Send Feedback');
@@ -294,6 +296,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             await evaluate('window.__placementTest.autoLoad=false; window.__placementTest.parents=[{id:"existing",title:"Existing parent",agentMessageCount:0}]');
             await wait('document.querySelector(".family") && !document.querySelector(".topic-placement")');
             assert.equal(await evaluate(matchingAccentButtons), true);
+            assert.equal(await evaluate(iconOnlyActions), true);
             assert.equal(await evaluate('window.__placementTest.calls'), beforeFamily);
             assert.equal(await evaluate('Math.abs(document.querySelector(".attrs").getBoundingClientRect().width - 2 * document.querySelector(".family").getBoundingClientRect().width) <= 2'), true);
             await evaluate('window.__placementTest.pause=true; ' + button('Suggest parent / workstream') + '.click()');
@@ -302,6 +305,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             await evaluate('window.__placementTest.releases.shift()()');
             await wait('document.querySelector(".placement-dialog article")');
             assert.equal(await evaluate(matchingAccentButtons), true);
+            assert.equal(await evaluate(iconOnlyActions), true);
             assert.equal(await evaluate('document.querySelectorAll(".topic-placement").length'), 1);
             assert.equal(await evaluate('window.__placementTest.calls'), beforeFamily + 1);
             assert.equal(await evaluate(button('Apply') + '.disabled'), true);

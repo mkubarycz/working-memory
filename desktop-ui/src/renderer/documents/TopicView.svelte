@@ -360,7 +360,9 @@
     </h2>
     {#if !draft && topic.id}
       <button class="suggest-placement placement-action-button" disabled={saveState !== 'idle' && saveState !== 'saved'}
-        onclick={openPlacementPopup}>Suggest parent / workstream</button>
+        aria-label="Suggest parent / workstream" title="Suggest parent / workstream" onclick={openPlacementPopup}>
+        <span class="codicon codicon-type-hierarchy" aria-hidden="true"></span>
+      </button>
     {/if}
     </div>
     <div class="family-scroll" bind:this={scrollEl} onscroll={updateScrollCues}>
