@@ -92,6 +92,22 @@ describe('DesktopCredentialVault', () => {
     expect(native.decryptString).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses to write credentials with Linux basic_text storage', () => {
+    const native = { ...nativeStorage(), getSelectedStorageBackend: () => 'basic_text' };
+    const vault = new DesktopCredentialVault(native, 'linux', temporaryKeyFile());
+    expect(vault.mode()).toBe('unavailable');
+    expect(() => vault.store({ endpoint: '', model: '' }, 'secret')).toThrow('OS-backed credential storage is unavailable');
+    expect(native.encryptString).not.toHaveBeenCalled();
+  });
+
+  it('stores credentials with a supported Linux keyring', () => {
+    const native = { ...nativeStorage(), getSelectedStorageBackend: () => 'gnome_libsecret' };
+    const vault = new DesktopCredentialVault(native, 'linux', temporaryKeyFile());
+    const stored = vault.store({ endpoint: '', model: '' }, 'secret');
+    expect(vault.mode()).toBe('secure');
+    expect(vault.decrypt(stored)).toBe('secret');
+  });
+
   it('rejects modified local ciphertext', () => {
     const vault = new DesktopCredentialVault(nativeStorage(), 'darwin', temporaryKeyFile());
     const config = vault.store({ endpoint: 'https://example.test', model: 'test' }, 'secret');

@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { TopicVM } from './documents/types';
-  import type { FeedbackContext, FeedbackServer } from '../shared/contracts';
+  import type { FeedbackContext, FeedbackPreparation, FeedbackServer } from '../shared/contracts';
 
-  let { topic, beforeShare, onClose, preview, sessionOnly = false, requestId = crypto.randomUUID() }: {
+  let { topic, beforeShare, onClose, preview, sessionOnly = false, requestId = crypto.randomUUID(),
+    preparation = null, preferredServerId = '' }: {
     topic: Pick<TopicVM, 'id' | 'title'>; beforeShare: () => Promise<void>; onClose: () => void; preview?: string;
     sessionOnly?: boolean;
     requestId?: string;
+    preparation?: FeedbackPreparation | null;
+    preferredServerId?: string;
   } = $props();
   let dialog: HTMLDialogElement;
   let servers = $state<FeedbackServer[]>([]);
@@ -22,7 +25,12 @@
 
   onMount(() => {
     dialog.showModal();
-    void prepare();
+    if (preparation) {
+      servers = preparation.servers;
+      context = preparation.context;
+      selectedServerId = servers.some(server => server.id === preferredServerId) ? preferredServerId
+        : servers.length === 1 ? servers[0].id : '';
+    } else void prepare();
   });
 
   async function prepare(): Promise<void> {

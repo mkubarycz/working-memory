@@ -296,7 +296,7 @@ function literalEvidence(text: string, patterns: ReturnType<typeof literalPatter
   if (first < 0) return;
   let start = Math.max(0, first - 160);
   if (start && /[\uDC00-\uDFFF]/.test(text[start])) start--;
-  return { terms, excerpt: Array.from(text.slice(start)).slice(0, 600).join('') };
+  return { terms, excerpt: Array.from(text.slice(start, start + 1200)).slice(0, 600).join('') };
 }
 
 export function lexicalCandidates(

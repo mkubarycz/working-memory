@@ -7,11 +7,12 @@
   import { placementApplyInput, placementBugContext } from './topicPlacementActions';
 
   let { id, title, resourceVersion, editable, autoLoad = false, environment = '', saved = true,
-    onOpenTopic, onOpenWorkstream, onApplied, onClose }: {
+    onOpenTopic, onOpenWorkstream, onBeforeApply, onApplied, onClose }: {
     id: string; title: string; resourceVersion: number; editable: boolean;
     autoLoad?: boolean; environment?: string; saved?: boolean;
     onOpenTopic: (id: string) => void; onOpenWorkstream: (id: string) => void;
     onApplied?: () => Promise<void>;
+    onBeforeApply?: (id: string) => void;
     onClose?: () => void;
   } = $props();
   let result = $state<TopicPlacement | null>(null);
@@ -65,6 +66,7 @@
     const input = placementApplyInput(topicId, result, selected);
     applying = true; error = '';
     try {
+      onBeforeApply?.(topicId);
       await window.workingMemory.applyTopicPlacement(input);
       if (current !== generation || id !== topicId || resourceVersion !== version || environment !== sourceEnvironment) return;
       result = null;

@@ -96,6 +96,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           if (state.failReport) throw new Error('Report storage unavailable');
           return { id: 'feature-report', title: 'Feature settings bug', body: 'podman info timeout with command timings' };
         },
+        async getPublicFeedbackSettings() { return { enabled: false, destination: null }; },
         async prepareFeedback() { return { servers: [{ id: 'feedback', name: 'Feedback', address: '127.0.0.1', port: 7720 }],
           context: { desktop: { version: 'fixture', build: 'fixture' }, backend: { version: 'fixture' } } }; },
         async sendFeedback(...args) { state.sends.push(args); return { status: 'sent', receipt: { title: 'Feature report', duplicate: false } }; },

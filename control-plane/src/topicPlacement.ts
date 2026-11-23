@@ -11,7 +11,9 @@ function forbiddenParents(store: Store, id: string): Set<string> {
   for (const row of store.db.prepare(`SELECT r.id, p.value AS parent FROM resources r,
     json_each(r.spec, '$.parents') p WHERE r.kind = 'Topic' AND r.deleted_at IS NULL`).iterate()) {
     const parent = String(row.parent);
-    children.set(parent, [...children.get(parent) ?? [], String(row.id)]);
+    const siblings = children.get(parent);
+    if (siblings) siblings.push(String(row.id));
+    else children.set(parent, [String(row.id)]);
   }
   const forbidden = new Set<string>();
   const pending = [id];

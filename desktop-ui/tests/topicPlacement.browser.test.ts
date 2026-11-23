@@ -63,6 +63,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           state.reports.push(input);
           return { id: 'report', title: 'Placement bug report', body: 'Supporting evidence: ' + input.search.supportingEvidence };
         },
+        async getPublicFeedbackSettings() { return { enabled: false, destination: null }; },
         async prepareFeedback() { return { servers: [{ id: 'feedback', name: 'Feedback', address: '127.0.0.1', port: 7720 }] }; },
         async sendFeedback() { return { status: 'sent', receipt: { title: 'Placement bug report', statusUrl: 'https://localhost/report' } }; }
       };

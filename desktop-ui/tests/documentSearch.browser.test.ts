@@ -54,6 +54,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             if(test.failReport)throw new Error('Report storage unavailable');
             return {id:'search-report',title:'Search bug: wrong confidence',body:'Captured search and result diagnostics'};
           },
+          getPublicFeedbackSettings:async()=>({enabled:false,destination:null}),
           prepareFeedback:async()=>({servers:[{id:'local',name:'Feedback',address:'127.0.0.1',port:7720}],
             context:{desktop:{version:'fixture',build:'fixture'},backend:{version:'fixture'}}}),
           sendFeedback:async(...args)=>{test.sends.push(args);return {status:'sent',receipt:{title:'Search report',duplicate:false}};},

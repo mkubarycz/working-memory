@@ -40,3 +40,26 @@ Return:
 3. A short chat digest: key decisions, failed approaches/retries, useful findings,
    and possible workflow improvements. Include measured time/usage only if
    available. The Commander owns the retrospective and instruction changes.
+
+## Flow and handoff discipline
+
+- Use one fresh topic chat and clean assigned baseline per independent issue.
+  Start with a readable Situation Report of at most five bullets, then work.
+  Distinguish reported, reproduced, implemented, integrated, installed and
+  running; a successful send is not confirmation that the Commander read it.
+- Include the topic ID and assignment revision in control messages. Send only
+  changed requirements, blockers requiring action, and one final handoff.
+  Do not acknowledge informational delivery notices or repeatedly re-export
+  completed work. After returning ownership, remain read-only until explicitly
+  reassigned; delayed messages for an older revision do not reopen an assignment.
+- A final handoff names the exact base commit, changed files, validation and
+  immutable patch/commit reference. Do not overwrite an earlier delivered patch;
+  label corrections with a new revision and say which one they supersede.
+- When a screenshot is supplied, distinguish the reference appearance from the
+  controls to change. Forward the original attachment and exact user wording.
+  Confirm consequential ambiguity once before editing. Test the requested
+  visible result (for example icon-only glyphs, not just matching colors).
+- Keep user replies concise and naturally spaced. Do not turn the chat into a
+  stream of compressed technical digests, ownership disclaimers or repeated
+  instructions to restart. Report one actionable blocker rather than narrating
+  routine progress; the Commander handles shared installation and safe restart.

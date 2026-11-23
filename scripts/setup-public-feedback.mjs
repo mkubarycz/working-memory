@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const options = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -18,8 +19,25 @@ if (!resourceGroup || !/^[a-z0-9]{3,24}$/.test(account ?? '') || !output) {
   throw new Error('A resource group, valid Azure storage account name and private sender-output path are required.');
 }
 const destination = resolve(output);
-const repository = resolve(new URL('..', import.meta.url).pathname);
-if (destination === repository || destination.startsWith(`${repository}/`)) throw new Error('Keep sender credentials outside the repository.');
+const repository = fileURLToPath(new URL('..', import.meta.url));
+function canonicalOutput(path) {
+  let ancestor = path;
+  for (;;) {
+    try {
+      return resolve(realpathSync(ancestor), relative(ancestor, path));
+    } catch (error) {
+      if (error?.code !== 'ENOENT' || dirname(ancestor) === ancestor) throw error;
+      ancestor = dirname(ancestor);
+    }
+  }
+}
+function insideRepository(path) {
+  const fromRepository = relative(repository, path);
+  return !fromRepository || !isAbsolute(fromRepository) && fromRepository !== '..' && !fromRepository.startsWith(`..${sep}`);
+}
+if (insideRepository(destination) || insideRepository(canonicalOutput(destination))) {
+  throw new Error('Keep sender credentials outside the repository.');
+}
 
 function azure(args, format = 'json') {
   try {

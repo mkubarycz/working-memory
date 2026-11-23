@@ -36,6 +36,7 @@
     activeDrag?: ActiveResourceDrag | null;
     onAddChild?: (parent: TopicLinkReference, workstream: TopicLinkReference) => Promise<void>;
     onTopicAdded?: () => Promise<void>;
+    onBeforePlacementApply?: (id: string) => void;
     newWorkstreamTitle?: string;
     onNewWorkstreamTitleChange?: (title: string) => void;
   }
@@ -62,6 +63,7 @@
     activeDrag = $bindable(null),
     onAddChild,
     onTopicAdded,
+    onBeforePlacementApply,
     newWorkstreamTitle,
     onNewWorkstreamTitleChange,
   }: Props = $props();
@@ -350,7 +352,8 @@
     <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
       autoLoad={placementAutoLoad} environment={placementEnvironment}
       saved={saveState === 'idle' || saveState === 'saved'}
-      editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream} onApplied={onTopicAdded} />
+      editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream}
+      onBeforeApply={onBeforePlacementApply} onApplied={onTopicAdded} />
   {:else}
   <aside class="family" aria-label="Family tree">
     <div class="family-heading">
@@ -420,6 +423,7 @@
     <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
       autoLoad environment={placementEnvironment} saved={saveState === 'idle' || saveState === 'saved'}
       editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream}
+      onBeforeApply={onBeforePlacementApply}
       onClose={() => { placementPopup = false; }}
       onApplied={async () => { await onTopicAdded?.(); placementPopup = false; }} />
   </dialog>

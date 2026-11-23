@@ -1,5 +1,5 @@
 import { constants, createDecipheriv, generateKeyPairSync, privateDecrypt } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -60,6 +60,20 @@ describe('public Feedback delivery', () => {
       expect(await store.read()).toEqual(configuration);
       await store.clear();
       expect(await store.read()).toBeUndefined();
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('does not save public upload credentials with Linux basic_text storage', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wm-insecure-feedback-'));
+    try {
+      const encryptString = vi.fn((value: string) => Buffer.from(value));
+      const vault = new DesktopCredentialVault({ isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => 'basic_text', encryptString, decryptString: value => value.toString() },
+      'linux', join(directory, 'vault.key'));
+      const file = join(directory, 'public-feedback.json');
+      await expect(new PublicFeedbackConfigStore(file, vault).save(configuration)).rejects.toThrow('OS-backed credential storage');
+      expect(encryptString).not.toHaveBeenCalled();
+      await expect(access(file)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 

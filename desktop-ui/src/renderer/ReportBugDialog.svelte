@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { ChatBugReportDraft, FeedbackSendResult } from '../shared/contracts';
+  import type { ChatBugReportDraft, FeedbackPreparation, FeedbackSendResult, PublicFeedbackSettings } from '../shared/contracts';
   import ShareTopicDialog from './ShareTopicDialog.svelte';
 
   let { capture, evidenceDescription, supportingEvidence, onClose, sessionOnly = false }: {
@@ -17,14 +17,28 @@
   let report = $state<ChatBugReportDraft | null>(null);
   let result = $state<Exclude<FeedbackSendResult, { status: 'choose' }> | null>(null);
   let chooseServer = $state(false);
-  let preparedServerId = '';
+  let preparedServerId = $state('');
+  let preparation = $state<FeedbackPreparation | null>(null);
+  let deliverySettings = $state<PublicFeedbackSettings | null>(null);
+  let deliveryError = $state('');
   const requestId = crypto.randomUUID();
   let mounted = true;
   onMount(() => {
     if (!dialog) throw new Error('The bug report dialog is unavailable.');
     dialog.showModal();
+    void loadDeliverySettings();
     return () => { mounted = false; };
   });
+
+  async function loadDeliverySettings(): Promise<void> {
+    deliveryError = '';
+    try {
+      const settings = await window.workingMemory.getPublicFeedbackSettings();
+      if (mounted) deliverySettings = settings;
+    } catch (cause) {
+      if (mounted) deliveryError = `Could not check the report delivery route: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+  }
 
   async function createReport(previewOnly = false): Promise<void> {
     if (creating || !description.trim()) return;
@@ -39,13 +53,14 @@
         return;
       }
       if (!preparedServerId) {
-        const preparation = await window.workingMemory.prepareFeedback(captured.id, requestId);
+        const prepared = await window.workingMemory.prepareFeedback(captured.id, requestId);
         if (!mounted) return;
-        if (preparation.servers.length !== 1) {
+        preparation = prepared;
+        if (prepared.servers.length !== 1) {
           chooseServer = true;
           return;
         }
-        preparedServerId = preparation.servers[0].id;
+        preparedServerId = prepared.servers[0].id;
       }
       const sent = await window.workingMemory.sendFeedback(captured.id, requestId, preparedServerId);
       if (!mounted) return;
@@ -59,6 +74,7 @@
 
 {#if report && chooseServer}
   <ShareTopicDialog topic={report} preview={report.body} {requestId}
+    {preparation} preferredServerId={preparedServerId}
     sessionOnly={report.sessionOnly ?? false} beforeShare={() => Promise.resolve()} {onClose} />
 {:else}
   <dialog bind:this={dialog} aria-labelledby="report-bug-title"
@@ -82,7 +98,21 @@
         <pre>{supportingEvidence}</pre>
       </section>
     {/if}
-    <div class="warning" role="note">Trusted LAN only. Traffic is encrypted with the discovered server's self-signed certificate; servers and senders are not authenticated.</div>
+    <div class="warning" role="note">
+      {#if deliverySettings?.enabled}
+        Public delivery is enabled: reports are uploaded to Azure at {deliverySettings.destination},
+        encrypted for the configured recipient, and queued until the receiver imports them.
+        The LAN route below applies only when public delivery is disabled in Settings &gt; Feedback.
+      {:else if deliverySettings}
+        Public delivery is disabled; this report uses the trusted-LAN route.
+      {:else}
+        Checking the configured report delivery route…
+      {/if}
+      Trusted LAN only. Traffic is encrypted with the discovered server's self-signed certificate;
+      servers and senders are not authenticated.
+    </div>
+    {#if deliveryError}<p class="error" role="alert">{deliveryError}
+      <button onclick={() => void loadDeliverySettings()}>Retry delivery settings</button></p>{/if}
     <details class="report-details">
       <summary>Report details</summary>
       <div>{evidenceDescription}</div>
@@ -102,8 +132,8 @@
         <button class="primary" onclick={onClose}>Done</button>
       {:else}
         <button onclick={onClose} disabled={creating}>Cancel</button>
-        <button onclick={() => void createReport(true)} disabled={creating || !description.trim()}>Preview report</button>
-        <button class="primary" onclick={() => void createReport()} disabled={creating || !description.trim()}>
+        <button onclick={() => void createReport(true)} disabled={creating || !description.trim() || !deliverySettings}>Preview report</button>
+        <button class="primary" onclick={() => void createReport()} disabled={creating || !description.trim() || !deliverySettings}>
           {creating ? 'Sending bug report…' : 'Send bug report'}
         </button>
       {/if}

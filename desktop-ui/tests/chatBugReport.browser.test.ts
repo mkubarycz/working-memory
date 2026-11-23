@@ -89,6 +89,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             if(test.hold) await new Promise(resolve=>{test.release=resolve;});
             return {id:'report-1',title:'Chat bug: Stalled',body:'Captured prompt and pending tool\\\\n<em>literal evidence</em>'};
           },
+          getPublicFeedbackSettings:async()=>{
+            if(test.routeError) throw new Error('Feedback settings unavailable');
+            return {enabled:!!test.publicDelivery,destination:test.publicDelivery?'https://fixture.blob.core.windows.net/feedback':null};
+          },
           prepareFeedback:async(id,requestId)=>{
             test.preparations.push({id,requestId});
             if(test.discoveryUnavailable) throw new Error('No Feedback servers found.');
@@ -189,6 +193,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('document.querySelector("dialog .report-details").open'), false);
           assert.equal(await evaluate('document.querySelectorAll("dialog > p").length'), 0);
           assert.equal(await evaluate('document.querySelector("dialog").innerText.includes("Trusted LAN only.")'), true);
+          await wait('document.querySelector("dialog .warning").innerText.includes("Public delivery is disabled")');
           assert(await evaluate('document.querySelector("dialog").innerText.includes("Trusted LAN only.")'));
           assert(await evaluate('document.querySelector("dialog").innerText.includes("servers and senders are not authenticated.")'));
           assert.equal(await evaluate(button('Send bug report')+'.disabled'),true);
@@ -280,6 +285,38 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait(button('Done'));
           assert(await evaluate('document.querySelector("dialog [role=status]").textContent.includes("Queued for the Feedback receiver")'));
           assert.equal(await evaluate('document.querySelector("dialog a")'),null);
+          await click('Done');
+          await wait('!document.querySelector("dialog")');
+          const capturesBeforeRetry=await evaluate('window.__reportTest.captures.length');
+          const preparationsBeforeRetry=await evaluate('window.__reportTest.preparations.length');
+          const sendsBeforeRetry=await evaluate('window.__reportTest.sends.length');
+          const deliveriesBeforeRetry=await evaluate('window.__reportTest.deliveries.length');
+          await evaluate('window.__reportTest.queue=false;window.__reportTest.fail=true;window.__reportTest.publicDelivery=true;window.__reportTest.routeError=true');
+          await click('Bug Report');
+          await describe();
+          await wait('document.querySelector("[role=alert]")?.textContent.includes("Feedback settings unavailable")');
+          assert.equal(await evaluate(button('Send bug report')+'.disabled'),true);
+          assert.equal(await evaluate('window.__reportTest.sends.length'),sendsBeforeRetry);
+          await evaluate('window.__reportTest.routeError=false');
+          await click('Retry delivery settings');
+          await wait('document.querySelector("dialog .warning").innerText.includes("reports are uploaded to Azure")');
+          assert(await evaluate('document.querySelector("dialog .warning").innerText.includes("https://fixture.blob.core.windows.net/feedback")'));
+          assert(await evaluate('document.querySelector("dialog .warning").innerText.includes("encrypted for the configured recipient")'));
+          await click('Send bug report');
+          await wait('document.querySelector("[role=alert]")?.textContent.includes("tracking note could not be saved")');
+          await evaluate('window.__reportTest.fail=false;window.__reportTest.discoveryUnavailable=true');
+          await click('Preview report');
+          await wait('document.querySelector("#share-topic-title")');
+          await wait('!'+button('Send')+'.disabled');
+          assert.equal(await evaluate('window.__reportTest.preparations.length'),preparationsBeforeRetry+1);
+          await click('Send');
+          await wait(button('Done'));
+          assert.equal(await evaluate('window.__reportTest.captures.length'),capturesBeforeRetry+1);
+          assert.equal(await evaluate('window.__reportTest.sends.length'),sendsBeforeRetry+2);
+          assert.equal(await evaluate('window.__reportTest.deliveries.length'),deliveriesBeforeRetry+1);
+          const retries=await evaluate('window.__reportTest.sends.slice(-2)');
+          assert.equal(retries[0].requestId,retries[1].requestId);
+          assert.equal(retries[0].serverId,retries[1].serverId);
           await click('Done');
           await wait('!document.querySelector("dialog")');
           console.log('CHAT_REPORT_UI_OK'); win.destroy(); app.exit(0);

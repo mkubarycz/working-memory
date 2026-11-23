@@ -719,6 +719,9 @@ the placement body contains only the proposed parent/workstream. Supporting evid
 is shown in the bug-report dialog and included in the report explanation. Bug-report
 privacy/delivery details are collapsed rather than four default paragraphs.
 The trusted-LAN warning remains visible before sending and retrying a report.
+The same notice explains that configured public delivery uploads encrypted reports
+to Azure; otherwise delivery uses the trusted-LAN route. Preview retries reuse the
+prepared destination, so saving a failed tracking note does not require rediscovery.
 A workstream-only recommendation
 remains usable when no parent is eligible. Similarity is not certainty or an authored
 relationship. Select **Apply** to add the proposed relationships; nothing is moved,

@@ -19,9 +19,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       import App from '/src/renderer/App.svelte';
       import '/src/renderer/style.css';
       const state = window.__tabsTest = {};
-      const model = (kind, id) => ({ kind, id, title: state.titles?.[id] ?? id, status: 'open',
+      const model = (kind, id) => ({ kind, id: kind === 'topic' ? 'placement-canonical' : id,
+        title: kind === 'topic' ? 'placement-preview' : state.titles?.[id] ?? id, status: 'open',
         createdAt: 1, updatedAt: 1, closure: null, resourceVersion: state.version ?? 1, editable: !!state.editable,
-        topics: [], tree: [], agentMessages: [] });
+        topics: [], tree: [], agentMessages: [], body: '', parents: [], children: [],
+        workstreams: [], focusedWorkstreams: [], topicTypes: [] });
       const environment = { id: 'tab-test', port: 7717, displayName: 'Tab test',
         mcpUrl: 'http://127.0.0.1:7717/mcp', source: 'sandbox' };
       const storageKey = 'working-memory.desktop.document-tabs:v1:tab-test';
@@ -60,6 +62,11 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         getAgentMessages: async () => [],
         listContainerApps: async () => [],
         getInstanceFeatures: async () => ({ hostTasks: false, search: false }),
+        suggestTopicPlacement: async () => ({ state: 'ready', sourceVersion: state.version ?? 1, limited: false,
+          suggestions: [{ parent: null, workstream: { id: 'destination', title: 'Destination', resourceVersion: 1 },
+            similarity: 0.8, confidence: { level: 'high', reason: 'Fixture evidence' },
+            excerpt: 'Fixture', evidence: 'workstream-semantic' }] }),
+        applyTopicPlacement: async input => { state.applied=input; },
         getInstanceAccess: async () => ({ requests: [], clients: [] }),
         startDocumentChanges: async () => {},
       };
@@ -258,6 +265,18 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait('document.querySelectorAll(".document-tab").length === 1');
           assert.equal(await selected(), 'third', 'closed visited tabs are skipped');
           console.log('tabs-browser: manual selection history and inactive close passed');
+          await evaluate('window.__tabsTest.editable=true; window.__tabsTest.open("topic","placement-preview")');
+          await wait('document.querySelector(".document-tab.preview .document-tab-select")?.textContent.trim()==="placement-preview"');
+          await evaluate('document.querySelector("button[aria-label=Refresh]").click()');
+          await wait('!document.querySelector("button[aria-label=Apply]").disabled');
+          await evaluate('document.querySelector("button[aria-label=Apply]").click()');
+          await wait('window.__tabsTest.applied?.id==="placement-canonical"');
+          assert.equal(await evaluate('document.querySelector(".document-tab.selected").classList.contains("preview")'),false);
+          assert((await persisted()).tabs.some(tab=>tab.kind==="topic" && tab.identifier==="placement-canonical"));
+          await evaluate('window.__tabsTest.open("workstream","another-preview")');
+          await wait('document.querySelector(".document-tab.preview .document-tab-select")?.textContent.trim()==="another-preview"');
+          assert((await order()).includes("placement-preview"));
+          console.log('tabs-browser: placement Apply promotes and persists the preview topic');
           window.destroy();
           app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });

@@ -3095,6 +3095,7 @@
             bind:activeDrag={activeTreeDrag}
             onAddChild={(parent, workstream) => startTopicCreation(workstream.id, workstream.title, parent)}
             onTopicAdded={refreshTopicMemberships}
+            onBeforePlacementApply={id => promoteDocument(`topic:${id}`)}
             {unreadResponses}
             topic={activeDocument}
             onShare={(topic) => { sharingTopic = topic; }}
