@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadKinds } from '../src/kinds/loader';
 import { openStore, type Store } from '../src/store';
 import { EMBEDDING_KINDS, EMBEDDING_MODEL, embeddingBatchSchema, matchConfidence, relatedTopicsSchema } from '../src/embeddingContract';
-import { embeddingStats, nextEmbeddingWork, relatedTopics, semanticSearch, submitEmbeddings, vector, similarity } from '../src/topicEmbeddings';
+import { embeddingStats, nextEmbeddingWork, selectEmbeddingWork, relatedTopics, semanticSearch, submitEmbeddings, vector, similarity } from '../src/topicEmbeddings';
 import { getKind } from '../src/kinds/registry';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
 import { InstanceFeatureStore } from '../src/instanceFeatures';
@@ -21,6 +21,41 @@ function submit(store: Store, direction = 0) {
 }
 
 describe('topic embeddings', () => {
+  it('selects oldest pending updates first and does not repeat completed or stale work', () => {
+    const store = fixture();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const first = store.createDocument({ kind: 'Topic', spec: { title: 'First saved' } });
+      vi.setSystemTime(new Date('2026-01-01T00:00:01Z'));
+      const second = store.createDocument({ kind: 'Topic', spec: { title: 'Second saved' } });
+      vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
+      const third = store.createDocument({ kind: 'Topic', spec: { title: 'Third saved' } });
+      store.updateDocument({ id: first.metadata.id, expectedResourceVersion: first.metadata.resourceVersion,
+        spec: { ...first.spec, body: 'Newer pending change in the same second.' } });
+      const stale = selectEmbeddingWork(store.db).work!;
+      expect(stale.id).toBe(second.metadata.id);
+      store.updateDocument({ id: second.metadata.id, expectedResourceVersion: second.metadata.resourceVersion,
+        spec: { ...second.spec, body: 'Changed while inference was running.' } });
+      expect(submitEmbeddings(store.db, { id: stale.id, sourceVersion: stale.sourceVersion, contentHash: stale.contentHash,
+        model: EMBEDDING_MODEL, vectors: stale.passages.map(() => unit()) })).toEqual({ accepted: false });
+      const processed: string[] = [];
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const { work, pending } = selectEmbeddingWork(store.db);
+        if (!work) {
+          expect(pending).toBe(false);
+          break;
+        }
+        processed.push(work.id);
+        expect(submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+          model: EMBEDDING_MODEL, vectors: work.passages.map(() => unit()) })).toEqual({ accepted: true });
+      }
+      expect(processed).toEqual([third.metadata.id, first.metadata.id, second.metadata.id]);
+      expect(selectEmbeddingWork(store.db)).toEqual({ work: null, pending: false });
+      expect(embeddingStats(store.db)).toMatchObject({ indexed: 3, pending: 0 });
+    } finally { vi.useRealTimers(); }
+  });
+
   it('keeps vector-byte totals permission-scoped through passage replacement and deletion', () => {
     const store = fixture();
     const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Long evidence', body: 'Evidence '.repeat(180) } });

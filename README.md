@@ -821,7 +821,21 @@ The build creates an isolated environment from
 The control plane owns the background indexing worker: it selects changed
 searchable WM documents, reuses their safe stored search projections, prepares
 bounded passages, calls the host inference service, and accepts
-vectors only while the document content version remains current. Existing
+vectors only while the document content version remains current.
+Pending documents are processed least-recently-updated first, with resource
+version breaking same-second ties in save order. An edit moves a document
+behind older pending changes; stale in-flight results are rejected, and
+current indexed versions are not selected again.
+While work remains, the worker yields to the event loop between items without
+the previous fixed 250 ms pause. Empty queues and errors retain the five-second
+poll/retry delay.
+Automatic work selection does not recount store-wide progress after each
+document. Progress is calculated on demand for status/dashboard reads and by
+the existing ten-second observability sampler when enabled; work scheduling
+uses the selector's result, not a cached progress count. Explicit
+`wm-embeddings-next` calls retain their exact progress summary. Pending-work
+selection and search-readiness checks remain current database queries.
+Existing
 Topic text/hash representation is preserved, so valid Topic vectors are reused
 while other kinds join the index. Enabling indexing
 persists settings in that instance, independently of the desktop's selected

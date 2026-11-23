@@ -8,7 +8,7 @@ import {
   semanticSearchSchema, EMBEDDING_KINDS, SEMANTIC_SEARCH_INFERENCE_TIMEOUT_MS,
   type EmbeddingDashboard,
 } from './embeddingContract.js';
-import { embeddingStats, nextEmbeddingWork, semanticSearch, submitEmbeddings } from './topicEmbeddings.js';
+import { embeddingStats, selectEmbeddingWork, semanticSearch, submitEmbeddings } from './topicEmbeddings.js';
 import type { Observability, EmbeddingOutcome } from './observability.js';
 
 async function hostFailure(response: Response): Promise<string> {
@@ -45,6 +45,7 @@ export class EmbeddingIndexer {
   private running: Promise<void> | undefined;
   private stopped = true;
   private halted = false;
+  private workPending = false;
   private telemetryTimer?: ReturnType<typeof setInterval>;
   private sampling?: Promise<void>;
   private state: EmbeddingDashboard = {
@@ -172,7 +173,7 @@ export class EmbeddingIndexer {
       if (this.running) return;
       this.running = this.tick().finally(() => {
         this.running = undefined;
-        this.schedule(this.state.stats?.pending && !this.state.error ? 250 : 5000);
+        this.schedule(this.workPending && !this.state.error ? 0 : 5000);
       });
     }, delay);
     this.timer.unref();
@@ -274,6 +275,7 @@ export class EmbeddingIndexer {
     return state;
   }
   private async tick(): Promise<void> {
+    this.workPending = false;
     if (this.stopped || this.halted) return;
     const settings = this.settings();
     if (!settings.enabled || settings.paused || !settings.host || !this.searchEnabled()) return;
@@ -282,8 +284,8 @@ export class EmbeddingIndexer {
     const started = performance.now();
     let outcome: EmbeddingOutcome | undefined;
     try {
-      const batch = nextEmbeddingWork(this.db);
-      this.state.stats = batch.stats;
+      const batch = selectEmbeddingWork(this.db);
+      this.workPending = batch.pending;
       if (!batch.work) { this.state.phase = 'idle'; this.state.error = null; return; }
       outcome = 'failed';
       this.state.phase = 'indexing';

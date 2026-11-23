@@ -101,6 +101,71 @@ function fixture() {
   return { store, path };
 }
 describe('container-owned embedding lifecycle', () => {
+  it('indexes consecutive documents without recounting progress or fixed pauses and keeps on-demand readiness exact', async () => {
+    const { store } = fixture();
+    for (let index = 0; index < 8; index++) {
+      store.createDocument({ kind: 'Topic', spec: { title: `Background item ${index}`, body: 'Saved evidence.' } });
+    }
+    const inference = await hostFixture();
+    const indexer = new EmbeddingIndexer(store.db, () => true);
+    await indexer.configure({ action: 'enable', host: inference.host });
+    expect(indexer.readiness()).toMatchObject({ ready: false, stats: { pending: 8 } });
+    const prepare = store.db.prepare.bind(store.db);
+    const summaryQueries: string[] = [];
+    const preparation = vi.spyOn(store.db, 'prepare').mockImplementation(sql => {
+      if (sql.includes('AS total,') || sql.includes('sum(length(p.vector))')) summaryQueries.push(sql);
+      return prepare(sql);
+    });
+    try {
+      const started = performance.now();
+      indexer.start();
+      await waitFor(() => Number(store.db.prepare('SELECT count(*) AS count FROM topic_embedding_index').get()?.count) === 8);
+      expect(performance.now() - started).toBeLessThan(1000);
+      expect(inference.requests()).toBe(8);
+      expect(summaryQueries).toEqual([]);
+      expect(indexer.readiness()).toMatchObject({ ready: true, stats: { total: 8, indexed: 8, pending: 0 } });
+      expect(await indexer.snapshot()).toMatchObject({ stats: { total: 8, indexed: 8, pending: 0, vectorBytes: 8 * 384 * 4 } });
+      expect(summaryQueries.length).toBeGreaterThan(0);
+    } finally {
+      await indexer.stop();
+      preparation.mockRestore();
+    }
+  });
+
+  it('continues past a metadata-only repair batch without waiting for a progress sample', async () => {
+    const { store } = fixture();
+    const documents = Array.from({ length: 21 }, (_, index) =>
+      store.createDocument({ kind: 'Topic', spec: { title: `Metadata item ${index}`, body: 'Unchanged evidence.' } }));
+    for (;;) {
+      const { work } = nextEmbeddingWork(store.db);
+      if (!work) break;
+      submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+        model: EMBEDDING_MODEL, vectors: work.passages.map(() => Array.from({ length: 384 }, (_, index) => Number(index === 0))) });
+    }
+    for (const document of documents) store.updateDocument({ id: document.metadata.id,
+      expectedResourceVersion: document.metadata.resourceVersion, spec: document.spec, labels: { reviewed: 'true' } });
+    const inference = await hostFixture();
+    const indexer = new EmbeddingIndexer(store.db, () => true);
+    await indexer.configure({ action: 'enable', host: inference.host });
+    const prepare = store.db.prepare.bind(store.db);
+    const summaryQueries: string[] = [];
+    const preparation = vi.spyOn(store.db, 'prepare').mockImplementation(sql => {
+      if (sql.includes('AS total,') || sql.includes('sum(length(p.vector))')) summaryQueries.push(sql);
+      return prepare(sql);
+    });
+    try {
+      indexer.start();
+      await waitFor(() => Number(store.db.prepare(`SELECT count(*) AS pending FROM resources r
+        JOIN topic_embedding_index i ON i.topic_id = r.id WHERE i.source_version != r.resource_version`).get()?.pending) === 0);
+      expect(inference.requests()).toBe(0);
+      expect(summaryQueries).toEqual([]);
+      expect(indexer.readiness()).toMatchObject({ ready: true, stats: { indexed: 21, pending: 0 } });
+    } finally {
+      await indexer.stop();
+      preparation.mockRestore();
+    }
+  });
+
   it.each([
     ['INC-42', false], ['A3', false], ['owner_alpha', false], ['ID', false], ['S', false],
     ['d85dbeef-2abc-4a01-9def-abcdef012345', true],

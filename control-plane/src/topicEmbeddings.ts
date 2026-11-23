@@ -83,7 +83,7 @@ export function embeddingStats(db: DatabaseSync, canReadKind: (kind: string) => 
     vectorBytes: Number(bytes?.bytes), lastIndexedAt: row?.last_indexed_at == null ? null : Number(row.last_indexed_at) };
 }
 
-export function nextEmbeddingWork(db: DatabaseSync): { stats: EmbeddingStats; work: EmbeddingWork | null } {
+export function selectEmbeddingWork(db: DatabaseSync): { work: EmbeddingWork | null; pending: boolean } {
   db.exec(`DELETE FROM topic_embedding_index WHERE topic_id IN
     (SELECT id FROM resources WHERE deleted_at IS NOT NULL)`);
   // Metadata-only edits can reuse vectors, but only after checking the exact indexed content.
@@ -92,8 +92,8 @@ export function nextEmbeddingWork(db: DatabaseSync): { stats: EmbeddingStats; wo
       LEFT JOIN topic_embedding_index i ON i.topic_id = r.id
       WHERE r.kind IN (${indexedKinds}) AND r.deleted_at IS NULL
       AND (i.topic_id IS NULL OR i.model_id != ? OR i.source_version != r.resource_version)
-      ORDER BY r.updated_at DESC, r.id LIMIT 1`).get(EMBEDDING_MODEL);
-    if (!row) return { stats: embeddingStats(db), work: null };
+      ORDER BY r.updated_at ASC, r.resource_version ASC, r.id ASC LIMIT 1`).get(EMBEDDING_MODEL);
+    if (!row) return { work: null, pending: false };
     const current = source(db, String(row.id));
     const title = String(current.title), body = String(current.body);
     const contentHash = hash(title, body);
@@ -102,12 +102,18 @@ export function nextEmbeddingWork(db: DatabaseSync): { stats: EmbeddingStats; wo
         .run(Number(current.resource_version), EMBEDDING_MODEL, Number(current.body_length) > EMBEDDING_TEXT_LIMIT ? 1 : 0, String(row.id));
       continue;
     }
-    return { stats: embeddingStats(db), work: {
+    return { pending: true, work: {
       id: String(row.id), sourceVersion: Number(current.resource_version), contentHash,
       limited: Number(current.body_length) > EMBEDDING_TEXT_LIMIT, passages: embeddingPassages(title, body),
     } };
   }
-  return { stats: embeddingStats(db), work: null };
+  // Yield after metadata repairs, without treating the remaining work as idle.
+  return { work: null, pending: true };
+}
+
+export function nextEmbeddingWork(db: DatabaseSync): { stats: EmbeddingStats; work: EmbeddingWork | null } {
+  const { work } = selectEmbeddingWork(db);
+  return { stats: embeddingStats(db), work };
 }
 
 function normalized(values: number[]): number[] {
