@@ -28,6 +28,7 @@ import { closeMcpSession, sessionLifecycleFetch, staleSessionRejected } from './
 import { parseDocumentChanges, type DocumentChanges } from './documentChanges';
 import { abortable } from './abort';
 import { SEMANTIC_SEARCH_INFERENCE_TIMEOUT_MS } from '../control-plane/src/embeddingContract';
+import { topicPlacementSchema, topicPlacementApplySchema, type TopicPlacement, type TopicPlacementApply } from '../control-plane/src/topicPlacementContract';
 import { isDocumentSearchResult, type DocumentSearchInput, type DocumentSearchResult } from './documentSearch';
 import {
   controlPlanePortFilePath,
@@ -44,6 +45,7 @@ const RETRYABLE_READ_TOOLS = new Set([
   'wm-embeddings-status',
   'wm-embeddings-dashboard',
   'wm-related-topics',
+  'wm-topic-suggest-placement',
   'wm-semantic-search',
   'wm-semantic-status',
   'ws-workstream-read', 'ws-containerclaim-read', 'ws-topic-read', 'ws-topictype-read', 'ws-config-read',
@@ -1293,6 +1295,20 @@ export class ControlPlaneClient {
    * transport drops (also resetting the connection so the next call reconnects),
    * or the tool result is flagged `isError`.
    */
+  async topicSuggestPlacement(id: string): Promise<TopicPlacement> {
+    return topicPlacementSchema.parse(parseToolText(await this.callDomainTool('wm-topic-suggest-placement', { id })));
+  }
+
+  async topicApplyPlacement(input: TopicPlacementApply): Promise<DocumentEnvelope> {
+    const parsed = parseToolText(await this.callDomainTool('wm-topic-apply-placement', topicPlacementApplySchema.parse(input)));
+    const document = parsed as DocumentEnvelope | null;
+    if (!document || document.kind !== 'Topic' || document.metadata?.id !== input.id
+      || !Number.isInteger(document.metadata.resourceVersion) || !document.spec) {
+      throw new ControlPlaneClientError('Malformed topic placement response');
+    }
+    return document;
+  }
+
   private async callDomainTool(
     name: string,
     args: Record<string, unknown> | ((client: Client) => Record<string, unknown>),

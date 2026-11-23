@@ -40,6 +40,7 @@ import {
 import { checkConfiguredModel } from './modelHealth';
 import { LocalCopilotProvider } from './copilotProvider';
 import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
+import { PublicFeedbackConfigStore } from './publicFeedbackConfig';
 import { createChatBugReport } from './chatBugReport';
 import { createSearchBugReport } from './searchBugReport';
 import { createFeatureBugReport } from './featureBugReport';
@@ -153,6 +154,7 @@ const WINDOW_STATE_SAVE_DELAY_MS = 250;
 let configFile = '';
 let credentialVault: DesktopCredentialVault | null = null;
 let feedbackSender: FeedbackSender | undefined;
+let publicFeedbackConfig: PublicFeedbackConfigStore | undefined;
 const backendBugReports = new BackendBugReports();
 let instanceMonitor: InstanceMonitor | undefined;
 let credentialMigrationError = '';
@@ -1054,6 +1056,15 @@ function registerIpc(): void {
     if (typeof id !== 'string' || !id || id.length > 256) throw new Error('Choose a saved topic.');
     return embeddings().related(id);
   });
+  ipcMain.handle('topic:suggest-placement', (event, id: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    if (typeof id !== 'string' || !id || id.length > 256) throw new Error('Choose a saved topic.');
+    return embeddings().placement(id);
+  });
+  ipcMain.handle('topic:apply-placement', (event, input: import('../../../control-plane/src/topicPlacementContract').TopicPlacementApply) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    return embeddings().applyPlacement(input);
+  });
   ipcMain.handle('desktop:build-info', () => ({
     version: desktopVersion(), development: isLocalBuild() || !app.isPackaged,
   }));
@@ -1297,11 +1308,28 @@ function registerIpc(): void {
     vault: hostTaskVault,
     platform: process.platform,
   });
-  ipcMain.handle('feedback:prepare', (_event, id: string, requestId: string) => {
+  ipcMain.handle('feedback:public-settings', event => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    if (!publicFeedbackConfig) throw new Error('Feedback is not initialized.');
+    return publicFeedbackConfig.status();
+  });
+  ipcMain.handle('feedback:public-save', (event, configuration: unknown) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    if (!publicFeedbackConfig) throw new Error('Feedback is not initialized.');
+    return publicFeedbackConfig.save(configuration);
+  });
+  ipcMain.handle('feedback:public-clear', event => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
+    if (!publicFeedbackConfig) throw new Error('Feedback is not initialized.');
+    return publicFeedbackConfig.clear();
+  });
+  ipcMain.handle('feedback:prepare', (event, id: string, requestId: string) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
     return feedbackSender.prepare(id, requestId);
   });
-  ipcMain.handle('feedback:send', (_event, id: string, requestId: string, serverId?: string) => {
+  ipcMain.handle('feedback:send', (event, id: string, requestId: string, serverId?: string) => {
+    assertHostTaskSender(event, mainWindow, rendererUrl);
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
     return feedbackSender.send(id, requestId, serverId);
   });
@@ -2238,6 +2266,7 @@ if (!ownsSingleInstanceLock) {
       process.platform,
       join(app.getPath('userData'), 'credential-vault.key'),
     );
+    publicFeedbackConfig = new PublicFeedbackConfigStore(join(app.getPath('userData'), 'public-feedback.json'), credentialVault);
     feedbackSender = new FeedbackSender(async (id) => {
       const backendReport = backendBugReports.feedbackSource(id);
       if (backendReport) return backendReport;
@@ -2258,6 +2287,9 @@ if (!ownsSingleInstanceLock) {
         recordReceipt: receipt => recordFeedbackReceipt(client, topic.id, receipt),
         context: { desktop: { version: desktopVersion(), build: __WM_BUILD_TIMESTAMP__ }, backend: { version: result.version } },
       };
+    }, () => {
+      if (!publicFeedbackConfig) throw new Error('Feedback is not initialized.');
+      return publicFeedbackConfig.read();
     });
     try {
       const storedConfig = await readStoredConfig(configFile);

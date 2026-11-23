@@ -281,6 +281,10 @@ function ensureSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources (kind);
 
+    -- Ascending keys scanned backwards also give descending implicit rowid ties.
+    CREATE INDEX IF NOT EXISTS idx_resources_live_kind_updated
+      ON resources (kind, updated_at) WHERE deleted_at IS NULL;
+
     CREATE INDEX IF NOT EXISTS idx_agent_message_pending_deadline
       ON resources (kind, json_extract(spec, '$.due_at'), id)
       WHERE kind = 'AgentMessage' AND deleted_at IS NULL

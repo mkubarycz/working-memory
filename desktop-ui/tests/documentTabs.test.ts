@@ -22,6 +22,7 @@ import {
   restoreLocalDocumentTab,
   settingsDocument,
   selectedTabScrollLeft,
+  selectDocumentTab,
   updateDocumentTab,
 } from '../src/renderer/documentTabs';
 import { containerAppDocument } from '../src/renderer/containerApps';
@@ -36,6 +37,69 @@ function topic(id: string, title = id): TopicVM {
 }
 
 describe('document tabs', () => {
+  it('returns through viewed tabs, independent of strip order, and skips closed inactive tabs', () => {
+    const state = { tabs: [topic('first'), topic('second'), topic('third'), topic('fourth')], selectedKey: 'topic:second' };
+    let viewed = selectDocumentTab(state, 'topic:first');
+    viewed = selectDocumentTab(viewed, 'topic:fourth');
+    viewed = selectDocumentTab(viewed, 'topic:first');
+    viewed = selectDocumentTab(viewed, 'topic:fourth');
+    viewed = reorderDocumentTab(viewed, 'topic:first', 3);
+    viewed = closeDocumentTab(viewed, 'topic:second');
+    expect(viewed.selectedKey).toBe('topic:fourth');
+    viewed = closeDocumentTab(viewed, 'topic:fourth');
+    expect(viewed.selectedKey).toBe('topic:first');
+    expect(viewed.selectionHistory).toEqual(['topic:first']);
+    viewed = closeDocumentTab(viewed, 'topic:first');
+    expect(viewed.selectedKey).toBe('topic:third');
+    expect(closeDocumentTab(viewed, 'topic:third').selectionHistory).toEqual([]);
+  });
+
+  it('removes replaced previews from history and retains promoted previews', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('kept'), false);
+    state = openDocumentTab(state, topic('preview'));
+    state = selectDocumentTab(state, 'topic:kept');
+    state = openDocumentTab(state, topic('replacement'));
+    expect(state.selectionHistory).toEqual(['topic:kept', 'topic:replacement']);
+    state = promoteDocumentTab(state, 'topic:replacement');
+    state = openDocumentTab(state, topic('next'));
+    state = closeDocumentTab(state, 'topic:next');
+    expect(state.selectedKey).toBe('topic:replacement');
+    expect(closeDocumentTab(state, 'topic:replacement').selectedKey).toBe('topic:kept');
+  });
+
+  it('rekeys history and merges duplicates without treating background refreshes as visits', () => {
+    let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('existing'), false);
+    state = openDocumentTab(state, topic('draft'), false);
+    state = openDocumentTab(state, topic('current'), false);
+    state = updateDocumentTab(state, 'topic:draft', topic('existing'));
+    expect(state.selectionHistory).toEqual(['topic:existing', 'topic:current']);
+    expect(state.selectedKey).toBe('topic:current');
+    state = closeDocumentTab(state, 'topic:current');
+    expect(state.selectedKey).toBe('topic:existing');
+    state = updateDocumentTab(state, 'topic:existing', topic('saved'));
+    expect(state.selectionHistory).toEqual(['topic:saved']);
+    expect(closeDocumentTab(state, 'topic:saved').selectedKey).toBeNull();
+  });
+
+  it('prunes bulk closes and starts restored sessions with only the restored selection', () => {
+    let state = selectDocumentTab({
+      tabs: [topic('first'), topic('second'), topic('third'), topic('fourth')],
+      selectedKey: 'topic:second',
+    }, 'topic:first');
+    state = selectDocumentTab(state, 'topic:fourth');
+    const right = closeDocumentTabsToRight(state, 'topic:second');
+    expect(right.selectedKey).toBe('topic:second');
+    expect(right.selectionHistory).toEqual(['topic:first', 'topic:second']);
+    expect(closeDocumentTab(right, 'topic:second').selectedKey).toBe('topic:first');
+    expect(closeOtherDocumentTabs(state, 'topic:third').selectionHistory).toEqual(['topic:third']);
+    const serialized = serializeDocumentTabs(state);
+    expect(serialized).not.toContain('selectionHistory');
+    const persisted = parseDocumentTabs(serialized)!;
+    const restored = { tabs: persisted.tabs.map(tab => topic(tab.identifier)), selectedKey: persisted.selectedKey };
+    expect(selectDocumentTab(restored, 'topic:third').selectionHistory).toEqual(['topic:fourth', 'topic:third']);
+    expect(closeDocumentTab(restored, 'topic:fourth').selectedKey).toBe('topic:third');
+  });
+
   it('finds drop boundaries from horizontal midpoints, including scrolled tabs and trailing space', () => {
     const bounds = [{ left: -60, width: 100 }, { left: 40, width: 180 }, { left: 220, width: 120 }];
     expect(documentTabDropIndex(bounds, -20)).toBe(0);
@@ -148,7 +212,7 @@ describe('document tabs', () => {
       ],
       selectedKey: 'host-task:first-task',
     });
-    expect(closeDocumentTab(state, 'host-task:first-task').selectedKey).toBe('host-task:second-task');
+    expect(closeDocumentTab(state, 'host-task:first-task').selectedKey).toBe('topic:preview');
   });
 
   it('shows topic locators in tab tooltips while retaining the title and preview hint', () => {
@@ -244,7 +308,7 @@ describe('document tabs', () => {
     expect(state.tabs.map(documentTabKey)).toContain('settings:desktop-settings');
   });
 
-  it('replaces the selected document in place and closes to the nearest remaining tab', () => {
+  it('replaces the selected document in place and closes to the previously viewed tab', () => {
     let state = openDocumentTab({ tabs: [], selectedKey: null }, topic('first'), false);
     state = openDocumentTab(state, topic('second'));
     state = replaceSelectedTab(state, topic('second', 'Second saved'));
@@ -271,6 +335,7 @@ describe('document tabs', () => {
       tabs: [state.tabs[1]],
       selectedKey: 'topic:second',
       previewKey: null,
+      selectionHistory: ['topic:second'],
     });
     expect(closeOtherDocumentTabs(state, 'topic:missing')).toBe(state);
   });
@@ -291,11 +356,13 @@ describe('document tabs', () => {
       tabs: state.tabs.slice(0, 2),
       selectedKey: 'topic:second',
       previewKey: null,
+      selectionHistory: ['topic:second'],
     });
     expect(closeDocumentTabsToRight({ ...state, selectedKey: 'topic:first' }, 'topic:second')).toEqual({
       tabs: state.tabs.slice(0, 2),
       selectedKey: 'topic:first',
       previewKey: null,
+      selectionHistory: ['topic:first'],
     });
     expect(closeDocumentTabsToRight(state, 'topic:third')).toBe(state);
   });

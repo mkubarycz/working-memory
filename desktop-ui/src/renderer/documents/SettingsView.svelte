@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type SettingsTab = 'models' | 'human' | 'system' | 'features' | 'access' | 'sessions' | 'diagnostics';
+  export type SettingsTab = 'models' | 'human' | 'system' | 'features' | 'access' | 'sessions' | 'diagnostics' | 'feedback';
   export type SystemTab = 'back-end' | 'front-end' | 'container-provider';
 </script>
 
@@ -18,6 +18,7 @@
   import AccessView from './AccessView.svelte';
   import SessionsView from './SessionsView.svelte';
   import DiagnosticsView from './DiagnosticsView.svelte';
+  import FeedbackSettings from './FeedbackSettings.svelte';
   import type { InstanceFeatures } from '../../../../control-plane/src/instanceFeatures';
 
   interface Props {
@@ -122,8 +123,11 @@
     <button role="tab" aria-selected={tab === 'access'} onclick={() => (tab = 'access')}>Access</button>
     <button role="tab" aria-selected={tab === 'sessions'} onclick={() => (tab = 'sessions')}>Sessions</button>
     <button role="tab" aria-selected={tab === 'diagnostics'} onclick={() => (tab = 'diagnostics')}>Diagnostics</button>
+    <button role="tab" aria-selected={tab === 'feedback'} onclick={() => (tab = 'feedback')}>Feedback</button>
   </div>
-  {#if tab === 'models'}
+  {#if tab === 'feedback'}
+    <FeedbackSettings />
+  {:else if tab === 'models'}
     <div class="model-settings" oninput={onChange} onchange={onChange} onfocusout={onFlush}>
     <p class="settings-intro">
       Configure GitHub Copilot or OpenAI-compatible model profiles and route AI work by speed and depth.

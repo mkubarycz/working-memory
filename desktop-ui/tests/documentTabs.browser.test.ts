@@ -5,7 +5,6 @@ import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,7 +13,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
   async () => {
     const executable: unknown = createRequire(import.meta.url)('electron');
     if (typeof executable !== 'string') throw new Error('Electron executable is unavailable.');
-    const directory = await mkdtemp(join(tmpdir(), 'working-memory-tabs-browser-'));
+    const directory = await mkdtemp(fileURLToPath(new URL('./.tabs-browser-', import.meta.url)));
     const fixture = `
       import { mount } from 'svelte';
       import App from '/src/renderer/App.svelte';
@@ -242,6 +241,23 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           console.log('tabs-browser: reorder, cancellation, persistence, previews and close actions passed');
           console.log('tabs-browser: activation refresh, cached content and retry passed');
           console.log('tabs-browser: unsaved edits and inactive save completion passed');
+          await evaluate('localStorage.removeItem("working-memory.desktop.document-tabs:v1:tab-test")');
+          await window.loadURL(url);
+          await wait('document.querySelectorAll(".document-tab").length === 4');
+          assert.equal(await selected(), 'second');
+          await select('first');
+          await select('fourth');
+          assert.deepEqual(await order(), ['first', 'second', 'third', 'fourth']);
+          await evaluate(\`Array.from(document.querySelectorAll(".document-tab")).find(tab => tab.querySelector(".document-tab-select").textContent.trim() === "fourth").querySelector(".document-tab-close").click()\`);
+          await wait('document.querySelectorAll(".document-tab").length === 3');
+          assert.equal(await selected(), 'first', 'closing selected fourth returns to previously viewed first, not adjacent third');
+          await evaluate(\`Array.from(document.querySelectorAll(".document-tab")).find(tab => tab.querySelector(".document-tab-select").textContent.trim() === "second").querySelector(".document-tab-close").click()\`);
+          await wait('document.querySelectorAll(".document-tab").length === 2');
+          assert.equal(await selected(), 'first', 'closing an inactive tab does not change selection');
+          await evaluate('document.querySelector(".document-tab.selected .document-tab-close").click()');
+          await wait('document.querySelectorAll(".document-tab").length === 1');
+          assert.equal(await selected(), 'third', 'closed visited tabs are skipped');
+          console.log('tabs-browser: manual selection history and inactive close passed');
           window.destroy();
           app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });
@@ -252,6 +268,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       expect(stdout, stderr).toContain('tabs-browser: reorder, cancellation, persistence, previews and close actions passed');
       expect(stdout, stderr).toContain('tabs-browser: activation refresh, cached content and retry passed');
       expect(stdout, stderr).toContain('tabs-browser: unsaved edits and inactive save completion passed');
+      expect(stdout, stderr).toContain('tabs-browser: manual selection history and inactive close passed');
     } finally {
       await server.close();
       await rm(directory, { recursive: true, force: true });

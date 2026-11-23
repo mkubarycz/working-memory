@@ -58,6 +58,8 @@ import { documentQuerySchema, documentSearchSchema, queryDocuments, searchDocume
 import { embeddingConfigureSchema, embeddingDashboardInputSchema, embeddingSubmitSchema, relatedTopicsInputSchema, semanticSearchSchema } from './embeddingContract.js';
 import { EmbeddingIndexer } from './embeddingIndexer.js';
 import { embeddingStats, nextEmbeddingWork, relatedTopics, submitEmbeddings } from './topicEmbeddings.js';
+import { topicPlacementInputSchema, topicPlacementApplySchema } from './topicPlacementContract.js';
+import { suggestTopicPlacement, applyTopicPlacement } from './topicPlacement.js';
 import type { PermissionSelection } from './instancePermissions.js';
 import { registerInstanceTaskTools } from './instanceToolsMcp.js';
 import { topicSpecWithDefaults, validateTopicReferences } from './kinds/topic/references.js';
@@ -505,6 +507,25 @@ export function createMcpServer(
     if (!features.read().search || !canReadKind('Topic')) return asError('Search is disabled or Topic read permission is unavailable.');
     if (!embeddings) return asError('Background indexing is unavailable.');
     return asText(relatedTopics(store.db, input, embeddings.isEnabled()));
+  });
+  server.registerTool('wm-topic-suggest-placement', {
+    title: 'Topic: Suggest Placement',
+    description: 'Compare indexed topic embeddings with existing topics and workstreams. Suggest parent/workstream pairs without changing authored relationships. Disabled or pending indexing is explicit.',
+    inputSchema: topicPlacementInputSchema, annotations: { readOnlyHint: true },
+  }, async input => {
+    try {
+      return asText(suggestTopicPlacement(store, input, features.read().search && !!embeddings?.isEnabled()));
+    } catch (error) { return asError((error as Error).message); }
+  });
+  server.registerTool('wm-topic-apply-placement', {
+    title: 'Topic: Apply Placement',
+    description: 'Explicitly add a selected parent and workstream, preserving existing memberships, content, focus and lifecycle. Reject stale versions and cyclic parents.',
+    inputSchema: topicPlacementApplySchema,
+  }, async input => {
+    try {
+      if (!features.read().search) throw new Error('Search is turned off. Enable it in Settings > Features.');
+      return asText(applyTopicPlacement(store, input));
+    } catch (error) { return asError((error as Error).message); }
   });
   server.registerTool('wm-semantic-status', {
     title: 'Search: Semantic Readiness', description: 'Read whether Embeddings is enabled and all searchable WM documents are indexed.',

@@ -8,6 +8,8 @@ export interface DocumentTabsState {
   tabs: DocumentVM[];
   selectedKey: string | null;
   previewKey?: string | null;
+  /** Session-only, least to most recently viewed; each open key appears at most once. */
+  selectionHistory?: string[];
 }
 
 export interface PersistedDocumentTabs {
@@ -215,6 +217,28 @@ export function promoteDocumentTab(state: DocumentTabsState, key: string | null)
   return key && state.previewKey === key ? { ...state, previewKey: null } : state;
 }
 
+function selectionHistory(state: DocumentTabsState): string[] {
+  const openKeys = new Set(state.tabs.map(documentTabKey));
+  const history = [...(state.selectionHistory ?? []), ...(state.selectedKey ? [state.selectedKey] : [])];
+  return history.filter((key, index) => openKeys.has(key) && history.lastIndexOf(key) === index);
+}
+
+export function selectDocumentTab(state: DocumentTabsState, key: string): DocumentTabsState {
+  if (!state.tabs.some(tab => documentTabKey(tab) === key)) return state;
+  return {
+    ...state,
+    selectedKey: key,
+    selectionHistory: [...selectionHistory(state).filter(candidate => candidate !== key), key],
+  };
+}
+
+function selectedState(state: DocumentTabsState, next: DocumentTabsState): DocumentTabsState {
+  const withHistory = { ...next, selectionHistory: selectionHistory(state) };
+  return next.selectedKey
+    ? selectDocumentTab(withHistory, next.selectedKey)
+    : { ...withHistory, selectionHistory: [] };
+}
+
 export function promoteOnDocumentInput(node: HTMLElement, promote: () => void) {
   const events = ['beforeinput', 'input', 'change'];
   for (const event of events) node.addEventListener(event, promote, true);
@@ -234,21 +258,21 @@ export function openDocumentTab(
   const key = documentTabKey(document);
   const index = state.tabs.findIndex((tab) => documentTabKey(tab) === key);
   if (index >= 0) {
-    return {
+    return selectedState(state, {
       ...state,
       tabs: state.tabs.map((tab, candidate) => candidate === index ? document : tab),
       selectedKey: key,
       previewKey: !preview && state.previewKey === key ? null : state.previewKey,
-    };
+    });
   }
   const previewIndex = state.tabs.findIndex((tab) => documentTabKey(tab) === state.previewKey);
-  return {
+  return selectedState(state, {
     tabs: preview && previewIndex >= 0
       ? state.tabs.map((tab, candidate) => candidate === previewIndex ? document : tab)
       : [document, ...state.tabs],
     selectedKey: key,
     previewKey: preview ? key : state.previewKey,
-  };
+  });
 }
 
 export function replaceSelectedTab(state: DocumentTabsState, document: DocumentVM): DocumentTabsState {
@@ -266,17 +290,19 @@ export function updateDocumentTab(
   const index = state.tabs.findIndex((tab) => documentTabKey(tab) === key);
   if (index < 0) return state;
   const nextKey = documentTabKey(document);
-  return {
+  const next = {
     ...state,
     tabs: state.tabs
       .filter((tab, candidate) => candidate === index || documentTabKey(tab) !== nextKey)
       .map((tab) => documentTabKey(tab) === key ? document : tab),
     selectedKey: state.selectedKey === key ? nextKey : state.selectedKey,
+    selectionHistory: selectionHistory(state).map(candidate => candidate === key ? nextKey : candidate),
     previewKey: state.previewKey === key
       ? state.tabs.some((tab, candidate) => candidate !== index && documentTabKey(tab) === nextKey)
         ? null : nextKey
       : state.previewKey === nextKey ? null : state.previewKey,
   };
+  return selectedState(next, next);
 }
 
 export function closeDocumentTab(state: DocumentTabsState, key: string): DocumentTabsState {
@@ -284,15 +310,18 @@ export function closeDocumentTab(state: DocumentTabsState, key: string): Documen
   if (index < 0) return state;
   const tabs = state.tabs.filter((tab) => documentTabKey(tab) !== key);
   const previewKey = state.previewKey === key ? null : state.previewKey;
-  if (state.selectedKey !== key) return { ...state, tabs, previewKey };
+  const history = selectionHistory(state).filter(candidate => candidate !== key);
+  if (state.selectedKey !== key) return selectedState(state, { ...state, tabs, previewKey });
   const fallback = tabs[Math.min(index, tabs.length - 1)];
-  return { tabs, selectedKey: fallback ? documentTabKey(fallback) : null, previewKey };
+  return selectedState(state, {
+    tabs, selectedKey: history.at(-1) ?? (fallback ? documentTabKey(fallback) : null), previewKey,
+  });
 }
 
 export function closeOtherDocumentTabs(state: DocumentTabsState, key: string): DocumentTabsState {
   const tab = state.tabs.find((candidate) => documentTabKey(candidate) === key);
   if (!tab) return state;
-  return { tabs: [tab], selectedKey: key, previewKey: state.previewKey === key ? key : null };
+  return selectedState(state, { tabs: [tab], selectedKey: key, previewKey: state.previewKey === key ? key : null });
 }
 
 export function closeDocumentTabsToRight(state: DocumentTabsState, key: string): DocumentTabsState {
@@ -302,8 +331,8 @@ export function closeDocumentTabsToRight(state: DocumentTabsState, key: string):
   const selectedKey = tabs.some((tab) => documentTabKey(tab) === state.selectedKey)
     ? state.selectedKey
     : key;
-  return {
+  return selectedState(state, {
     tabs, selectedKey,
     previewKey: tabs.some((tab) => documentTabKey(tab) === state.previewKey) ? state.previewKey : null,
-  };
+  });
 }

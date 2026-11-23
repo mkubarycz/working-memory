@@ -408,7 +408,8 @@ export type DocumentChangeEvent = { mcpUrl: string } & (
 export interface SharedTopicReceipt {
   id: string;  title: string; duplicate: boolean; statusUrl: string; submittedAt: string;
 }
-export interface FeedbackServer { id: string; name: string; address: string }
+export interface FeedbackServer { id: string; name: string; address: string; delivery?: 'public-inbox' }
+export interface PublicFeedbackSettings { enabled: boolean; destination: string | null }
 export interface FeedbackContext {
   desktop: { version: string; build: string };
   backend: { version: string };
@@ -489,11 +490,16 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   setEmbeddingAction(action: import('./embeddings').EmbeddingAction): Promise<import('./embeddings').EmbeddingDashboard>;
   setEmbeddingRetention(minutes: number | null): Promise<import('./embeddings').EmbeddingDashboard>;
   getRelatedTopics(id: string): Promise<import('../../../control-plane/src/embeddingContract').RelatedTopics>;
+  suggestTopicPlacement(id: string): Promise<import('../../../control-plane/src/topicPlacementContract').TopicPlacement>;
+  applyTopicPlacement(input: import('../../../control-plane/src/topicPlacementContract').TopicPlacementApply): Promise<void>;
   getContainerProvider(): Promise<'docker' | 'podman'>;
   setContainerProvider(provider: 'docker' | 'podman'): Promise<void>;
   getDesktopBuildInfo(): Promise<DesktopBuildInfo>;
   prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
   sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
+  getPublicFeedbackSettings(): Promise<PublicFeedbackSettings>;
+  savePublicFeedbackSettings(configuration: unknown): Promise<PublicFeedbackSettings>;
+  clearPublicFeedbackSettings(): Promise<PublicFeedbackSettings>;
   createChatBugReport(input: ChatBugReportInput): Promise<ChatBugReportDraft>;
   createSearchBugReport(input: SearchBugReportInput): Promise<ChatBugReportDraft>;
   createFeatureBugReport(input: FeatureBugReportInput): Promise<ChatBugReportDraft>;

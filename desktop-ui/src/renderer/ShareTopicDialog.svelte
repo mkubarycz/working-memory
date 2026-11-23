@@ -91,7 +91,9 @@
       <label><input type="radio" bind:group={selectedServerId} value={server.id} disabled={busy} /> {server.name} — {server.address}</label>
     {/each}
   {/if}
-  <p class="warning">Trusted LAN only. Traffic is encrypted with the discovered server's self-signed certificate; servers and senders are not authenticated.</p>
+  <p class="warning">{servers.some(server => server.delivery === 'public-inbox')
+    ? 'Public inbox uploads are encrypted for the configured recipient. The upload credential cannot read, list, overwrite or delete reports. The receiving computer must be running to import them.'
+    : 'Trusted LAN only. Traffic is encrypted with the discovered server’s self-signed certificate; servers and senders are not authenticated.'}</p>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
   {#if sessionOnly && sent && receiptUrl}<p><a href={receiptUrl} target="_blank" rel="noreferrer">Check report status</a></p>{/if}

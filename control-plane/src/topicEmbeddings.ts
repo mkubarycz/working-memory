@@ -118,7 +118,7 @@ function bytes(vector: number[]): Buffer {
   return buffer;
 }
 
-function vector(value: unknown): number[] {
+export function vector(value: unknown): number[] {
   if (!(value instanceof Uint8Array) || value.byteLength !== EMBEDDING_DIMENSIONS * 4) {
     throw new Error('Stored embedding is invalid. Rebuild the embedding index.');
   }
@@ -158,7 +158,7 @@ export function submitEmbeddings(db: DatabaseSync, raw: unknown): { accepted: bo
   }
 }
 
-function similarity(a: number[], b: number[]): number {
+export function similarity(a: number[], b: number[]): number {
   let sum = 0;
   for (let i = 0; i < EMBEDDING_DIMENSIONS; i++) sum += a[i] * b[i];
   return Math.max(-1, Math.min(1, sum));

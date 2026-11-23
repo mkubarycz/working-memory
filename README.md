@@ -56,6 +56,32 @@ For   **topics**, topic types, Agent Messages, and related control-plane documen
 - **Built for recovery:** resources use explicit status and relationship
   fields, while the SQLite store remains portable and independently backed up.
 
+## Development agents
+
+The repository's [Coding Agent](.github/agents/coding-agent.agent.md) follows
+the existing repository instructions and implements one bounded topic at a time.
+It returns changes, validation results, and a short chat digest; it does not
+integrate sibling changes or install into shared local environments.
+
+The user-level **Coding Agent Commander** lives at
+`~/.copilot/agents/coding-agent-commander.agent.md` and is reusable across
+repositories on that machine. In a Copilot session, select it from the agent
+picker and identify the repository, workstream/topics, and local environment.
+The Commander creates an interactive nested Coding Agent chat per assigned topic.
+The child starts with a Situation Report covering its task, existing delivery,
+verified status, uncertainties, and next step. Discuss the topic in that chat;
+the child sends blockers, requirement changes, and completion/digest updates to
+the Commander through session messaging. A background subagent transcript is not
+a substitute for this interactive conversation.
+
+The Commander reviews and integrates
+the result, validates and delivers locally, and proposes retrospective-driven
+instruction improvements for user approval. It starts with one worker;
+additional concurrency requires a user request.
+
+This first iteration is human-started. Agent definitions do not establish a
+persistent workstream watch or scheduler. Delivery does not close topics.
+
 ## Installation status
 
 Working Memory no longer ships as a VS Code extension. Tagged releases publish
@@ -642,6 +668,15 @@ or pinning. Child creation uses the parent's workstream when there is exactly
 one; otherwise it asks for an open workstream before opening the normal form.
 Search and Related topics share the result component, topic actions and workstream picker.
 
+Saved topics also offer **Suggest Placement**. Working Memory compares the topic's
+indexed embeddings with readable topics and workstreams and proposes a parent
+and workstream with supporting evidence. Similarity is not certainty or an authored
+relationship. Select **Apply** to add the proposed relationships; nothing is moved,
+closed or linked automatically. Self/descendant parents are excluded, and changed
+source/candidate versions require fresh suggestions before applying. Disabled or
+pending embeddings are reported explicitly. **Bug Report** captures the placement
+snapshot so an incorrect recommendation can be reported without rerunning it.
+
 Enable local indexing with the **Embeddings** switch in **Settings > Features**.
 Monitor indexing history in **Observability** (enable **Observability Container App**
 in **Settings > Features** if needed). Pause/resume, Retry and local service
@@ -1024,6 +1059,11 @@ Reconcile renderer overlap with #78/#79/#80, preserving App-owned
 integration. Those sibling features are not included here.
 
 ## Document stage
+
+Closing the selected tab returns to the previously viewed still-open tab, rather
+than choosing a neighbouring tab by position. Closing an inactive tab does not
+change selection. Viewing history is session-only and resets on restart or
+environment change; restored tabs use the existing fallback until viewed.
 
 Opening a document creates an italic **preview tab**. There is at most one:
 opening another document replaces that preview in place, while existing
@@ -1474,25 +1514,20 @@ every historical response unread.
 
 ### Bug Report and Feedback delivery
 
-Chat, Search and feature/backend errors share **Bug Report**: enter what went
-wrong, then select **Send bug report**. The shared dialog gathers bounded,
-redacted evidence and submits to a single discovered destination without a
-mandatory second preview-and-send screen. Multiple LAN receivers still require
-a choice; **Preview report** keeps the optional review and explicit Send
-workflow. The trusted-LAN warning is shown before direct Send as well as in the
-preview: discovered receivers and senders are not authenticated. Failed delivery
-retains the captured report, request identity and prepared receiver for retry
-instead of recapturing or rediscovering it. If delivery succeeded but the local
-tracking note failed, retry saves the cached receipt without resending, even if
-the receiver has gone offline. Collected evidence remains
-inspectable in the dialog; do not include private information in the description.
-SAS credential redaction covers literal query delimiters and named, decimal,
-or hexadecimal HTML/XML ampersand entities.
-Reporting never retries or changes the original operation.
-
-The shared dialogs also distinguish a queued upload result from confirmed
-delivery: a queued result does not offer a status link or claim an import.
-This result compatibility does not enable or configure a public inbox sender.
+Chat, Search, feature/backend errors and placement suggestions share **Bug Report**:
+enter what went wrong, then select **Send bug report**. The shared dialog gathers
+bounded, redacted evidence and submits to the single configured/discovered
+destination without a mandatory second preview-and-send screen. Multiple LAN
+receivers still require a choice; **Preview report** keeps the optional review
+and explicit Send workflow. The direct dialog also shows the trusted-LAN warning:
+discovered receivers and senders are not authenticated. Failed delivery retains
+the captured report, request identity and prepared receiver for retry instead of
+recapturing or rediscovering it. If delivery succeeded but the local tracking note
+failed, retry saves the cached receipt without resending, even if the receiver
+has gone offline. SAS redaction covers literal query delimiters and named,
+decimal, or hexadecimal HTML/XML ampersand entities. Collected
+evidence remains inspectable in the dialog; do not include private information in
+the description. Reporting never retries or changes the original operation.
 
 Every chat message has **Bug Report**, including messages still running.
 Search also has **Bug Report** at the top right, available before, during, or
@@ -1532,9 +1567,9 @@ bounded original Compose error output, and provider command timings. Reporting
 does not retry the upgrade, stop containers, change ports, or modify storage.
 Backend reports are previewed in the desktop session rather than written to
 the affected backend, so they can be sent while that backend is offline.
-Canceling discards the session report; explicit **Send bug report** submits to
-a discovered Feedback server and provides a status link. No source topic is
-created or edited.
+Canceling discards the session report; explicit **Send bug report** submits through
+Feedback. LAN delivery provides a status link; public uploads provide a queued
+confirmation only. No source topic is created or edited.
 
 Podman connection discovery and engine probes allow up to 30 seconds per command
 (Docker remains at 10 seconds). A timeout identifies the command that did not
@@ -1543,8 +1578,8 @@ After a timeout, the Features page does not immediately repeat container discove
 to look for ownership recovery. Ownership-conflict errors still offer recovery.
 
 Answer **What was the bug?** and explicitly select **Send bug report**. Chat,
-Search and feature reports create a separate local report topic, which remains
-if discovery or delivery fails or you cancel delivery after preview; the original
+Search, feature and placement reports create a separate local report topic, which
+remains if discovery or delivery fails; the original
 message and resource are not changed.
 Embedded Container App dashboards are hidden while HTML dialogs are open,
 including report capture and Feedback, and restored after the last overlay closes.
@@ -1555,9 +1590,8 @@ Reports include the selected prompt/response, journal state and timing, tool
 arguments/results, journal errors, confirmation state, desktop/platform details,
 and whether this desktop still tracks the run. The latest 100 shareable journal
 events are included within a bounded report size; omissions and truncation are
-marked. Recognized secrets and configured credentials are redacted. Arbitrary
-sensitive text cannot be reliably detected: only describe information you may
-share, and use the optional preview to review captured evidence. Image
+marked. Recognized secrets and configured credentials are redacted. Arbitrary sensitive
+text cannot be reliably detected: only describe information you may share. Image
 attachments are references only; other conversations, internal system events,
 hidden reasoning and general application/backend log files are not included.
 Inline tool-result media and embedded resource blobs are omitted before
@@ -1600,6 +1634,42 @@ HTTP status UI is loopback-only on 7722. Generic Docker runtime `additionalPorts
 publish the receiving TCP port and discovery UDP port with explicit
 `hostIp: "0.0.0.0"`; omitted host IPs default to loopback. The existing primary
 UI/health port remains loopback-only for all apps.
+
+#### Public write-only inbox
+
+**Settings > Feedback** accepts a sender configuration for a private Azure Blob
+container exposed over public HTTPS. It contains only a create-only container
+SAS (`c`, HTTPS-only, with an expiry) and the receiver's RSA public key. The desktop
+encrypts the complete report with AES-256-GCM and wraps its key with
+RSA-OAEP-SHA256 before upload. The sender credential cannot read, list, overwrite
+or delete blobs; its configuration is encrypted in the desktop credential vault.
+Configured public delivery replaces LAN discovery, so the receiving computer
+does not need an inbound connection from the sending network.
+
+Uploads say **queued**, not imported or resolved, and do not invent a topic/status
+receipt. The existing Feedback container polls every 15 seconds using a separate
+read/delete/list credential, decrypts and validates each report, imports through
+its existing Inbox/User Story path, and deletes the blob only after a successful
+import. Failed imports remain queued; retries reuse request/content identity.
+Its loopback `/health` includes polling/error state without credentials.
+
+Build/start the updated Feedback receiver first, then provision with:
+
+```bash
+node scripts/setup-public-feedback.mjs --resource-group <existing-group> \
+  --account <unique-storage-account> --location eastus2 \
+  --sender-output <private-path-outside-repository>/feedback-sender.json
+```
+
+This creates a Standard LRS account and private `reports` container in the selected
+Azure subscription, saves receiver configuration in its existing `/data` volume,
+and creates a private sender setup file. Azure storage/transaction charges apply.
+Restart Feedback to activate polling, and paste the sender setup into
+**Settings > Feedback** on each sending computer. Credentials expire after one
+year; renew them before expiry using a new sender-output path and redistribute
+the configuration. Back up `/data/public-inbox/private.pem`: TLS certificate
+renewal does not rotate this separate inbox key. Losing it makes queued reports
+undecryptable. Never expose the LAN TCP/UDP receiving ports publicly.
 
 The receiver persists its self-signed certificate in its own named volume.
 Only the feedback request accepts that self-signed certificate, and it verifies

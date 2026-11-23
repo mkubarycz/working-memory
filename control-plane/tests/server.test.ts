@@ -4,6 +4,7 @@ import { startServer } from '../../tests/authenticatedFixture';
 import { SERVICE_VERSION } from '../src/config';
 import { Client } from '@modelcontextprotocol/client';
 import { StreamableHTTPClientTransport } from '../../tests/authenticatedFixture';
+import { openStore } from '../src/store';
 
 interface HealthBody {
   ok: boolean;
@@ -129,6 +130,43 @@ describe('control-plane server bootstrap', () => {
       await a.close();
       await b.close();
       await server.close();
+    }
+  });
+
+  it('uses the live ordered index for MCP kind pages without changing timestamp ties or deleted reads', async () => {
+    const store = openStore(':memory:');
+    const first = store.createDocument({ kind: 'Topic', spec: { title: 'First' } });
+    store.createDocument({ kind: 'Workstream', spec: { title: 'Other kind' } });
+    const second = store.createDocument({ kind: 'Topic', spec: { title: 'Second' } });
+    const deleted = store.createDocument({ kind: 'Topic', spec: { title: 'Deleted' } });
+    const last = store.createDocument({ kind: 'Topic', spec: { title: 'Last' } });
+    store.deleteDocument({ id: deleted.metadata.id });
+    store.db.prepare('UPDATE resources SET updated_at = 100').run();
+    const server = await startServer({ port: 0, store });
+    const client = new Client({ name: 'wm-ordered-page-test', version: '1' });
+    const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`));
+    try {
+      const plan = store.db.prepare(`EXPLAIN QUERY PLAN SELECT * FROM resources
+        WHERE deleted_at IS NULL AND kind = ? ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?`)
+        .all('Topic', 2, 1).map(row => String(row.detail)).join('\n');
+      expect(plan).toContain('idx_resources_live_kind_updated');
+      expect(plan).not.toContain('TEMP B-TREE');
+      await client.connect(transport);
+      const read = async (args: Record<string, unknown>) => {
+        const result = await client.callTool({ name: 'wm-document-read', arguments: { kind: 'Topic', ...args } });
+        expect(result.isError).not.toBe(true);
+        const text = (result.content as TextContent[]).find(value => value.type === 'text')?.text ?? '';
+        return (JSON.parse(text).documents as Array<{ metadata: { id: string } }>).map(doc => doc.metadata.id);
+      };
+      expect(await read({ limit: 2 })).toEqual([last.metadata.id, second.metadata.id]);
+      expect(await read({ limit: 2, offset: 1 })).toEqual([second.metadata.id, first.metadata.id]);
+      expect(await read({ includeDeleted: true, limit: 3 })).toEqual([last.metadata.id, deleted.metadata.id, second.metadata.id]);
+      store.db.prepare('UPDATE resources SET updated_at = 200 WHERE id = ?').run(first.metadata.id);
+      expect(await read({ limit: 2 })).toEqual([first.metadata.id, last.metadata.id]);
+    } finally {
+      await client.close();
+      await server.close();
+      store.close();
     }
   });
 });

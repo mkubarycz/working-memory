@@ -106,6 +106,7 @@
     serializeDocumentTabs,
     settingsDocument,
     searchDocument,
+    selectDocumentTab,
     updateDocumentTab,
     type DocumentTabsState,
   } from './documentTabs';
@@ -217,6 +218,7 @@
     if (!documents.some(document => document.kind === 'topic-backlog')) backlogExpanded.clear();
   });
   let selectedDocumentKey = $state<string | null>(null);
+  let documentSelectionHistory = $state<string[]>([]);
   $effect(() => {
     const key = selectedDocumentKey;
     if (key) untrack(() => {
@@ -235,7 +237,17 @@
   const closedDuringRestore = new Set<string>();
 
   function documentTabsState(): DocumentTabsState {
-    return { tabs: documents, selectedKey: selectedDocumentKey, previewKey: previewDocumentKey };
+    return {
+      tabs: documents, selectedKey: selectedDocumentKey, previewKey: previewDocumentKey,
+      selectionHistory: documentSelectionHistory,
+    };
+  }
+
+  function setDocumentTabs(next: DocumentTabsState): void {
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
+    documentSelectionHistory = next.selectionHistory ?? [];
   }
 
   function promoteDocument(key = selectedDocumentKey): void {
@@ -641,9 +653,7 @@
       containerAppDocument(app),
       false,
     );
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     containerAppViews[app.id] = app.embeddable ? 'app' : 'info';
     activateHeaderTab('container-apps');
     restoreDocumentSaveStatus(next.selectedKey);
@@ -1064,9 +1074,7 @@
     if (document && foreground) {
       documentOpens.invalidate();
       const next = openDocumentTab(documentTabsState(), document, false);
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
       activateHeaderTab('log');
       documentError = '';
     }
@@ -1477,6 +1485,7 @@
       documentTabKey(document) === persisted.selectedKey)
       ? persisted.selectedKey
       : restored.at(-1) ? documentTabKey(restored.at(-1)!) : null;
+    documentSelectionHistory = selectedDocumentKey ? [selectedDocumentKey] : [];
     const selectedAppId = containerAppIdForDocument(
       documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null,
     );
@@ -1632,6 +1641,7 @@
     documents = reset.documents;
     backlogExpanded.clear();
     selectedDocumentKey = null;
+    documentSelectionHistory = [];
     previewDocumentKey = null;
     documentOpens.invalidate();
     saveState = reset.saveState;
@@ -1953,18 +1963,14 @@
       for (const document of documents.filter(document => document.kind === 'search')) {
         next = closeDocumentTab(next, documentTabKey(document));
       }
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
     }
     if (!features.hostTasks) {
       let next = documentTabsState();
       for (const document of documents.filter(document => ['host-tasks', 'host-task', 'host-task-create'].includes(document.kind))) {
         next = closeDocumentTab(next, documentTabKey(document));
       }
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
       if (activeHeaderTab === 'host-tasks') activeHeaderTab = 'log';
       if (focusedHeaderTab === 'host-tasks') focusedHeaderTab = activeHeaderTab;
     }
@@ -1989,9 +1995,7 @@
     }
     documentOpens.invalidate();
     const next = openDocumentTab(documentTabsState(), hostTaskDocument(task), false);
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     activateHeaderTab('host-tasks');
     restoreDocumentSaveStatus(next.selectedKey);
   }
@@ -2023,9 +2027,7 @@
       documentTabsState(),
       settingsDocument(),
     );
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     restoreDocumentSaveStatus(next.selectedKey);
   }
 
@@ -2042,9 +2044,7 @@
     if (activeDocument?.kind !== 'search') searchState.context = searchContextForSession(searchState, activeDocument);
     documentOpens.invalidate();
     const next = openDocumentTab(documentTabsState(), searchDocument());
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     restoreDocumentSaveStatus(next.selectedKey);
     activateHeaderTab('log');
   }
@@ -2058,9 +2058,7 @@
     const next = key
       ? updateDocumentTab(documentTabsState(), key, document)
       : replaceSelectedTab(documentTabsState(), document);
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
   }
 
   function restoreDocumentSaveStatus(key: string | null): void {
@@ -2094,9 +2092,7 @@
         return;
       }
       const next = openDocumentTab(documentTabsState(), document);
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
       activateHeaderTab('log');
       restoreDocumentSaveStatus(next.selectedKey);
     } catch (error) {
@@ -2135,9 +2131,7 @@
         parentTitle: parent?.title ?? null,
       };
       const next = openDocumentTab(documentTabsState(), draft, false);
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
       activateHeaderTab('log');
     } catch (error) {
       if (!isCurrent() || generation !== environmentGeneration) return;
@@ -2149,9 +2143,7 @@
     documentOpens.invalidate();
     const backlog = topicBacklogDocument(activePanel);
     const next = openDocumentTab(documentTabsState(), backlog);
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     activateHeaderTab('log');
   }
 
@@ -2164,9 +2156,7 @@
       draftKey,
       created,
     );
-    documents = replaced.tabs;
-    selectedDocumentKey = replaced.selectedKey;
-    previewDocumentKey = replaced.previewKey ?? null;
+    setDocumentTabs(replaced);
     const workstreamKey = `workstream:${draft.workstream}`;
     if (documents.some((document) => documentTabKey(document) === workstreamKey)) {
       const refreshed = await window.workingMemory.openResource('workstream', draft.workstream);
@@ -2175,9 +2165,7 @@
         workstreamKey,
         refreshed,
       );
-      documents = updated.tabs;
-      selectedDocumentKey = updated.selectedKey;
-      previewDocumentKey = updated.previewKey ?? null;
+      setDocumentTabs(updated);
     }
     await refreshActive();
   }
@@ -2287,9 +2275,7 @@
           state = updateDocumentTab(state, result.value.key, result.value.document);
         }
       }
-      documents = state.tabs;
-      selectedDocumentKey = state.selectedKey;
-      previewDocumentKey = state.previewKey ?? null;
+      setDocumentTabs(state);
       restoreDocumentSaveStatus(state.selectedKey);
       const failedRefreshes = refreshed.filter((result) => result.status === 'rejected').length;
       if (failedRefreshes > 0) {
@@ -2357,9 +2343,7 @@
           state = updateDocumentTab(state, result.value.key, result.value.document);
         }
       }
-      documents = state.tabs;
-      selectedDocumentKey = state.selectedKey;
-      previewDocumentKey = state.previewKey ?? null;
+      setDocumentTabs(state);
       restoreDocumentSaveStatus(state.selectedKey);
     }
   }
@@ -2509,7 +2493,7 @@
   function selectDocument(key: string): void {
     if (documents.some((document) => documentTabKey(document) === key)) {
       documentOpens.invalidate();
-      selectedDocumentKey = key;
+      setDocumentTabs(selectDocumentTab(documentTabsState(), key));
       const kind = documents.find(document => documentTabKey(document) === key)?.kind;
       activateHeaderTab(kind === 'host-task' || kind === 'host-task-create' ? 'host-tasks' : 'log');
       restoreDocumentSaveStatus(key);
@@ -2561,9 +2545,7 @@
       });
       searchState = nextSearch;
     }
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     restoreDocumentSaveStatus(next.selectedKey);
   }
 

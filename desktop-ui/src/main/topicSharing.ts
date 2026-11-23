@@ -3,6 +3,7 @@ import { TLSSocket } from 'node:tls';
 import type { ControlPlaneClient, Topic } from '../../../shared/controlPlaneClient';
 import type { FeedbackContext, FeedbackPreparation, FeedbackSendResult, SharedTopicReceipt } from '../shared/contracts';
 import { discoverFeedbackServers, type FeedbackDestination } from './feedbackDiscovery';
+import { encryptPublicFeedback, publicFeedbackRecipient, uploadPublicFeedback, type PublicFeedbackConfiguration } from '../../../shared/publicFeedback';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IMAGE_TYPES: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
@@ -134,6 +135,9 @@ interface FeedbackSnapshot {
   createdAt: number;
   receipt?: SharedTopicReceipt;
   recorded?: boolean;
+  publicInbox?: PublicFeedbackConfiguration;
+  publicPayload?: { envelope: string; url: string };
+  queued?: Extract<FeedbackSendResult, { status: 'queued' }>;
   recordReceipt: (receipt: SharedTopicReceipt) => Promise<void>;
 }
 
@@ -144,7 +148,7 @@ export class FeedbackSender {
     topic: FeedbackTopic; sourceUrl: string; context: FeedbackContext;
     recordReceipt: (receipt: SharedTopicReceipt) => Promise<void>;
     fetcher?: typeof fetch;
-  }>) {}
+  }>, private readonly publicInbox: () => Promise<PublicFeedbackConfiguration | undefined> = async () => undefined) {}
 
   private async snapshot(id: string, requestId: string): Promise<FeedbackSnapshot> {
     if (!UUID.test(requestId)) throw new Error('Invalid feedback request ID.');
@@ -152,19 +156,27 @@ export class FeedbackSender {
       this.requestId = requestId;
       this.pending = (async () => {
         const { topic, sourceUrl, context, recordReceipt, fetcher } = await this.source(id);
-        return { id, body: await serializeFeedback(topic, sourceUrl, requestId, context, fetcher), context, recordReceipt, servers: [], createdAt: Date.now() };
+        return { id, body: await serializeFeedback(topic, sourceUrl, requestId, context, fetcher), context, recordReceipt,
+          publicInbox: await this.publicInbox(), servers: [], createdAt: Date.now() };
       })();
     }
     let snapshot: FeedbackSnapshot;
     try { snapshot = await this.pending; }
     catch (error) { this.pending = undefined; throw error; }
     if (snapshot.id !== id) throw new Error('This feedback request belongs to a different topic.');
-    if (!snapshot.receipt && Date.now() - snapshot.createdAt > 5 * 60_000) throw new Error('Feedback snapshot expired. Close this dialog and try again.');
+    if (!snapshot.receipt && !snapshot.queued && Date.now() - snapshot.createdAt > 5 * 60_000) throw new Error('Feedback snapshot expired. Close this dialog and try again.');
     return snapshot;
   }
 
   async prepare(id: string, requestId: string): Promise<FeedbackPreparation> {
     const snapshot = await this.snapshot(id, requestId);
+    if (snapshot.publicInbox) {
+      const url = new URL(snapshot.publicInbox.uploadUrl);
+      return { context: snapshot.context, servers: [{
+        id: `azure:${publicFeedbackRecipient(snapshot.publicInbox.publicKey)}`,
+        name: 'Public Feedback inbox', address: url.hostname, delivery: 'public-inbox',
+      }] };
+    }
     snapshot.servers = await discoverFeedbackServers();
     if (!snapshot.servers.length) throw new Error('No Feedback servers found. Start the Feedback container app; allow UDP 7721 and TCP 7720 on the same LAN.');
     return { context: snapshot.context, servers: snapshot.servers.map(({ id, name, url }) => ({ id, name, address: new URL(url).hostname })) };
@@ -172,6 +184,16 @@ export class FeedbackSender {
 
   async send(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult> {
     const snapshot = await this.snapshot(id, requestId);
+    if (snapshot.publicInbox) {
+      const server = (await this.prepare(id, requestId)).servers[0];
+      if (serverId && serverId !== server.id) throw new Error('That public inbox was not prepared for this report.');
+      if (!snapshot.queued) {
+        snapshot.publicPayload ??= encryptPublicFeedback(snapshot.body, requestId, snapshot.publicInbox);
+        await uploadPublicFeedback(snapshot.publicPayload);
+        snapshot.queued = { status: 'queued', requestId, uploadedAt: new Date().toISOString(), destination: server.address };
+      }
+      return snapshot.queued;
+    }
     if (!snapshot.receipt) {
       if (!serverId) await this.prepare(id, requestId);
       const server = serverId ? snapshot.servers.find((candidate) => candidate.id === serverId)

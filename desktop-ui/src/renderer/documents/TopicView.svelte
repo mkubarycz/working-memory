@@ -11,6 +11,7 @@
   import AgentMessageCallouts from './AgentMessageCallouts.svelte';
   import HybridMarkdownEditor from './HybridMarkdownEditor.svelte';
   import RelatedTopics from './RelatedTopics.svelte';
+  import TopicPlacement from './TopicPlacement.svelte';
   import type { ActiveResourceDrag, TopicLinkReference } from '../resourceDrag';
 
   interface Props {
@@ -449,6 +450,12 @@
   </div>
 </section>
 
+{#if !draft && topic.id}
+  {#key topic.id}
+    <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
+      editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream} onApplied={onTopicAdded} />
+  {/key}
+{/if}
 {#if showRelatedTopics && !draft && topic.id}
   <RelatedTopics id={topic.id} resourceVersion={topic.resourceVersion} {onOpenTopic} {attachmentBaseUrl}
     bind:activeDrag {onAddChild} onAdded={onTopicAdded} />
