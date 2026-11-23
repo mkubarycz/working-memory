@@ -193,22 +193,22 @@ describe('agentic document search', () => {
     expect(response.trace?.[0].tool).toBe('wm-semantic-search');
   });
 
-  it('orders literal results before semantic-only model selections without dropping either', async () => {
-    const other = { ...hit, id: 'semantic', score: 0.95, similarity: 0.95 };
+  it('preserves host fusion order even when a semantic-only selection outranks a lexical hit', async () => {
+    const other = { ...hit, id: 'semantic', score: 0.016, similarity: 0.95 };
     const dependencies = harness([answer([{ type: 'list', items: [{ sourceId: other.id, text: 'A related concept.' }] }])]);
     dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 2, results: [
-      { ...hit, literalMatch: true, similarity: 0.1, score: 0.1 }, other,
+      { ...hit, literalMatch: true, similarity: 0.1, score: 0.013 }, other,
     ] } });
     const response = await searchWithMatches('bank account', dependencies);
-    expect(response.results.map(result => result.id)).toEqual([hit.id, other.id]);
-    expect(response.blocks?.[0]).toMatchObject({ type: 'list', items: [{ sourceId: hit.id }] });
+    expect(response.results.map(result => result.id)).toEqual([other.id, hit.id]);
+    expect(response.blocks?.map(block => block.type === 'list' ? block.items[0].sourceId : '')).toEqual([other.id, hit.id]);
   });
 
   it('retains the exact case-number match when AI selects only a different case', async () => {
     const caseId = '20261411192068475308';
     const exact = { ...hit, title: 'Case file', excerpt: `Case ${caseId}`, literalMatch: true,
-      score: 0, similarity: 0, confidence: { level: 'high' as const, reason: 'Exact reference, not semantic similarity.' } };
-    const other = { ...hit, id: 'different-case', title: 'jubberish topic 20261411192068475309', score: 0.95, similarity: 0.95 };
+      score: 0.02, similarity: 0, confidence: { level: 'high' as const, reason: 'Exact reference, not semantic similarity.' } };
+    const other = { ...hit, id: 'different-case', title: 'jubberish topic 20261411192068475309', score: 0.016, similarity: 0.95 };
     const dependencies = { ...harness([answer([{ type: 'list', items: [{ sourceId: other.id, text: 'A related concept.' }] }])]),
       onResults: vi.fn() };
     dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 2, results: [exact, other] } });
@@ -221,7 +221,7 @@ describe('agentic document search', () => {
       expect.objectContaining({ id: other.id }),
     ] }));
     expect(response.results.map(result => result.id)).toEqual([exact.id, other.id]);
-    expect(response.results[0]).toMatchObject({ resourceVersion: exact.resourceVersion, score: 0, similarity: 0,
+    expect(response.results[0]).toMatchObject({ resourceVersion: exact.resourceVersion, score: 0.02, similarity: 0,
       confidence: exact.confidence, excerpt: exact.excerpt });
     expect(response.blocks?.[0]).toMatchObject({ type: 'list', items: [{ sourceId: exact.id }] });
   });

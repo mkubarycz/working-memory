@@ -618,14 +618,36 @@ Topics even though the shared index covers other document kinds.
 MCP callers use the same read-only retrieval as desktop Search. For topic-only
 search, call `wm-semantic-search` with
 `{ "queries": ["health"], "literalQuery": "health", "kinds": ["Topic"], "limit": 20 }`.
-`literalQuery` prioritizes exact text matches; results include relevance,
+`literalQuery` supplies an intentional full-phrase lexical anchor; results include relevance,
 evidence confidence and source IDs. Use `wm-document-query` for literal filters,
 exact counts, workstream membership or full source reads. Conversational AI
 interpretation remains desktop-owned, not an extra MCP or HTTP search endpoint.
-Standalone 20-digit case numbers in search phrases are also verified against the
-full indexed text and ranked before semantic-only matches, even without
-`literalQuery`. They remain strings and do not match parts of longer identifiers.
-Their High confidence verifies the literal reference, not semantic similarity.
+Search, Related topics and placement share general lexical/semantic retrieval.
+Words, phrases and punctuation-connected references of any format remain strings;
+whole-token verification rejects partial or near identifiers, regardless of FTS
+stemming. Lexical evidence uses full saved search projections, including text
+beyond embedding coverage, but excludes historical missing-body projection
+artifacts. Source-based discovery proposes important words and adjacent phrases
+from the full saved title/body using indexed vocabulary rarity estimates, then
+evaluates at most 128 proposals in one indexed candidate scan against the eligible
+corpus and selects up to 12. An anchor counts at most once per eligible document,
+even when repeated in its text.
+This bounded heuristic is not exhaustive extraction: equally distinctive terms
+can compete for the proposal budget. Derived anchors occurring in at least half
+of three or more eligible documents are suppressed; an explicit `literalQuery`
+phrase is exempt because the caller intentionally requested it.
+
+Up to 50 verified lexical candidates (BM25 order) and 50 semantic candidates
+(cosine at least 0.35) are combined with weighted reciprocal-rank fusion:
+`1 / (61 + semanticRank)` plus `1.25 / (61 + lexicalRank)`, using zero-based ranks.
+Exact verification and eligibility filtering precede the lexical limit.
+The higher-is-better semantic-search `score` is **fusion relevance**, neither
+cosine nor calibrated confidence. `similarity` remains the measured vector
+cosine; High lexical confidence verifies occurrence, not intended meaning or
+correct placement. Desktop Search preserves host relevance order, rather than
+always putting every lexical hit first. Bounded candidate lists do not eliminate
+the existing scan of eligible vectors/passages. No entity embeddings, new model
+or LLM reranker are required.
 
 Agents can call the read-only `wm-document-search` tool with
 `{ "queries": ["authentication", "sign in"], "kinds": ["Topic"], "limit": 20 }`.
@@ -655,22 +677,21 @@ be opened through `openStore` to install the local projection function and trigg
 ### Local embeddings and Related topics (V1)
 
 With Search and Embeddings enabled, saved topics show **Related topics**:
-semantic candidates ranked by vector similarity.
+hybrid candidates ranked by lexical/semantic fusion relevance.
 Results include supporting passages and label existing parent/child links;
 they never create links or modify authored documents. Compact topic-tree-style
-rows show a relevance score (vector cosine similarity, not a confidence
+rows show measured vector cosine similarity (not fusion relevance or a confidence
 percentage). Supporting Markdown passages are quoted beneath the title when
 expanded; they start collapsed. The section is hidden
 when Embeddings is disabled, without running related-topic retrieval. Pending
 source topics show an indexing message, not keyword substitutes.
-Exact standalone 20-digit case references shared with the source title or full
-body are ranked before semantic-only candidates, including before the candidate
-cap. Verified references show **Term match** and High literal-evidence confidence,
+Verified lexical anchors from the source title or full body can discover topics
+with low semantic cosine. They show **Term match** and High literal-evidence confidence,
 even when their measured cosine similarity is low; that does not prove shared
 meaning or authorize a relationship. Related topics and placement use the same
-reference matcher. Existing workstream filters and current-index requirements
+hybrid matcher. Existing workstream filters and current-index requirements
 still apply. Ordinary
-keyword MCP search remains available separately; desktop Search uses semantic retrieval.
+keyword MCP search remains available separately; desktop Search uses hybrid retrieval.
 
 Related topic handles share drag handling with the workstream tree: drag to the
 left rail or export the same Markdown context attachment to VS Code. Their
@@ -703,8 +724,8 @@ closed or linked automatically. Self/descendant parents are excluded, and change
 source/candidate versions require fresh suggestions before applying. Disabled or
 pending embeddings are reported explicitly. **Bug Report** captures the placement
 snapshot so an incorrect recommendation can be reported without rerunning it.
-Placement also prioritizes exact standalone 20-digit case references shared with
-the saved topic's title or body, including text beyond embedding coverage.
+Placement uses the same general lexical/semantic fusion from the saved title or
+body, including lexical text beyond embedding coverage.
 Similarity remains the actual cosine score; literal confidence is not approval
 to create a relationship. Parents must still be open, non-descendants and members
 of an open workstream; a matching unplaced topic remains searchable but is not

@@ -35,6 +35,25 @@ const applyInput = (id: string, version: number, parent: { id: string; resourceV
     workstream: { id: workstream.id, resourceVersion: workstream.resourceVersion } });
 
 describe('topic placement production MCP/client entry points', () => {
+  it('ranks a verified workstream above a weaker semantic parent', async () => {
+    const { server, client } = await setup();
+    try {
+      const destination = store.createDocument({ kind: 'Workstream', spec: { title: 'INC-42' } });
+      const other = store.createDocument({ kind: 'Workstream', spec: { title: 'Other destination' } });
+      store.createDocument({ kind: 'Topic', spec: { title: 'Unrelated parent', workstreams: [other.metadata.id] } });
+      const source = store.createDocument({ kind: 'Topic', spec: { title: 'Re: INC-42' } });
+      store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+      indexAll(id => id === destination.metadata.id ? 1 : 0);
+      const response = await client.callTool('wm-topic-suggest-placement', { id: source.metadata.id, limit: 1 });
+      if (!response.ok) throw new Error(response.error);
+      expect(topicPlacementSchema.parse(response.result)).toMatchObject({
+        state: 'ready', suggestions: [{ parent: null, workstream: { id: destination.metadata.id },
+          similarity: 0, confidence: { reason: expect.stringContaining('Verified lexical evidence') } }],
+      });
+      expect(store.getDocument({ id: source.metadata.id })).toEqual(source);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it.each(['title', 'body'] as const)('prioritizes exact case identity from the source %s before cosine limits without bypassing parent eligibility', async field => {
     const { server, client } = await setup();
     try {

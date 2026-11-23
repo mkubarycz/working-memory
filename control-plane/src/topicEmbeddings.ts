@@ -5,7 +5,7 @@ import {
   embeddingSubmitSchema, relatedTopicsInputSchema,
   type EmbeddingStats, type EmbeddingWork, type RelatedTopics,
 } from './embeddingContract.js';
-import { caseIdentifiers, caseReferenceMatches, literalDocumentMatches, refreshDocumentSearch, type DocumentSearchHit } from './documentSearch.js';
+import { hybridRanks, lexicalCandidates, lexicalConfidence, refreshDocumentSearch, type DocumentSearchHit } from './documentSearch.js';
 
 const indexedKinds = EMBEDDING_KINDS.map(kind => `'${kind}'`).join(',');
 const projectedBody = "CASE WHEN r.kind = 'Topic' THEN substr(s.body, length(s.title) + 2) ELSE s.body END";
@@ -172,8 +172,7 @@ export function relatedTopics(db: DatabaseSync, raw: unknown, enabled: boolean):
   const indexed = db.prepare('SELECT * FROM topic_embedding_index WHERE topic_id = ? AND model_id = ? AND source_version = ?')
     .get(input.id, EMBEDDING_MODEL, Number(current.resource_version));
   const sourceVector = indexed ? vector(indexed.centroid) : null;
-  const best: Array<{ id: string; score: number; literalMatch: boolean }> = [];
-  const literalMatches = sourceVector ? caseReferenceMatches(db, input.id) : new Map<string, string>();
+  const eligible = new Map<string, number>();
   if (sourceVector) {
     for (const row of db.prepare(`SELECT r.id, i.centroid FROM topic_embedding_index i JOIN resources r ON r.id = i.topic_id
       WHERE r.kind = 'Topic' AND r.deleted_at IS NULL AND r.id != ?
@@ -181,31 +180,32 @@ export function relatedTopics(db: DatabaseSync, raw: unknown, enabled: boolean):
       AND (? IS NULL OR EXISTS (SELECT 1 FROM json_each(r.spec, '$.workstreams') WHERE value = ?))`)
       .iterate(input.id, EMBEDDING_MODEL, input.workstream ?? null, input.workstream ?? null)) {
       const score = similarity(sourceVector, vector(row.centroid));
-      const literalMatch = literalMatches.has(String(row.id));
-      if (score < 0.35 && !literalMatch) continue;
-      best.push({ id: String(row.id), score, literalMatch });
-      best.sort((a, b) => Number(b.literalMatch) - Number(a.literalMatch) || b.score - a.score || a.id.localeCompare(b.id));
-      if (best.length > 40) best.pop();
+      eligible.set(String(row.id), score);
     }
 
   }
+  const lexical = lexicalCandidates(db, new Set(eligible.keys()), { sourceId: input.id });
+  const ranks = hybridRanks(eligible, lexical);
+  const best = [...ranks].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const parents: string[] = JSON.parse(String(current.parents));
-  const results = best.slice(0, input.limit).map(({ id, score, literalMatch }) => {
+  const results = best.slice(0, input.limit).map(([id]) => {
+      const score = eligible.get(id)!;
+      const literal = lexical.get(id);
       const doc = source(db, id);
       const candidateParents: string[] = JSON.parse(String(doc.parents));
-      let excerpt = literalMatches.get(id) ?? String(doc.body).slice(0, 600);
+      let excerpt = literal?.excerpt ?? String(doc.body).slice(0, 600);
       let passageScore = -1;
       if (sourceVector) {
         for (const passage of db.prepare('SELECT excerpt, vector FROM topic_embedding_passages WHERE topic_id = ?').iterate(id)) {
           const score = similarity(sourceVector, vector(passage.vector));
-          if (score > passageScore) { passageScore = score; if (!literalMatch) excerpt = String(passage.excerpt); }
+          if (score > passageScore) { passageScore = score; if (!literal) excerpt = String(passage.excerpt); }
         }
       }
       return { id, title: String(doc.title), excerpt, similarity: score,
-        confidence: matchConfidence(passageScore, score, literalMatch,
+        confidence: literal ? lexicalConfidence(literal) : matchConfidence(passageScore, score, false,
           Number(indexed?.limited) === 1 || Number(doc.body_length) > EMBEDDING_TEXT_LIMIT),
         alreadyLinked: parents.includes(id) || candidateParents.includes(input.id),
-        evidence: literalMatch ? score >= 0.35 ? 'both' as const : 'keyword' as const : 'semantic' as const };
+        evidence: literal ? score >= 0.35 ? 'both' as const : 'keyword' as const : 'semantic' as const };
     });
   return { state: indexed ? 'ready' : 'pending', limited: Number(current.body_length) > EMBEDDING_TEXT_LIMIT, results };
 }
@@ -221,10 +221,6 @@ export function semanticSearch(
     WHERE r.deleted_at IS NULL AND r.kind IN (${kinds.map(() => '?').join(',')})
     AND i.model_id = ? AND i.source_version = r.resource_version AND i.limited = 1 LIMIT 1`).get(...kinds, EMBEDDING_MODEL);
   const candidates = new Map<string, DocumentSearchHit>();
-  const literalMatches = literalDocumentMatches(db, [
-    ...caseIdentifiers([input.literalQuery ?? '', ...input.queries].join('\n')),
-    ...(input.literalQuery ? [input.literalQuery] : []),
-  ], kinds);
   const documentScores = new Map<string, number[]>();
   for (const row of db.prepare(`SELECT r.id, r.kind, r.resource_version, s.title, p.excerpt, p.vector, i.centroid, i.limited FROM resources r
     JOIN topic_embedding_index i ON i.topic_id = r.id JOIN document_search s ON s.rowid = r.rowid
@@ -234,7 +230,6 @@ export function semanticSearch(
     const values = vector(row.vector);
     const scores = vectors.map(query => similarity(query, values));
     const score = Math.max(...scores);
-    if (score < 0.35 && !literalMatches.has(String(row.id))) continue;
     const id = String(row.id);
     let centroidScores = documentScores.get(id);
     if (!centroidScores) {
@@ -243,13 +238,19 @@ export function semanticSearch(
       documentScores.set(id, centroidScores);
     }
     if (score > (candidates.get(id)?.score ?? Number.NEGATIVE_INFINITY)) candidates.set(id, {
-      id, kind: String(row.kind), title: String(row.title), excerpt: literalMatches.get(id) ?? String(row.excerpt), score, similarity: score,
+      id, kind: String(row.kind), title: String(row.title), excerpt: String(row.excerpt), score, similarity: score,
       resourceVersion: Number(row.resource_version),
-      ...(literalMatches.has(id) ? { literalMatch: true } : {}),
-      confidence: matchConfidence(score, centroidScores[scores.indexOf(score)], literalMatches.has(id), Number(row.limited) === 1),
+      confidence: matchConfidence(score, centroidScores[scores.indexOf(score)], false, Number(row.limited) === 1),
     });
   }
-  const results = [...candidates.values()].sort((a, b) =>
-    Number(!!b.literalMatch) - Number(!!a.literalMatch) || b.score - a.score || a.id.localeCompare(b.id)).slice(0, input.limit);
-  return { count: results.length, results, limited: limited || candidates.size > results.length };
+  const lexical = lexicalCandidates(db, new Set(candidates.keys()), input);
+  const ranks = hybridRanks(new Map([...candidates].map(([id, hit]) => [id, hit.similarity!])), lexical);
+  const results = [...ranks].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, input.limit)
+    .map(([id, rank]) => {
+      const literal = lexical.get(id);
+      return { ...candidates.get(id)!, score: rank, ...(literal ? {
+        literalMatch: true, excerpt: literal.excerpt, confidence: lexicalConfidence(literal),
+      } : {}) };
+    });
+  return { count: results.length, results, limited: limited || ranks.size > results.length };
 }

@@ -11,7 +11,9 @@ export interface DocumentSearchHit {
   kind: string;
   title: string;
   excerpt: string;
+  /** Higher-is-better BM25 for wm-document-search; rank-fusion relevance for wm-semantic-search, not cosine or calibrated confidence. */
   score: number;
+  /** Measured vector cosine, independent of lexical evidence and fusion relevance. */
   similarity?: number;
   resourceVersion?: number;
   literalMatch?: boolean;

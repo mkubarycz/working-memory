@@ -501,7 +501,7 @@ export function createMcpServer(
   }, async input => features.read().search
     ? asText(submitEmbeddings(store.db, input)) : asError('Search is turned off.'));
   server.registerTool('wm-related-topics', {
-    title: 'Topics: Related Topics', description: 'Read semantic suggestions and exact shared 20-digit case references with evidence when Embeddings is enabled. Similarity is not an authored relationship.',
+    title: 'Topics: Related Topics', description: 'Read hybrid lexical/semantic suggestions from saved topic text when Embeddings is enabled. Ranking fuses bounded lexical and semantic lists; similarity remains measured cosine. Verified lexical confidence proves occurrence, not meaning or an authored relationship.',
     inputSchema: relatedTopicsInputSchema, annotations: { readOnlyHint: true },
   }, async input => {
     if (!features.read().search || !canReadKind('Topic')) return asError('Search is disabled or Topic read permission is unavailable.');
@@ -510,7 +510,7 @@ export function createMcpServer(
   });
   server.registerTool('wm-topic-suggest-placement', {
     title: 'Topic: Suggest Placement',
-    description: 'Compare indexed topic embeddings with existing topics and workstreams, prioritizing exact shared 20-digit case references in eligible parent topics. Suggest parent/workstream pairs without changing authored relationships. Disabled or pending indexing is explicit.',
+    description: 'Suggest eligible parent/workstream pairs using hybrid lexical/semantic retrieval from saved topic text without changing authored relationships. Rank fusion is not cosine or calibrated confidence; similarity remains measured cosine. Disabled or pending indexing is explicit.',
     inputSchema: topicPlacementInputSchema, annotations: { readOnlyHint: true },
   }, async input => {
     try {
@@ -533,7 +533,7 @@ export function createMcpServer(
   }, async () => embeddings ? asText(embeddings.readiness(canReadKind)) : asError('Background indexing is unavailable.'));
   server.registerTool('wm-semantic-search', {
     title: 'Search: Semantic Documents',
-    description: 'Find WM documents by meaning using local embeddings, prioritizing exact standalone 20-digit case references in queries. Requires Embeddings enabled and complete indexing. Similarity is not confidence or proof of a relationship. Config and connected-app data are excluded.',
+    description: 'Find WM documents using bounded lexical and local semantic candidate lists with rank fusion. Score is fusion relevance, not cosine or calibrated confidence; similarity is measured cosine. Lexical evidence verifies whole words, phrases or references of any format. Requires Embeddings enabled and complete indexing. Config and connected-app data are excluded.',
     inputSchema: semanticSearchSchema, annotations: { readOnlyHint: true },
   }, async (input, ctx) => {
     if (!features.read().search) return asError('Search is turned off.');

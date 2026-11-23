@@ -112,7 +112,7 @@ describe('topic embeddings', () => {
     expect(result.results.find(hit => hit.id === later.metadata.id)?.excerpt).toContain('bank notes');
     expect(semanticSearch(store.db, { ...input, limit: 1 }, [unit()], () => true).results[0].literalMatch).toBe(true);
     expect(semanticSearch(store.db, input, [unit()], () => false).results).toEqual([]);
-    expect(relatedTopics(store.db, { id: exact.metadata.id }, true).results[0].confidence?.level).toBe('medium');
+    expect(relatedTopics(store.db, { id: exact.metadata.id }, true).results[0].confidence?.reason).toContain('Verified lexical evidence');
   });
 
   it('keeps case-reference evidence inside kind permissions and current embedding versions', () => {
@@ -234,18 +234,21 @@ describe('topic embeddings', () => {
     expect(prepare).not.toHaveBeenCalled();
   });
 
-  it('excludes keyword-only matches and ranks only indexed semantic matches', () => {
+  it('includes verified lexical matches alongside meaning matches, but excludes unindexed sources', () => {
     const store = fixture();
     const source = store.createDocument({ kind: 'Topic', spec: { title: 'Network recovery' } });
     submit(store);
-    store.createDocument({ kind: 'Topic', spec: { title: 'Network recovery configuration' } });
+    const lexical = store.createDocument({ kind: 'Topic', spec: { title: 'Network recovery configuration' } });
     submit(store, 1);
     const match = store.createDocument({ kind: 'Topic', spec: { title: 'Restore connectivity' } });
     submit(store);
     store.createDocument({ kind: 'Topic', spec: { title: 'Network recovery not indexed' } });
     const result = relatedTopics(store.db, { id: source.metadata.id }, true);
-    expect(result.results).toHaveLength(1);
-    expect(result.results[0]).toMatchObject({ id: match.metadata.id, evidence: 'semantic', similarity: 1 });
+    expect(result.results).toHaveLength(2);
+    expect(result.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: match.metadata.id, evidence: 'semantic', similarity: 1 }),
+      expect.objectContaining({ id: lexical.metadata.id, evidence: 'keyword', similarity: 0 }),
+    ]));
   });
 
   it('rejects stale submissions, reuses metadata-only edits and removes deleted vectors', () => {
@@ -300,7 +303,7 @@ describe('topic embeddings', () => {
       parents: [source.metadata.id], workstreams: [stream.metadata.id] } });
     submit(store);
     expect(relatedTopics(store.db, { id: source.metadata.id, workstream: stream.metadata.id }, true).results[0])
-      .toMatchObject({ id: target.metadata.id, alreadyLinked: true, evidence: 'semantic' });
+      .toMatchObject({ id: target.metadata.id, alreadyLinked: true, evidence: 'both' });
     expect(relatedTopics(store.db, { id: source.metadata.id, workstream: 'missing' }, true).results).toEqual([]);
     const pending = store.createDocument({ kind: 'Topic', spec: { title: 'Network incident' } });
     expect(relatedTopics(store.db, { id: pending.metadata.id }, true))
