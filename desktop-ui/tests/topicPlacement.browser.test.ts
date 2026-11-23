@@ -29,7 +29,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         phase: 'ready', applied: [], refreshes: 0, calls: 0, autoLoad: true, saved: true,
         id: 'topic', version: 3, environment: 'first', editable: true,
         pause: true, releases: [], failSuggest: false, failApply: false, opened: [], responseVersion: null,
-        fullView: false, draft: false, search: true, saves: [], parents: [], children: [], reports: [], status: 'open'
+        fullView: false, draft: false, search: true, saves: [], parents: [], children: [], reports: [], status: 'open', shared: []
       });
       window.__placementTest = state;
       window.workingMemory = {
@@ -76,6 +76,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         placementAutoLoad={state.search && state.autoLoad} placementEnvironment={state.environment}
         onSaveTopic={patch => state.saves.push(patch)}
         onOpenTopic={id => state.opened.push(id)} onOpenWorkstream={id => state.opened.push(id)}
+        onShare={topic => state.shared.push(topic.id)}
         onSetAgentMessageStatus={() => { throw new Error('Unexpected status mutation'); }}
         onTopicAdded={async () => { state.refreshes++; }} />
     {:else}
@@ -248,6 +249,13 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             await evaluate('window.__placementTest.pause = true; window.__placementTest.editable = false; window.__placementTest.fullView = true');
             await wait('window.__placementTest.calls === ' + (beforeTopicView + 1) + ' && window.__placementTest.releases.length === 1');
             assert.equal(await evaluate('document.querySelector("h1.title").textContent'), 'Saved topic');
+            assert.equal(await evaluate('getComputedStyle(document.querySelector(".feedback-button")).borderTopWidth'), '0px');
+            assert.equal(await evaluate('(() => { const reference=document.createElement("span"); reference.style.color="var(--desktop-chat-muted)"; document.body.append(reference); const matches=getComputedStyle(document.querySelector(".feedback-button")).color===getComputedStyle(reference).color; reference.remove(); return matches; })()'), true);
+            assert.equal(await evaluate('document.querySelector(".feedback-button").getBoundingClientRect().width'), 26);
+            await evaluate('document.querySelector(".feedback-button").focus()');
+            assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), 'Send Feedback');
+            await evaluate('document.querySelector(".feedback-button").click()');
+            assert.deepEqual(await evaluate('[...window.__placementTest.shared]'), [await evaluate('window.__placementTest.id')]);
             assert.equal(await evaluate('document.body.innerText.includes("Stored source")'), true);
             assert.equal(await evaluate('window.__placementTest.saves.length'), 0);
             await evaluate('window.__placementTest.releases.shift()()');
