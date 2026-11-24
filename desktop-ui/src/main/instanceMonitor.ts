@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { monitorStateSchema, type MonitorState, type InstanceIncident, type InstanceDiagnostics } from '../../../control-plane/src/diagnosticContract';
 import type { DesktopInstanceIdentity } from './instanceIdentity';
 import type { SessionSnapshot } from '../../../control-plane/src/sessionPolicy';
 import { abortable } from '../../../shared/abort';
+import { MAX_MAINTENANCE_MS, readInstanceMaintenance } from './instanceMaintenance';
 
 const MAX_EVIDENCE_LENGTH = 20000;
 
@@ -138,15 +139,35 @@ export class InstanceMonitor {
     if (this.delivery?.environment === mcpUrl) this.delivery.controller.abort();
     if (this.evidenceCapture?.environment === mcpUrl) this.evidenceCapture.controller.abort();
     let resumed = false;
-    return () => {
+    const finish = (resetBaseline: boolean) => {
       if (resumed) return;
       resumed = true;
+      clearTimeout(timer);
       const remaining = this.suspended.get(mcpUrl)! - 1;
       if (remaining > 0) { this.suspended.set(mcpUrl, remaining); return; }
       this.suspended.delete(mcpUrl);
-      delete this.state.environments[mcpUrl];
+      if (resetBaseline) delete this.state.environments[mcpUrl];
       this.save();
     };
+    const timer = setTimeout(() => {
+      console.error('[instance-monitor] Planned upgrade exceeded its maintenance deadline; monitoring resumed.');
+      finish(false);
+    }, MAX_MAINTENANCE_MS);
+    timer.unref();
+    return () => finish(true);
+  }
+
+  private maintenance(mcpUrl: string) {
+    try { return readInstanceMaintenance(join(dirname(this.options.file), 'instance-maintenance'), mcpUrl); }
+    catch (error) {
+      console.error('[instance-monitor] Invalid maintenance record; monitoring remains enabled:', error);
+      return null;
+    }
+  }
+
+  private maintenanceActive(mcpUrl: string): boolean {
+    const record = this.maintenance(mcpUrl);
+    return !!record && record.completedAt === undefined && this.clock() >= record.startedAt && this.clock() < record.expiresAt;
   }
 
   start(): void {
@@ -177,11 +198,12 @@ export class InstanceMonitor {
 
   private async tickOnce(): Promise<void> {
     const target = this.options.selected();
-    if (this.busy || this.stopped || !target || this.suspended.has(target.mcpUrl)) return;
+    if (this.busy || this.stopped || !target || this.suspended.has(target.mcpUrl) || this.maintenanceActive(target.mcpUrl)) return;
     this.busy = true;
     const generation = this.generations.get(target.mcpUrl);
     const current = () => !this.stopped && this.options.selected()?.mcpUrl === target.mcpUrl
-      && !this.suspended.has(target.mcpUrl) && this.generations.get(target.mcpUrl) === generation;
+      && !this.suspended.has(target.mcpUrl) && !this.maintenanceActive(target.mcpUrl)
+      && this.generations.get(target.mcpUrl) === generation;
     try {
       const probe = await this.options.probe(target);
       if (!current()) return;
@@ -205,6 +227,9 @@ export class InstanceMonitor {
             + `Last successful sample:\n${state.lastEvidence}`);
       } else {
         const recovered = this.state.incidents.find(item => item.id === state.outageId && !item.topicId);
+        const maintenance = this.maintenance(target.mcpUrl);
+        if (!state.outageId && maintenance?.completedAt !== undefined && maintenance.completedAt <= this.clock()
+          && maintenance.bootId === probe.bootId) state.bootId = probe.bootId;
         if (state.bootId && probe.bootId && state.bootId !== probe.bootId) {
           if (state.outageId) {
             const incident = this.state.incidents.find(item => item.id === state.outageId);

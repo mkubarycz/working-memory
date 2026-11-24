@@ -43,6 +43,15 @@ it('captures a disconnected session without a topic or backend query and keeps t
   expect(fetcher).not.toHaveBeenCalled();
 });
 
+it('captures the initial unknown AI health state and retains the snapshot when described again', () => {
+  const reports = new SessionBugReports();
+  const snapshot: SessionBugReportInput = { ...input, renderer: { ...input.renderer,
+    aiHealth: { state: 'unknown', result: 'Health check pending', observedAt: 0 } } };
+  const draft = reports.capture(snapshot, dependencies);
+  expect(reports.describe(draft.id, 'Startup issue').body).toContain('Health check pending');
+  expect(reports.describe(draft.id, 'Startup issue, retry').body).toContain('unknown');
+});
+
 it('allows no environment and filters unexpected session content, credentials, attachment references and oversized evidence', async () => {
   const reports = new SessionBugReports();
   const draft = reports.capture({

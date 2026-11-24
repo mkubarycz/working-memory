@@ -2792,6 +2792,28 @@ are included without health-check output or container environment variables.
 The desktop also reports heap admission pressure and event-loop stalls, with
 deduplication/cooldowns. App-initiated upgrades are excluded from monitoring.
 
+External deployment commands must also coordinate planned maintenance with the
+running desktop before stopping a backend:
+
+```bash
+node --experimental-strip-types scripts/with-instance-maintenance.mjs \
+  --user-data "/path/to/the/running/desktop/profile" \
+  --mcp-url http://127.0.0.1:7717/mcp --seconds 600 -- node deployment.mjs
+```
+
+Use the desktop's exact user-data directory and selected MCP URL. Wrap the entire
+backup/upgrade/offline-verification sequence, not each individual restart. The
+private per-instance lease survives desktop restarts, defaults to ten minutes,
+and cannot exceed fifteen minutes. Command failure expires it immediately.
+Successful completion requires a healthy backend and records its exact boot ID;
+only that verified boot is accepted as the new baseline. A subsequent boot change
+still reports a restart, even before the first post-maintenance probe. Existing
+outages are retained. Expired or invalid leases never disable normal monitoring;
+an unresolved outage uses the normal three-failed-probe threshold. In-app upgrade
+suspensions also expire after fifteen minutes. Concurrent wrappers for the same
+instance are rejected; after a killed wrapper, remove its `.lock` directory only
+after verifying that its deployment process has stopped.
+
 Reports are atomically queued in the desktop user profile and survive desktop
 and backend restarts. Once the same selected backend is reachable and signed
 in, queued reports become Topics in a workstream named **Inbox**, creating that

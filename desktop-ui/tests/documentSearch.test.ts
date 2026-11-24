@@ -226,6 +226,23 @@ describe('agentic document search', () => {
     expect(response.blocks?.[0]).toMatchObject({ type: 'list', items: [{ sourceId: exact.id }] });
   });
 
+  it.each(['list', 'table'] as const)('interleaves missing lexical hits with an AI-selected %s in global fusion order', async type => {
+    const first = { ...hit, id: 'first', literalMatch: true, score: 0.03 };
+    const middle = { ...hit, id: 'middle', score: 0.02 };
+    const last = { ...hit, id: 'last', literalMatch: true, score: 0.01 };
+    const block = type === 'list'
+      ? { type, heading: 'Selected evidence', items: [{ sourceId: middle.id, text: 'Related evidence' }] }
+      : { type, heading: 'Selected evidence', columns: ['title' as const],
+        rows: [{ sourceId: middle.id, summary: 'Related evidence' }] };
+    const dependencies = harness([answer([block])]);
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 3, results: [first, middle, last] } });
+    const response = await searchWithMatches('bank account', dependencies);
+    const displayed = response.blocks?.flatMap(block => block.type === 'list' ? block.items.map(item => item.sourceId)
+      : block.type === 'table' ? block.rows.map(row => row.sourceId) : []);
+    expect(displayed).toEqual([first.id, middle.id, last.id]);
+    expect(response.blocks?.find(block => block.type === type && block.heading === 'Selected evidence')).toBeDefined();
+  });
+
   it('does not ask the model when initial retrieval fails or the request is cancelled', async () => {
     const dependencies = harness([]);
     dependencies.callTool.mockRejectedValue(new Error('Backend unavailable'));

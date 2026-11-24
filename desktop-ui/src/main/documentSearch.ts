@@ -208,10 +208,23 @@ export async function searchByIntent(query: string, dependencies: {
           ...answer.blocks.map(block => block.type === 'list' ? { ...block, items: [...block.items].sort((a, b) => rank(b.sourceId) - rank(a.sourceId)) }
             : block.type === 'table' ? { ...block, rows: [...block.rows].sort((a, b) => rank(b.sourceId) - rank(a.sourceId)) } : block),
         ];
-        if (initial) blocks.sort((a, b) => {
+        if (initial) {
+          const ordered = blocks.flatMap<{ block: SearchBlock; group: number }>((block, group) =>
+            block.type === 'list' ? block.items.map(item => ({ block: { ...block, items: [item] }, group }))
+              : block.type === 'table' ? block.rows.map(row => ({ block: { ...block, rows: [row] }, group }))
+                : [{ block, group }]);
           const order = (block: SearchBlock) => Math.max(-Infinity, ...ids(block).map(rank));
-          return order(b) - order(a);
-        });
+          ordered.sort((a, b) => order(b.block) - order(a.block));
+          blocks.length = 0;
+          let previousGroup = -1;
+          for (const { block, group } of ordered) {
+            const previous = blocks.at(-1);
+            if (group === previousGroup && previous?.type === 'list' && block.type === 'list') previous.items.push(...block.items);
+            else if (group === previousGroup && previous?.type === 'table' && block.type === 'table') previous.rows.push(...block.rows);
+            else blocks.push(block);
+            previousGroup = group;
+          }
+        }
         const partial = answer.partial || evidenceLimited || trace.some(entry => entry.status === 'error') || [...pages.values()].some(page => page.ids.size < page.total)
           || [...selected.keys()].some(id => unreadBodies.has(id));
         const results = [...selected.values()];

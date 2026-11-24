@@ -452,7 +452,7 @@ export interface SessionBugReportInput {
     screen: string;
     authenticated: boolean;
     backendHealth: BackendHealth | null;
-    aiHealth: { state: 'healthy' | 'degraded' | 'unreachable'; result: string; observedAt: number };
+    aiHealth: { state: 'unknown' | 'healthy' | 'degraded' | 'unreachable'; result: string; observedAt: number };
     features: import('../../../control-plane/src/instanceFeatures').InstanceFeatures;
     openDocuments: number;
     activeChatContexts: number;

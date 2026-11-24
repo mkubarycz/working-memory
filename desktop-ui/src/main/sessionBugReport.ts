@@ -7,7 +7,7 @@ import { featureBugReportInputSchema } from './featureBugReport';
 import { searchBugReportInputSchema } from './searchBugReport';
 import { TransientBugReports } from './transientBugReports';
 
-const healthState = z.enum(['healthy', 'degraded', 'unreachable']);
+const healthState = z.enum(['unknown', 'healthy', 'degraded', 'unreachable']);
 export const sessionBugReportInputSchema = z.object({
   renderer: z.object({
     capturedAt: z.string().datetime(), screen: z.string().max(200), authenticated: z.boolean(),

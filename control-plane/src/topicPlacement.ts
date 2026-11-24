@@ -98,7 +98,7 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
     new Set(neighbor.parents.flatMap(parent => neighbor.workstreams
       .map(workstream => pairKey(parent, workstream)).filter(key => pairs.has(key)))),
   ] as const).filter(([, destinations]) => destinations.size));
-  const neighborLexical = new Map([...lexical].filter(([id]) => neighborPairs.has(id)));
+  const neighborLexical = lexicalCandidates(store.db, new Set(neighborPairs.keys()), { sourceId: input.id });
   const neighborRanks = hybridRanks(new Map([...neighbors].filter(([id]) => neighborPairs.has(id))
     .map(([id, neighbor]) => [id, neighbor.similarity])), neighborLexical);
   const support = new Map<string, { weight: number; examples: Array<{ id: string; title: string }>; strong: number; limited: boolean }>();

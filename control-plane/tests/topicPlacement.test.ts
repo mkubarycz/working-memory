@@ -43,6 +43,35 @@ const applyInput = (id: string, version: number, parent: { id: string; resourceV
     workstream: { id: workstream.id, resourceVersion: workstream.resourceVersion } });
 
 describe('topic placement production MCP/client entry points', () => {
+  it.each(['title', 'body'])('uses closed exact-reference examples from the %s below the semantic threshold', async field => {
+    const { server, client } = await setup();
+    try {
+      const ws = store.createDocument({ kind: 'Workstream', spec: { title: 'Destination' } });
+      const parent = store.createDocument({ kind: 'Topic', spec: { title: 'Authored grouping', workstreams: [ws.metadata.id] } });
+      const source = store.createDocument({ kind: 'Topic', spec: { title: 'Reference 20261510592741803614' } });
+      const examples = Array.from({ length: 4 }, (_, i) => store.createDocument({ kind: 'Topic', spec: {
+        title: field === 'title' ? `20261510592741803614 example ${i}` : `Archived example ${i}`,
+        body: field === 'body' ? 'Reference 20261510592741803614' : '', status: 'closed',
+        parents: [parent.metadata.id], workstreams: [ws.metadata.id],
+      } }));
+      const unrelated = Array.from({ length: 5 }, (_, i) => store.createDocument({ kind: 'Topic', spec: {
+        title: `Unrelated history ${i}`, status: 'closed', parents: [parent.metadata.id], workstreams: [ws.metadata.id],
+      } }));
+      store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+      indexSimilarities(new Map([[source.metadata.id, 1],
+        ...[...examples, ...unrelated].map(example => [example.metadata.id, 0] as [string, number])]));
+      const authored = store.db.prepare('SELECT id, spec, resource_version FROM resources ORDER BY id').all();
+      const result = await client.topicSuggestPlacement(source.metadata.id);
+      expect(result.state).toBe('ready');
+      expect(result.suggestions[0]).toMatchObject({ parent: { id: parent.metadata.id }, workstream: { id: ws.metadata.id },
+        confidence: { level: 'low', reason: expect.stringContaining('4 of 4 similar organized topics') } });
+      expect(result.suggestions[0].similarity).toBeCloseTo(0.1);
+      expect(result.suggestions[0].confidence.reason).toContain('4.00 of 4.00');
+      expect(result.suggestions.some(s => examples.some(example => example.metadata.id === s.parent?.id))).toBe(false);
+      expect(store.db.prepare('SELECT id, spec, resource_version FROM resources ORDER BY id').all()).toEqual(authored);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it.each(['closed', 'crowded'] as const)('retains authored evidence from %s examples before limiting the structural neighborhood', async scenario => {
     const { server, client } = await setup();
     try {
