@@ -2804,7 +2804,9 @@ node --experimental-strip-types scripts/with-instance-maintenance.mjs \
 Use the desktop's exact user-data directory and selected MCP URL. Wrap the entire
 backup/upgrade/offline-verification sequence, not each individual restart. The
 private per-instance lease survives desktop restarts, defaults to ten minutes,
-and cannot exceed fifteen minutes. Command failure expires it immediately.
+and cannot exceed fifteen minutes. Command failure remains an explicit failure:
+cleanup accepts a health-verified recovery boot, or expires the lease immediately
+after a failed health check (at most five seconds).
 Successful completion requires a healthy backend and records its exact boot ID;
 only that verified boot is accepted as the new baseline. A subsequent boot change
 still reports a restart, even before the first post-maintenance probe. Existing

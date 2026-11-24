@@ -15,19 +15,25 @@ const script = fileURLToPath(new URL('../../scripts/with-instance-maintenance.mj
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-it('coordinates a real external command and health endpoint with restart monitoring, then detects a later restart', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'wm-maintenance-'));
-  cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
-  let bootId = randomUUID();
+async function healthEndpoint(health: () => { ok: boolean; bootId?: string }) {
   const server = createServer((_request, response) => {
+    const result = health();
+    response.statusCode = result.ok ? 200 : 503;
     response.setHeader('content-type', 'application/json');
-    response.end(JSON.stringify({ ok: true, bootId }));
+    response.end(JSON.stringify(result));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   cleanup.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Missing fixture address');
-  const mcpUrl = `http://127.0.0.1:${address.port}/mcp`;
+  return `http://127.0.0.1:${address.port}/mcp`;
+}
+
+it('coordinates a real external command and health endpoint with restart monitoring, then detects a later restart', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'wm-maintenance-'));
+  cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+  let bootId = randomUUID();
+  const mcpUrl = await healthEndpoint(() => ({ ok: true, bootId }));
   const probe = vi.fn(async () => ({ healthy: true, bootId, evidence: '', diagnostics: null }));
   const monitor = new InstanceMonitor({ file: join(directory, 'incidents.json'), selected: () => ({ mcpUrl }),
     probe, deliver: async () => randomUUID() });
@@ -53,7 +59,7 @@ it('coordinates a real external command and health endpoint with restart monitor
 it('expires maintenance immediately on command failure and refuses an unbounded deadline before executing', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'wm-maintenance-failure-'));
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
-  const mcpUrl = 'http://127.0.0.1:7719/mcp';
+  const mcpUrl = await healthEndpoint(() => ({ ok: false }));
   const args = ['--experimental-strip-types', script, '--user-data', directory, '--mcp-url', mcpUrl];
   await expect(execute(process.execPath, [...args, '--seconds', '901', '--', process.execPath, '-e', 'process.exit(7)']))
     .rejects.toThrow('deadline of 1');
@@ -65,4 +71,16 @@ it('expires maintenance immediately on command failure and refuses an unbounded 
   expect(record?.expiresAt).toBeLessThanOrEqual(Date.now());
   expect(record?.bootId).toBeUndefined();
   expect(existsSync(`${maintenancePath(records, mcpUrl)}.lock`)).toBe(false);
+});
+
+it('retains the command failure while accepting only a health-verified recovery boot', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'wm-maintenance-recovery-'));
+  cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+  const bootId = randomUUID();
+  const mcpUrl = await healthEndpoint(() => ({ ok: true, bootId }));
+  await expect(execute(process.execPath, ['--experimental-strip-types', script, '--user-data', directory,
+    '--mcp-url', mcpUrl, '--', process.execPath, '-e', 'process.exit(7)'])).rejects.toThrow('Deployment exited with code 7');
+  expect(readInstanceMaintenance(join(directory, 'instance-maintenance'), mcpUrl)).toMatchObject({
+    bootId, completedAt: expect.any(Number),
+  });
 });

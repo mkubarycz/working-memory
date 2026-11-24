@@ -32,6 +32,12 @@ const write = value => {
   writeFileSync(temporary, JSON.stringify(maintenanceRecordSchema.parse(value)), { mode: 0o600 });
   renameSync(temporary, file);
 };
+const complete = async () => {
+  const response = await fetch(`${url.origin}/health`, { redirect: 'error', signal: AbortSignal.timeout(5000) });
+  const health = await response.json();
+  if (!response.ok || health.ok !== true || typeof health.bootId !== 'string') throw new Error('Deployment did not finish with a healthy backend and boot ID.');
+  write({ ...record, completedAt: Date.now(), bootId: health.bootId });
+};
 try {
   write(record);
   console.log(`Planned instance maintenance until ${new Date(record.expiresAt).toISOString()}`);
@@ -52,14 +58,16 @@ try {
     process.off('SIGTERM', terminate);
   }
   if (code !== 0) throw new Error(`Deployment exited with code ${code}.`);
-  const response = await fetch(`${url.origin}/health`, { redirect: 'error', signal: AbortSignal.timeout(5000) });
-  const health = await response.json();
-  if (!response.ok || health.ok !== true || typeof health.bootId !== 'string') throw new Error('Deployment did not finish with a healthy backend and boot ID.');
-  write({ ...record, completedAt: Date.now(), bootId: health.bootId });
+  await complete();
   console.log('Maintenance complete; monitoring will baseline only the verified backend boot ID.');
 } catch (error) {
-  // An expired, uncompleted record cannot suppress monitoring or accept a new boot ID.
-  write({ ...record, expiresAt: Math.min(record.expiresAt, Date.now()) });
+  try {
+    await complete();
+    console.error('Deployment failed, but the backend is healthy. Only its verified recovery boot is accepted; the command still fails.');
+  } catch (healthError) {
+    write({ ...record, expiresAt: Math.min(record.expiresAt, Date.now()) });
+    console.error('Maintenance ended without verified backend health; normal outage/restart monitoring resumes:', healthError);
+  }
   throw error;
 } finally {
   rmdirSync(lock);
