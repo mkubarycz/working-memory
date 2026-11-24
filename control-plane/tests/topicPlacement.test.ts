@@ -327,6 +327,41 @@ describe('topic placement production MCP/client entry points', () => {
     } finally { await client.dispose(); await server.close(); }
   });
 
+  it('clears prior backlog memberships only when a placement is approved, preserving ordinary memberships and parents', async () => {
+    const { server, client } = await setup();
+    try {
+      const inbox = store.createDocument({ kind: 'Workstream', spec: { title: 'Inbox' } });
+      const backlog = store.createDocument({ kind: 'Workstream', spec: { title: 'Triage', pinned: true } });
+      const ordinary = store.createDocument({ kind: 'Workstream', spec: { title: 'Existing membership' } });
+      const destination = store.createDocument({ kind: 'Workstream', spec: { title: 'Destination' } });
+      const parent = store.createDocument({ kind: 'Topic', spec: { title: 'Suggested parent', workstreams: [destination.metadata.id] } });
+      const previousParent = store.createDocument({ kind: 'Topic', spec: { title: 'Previous parent' } });
+      const source = await client.topicCreate({
+        title: 'Topic', body: 'Authored Markdown', parents: [previousParent.metadata.id],
+        workstreams: [inbox.metadata.id, backlog.metadata.id, ordinary.metadata.id],
+        focusedWorkstreams: [inbox.metadata.id, backlog.metadata.id, ordinary.metadata.id],
+      });
+      store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+      indexAll();
+      const result = await client.topicSuggestPlacement(source.id);
+      const suggestion = result.suggestions.find(s => s.parent?.id === parent.metadata.id)!;
+      expect(suggestion).toBeDefined();
+      expect(store.getDocument({ id: source.id })!.spec.workstreams).toEqual(source.workstreams);
+      const input = applyInput(source.id, result.sourceVersion, suggestion.parent, suggestion.workstream);
+      await expect(client.topicApplyPlacement({ ...input, workstream: { ...input.workstream, resourceVersion: 0 } }))
+        .rejects.toThrow(/workstream changed/i);
+      expect(store.getDocument({ id: source.id })!.spec.workstreams).toEqual(source.workstreams);
+      const updated = await client.topicApplyPlacement(input);
+      expect(updated.spec).toMatchObject({
+        title: 'Topic', body: 'Authored Markdown', status: 'open',
+        workstreams: [ordinary.metadata.id, destination.metadata.id],
+        focusedWorkstreams: [ordinary.metadata.id],
+        parents: [previousParent.metadata.id, parent.metadata.id],
+      });
+      expect(store.getDocument({ id: source.id })!.spec).toEqual(updated.spec);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it('excludes self/descendants and rejects a newly cyclic or stale selected parent at apply time', async () => {
     const { server, client } = await setup();
     try {

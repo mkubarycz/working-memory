@@ -307,7 +307,7 @@
     <label>
       <input type="checkbox" checked={inbox || ws.pinned === true} disabled={inbox}
         onchange={event => onSave({ pinned: event.currentTarget.checked })} />
-      Pin workstream
+      Backlog Workstream
     </label>
     <label>
       <input type="checkbox" checked={ws.includeClosedTopics === false}

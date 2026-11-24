@@ -20,8 +20,9 @@ export function registerWsTopicTransfer(server: McpServer, store: Store): void {
       title: 'Topic: Transfer',
       description:
         'Atomically copy or move a topic and all of its descendants between workstreams. ' +
-        'Copy keeps source membership; move removes it and clears source focus. ' +
-        'Omit sourceWorkstream to add a tree to a workstream without removing existing memberships.',
+        'Copy keeps ordinary source membership; move removes it and clears source focus. ' +
+        'New assignments remove prior Backlog Workstream memberships (including Inbox) and their focus pins. ' +
+        'Omit sourceWorkstream to add a tree without removing ordinary memberships.',
       inputSchema: wsTopicTransferInputSchema,
     },
     async ({ id, sourceWorkstream, targetWorkstream, move }) => {

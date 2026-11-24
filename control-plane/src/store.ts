@@ -27,6 +27,7 @@ import { migrateResourceIds } from './resourceIdMigration.js';
 import { ensureDocumentSearch, registerDocumentSearchFunctions } from './documentSearch.js';
 import { ensureTopicEmbeddingSchema } from './topicEmbeddings.js';
 import { migrateLegacyAnalytics } from './legacyAnalyticsMigration.js';
+import { stringArray } from './kinds/topic/topic.js';
 export interface DocumentChange {
   id: string;
   kind: string;
@@ -672,8 +673,31 @@ export function openStore(dbFilePath: string): Store {
     return row ? rowToEnvelope(row) : null;
   }
 
+  function normalizeTopicAssignment(existing: DocumentEnvelope | null, spec: Record<string, unknown>): Record<string, unknown> {
+    if (existing?.kind !== 'Topic') return spec;
+    const previous = new Set(stringArray(existing.spec.workstreams));
+    const requested = stringArray(spec.workstreams);
+    if (!requested.some(id => !previous.has(id))) return spec;
+    // A new assignment consumes prior backlog memberships, not ordinary memberships
+    // or newly selected backlogs. Unrelated edits must not reorganize existing topics.
+    const workstreams = requested.filter(id => {
+      if (!previous.has(id)) return true;
+      const workstream = getDocument({ id, kind: 'Workstream', omitBody: true });
+      return workstream?.spec.title !== 'Inbox' && workstream?.spec.pinned !== true;
+    });
+    if (workstreams.length === requested.length) return spec;
+    return {
+      ...spec,
+      workstreams,
+      ...(Array.isArray(spec.focusedWorkstreams) ? {
+        focusedWorkstreams: stringArray(spec.focusedWorkstreams).filter(id => workstreams.includes(id)),
+      } : {}),
+    };
+  }
+
   function updateDocument(input: UpdateDocumentInput, validatePreconditions?: () => void): DocumentEnvelope {
     const existing = getDocument({ id: input.id });
+    input = { ...input, spec: normalizeTopicAssignment(existing, input.spec) };
     if (existing?.kind === 'Workstream' && existing.spec.title === 'Inbox') {
       if (input.spec.title !== 'Inbox') throw new Error('The Inbox workstream cannot be renamed.');
     }
@@ -767,8 +791,10 @@ export function openStore(dbFilePath: string): Store {
     db.exec('BEGIN IMMEDIATE');
     try {
       const updated: DocumentEnvelope[] = [];
-      for (const input of inputs) {
+      for (const requested of inputs) {
+        let input = requested;
         const document = getDocument({ id: input.id });
+        input = { ...input, spec: normalizeTopicAssignment(document, input.spec) };
         if (document?.kind === AGENT_KIND) input.spec = validateAgent(input.spec, input.id);
         if (document?.kind === AGENT_MESSAGE_KIND) {
           input.spec = validateMessage(input.spec, input.id);

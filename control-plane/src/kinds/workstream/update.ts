@@ -22,7 +22,7 @@ const wsWorkstreamUpdateInputSchema = z.object({
           .describe("New lifecycle status: 'queue' | 'progress' | 'backlog' | 'closed'."),
         closure: z.string().optional().describe('New closure note.'),
         position: z.number().finite().optional().describe('Sort position within the lifecycle section.'),
-        pinned: z.boolean().optional().describe('Show as a pinned navigation tab. Inbox cannot be unpinned.'),
+        pinned: z.boolean().optional().describe('Backlog Workstream: show as a backlog navigation tab; topics leave it on new assignment elsewhere. Cannot be disabled for Inbox.'),
         includeClosedTopics: z.boolean().optional().describe('Include closed topics in all workstream trees.'),
       }).strict();
 

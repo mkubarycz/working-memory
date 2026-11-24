@@ -1308,15 +1308,26 @@ through the selected environment's authenticated attachment proxy. Raster images
 (PNG, JPEG, GIF, WebP, or AVIF; up to 30 MB) are opened as private temporary files,
 which are removed when Working Memory quits.
 
-## Inbox, pinned workstreams and Backlog
+## Inbox, Backlog Workstreams and Backlog
 
 The left rail shows **Queue** and **In Progress** workstreams. Its backlog button
-opens a page with Settings-style **Inbox**, other pinned workstream, and **Backlog**
-tabs. Inbox is always pinned, keeps its existing ID and lifecycle status, and
-cannot be renamed or unpinned. Its tab shows the workstream view, without the
-Send to Queue/In Progress buttons. Pin or unpin other workstreams using **Pin
-workstream** in their workstream view. Pinned workstreams appear only in these
-navigation tabs, not in the ordinary rail or backlog sections.
+opens a page with Settings-style **Inbox**, other Backlog Workstream, and **Backlog**
+tabs. Inbox is always a Backlog Workstream, keeps its existing ID and lifecycle
+status, and cannot be renamed or have that preference disabled. Its tab shows the
+workstream view, without the Send to Queue/In Progress buttons. Enable or disable
+**Backlog Workstream** in other workstream views. These workstreams appear only in
+these navigation tabs, not in the ordinary rail or backlog sections. The setting
+retains its existing persisted `pinned` field; topic focus pins are separate.
+
+When an existing topic gains a new workstream assignment (including tab drops,
+copy gestures, and approved placement suggestions), it leaves all its prior
+Backlog Workstreams, including Inbox. Other ordinary memberships and parent links
+are preserved, and focus pins are cleared only for memberships that are removed.
+Assigning to another Backlog Workstream keeps the newly selected backlog and
+removes the prior ones. Tree transfers apply this rule to each topic gaining an
+assignment. This does not bulk reorganize existing topics: unrelated edits,
+preference changes, and unchanged assignments leave membership alone. A workstream's
+backlog lifecycle status by itself does not enable this preference.
 Switching pinned tabs during autosave retains in-flight drafts and restores the
 selected workstream when its save completes. Failed drafts remain editable with
 an explicit save error.
@@ -1339,7 +1350,7 @@ topic tree (hold Option/Alt, Ctrl, or Command to copy), drop on topics to repare
 between Backlog, Queue, and In Progress or reorder within a section. Dragged
 resources also carry the same Markdown/context-file references for editors and
 other apps. Unassigned topic trees can be added to a workstream without removing
-any existing memberships; this requires a backend supporting source-free
+ordinary existing memberships; this requires a backend supporting source-free
 `ws-topic-transfer`.
 Internal moves and external Markdown-file exports use the same drag gesture,
 including on Windows; no extra modifier or separate handle is required.

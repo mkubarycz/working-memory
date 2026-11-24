@@ -159,6 +159,81 @@ describe('Topic ID-only domain API', () => {
     expect(error(await call('ws-topic-transfer', { id: root, sourceWorkstream: moved, targetWorkstream: 'missing' }))).toBe(true);
   });
 
+  it.each([
+    { source: false, move: true },
+    { source: true, move: true },
+    { source: true, move: false },
+  ])('consumes prior backlog memberships on a tab/tree transfer ($source, $move)', async ({ source, move }) => {
+    const { call, workstream, seed, read, store } = await connect();
+    const inbox = workstream('Inbox');
+    const backlog = store.createDocument({ kind: 'Workstream', spec: { title: 'Triage', pinned: true } }).metadata.id;
+    const ordinary = workstream('Ordinary');
+    const statusOnly = store.createDocument({ kind: 'Workstream', spec: { title: 'Planned', status: 'backlog' } }).metadata.id;
+    const target = workstream('Destination');
+    const parent = seed('Parent');
+    const memberships = [inbox, backlog, ordinary, statusOnly];
+    const root = seed('Root', { workstreams: memberships, focusedWorkstreams: memberships, parents: [parent] });
+    const child = seed('Child', { workstreams: memberships, focusedWorkstreams: [inbox, ordinary], parents: [root], status: 'closed' });
+    const unrelated = seed('Other backlog topic', { workstreams: [inbox, backlog] });
+    const result = await call('ws-topic-transfer', {
+      id: root, ...(source ? { sourceWorkstream: inbox } : {}), targetWorkstream: target, move,
+    });
+    expect(error(result)).toBe(false);
+    expect(json<ITopic[]>(result)).toEqual([
+      expect.objectContaining({ id: root, workstreams: [ordinary, statusOnly, target], focusedWorkstreams: [ordinary, statusOnly] }),
+      expect.objectContaining({ id: child, workstreams: [ordinary, statusOnly, target], focusedWorkstreams: [ordinary] }),
+    ]);
+    expect(await read(root)).toMatchObject({
+      workstreams: [ordinary, statusOnly, target], parents: [parent], status: 'open',
+    });
+    expect(await read(child)).toMatchObject({
+      workstreams: [ordinary, statusOnly, target], parents: [root], status: 'closed',
+    });
+    expect(await read(unrelated)).toMatchObject({ workstreams: [inbox, backlog] });
+  });
+
+  it('only consumes prior backlogs on new assignments, including backlog-to-backlog updates', async () => {
+    const { call, workstream, seed, read, store } = await connect();
+    const inbox = workstream('Inbox');
+    const backlog = store.createDocument({ kind: 'Workstream', spec: { title: 'Triage', pinned: true } }).metadata.id;
+    const ordinary = workstream('Ordinary');
+    const parent = seed('Parent');
+    const id = seed('Topic', { workstreams: [inbox, ordinary], focusedWorkstreams: [inbox, ordinary] });
+    expect(error(await call('ws-topic-update', { id, title: 'Edited', parents: [parent] }))).toBe(false);
+    expect(error(await call('ws-topic-update', { id, workstreams: [inbox, ordinary] }))).toBe(false);
+    expect(await read(id)).toMatchObject({ workstreams: [inbox, ordinary], focusedWorkstreams: [inbox, ordinary] });
+    const assigned = await call('ws-topic-update', { id, workstreams: [inbox, ordinary, backlog] });
+    expect(error(assigned)).toBe(false);
+    expect(json<ITopic>(assigned)).toMatchObject({
+      workstreams: [ordinary, backlog], focusedWorkstreams: [ordinary], parents: [parent], title: 'Edited',
+    });
+    const returned = await call('ws-topic-transfer', { id, targetWorkstream: inbox });
+    expect(error(returned)).toBe(false);
+    expect(await read(id)).toMatchObject({ workstreams: [ordinary, inbox], focusedWorkstreams: [ordinary], parents: [parent] });
+    expect(store.getDocument({ id: backlog })!.spec.pinned).toBe(true);
+  });
+
+  it('rolls back backlog removals and focus changes if a descendant transfer conflicts', async () => {
+    const { call, workstream, seed, store, read } = await connect();
+    const inbox = workstream('Inbox'), target = workstream('Target');
+    const root = seed('Root', { workstreams: [inbox], focusedWorkstreams: [inbox] });
+    const child = seed('Child', { workstreams: [inbox], focusedWorkstreams: [inbox], parents: [root] });
+    const original = store.updateDocuments;
+    const spy = vi.spyOn(store, 'updateDocuments').mockImplementation(inputs =>
+      original(inputs.map((input, i) => i === 1 ? { ...input, expectedResourceVersion: -1 } : input)));
+    const version = store.getResourceVersion();
+    expect(error(await call('ws-topic-transfer', { id: root, targetWorkstream: target }))).toBe(true);
+    expect(store.getResourceVersion()).toBe(version);
+    for (const id of [root, child]) {
+      expect(await read(id)).toMatchObject({ workstreams: [inbox], focusedWorkstreams: [inbox] });
+    }
+    spy.mockRestore();
+    expect(error(await call('ws-topic-transfer', { id: root, targetWorkstream: target }))).toBe(false);
+    for (const id of [root, child]) {
+      expect(await read(id)).toMatchObject({ workstreams: [target], focusedWorkstreams: [] });
+    }
+  });
+
   it('dry-runs deterministic close plans, counts no-ops and skips shared descendants transitively', async () => {
     const { call, seed, read } = await connect();
     const root = seed('Root'), outside = seed('Outside');
