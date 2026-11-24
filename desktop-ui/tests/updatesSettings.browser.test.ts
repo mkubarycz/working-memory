@@ -350,6 +350,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait("document.querySelector('section[aria-label^=Feedback]').textContent.includes('ABCDEF123456')");
           assert.equal(await evaluate(button('Connect this computer') + '.disabled'), true);
           assert.equal(await evaluate("document.querySelector('section[aria-label^=Feedback]').textContent.includes('Approval pending')"), true);
+          assert.equal(await evaluate("document.querySelector('section[aria-label^=Feedback]').textContent.includes('Feedback app > Device approvals')"), true);
+          assert.equal(await evaluate("document.querySelector('section[aria-label^=Feedback]').textContent.includes('receiving Working Memory owner password')"), true);
           await evaluate("window.__updatesTest.feedbackState = 'connected'; " + button('Check approval') + '.click()');
           await wait("document.querySelector('section[aria-label^=Feedback] [role=status]').textContent.includes('Connected.')");
           await evaluate("window.__updatesTest.feedbackState = 'revoked'; " + button('Check approval') + '.click()');

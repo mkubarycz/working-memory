@@ -50,7 +50,25 @@ Do not delete claims as routine cleanup: this would weaken retry identity.
 ## One-time approval and revocation
 
 Settings > Feedback > **Connect this computer** shows a code valid for 15 minutes.
-The owner verifies the code and computer with the requester out of band, then:
+The owner verifies the code and computer with the requester out of band, then
+opens the receiving computer's **Feedback app > Device approvals**, signs in with
+the **receiving Working Memory owner password**, and enters the code. Codes are
+case-insensitive in this screen; routine approval needs no terminal.
+
+The receiver must be provisioned once with a private HTTPS read/write Blob SAS
+scoped **only** to `feedback-service/devices.json`, stored with mode0600 in
+`/data/public-inbox/device-approvals.json` as `{ "devicesUrl": "<scoped-blob-URL>" }`.
+Require `sr=b`, `sp=rw`, `spr=https`, nonempty `sig` and a future `se`; grant no
+container/account or reports access. Keep it server-side, outside source/images,
+logs and browser/desktop configuration. The existing reports pull credential does
+not grant approval authority. This explicitly delegates device approval to the
+receiving instance's authenticated owner. The receiver uses owner login/status/
+logout, short-lived HttpOnly sessions, same-origin JSON CSRF protection and
+ETag CAS to preserve the Function's counters/unknown state. No public owner approval
+endpoint is added to this service. The receiver's README documents provisioning
+and trust boundaries in detail.
+
+The Azure-login CLI remains available for administrators and revocation:
 
 ```sh
 export FEEDBACK_STORAGE_ACCOUNT=wmfeedback20261122mk
@@ -59,7 +77,7 @@ npm run admin -- approve ABCDEF123456
 npm run admin -- revoke <device-uuid>
 ```
 
-Admin commands use the owner's current **Azure CLI identity**, not a public HTTP
+These admin commands use the owner's current **Azure CLI identity**, not a public HTTP
 approval endpoint. Grant the owner Blob Data Contributor on `feedback-service`.
 Listing shows names, IDs, states and expiry, never proof/token hashes or codes.
 The desktop polls with a separate unguessable proof and stores both proof and

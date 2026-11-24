@@ -28,7 +28,8 @@
   {#if settings?.state === 'pending'}
     <p role="status">Approval pending. Give the owner this one-time code: <strong>{settings.pairingCode}</strong></p>
     <p>Expires {settings.expiresAt ? new Date(settings.expiresAt).toLocaleString() : ''}.
-      The owner approves this computer with the Feedback administration command.</p>
+      The owner enters this code in the receiving computer's Feedback app &gt; Device approvals,
+      after signing in with the receiving Working Memory owner password.</p>
   {:else if settings?.state === 'connected'}
     <p role="status">Connected. This computer is approved to upload encrypted reports.</p>
   {:else if settings?.state === 'revoked'}
@@ -36,7 +37,8 @@
   {:else if settings?.state === 'expired'}
     <p role="status">The pairing code expired. Connect again to request approval.</p>
   {:else}
-    <p>Connect this computer once and ask the owner to approve it. No Azure credentials or configuration to paste.</p>
+    <p>Connect this computer once, then give the code to the owner to enter in the receiving computer's
+      Feedback app &gt; Device approvals. No Azure credentials or configuration to paste.</p>
   {/if}
   {#if settings}<p>Service: {settings.destination}</p>{/if}
   <p>Device credentials are protected in the desktop credential vault. Disconnect revokes this device.

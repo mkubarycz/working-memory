@@ -1793,7 +1793,9 @@ stopped. Reporting does not automatically fail, interrupt or unblock it.
 Feedback uses an automatically configured HTTPS service; direct LAN discovery,
 self-signed receiving endpoints and manual sender SAS setup have been removed.
 In **Settings > Feedback**, select **Connect this computer**, give the one-time
-code to the owner, and wait for approval. The page shows pending, connected,
+code to the owner to enter in the receiving computer's **Feedback app >
+Device approvals**, and wait for approval. The owner signs in there with the
+receiving Working Memory owner password. The sender page shows pending, connected,
 expired and revoked states. **Disconnect and revoke** invalidates the device
 before forgetting its protected credentials. Unapproved uploads explicitly direct
 the user to approval; there is no fallback to another destination.
@@ -1802,8 +1804,11 @@ The service URL ships with the desktop. It supplies the existing receiver's RSA
 public key, never Azure credentials. Reports are encrypted with AES-256-GCM and
 RSA-OAEP-SHA256 before upload. Device credentials are high entropy, encrypted in
 the desktop vault and hashed server-side. The service checks revocation and
-atomic shared quotas on each upload. Owner approval/revocation uses an Azure-login
-CLI, not an unauthenticated public approval endpoint. See
+atomic shared quotas on each upload. The receiver's owner-authenticated approval
+screen uses a private, device-state-blob-only credential and atomic CAS; it never
+ships management credentials to senders or browsers. An Azure-login administrator
+CLI remains available for approval/revocation. There is no unauthenticated public
+approval endpoint. See
 [Feedback service deployment and administration](feedback-service/README.md).
 
 Review the report and included desktop/backend versions before sending. Copies
