@@ -493,7 +493,7 @@ describe('desktop tree icon contract', () => {
     expect(rail).toContain('expanded = new SvelteSet<string>()');
   });
 
-  it('shows five recent current-scope rows or all expanded exchanges and targets stable history elements', () => {
+  it('shares scoped message rendering and targets stable history elements', () => {
     const app = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/App.svelte'), 'utf8');
     const recent = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/RecentMessages.svelte'), 'utf8');
     const entry = readFileSync(resolve(repoRoot, 'desktop-ui/src/renderer/MessageEntry.svelte'), 'utf8');
@@ -506,8 +506,6 @@ describe('desktop tree icon contract', () => {
 
     expect(recent).toContain("['topic', 'workstream'].includes(normalizeScopeKind(context?.kind ?? ''))");
     expect(recent).toContain('scopedMessageRows(runs, previewMessages, context, document)');
-    expect(recent).toContain('agentMessages={previewMessages}');
-    expect(recent).toContain('limit={expanded ? undefined : 5}');
     expect(recent).toContain('aria-label="Recent messages"');
     expect(recent).toContain('<span>Recent messages</span>');
     expect(app).toContain('scopePreviewExpanded = true;');

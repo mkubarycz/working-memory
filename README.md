@@ -1264,6 +1264,13 @@ marker shows where it will land, and dropping it does not change the selected
 document or promote a preview. The new permanent-tab order is remembered per
 environment.
 
+Resource tabs also drag to the left-hand tree using the same topic/workstream
+drop actions as rail handles, or export the same Markdown context attachment
+to other apps such as VS Code. Local-only tabs still reorder within the tab bar.
+Every visible occurrence of the active topic, including pinned rows, is
+highlighted yellow in the working tree, including while hovered; tree handles
+have no gray hover background. Selecting another kind of tab clears the highlight.
+
 The right-hand Chat rail starts collapsed when no preference has been saved.
 Its open/closed state is remembered locally across desktop restarts, alongside
 the rail widths. Explicit chat actions can still open it when needed.
@@ -1658,9 +1665,9 @@ Click the pink-dot/date/status header (or focus it and press Enter/Space)
 to collapse a message to a one-line preview and status; click the preview to
 expand it again. Recent messages hides the redundant scope link and adds
 **Show in Log**. Attention requests appear once in chronological order, marked
-**Needs your attention**, rather than in a duplicate pinned section. Older
-attention requests and pending tool confirmations remain available even when
-Recent messages is limited to the latest five rows.
+**Needs your attention**, rather than in a duplicate pinned section.
+Recent messages is collapsed to exactly the latest row. Expand it to view the
+full scoped history, including older attention requests and pending confirmations.
 Both surfaces summarize tool activity as a count (for example, **5 tool calls**).
 Click the summary, or focus it and press Enter/Space, to reveal tools and outcomes;
 individual tools still open the full inspector. Failed, cancelled, and pending

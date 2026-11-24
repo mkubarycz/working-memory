@@ -26,6 +26,7 @@
     ? []
     : agentMessages);
   const allRows = $derived(scopedMessageRows(runs, previewMessages, context, document));
+  const visibleRows = $derived(expanded ? allRows : allRows.slice(-1));
 </script>
 
 <section class="scope-preview" class:expanded aria-label="Recent messages">
@@ -49,8 +50,9 @@
         {#if allRows.length === 0 && !loading && !error}
           <p>No messages for this scope.</p>
         {/if}
-        <MessageTimeline {runs} agentMessages={previewMessages} scoped {context} {document}
-          {expanded} limit={expanded ? undefined : 5}
+        <MessageTimeline runs={visibleRows.flatMap(row => row.kind === 'run' ? [row.run] : [])}
+          agentMessages={visibleRows.flatMap(row => row.kind === 'agent-message' ? [row.message] : [])}
+          scoped {context} {document} {expanded}
           showScope={false} showInLog {...entryProps} />
       </div>
     </div>

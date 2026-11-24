@@ -151,6 +151,16 @@ export function documentTabKey(document: DocumentVM): string {
   return `${documentRouteKind(document.kind)}:${identifier}`;
 }
 
+export function documentTabResourceUri(document: DocumentVM): string | null {
+  if (!document.id) return null;
+  const kind = normalizeScopeKind(document.kind);
+  const route = kind === 'topic' || kind === 'workstream' || kind === 'document' ? kind
+    : kind === 'agentmessage' ? 'agent-message'
+      : kind === 'topictype' ? 'topic-type'
+        : 'spec' in document ? 'document' : null;
+  return route ? `working-memory:/${route}/${encodeURIComponent(document.id)}.working-memory` : null;
+}
+
 export function documentTabDropIndex(
   bounds: Array<{ left: number; width: number }>,
   pointerX: number,

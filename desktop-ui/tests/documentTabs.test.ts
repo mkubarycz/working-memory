@@ -9,6 +9,7 @@ import {
   documentTabDropIndex,
   documentTabIcon,
   documentTabTooltip,
+  documentTabResourceUri,
   hostTaskDocument,
   newHostTaskDocument,
   keepSelectedTabVisible,
@@ -37,6 +38,19 @@ function topic(id: string, title = id): TopicVM {
 }
 
 describe('document tabs', () => {
+  it('exports persisted resource tabs with canonical IDs, not local-only tabs or drafts', () => {
+    expect(documentTabResourceUri(topic('id/with spaces'))).toBe('working-memory:/topic/id%2Fwith%20spaces.working-memory');
+    const generic = { id: 'resource', title: 'Resource', createdAt: 1, updatedAt: 1, resourceVersion: 1, spec: [] };
+    expect(documentTabResourceUri({ ...generic, kind: 'AgentMessage' })).toBe('working-memory:/agent-message/resource.working-memory');
+    expect(documentTabResourceUri({ ...generic, kind: 'TopicType' })).toBe('working-memory:/topic-type/resource.working-memory');
+    expect(documentTabResourceUri({ ...generic, kind: 'CustomKind' })).toBe('working-memory:/document/resource.working-memory');
+    expect(documentTabResourceUri(settingsDocument())).toBeNull();
+    expect(documentTabResourceUri(newHostTaskDocument())).toBeNull();
+    expect(documentTabResourceUri({ ...topic('draft'), kind: 'topic-create',
+      topicTypes: [], workstream: '', workstreamTitle: '', parent: null, parentTitle: null })).toBeNull();
+    expect(documentTabResourceUri({ ...topic(''), id: null })).toBeNull();
+  });
+
   it('returns through viewed tabs, independent of strip order, and skips closed inactive tabs', () => {
     const state = { tabs: [topic('first'), topic('second'), topic('third'), topic('fourth')], selectedKey: 'topic:second' };
     let viewed = selectDocumentTab(state, 'topic:first');

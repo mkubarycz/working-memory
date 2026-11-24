@@ -63,6 +63,8 @@
     composeContainerAppResourceMessage,
     containerAppResourceLabel,
     parseContainerAppResourceReference,
+    ResourceDragPreparationCache,
+    setResourceDragData,
   } from './resourceDrag';
   import {
     containerAppDocument,
@@ -97,6 +99,7 @@
     documentTabDropIndex,
     documentTabIcon,
     documentTabTooltip,
+    documentTabResourceUri,
     hostTaskDocument,
     keepSelectedTabVisible,
     openDocumentTab,
@@ -334,6 +337,22 @@
   let historyRequestGeneration: number | null = null;
   let documentTabsPersistenceReady = $state(false);
   let activeTreeDrag = $state<ActiveResourceDrag | null>(null);
+  let ownedTabDrag: ActiveResourceDrag | null = null;
+  let nativeTabDragFilePath: string | null = null;
+  const tabResourceDrags = new ResourceDragPreparationCache(
+    (uri, title) => window.workingMemory.prepareResourceDrag(uri, title),
+    error => { liveUpdateError = `Unable to prepare tab drag context: ${error instanceof Error ? error.message : String(error)}`; },
+  );
+  $effect(() => {
+    selectedEnvironment?.mcpUrl;
+    tabResourceDrags.clear();
+    for (const document of documents) prepareDocumentTabDrag(document);
+  });
+  $effect(() => window.workingMemory.onResourceDragResult(result => {
+    if (result.filePath !== nativeTabDragFilePath || result.status !== 'failed') return;
+    endDocumentTabDrag();
+    liveUpdateError = `Unable to drag tab context: ${result.error ?? 'Native drag failed.'}`;
+  }));
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
   const selectedContainerAppId = $derived(containerAppIdForDocument(activeDocument));
   const selectedContainerApp = $derived(containerApps.find((app) => app.id === selectedContainerAppId) ?? null);
@@ -606,6 +625,8 @@
   onDestroy(() => {
     clearComposerImages();
     closeCamera();
+    tabResourceDrags.clear();
+    endDocumentTabDrag();
   });
 
   async function refreshContainerApp(app: ContainerAppItem): Promise<void> {
@@ -2248,6 +2269,7 @@
   }
 
   const activeTreeProps = $derived({
+    activeTopicId: activeDocument?.kind === 'topic' ? activeDocument.id : null,
     unreadResponses, environments, selectedEnvironment, environmentLoading, environmentError,
     data: activePanel, loading: activeLoading, error: activeError,
     onDiscoverEnvironments: discoverEnvironments,
@@ -2588,31 +2610,67 @@
     applyDocumentTabs(closeDocumentTab(documentTabsState(), key));
   }
 
+  function prepareDocumentTabDrag(document: DocumentVM): void {
+    const uri = documentTabResourceUri(document);
+    if (uri) tabResourceDrags.prepare(uri, document.title);
+  }
+
   function startDocumentTabDrag(event: DragEvent, key: string): void {
     if (!event.dataTransfer) return;
+    endDocumentTabDrag();
+    const document = documents.find(document => documentTabKey(document) === key);
+    if (!document) return;
+    const uri = documentTabResourceUri(document);
+    const prepared = uri ? tabResourceDrags.get(uri) : undefined;
+    const section = prepared?.workstreamSection ?? ('status' in document
+      && (document.status === 'queue' || document.status === 'progress' || document.status === 'backlog')
+      ? document.status : undefined);
+    event.dataTransfer.clearData();
+    if (uri && !setResourceDragData(event.dataTransfer, uri, document.title, prepared)) {
+      event.preventDefault();
+      liveUpdateError = 'Unable to drag this Working Memory tab.';
+      return;
+    }
     event.dataTransfer.setData(DOCUMENT_TAB_DRAG_TYPE, key);
-    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.effectAllowed = uri ? 'copyMove' : 'move';
     draggedDocumentKey = key;
     documentTabMenu = null;
     containerAppTabMenu = null;
+    ownedTabDrag = document.kind === 'topic' && document.id
+      ? { kind: 'topic', id: document.id, sourceWorkstream: '', ...(prepared ? { native: true } : {}) }
+      : document.kind === 'workstream' && document.id && section
+        ? { kind: 'workstream', id: document.id, section, ...(prepared ? { native: true } : {}) } : null;
+    if (ownedTabDrag) {
+      activeTreeDrag = ownedTabDrag;
+      ownedTabDrag = activeTreeDrag;
+    }
+    if (prepared) {
+      event.preventDefault();
+      nativeTabDragFilePath = prepared.filePath;
+      window.workingMemory.startResourceDrag(prepared);
+    }
   }
 
   function endDocumentTabDrag(): void {
+    if (ownedTabDrag && activeTreeDrag === ownedTabDrag) activeTreeDrag = null;
+    ownedTabDrag = null;
+    nativeTabDragFilePath = null;
     draggedDocumentKey = null;
     documentTabDropTarget = null;
   }
 
   function documentTabDragOver(event: DragEvent & { currentTarget: HTMLDivElement }): void {
-    if (!draggedDocumentKey || !event.dataTransfer?.types.includes(DOCUMENT_TAB_DRAG_TYPE)) return;
+    if (!draggedDocumentKey || !event.dataTransfer
+      || (!nativeTabDragFilePath && !event.dataTransfer.types.includes(DOCUMENT_TAB_DRAG_TYPE))) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
+    event.dataTransfer.dropEffect = nativeTabDragFilePath ? 'copy' : 'move';
     const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('.document-tab')];
     documentTabDropTarget = documentTabDropIndex(tabs.map(tab => tab.getBoundingClientRect()), event.clientX);
   }
 
   function dropDocumentTab(event: DragEvent & { currentTarget: HTMLDivElement }): void {
     const key = draggedDocumentKey;
-    if (!key || event.dataTransfer?.getData(DOCUMENT_TAB_DRAG_TYPE) !== key) return;
+    if (!key || (!nativeTabDragFilePath && event.dataTransfer?.getData(DOCUMENT_TAB_DRAG_TYPE) !== key)) return;
     event.preventDefault();
     event.stopPropagation();
     const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('.document-tab')];
@@ -2736,6 +2794,9 @@
 </script>
 
 <svelte:window
+  onpointermove={event => {
+    if (event.buttons === 0 && nativeTabDragFilePath) endDocumentTabDrag();
+  }}
   onclick={(event) => { documentTabMenu = null; containerAppTabMenu = null; handleDocumentClick(event); }}
   onkeydown={(event) => {
     if (event.key === 'Escape') {
@@ -2899,6 +2960,7 @@
                 aria-selected={key === selectedDocumentKey}
                 title={documentTabTooltip(document, key === previewDocumentKey)}
                 draggable="true"
+                onpointerdown={() => prepareDocumentTabDrag(document)}
                 ondragstart={(event) => startDocumentTabDrag(event, key)}
                 ondragend={endDocumentTabDrag}
                 onclick={() => selectDocument(key)}

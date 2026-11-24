@@ -523,7 +523,6 @@ button { cursor: pointer; }
 .active-card-body { --active-tree-control-width: 22px; border-top: 1px solid var(--ws-card-border); }
 .active-open, .focused-topic-open, .focused-topic-pin { min-width: 0; border: 0; background: transparent; color: inherit; text-align: left; }
 .active-open { display: flex; align-items: center; flex: 1 1 auto; gap: 7px; min-height: 26px; padding: 1px 4px; }
-.active-open:hover, .focused-topic-open:hover, .focused-topic-pin:hover { background: var(--desktop-active-hover); }
 .active-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workstream-open .active-label { font-size: 12px; font-weight: 650; }
 .active-description { flex: 0 0 auto; color: var(--desktop-active-muted); font-size: 10px; }
@@ -554,6 +553,8 @@ button { cursor: pointer; }
 .active-tree-node > .active-row > .graph-node-control { flex-basis: var(--active-tree-control-width); width: var(--active-tree-control-width); }
 .active-tree-node > .active-row { padding-left: calc(min(var(--tree-depth), 1) * 2px); }
 .active-row.closed .active-open { color: var(--desktop-active-muted); }
+.active-row.selected, .focused-topic.selected { border-radius: 4px; background: #f8df80; color: #302600; }
+.active-row.selected .active-open, .focused-topic.selected .focused-topic-open { color: inherit; }
 
 @media (max-width: 760px) {
   .desktop-header { gap: 4px; padding-inline: 5px; }

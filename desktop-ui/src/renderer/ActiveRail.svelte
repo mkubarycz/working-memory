@@ -38,6 +38,7 @@
     backlog?: TopicBacklogVM;
     expanded?: SvelteSet<string>;
     activeDrag?: ActiveResourceDrag | null;
+    activeTopicId?: string | null;
     unreadResponses?: UnreadResponse[];
     environments: DesktopEnvironment[];
     selectedEnvironment: DesktopEnvironment | null;
@@ -69,6 +70,7 @@
     backlog,
     expanded = new SvelteSet<string>(),
     activeDrag = $bindable(null),
+    activeTopicId = null,
     unreadResponses = [],
     environments, selectedEnvironment, environmentLoading, environmentError,
     data, loading, error, onRefresh, onSettings, onCollapse, onOpen, onToggleFocus, onAction, onReorder, onTransferTopic,
@@ -546,6 +548,7 @@
   {@const children = node.children ?? []}
   {@const open = expanded.has(node.id)}
   {@const topicId = topicIdFromOpenUri(node.openUri)}
+  {@const selected = activeTopicId !== null && activeTopicId === ('documentId' in node ? node.documentId ?? topicId : topicId)}
   {@const menuItems = activeContextMenuItems(node.actions, {
     topic: topicId,
     focused: 'focused' in node && node.focused,
@@ -555,6 +558,7 @@
   <li class="active-tree-node" class:expanded={children.length > 0 && open} style="--tree-depth: {depth}">
     <div
       class="active-row"
+      class:selected
       class:closed={node.status === 'closed'}
       class:topic-reparent-target={topicReparentTarget === topicId}
       data-kind={node.kind}
@@ -577,6 +581,7 @@
       {/if}
       <button
         class="active-open"
+        aria-current={selected ? 'page' : undefined}
         title={node.tooltip}
         draggable="true"
         onpointerdown={() => prepareResourceDrag(node.openUri, node.label)}
@@ -714,6 +719,7 @@
               {@const topicId = topicIdFromOpenUri(topic.openUri)}
               <div
                 class="focused-topic"
+                class:selected={activeTopicId !== null && activeTopicId === (topic.documentId ?? topicId)}
                 role="group"
                 oncontextmenu={(event) => void openMenu(event, workstream.id ?? '', activeContextMenuItems(topic.actions, {
                   topic: topicId,
@@ -733,6 +739,7 @@
                 ><span aria-hidden="true" class="codicon codicon-pinned"></span></button>
                 <button
                   class="focused-topic-open"
+                  aria-current={activeTopicId !== null && activeTopicId === (topic.documentId ?? topicId) ? 'page' : undefined}
                   title={topic.tooltip}
                   draggable="true"
                   onpointerdown={() => prepareResourceDrag(topic.openUri, topic.label)}
