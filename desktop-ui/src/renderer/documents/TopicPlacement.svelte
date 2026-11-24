@@ -75,7 +75,7 @@
       await window.workingMemory.applyTopicPlacement(input);
       if (current !== generation || id !== topicId || resourceVersion !== version || environment !== sourceEnvironment) return;
       result = null;
-      notice = 'Placement applied. Existing relationships and topic status were preserved.';
+      notice = 'Placement applied. New assignments leave prior Backlog Workstreams; other relationships and topic status are preserved.';
       await onApplied?.();
     } catch (cause) {
       if (current === generation) error = cause instanceof Error ? cause.message : String(cause);

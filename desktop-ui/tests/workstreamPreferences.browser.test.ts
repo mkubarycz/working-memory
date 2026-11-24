@@ -218,7 +218,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             input.dispatchEvent(new Event('input', { bubbles: true }));
           }\`);
           await wait('window.__preferences.workstreams[0].title === "First" && ![...document.querySelectorAll("[role=alert]")].some(node => node.textContent.includes("Inbox is reserved"))');
-          await preference('Pin workstream');
+          await preference('Backlog Workstream');
           await wait('window.__preferences.workstreams[0].pinned === true');
           await evaluate('document.querySelector(".topic-backlog-button").click()');
           await wait('document.querySelector("h1.title")?.textContent === "Inbox"');
@@ -237,7 +237,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('document.querySelector("[data-workstream=first]")'), null);
           await subtab('First');
           await wait('document.querySelector(".title-input")?.value === "First"');
-          await preference('Pin workstream');
+          await preference('Backlog Workstream');
           await wait('window.__preferences.workstreams[0].pinned === false');
           await wait('document.querySelector("h1.title")?.textContent === "Inbox"');
           await wait('document.querySelector(".active-rail [data-workstream=first] .active-row.closed")');
@@ -292,7 +292,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await wait('window.__preferences.workstreams[0].includeClosedTopics === false && !document.querySelector(".active-rail [data-workstream=first] .active-row.closed")');
           await wait('!document.querySelector(".tree-link.closed") && [...document.querySelectorAll(".tree-label")].some(row => row.textContent === "Open child")');
           assert.equal(await evaluate('window.__preferences.topics.find(topic => topic.id === "closed").status'), 'closed');
-          await preference('Pin workstream');
+          await preference('Backlog Workstream');
           await wait('window.__preferences.workstreams[0].pinned === true');
           await evaluate('document.querySelector(".topic-backlog-button").click()');
           await subtab('First');
