@@ -801,8 +801,12 @@ Similarity remains the actual cosine score; literal confidence is not approval
 to create a relationship. Parents must still be open, non-descendants and members
 of an open workstream; a matching unplaced topic remains searchable but is not
 an eligible parent/workstream pair.
-Placement also uses up to 50 hybrid-ranked, open, non-descendant topic neighbors
-as examples of authored organization. A neighbor votes only for its existing
+Placement also uses up to 50 hybrid-ranked, live, non-descendant topic neighbors
+with usable authored destinations as examples of organization. Closed children
+can remain examples without being reopened; proposed parents and workstreams must
+still be open. Eligibility is checked before the structural neighborhood limit,
+so unorganized lookalikes cannot crowd out authored examples.
+A neighbor votes only for its existing
 parents in workstreams shared by that neighbor and parent; unorganized duplicates
 do not invent a destination. Each example's vote is its source-to-neighbor cosine
 (or unit weight for verified lexical evidence), divided equally among its eligible

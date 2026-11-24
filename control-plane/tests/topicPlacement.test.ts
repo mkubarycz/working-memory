@@ -43,6 +43,81 @@ const applyInput = (id: string, version: number, parent: { id: string; resourceV
     workstream: { id: workstream.id, resourceVersion: workstream.resourceVersion } });
 
 describe('topic placement production MCP/client entry points', () => {
+  it.each(['closed', 'crowded'] as const)('retains authored evidence from %s examples before limiting the structural neighborhood', async scenario => {
+    const { server, client } = await setup();
+    try {
+      const ws = store.createDocument({ kind: 'Workstream', spec: { title: 'Organized destination' } });
+      const parent = store.createDocument({ kind: 'Topic', spec: { title: 'Authored grouping', workstreams: [ws.metadata.id] } });
+      const source = store.createDocument({ kind: 'Topic', spec: { title: 'New synthetic observation' } });
+      const duplicate = store.createDocument({ kind: 'Topic', spec: { title: source.spec.title, workstreams: [ws.metadata.id] } });
+      const examples = Array.from({ length: 4 }, (_, i) => store.createDocument({ kind: 'Topic', spec: {
+        title: `Organized example ${i}`, status: scenario === 'closed' ? 'closed' : 'open',
+        parents: [parent.metadata.id], workstreams: [ws.metadata.id],
+      } }));
+      const scores = new Map([[source.metadata.id, 1], [duplicate.metadata.id, 0.94],
+        ...examples.map(example => [example.metadata.id, 0.8] as [string, number])]);
+      if (scenario === 'crowded') {
+        for (let i = 0; i < 60; i++) {
+          const distractor = store.createDocument({ kind: 'Topic', spec: { title: `Unorganized lookalike ${i}`, workstreams: [ws.metadata.id] } });
+          scores.set(distractor.metadata.id, 0.9);
+        }
+      }
+      store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+      indexSimilarities(scores);
+      const authored = store.db.prepare('SELECT id, spec, resource_version FROM resources ORDER BY id').all();
+      const response = await client.callTool('wm-topic-suggest-placement', { id: source.metadata.id, limit: 1 });
+      if (!response.ok) throw new Error(response.error);
+      const result = topicPlacementSchema.parse(response.result);
+      expect(result.state).toBe('ready');
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0]).toMatchObject({
+        parent: { id: parent.metadata.id }, workstream: { id: ws.metadata.id },
+        confidence: { level: 'medium', reason: expect.stringContaining('4 of 4 similar organized topics') },
+        evidence: 'parent-membership',
+      });
+      expect(result.suggestions[0].similarity).toBeCloseTo(0.1);
+      expect(result.suggestions[0].confidence.reason).toContain('3.20 of 3.20 organized vote weight');
+      expect(result.suggestions[0].confidence.reason).toContain('Similarity and excerpt describe the proposed parent');
+      expect(examples.filter(example => result.suggestions[0].confidence.reason.includes(example.metadata.id))).toHaveLength(3);
+      expect(store.db.prepare('SELECT id, spec, resource_version FROM resources ORDER BY id').all()).toEqual(authored);
+      expect((await client.topicSuggestPlacement(source.metadata.id)).suggestions[0].parent?.id).toBe(parent.metadata.id);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
+  it('uses completed examples without accepting closed, mismatched or cyclic destinations', async () => {
+    const { server, client } = await setup();
+    try {
+      const ws = store.createDocument({ kind: 'Workstream', spec: { title: 'Current destination' } });
+      const closedWs = store.createDocument({ kind: 'Workstream', spec: { title: 'Closed destination', status: 'closed' } });
+      const source = store.createDocument({ kind: 'Topic', spec: { title: 'New observation', workstreams: [ws.metadata.id] } });
+      const parent = store.createDocument({ kind: 'Topic', spec: { title: 'Valid grouping', workstreams: [ws.metadata.id] } });
+      const closed = store.createDocument({ kind: 'Topic', spec: { title: 'Closed grouping', status: 'closed', workstreams: [ws.metadata.id] } });
+      const old = store.createDocument({ kind: 'Topic', spec: { title: 'Old grouping', workstreams: [closedWs.metadata.id] } });
+      const mismatched = store.createDocument({ kind: 'Topic', spec: { title: 'Other grouping', workstreams: [ws.metadata.id] } });
+      const descendant = store.createDocument({ kind: 'Topic', spec: { title: 'Descendant grouping', parents: [source.metadata.id], workstreams: [ws.metadata.id] } });
+      const scores = new Map([[source.metadata.id, 1]]);
+      for (const [destination, workstream] of [[closed, ws], [old, closedWs], [mismatched, closedWs], [descendant, ws], [source, ws]]) {
+        const example = store.createDocument({ kind: 'Topic', spec: { title: 'Ineligible example', status: 'closed',
+          parents: [destination.metadata.id], workstreams: [workstream.metadata.id] } });
+        scores.set(example.metadata.id, 0.99);
+      }
+      const examples = Array.from({ length: 4 }, (_, i) => store.createDocument({ kind: 'Topic', spec: {
+        title: `Completed example ${i}`, status: 'closed', parents: [parent.metadata.id], workstreams: [ws.metadata.id],
+      } }));
+      store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+      for (const example of examples) scores.set(example.metadata.id, 0.8);
+      indexSimilarities(scores);
+      const result = await client.topicSuggestPlacement(source.metadata.id);
+      expect(result.suggestions[0]).toMatchObject({
+        parent: { id: parent.metadata.id }, workstream: { id: ws.metadata.id },
+        confidence: { reason: expect.stringContaining('4 of 4 similar organized topics') },
+      });
+      expect(result.suggestions.some(s => [closed, old, mismatched, descendant, source, ...examples].some(document => document.metadata.id === s.parent?.id))).toBe(false);
+      expect(store.getDocument({ id: source.metadata.id })).toEqual(source);
+      expect(examples.every(example => store.getDocument({ id: example.metadata.id })!.spec.status === 'closed')).toBe(true);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it('learns an authored destination from organized siblings rather than a closer duplicate, without caching relationships or writing topics', async () => {
     const { server, client } = await setup();
     try {

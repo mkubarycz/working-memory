@@ -67,13 +67,13 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
     const id = String(row.id);
     if (row.kind === 'Topic' && forbidden.has(id)) continue;
     const score = similarity(source, vector(row.centroid));
-    if (row.kind === 'Topic' && row.status === 'closed') continue;
     const excerpt = String(row.excerpt);
     const limited = !!indexed.limited || !!row.limited;
     if (row.kind === 'Topic') {
       const workstreams = stringArray(JSON.parse(String(row.workstreams)));
       neighbors.set(id, { title: String(row.title), similarity: score,
         parents: stringArray(JSON.parse(String(row.parents))), workstreams, limited });
+      if (row.status === 'closed') continue;
       for (const workstreamId of workstreams) {
         const workstream = liveWorkstreams.get(workstreamId);
         if (!workstream) continue;
@@ -91,17 +91,21 @@ export function suggestTopicPlacement(store: Store, raw: unknown, enabled: boole
   const eligible = new Map(suggestions.map(suggestion => [evidenceId(suggestion), suggestion.similarity]));
   const lexical = lexicalCandidates(store.db, new Set(eligible.keys()), { sourceId: input.id });
   const ranks = hybridRanks(eligible, lexical);
-  const neighborLexical = new Map([...lexical].filter(([id]) => neighbors.has(id)));
-  const neighborRanks = hybridRanks(new Map([...neighbors].map(([id, neighbor]) => [id, neighbor.similarity])), neighborLexical);
   const pairKey = (parent: string, workstream: string) => JSON.stringify([parent, workstream]);
   const pairs = new Set(suggestions.filter(s => s.parent).map(s => pairKey(s.parent!.id, s.workstream.id)));
+  // Only usable authored examples consume structural retrieval slots; closed examples are not destinations.
+  const neighborPairs = new Map([...neighbors].map(([id, neighbor]) => [id,
+    new Set(neighbor.parents.flatMap(parent => neighbor.workstreams
+      .map(workstream => pairKey(parent, workstream)).filter(key => pairs.has(key)))),
+  ] as const).filter(([, destinations]) => destinations.size));
+  const neighborLexical = new Map([...lexical].filter(([id]) => neighborPairs.has(id)));
+  const neighborRanks = hybridRanks(new Map([...neighbors].filter(([id]) => neighborPairs.has(id))
+    .map(([id, neighbor]) => [id, neighbor.similarity])), neighborLexical);
   const support = new Map<string, { weight: number; examples: Array<{ id: string; title: string }>; strong: number; limited: boolean }>();
   let totalWeight = 0, organized = 0;
   for (const [id] of [...neighborRanks].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, HYBRID_CANDIDATE_LIMIT)) {
     const neighbor = neighbors.get(id)!;
-    const destinations = new Set(neighbor.parents.flatMap(parent => neighbor.workstreams
-      .map(workstream => pairKey(parent, workstream)).filter(key => pairs.has(key))));
-    if (!destinations.size) continue;
+    const destinations = neighborPairs.get(id)!;
     // Each authored example has one vote budget, divided across its eligible pairs.
     const weight = neighborLexical.has(id) ? 1 : neighbor.similarity;
     totalWeight += weight;
