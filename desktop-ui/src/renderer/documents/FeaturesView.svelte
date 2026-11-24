@@ -4,6 +4,7 @@
   import type { EmbeddingDashboard } from '../../shared/embeddings';
   import type { FeatureBugReportInput } from '../../shared/contracts';
   import ReportBugDialog from '../ReportBugDialog.svelte';
+  import { useSessionBugReportOperation } from '../sessionBugReportOperation';
 
   let { onChanged, onOpenObservability }: {
     onChanged: (features: InstanceFeatures) => void; onOpenObservability?: () => Promise<void>;
@@ -12,6 +13,7 @@
   let enabled = $state(false);
   let searchEnabled = $state(false);
   let observabilityEnabled = $state(false);
+  let placementAutoLoadEnabled = $state(false);
   let recoveryAppId = $state<string | null>(null);
   let embeddings = $state<EmbeddingDashboard | null>(null);
   let embeddingsEnabled = $state(false);
@@ -24,6 +26,10 @@
   let requestedChange = $state<FeatureBugReportInput['failure']['requested']>();
   let reporting = $state<FeatureBugReportInput['failure'] | null>(null);
   const displayedError = $derived(error || pollError || embeddingsPollError);
+  useSessionBugReportOperation(() => ({ kind: 'features', failure: $state.snapshot({
+    error: displayedError || 'No displayed error.', operation: operation || 'features:status',
+    capturedAt: new Date().toISOString(), features, requested: requestedChange, embeddingsEnabled,
+  }) }));
   let active = false;
   let refreshing = false;
   let generation = 0;
@@ -43,6 +49,7 @@
         enabled = features.hostTasks;
         searchEnabled = features.search;
         observabilityEnabled = features.observability ?? false;
+        placementAutoLoadEnabled = features.topicPlacementAutoLoad ?? false;
         pollError = '';
         onChanged(features);
       } else pollError = loaded.reason instanceof Error ? loaded.reason.message : String(loaded.reason);
@@ -105,6 +112,7 @@
       enabled = features?.hostTasks ?? false;
       searchEnabled = features?.search ?? false;
       observabilityEnabled = features?.observability ?? false;
+      placementAutoLoadEnabled = features?.topicPlacementAutoLoad ?? false;
       busy = false;
     }
   }
@@ -179,6 +187,18 @@
           bind:checked={observabilityEnabled} disabled={!features || busy}
           onchange={(event) => void toggle('observability', event.currentTarget.checked)} />
       </td>
+    </tr>
+    <tr>
+      <th scope="row">Automatic topic placement suggestions</th>
+      <td>Suggest one placement in the background when opening a saved topic. Requires Search and Embeddings.
+        Manual Suggest Placement remains available when off.
+        {#if features && features.topicPlacementAutoLoad === undefined}Upgrade this backend to configure automatic suggestions.{/if}
+      </td>
+      <td>
+        <input class="feature-switch" type="checkbox" role="switch" aria-label="Automatic topic placement suggestions"
+          bind:checked={placementAutoLoadEnabled} disabled={!features || features.topicPlacementAutoLoad === undefined || busy}
+          onchange={(event) => void toggle('topicPlacementAutoLoad', event.currentTarget.checked)} />
+      </td>
     </tr></tbody>
   </table>
   {#if busy}<p role="status">Applying feature settings. Container setup may take several minutes.</p>{/if}
@@ -192,7 +212,7 @@
           capturedAt: new Date().toISOString(), features, embeddingsEnabled,
           ...(error && requestedChange ? { requested: requestedChange } : {}),
         });
-      }}>Report a bug</button>
+      }}>Bug Report</button>
     </div>
   {/if}
 </section>

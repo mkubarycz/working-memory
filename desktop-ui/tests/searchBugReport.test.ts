@@ -6,6 +6,7 @@ import { InstanceIdentity } from '../../control-plane/src/instanceIdentity';
 import { loadKinds } from '../../control-plane/src/kinds/loader';
 import { createSearchBugReport } from '../src/main/searchBugReport';
 import type { SearchBugReportInput } from '../src/shared/contracts';
+import { placementBugContext } from '../src/renderer/documents/topicPlacementActions';
 
 const cleanup: Array<() => Promise<void>> = [];
 beforeAll(() => loadKinds());
@@ -43,6 +44,25 @@ it('persists query, scope, complete displayed result evidence and timings throug
     '"literalMatch": true', '"level": "high"', '"limited": true', '"returnedResults": 1',
     '"limit": 20', '"durationMs": 120', 'http://localhost:7719', 'fixture']) expect(report.body).toContain(text);
   expect((await client.topicRead({ id: report.id }))[0].body).toBe(report.body);
+  const selected = {
+    parent: { id: 'parent', title: 'Suggested parent', resourceVersion: 5 },
+    workstream: { id: 'workstream', title: 'Suggested workstream', resourceVersion: 7 },
+    similarity: 0.8, confidence: { level: 'high' as const, reason: 'Shared case reference' },
+    excerpt: 'Matching authored evidence PRIVATE_MODEL_KEY https://inbox.blob.core.windows.net/reports?sp=c&sig=123456789012&se=2099',
+    evidence: 'parent-membership' as const,
+  };
+  const placementReport = await createSearchBugReport({
+    description: 'This is the wrong suggested parent.',
+    search: placementBugContext({ id: 'source', title: 'Source topic', resourceVersion: 3 },
+      { state: 'ready', sourceVersion: 3, limited: false, suggestions: [selected] }, selected, '', false),
+  }, { ...options, client });
+  expect(placementReport.body).toContain('## Supporting evidence');
+  for (const text of ['Suggested parent', 'Suggested workstream', 'Shared case reference', 'Matching authored evidence']) {
+    expect(placementReport.body).toContain(text);
+  }
+  expect(placementReport.body).not.toContain('PRIVATE_MODEL_KEY');
+  expect(placementReport.body).not.toContain('123456789012');
+  expect((await client.topicRead({ id: placementReport.id }))[0].body).toBe(placementReport.body);
 });
 
 it('captures failed, in-progress and empty searches without changing or restarting a search', async () => {

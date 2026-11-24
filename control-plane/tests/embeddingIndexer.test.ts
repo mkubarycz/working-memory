@@ -5,13 +5,15 @@ import { join } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadKinds } from '../src/kinds/loader';
 import { openStore, type Store } from '../src/store';
-import { EMBEDDING_MODEL, semanticStatusSchema, embeddingDashboardSchema } from '../src/embeddingContract';
+import { EMBEDDING_MODEL, semanticStatusSchema, embeddingDashboardSchema, relatedTopicsSchema } from '../src/embeddingContract';
 import { embeddingStats, nextEmbeddingWork, submitEmbeddings } from '../src/topicEmbeddings';
 import { InstanceFeatureStore } from '../src/instanceFeatures';
 import { EmbeddingIndexer } from '../src/embeddingIndexer';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
 import { LocalEmbeddings } from '../../desktop-ui/src/main/localEmbeddings';
 import { Observability } from '../src/observability';
+import { isDocumentSearchResult } from '../../shared/documentSearch';
+import * as retrieval from '../src/documentSearch';
 
 const stores: Store[] = [];
 const hosts: Server[] = [];
@@ -99,6 +101,378 @@ function fixture() {
   return { store, path };
 }
 describe('container-owned embedding lifecycle', () => {
+  it('indexes consecutive documents without recounting progress or fixed pauses and keeps on-demand readiness exact', async () => {
+    const { store } = fixture();
+    for (let index = 0; index < 8; index++) {
+      store.createDocument({ kind: 'Topic', spec: { title: `Background item ${index}`, body: 'Saved evidence.' } });
+    }
+    const inference = await hostFixture();
+    const indexer = new EmbeddingIndexer(store.db, () => true);
+    await indexer.configure({ action: 'enable', host: inference.host });
+    expect(indexer.readiness()).toMatchObject({ ready: false, stats: { pending: 8 } });
+    const prepare = store.db.prepare.bind(store.db);
+    const summaryQueries: string[] = [];
+    const preparation = vi.spyOn(store.db, 'prepare').mockImplementation(sql => {
+      if (sql.includes('AS total,') || sql.includes('sum(length(p.vector))')) summaryQueries.push(sql);
+      return prepare(sql);
+    });
+    try {
+      const started = performance.now();
+      indexer.start();
+      await waitFor(() => Number(store.db.prepare('SELECT count(*) AS count FROM topic_embedding_index').get()?.count) === 8);
+      expect(performance.now() - started).toBeLessThan(1000);
+      expect(inference.requests()).toBe(8);
+      expect(summaryQueries).toEqual([]);
+      expect(indexer.readiness()).toMatchObject({ ready: true, stats: { total: 8, indexed: 8, pending: 0 } });
+      expect(await indexer.snapshot()).toMatchObject({ stats: { total: 8, indexed: 8, pending: 0, vectorBytes: 8 * 384 * 4 } });
+      expect(summaryQueries.length).toBeGreaterThan(0);
+    } finally {
+      await indexer.stop();
+      preparation.mockRestore();
+    }
+  });
+
+  it('continues past a metadata-only repair batch without waiting for a progress sample', async () => {
+    const { store } = fixture();
+    const documents = Array.from({ length: 21 }, (_, index) =>
+      store.createDocument({ kind: 'Topic', spec: { title: `Metadata item ${index}`, body: 'Unchanged evidence.' } }));
+    for (;;) {
+      const { work } = nextEmbeddingWork(store.db);
+      if (!work) break;
+      submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+        model: EMBEDDING_MODEL, vectors: work.passages.map(() => Array.from({ length: 384 }, (_, index) => Number(index === 0))) });
+    }
+    for (const document of documents) store.updateDocument({ id: document.metadata.id,
+      expectedResourceVersion: document.metadata.resourceVersion, spec: document.spec, labels: { reviewed: 'true' } });
+    const inference = await hostFixture();
+    const indexer = new EmbeddingIndexer(store.db, () => true);
+    await indexer.configure({ action: 'enable', host: inference.host });
+    const prepare = store.db.prepare.bind(store.db);
+    const summaryQueries: string[] = [];
+    const preparation = vi.spyOn(store.db, 'prepare').mockImplementation(sql => {
+      if (sql.includes('AS total,') || sql.includes('sum(length(p.vector))')) summaryQueries.push(sql);
+      return prepare(sql);
+    });
+    try {
+      indexer.start();
+      await waitFor(() => Number(store.db.prepare(`SELECT count(*) AS pending FROM resources r
+        JOIN topic_embedding_index i ON i.topic_id = r.id WHERE i.source_version != r.resource_version`).get()?.pending) === 0);
+      expect(inference.requests()).toBe(0);
+      expect(summaryQueries).toEqual([]);
+      expect(indexer.readiness()).toMatchObject({ ready: true, stats: { indexed: 21, pending: 0 } });
+    } finally {
+      await indexer.stop();
+      preparation.mockRestore();
+    }
+  });
+
+  it.each([
+    ['INC-42', false], ['A3', false], ['owner_alpha', false], ['ID', false], ['S', false],
+    ['d85dbeef-2abc-4a01-9def-abcdef012345', true],
+    ['silver albatross', false], ['marmalade', false], ['20261411192068475308', false], ['undefined', false],
+    [`${'X'.repeat(400)}-42`, false],
+  ] as const)('shares general lexical/semantic discovery for %s across authenticated Search, Related topics and placement', async (reference, longBody) => {
+    const { store } = fixture();
+    const email = store.createDocument({ kind: 'Workstream', spec: { title: 'Email' } });
+    const destination = store.createDocument({ kind: 'Workstream', spec: { title: 'test' } });
+    const authoredReference = reference === 'S' ? '\u017f' : reference;
+    const source = store.createDocument({ kind: 'Topic', spec: {
+      title: longBody ? 'Email follow-up' : `Re: ${reference}`,
+      ...(reference === 'A3' ? {} : { body: `${longBody ? 'A'.repeat(33000) : ''}\n${reference} An email about this reference` }),
+      workstreams: [email.metadata.id],
+    } });
+    const exact = store.createDocument({ kind: 'Topic', spec: {
+      title: longBody ? 'Collected notes' : `Tracking ${authoredReference}`,
+      body: `${longBody ? 'B'.repeat(33000) : 'The curious kettle collected raindrops in a thimble.'}\n${authoredReference}`,
+      workstreams: [destination.metadata.id],
+    } });
+    const near = store.createDocument({ kind: 'Topic', spec: {
+      title: reference === 'ID' ? 'Cafe\u0301-ID' : `${reference}0`,
+      ...(reference === 'A3' ? {} : { body: 'A postcard reached Saturn.' }),
+      workstreams: [destination.metadata.id],
+    } });
+    const artifact = store.createDocument({ kind: 'Topic', spec: { title: 'Archive', workstreams: [destination.metadata.id] } });
+    const suffixNear = reference === 'ID' ? store.createDocument({ kind: 'Topic',
+      spec: { title: 'ID-\u0301Cafe', workstreams: [destination.metadata.id] } }) : null;
+    for (let index = 0; index < 65; index++) {
+      store.createDocument({ kind: 'Topic', spec: {
+        title: `Other example ${index}`, ...(reference === 'undefined' ? {} : { body: 'The orange beetle wrote a postcard to Saturn.' }),
+        workstreams: [destination.metadata.id],
+      } });
+    }
+    for (;;) {
+      const work = nextEmbeddingWork(store.db).work;
+      if (!work) break;
+      submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+        model: EMBEDDING_MODEL, vectors: work.passages.map(() => Array.from({ length: 384 },
+          (_, index) => Number(index === (work.id === exact.metadata.id ? 1 : 0)))) });
+    }
+    const inference = await hostFixture();
+    new EmbeddingIndexer(store.db, () => true);
+    store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, ?)').run(JSON.stringify(inference.host));
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      const search = await client.callTool('wm-semantic-search', { queries: [reference], literalQuery: reference, kinds: ['Topic'], limit: 5 });
+      if (!search.ok) throw new Error(search.error);
+      if (!isDocumentSearchResult(search.result)) throw new Error('Invalid search result');
+      expect(search.result.results.slice(0, 3).map(hit => hit.id)).toContain(exact.metadata.id);
+      expect(search.result.results.find(hit => hit.id === exact.metadata.id)).toMatchObject({
+        similarity: 0, literalMatch: true, resourceVersion: exact.metadata.resourceVersion,
+        excerpt: expect.stringContaining(authoredReference), confidence: { reason: expect.stringContaining('Verified lexical evidence') },
+      });
+      if (!reference.includes(' ')) expect(search.result.results.find(hit => hit.id === near.metadata.id)?.literalMatch).not.toBe(true);
+      if (suffixNear) expect(search.result.results.find(hit => hit.id === suffixNear.metadata.id)?.literalMatch).not.toBe(true);
+      expect(search.result.results.find(hit => hit.id === artifact.metadata.id)?.literalMatch).not.toBe(true);
+      const related = await client.callTool('wm-related-topics', { id: source.metadata.id, limit: 5 });
+      if (!related.ok) throw new Error(related.error);
+      expect(relatedTopicsSchema.parse(related.result).results.slice(0, 3).map(hit => hit.id)).toContain(exact.metadata.id);
+      expect(relatedTopicsSchema.parse(related.result).results.find(hit => hit.id === exact.metadata.id)).toMatchObject({
+        similarity: 0, evidence: 'keyword', confidence: { reason: expect.stringContaining('Verified lexical evidence') },
+      });
+      expect(relatedTopicsSchema.parse(related.result).results.find(hit => hit.id === artifact.metadata.id)?.evidence).not.toBe('keyword');
+      expect(relatedTopicsSchema.parse(related.result).results.find(hit => hit.id === artifact.metadata.id)?.evidence).not.toBe('both');
+      const placement = await client.topicSuggestPlacement(source.metadata.id);
+      expect(placement.suggestions.slice(0, 3).map(suggestion => suggestion.parent?.id)).toContain(exact.metadata.id);
+      expect(placement.suggestions.find(suggestion => suggestion.parent?.id === exact.metadata.id)).toMatchObject({
+        similarity: 0, workstream: { id: destination.metadata.id }, excerpt: expect.stringContaining(authoredReference),
+      });
+      expect(placement.suggestions.find(suggestion => suggestion.parent?.id === artifact.metadata.id)?.confidence.reason ?? '')
+        .not.toContain('Verified lexical evidence');
+      expect(store.getDocument({ id: source.metadata.id })).toEqual(source);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
+  it.each([2, 60])('suppresses frequent numbers and boilerplate in a %s-distractor corpus while retaining semantic-only discovery', async count => {
+    const { store } = fixture();
+    const workstream = store.createDocument({ kind: 'Workstream', spec: { title: 'Destination' } });
+    const source = store.createDocument({ kind: 'Topic', spec: { title: '2026 Weekly report',
+      body: 'Please review the weekly report 2026' } });
+    const meaningful = store.createDocument({ kind: 'Topic', spec: { title: 'Restoring connectivity',
+      body: 'Packets cannot reach their destination.', workstreams: [workstream.metadata.id] } });
+    for (let index = 0; index < count; index++) {
+      store.createDocument({ kind: 'Topic', spec: { title: '2026 Weekly report',
+        body: 'Please review the weekly report 2026', workstreams: [workstream.metadata.id] } });
+    }
+    for (;;) {
+      const work = nextEmbeddingWork(store.db).work;
+      if (!work) break;
+      submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+        model: EMBEDDING_MODEL, vectors: work.passages.map(() => Array.from({ length: 384 },
+          (_, index) => Number(index === ([source.metadata.id, meaningful.metadata.id].includes(work.id) ? 0 : 1)))) });
+    }
+    const inference = await hostFixture();
+    new EmbeddingIndexer(store.db, () => true);
+    store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, ?)').run(JSON.stringify(inference.host));
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      const search = await client.callTool('wm-semantic-search', { queries: ['Please review the weekly report 2026'], limit: 5 });
+      expect(search).toMatchObject({ ok: true, result: { results: expect.arrayContaining([
+        expect.objectContaining({ id: meaningful.metadata.id, similarity: 1 }),
+      ]) } });
+      if (!search.ok || !isDocumentSearchResult(search.result)) throw new Error('Invalid search response');
+      expect(search.result.results.every(hit => !hit.literalMatch)).toBe(true);
+      const related = await client.callTool('wm-related-topics', { id: source.metadata.id });
+      expect(related).toMatchObject({ ok: true, result: { results: [{ id: meaningful.metadata.id, similarity: 1, evidence: 'semantic' }] } });
+      expect((await client.topicSuggestPlacement(source.metadata.id)).suggestions[0].parent?.id).toBe(meaningful.metadata.id);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
+  it('bounds production hybrid ranking on 6500 topics with late distinctive text and 120 higher-BM25 near references', async () => {
+    const store = openStore(':memory:');
+    stores.push(store);
+    new InstanceFeatureStore(store.db).write({ search: true });
+    const workstream = store.createDocument({ kind: 'Workstream', spec: { title: 'Destination' } });
+    const boilerplate = Array.from({ length: 180 }, (_, index) => `common${index}`).join(' ');
+    const reference = 'zeta-82';
+    const source = store.createDocument({ kind: 'Topic', spec: {
+      title: 'Weekly journal', body: `${`${boilerplate}\n`.repeat(25)}\n${reference}`,
+    } });
+    const target = store.createDocument({ kind: 'Topic', spec: {
+      title: 'Collected notes', body: `${`${boilerplate}\n`.repeat(25)}\n${reference}`, workstreams: [workstream.metadata.id],
+    } });
+    const meaningful = store.createDocument({ kind: 'Topic', spec: {
+      title: 'Meaningful follow-up', body: 'An equivalent idea.', workstreams: [workstream.metadata.id],
+    } });
+    const documents = [workstream, source, target, meaningful];
+    const nearIds = new Set<string>();
+    for (let index = 0; index < 6497; index++) {
+      const document = store.createDocument({ kind: 'Topic', spec: {
+        title: index < 120 ? `${reference}-extra${index}` : `Corpus sample ${index}`,
+        body: boilerplate, workstreams: [workstream.metadata.id],
+      } });
+      documents.push(document);
+      if (index < 120) nearIds.add(document.metadata.id);
+    }
+    const unverified = store.db.prepare(`SELECT id FROM document_search WHERE document_search MATCH ? AND kind = 'Topic'
+      ORDER BY bm25(document_search, 0, 0, 6, 1), id LIMIT 50`).all('"zeta-82"');
+    expect(unverified).toHaveLength(50);
+    expect(unverified.every(row => nearIds.has(String(row.id)))).toBe(true);
+    new EmbeddingIndexer(store.db, () => true);
+    const index = store.db.prepare('INSERT INTO topic_embedding_index VALUES (?, ?, ?, ?, ?, 1, ?)');
+    const passage = store.db.prepare('INSERT INTO topic_embedding_passages VALUES (?, 0, ?, ?)');
+    for (const document of documents) {
+      const values = new Float32Array(384);
+      if ([source.metadata.id, meaningful.metadata.id].includes(document.metadata.id)) values[0] = 1;
+      else if (document.metadata.id === target.metadata.id) values[1] = 1;
+      else { values[0] = 0.8; values[1] = 0.6; }
+      const bytes = Buffer.from(values.buffer);
+      index.run(document.metadata.id, EMBEDDING_MODEL, document.metadata.resourceVersion, '0'.repeat(64), bytes,
+        Number([source.metadata.id, target.metadata.id].includes(document.metadata.id)));
+      passage.run(document.metadata.id, String(document.spec.body ?? document.spec.title).slice(0, 600), bytes);
+    }
+    const plans = [
+      store.db.prepare('EXPLAIN QUERY PLAN SELECT doc FROM document_search_vocabulary WHERE term = ?').all('common0'),
+      store.db.prepare('EXPLAIN QUERY PLAN SELECT min(doc) FROM document_search_vocabulary WHERE term >= ? AND term < ? AND doc > 1').all('zet', 'zet\uffff'),
+      store.db.prepare(`EXPLAIN QUERY PLAN SELECT document_search.id FROM document_search
+        JOIN resources r ON r.rowid = document_search.rowid WHERE document_search MATCH ?
+        AND document_search.id IN (SELECT value FROM json_each(?))
+        AND wm_literal_evidence(document_search.title || char(10) ||
+          CASE WHEN r.kind = 'Topic' AND json_type(r.spec, '$.body') IS NOT 'text' THEN '' ELSE document_search.body END, ?, 0) != ''
+        ORDER BY bm25(document_search, 0, 0, 6, 1), document_search.id LIMIT 50`)
+        .all('"zeta-82"', JSON.stringify(documents.map(document => document.metadata.id)), JSON.stringify([reference])),
+      store.db.prepare(`EXPLAIN QUERY PLAN SELECT wm_literal_evidence(document_search.title || char(10) ||
+          CASE WHEN r.kind = 'Topic' AND json_type(r.spec, '$.body') IS NOT 'text' THEN '' ELSE document_search.body END, ?, 2) AS matched_terms
+        FROM document_search
+        JOIN resources r ON r.rowid = document_search.rowid
+        WHERE document_search MATCH ? AND document_search.id IN (SELECT value FROM json_each(?))`)
+        .all(JSON.stringify(['common0', reference]), '"common0" OR "zeta-82"', JSON.stringify(documents.map(document => document.metadata.id))),
+    ].map(rows => rows.map(row => String(row.detail)));
+    for (const plan of plans.slice(0, 2)) expect(plan.join(' ')).toMatch(/VIRTUAL TABLE INDEX [1-9]/);
+    expect(plans[2].join(' ')).toMatch(/document_search VIRTUAL TABLE INDEX \S*:M/);
+    expect(plans[3].join(' ')).toMatch(/document_search VIRTUAL TABLE INDEX \S*:M/);
+    const inference = await hostFixture();
+    store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, ?)').run(JSON.stringify(inference.host));
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    const ranking = vi.spyOn(retrieval, 'hybridRanks');
+    const timings: Record<string, number> = {};
+    const originalLexical = retrieval.lexicalCandidates;
+    let disabledLexical = false;
+    let lexicalMetrics = { totalMs: 0, getMs: 0, prepareMs: 0, queries: 0, vocabularyQueries: 0, frequencyQueries: 0 };
+    const lexical = vi.spyOn(retrieval, 'lexicalCandidates').mockImplementation((...args) => {
+      lexicalMetrics = { totalMs: 0, getMs: 0, prepareMs: 0, queries: 0, vocabularyQueries: 0, frequencyQueries: 0 };
+      if (disabledLexical) return new Map();
+      const start = performance.now();
+      const originalPrepare = args[0].prepare.bind(args[0]);
+      const restore: Array<() => void> = [];
+      const prepare = vi.spyOn(args[0], 'prepare').mockImplementation(sql => {
+        const start = performance.now();
+        const statement = originalPrepare(sql);
+        lexicalMetrics.prepareMs += performance.now() - start;
+        const originalGet = statement.get.bind(statement);
+        const get = vi.spyOn(statement, 'get').mockImplementation((...parameters) => {
+          const start = performance.now();
+          lexicalMetrics.queries++;
+          if (sql.includes('document_search_vocabulary')) lexicalMetrics.vocabularyQueries++;
+          if (sql.includes('SELECT count(*)') && sql.includes('wm_literal_evidence')) lexicalMetrics.frequencyQueries++;
+          try { return originalGet(...parameters); }
+          finally { lexicalMetrics.getMs += performance.now() - start; }
+        });
+        const originalAll = statement.all.bind(statement);
+        const all = vi.spyOn(statement, 'all').mockImplementation((...parameters) => {
+          const start = performance.now();
+          lexicalMetrics.queries++;
+          if (sql.includes('count(*)') && sql.includes('wm_literal_evidence')) lexicalMetrics.frequencyQueries++;
+          try {
+            const rows = originalAll(...parameters);
+            if (sql.includes('count(*)') && sql.includes('wm_literal_evidence')) {
+              expect(rows.every(row => Number(row.count) <= args[1].size)).toBe(true);
+            }
+            return rows;
+          }
+          finally { lexicalMetrics.getMs += performance.now() - start; }
+        });
+        const originalIterate = statement.iterate.bind(statement);
+        const iterate = vi.spyOn(statement, 'iterate').mockImplementation((...parameters) => {
+          lexicalMetrics.queries++;
+          if (!sql.includes('AS matched_terms')) return originalIterate(...parameters);
+          lexicalMetrics.frequencyQueries++;
+          const rows = originalIterate(...parameters);
+          const counts = new Map<string, number>();
+          return (function* () {
+            try {
+              for (;;) {
+                const start = performance.now();
+                const next = rows.next();
+                lexicalMetrics.getMs += performance.now() - start;
+                if (next.done) {
+                  expect([...counts.values()].every(count => count <= args[1].size)).toBe(true);
+                  return;
+                }
+                for (const term of JSON.parse(String(next.value.matched_terms)) as string[]) {
+                  counts.set(term, (counts.get(term) ?? 0) + 1);
+                }
+                yield next.value;
+              }
+            } finally { rows.return?.(); }
+          })();
+        });
+        restore.push(() => { get.mockRestore(); all.mockRestore(); iterate.mockRestore(); });
+        return statement;
+      });
+      try { return originalLexical(...args); }
+      finally {
+        prepare.mockRestore();
+        for (const cleanup of restore) cleanup();
+        lexicalMetrics.totalMs = performance.now() - start;
+      }
+    });
+    const profiles: Array<{ surface: string; mode: string; request: number; totalMs: number; lexical: typeof lexicalMetrics }> = [];
+    const record = (surface: string, mode: string, request: number, totalMs: number) => {
+      profiles.push({ surface, mode, request, totalMs, lexical: { ...lexicalMetrics } });
+    };
+    try {
+      let start = performance.now();
+      const search = await client.callTool('wm-semantic-search', { queries: [reference], kinds: ['Topic'], limit: 40 });
+      timings.searchMs = performance.now() - start;
+      record('search', 'hybrid', 0, timings.searchMs);
+      if (!search.ok || !isDocumentSearchResult(search.result)) throw new Error('Invalid search result');
+      expect(search.result.results.slice(0, 3).map(hit => hit.id)).toContain(target.metadata.id);
+      expect(search.result.results.find(hit => hit.id === target.metadata.id)).toMatchObject({ literalMatch: true, similarity: 0 });
+      expect(search.result.results.filter(hit => nearIds.has(hit.id)).every(hit => !hit.literalMatch)).toBe(true);
+      start = performance.now();
+      const related = await client.callTool('wm-related-topics', { id: source.metadata.id, limit: 10 });
+      timings.relatedMs = performance.now() - start;
+      record('related', 'hybrid', 0, timings.relatedMs);
+      if (!related.ok) throw new Error(related.error);
+      const hits = relatedTopicsSchema.parse(related.result).results;
+      expect(hits[0]).toMatchObject({ id: target.metadata.id, evidence: 'keyword', similarity: 0,
+        excerpt: expect.stringContaining(reference) });
+      expect(hits.some(hit => hit.id === meaningful.metadata.id && hit.evidence === 'semantic')).toBe(true);
+      expect(hits.filter(hit => nearIds.has(hit.id)).every(hit => hit.evidence === 'semantic')).toBe(true);
+      start = performance.now();
+      const placement = await client.topicSuggestPlacement(source.metadata.id);
+      timings.placementMs = performance.now() - start;
+      record('placement', 'hybrid', 0, timings.placementMs);
+      expect(placement.suggestions[0]).toMatchObject({ parent: { id: target.metadata.id }, similarity: 0,
+        excerpt: expect.stringContaining(reference) });
+      for (const [, lexical] of ranking.mock.calls) expect(lexical.size).toBeLessThanOrEqual(50);
+      const sizes = ranking.mock.results.map(result => result.value.size);
+      expect(sizes.some(size => size > 50)).toBe(true);
+      expect(sizes.every(size => size <= 100)).toBe(true);
+      for (const mode of ['hybrid', 'lexical-disabled']) {
+        disabledLexical = mode === 'lexical-disabled';
+        for (let request = disabledLexical ? 0 : 1; request < 4; request++) {
+          let start = performance.now();
+          const search = await client.callTool('wm-semantic-search', { queries: [reference], kinds: ['Topic'], limit: 40 });
+          if (!search.ok) throw new Error(search.error);
+          record('search', mode, request, performance.now() - start);
+          start = performance.now();
+          const related = await client.callTool('wm-related-topics', { id: source.metadata.id, limit: 10 });
+          if (!related.ok) throw new Error(related.error);
+          record('related', mode, request, performance.now() - start);
+          start = performance.now();
+          await client.topicSuggestPlacement(source.metadata.id);
+          record('placement', mode, request, performance.now() - start);
+        }
+      }
+      process.stdout.write(`${JSON.stringify({ topics: 6500, nearReferences: 120, plans, profiles, fusedCandidateSizes: sizes })}\n`);
+      expect(store.getDocument({ id: source.metadata.id })).toEqual(source);
+    } finally { lexical.mockRestore(); ranking.mockRestore(); await client.dispose(); await server.close(); }
+  }, 60000);
+
   it('exports indexing/search outcomes and samples paused embeddings without a desktop, excluding private data', async () => {
     const { store } = fixture();
     store.createDocument({ kind: 'Topic', spec: { title: 'Private topic title', body: 'Private document passage.' } });
@@ -336,6 +710,51 @@ describe('container-owned embedding lifecycle', () => {
         }).toMatchObject({ phase: 'error', error: expect.stringContaining('Error details unavailable') });
       } finally { await client.dispose(); await server.close(); }
     });
+  it.each([false, true])('finds exact case references inside Re: search phrases ahead of different case numbers through authenticated MCP (literalQuery=%s)', async includeLiteralQuery => {
+    const { store } = fixture();
+    const caseId = '20261411192068475308';
+    const exact = store.createDocument({ kind: 'Topic', spec: { title: 'Case file',
+      body: `${'A'.repeat(33000)}\nCase ${caseId}` } });
+    const semantic = store.createDocument({ kind: 'Topic', spec: { title: 'jubberish topic 20261411192068475309',
+      body: 'The orange beetle wrote a postcard to Saturn.' } });
+    for (const title of [`X${caseId}`, `${caseId}0`, `${caseId}_notes`]) {
+      store.createDocument({ kind: 'Topic', spec: { title } });
+    }
+    for (;;) {
+      const work = nextEmbeddingWork(store.db).work;
+      if (!work) break;
+      submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+        model: EMBEDDING_MODEL, vectors: work.passages.map(() => Array.from({ length: 384 },
+          (_, index) => Number(index === (work.id === exact.metadata.id ? 1 : 0)))) });
+    }
+    const inference = await hostFixture();
+    new EmbeddingIndexer(store.db, () => true);
+    store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, ?)').run(JSON.stringify(inference.host));
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      expect(await client.callTool('wm-semantic-search', {
+        queries: [`Re: ${caseId}`], ...(includeLiteralQuery ? { literalQuery: `Re: ${caseId}` } : {}), kinds: ['Topic'], limit: 1,
+      })).toMatchObject({ ok: true, result: { count: 1, limited: true, results: [{
+        id: exact.metadata.id, resourceVersion: exact.metadata.resourceVersion, literalMatch: true,
+        similarity: 0, confidence: { level: 'high' }, excerpt: expect.stringContaining(caseId),
+      }] } });
+      const all = await client.callTool('wm-semantic-search', { queries: [`Re: ${caseId}`], kinds: ['Topic'], limit: 40 });
+      expect(all).toMatchObject({ ok: true, result: { results: [
+        expect.objectContaining({ id: exact.metadata.id, literalMatch: true }), ...Array(4).fill(expect.any(Object)),
+      ] } });
+      if (!all.ok) throw new Error(all.error);
+      if (!isDocumentSearchResult(all.result)) throw new Error('Invalid search result');
+      const results = all.result.results;
+      expect(results.filter(hit => hit.literalMatch).map(hit => hit.id)).toEqual([exact.metadata.id]);
+      expect(results.find(hit => hit.id === semantic.metadata.id)?.similarity).toBe(1);
+      expect(await client.callTool('wm-semantic-search', { queries: ['2026'], kinds: ['Topic'], limit: 40 }))
+        .toMatchObject({ ok: true, result: { count: 4 } });
+      expect(await client.callTool('wm-semantic-search', { queries: [`Re: X${caseId}`], kinds: ['Topic'], limit: 40 }))
+        .toMatchObject({ ok: true, result: { count: 4 } });
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it('allows cold inference beyond thirty seconds through authenticated MCP', async () => {
     const { store } = fixture();
     const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Nanites', body: 'Nanite model research.' } });

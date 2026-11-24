@@ -2,13 +2,13 @@ import { z } from 'zod';
 import type { ChatBugReportDependencies } from './chatBugReport';
 import { bugReportSection, bugReportTitle } from './chatBugReport';
 import type { ChatBugReportDraft } from '../shared/contracts';
-import { instanceFeaturesV3Schema } from '../../../control-plane/src/instanceFeatures';
+import { instanceFeaturesV4Schema } from '../../../control-plane/src/instanceFeatures';
 
-const inputSchema = z.object({
+export const featureBugReportInputSchema = z.object({
   description: z.string().trim().min(1, 'Describe what went wrong.').max(8000),
   failure: z.object({
     error: z.string().min(1).max(32768), operation: z.string().max(200), capturedAt: z.string().datetime(),
-    features: instanceFeaturesV3Schema.nullable(),
+    features: instanceFeaturesV4Schema.partial({ topicPlacementAutoLoad: true }).nullable(),
     requested: z.object({ feature: z.string().max(80), enabled: z.boolean() }).optional(),
     embeddingsEnabled: z.boolean(),
   }),
@@ -20,7 +20,7 @@ export async function createFeatureBugReport(
     featureDiagnostics?: unknown;
   },
 ): Promise<ChatBugReportDraft> {
-  const { description, failure } = inputSchema.parse(input);
+  const { description, failure } = featureBugReportInputSchema.parse(input);
   dependencies.assertCurrent();
   const section = (heading: string, value: unknown) => bugReportSection(heading, value, dependencies.secrets);
   const body = '# Feature settings bug report\n'

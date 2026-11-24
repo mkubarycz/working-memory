@@ -193,15 +193,54 @@ describe('agentic document search', () => {
     expect(response.trace?.[0].tool).toBe('wm-semantic-search');
   });
 
-  it('orders literal results before semantic-only model selections without dropping either', async () => {
-    const other = { ...hit, id: 'semantic', score: 0.95, similarity: 0.95 };
+  it('preserves host fusion order even when a semantic-only selection outranks a lexical hit', async () => {
+    const other = { ...hit, id: 'semantic', score: 0.016, similarity: 0.95 };
     const dependencies = harness([answer([{ type: 'list', items: [{ sourceId: other.id, text: 'A related concept.' }] }])]);
     dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 2, results: [
-      { ...hit, literalMatch: true, similarity: 0.1, score: 0.1 }, other,
+      { ...hit, literalMatch: true, similarity: 0.1, score: 0.013 }, other,
     ] } });
     const response = await searchWithMatches('bank account', dependencies);
-    expect(response.results.map(result => result.id)).toEqual([hit.id, other.id]);
-    expect(response.blocks?.[0]).toMatchObject({ type: 'list', items: [{ sourceId: hit.id }] });
+    expect(response.results.map(result => result.id)).toEqual([other.id, hit.id]);
+    expect(response.blocks?.map(block => block.type === 'list' ? block.items[0].sourceId : '')).toEqual([other.id, hit.id]);
+  });
+
+  it('retains the exact case-number match when AI selects only a different case', async () => {
+    const caseId = '20261411192068475308';
+    const exact = { ...hit, title: 'Case file', excerpt: `Case ${caseId}`, literalMatch: true,
+      score: 0.02, similarity: 0, confidence: { level: 'high' as const, reason: 'Exact reference, not semantic similarity.' } };
+    const other = { ...hit, id: 'different-case', title: 'jubberish topic 20261411192068475309', score: 0.016, similarity: 0.95 };
+    const dependencies = { ...harness([answer([{ type: 'list', items: [{ sourceId: other.id, text: 'A related concept.' }] }])]),
+      onResults: vi.fn() };
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 2, results: [exact, other] } });
+    const response = await searchWithMatches(`Re: ${caseId}`, dependencies);
+    expect(dependencies.callTool).toHaveBeenCalledWith('wm-semantic-search', expect.objectContaining({
+      queries: [`Re: ${caseId}`], literalQuery: `Re: ${caseId}`,
+    }));
+    expect(dependencies.onResults).toHaveBeenCalledWith(expect.objectContaining({ results: [
+      expect.objectContaining({ id: exact.id, literalMatch: true, similarity: 0 }),
+      expect.objectContaining({ id: other.id }),
+    ] }));
+    expect(response.results.map(result => result.id)).toEqual([exact.id, other.id]);
+    expect(response.results[0]).toMatchObject({ resourceVersion: exact.resourceVersion, score: 0.02, similarity: 0,
+      confidence: exact.confidence, excerpt: exact.excerpt });
+    expect(response.blocks?.[0]).toMatchObject({ type: 'list', items: [{ sourceId: exact.id }] });
+  });
+
+  it.each(['list', 'table'] as const)('interleaves missing lexical hits with an AI-selected %s in global fusion order', async type => {
+    const first = { ...hit, id: 'first', literalMatch: true, score: 0.03 };
+    const middle = { ...hit, id: 'middle', score: 0.02 };
+    const last = { ...hit, id: 'last', literalMatch: true, score: 0.01 };
+    const block = type === 'list'
+      ? { type, heading: 'Selected evidence', items: [{ sourceId: middle.id, text: 'Related evidence' }] }
+      : { type, heading: 'Selected evidence', columns: ['title' as const],
+        rows: [{ sourceId: middle.id, summary: 'Related evidence' }] };
+    const dependencies = harness([answer([block])]);
+    dependencies.callTool.mockResolvedValue({ ok: true, result: { count: 3, results: [first, middle, last] } });
+    const response = await searchWithMatches('bank account', dependencies);
+    const displayed = response.blocks?.flatMap(block => block.type === 'list' ? block.items.map(item => item.sourceId)
+      : block.type === 'table' ? block.rows.map(row => row.sourceId) : []);
+    expect(displayed).toEqual([first.id, middle.id, last.id]);
+    expect(response.blocks?.find(block => block.type === type && block.heading === 'Selected evidence')).toBeDefined();
   });
 
   it('does not ask the model when initial retrieval fails or the request is cancelled', async () => {

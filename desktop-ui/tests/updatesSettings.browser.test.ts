@@ -123,6 +123,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             if (probe.failReport) { probe.failReport = false; throw new Error('Report capture failed. Retry.'); }
             return { id: 'report-id', title: 'Backend settings bug', body: JSON.stringify(input), sessionOnly: true };
           },
+          async getPublicFeedbackSettings() { return { enabled: false, destination: null }; },
           async prepareFeedback(id, requestId) {
             probe.preparations.push({ id, requestId });
             return { servers: [{ id: 'feedback', name: 'Feedback', address: '127.0.0.1' }],
@@ -248,21 +249,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("document.querySelector('.instances-status')"), null);
           await evaluate("document.querySelector('.operation-error button').click()");
           await wait("document.querySelector('#bug-description')");
+          await evaluate("document.querySelector('.report-details summary').click()");
           assert.equal(await evaluate("document.querySelector('dialog').innerText.includes('even when the backend is offline')"), true);
           await evaluate("(() => { const input = document.querySelector('#bug-description'); input.value = 'Upgrade fails with a port conflict'; input.dispatchEvent(new Event('input', { bubbles: true })); })()");
-          await evaluate(button('Create report') + '.click()');
+          await evaluate(button('Send bug report') + '.click()');
           await wait("document.querySelector('dialog [role=alert]')?.textContent.includes('Report capture failed')");
-          await evaluate(button('Create report') + '.click()');
-          await wait("document.querySelector('#share-topic-title') && " + button('Send') + "?.disabled === false");
-          assert.equal(await evaluate("window.__updatesTest.sends.length"), 0);
+          await evaluate(button('Send bug report') + '.click()');
+          await wait(button('Done') + ' !== undefined');
           assert.deepEqual(await evaluate("window.__updatesTest.reports[1].failure.instance"), {
             port: 7719, name: 'Test', createdAt: '', mcpUrl: 'http://127.0.0.1:7719/mcp',
             container: 'working-memory-control-plane-7719', state: 'running', version: '1.4.0', updateAvailable: true,
           });
           assert.equal(await evaluate("window.__updatesTest.reports[1].failure.backendTarget.version"), '1.4.2');
           assert.equal(await evaluate("document.querySelector('dialog pre').textContent.includes('bind: address already in use')"), true);
-          await evaluate(button('Send') + '.click()');
-          await wait(button('Done') + ' !== undefined');
           assert.equal(await evaluate("window.__updatesTest.sends.length"), 1);
           assert.equal(await evaluate("window.__updatesTest.sends[0].requestId === window.__updatesTest.preparations[0].requestId"), true);
           assert.equal(await evaluate("document.querySelector('dialog a').href"), 'https://feedback.invalid/submissions/report');

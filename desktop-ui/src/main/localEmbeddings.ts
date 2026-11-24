@@ -2,6 +2,7 @@ import type { ControlPlaneClient } from '../../../shared/controlPlaneClient';
 import { embeddingDashboardSchema, relatedTopicsSchema, isPrivateEmbeddingAddress, embeddingErrorMessage, type RelatedTopics } from '../../../control-plane/src/embeddingContract';
 import type { EmbeddingAction, EmbeddingDashboard } from '../shared/embeddings';
 import type { EmbeddingServiceManager } from './embeddingServiceManager';
+import { topicPlacementSchema, topicPlacementApplySchema, type TopicPlacement, type TopicPlacementApply } from '../../../control-plane/src/topicPlacementContract';
 
 type Target = { endpoint: string; client: Pick<ControlPlaneClient, 'callTool'> };
 const isLocalEndpoint = (endpoint: string) => ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(endpoint).hostname);
@@ -74,5 +75,11 @@ export class LocalEmbeddings {
   }
   async related(id: string): Promise<RelatedTopics> {
     return relatedTopicsSchema.parse(await this.call(this.target(), 'wm-related-topics', { id }));
+  }
+  async placement(id: string): Promise<TopicPlacement> {
+    return topicPlacementSchema.parse(await this.call(this.target(), 'wm-topic-suggest-placement', { id }));
+  }
+  async applyPlacement(input: TopicPlacementApply): Promise<void> {
+    await this.call(this.target(), 'wm-topic-apply-placement', topicPlacementApplySchema.parse(input));
   }
 }

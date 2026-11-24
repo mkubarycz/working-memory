@@ -207,17 +207,18 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     expect(timeline).toContain(`href="${external}" title="${external}"`);
   });
 
-  it('collapses five recent conversations without duplicating system messages from the slider', () => {
+  it('collapses to the latest conversation without duplicating system messages from the slider', () => {
     const messages = [message(0, { attention: true, category: 'approval' }), message(4), message(7)];
     const html = render(RecentMessages, { props: props(Array.from({ length: 8 }, (_, i) => run(i)),
       { agentMessages: messages }) }).body;
-    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(5);
+    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(1);
     expect(html).not.toContain('Canonical 7');
     expect(html).not.toContain('Needs your attention');
     expect(html).not.toContain('Canonical 0');
     expect(html).not.toContain('class="agent-message"');
     const timeline = html.slice(html.indexOf('id="scoped-messages"'));
-    expect(timeline.indexOf('Response 6')).toBeLessThan(timeline.indexOf('Response 7'));
+    expect(timeline).not.toContain('Response 6');
+    expect(timeline).toContain('Response 7');
   });
 
   it.each([false, true])('keeps a dedicated message document within the shared message scroller when expanded=%s', (expanded) => {
@@ -236,23 +237,20 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     expect(html.indexOf('class="scope-preview-heading"')).toBeLessThan(scroller);
   });
 
-  it('keeps old trusted pending confirmations discoverable outside five newer canonical rows', () => {
+  it('keeps a single collapsed row while older pending confirmations remain available on expansion', () => {
     const pending = run(0, { status: 'awaiting_confirmation', userText: 'Protected write',
       pendingConfirmation: { id: 'protected', tool: 'ws-topic-update', arguments: { status: 'closed' } } });
     const messages = Array.from({ length: 8 }, (_, index) => message(index + 1));
     const runs = [pending, ...Array.from({ length: 8 }, (_, index) => run(index + 1))];
     const html = render(RecentMessages, { props: props(runs, { agentMessages: messages }) }).body;
-    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(6);
-    expect(html).toContain('awaiting confirmation');
-    expect(html).toContain('Protected write');
-    const pendingSummary = timelineDisclosures(html).find((entry) => entry.summary.includes('Protected write'));
-    expect(pendingSummary?.open).toBe(false);
-    expect(pendingSummary?.summary).toContain('awaiting confirmation');
-    expect(pendingSummary?.summaryAttributes).not.toMatch(/aria-label(?:ledby)?=/);
-    expect(html.match(/Protected write/g)).toHaveLength(1);
+    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(1);
+    expect(html).toContain('Response 8');
+    expect(html).not.toContain('Protected write');
     expect(html).not.toContain('class="confirm"');
     expect(html).not.toContain('class="cancel"');
     const expanded = render(RecentMessages, { props: props(runs, { agentMessages: messages, expanded: true }) }).body;
+    expect(expanded).toContain('Protected write');
+    expect(expanded).toContain('awaiting confirmation');
     expect(expanded).toContain('class="confirm"');
     expect(expanded).toContain('class="cancel"');
   });
@@ -449,14 +447,14 @@ describe('rendered recent messages (Svelte server rendering, not browser layout)
     }
   });
 
-  it('renders exactly five compact scoped rows and a clear expansion prompt', () => {
+  it('renders exactly one compact scoped row and a clear expansion prompt', () => {
     const runs = Array.from({ length: 9 }, (_, i) => run(i));
     runs.push(run(100, { scope: { kind: 'Topic', id: 'unrelated' } }));
     const html = render(RecentMessages, { props: props(runs) }).body;
-    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(5);
+    expect(html.match(/<details class="chat-run message-entry/g)).toHaveLength(1);
     expect(html.match(/message-entry latest"/g)).toHaveLength(1);
     expect(html).toContain('Response 8');
-    expect(html).not.toContain('Response 3');
+    expect(html).not.toContain('Response 7');
     expect(html).not.toContain('Response 100');
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('Expand for all messages and details');

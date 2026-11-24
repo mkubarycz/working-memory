@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
+import { endianness } from 'node:os';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, EMBEDDING_TEXT_LIMIT, EMBEDDING_KINDS, semanticSearchSchema, matchConfidence,
   embeddingSubmitSchema, relatedTopicsInputSchema,
   type EmbeddingStats, type EmbeddingWork, type RelatedTopics,
 } from './embeddingContract.js';
-import { refreshDocumentSearch, type DocumentSearchHit } from './documentSearch.js';
+import { hybridRanks, lexicalCandidates, lexicalConfidence, refreshDocumentSearch, type DocumentSearchHit } from './documentSearch.js';
 
 const indexedKinds = EMBEDDING_KINDS.map(kind => `'${kind}'`).join(',');
 const projectedBody = "CASE WHEN r.kind = 'Topic' THEN substr(s.body, length(s.title) + 2) ELSE s.body END";
+const littleEndian = endianness() === 'LE';
 
 export function ensureTopicEmbeddingSchema(db: DatabaseSync): void {
   db.exec(`
@@ -23,6 +25,8 @@ export function ensureTopicEmbeddingSchema(db: DatabaseSync): void {
       position INTEGER NOT NULL, excerpt TEXT NOT NULL, vector BLOB NOT NULL,
       PRIMARY KEY (topic_id, position)
     );
+    CREATE INDEX IF NOT EXISTS idx_topic_embedding_passage_bytes
+      ON topic_embedding_passages(topic_id, length(vector));
     CREATE TRIGGER IF NOT EXISTS topic_embedding_index_delete AFTER DELETE ON topic_embedding_index BEGIN
       DELETE FROM topic_embedding_passages WHERE topic_id = OLD.topic_id;
     END;
@@ -79,7 +83,7 @@ export function embeddingStats(db: DatabaseSync, canReadKind: (kind: string) => 
     vectorBytes: Number(bytes?.bytes), lastIndexedAt: row?.last_indexed_at == null ? null : Number(row.last_indexed_at) };
 }
 
-export function nextEmbeddingWork(db: DatabaseSync): { stats: EmbeddingStats; work: EmbeddingWork | null } {
+export function selectEmbeddingWork(db: DatabaseSync): { work: EmbeddingWork | null; pending: boolean } {
   db.exec(`DELETE FROM topic_embedding_index WHERE topic_id IN
     (SELECT id FROM resources WHERE deleted_at IS NOT NULL)`);
   // Metadata-only edits can reuse vectors, but only after checking the exact indexed content.
@@ -88,8 +92,8 @@ export function nextEmbeddingWork(db: DatabaseSync): { stats: EmbeddingStats; wo
       LEFT JOIN topic_embedding_index i ON i.topic_id = r.id
       WHERE r.kind IN (${indexedKinds}) AND r.deleted_at IS NULL
       AND (i.topic_id IS NULL OR i.model_id != ? OR i.source_version != r.resource_version)
-      ORDER BY r.updated_at DESC, r.id LIMIT 1`).get(EMBEDDING_MODEL);
-    if (!row) return { stats: embeddingStats(db), work: null };
+      ORDER BY r.updated_at ASC, r.resource_version ASC, r.id ASC LIMIT 1`).get(EMBEDDING_MODEL);
+    if (!row) return { work: null, pending: false };
     const current = source(db, String(row.id));
     const title = String(current.title), body = String(current.body);
     const contentHash = hash(title, body);
@@ -98,12 +102,18 @@ export function nextEmbeddingWork(db: DatabaseSync): { stats: EmbeddingStats; wo
         .run(Number(current.resource_version), EMBEDDING_MODEL, Number(current.body_length) > EMBEDDING_TEXT_LIMIT ? 1 : 0, String(row.id));
       continue;
     }
-    return { stats: embeddingStats(db), work: {
+    return { pending: true, work: {
       id: String(row.id), sourceVersion: Number(current.resource_version), contentHash,
       limited: Number(current.body_length) > EMBEDDING_TEXT_LIMIT, passages: embeddingPassages(title, body),
     } };
   }
-  return { stats: embeddingStats(db), work: null };
+  // Yield after metadata repairs, without treating the remaining work as idle.
+  return { work: null, pending: true };
+}
+
+export function nextEmbeddingWork(db: DatabaseSync): { stats: EmbeddingStats; work: EmbeddingWork | null } {
+  const { work } = selectEmbeddingWork(db);
+  return { stats: embeddingStats(db), work };
 }
 
 function normalized(values: number[]): number[] {
@@ -118,12 +128,16 @@ function bytes(vector: number[]): Buffer {
   return buffer;
 }
 
-function vector(value: unknown): number[] {
+export function vector(value: unknown): Float32Array {
   if (!(value instanceof Uint8Array) || value.byteLength !== EMBEDDING_DIMENSIONS * 4) {
     throw new Error('Stored embedding is invalid. Rebuild the embedding index.');
   }
-  const buffer = Buffer.from(value);
-  return Array.from({ length: EMBEDDING_DIMENSIONS }, (_, index) => buffer.readFloatLE(index * 4));
+  if (!littleEndian) {
+    const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+    return Float32Array.from({ length: EMBEDDING_DIMENSIONS }, (_, index) => view.getFloat32(index * 4, true));
+  }
+  const aligned = value.byteOffset % 4 === 0 ? value : Uint8Array.from(value);
+  return new Float32Array(aligned.buffer, aligned.byteOffset, EMBEDDING_DIMENSIONS);
 }
 
 export function submitEmbeddings(db: DatabaseSync, raw: unknown): { accepted: boolean } {
@@ -158,7 +172,7 @@ export function submitEmbeddings(db: DatabaseSync, raw: unknown): { accepted: bo
   }
 }
 
-function similarity(a: number[], b: number[]): number {
+export function similarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
   let sum = 0;
   for (let i = 0; i < EMBEDDING_DIMENSIONS; i++) sum += a[i] * b[i];
   return Math.max(-1, Math.min(1, sum));
@@ -172,7 +186,7 @@ export function relatedTopics(db: DatabaseSync, raw: unknown, enabled: boolean):
   const indexed = db.prepare('SELECT * FROM topic_embedding_index WHERE topic_id = ? AND model_id = ? AND source_version = ?')
     .get(input.id, EMBEDDING_MODEL, Number(current.resource_version));
   const sourceVector = indexed ? vector(indexed.centroid) : null;
-  const best: Array<{ id: string; score: number }> = [];
+  const eligible = new Map<string, number>();
   if (sourceVector) {
     for (const row of db.prepare(`SELECT r.id, i.centroid FROM topic_embedding_index i JOIN resources r ON r.id = i.topic_id
       WHERE r.kind = 'Topic' AND r.deleted_at IS NULL AND r.id != ?
@@ -180,30 +194,32 @@ export function relatedTopics(db: DatabaseSync, raw: unknown, enabled: boolean):
       AND (? IS NULL OR EXISTS (SELECT 1 FROM json_each(r.spec, '$.workstreams') WHERE value = ?))`)
       .iterate(input.id, EMBEDDING_MODEL, input.workstream ?? null, input.workstream ?? null)) {
       const score = similarity(sourceVector, vector(row.centroid));
-      if (score < 0.35) continue;
-      best.push({ id: String(row.id), score });
-      best.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
-      if (best.length > 40) best.pop();
+      eligible.set(String(row.id), score);
     }
 
   }
+  const lexical = lexicalCandidates(db, new Set(eligible.keys()), { sourceId: input.id });
+  const ranks = hybridRanks(eligible, lexical);
+  const best = [...ranks].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const parents: string[] = JSON.parse(String(current.parents));
-  const results = best.slice(0, input.limit).map(({ id, score }) => {
+  const results = best.slice(0, input.limit).map(([id]) => {
+      const score = eligible.get(id)!;
+      const literal = lexical.get(id);
       const doc = source(db, id);
       const candidateParents: string[] = JSON.parse(String(doc.parents));
-      let excerpt = String(doc.body).slice(0, 600);
+      let excerpt = literal?.excerpt ?? String(doc.body).slice(0, 600);
       let passageScore = -1;
       if (sourceVector) {
         for (const passage of db.prepare('SELECT excerpt, vector FROM topic_embedding_passages WHERE topic_id = ?').iterate(id)) {
           const score = similarity(sourceVector, vector(passage.vector));
-          if (score > passageScore) { passageScore = score; excerpt = String(passage.excerpt); }
+          if (score > passageScore) { passageScore = score; if (!literal) excerpt = String(passage.excerpt); }
         }
       }
       return { id, title: String(doc.title), excerpt, similarity: score,
-        confidence: matchConfidence(passageScore, score, false,
+        confidence: literal ? lexicalConfidence(literal) : matchConfidence(passageScore, score, false,
           Number(indexed?.limited) === 1 || Number(doc.body_length) > EMBEDDING_TEXT_LIMIT),
         alreadyLinked: parents.includes(id) || candidateParents.includes(input.id),
-        evidence: 'semantic' as const };
+        evidence: literal ? score >= 0.35 ? 'both' as const : 'keyword' as const : 'semantic' as const };
     });
   return { state: indexed ? 'ready' : 'pending', limited: Number(current.body_length) > EMBEDDING_TEXT_LIMIT, results };
 }
@@ -219,24 +235,6 @@ export function semanticSearch(
     WHERE r.deleted_at IS NULL AND r.kind IN (${kinds.map(() => '?').join(',')})
     AND i.model_id = ? AND i.source_version = r.resource_version AND i.limited = 1 LIMIT 1`).get(...kinds, EMBEDDING_MODEL);
   const candidates = new Map<string, DocumentSearchHit>();
-  const literalMatches = new Map<string, string>();
-  if (input.literalQuery) {
-    const phrase = input.literalQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const expression = new RegExp(`(?<![\\p{L}\\p{N}_])${phrase}(?![\\p{L}\\p{N}_])`, 'iu');
-    for (const row of db.prepare(`SELECT r.id, document_search.title || char(10) || document_search.body AS text FROM resources r
-      JOIN document_search ON document_search.rowid = r.rowid
-      WHERE r.deleted_at IS NULL AND r.kind IN (${kinds.map(() => '?').join(',')})
-      AND document_search MATCH ?`).iterate(...kinds, `"${input.literalQuery.replaceAll('"', '""')}"`)) {
-      const text = String(row.text);
-      const match = expression.exec(text);
-      if (!match) continue;
-      let start = Math.max(0, match.index - 160);
-      if (start && /[\uDC00-\uDFFF]/.test(text[start])) start--;
-      let end = Math.min(text.length, match.index + 1200);
-      if (end < text.length && /[\uDC00-\uDFFF]/.test(text[end])) end--;
-      literalMatches.set(String(row.id), Array.from(text.slice(start, end)).slice(0, 600).join(''));
-    }
-  }
   const documentScores = new Map<string, number[]>();
   for (const row of db.prepare(`SELECT r.id, r.kind, r.resource_version, s.title, p.excerpt, p.vector, i.centroid, i.limited FROM resources r
     JOIN topic_embedding_index i ON i.topic_id = r.id JOIN document_search s ON s.rowid = r.rowid
@@ -246,7 +244,6 @@ export function semanticSearch(
     const values = vector(row.vector);
     const scores = vectors.map(query => similarity(query, values));
     const score = Math.max(...scores);
-    if (score < 0.35 && !literalMatches.has(String(row.id))) continue;
     const id = String(row.id);
     let centroidScores = documentScores.get(id);
     if (!centroidScores) {
@@ -255,13 +252,19 @@ export function semanticSearch(
       documentScores.set(id, centroidScores);
     }
     if (score > (candidates.get(id)?.score ?? Number.NEGATIVE_INFINITY)) candidates.set(id, {
-      id, kind: String(row.kind), title: String(row.title), excerpt: literalMatches.get(id) ?? String(row.excerpt), score, similarity: score,
+      id, kind: String(row.kind), title: String(row.title), excerpt: String(row.excerpt), score, similarity: score,
       resourceVersion: Number(row.resource_version),
-      ...(literalMatches.has(id) ? { literalMatch: true } : {}),
-      confidence: matchConfidence(score, centroidScores[scores.indexOf(score)], literalMatches.has(id), Number(row.limited) === 1),
+      confidence: matchConfidence(score, centroidScores[scores.indexOf(score)], false, Number(row.limited) === 1),
     });
   }
-  const results = [...candidates.values()].sort((a, b) =>
-    Number(!!b.literalMatch) - Number(!!a.literalMatch) || b.score - a.score || a.id.localeCompare(b.id)).slice(0, input.limit);
-  return { count: results.length, results, limited: limited || candidates.size > results.length };
+  const lexical = lexicalCandidates(db, new Set(candidates.keys()), input);
+  const ranks = hybridRanks(new Map([...candidates].map(([id, hit]) => [id, hit.similarity!])), lexical);
+  const results = [...ranks].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, input.limit)
+    .map(([id, rank]) => {
+      const literal = lexical.get(id);
+      return { ...candidates.get(id)!, score: rank, ...(literal ? {
+        literalMatch: true, excerpt: literal.excerpt, confidence: lexicalConfidence(literal),
+      } : {}) };
+    });
+  return { count: results.length, results, limited: limited || ranks.size > results.length };
 }

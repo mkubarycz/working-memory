@@ -73,7 +73,7 @@
     {/if}
     {#if kind !== 'Topic'}<span class="kind">{kind}</span>{/if}
     {#if hit.alreadyLinked}<span class="linked">Already linked</span>{/if}
-    {#if hit.literalMatch}<span class="linked" title="Contains the search word or phrase. Term matches are shown before semantic-only matches.">Term match</span>{/if}
+    {#if hit.literalMatch}<span class="linked" title="Contains an exact search term or shared case reference. Term matches are shown before semantic-only matches.">Term match</span>{/if}
       <span class="relevance" title="Vector cosine similarity (-1 to 1). Higher is closer in meaning, not a confidence percentage.">
         Similarity {hit.similarity == null ? 'unavailable' : hit.similarity.toFixed(2)}
       </span>

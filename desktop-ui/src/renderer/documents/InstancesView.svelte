@@ -13,6 +13,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ReportBugDialog from '../ReportBugDialog.svelte';
+  import { useSessionBugReportOperation } from '../sessionBugReportOperation';
 
   interface Props {
     section?: 'backend' | 'provider' | 'all';
@@ -43,6 +44,7 @@
   let provider = $state<'docker' | 'podman'>(cached?.provider ?? 'docker');
   let refreshError = $state('');
   let refreshing = false;
+  useSessionBugReportOperation(() => failure ? { kind: 'backend', failure: $state.snapshot(failure) } : null);
 
   onMount(() => {
     const poll = (force = false) => {
@@ -368,7 +370,7 @@
   {#if failure}
     <div class="operation-error" role="alert">
       <span>{failure.error}</span>
-      <button onclick={() => { reportFailure = structuredClone($state.snapshot(failure)); }}>Report a bug</button>
+      <button onclick={() => { reportFailure = structuredClone($state.snapshot(failure)); }}>Bug Report</button>
     </div>
   {/if}
 </div>
@@ -377,7 +379,7 @@
   <ReportBugDialog sessionOnly
     evidenceDescription="Includes the selected error, backend version, port, update target, and captured upgrade diagnostics. Does not retry the upgrade or change containers."
     capture={description => {
-      if (!reportFailure) throw new Error('The selected failure is no longer available. Reopen Report a bug.');
+      if (!reportFailure) throw new Error('The selected failure is no longer available. Reopen Bug Report.');
       return window.workingMemory.createBackendBugReport({ description, failure: $state.snapshot(reportFailure) });
     }}
     onClose={() => { reportFailure = null; }} />

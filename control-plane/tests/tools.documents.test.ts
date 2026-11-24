@@ -37,6 +37,36 @@ describe('generic ID-only document tools', () => {
       expect(read.documents.map(doc => doc.metadata.id)).toEqual([newest.metadata.id]);
     } finally { spy.mockRestore(); }
   });
+  it.each([{}, { query: 'matched' }, { kind: 'Topic', query: 'matched' }])(
+      'does not materialize documents after the requested matched page for %j', async input => {
+        const { call, create } = await connect();
+        await create('UNSELECTED_BODY_SENTINEL');
+        const older = await create('Older matched');
+        const newest = await create('Newest matched');
+        const parse = JSON.parse;
+        const spy = vi.spyOn(JSON, 'parse').mockImplementation((value, reviver) => {
+          if (value.includes('UNSELECTED_BODY_SENTINEL')) throw new Error('Unselected document was materialized');
+          return parse(value, reviver);
+        });
+        try {
+          const read = json<{ documents: DocumentEnvelope[] }>(await call('wm-document-read', { ...input, offset: 1, limit: 1 }));
+          expect(read.documents.map(doc => doc.metadata.id)).toEqual([older.metadata.id]);
+          expect(read.documents[0].metadata.id).not.toBe(newest.metadata.id);
+        } finally { spy.mockRestore(); }
+      },
+    );
+
+    it('keeps substring matching over the exact envelope JSON, including labels, IDs and escaped text', async () => {
+      const { store, call, create } = await connect();
+      const initial = await create('Envelope compatibility');
+      const doc = store.updateDocument({ id: initial.metadata.id, expectedResourceVersion: initial.metadata.resourceVersion,
+        spec: { ...initial.spec, body: 'Quoted "needle"\nline' }, labels: { custom_label: 'MixedCase' } });
+      for (const query of [doc.metadata.id, 'mixedcase', 'custom_label', '\\nline', '\\"needle\\"', '"resourceVersion"'.toLowerCase()]) {
+        const read = json<{ documents: DocumentEnvelope[] }>(await call('wm-document-read', { query, limit: 1 }));
+        const expected = store.listDocuments().filter(document => JSON.stringify(document).toLowerCase().includes(query.toLowerCase())).slice(0, 1);
+        expect(read.documents).toEqual(expected);
+      }
+    });
   it('creates ID-only envelopes and returns a uniform list/single read shape with kind filtering', async () => {
     const { client, type, call, create } = await connect();
     const created = await create('Demo');

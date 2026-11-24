@@ -7,7 +7,8 @@
   import RecentMessages from './RecentMessages.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import { loadAllAgentMessages, mergeMessageRows } from './agentMessages';
-  import ShareTopicDialog from './ShareTopicDialog.svelte';
+  import ReportSessionBugDialog from './ReportSessionBugDialog.svelte';
+  import { createSessionBugReportOperationCollector } from './sessionBugReportOperation';
   import ReportChatBugDialog from './ReportChatBugDialog.svelte';
   import MoveToNewWorkstreamDialog from './MoveToNewWorkstreamDialog.svelte';
   import type { TopicVM } from './documents/types';
@@ -54,12 +55,16 @@
     ModelRouting,
     DocumentChangeEvent,
     PublicConfig,
+    SessionBugReportInput,
+    SessionBugReportOperation,
   } from '../shared/contracts';
   import {
     CONTAINER_APP_RESOURCE_MIME,
     composeContainerAppResourceMessage,
     containerAppResourceLabel,
     parseContainerAppResourceReference,
+    ResourceDragPreparationCache,
+    setResourceDragData,
   } from './resourceDrag';
   import {
     containerAppDocument,
@@ -94,6 +99,7 @@
     documentTabDropIndex,
     documentTabIcon,
     documentTabTooltip,
+    documentTabResourceUri,
     hostTaskDocument,
     keepSelectedTabVisible,
     openDocumentTab,
@@ -106,6 +112,7 @@
     serializeDocumentTabs,
     settingsDocument,
     searchDocument,
+    selectDocumentTab,
     updateDocumentTab,
     type DocumentTabsState,
   } from './documentTabs';
@@ -197,7 +204,8 @@
   let toolDetailRequest = 0;
   let toolInspectorElement = $state<HTMLElement | null>(null);
   let unreadResponses = $state<UnreadResponse[]>([]);
-  let sharingTopic = $state<TopicVM | null>(null);
+  let sessionReportSnapshot = $state<SessionBugReportInput | null>(null);
+  const collectSessionOperation = createSessionBugReportOperationCollector();
   let reportingChatRun = $state<ChatRun | null>(null);
   const reportChatSnapshot = $derived(reportingChatRun
     ? latestChatRun(reportingChatRun, scopedConversationRuns) : null);
@@ -217,6 +225,7 @@
     if (!documents.some(document => document.kind === 'topic-backlog')) backlogExpanded.clear();
   });
   let selectedDocumentKey = $state<string | null>(null);
+  let documentSelectionHistory = $state<string[]>([]);
   $effect(() => {
     const key = selectedDocumentKey;
     if (key) untrack(() => {
@@ -235,7 +244,17 @@
   const closedDuringRestore = new Set<string>();
 
   function documentTabsState(): DocumentTabsState {
-    return { tabs: documents, selectedKey: selectedDocumentKey, previewKey: previewDocumentKey };
+    return {
+      tabs: documents, selectedKey: selectedDocumentKey, previewKey: previewDocumentKey,
+      selectionHistory: documentSelectionHistory,
+    };
+  }
+
+  function setDocumentTabs(next: DocumentTabsState): void {
+    documents = next.tabs;
+    selectedDocumentKey = next.selectedKey;
+    previewDocumentKey = next.previewKey ?? null;
+    documentSelectionHistory = next.selectionHistory ?? [];
   }
 
   function promoteDocument(key = selectedDocumentKey): void {
@@ -318,6 +337,22 @@
   let historyRequestGeneration: number | null = null;
   let documentTabsPersistenceReady = $state(false);
   let activeTreeDrag = $state<ActiveResourceDrag | null>(null);
+  let ownedTabDrag: ActiveResourceDrag | null = null;
+  let nativeTabDragFilePath: string | null = null;
+  const tabResourceDrags = new ResourceDragPreparationCache(
+    (uri, title) => window.workingMemory.prepareResourceDrag(uri, title),
+    error => { liveUpdateError = `Unable to prepare tab drag context: ${error instanceof Error ? error.message : String(error)}`; },
+  );
+  $effect(() => {
+    selectedEnvironment?.mcpUrl;
+    tabResourceDrags.clear();
+    for (const document of documents) prepareDocumentTabDrag(document);
+  });
+  $effect(() => window.workingMemory.onResourceDragResult(result => {
+    if (result.filePath !== nativeTabDragFilePath || result.status !== 'failed') return;
+    endDocumentTabDrag();
+    liveUpdateError = `Unable to drag tab context: ${result.error ?? 'Native drag failed.'}`;
+  }));
   const activeDocument = $derived(documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null);
   const selectedContainerAppId = $derived(containerAppIdForDocument(activeDocument));
   const selectedContainerApp = $derived(containerApps.find((app) => app.id === selectedContainerAppId) ?? null);
@@ -590,6 +625,8 @@
   onDestroy(() => {
     clearComposerImages();
     closeCamera();
+    tabResourceDrags.clear();
+    endDocumentTabDrag();
   });
 
   async function refreshContainerApp(app: ContainerAppItem): Promise<void> {
@@ -641,9 +678,7 @@
       containerAppDocument(app),
       false,
     );
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     containerAppViews[app.id] = app.embeddable ? 'app' : 'info';
     activateHeaderTab('container-apps');
     restoreDocumentSaveStatus(next.selectedKey);
@@ -987,6 +1022,36 @@
   const scopedConversationRuns = $derived(mergeScopedHistory(chatRuns,
     loadedScopeKey === scopedHistoryKey ? scopedHistory : []));
 
+  function openSessionBugReport(): void {
+    let operation: SessionBugReportOperation | null = selectedTool ? null : collectSessionOperation();
+    const selectedRun = selectedTool
+      ? scopedConversationRuns.find(run => run.journalId === selectedTool.row.journalId)
+      : !chatRailCollapsed || scopePreviewExpanded
+        ? scopedConversationRuns.filter(run => !currentChatContext || matchesChatContext(run.scope, currentChatContext)).at(-1)
+        : undefined;
+    if (!operation && selectedRun && instanceConnection?.authenticated) {
+      operation = { kind: 'chat', input: {
+        run: selectedRun, renderer: { conversationBlocked: runBlocked(selectedRun),
+          localRequestActive: activeChatContexts.includes(chatContextKey(chatContextForScope(selectedRun.scope))) },
+      }, toolDetail: selectedTool?.detail };
+    }
+    sessionReportSnapshot = $state.snapshot({
+      renderer: {
+        capturedAt: new Date().toISOString(),
+        screen: !instanceConnection?.authenticated ? managingInstancesBeforeSignIn ? 'manage-instances' : 'sign-in'
+          : activeDocument?.kind === 'settings' ? `settings:${settingsTab}${settingsTab === 'system' ? `:${systemTab}` : ''}`
+          : activeDocument?.kind ?? 'workspace',
+        authenticated: instanceConnection?.authenticated ?? false,
+        backendHealth, aiHealth: openAiHealth, features: instanceFeatures,
+        openDocuments: documents.length, activeChatContexts: activeChatContexts.length,
+        errors: { environment: environmentError, connection: instanceConnectionError, features: featuresError,
+          history: historyError, scopedHistory: scopedHistoryError, liveUpdates: liveUpdateError,
+          document: documentError, build: buildInfoError },
+      },
+      operation,
+    });
+  }
+
   $effect(() => {
     const key = scopedHistoryKey;
     const revision = scopedHistoryRevision;
@@ -1064,9 +1129,7 @@
     if (document && foreground) {
       documentOpens.invalidate();
       const next = openDocumentTab(documentTabsState(), document, false);
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
       activateHeaderTab('log');
       documentError = '';
     }
@@ -1477,6 +1540,7 @@
       documentTabKey(document) === persisted.selectedKey)
       ? persisted.selectedKey
       : restored.at(-1) ? documentTabKey(restored.at(-1)!) : null;
+    documentSelectionHistory = selectedDocumentKey ? [selectedDocumentKey] : [];
     const selectedAppId = containerAppIdForDocument(
       documents.find((document) => documentTabKey(document) === selectedDocumentKey) ?? null,
     );
@@ -1609,7 +1673,6 @@
     const reset = emptyEnvironmentBoundRendererState();
     documentSaves.clear();
     documentChanges.clear();
-    sharingTopic = null;
     movingToNewWorkstream = null;
     searchState = createSearchViewState();
     deferredDocumentRefreshes.clear();
@@ -1632,6 +1695,7 @@
     documents = reset.documents;
     backlogExpanded.clear();
     selectedDocumentKey = null;
+    documentSelectionHistory = [];
     previewDocumentKey = null;
     documentOpens.invalidate();
     saveState = reset.saveState;
@@ -1649,7 +1713,6 @@
     scopedHistoryLoading = false;
     selectedTool = reset.selectedTool;
     reportingChatRun = null;
-    sharingTopic = null;
     activePanel = reset.activePanel;
     activeLoading = reset.activeLoading;
     activeError = reset.activeError;
@@ -1953,18 +2016,14 @@
       for (const document of documents.filter(document => document.kind === 'search')) {
         next = closeDocumentTab(next, documentTabKey(document));
       }
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
     }
     if (!features.hostTasks) {
       let next = documentTabsState();
       for (const document of documents.filter(document => ['host-tasks', 'host-task', 'host-task-create'].includes(document.kind))) {
         next = closeDocumentTab(next, documentTabKey(document));
       }
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
       if (activeHeaderTab === 'host-tasks') activeHeaderTab = 'log';
       if (focusedHeaderTab === 'host-tasks') focusedHeaderTab = activeHeaderTab;
     }
@@ -1989,9 +2048,7 @@
     }
     documentOpens.invalidate();
     const next = openDocumentTab(documentTabsState(), hostTaskDocument(task), false);
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     activateHeaderTab('host-tasks');
     restoreDocumentSaveStatus(next.selectedKey);
   }
@@ -2023,9 +2080,7 @@
       documentTabsState(),
       settingsDocument(),
     );
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     restoreDocumentSaveStatus(next.selectedKey);
   }
 
@@ -2042,9 +2097,7 @@
     if (activeDocument?.kind !== 'search') searchState.context = searchContextForSession(searchState, activeDocument);
     documentOpens.invalidate();
     const next = openDocumentTab(documentTabsState(), searchDocument());
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     restoreDocumentSaveStatus(next.selectedKey);
     activateHeaderTab('log');
   }
@@ -2058,9 +2111,7 @@
     const next = key
       ? updateDocumentTab(documentTabsState(), key, document)
       : replaceSelectedTab(documentTabsState(), document);
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
   }
 
   function restoreDocumentSaveStatus(key: string | null): void {
@@ -2094,9 +2145,7 @@
         return;
       }
       const next = openDocumentTab(documentTabsState(), document);
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
       activateHeaderTab('log');
       restoreDocumentSaveStatus(next.selectedKey);
     } catch (error) {
@@ -2135,9 +2184,7 @@
         parentTitle: parent?.title ?? null,
       };
       const next = openDocumentTab(documentTabsState(), draft, false);
-      documents = next.tabs;
-      selectedDocumentKey = next.selectedKey;
-      previewDocumentKey = next.previewKey ?? null;
+      setDocumentTabs(next);
       activateHeaderTab('log');
     } catch (error) {
       if (!isCurrent() || generation !== environmentGeneration) return;
@@ -2149,9 +2196,7 @@
     documentOpens.invalidate();
     const backlog = topicBacklogDocument(activePanel);
     const next = openDocumentTab(documentTabsState(), backlog);
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     activateHeaderTab('log');
   }
 
@@ -2164,9 +2209,7 @@
       draftKey,
       created,
     );
-    documents = replaced.tabs;
-    selectedDocumentKey = replaced.selectedKey;
-    previewDocumentKey = replaced.previewKey ?? null;
+    setDocumentTabs(replaced);
     const workstreamKey = `workstream:${draft.workstream}`;
     if (documents.some((document) => documentTabKey(document) === workstreamKey)) {
       const refreshed = await window.workingMemory.openResource('workstream', draft.workstream);
@@ -2175,9 +2218,7 @@
         workstreamKey,
         refreshed,
       );
-      documents = updated.tabs;
-      selectedDocumentKey = updated.selectedKey;
-      previewDocumentKey = updated.previewKey ?? null;
+      setDocumentTabs(updated);
     }
     await refreshActive();
   }
@@ -2228,6 +2269,7 @@
   }
 
   const activeTreeProps = $derived({
+    activeTopicId: activeDocument?.kind === 'topic' ? activeDocument.id : null,
     unreadResponses, environments, selectedEnvironment, environmentLoading, environmentError,
     data: activePanel, loading: activeLoading, error: activeError,
     onDiscoverEnvironments: discoverEnvironments,
@@ -2287,9 +2329,7 @@
           state = updateDocumentTab(state, result.value.key, result.value.document);
         }
       }
-      documents = state.tabs;
-      selectedDocumentKey = state.selectedKey;
-      previewDocumentKey = state.previewKey ?? null;
+      setDocumentTabs(state);
       restoreDocumentSaveStatus(state.selectedKey);
       const failedRefreshes = refreshed.filter((result) => result.status === 'rejected').length;
       if (failedRefreshes > 0) {
@@ -2357,9 +2397,7 @@
           state = updateDocumentTab(state, result.value.key, result.value.document);
         }
       }
-      documents = state.tabs;
-      selectedDocumentKey = state.selectedKey;
-      previewDocumentKey = state.previewKey ?? null;
+      setDocumentTabs(state);
       restoreDocumentSaveStatus(state.selectedKey);
     }
   }
@@ -2509,7 +2547,7 @@
   function selectDocument(key: string): void {
     if (documents.some((document) => documentTabKey(document) === key)) {
       documentOpens.invalidate();
-      selectedDocumentKey = key;
+      setDocumentTabs(selectDocumentTab(documentTabsState(), key));
       const kind = documents.find(document => documentTabKey(document) === key)?.kind;
       activateHeaderTab(kind === 'host-task' || kind === 'host-task-create' ? 'host-tasks' : 'log');
       restoreDocumentSaveStatus(key);
@@ -2561,9 +2599,7 @@
       });
       searchState = nextSearch;
     }
-    documents = next.tabs;
-    selectedDocumentKey = next.selectedKey;
-    previewDocumentKey = next.previewKey ?? null;
+    setDocumentTabs(next);
     restoreDocumentSaveStatus(next.selectedKey);
   }
 
@@ -2574,31 +2610,67 @@
     applyDocumentTabs(closeDocumentTab(documentTabsState(), key));
   }
 
+  function prepareDocumentTabDrag(document: DocumentVM): void {
+    const uri = documentTabResourceUri(document);
+    if (uri) tabResourceDrags.prepare(uri, document.title);
+  }
+
   function startDocumentTabDrag(event: DragEvent, key: string): void {
     if (!event.dataTransfer) return;
+    endDocumentTabDrag();
+    const document = documents.find(document => documentTabKey(document) === key);
+    if (!document) return;
+    const uri = documentTabResourceUri(document);
+    const prepared = uri ? tabResourceDrags.get(uri) : undefined;
+    const section = prepared?.workstreamSection ?? ('status' in document
+      && (document.status === 'queue' || document.status === 'progress' || document.status === 'backlog')
+      ? document.status : undefined);
+    event.dataTransfer.clearData();
+    if (uri && !setResourceDragData(event.dataTransfer, uri, document.title, prepared)) {
+      event.preventDefault();
+      liveUpdateError = 'Unable to drag this Working Memory tab.';
+      return;
+    }
     event.dataTransfer.setData(DOCUMENT_TAB_DRAG_TYPE, key);
-    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.effectAllowed = uri ? 'copyMove' : 'move';
     draggedDocumentKey = key;
     documentTabMenu = null;
     containerAppTabMenu = null;
+    ownedTabDrag = document.kind === 'topic' && document.id
+      ? { kind: 'topic', id: document.id, sourceWorkstream: '', ...(prepared ? { native: true } : {}) }
+      : document.kind === 'workstream' && document.id && section
+        ? { kind: 'workstream', id: document.id, section, ...(prepared ? { native: true } : {}) } : null;
+    if (ownedTabDrag) {
+      activeTreeDrag = ownedTabDrag;
+      ownedTabDrag = activeTreeDrag;
+    }
+    if (prepared) {
+      event.preventDefault();
+      nativeTabDragFilePath = prepared.filePath;
+      window.workingMemory.startResourceDrag(prepared);
+    }
   }
 
   function endDocumentTabDrag(): void {
+    if (ownedTabDrag && activeTreeDrag === ownedTabDrag) activeTreeDrag = null;
+    ownedTabDrag = null;
+    nativeTabDragFilePath = null;
     draggedDocumentKey = null;
     documentTabDropTarget = null;
   }
 
   function documentTabDragOver(event: DragEvent & { currentTarget: HTMLDivElement }): void {
-    if (!draggedDocumentKey || !event.dataTransfer?.types.includes(DOCUMENT_TAB_DRAG_TYPE)) return;
+    if (!draggedDocumentKey || !event.dataTransfer
+      || (!nativeTabDragFilePath && !event.dataTransfer.types.includes(DOCUMENT_TAB_DRAG_TYPE))) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
+    event.dataTransfer.dropEffect = nativeTabDragFilePath ? 'copy' : 'move';
     const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('.document-tab')];
     documentTabDropTarget = documentTabDropIndex(tabs.map(tab => tab.getBoundingClientRect()), event.clientX);
   }
 
   function dropDocumentTab(event: DragEvent & { currentTarget: HTMLDivElement }): void {
     const key = draggedDocumentKey;
-    if (!key || event.dataTransfer?.getData(DOCUMENT_TAB_DRAG_TYPE) !== key) return;
+    if (!key || (!nativeTabDragFilePath && event.dataTransfer?.getData(DOCUMENT_TAB_DRAG_TYPE) !== key)) return;
     event.preventDefault();
     event.stopPropagation();
     const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('.document-tab')];
@@ -2722,6 +2794,9 @@
 </script>
 
 <svelte:window
+  onpointermove={event => {
+    if (event.buttons === 0 && nativeTabDragFilePath) endDocumentTabDrag();
+  }}
   onclick={(event) => { documentTabMenu = null; containerAppTabMenu = null; handleDocumentClick(event); }}
   onkeydown={(event) => {
     if (event.key === 'Escape') {
@@ -2732,9 +2807,39 @@
   }}
 />
 
+{#snippet statusBar()}
+  <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
+    <span
+      class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
+      title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"
+    >
+      <span class="status-dot"></span>
+      Working Memory: {backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}
+    </span>
+    <span
+      class="backend-status state-{openAiHealth.state}"
+      title="Provider: {modelProfiles.find((profile) => profile.id === modelRouting['complex:medium'])?.provider === 'copilot' ? 'Local GitHub Copilot' : endpoint || 'not configured'}&#10;Signal: startup connectivity test or normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
+    >
+      <span class="status-dot"></span>
+      AI: {openAiHealth.state}
+    </span>
+    {#if featuresError}<span role="alert">Features: {featuresError}</span>{/if}
+    {#if instanceConnectionError}<span>Connection: reconnecting</span>{/if}
+    {#if pendingAccessRequests}
+      <button onclick={() => openSettings('access')}>{pendingAccessRequests} access request{pendingAccessRequests === 1 ? '' : 's'} - Review</button>
+    {/if}
+    {#if buildInfoError}<span role="alert">Build information: {buildInfoError}</span>{/if}
+    <button class="session-report-link" onclick={openSessionBugReport}>
+      <span class="codicon codicon-bug" aria-hidden="true"></span> Report Bug
+    </button>
+    <span class="desktop-build-status">{desktopBuildLabel}</span>
+  </footer>
+{/snippet}
+
 {#if !instanceConnection?.authenticated}
+  <div class="disconnected-shell">
   {#if managingInstancesBeforeSignIn}
-    <main class="connection-instances" style="padding: 24px; height: 100vh; overflow: auto;">
+    <main class="connection-instances" style="padding: 24px; overflow: auto;">
       <button onclick={() => { managingInstancesBeforeSignIn = false; void refreshInstanceConnection(); }}>Back to sign-in</button>
       <h1>Manage instances</h1>
       <InstancesView selectedMcpUrl={selectedEnvironment?.mcpUrl ?? null}
@@ -2750,6 +2855,8 @@
         onManage={() => { managingInstancesBeforeSignIn = true; }} />
     {/key}
   {/if}
+  {@render statusBar()}
+  </div>
 {:else}
 <div
   class="shell"
@@ -2853,6 +2960,7 @@
                 aria-selected={key === selectedDocumentKey}
                 title={documentTabTooltip(document, key === previewDocumentKey)}
                 draggable="true"
+                onpointerdown={() => prepareDocumentTabDrag(document)}
                 ondragstart={(event) => startDocumentTabDrag(event, key)}
                 ondragend={endDocumentTabDrag}
                 onclick={() => selectDocument(key)}
@@ -3108,12 +3216,14 @@
         {:else if activeDocument?.kind === 'topic'}
           <TopicView
             showRelatedTopics={instanceFeatures.search}
+            placementAutoLoad={instanceFeatures.search && instanceFeatures.topicPlacementAutoLoad === true}
+            placementEnvironment={selectedEnvironment?.mcpUrl ?? ''}
             bind:activeDrag={activeTreeDrag}
             onAddChild={(parent, workstream) => startTopicCreation(workstream.id, workstream.title, parent)}
             onTopicAdded={refreshTopicMemberships}
+            onBeforePlacementApply={id => promoteDocument(`topic:${id}`)}
             {unreadResponses}
             topic={activeDocument}
-            onShare={(topic) => { sharingTopic = topic; }}
             {saveState}
             onSaveTopic={saveTopic.bind(null, activeDocument)}
             onOpenTopic={(id) => void openResource('topic', id)}
@@ -3305,9 +3415,6 @@
           </button>
         </form>
       </div>
-    {#if sharingTopic}
-      <ShareTopicDialog topic={sharingTopic} beforeShare={() => documentSaves.flushAll()} onClose={() => { sharingTopic = null; }} />
-    {/if}
     {#if reportChatSnapshot}
       <ReportChatBugDialog run={reportChatSnapshot}
         conversationBlocked={runBlocked(reportChatSnapshot)}
@@ -3590,28 +3697,9 @@
     {/if}
   </aside>
 
-  <footer class="desktop-status-bar" title={`Built ${DESKTOP_BUILD_TIMESTAMP}`}>
-    <span
-      class="backend-status state-{backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}"
-      title="Endpoint: {backendHealth?.endpoint ?? selectedEnvironment?.mcpUrl ?? 'not selected'}&#10;Environment: {backendHealth?.source ?? selectedEnvironment?.source ?? 'unknown'}&#10;Result: {backendHealth?.result ?? 'Checking…'}&#10;Observed: {statusTime(backendHealth?.observedAt ?? 0)}"
-    >
-      <span class="status-dot"></span>
-      Working Memory: {backendHealthChecking ? 'checking' : backendHealth?.state ?? 'unknown'}
-    </span>
-    <span
-      class="backend-status state-{openAiHealth.state}"
-      title="Provider: {modelProfiles.find((profile) => profile.id === modelRouting['complex:medium'])?.provider === 'copilot' ? 'Local GitHub Copilot' : endpoint || 'not configured'}&#10;Signal: startup connectivity test or normal backend usage&#10;Result: {openAiHealth.result}&#10;Observed: {statusTime(openAiHealth.observedAt)}"
-    >
-      <span class="status-dot"></span>
-      AI: {openAiHealth.state}
-    </span>
-    {#if featuresError}<span role="alert">Features: {featuresError}</span>{/if}
-    {#if instanceConnectionError}<span>Connection: reconnecting</span>{/if}
-    {#if pendingAccessRequests}
-      <button onclick={() => openSettings('access')}>{pendingAccessRequests} access request{pendingAccessRequests === 1 ? '' : 's'} - Review</button>
-    {/if}
-    {#if buildInfoError}<span role="alert">Build information: {buildInfoError}</span>{/if}
-    <span class="desktop-build-status">{desktopBuildLabel}</span>
-  </footer>
+  {@render statusBar()}
 </div>
+{/if}
+{#if sessionReportSnapshot}
+  <ReportSessionBugDialog snapshot={sessionReportSnapshot} onClose={() => { sessionReportSnapshot = null; }} />
 {/if}

@@ -11,11 +11,11 @@
   import AgentMessageCallouts from './AgentMessageCallouts.svelte';
   import HybridMarkdownEditor from './HybridMarkdownEditor.svelte';
   import RelatedTopics from './RelatedTopics.svelte';
+  import TopicPlacement from './TopicPlacement.svelte';
   import type { ActiveResourceDrag, TopicLinkReference } from '../resourceDrag';
 
   interface Props {
     unreadResponses?: UnreadResponse[];
-    onShare?: (topic: TopicVM) => void;
     topic: TopicVM;
     saveState: SaveState;
     onSaveTopic: (patch: TopicPatch) => void;
@@ -30,16 +30,18 @@
     titlePlaceholder?: string;
     draft?: boolean;
     showRelatedTopics?: boolean;
+    placementAutoLoad?: boolean;
+    placementEnvironment?: string;
     activeDrag?: ActiveResourceDrag | null;
     onAddChild?: (parent: TopicLinkReference, workstream: TopicLinkReference) => Promise<void>;
     onTopicAdded?: () => Promise<void>;
+    onBeforePlacementApply?: (id: string) => void;
     newWorkstreamTitle?: string;
     onNewWorkstreamTitleChange?: (title: string) => void;
   }
 
   let {
     unreadResponses = [],
-    onShare,
     topic,
     saveState,
     onSaveTopic,
@@ -54,9 +56,12 @@
     titlePlaceholder = '',
     draft = false,
     showRelatedTopics = false,
+    placementAutoLoad = false,
+    placementEnvironment = '',
     activeDrag = $bindable(null),
     onAddChild,
     onTopicAdded,
+    onBeforePlacementApply,
     newWorkstreamTitle,
     onNewWorkstreamTitleChange,
   }: Props = $props();
@@ -191,6 +196,24 @@
   // Family-tree scroll cues: show top/bottom fades only when there's more to
   // scroll in that direction, so the lineage reads as scrollable.
   let scrollEl = $state<HTMLDivElement | null>(null);
+  let placementPopup = $state(false);
+  let placementDialog = $state<HTMLDialogElement>();
+  let placementSource = $state<{ id: string; resourceVersion: number; environment: string } | null>(null);
+  const hasFamily = $derived(topic.parents.length > 0 || topic.children.length > 0);
+  const inlinePlacement = $derived(!draft && !!topic.id && !hasFamily);
+  $effect(() => {
+    if (placementPopup && (!placementSource || draft || !hasFamily || topic.id !== placementSource.id
+      || topic.resourceVersion !== placementSource.resourceVersion || placementEnvironment !== placementSource.environment)) {
+      placementPopup = false;
+    }
+  });
+  $effect(() => {
+    if (placementPopup && placementDialog && !placementDialog.open) placementDialog.showModal();
+  });
+  function openPlacementPopup(): void {
+    placementSource = { id: topic.id, resourceVersion: topic.resourceVersion, environment: placementEnvironment };
+    placementPopup = true;
+  }
   let canUp = $state(false);
   let canDown = $state(false);
 
@@ -254,11 +277,6 @@
     <UnreadBadge count={unreadResponseCount(unreadResponses, 'topic', topic.id)} />
     <span class="rv-label mono" title="Resource version">v{topic.resourceVersion}</span>
     <SaveStatus state={saveState} />
-    {#if onShare && topic.id}
-      <button class="feedback-button" type="button" onclick={() => onShare(topic)} title="Send Feedback" aria-label="Send Feedback">
-        <span class="codicon codicon-feedback" aria-hidden="true"></span>
-      </button>
-    {/if}
   {/if}
 </header>
 
@@ -270,7 +288,7 @@
   </div>
 {/if}
 
-<div class="header-grid">
+<div class="header-grid" class:with-placement={inlinePlacement}>
 <section class="attrs" aria-label="Topic attributes">
   <div class="attr">
     <span class="k">Status</span>
@@ -323,11 +341,26 @@
   {/each}
 </section>
 
+  {#if inlinePlacement}
+    <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
+      autoLoad={placementAutoLoad} environment={placementEnvironment}
+      saved={saveState === 'idle' || saveState === 'saved'}
+      editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream}
+      onBeforeApply={onBeforePlacementApply} onApplied={onTopicAdded} />
+  {:else}
   <aside class="family" aria-label="Family tree">
+    <div class="family-heading">
     <h2 class="family-title">
       <span class="codicon codicon-type-hierarchy"></span>
       Family tree
     </h2>
+    {#if !draft && topic.id}
+      <button class="suggest-placement placement-action-button" disabled={saveState !== 'idle' && saveState !== 'saved'}
+        aria-label="Suggest parent / workstream" title="Suggest parent / workstream" onclick={openPlacementPopup}>
+        <span class="codicon codicon-type-hierarchy" aria-hidden="true"></span>
+      </button>
+    {/if}
+    </div>
     <div class="family-scroll" bind:this={scrollEl} onscroll={updateScrollCues}>
       {#if topic.parents.length > 0}
         <div class="fam-group">
@@ -374,7 +407,20 @@
       <span class="codicon codicon-chevron-down fam-fade-chevron"></span>
     </div>
   </aside>
+  {/if}
 </div>
+
+{#if placementPopup && !draft && topic.id && hasFamily}
+  <dialog class="popup-dialog placement-dialog" bind:this={placementDialog} aria-label="Suggest parent and workstream"
+    oncancel={event => { event.preventDefault(); placementPopup = false; }}>
+    <TopicPlacement id={topic.id} title={topic.title} resourceVersion={topic.resourceVersion}
+      autoLoad environment={placementEnvironment} saved={saveState === 'idle' || saveState === 'saved'}
+      editable={topic.editable && (saveState === 'idle' || saveState === 'saved')} {onOpenTopic} {onOpenWorkstream}
+      onBeforeApply={onBeforePlacementApply}
+      onClose={() => { placementPopup = false; }}
+      onApplied={async () => { await onTopicAdded?.(); placementPopup = false; }} />
+  </dialog>
+{/if}
 
 <AgentMessageCallouts agentMessages={topic.agentMessages} {onSetAgentMessageStatus} {onRecordDecision} {onSnooze} {attachmentBaseUrl} />
 
@@ -804,10 +850,12 @@
     max-height: 160px;
   }
 
+  .family-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .suggest-placement { margin-left: auto; }
+
   @media (min-width: 720px) {
-    .header-grid {
-      grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-    }
+    .header-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+    .header-grid.with-placement { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); max-height: none; }
   }
 
   @media (max-width: 719px) {

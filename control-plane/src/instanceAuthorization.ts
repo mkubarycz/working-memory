@@ -19,6 +19,8 @@ export function instanceToolPermissions(name: string, args: Record<string, unkno
   const required = (category: PermissionCategory, operation: PermissionOperation): PermissionSelection[] => [{ category, operation }];
   if (name === 'wm-attachment-create') return required('content', 'create');
   if (name === 'wm-search-add-topic') return [...required('content', 'read'), ...required('content', 'update')];
+  if (name === 'wm-topic-suggest-placement') return required('content', 'read');
+  if (name === 'wm-topic-apply-placement') return [...required('content', 'read'), ...required('content', 'update')];
   if (name === 'wm-related-topics') return required('content', 'read');
   if (name === 'wm-semantic-search' || name === 'wm-semantic-status') return required('content', 'read');
   if (name === 'wm-embeddings-status') return [...required('content', 'read'), ...required('settings', 'read')];

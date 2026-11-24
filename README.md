@@ -56,6 +56,32 @@ For   **topics**, topic types, Agent Messages, and related control-plane documen
 - **Built for recovery:** resources use explicit status and relationship
   fields, while the SQLite store remains portable and independently backed up.
 
+## Development agents
+
+The repository's [Coding Agent](.github/agents/coding-agent.agent.md) follows
+the existing repository instructions and implements one bounded topic at a time.
+It returns changes, validation results, and a short chat digest; it does not
+integrate sibling changes or install into shared local environments.
+
+The user-level **Coding Agent Commander** lives at
+`~/.copilot/agents/coding-agent-commander.agent.md` and is reusable across
+repositories on that machine. In a Copilot session, select it from the agent
+picker and identify the repository, workstream/topics, and local environment.
+The Commander creates an interactive nested Coding Agent chat per assigned topic.
+The child starts with a Situation Report covering its task, existing delivery,
+verified status, uncertainties, and next step. Discuss the topic in that chat;
+the child sends blockers, requirement changes, and completion/digest updates to
+the Commander through session messaging. A background subagent transcript is not
+a substitute for this interactive conversation.
+
+The Commander reviews and integrates
+the result, validates and delivers locally, and proposes retrospective-driven
+instruction improvements for user approval. It starts with one worker;
+additional concurrency requires a user request.
+
+This first iteration is human-started. Agent definitions do not establish a
+persistent workstream watch or scheduler. Delivery does not close topics.
+
 ## Installation status
 
 Working Memory no longer ships as a VS Code extension. Tagged releases publish
@@ -330,6 +356,72 @@ without an Apple Team ID is **not** enough to avoid repeat prompts: macOS may
 record a per-build code hash even when its designated requirement is stable.
 Identity lookup failures stop the build rather than silently changing signers.
 
+### Isolated large-store performance checks
+
+`scripts/benchmark-documents.mjs` uses production HTTP/MCP entry points in a
+disposable Docker backend with exactly 1 CPU, 1 GiB memory and no additional
+swap allowance. It creates a labelled private volume and dedicated network,
+verifies their identities and the effective limits, publishes an ephemeral
+loopback port (never 7717/7719), and removes only its own resources. It accepts
+no live target URL and never opens SQLite on the host.
+
+After compiling the control plane, use an existing local image and embedding
+helper/model installation:
+
+```bash
+node scripts/benchmark-documents.mjs --image <local-image> \
+  --backend-dir out/control-plane --realistic --scales 10000,30000 \
+  --samples 20 --first-samples 3 --output <report.json> \
+  --embedding-runtime <existing-wm-embeddings-executable> \
+  --embedding-model-directory <existing-minilm-1110a243-directory>
+node --test scripts/benchmark-documents.test.mjs
+```
+
+The seeded workload varies Markdown body lengths, vocabulary, references,
+Unicode, parent fanout and workstream memberships. It measures creates,
+reads/search/query, ready semantic search, Related and placement suggestions.
+First-request samples restart only the disposable backend: **not OS-cold**.
+Reports include sample counts, p50/p95, throughput, cgroup lifetime peak/cache,
+process RSS and OOM counters. Failed attempts remain in all-attempt latency
+and elapsed-time/throughput totals; successful latency and failed-request
+elapsed time are also reported separately. Bounded transport diagnostics
+capture cause/code/timing and HTTP lifecycle settings, never authorization
+headers or request bodies. Host model startup, CPU and sampled RSS are
+separate from the backend's limit. Indexing uses real production passages and
+a bounded exact-text vector cache; query inference does not use that cache.
+Indexing wall time is therefore not an uncached host-inference estimate.
+
+For attribution, `--compare-backend-dir <other-compiled-control-plane-directory>`
+compares compiled code on byte-identical copies of the stopped disposable
+store, including its IDs and vectors, in the same image. Separate labelled
+volumes prevent new indexes from contaminating the baseline. File hashes are
+verified inside each container before its SQLite owner opens the restored store;
+both variants must retain true index readiness. Temporary file
+copies are private, never opened with host SQLite, and removed after controls.
+The harness verifies code hashes and compares responses except timings. Keep
+code snapshots unchanged during a run. Small first-request sample sets and shared
+host scheduling are explicit limitations, not latency guarantees.
+
+Generic document reads apply readable-kind restrictions before pagination.
+Substring reads preserve case-insensitive matching over the exact envelope
+JSON, but sort row identities and hydrate only through the requested matched
+page. An absent or sparse substring can still require a full scan; a small
+result limit is not a bound on execution work. Embedding ranking reads the
+existing little-endian float32 vectors through typed views, with alignment and
+endianness handling; model, passage coverage and scoring semantics are unchanged.
+An expression index on passage topic ID and vector length lets coverage/byte
+statistics use a small index instead of repeatedly reading large vector and
+excerpt rows. It adds index storage/write maintenance, not cached counters or
+new document state; permission and current-version checks are unchanged.
+
+In the paired 30k-topic run, serial warm p50 improved from 656 to 69 ms for
+unscoped pages and 4,962 to 2,630 ms for semantic search. This was **not a clean
+acceptance pass**: concurrency-four Related/placement still had 4/3 failures,
+and semantic successful p95 was 37.6 seconds. Reliability remains tracked in
+[#122](https://github.com/mkubarycz/working-memory/issues/122); indexing scaling
+and unmeasured write overhead remain in
+[#123](https://github.com/mkubarycz/working-memory/issues/123).
+
 ## Desktop AI providers
 
 Settings > Models supports **OpenAI-compatible / Azure Foundry** and
@@ -592,10 +684,36 @@ Topics even though the shared index covers other document kinds.
 MCP callers use the same read-only retrieval as desktop Search. For topic-only
 search, call `wm-semantic-search` with
 `{ "queries": ["health"], "literalQuery": "health", "kinds": ["Topic"], "limit": 20 }`.
-`literalQuery` prioritizes exact text matches; results include relevance,
+`literalQuery` supplies an intentional full-phrase lexical anchor; results include relevance,
 evidence confidence and source IDs. Use `wm-document-query` for literal filters,
 exact counts, workstream membership or full source reads. Conversational AI
 interpretation remains desktop-owned, not an extra MCP or HTTP search endpoint.
+Search, Related topics and placement share general lexical/semantic retrieval.
+Words, phrases and punctuation-connected references of any format remain strings;
+whole-token verification rejects partial or near identifiers, regardless of FTS
+stemming. Lexical evidence uses full saved search projections, including text
+beyond embedding coverage, but excludes historical missing-body projection
+artifacts. Source-based discovery proposes important words and adjacent phrases
+from the full saved title/body using indexed vocabulary rarity estimates, then
+evaluates at most 128 proposals in one indexed candidate scan against the eligible
+corpus and selects up to 12. An anchor counts at most once per eligible document,
+even when repeated in its text.
+This bounded heuristic is not exhaustive extraction: equally distinctive terms
+can compete for the proposal budget. Derived anchors occurring in at least half
+of three or more eligible documents are suppressed; an explicit `literalQuery`
+phrase is exempt because the caller intentionally requested it.
+
+Up to 50 verified lexical candidates (BM25 order) and 50 semantic candidates
+(cosine at least 0.35) are combined with weighted reciprocal-rank fusion:
+`1 / (61 + semanticRank)` plus `1.25 / (61 + lexicalRank)`, using zero-based ranks.
+Exact verification and eligibility filtering precede the lexical limit.
+The higher-is-better semantic-search `score` is **fusion relevance**, neither
+cosine nor calibrated confidence. `similarity` remains the measured vector
+cosine; High lexical confidence verifies occurrence, not intended meaning or
+correct placement. Desktop Search preserves host relevance order, rather than
+always putting every lexical hit first. Bounded candidate lists do not eliminate
+the existing scan of eligible vectors/passages. No entity embeddings, new model
+or LLM reranker are required.
 
 Agents can call the read-only `wm-document-search` tool with
 `{ "queries": ["authentication", "sign in"], "kinds": ["Topic"], "limit": 20 }`.
@@ -625,15 +743,21 @@ be opened through `openStore` to install the local projection function and trigg
 ### Local embeddings and Related topics (V1)
 
 With Search and Embeddings enabled, saved topics show **Related topics**:
-semantic candidates ranked by vector similarity.
+hybrid candidates ranked by lexical/semantic fusion relevance.
 Results include supporting passages and label existing parent/child links;
 they never create links or modify authored documents. Compact topic-tree-style
-rows show a relevance score (vector cosine similarity, not a confidence
+rows show measured vector cosine similarity (not fusion relevance or a confidence
 percentage). Supporting Markdown passages are quoted beneath the title when
 expanded; they start collapsed. The section is hidden
 when Embeddings is disabled, without running related-topic retrieval. Pending
-source topics show an indexing message, not keyword substitutes. Ordinary
-keyword MCP search remains available separately; desktop Search uses semantic retrieval.
+source topics show an indexing message, not keyword substitutes.
+Verified lexical anchors from the source title or full body can discover topics
+with low semantic cosine. They show **Term match** and High literal-evidence confidence,
+even when their measured cosine similarity is low; that does not prove shared
+meaning or authorize a relationship. Related topics and placement use the same
+hybrid matcher. Existing workstream filters and current-index requirements
+still apply. Ordinary
+keyword MCP search remains available separately; desktop Search uses hybrid retrieval.
 
 Related topic handles share drag handling with the workstream tree: drag to the
 left rail or export the same Markdown context attachment to VS Code. Their
@@ -641,6 +765,64 @@ right-click menu offers **Add to workstream** and **Add Child...**, not removal
 or pinning. Child creation uses the parent's workstream when there is exactly
 one; otherwise it asks for an open workstream before opening the normal form.
 Search and Related topics share the result component, topic actions and workstream picker.
+
+Saved topics lazily load an advisory placement by default, without blocking the
+document. **Settings > Features > Automatic topic placement suggestions** turns
+automatic requests off instance-wide; **Suggest Placement** / **Refresh placement**
+still works manually. Search and Embeddings must be enabled separately. Older
+backends retain manual suggestions until upgraded to the Features v4 contract;
+the v1-v3 endpoint shapes are unchanged.
+Working Memory compares the topic's
+indexed embeddings with readable topics and workstreams and proposes a parent
+and workstream, showing only the highest-ranked eligible recommendation with normal
+topic/workstream links. For saved topics without a family tree, placement replaces the
+empty family-tree cell beside the status/attributes section in an equal-width split.
+Existing family trees have **Suggest parent / workstream**, opening the same placement
+component in a popup. **Refresh**, **Apply** and **Bug Report** sit at the top right;
+placement actions are compact icon-only buttons sharing the header feedback button's
+outlined pink-accent style, with action names in tooltips and accessible labels.
+the placement body contains only the proposed parent/workstream. Supporting evidence
+is shown in the bug-report dialog and included in the report explanation. Bug-report
+privacy/delivery details are collapsed rather than four default paragraphs.
+The trusted-LAN warning remains visible before sending and retrying a report.
+The same notice explains that configured public delivery uploads encrypted reports
+to Azure; otherwise delivery uses the trusted-LAN route. Preview retries reuse the
+prepared destination, so saving a failed tracking note does not require rediscovery.
+A workstream-only recommendation
+remains usable when no parent is eligible. Similarity is not certainty or an authored
+relationship. Select **Apply** to add the proposed relationships; nothing is moved,
+closed or linked automatically. Self/descendant parents are excluded, and changed
+source/candidate versions require fresh suggestions before applying. Disabled or
+pending embeddings are reported explicitly. **Bug Report** captures the placement
+snapshot so an incorrect recommendation can be reported without rerunning it.
+Placement uses the same general lexical/semantic fusion from the saved title or
+body, including lexical text beyond embedding coverage.
+Similarity remains the actual cosine score; literal confidence is not approval
+to create a relationship. Parents must still be open, non-descendants and members
+of an open workstream; a matching unplaced topic remains searchable but is not
+an eligible parent/workstream pair.
+Placement also uses up to 50 hybrid-ranked, live, non-descendant topic neighbors
+with usable authored destinations as examples of organization. Closed children
+can remain examples without being reopened; proposed parents and workstreams must
+still be open. Eligibility is checked before the structural neighborhood limit,
+so unorganized lookalikes cannot crowd out authored examples.
+A neighbor votes only for its existing
+parents in workstreams shared by that neighbor and parent; unorganized duplicates
+do not invent a destination. Each example's vote is its source-to-neighbor cosine
+(or unit weight for verified lexical evidence), divided equally among its eligible
+parent/workstream pairs. Pair support is multiplied by its share of all organized
+vote weight, so disagreement and multiple destinations dilute support. This is
+added to the direct hybrid rank normalized to the best direct candidate.
+Multiple strong agreeing examples can therefore recommend a container whose own
+text is less similar; direct and exact-reference matches remain eligible candidates.
+Lone, weak or conflicting examples remain Low confidence; at least two strong
+semantic examples with undivided agreement and complete coverage can reach Medium,
+never a calibrated probability. The existing supporting-evidence report names up
+to three examples and reports weighted support. Similarity and excerpt still
+describe the proposed parent (or direct workstream), not its supporting children.
+Relationships are read fresh on every suggestion, with no learned persisted state,
+additional model call, body hydration or re-embedding for the query. Existing
+eligibility, explicit additive Apply and version checks are unchanged.
 
 Enable local indexing with the **Embeddings** switch in **Settings > Features**.
 Monitor indexing history in **Observability** (enable **Observability Container App**
@@ -661,7 +843,21 @@ The build creates an isolated environment from
 The control plane owns the background indexing worker: it selects changed
 searchable WM documents, reuses their safe stored search projections, prepares
 bounded passages, calls the host inference service, and accepts
-vectors only while the document content version remains current. Existing
+vectors only while the document content version remains current.
+Pending documents are processed least-recently-updated first, with resource
+version breaking same-second ties in save order. An edit moves a document
+behind older pending changes; stale in-flight results are rejected, and
+current indexed versions are not selected again.
+While work remains, the worker yields to the event loop between items without
+the previous fixed 250 ms pause. Empty queues and errors retain the five-second
+poll/retry delay.
+Automatic work selection does not recount store-wide progress after each
+document. Progress is calculated on demand for status/dashboard reads and by
+the existing ten-second observability sampler when enabled; work scheduling
+uses the selector's result, not a cached progress count. Explicit
+`wm-embeddings-next` calls retain their exact progress summary. Pending-work
+selection and search-readiness checks remain current database queries.
+Existing
 Topic text/hash representation is preserved, so valid Topic vectors are reused
 while other kinds join the index. Enabling indexing
 persists settings in that instance, independently of the desktop's selected
@@ -1025,6 +1221,11 @@ integration. Those sibling features are not included here.
 
 ## Document stage
 
+Closing the selected tab returns to the previously viewed still-open tab, rather
+than choosing a neighbouring tab by position. Closing an inactive tab does not
+change selection. Viewing history is session-only and resets on restart or
+environment change; restored tabs use the existing fallback until viewed.
+
 Opening a document creates an italic **preview tab**. There is at most one:
 opening another document replaces that preview in place, while existing
 permanent tabs are selected without duplication. Selecting tabs, following
@@ -1062,6 +1263,13 @@ Drag a tab header left or right within the tab bar to reorder it. The insertion
 marker shows where it will land, and dropping it does not change the selected
 document or promote a preview. The new permanent-tab order is remembered per
 environment.
+
+Resource tabs also drag to the left-hand tree using the same topic/workstream
+drop actions as rail handles, or export the same Markdown context attachment
+to other apps such as VS Code. Local-only tabs still reorder within the tab bar.
+Every visible occurrence of the active topic, including pinned rows, is
+highlighted yellow in the working tree, including while hovered; tree handles
+have no gray hover background. Selecting another kind of tab clears the highlight.
 
 The right-hand Chat rail starts collapsed when no preference has been saved.
 Its open/closed state is remembered locally across desktop restarts, alongside
@@ -1457,9 +1665,9 @@ Click the pink-dot/date/status header (or focus it and press Enter/Space)
 to collapse a message to a one-line preview and status; click the preview to
 expand it again. Recent messages hides the redundant scope link and adds
 **Show in Log**. Attention requests appear once in chronological order, marked
-**Needs your attention**, rather than in a duplicate pinned section. Older
-attention requests and pending tool confirmations remain available even when
-Recent messages is limited to the latest five rows.
+**Needs your attention**, rather than in a duplicate pinned section.
+Recent messages is collapsed to exactly the latest row. Expand it to view the
+full scoped history, including older attention requests and pending confirmations.
 Both surfaces summarize tool activity as a count (for example, **5 tool calls**).
 Click the summary, or focus it and press Enter/Space, to reveal tools and outcomes;
 individual tools still open the full inspector. Failed, cancelled, and pending
@@ -1472,22 +1680,56 @@ merely switching tabs does not clear it. Unread state is retained separately
 for each selected data environment, and loading old history does not mark
 every historical response unread.
 
-### Local Send Feedback prototype
+### Bug Report and Feedback delivery
 
-Every chat message also has **Report a bug**, including messages still running.
-Search also has **Report a bug** at the top right, available before, during, or
+Chat, Search, feature/backend errors and placement suggestions share **Bug Report**:
+enter what went wrong, then select **Send bug report**. The shared dialog gathers
+bounded, redacted evidence and submits to the single configured/discovered
+destination without a mandatory second preview-and-send screen. Multiple LAN
+receivers still require a choice; **Preview report** keeps the optional review
+and explicit Send workflow. The direct dialog also shows the trusted-LAN warning:
+discovered receivers and senders are not authenticated. Failed delivery retains
+the captured report, request identity and prepared receiver for retry instead of
+recapturing or rediscovering it. If delivery succeeded but the local tracking note
+failed, retry saves the cached receipt without resending, even if the receiver
+has gone offline. SAS redaction covers literal query delimiters and named,
+decimal, or hexadecimal HTML/XML ampersand entities. Collected
+evidence remains inspectable in the dialog; do not include private information in
+the description. Reporting never retries or changes the original operation.
+
+The bottom status bar's **Report Bug** link is available throughout the desktop,
+including sign-in and when no topic, chat or backend is selected. Opening it
+captures bounded session diagnostics (desktop/build/platform, connection and AI
+health, current screen, feature/error state and active-work counts), then prompts
+for the bug details. Where available, it also snapshots the currently displayed
+Search/placement/feature/backend operation, or the selected tool/latest message
+in the visible chat. It never collects document drafts, unrelated conversations,
+files, attachment bytes or general logs. The snapshot is session-only and requires
+no live backend query or local topic creation. Capture/settings errors block sending
+and offer retry; canceling leaves unsaved work untouched. The compact dialog has
+the bug-details input and the placement popup's shared layout and pink header icons:
+**Copy to clipboard**, **Send bug report**, then the top-right **X**. There is no
+bottom Cancel button, report-data preview or explanatory paragraphs; a one-line
+delivery destination/trust notice remains. Close and Escape wait for pending copy/send
+operations to finish. Copying uses the redacted report without transmitting
+it and remains available if delivery settings cannot load. Sending preserves cached
+delivery/receipt retry. Changing screens or environments after capture does not change its source.
+The obsolete topic-header **Send Feedback** action has been removed.
+
+Every chat message has **Bug Report**, including messages still running.
+Search also has **Bug Report** at the top right, available before, during, or
 after a search. It snapshots the search text, scope, displayed results and excerpts,
 scores and confidence reasons, answer blocks, activity timings, and errors when
 clicked. Evidence is bounded with explicit truncation/omission markers and uses
-the same credential/media redaction, local report preview, and explicit Feedback
-Send flow as chat reports; it does not rerun or cancel the search.
+the same credential/media redaction and shared Feedback delivery flow as chat
+reports, with optional preview; it does not rerun or cancel the search.
 Settings > Features keeps help text in the feature rows rather than paragraphs
-below the switches. Failures appear in a red error panel with **Report a bug**.
+below the switches. Failures appear in a red error panel with **Bug Report**.
 The report snapshots the selected error, feature state and requested change, plus
 the latest failed Observability operation's provider commands, durations and timeout
 limits. Command output, environment variables and private credentials are not
 collected by these command timings. Reporting uses the same local preview and
-explicit Feedback Send flow; it does not retry feature setup or run more provider
+shared Feedback delivery flow; it does not retry feature setup or run more provider
 checks.
 
 When replacing a registered running Podman backend, Working Memory prepares the
@@ -1506,14 +1748,15 @@ Working Memory does not kill unrelated listeners, choose a different port, or
 remove data volumes to make an upgrade succeed.
 
 Settings > System > Backend shows failed operations in a red error panel with
-**Report a bug**. Upgrade reports include the selected error, pre-operation
+**Bug Report**. Upgrade reports include the selected error, pre-operation
 instance/version and port, requested target, generated Compose configuration,
 bounded original Compose error output, and provider command timings. Reporting
 does not retry the upgrade, stop containers, change ports, or modify storage.
 Backend reports are previewed in the desktop session rather than written to
 the affected backend, so they can be sent while that backend is offline.
-Canceling discards the preview; explicit **Send** publishes it to a discovered
-Feedback server and provides a status link. No source topic is created or edited.
+Canceling discards the session report; explicit **Send bug report** submits through
+Feedback. LAN delivery provides a status link; public uploads provide a queued
+confirmation only. No source topic is created or edited.
 
 Podman connection discovery and engine probes allow up to 30 seconds per command
 (Docker remains at 10 seconds). A timeout identifies the command that did not
@@ -1521,9 +1764,9 @@ respond; it is not proof that the provider is stopped or that Compose is missing
 After a timeout, the Features page does not immediately repeat container discovery
 to look for ownership recovery. Ownership-conflict errors still offer recovery.
 
-Answer **What was the bug?** to create a separate local report topic, then review
-the captured report in the existing Feedback dialog and explicitly click **Send**.
-The local report remains if discovery fails or you cancel delivery; the original
+Answer **What was the bug?** and explicitly select **Send bug report**. Chat,
+Search, feature and placement reports create a separate local report topic, which
+remains if discovery or delivery fails; the original
 message and resource are not changed.
 Embedded Container App dashboards are hidden while HTML dialogs are open,
 including report capture and Feedback, and restored after the last overlay closes.
@@ -1534,8 +1777,8 @@ Reports include the selected prompt/response, journal state and timing, tool
 arguments/results, journal errors, confirmation state, desktop/platform details,
 and whether this desktop still tracks the run. The latest 100 shareable journal
 events are included within a bounded report size; omissions and truncation are
-marked. Recognized secrets and configured credentials are redacted. Always review
-before sharing: arbitrary sensitive text cannot be reliably detected. Image
+marked. Recognized secrets and configured credentials are redacted. Arbitrary sensitive
+text cannot be reliably detected: only describe information you may share. Image
 attachments are references only; other conversations, internal system events,
 hidden reasoning and general application/backend log files are not included.
 Inline tool-result media and embedded resource blobs are omitted before
@@ -1547,16 +1790,16 @@ append/finalization requests as well as model and tool calls.
 Not finding a run on this desktop does not prove a run on another computer has
 stopped. Reporting does not automatically fail, interrupt or unblock it.
 
-An existing topic's square **Send Feedback** control prepares a copy and discovers
-Feedback servers on the local network. Review the desktop version/build timestamp
-and the selected backend's reported version, then click **Send**. One server is
-preselected; multiple servers require a choice. Preparing or choosing a server
-does not transmit topic content. After success, **Send** becomes **Done**.
+The optional report preview's **Send Feedback** dialog discovers Feedback servers
+on the local network. Review the desktop version/build timestamp and the selected
+backend's version (explicitly unknown for session snapshots), then click **Send**.
+One server is preselected; multiple servers require a choice. Preparing or choosing
+a server does not transmit topic content. After success, **Send** becomes **Done**.
 No receiver URL or secret is required. Discovery probes IPv4 LAN broadcasts and
 loopback using UDP 7721; topic content travels only over HTTPS on TCP 7720.
 
-Pending edits must save successfully before sharing. The title, Markdown,
-topic type, and referenced screenshot images are copied, but relationships,
+The Feedback transport can copy a topic's title, Markdown and referenced
+screenshot images, but relationships,
 Agent Messages, history, and lifecycle status are not. The receiver creates an open
 topic in its **Inbox** workstream and remaps image IDs into that environment.
 After delivery, the source topic receives an appended, dated **Sent as feedback
@@ -1567,6 +1810,9 @@ not overwritten. Keep the dialog open when retrying an uncertain delivery:
 retries use the same request ID and do not create duplicate topics. If delivery
 succeeds but the note cannot save, the error says so; clicking **Send** again
 retries the note without reposting the feedback.
+An uncertain public-inbox upload retains its encrypted bytes and request ID for
+retry while the dialog remains open, including after five minutes. Prepared
+snapshots with no upload attempt still expire after five minutes.
 The incoming copy includes a **Feedback environment** section with the desktop
 version, exact build timestamp, and version reported by the selected backend's
 `wm-ping` response, not the bundled image or update-channel target. These details
@@ -1578,6 +1824,42 @@ HTTP status UI is loopback-only on 7722. Generic Docker runtime `additionalPorts
 publish the receiving TCP port and discovery UDP port with explicit
 `hostIp: "0.0.0.0"`; omitted host IPs default to loopback. The existing primary
 UI/health port remains loopback-only for all apps.
+
+#### Public write-only inbox
+
+**Settings > Feedback** accepts a sender configuration for a private Azure Blob
+container exposed over public HTTPS. It contains only a create-only container
+SAS (`c`, HTTPS-only, with an expiry) and the receiver's RSA public key. The desktop
+encrypts the complete report with AES-256-GCM and wraps its key with
+RSA-OAEP-SHA256 before upload. The sender credential cannot read, list, overwrite
+or delete blobs; its configuration is encrypted in the desktop credential vault.
+Configured public delivery replaces LAN discovery, so the receiving computer
+does not need an inbound connection from the sending network.
+
+Uploads say **queued**, not imported or resolved, and do not invent a topic/status
+receipt. The existing Feedback container polls every 15 seconds using a separate
+read/delete/list credential, decrypts and validates each report, imports through
+its existing Inbox/User Story path, and deletes the blob only after a successful
+import. Failed imports remain queued; retries reuse request/content identity.
+Its loopback `/health` includes polling/error state without credentials.
+
+Build/start the updated Feedback receiver first, then provision with:
+
+```bash
+node scripts/setup-public-feedback.mjs --resource-group <existing-group> \
+  --account <unique-storage-account> --location eastus2 \
+  --sender-output <private-path-outside-repository>/feedback-sender.json
+```
+
+This creates a Standard LRS account and private `reports` container in the selected
+Azure subscription, saves receiver configuration in its existing `/data` volume,
+and creates a private sender setup file. Azure storage/transaction charges apply.
+Restart Feedback to activate polling, and paste the sender setup into
+**Settings > Feedback** on each sending computer. Credentials expire after one
+year; renew them before expiry using a new sender-output path and redistribute
+the configuration. Back up `/data/public-inbox/private.pem`: TLS certificate
+renewal does not rotate this separate inbox key. Losing it makes queued reports
+undecryptable. Never expose the LAN TCP/UDP receiving ports publicly.
 
 The receiver persists its self-signed certificate in its own named volume.
 Only the feedback request accepts that self-signed certificate, and it verifies
@@ -2516,6 +2798,30 @@ image identity, OOM/exit information and the last five health-check timings
 are included without health-check output or container environment variables.
 The desktop also reports heap admission pressure and event-loop stalls, with
 deduplication/cooldowns. App-initiated upgrades are excluded from monitoring.
+
+External deployment commands must also coordinate planned maintenance with the
+running desktop before stopping a backend:
+
+```bash
+node --experimental-strip-types scripts/with-instance-maintenance.mjs \
+  --user-data "/path/to/the/running/desktop/profile" \
+  --mcp-url http://127.0.0.1:7717/mcp --seconds 600 -- node deployment.mjs
+```
+
+Use the desktop's exact user-data directory and selected MCP URL. Wrap the entire
+backup/upgrade/offline-verification sequence, not each individual restart. The
+private per-instance lease survives desktop restarts, defaults to ten minutes,
+and cannot exceed fifteen minutes. Command failure remains an explicit failure:
+cleanup accepts a health-verified recovery boot, or expires the lease immediately
+after a failed health check (at most five seconds).
+Successful completion requires a healthy backend and records its exact boot ID;
+only that verified boot is accepted as the new baseline. A subsequent boot change
+still reports a restart, even before the first post-maintenance probe. Existing
+outages are retained. Expired or invalid leases never disable normal monitoring;
+an unresolved outage uses the normal three-failed-probe threshold. In-app upgrade
+suspensions also expire after fifteen minutes. Concurrent wrappers for the same
+instance are rejected; after a killed wrapper, remove its `.lock` directory only
+after verifying that its deployment process has stopped.
 
 Reports are atomically queued in the desktop user profile and survive desktop
 and backend restarts. Once the same selected backend is reachable and signed

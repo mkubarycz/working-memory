@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, it } from 'vitest';
+import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { openStore } from '../src/store';
 import { startServer } from '../src/server';
@@ -268,6 +268,18 @@ it('edits pending permissions, filters mixed reads, and enforces changes on an e
   expect(value(await reader.callTool({ name: 'wm-document-read', arguments: {} }))).toMatchObject({
     count: 1, documents: [{ metadata: { id: topic.metadata.id } }],
   });
+  const parse = JSON.parse;
+  const materialize = vi.spyOn(JSON, 'parse').mockImplementation((text, reviver) => {
+    if (text.includes('Private settings')) throw new Error('Unreadable settings were materialized');
+    return parse(text, reviver);
+  });
+  try {
+    for (const args of [{ limit: 1 }, { query: 'visible', limit: 1 }]) {
+      expect(value(await reader.callTool({ name: 'wm-document-read', arguments: args }))).toMatchObject({
+        count: 1, documents: [{ metadata: { id: topic.metadata.id } }],
+      });
+    }
+  } finally { materialize.mockRestore(); }
   for (const args of [{ id: config.metadata.id }, { kind: 'Config' }, { id: config.metadata.id, kind: 'Topic' }]) {
     await expect(reader.callTool({ name: 'wm-document-read', arguments: args })).rejects.toThrow(/permission/i);
   }
@@ -379,7 +391,7 @@ it('prevents a pending renewal from restoring removed permissions and keeps acce
 it('blocks every instance-MCP task operation for an authenticated owner until Host Tasks is explicitly enabled', async () => {
   const { owner, connect, store } = await fixture();
   const broker = new HostTaskBroker(store.db);
-  expect(broker.features.read()).toEqual({ hostTasks: false, search: false });
+  expect(broker.features.read()).toEqual({ hostTasks: false, search: false, topicPlacementAutoLoad: true });
   const agent = await connect(owner!.token);
   const id = randomUUID();
   const definition = { name: 'Blocked task', description: '', hostId: randomUUID(),
@@ -399,7 +411,7 @@ it('blocks every instance-MCP task operation for an authenticated owner until Ho
   }
   expect(store.db.prepare('SELECT COUNT(*) AS count FROM host_script_tasks').get()?.count).toBe(0);
   expect(store.db.prepare('SELECT COUNT(*) AS count FROM host_script_jobs').get()?.count).toBe(0);
-  expect(broker.features.read()).toEqual({ hostTasks: false, search: false });
+  expect(broker.features.read()).toEqual({ hostTasks: false, search: false, topicPlacementAutoLoad: true });
 });
 
 it('requires Tools Run and exact-version grants, keeps edits as drafts, and invalidates grants on publish or downgrade', async () => {

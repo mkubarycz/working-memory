@@ -59,6 +59,8 @@ export interface CreateDocumentInput {
 
 export interface ListDocumentsInput {
   kind?: string;
+  kinds?: string[];
+  query?: string;
   omitBody?: boolean;
   includeDeleted?: boolean;
   limit?: number;
@@ -280,6 +282,10 @@ function ensureSchema(db: DatabaseSync): void {
     INSERT OR IGNORE INTO store_meta (key, value) VALUES ('resource_version', 0);
 
     CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources (kind);
+
+    -- Ascending keys scanned backwards also give descending implicit rowid ties.
+    CREATE INDEX IF NOT EXISTS idx_resources_live_kind_updated
+      ON resources (kind, updated_at) WHERE deleted_at IS NULL;
 
     CREATE INDEX IF NOT EXISTS idx_agent_message_pending_deadline
       ON resources (kind, json_extract(spec, '$.due_at'), id)
@@ -615,55 +621,41 @@ export function openStore(dbFilePath: string): Store {
 
   const metadataColumns = "id, kind, labels, status, agent_name_key, created_at, updated_at, deleted_at, resource_version, json_remove(spec, '$.body') AS spec";
 
-  function listDocuments(input: ListDocumentsInput = {}): DocumentEnvelope[] {
-    input = { ...input, kind: canonicalKind(input.kind) };
+  function orderedDocuments(input: ListDocumentsInput, order: 'updated_at' | 'created_at'): CreationOrderedDocument[] {
+    const kind = canonicalKind(input.kind);
+    const kinds = kind ? [kind] : input.kinds?.map(value => canonicalKind(value) ?? value);
+    if (input.limit === 0 || kinds?.length === 0) return [];
     const columns = input.omitBody ? metadataColumns : '*';
-    const rows = (
-      input.kind
-        ? db
-            .prepare(
-              `SELECT ${columns} FROM resources
-               WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'} AND kind = ?
-               ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?`,
-            )
-            .all(input.kind, input.limit ?? -1, input.offset ?? 0)
-        : db
-            .prepare(
-              `SELECT ${columns} FROM resources
-               WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'}
-               ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?`,
-            )
-            .all(input.limit ?? -1, input.offset ?? 0)
-    ) as unknown as ResourceRow[];
-    return rows.map(rowToEnvelope);
+    const needle = input.query?.trim() ? input.query.toLowerCase() : undefined;
+    const predicate = `${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'}${
+      kinds ? ` AND kind IN (${kinds.map(() => '?').join(',')})` : ''}`;
+    // Sort only row identities for substring reads; hydrate until the matched page is full.
+    const rows = db.prepare(`SELECT ${needle ? '' : `${columns}, `}rowid AS creation_sequence FROM resources
+      WHERE ${predicate} ORDER BY ${order} DESC, rowid DESC LIMIT ? OFFSET ?`)
+      .iterate(...(kinds ?? []), needle ? -1 : input.limit ?? -1, needle ? 0 : input.offset ?? 0);
+    const hydrate = needle ? db.prepare(`SELECT ${columns}, rowid AS creation_sequence FROM resources WHERE rowid = ?`) : undefined;
+    const documents: CreationOrderedDocument[] = [];
+    let skipped = 0;
+    for (const identity of rows) {
+      const row = (hydrate ? hydrate.get(identity.creation_sequence) : identity) as unknown as CreationOrderedResourceRow | undefined;
+      if (!row) throw new Error('A document disappeared during an ordered read.');
+      const document = rowToEnvelope(row);
+      if (needle && !JSON.stringify(document).toLowerCase().includes(needle)) continue;
+      if (needle && skipped++ < Math.max(0, input.offset ?? 0)) continue;
+      documents.push({ document, creationSequence: Number(row.creation_sequence) });
+      if (needle && input.limit !== undefined && input.limit >= 0 && documents.length >= input.limit) break;
+    }
+    return documents;
+  }
+
+  function listDocuments(input: ListDocumentsInput = {}): DocumentEnvelope[] {
+    return orderedDocuments(input, 'updated_at').map(({ document }) => document);
   }
 
   function listDocumentsByCreation(
     input: ListDocumentsInput = {},
   ): CreationOrderedDocument[] {
-    input = { ...input, kind: canonicalKind(input.kind) };
-    const columns = input.omitBody ? metadataColumns : '*';
-    const rows = (
-      input.kind
-        ? db
-            .prepare(
-              `SELECT ${columns}, rowid AS creation_sequence FROM resources
-               WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'} AND kind = ?
-               ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
-            )
-            .all(input.kind, input.limit ?? -1, input.offset ?? 0)
-        : db
-            .prepare(
-              `SELECT ${columns}, rowid AS creation_sequence FROM resources
-               WHERE ${input.includeDeleted ? '1=1' : 'deleted_at IS NULL'}
-               ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
-            )
-            .all(input.limit ?? -1, input.offset ?? 0)
-    ) as unknown as CreationOrderedResourceRow[];
-    return rows.map((row) => ({
-      document: rowToEnvelope(row),
-      creationSequence: row.creation_sequence,
-    }));
+    return orderedDocuments(input, 'created_at');
   }
 
   function getDocument(input: GetDocumentInput): DocumentEnvelope | null {

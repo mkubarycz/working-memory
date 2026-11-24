@@ -57,7 +57,7 @@ export function searchInstructions(context?: SearchContext): string {
     `Read only the sources needed to answer. The whole search allows ${MAX_TOOL_CALLS} retrieval calls, including the initial host retrieval. Present supported results before exhausting this budget.`,
     'Similarity is a cosine score, never a confidence percentage or proof that a document answers the request. Read supporting passages and, when needed, full bodies before choosing results.',
     'Confidence is host-computed evidence strength (High/Medium/Low), not a probability. Do not invent or replace relevance or confidence scores.',
-    'Host retrieval runs first. For a request such as "bank", show documents containing that word without asking which meaning the user intended. Literal matches come before semantic-only matches, even when their cosine scores are lower.',
+    'Host retrieval runs first. For a request such as "bank", show retrieved evidence without asking which meaning the user intended. Preserve host hybrid relevance order: score is rank fusion; similarity is measured cosine. Verified lexical evidence does not prove similar meaning.',
     'Offer optional, evidence-based suggestions to narrow the search AFTER showing matching documents. Ambiguity is not a reason to withhold term matches. Ask a blocking clarification only if no useful results can be shown or an exact scoped operation cannot be resolved.',
     'Use totals and nextOffset to page. Supply expectedVersion on subsequent pages. Use id/bodyOffset/bodyLimit to read additional evidence when nextBodyOffset is present.',
     'A parent relationship is not a blocker. An open topic is not proof of a blocker. Report missing evidence rather than inventing it.',
@@ -198,25 +198,37 @@ export async function searchByIntent(query: string, dependencies: {
         const literal = initial?.result.results.filter(hit => hit.literalMatch
           && sources.get(hit.id)?.resourceVersion === hit.resourceVersion && sources.get(hit.id)?.literalMatch) ?? [];
         const missing = literal.filter(hit => !selected.has(hit.id));
-        for (const hit of missing) use(hit.id, 'Contains your search text.');
-        const literalIds = new Set(literal.map(hit => hit.id));
+        for (const hit of missing) use(hit.id, 'Contains verified lexical evidence.');
         const ids = (block: SearchBlock): string[] => block.type === 'list' ? block.items.map(item => item.sourceId)
           : block.type === 'table' ? block.rows.map(row => row.sourceId) : block.type === 'summary' ? block.sourceIds : [];
-        const rank = (id: string) => literalIds.has(id) ? 0 : 1;
+        const rank = (id: string) => sources.get(id)?.score ?? -Infinity;
         const blocks: SearchBlock[] = [
           ...(missing.length ? [{ type: 'list' as const, heading: 'Matching your search',
-            items: missing.map(hit => ({ sourceId: hit.id, text: 'Contains your search text.' })) }] : []),
-          ...answer.blocks.map(block => block.type === 'list' ? { ...block, items: [...block.items].sort((a, b) => rank(a.sourceId) - rank(b.sourceId)) }
-            : block.type === 'table' ? { ...block, rows: [...block.rows].sort((a, b) => rank(a.sourceId) - rank(b.sourceId)) } : block),
+            items: missing.map(hit => ({ sourceId: hit.id, text: 'Contains verified lexical evidence.' })) }] : []),
+          ...answer.blocks.map(block => block.type === 'list' ? { ...block, items: [...block.items].sort((a, b) => rank(b.sourceId) - rank(a.sourceId)) }
+            : block.type === 'table' ? { ...block, rows: [...block.rows].sort((a, b) => rank(b.sourceId) - rank(a.sourceId)) } : block),
         ];
-        if (initial) blocks.sort((a, b) => {
-          const order = (block: SearchBlock) => ids(block).some(id => literalIds.has(id)) ? 0 : block.type === 'clarification' ? 2 : 1;
-          return order(a) - order(b);
-        });
+        if (initial) {
+          const ordered = blocks.flatMap<{ block: SearchBlock; group: number }>((block, group) =>
+            block.type === 'list' ? block.items.map(item => ({ block: { ...block, items: [item] }, group }))
+              : block.type === 'table' ? block.rows.map(row => ({ block: { ...block, rows: [row] }, group }))
+                : [{ block, group }]);
+          const order = (block: SearchBlock) => Math.max(-Infinity, ...ids(block).map(rank));
+          ordered.sort((a, b) => order(b.block) - order(a.block));
+          blocks.length = 0;
+          let previousGroup = -1;
+          for (const { block, group } of ordered) {
+            const previous = blocks.at(-1);
+            if (group === previousGroup && previous?.type === 'list' && block.type === 'list') previous.items.push(...block.items);
+            else if (group === previousGroup && previous?.type === 'table' && block.type === 'table') previous.rows.push(...block.rows);
+            else blocks.push(block);
+            previousGroup = group;
+          }
+        }
         const partial = answer.partial || evidenceLimited || trace.some(entry => entry.status === 'error') || [...pages.values()].some(page => page.ids.size < page.total)
           || [...selected.keys()].some(id => unreadBodies.has(id));
         const results = [...selected.values()];
-        if (initial) results.sort((a, b) => Number(!!b.literalMatch) - Number(!!a.literalMatch) || b.score - a.score);
+        if (initial) results.sort((a, b) => b.score - a.score);
         return { query, queries: [...queries], results,
           blocks, trace, partial };
       } catch (error) {
@@ -374,7 +386,8 @@ export async function searchWithMatches(query: string, dependencies: Omit<Parame
   trace.timings = result.timings;
   dependencies.onTrace?.(trace);
   const response: SearchResponse = { query, queries: [query], trace: [trace], partial: false, limited: !!result.limited,
-    results: result.results.map(hit => ({ ...hit, reason: hit.literalMatch ? 'Contains your search text.' : 'Similar supporting passage.' })) };
+    results: result.results.map(hit => ({ ...hit, reason: hit.literalMatch
+      ? hit.confidence?.reason ?? 'Contains verified lexical evidence.' : 'Similar supporting passage.' })) };
   dependencies.onResults?.(response);
   if (/^[\p{L}\p{N}][\p{L}\p{N}\p{M}_-]*$/u.test(query)) return response;
   const conversation = dependencies.conversation ?? await dependencies.prepareConversation?.();

@@ -5,24 +5,37 @@ import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildWorkstreamPanels } from '../../shared/panelData';
+import type { Topic, Workstream } from '../../shared/controlPlaneClient';
 
 it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
   'reorders actual desktop tabs, persists order and preserves selection, previews and close actions',
   async () => {
     const executable: unknown = createRequire(import.meta.url)('electron');
     if (typeof executable !== 'string') throw new Error('Electron executable is unavailable.');
-    const directory = await mkdtemp(join(tmpdir(), 'working-memory-tabs-browser-'));
+    const directory = await mkdtemp(fileURLToPath(new URL('./.tabs-browser-', import.meta.url)));
+    const workstreams: Workstream[] = ['first', 'second', 'third', 'fourth'].map(id => ({
+      id, title: id, status: 'progress', position: 0, closure: null,
+      opened_at: 1, updated_at: 1, closed_at: null, resourceVersion: 1,
+    }));
+    const railTopic: Topic = {
+      id: 'placement-canonical', title: 'Rail topic', body: '', topicType: 'type', status: 'open',
+      parents: [], workstreams: ['second', 'third'], focusedWorkstreams: ['second'],
+      created_at: 1, updated_at: 1, resourceVersion: 1,
+    };
+    const panel = buildWorkstreamPanels({ available: true, workstreams, topics: [railTopic] }).active;
     const fixture = `
       import { mount } from 'svelte';
       import App from '/src/renderer/App.svelte';
       import '/src/renderer/style.css';
       const state = window.__tabsTest = {};
-      const model = (kind, id) => ({ kind, id, title: state.titles?.[id] ?? id, status: 'open',
+      const model = (kind, id) => ({ kind, id: kind === 'topic' ? 'placement-canonical' : id,
+        title: kind === 'topic' ? 'placement-preview' : state.titles?.[id] ?? id, status: kind === 'workstream' ? 'progress' : 'open',
         createdAt: 1, updatedAt: 1, closure: null, resourceVersion: state.version ?? 1, editable: !!state.editable,
-        topics: [], tree: [], agentMessages: [] });
+        topics: [], tree: [], agentMessages: [], body: '', parents: [], children: [],
+        workstreams: [], focusedWorkstreams: [], topicTypes: [] });
       const environment = { id: 'tab-test', port: 7717, displayName: 'Tab test',
         mcpUrl: 'http://127.0.0.1:7717/mcp', source: 'sandbox' };
       const storageKey = 'working-memory.desktop.document-tabs:v1:tab-test';
@@ -53,14 +66,34 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           return model('workstream', id);
         },
         onDocumentChanges: listener => { state.change = listener; return () => {}; },
-        onResourceDragResult: () => () => {},
+        onResourceDragResult: listener => {
+          (state.dragListeners ??= []).push(listener);
+          state.dragResult = result => state.dragListeners.forEach(listener => listener(result));
+          return () => { state.dragListeners = state.dragListeners.filter(item => item !== listener); };
+        },
+        prepareResourceDrag: (uri, title) => new Promise(resolve => {
+          const finish = () => resolve({
+            filename: 'tab-context.md', filePath: '/tmp/tab-context.md', fileUrl: 'file:///tmp/tab-context.md',
+            workstreamSection: 'progress',
+          });
+          if (state.nativeReady) finish();
+          else (state.preparations ??= []).push(finish);
+        }),
+        startResourceDrag: prepared => { (state.nativeDrags ??= []).push(prepared); },
+        invokeAction: async (...args) => { (state.actions ??= []).push(args); },
+        reorderWorkstreams: async updates => { (state.reorders ??= []).push(updates); },
         getBackendHealth: async () => ({ state: 'healthy', endpoint: environment.mcpUrl,
           result: 'OK', observedAt: Date.now(), source: 'sandbox' }),
-        getActivePanel: async () => ({ tab: 'active', items: [], emptyMessage: 'No workstreams.' }),
+        getActivePanel: async () => (${JSON.stringify(panel)}),
         getChatHistory: async () => ({ journals: [] }),
         getAgentMessages: async () => [],
         listContainerApps: async () => [],
         getInstanceFeatures: async () => ({ hostTasks: false, search: false }),
+        suggestTopicPlacement: async () => ({ state: 'ready', sourceVersion: state.version ?? 1, limited: false,
+          suggestions: [{ parent: null, workstream: { id: 'destination', title: 'Destination', resourceVersion: 1 },
+            similarity: 0.8, confidence: { level: 'high', reason: 'Fixture evidence' },
+            excerpt: 'Fixture', evidence: 'workstream-semantic' }] }),
+        applyTopicPlacement: async input => { state.applied=input; },
         getInstanceAccess: async () => ({ requests: [], clients: [] }),
         startDocumentChanges: async () => {},
       };
@@ -136,6 +169,28 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             })()\`);
             await wait('document.querySelector(".document-tab.dragging, .document-tab.drop-before, .document-tab.drop-after") === null');
           }
+          async function queueWorkstreamTab() {
+            const count = await evaluate('window.__tabsTest.reorders?.length ?? 0');
+            await evaluate(\`(() => {
+              const source = window.__workstreamTabSource = [...document.querySelectorAll('.document-tab-select')].find(tab => tab.textContent.trim() === 'third');
+              window.__workstreamTabData = new DataTransfer();
+              source.dispatchEvent(new DragEvent('dragstart', {
+                bubbles:true,cancelable:true,dataTransfer:window.__workstreamTabData,
+              }));
+              window.__workstreamTabData.clearData();
+            })()\`);
+            await delay(20);
+            await evaluate(\`(() => {
+              const target = document.querySelector('.active-rail .section-queue .active-section-content');
+              target.dispatchEvent(new DragEvent('dragover', {bubbles:true,cancelable:true,dataTransfer:window.__workstreamTabData}));
+              target.dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:window.__workstreamTabData}));
+            })()\`);
+            await wait('window.__tabsTest.reorders?.length > ' + count);
+            assert.deepEqual(await evaluate('window.__tabsTest.reorders.at(-1).find(update => update.id === "third")'),
+              {id:'third',section:'queue',position:0});
+            await evaluate(\`window.__workstreamTabSource.dispatchEvent(new DragEvent('dragend', {bubbles:true}));
+              window.dispatchEvent(new PointerEvent('pointermove', {buttons:0}))\`);
+          }
           const url = 'http://127.0.0.1:${address.port}/tabs-test.html';
           await window.loadURL(url);
           await wait('document.querySelectorAll(".document-tab").length === 4');
@@ -160,6 +215,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             document.querySelector('.document-tabs').dispatchEvent(event);
             return event.defaultPrevented;
           })()\`), false);
+          await queueWorkstreamTab();
           await window.loadURL(url);
           await wait('document.querySelectorAll(".document-tab").length === 4');
           assert.deepEqual(await order(), ['second', 'first', 'third', 'fourth']);
@@ -242,6 +298,116 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           console.log('tabs-browser: reorder, cancellation, persistence, previews and close actions passed');
           console.log('tabs-browser: activation refresh, cached content and retry passed');
           console.log('tabs-browser: unsaved edits and inactive save completion passed');
+          await evaluate('localStorage.removeItem("working-memory.desktop.document-tabs:v1:tab-test")');
+          await window.loadURL(url);
+          await wait('document.querySelectorAll(".document-tab").length === 4');
+          assert.equal(await selected(), 'second');
+          await select('first');
+          await select('fourth');
+          assert.deepEqual(await order(), ['first', 'second', 'third', 'fourth']);
+          await evaluate(\`Array.from(document.querySelectorAll(".document-tab")).find(tab => tab.querySelector(".document-tab-select").textContent.trim() === "fourth").querySelector(".document-tab-close").click()\`);
+          await wait('document.querySelectorAll(".document-tab").length === 3');
+          assert.equal(await selected(), 'first', 'closing selected fourth returns to previously viewed first, not adjacent third');
+          await evaluate(\`Array.from(document.querySelectorAll(".document-tab")).find(tab => tab.querySelector(".document-tab-select").textContent.trim() === "second").querySelector(".document-tab-close").click()\`);
+          await wait('document.querySelectorAll(".document-tab").length === 2');
+          assert.equal(await selected(), 'first', 'closing an inactive tab does not change selection');
+          await evaluate('document.querySelector(".document-tab.selected .document-tab-close").click()');
+          await wait('document.querySelectorAll(".document-tab").length === 1');
+          assert.equal(await selected(), 'third', 'closed visited tabs are skipped');
+          console.log('tabs-browser: manual selection history and inactive close passed');
+          await evaluate('window.__tabsTest.editable=true; window.__tabsTest.open("topic","placement-preview")');
+          await wait('document.querySelector(".document-tab.preview .document-tab-select")?.textContent.trim()==="placement-preview"');
+          await wait('document.querySelectorAll(".active-rail [aria-current=page]").length === 3');
+          assert.equal(await evaluate('getComputedStyle(document.querySelector(".active-rail .active-row.selected")).backgroundColor'), 'rgb(248, 223, 128)');
+          window.webContents.debugger.attach('1.3');
+          await window.webContents.debugger.sendCommand('DOM.enable');
+          await window.webContents.debugger.sendCommand('CSS.enable');
+          const {root} = await window.webContents.debugger.sendCommand('DOM.getDocument');
+          for (const selector of [
+            '.active-rail .active-row.selected .active-open',
+            '.active-rail .focused-topic.selected .focused-topic-open',
+            '.active-rail .focused-topic.selected .focused-topic-pin',
+            '.active-rail .workstream-open',
+          ]) {
+            const {nodeId} = await window.webContents.debugger.sendCommand('DOM.querySelector', {nodeId:root.nodeId,selector});
+            assert(nodeId, 'Missing hover target: ' + selector);
+            await window.webContents.debugger.sendCommand('CSS.forcePseudoState', {nodeId,forcedPseudoClasses:['hover']});
+            assert.equal(await evaluate('getComputedStyle(document.querySelector(' + JSON.stringify(selector) + ')).backgroundColor'),
+              'rgba(0, 0, 0, 0)', 'Tree handles must not replace the row background on hover');
+            await window.webContents.debugger.sendCommand('CSS.forcePseudoState', {nodeId,forcedPseudoClasses:[]});
+          }
+          assert.equal(await evaluate('getComputedStyle(document.querySelector(".active-rail .active-row.selected")).backgroundColor'), 'rgb(248, 223, 128)');
+          window.webContents.debugger.detach();
+          await evaluate('document.querySelector("button[aria-label=Refresh]").click()');
+          await wait('!document.querySelector("button[aria-label=Apply]").disabled');
+          await evaluate('document.querySelector("button[aria-label=Apply]").click()');
+          await wait('window.__tabsTest.applied?.id==="placement-canonical"');
+          assert.equal(await evaluate('document.querySelector(".document-tab.selected").classList.contains("preview")'),false);
+          assert((await persisted()).tabs.some(tab=>tab.kind==="topic" && tab.identifier==="placement-canonical"));
+          await evaluate('window.__tabsTest.open("workstream","another-preview")');
+          await wait('document.querySelector(".document-tab.preview .document-tab-select")?.textContent.trim()==="another-preview"');
+          assert.equal(await evaluate('document.querySelectorAll(".active-rail [aria-current=page]").length'), 0);
+          assert((await order()).includes("placement-preview"));
+          console.log('tabs-browser: placement Apply promotes and persists the preview topic');
+          await select('placement-preview');
+          await wait('document.querySelectorAll(".active-rail [aria-current=page]").length === 3');
+          await evaluate('window.__tabsTest.nativeReady = true; window.__tabsTest.preparations.splice(0).forEach(finish => finish())');
+          await delay(50);
+          await drag('placement-preview', 'third', false);
+          assert.equal(await selected(), 'placement-preview');
+          assert((await evaluate('window.__tabsTest.nativeDrags.length')) > 0);
+          await evaluate(\`(() => {
+            const tab = [...document.querySelectorAll('.document-tab-select')].find(tab => tab.textContent.trim() === 'placement-preview');
+            const dataTransfer = window.__externalTabDrag = new DataTransfer();
+            window.__externalTabSource = tab;
+            tab.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }));
+            window.__exportedTabData = {
+              markdown: dataTransfer.getData('text/markdown'),
+              file: dataTransfer.getData('text/uri-list'),
+            };
+            dataTransfer.clearData();
+            const target = document.querySelector('.active-rail [data-workstream="first"]');
+            target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+          })()\`);
+          await wait('document.querySelector(".active-rail .topic-drop-target") !== null');
+          await evaluate(\`document.querySelector('.active-rail [data-workstream="first"]').dispatchEvent(new DragEvent('drop', {
+            bubbles: true, cancelable: true, dataTransfer: window.__externalTabDrag,
+          }))\`);
+          await wait('window.__tabsTest.actions?.some(args => args[1] === "workingMemory.topic.transfer")');
+          const transfer = await evaluate('window.__tabsTest.actions.find(args => args[1] === "workingMemory.topic.transfer")');
+          assert.equal(transfer[0], 'first');
+          assert.deepEqual(transfer[2], [{ topicId: 'placement-canonical', sourceWorkstream: '', move: true }]);
+          assert.equal(await evaluate('window.__exportedTabData.markdown'), '[placement-preview](http://127.0.0.1:7718/open/topic/placement-canonical)');
+          assert.equal(await evaluate('window.__exportedTabData.file'), 'file:///tmp/tab-context.md');
+          await evaluate('window.dispatchEvent(new PointerEvent("pointermove", {buttons:0}))');
+          await wait('document.querySelector(".document-tab.dragging") === null');
+          assert.equal(await evaluate(\`(() => {
+            const dataTransfer = new DataTransfer();
+            const event = new DragEvent('dragover', {bubbles:true, cancelable:true, dataTransfer});
+            document.querySelector('.document-tabs').dispatchEvent(event);
+            return event.defaultPrevented;
+          })()\`), false);
+          await queueWorkstreamTab();
+          await evaluate(\`(() => {
+            const source = document.querySelector('.document-tab-select');
+            const target = document.querySelector('.document-tabs');
+            const dataTransfer = new DataTransfer();
+            source.dispatchEvent(new DragEvent('dragstart', {bubbles:true,cancelable:true,dataTransfer}));
+            dataTransfer.clearData();
+            const bounds = target.getBoundingClientRect();
+            target.dispatchEvent(new DragEvent('dragover', {bubbles:true,cancelable:true,dataTransfer,clientX:bounds.right-2}));
+            target.dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer,clientX:bounds.right-2}));
+          })()\`);
+          await wait('document.querySelector(".document-tab.dragging") === null');
+          await evaluate(\`(() => {
+            document.querySelector('.document-tab-select').dispatchEvent(new DragEvent('dragstart', {
+              bubbles:true,cancelable:true,dataTransfer:new DataTransfer(),
+            }));
+            window.__tabsTest.dragResult({filePath:'/tmp/tab-context.md',status:'failed',error:'Synthetic native drag failure'});
+          })()\`);
+          await wait('document.querySelector(".live-update-error")?.textContent.includes("Synthetic native drag failure")');
+          assert.equal(await evaluate('document.querySelector(".document-tab.dragging")'), null);
+          console.log('tabs-browser: canonical active-topic highlight, native rail drops, exports, reorder and failure cleanup passed');
           window.destroy();
           app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });
@@ -252,6 +418,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       expect(stdout, stderr).toContain('tabs-browser: reorder, cancellation, persistence, previews and close actions passed');
       expect(stdout, stderr).toContain('tabs-browser: activation refresh, cached content and retry passed');
       expect(stdout, stderr).toContain('tabs-browser: unsaved edits and inactive save completion passed');
+      expect(stdout, stderr).toContain('tabs-browser: manual selection history and inactive close passed');
+      expect(stdout, stderr).toContain('tabs-browser: canonical active-topic highlight, native rail drops, exports, reorder and failure cleanup passed');
     } finally {
       await server.close();
       await rm(directory, { recursive: true, force: true });

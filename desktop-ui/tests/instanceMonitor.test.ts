@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import { ControlPlaneClient } from '../../shared/controlPlaneClient';
 import { DesktopInstanceIdentity } from '../src/main/instanceIdentity';
 import { HostTaskCredentialVault } from '../src/main/hostTaskBroker';
 import { sessionSnapshotSchema } from '../../control-plane/src/sessionPolicy';
+import { maintenancePath, MAX_MAINTENANCE_MS } from '../src/main/instanceMaintenance';
 
 const cleanup: Array<() => Promise<void> | void> = [];
 beforeAll(() => loadKinds());
@@ -207,6 +208,86 @@ it('does not confuse successful health probes, transient failures, environment c
   f.result({ bootId: randomUUID() });
   await f.monitor.tick();
   expect(f.monitor.incidents('http://127.0.0.1:7720/mcp')).toHaveLength(0);
+});
+
+function maintenance(f: ReturnType<typeof fixture>, changes: Record<string, unknown> = {}) {
+  const record = { id: randomUUID(), mcpUrl: 'http://127.0.0.1:7719/mcp',
+    startedAt: 1793733600000, expiresAt: 1793733660000, ...changes };
+  const directory = join(dirname(f.file), 'instance-maintenance');
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(maintenancePath(directory, record.mcpUrl), JSON.stringify(record));
+  return record;
+}
+
+it('suppresses external maintenance across desktop restarts and baselines only the verified completion boot', async () => {
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  await f.monitor.tick();
+  const record = maintenance(f);
+  f.result({ healthy: false });
+  for (let i = 0; i < 4; i++) { f.advance(); await f.monitor.tick(); }
+  expect(f.probe).toHaveBeenCalledOnce();
+  const restarted = new InstanceMonitor(f.options);
+  cleanup.push(() => restarted.stop());
+  await restarted.tick();
+  expect(restarted.incidents(url)).toHaveLength(0);
+  const expectedBoot = randomUUID();
+  maintenance(f, { ...record, completedAt: record.startedAt + 40000, bootId: expectedBoot });
+  f.result({ healthy: true, bootId: expectedBoot });
+  await restarted.tick();
+  expect(restarted.incidents(url)).toHaveLength(0);
+  f.result({ bootId: randomUUID() });
+  await restarted.tick();
+  expect(restarted.incidents(url).map(incident => incident.kind)).toEqual(['restart']);
+});
+
+it.each(['deadline', 'failed', 'invalid', 'other-instance'])('does not conceal an unresolved outage after %s maintenance', async scenario => {
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  await f.monitor.tick();
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  const record = maintenance(f, scenario === 'failed' ? { expiresAt: 1793733600000 }
+    : scenario === 'invalid' ? { expiresAt: 1793733600000 + MAX_MAINTENANCE_MS + 1 }
+      : scenario === 'other-instance' ? { mcpUrl: 'http://127.0.0.1:7720/mcp' } : {});
+  if (scenario === 'deadline') f.advance(record.expiresAt - record.startedAt);
+  f.result({ healthy: false });
+  for (let i = 0; i < 3; i++) await f.monitor.tick();
+  expect(f.monitor.incidents(url).map(incident => incident.kind)).toEqual(['outage']);
+});
+
+it('rejects a post-maintenance crash before the first completion probe and preserves existing outages', async () => {
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  await f.monitor.tick();
+  maintenance(f, { completedAt: 1793733600000, bootId: randomUUID() });
+  f.result({ bootId: randomUUID() });
+  await f.monitor.tick();
+  expect(f.monitor.incidents(url)).toHaveLength(1);
+  f.result({ healthy: false });
+  for (let i = 0; i < 3; i++) await f.monitor.tick();
+  const recoveredBoot = randomUUID();
+  maintenance(f, { completedAt: 1793733600000, bootId: recoveredBoot });
+  f.result({ healthy: true, bootId: recoveredBoot });
+  await f.monitor.tick();
+  expect(f.monitor.incidents(url)).toHaveLength(2);
+  expect(f.monitor.incidents(url).some(incident => incident.evidence.includes('restart after the outage'))).toBe(true);
+});
+
+it('discards an in-flight probe when external maintenance begins and expires in-app suspensions', async () => {
+  vi.useFakeTimers();
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  const f = fixture(), url = 'http://127.0.0.1:7719/mcp';
+  await f.monitor.tick();
+  f.probe.mockImplementationOnce(async () => {
+    maintenance(f);
+    return { healthy: true, bootId: randomUUID(), diagnostics: null, evidence: '' };
+  });
+  await f.monitor.tick();
+  expect(f.monitor.incidents(url)).toHaveLength(0);
+  f.advance(MAX_MAINTENANCE_MS);
+  const resume = f.monitor.suspend(url);
+  f.result({ bootId: randomUUID() });
+  await vi.advanceTimersByTimeAsync(MAX_MAINTENANCE_MS);
+  resume();
+  await f.monitor.tick();
+  expect(f.monitor.incidents(url).map(incident => incident.kind)).toEqual(['restart']);
 });
 
 it('deduplicates memory episodes and throttles event-loop incident reports at exact thresholds', async () => {

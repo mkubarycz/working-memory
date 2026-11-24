@@ -57,6 +57,13 @@ it('redacts known credentials and secret fields and bounds oversized diagnostics
   expect(report.body.length).toBeLessThan(40000);
 });
 
+it('captures the automatic placement switch in v4 feature reports', async () => {
+  const report = await createFeatureBugReport({
+    ...input, failure: { ...input.failure, features: { ...input.failure.features, topicPlacementAutoLoad: false } },
+  }, { ...dependencies, client: { topicCreate: vi.fn().mockResolvedValue({ id: 'report' }) } });
+  expect(report.body).toContain('"topicPlacementAutoLoad": false');
+});
+
 it('rejects invalid input and environment changes without creating a report or probing the provider', async () => {
   const topicCreate = vi.fn();
   await expect(createFeatureBugReport({ ...input, description: ' ' }, { ...dependencies, client: { topicCreate } })).rejects.toThrow();

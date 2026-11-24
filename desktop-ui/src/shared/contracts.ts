@@ -408,13 +408,16 @@ export type DocumentChangeEvent = { mcpUrl: string } & (
 export interface SharedTopicReceipt {
   id: string;  title: string; duplicate: boolean; statusUrl: string; submittedAt: string;
 }
-export interface FeedbackServer { id: string; name: string; address: string }
+export interface FeedbackServer { id: string; name: string; address: string; delivery?: 'public-inbox' }
+export interface PublicFeedbackSettings { enabled: boolean; destination: string | null }
 export interface FeedbackContext {
   desktop: { version: string; build: string };
   backend: { version: string };
 }
 export interface FeedbackPreparation { servers: FeedbackServer[]; context: FeedbackContext }
-export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt } | { status: 'choose'; servers: FeedbackServer[] };
+export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt }
+  | { status: 'queued'; requestId: string; uploadedAt: string; destination: string }
+  | { status: 'choose'; servers: FeedbackServer[] };
 
 export interface ChatBugReportInput {
   description: string;
@@ -436,6 +439,27 @@ export interface ChatBugReportInput {
   renderer: { conversationBlocked: boolean; localRequestActive: boolean };
 }
 export interface ChatBugReportDraft { id: string; title: string; body: string; sessionOnly?: boolean }
+
+export type SessionBugReportOperation =
+  | { kind: 'chat'; input: Omit<ChatBugReportInput, 'description'>; toolDetail?: unknown }
+  | { kind: 'search' | 'placement'; search: SearchBugReportInput['search'] }
+  | { kind: 'features'; failure: FeatureBugReportInput['failure'] }
+  | { kind: 'backend'; failure: BackendBugReportInput['failure'] };
+
+export interface SessionBugReportInput {
+  renderer: {
+    capturedAt: string;
+    screen: string;
+    authenticated: boolean;
+    backendHealth: BackendHealth | null;
+    aiHealth: { state: 'unknown' | 'healthy' | 'degraded' | 'unreachable'; result: string; observedAt: number };
+    features: import('../../../control-plane/src/instanceFeatures').InstanceFeatures;
+    openDocuments: number;
+    activeChatContexts: number;
+    errors: Record<string, string>;
+  };
+  operation: SessionBugReportOperation | null;
+}
 
 export interface BackendBugReportInput {
   description: string;
@@ -469,6 +493,7 @@ export interface SearchBugReportInput {
     context?: SearchContext;
     response: SearchResponse | null;
     trace: SearchTrace[];
+    supportingEvidence?: string;
     loading: boolean;
     error: string;
     notice: string;
@@ -487,15 +512,22 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   setEmbeddingAction(action: import('./embeddings').EmbeddingAction): Promise<import('./embeddings').EmbeddingDashboard>;
   setEmbeddingRetention(minutes: number | null): Promise<import('./embeddings').EmbeddingDashboard>;
   getRelatedTopics(id: string): Promise<import('../../../control-plane/src/embeddingContract').RelatedTopics>;
+  suggestTopicPlacement(id: string): Promise<import('../../../control-plane/src/topicPlacementContract').TopicPlacement>;
+  applyTopicPlacement(input: import('../../../control-plane/src/topicPlacementContract').TopicPlacementApply): Promise<void>;
   getContainerProvider(): Promise<'docker' | 'podman'>;
   setContainerProvider(provider: 'docker' | 'podman'): Promise<void>;
   getDesktopBuildInfo(): Promise<DesktopBuildInfo>;
   prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
   sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
+  getPublicFeedbackSettings(): Promise<PublicFeedbackSettings>;
+  savePublicFeedbackSettings(configuration: unknown): Promise<PublicFeedbackSettings>;
+  clearPublicFeedbackSettings(): Promise<PublicFeedbackSettings>;
   createChatBugReport(input: ChatBugReportInput): Promise<ChatBugReportDraft>;
   createSearchBugReport(input: SearchBugReportInput): Promise<ChatBugReportDraft>;
   createFeatureBugReport(input: FeatureBugReportInput): Promise<ChatBugReportDraft>;
   createBackendBugReport(input: BackendBugReportInput): Promise<ChatBugReportDraft>;
+  captureSessionBugReport(input: SessionBugReportInput): Promise<ChatBugReportDraft>;
+  describeSessionBugReport(id: string, description: string): Promise<ChatBugReportDraft>;
   startDocumentChanges(): Promise<void>;
   onDocumentChanges(listener: (event: DocumentChangeEvent) => void): () => void;
   listContainerApps(): Promise<ContainerAppDefinition[]>;

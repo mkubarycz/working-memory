@@ -54,6 +54,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             if(test.failReport)throw new Error('Report storage unavailable');
             return {id:'search-report',title:'Search bug: wrong confidence',body:'Captured search and result diagnostics'};
           },
+          getPublicFeedbackSettings:async()=>({enabled:false,destination:null}),
           prepareFeedback:async()=>({servers:[{id:'local',name:'Feedback',address:'127.0.0.1',port:7720}],
             context:{desktop:{version:'fixture',build:'fixture'},backend:{version:'fixture'}}}),
           sendFeedback:async(...args)=>{test.sends.push(args);return {status:'sent',receipt:{title:'Search report',duplicate:false}};},
@@ -402,13 +403,13 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.ok(await evaluate('document.querySelector("[data-search-result=topic-1]").textContent.includes("Similarity 0.28")'));
           assert.ok(await evaluate('document.querySelector("[data-search-result=topic-1]").textContent.includes("Term match")'));
           assert.equal(await evaluate('(()=>{const h=document.querySelector(".search-view header").getBoundingClientRect();const b=document.querySelector(".search-view header .report-bug-link").getBoundingClientRect();return Math.abs(h.right-b.right)<2;})()'),true);
-          await click('Report a bug');
+          await click('Bug Report');
           await wait('document.querySelector("dialog:modal")');
           await evaluate('window.__searchTest.changePrompt();window.__searchTest.failReport=true;(()=>{const t=document.querySelector("dialog textarea");t.value="Wrong confidence";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
-          await click('Create report');
+          await click('Send bug report');
           await wait('document.querySelector("dialog [role=alert]")?.textContent.includes("Report storage unavailable")');
           await evaluate('window.__searchTest.failReport=false');
-          await click('Create report');
+          await click('Send bug report');
           await wait('document.querySelector("details pre")');
           const captured=await evaluate('window.__searchTest.reports.at(-1)');
           assert.equal(captured.search.prompt,'040');
@@ -421,8 +422,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(captured.search.response.results[1].confidence.level,'low');
           assert.equal(captured.search.context.document.id,'topic-040');
           assert.equal(captured.description,'Wrong confidence');
-          assert.equal(await evaluate('window.__searchTest.sends.length'),0);
-          await click('Send');await wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Done")');
+          await wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Done")');
+          assert.equal(await evaluate('window.__searchTest.sends.length'),1);
           await click('Done');await wait('!document.querySelector("dialog")');
           await evaluate('window.__searchTest.extraResults=[{id:"second-high",kind:"Topic",title:"Another strong match",excerpt:"strong evidence",reason:"Related",score:0.8,similarity:0.8,confidence:{level:"high",reason:"Strong evidence"}}]');
           await submit();await wait('!document.querySelector("textarea").disabled');
@@ -432,7 +433,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('document.querySelectorAll("article blockquote").length'),0);
           await evaluate('window.__searchTest.holdSearch=true;window.__searchTest.releaseSearch=null');
           await submit();await wait('typeof window.__searchTest.releaseSearch==="function"');
-          await click('Report a bug');await wait('document.querySelector("dialog:modal")');
+          await click('Bug Report');await wait('document.querySelector("dialog:modal")');
           await click('Cancel');await wait('!document.querySelector("dialog")');
           assert.equal(await evaluate('document.querySelector("#document-search-prompt").disabled'),true);
           await evaluate('window.__searchTest.releaseSearch()');await wait('!document.querySelector("#document-search-prompt").disabled');

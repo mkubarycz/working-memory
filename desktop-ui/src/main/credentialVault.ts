@@ -41,7 +41,7 @@ export class DesktopCredentialVault {
 
   mode(): CredentialStorageMode {
     if (this.platform === 'darwin') return 'local';
-    return this.nativeStorage.isEncryptionAvailable() ? 'secure' : 'unavailable';
+    return nativeCredentialStorageAvailable(this.nativeStorage, this.platform) ? 'secure' : 'unavailable';
   }
 
   decrypt(config: StoredConfig): string {
@@ -62,7 +62,7 @@ export class DesktopCredentialVault {
     if (this.platform === 'darwin') {
       return { ...config, encryptedApiKey: this.encryptLocal(value) };
     }
-    if (!this.nativeStorage.isEncryptionAvailable()) {
+    if (!nativeCredentialStorageAvailable(this.nativeStorage, this.platform)) {
       throw new Error('OS-backed credential storage is unavailable on this system');
     }
     return {

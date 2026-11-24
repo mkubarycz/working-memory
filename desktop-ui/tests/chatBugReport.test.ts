@@ -84,10 +84,10 @@ it('captures submitting messages and partial evidence without claiming a remote 
 it('redacts known credentials and structured secret fields, and never turns diagnostic attachment references into uploads', () => {
   const report = buildChatBugReport({
     ...input, description: 'Failure with PRIVATE_MODEL_KEY and sk-thisIsASecret123',
-    run: { ...input.run, userText: 'Bearer abc123secret\npassword=private-value\nhttps://user:pass@host/path\nBasic c2VjcmV0\nwm-attachment:00000000-0000-4000-8000-000000000001',
+    run: { ...input.run, userText: 'Bearer abc123secret\npassword=private-value\nhttps://user:pass@host/path\nhttps://inbox.blob.core.windows.net/reports?sp=c&sig=PRIVATE_SAS_SIGNATURE&se=2099\nBasic c2VjcmV0\nwm-attachment:00000000-0000-4000-8000-000000000001',
       pendingConfirmation: { id: 'confirm', tool: 'test', arguments: { nested: { token: 'private-token' } } } },
   }, null, reportOptions);
-  for (const secret of ['PRIVATE_MODEL_KEY', 'sk-thisIsASecret123', 'abc123secret', 'private-value', 'user:pass@', 'c2VjcmV0', 'private-token']) {
+  for (const secret of ['PRIVATE_MODEL_KEY', 'sk-thisIsASecret123', 'abc123secret', 'private-value', 'user:pass@', 'c2VjcmV0', 'private-token', 'PRIVATE_SAS_SIGNATURE']) {
     expect(JSON.stringify(report)).not.toContain(secret);
   }
   expect(report.body).not.toContain('wm-attachment:');
@@ -107,6 +107,19 @@ it('redacts the entire URL authority userinfo, including literal @ characters in
   const longReport = buildChatBugReport({ ...input, run: { ...input.run, userText: longUrl } }, null, reportOptions);
   expect(longReport.body).not.toContain('PRIVATE_PREFIX');
   expect(longReport.body).toContain('https://[redacted]@example.test/path');
+});
+
+it.each(['&amp;', '&#38;', '&#x26;', '&#X26;', '&#00038;', '&#x0026;'])(
+  'redacts SAS credentials with %s delimiters across the report and title', delimiter => {
+  const url = `https://inbox.blob.core.windows.net/reports?sp=c${delimiter}sig=PRIVATE_SAS_SIGNATURE${delimiter}se=2099`;
+  const report = buildChatBugReport({
+    ...input, description: `Problem with ${url}`,
+    run: { ...input.run, userText: url, assistantText: url,
+      pendingConfirmation: { id: 'confirm', tool: 'test', arguments: { evidence: url } } },
+  }, null, reportOptions);
+  expect(JSON.stringify(report)).not.toContain('PRIVATE_SAS_SIGNATURE');
+  expect(report.title).toContain(`${delimiter}sig=[redacted]${delimiter}se=2099`);
+  expect(report.body).toContain(`${delimiter}sig=[redacted]${delimiter}se=2099`);
 });
 
 it('omits nested media, serialized media and incomplete serialized previews before truncation', () => {

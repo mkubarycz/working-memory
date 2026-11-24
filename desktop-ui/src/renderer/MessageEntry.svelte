@@ -144,7 +144,7 @@
           </div>
         </section>
         <div class="run-actions">
-          <button class="report-bug-link" onclick={() => onReportBug(run)}>Report a bug</button>
+          <button class="report-bug-link" onclick={() => onReportBug(run)}>Bug Report</button>
         </div>
         {#if isRetryableRun(run)}
           <div class="run-actions">

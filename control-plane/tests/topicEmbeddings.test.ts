@@ -1,12 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadKinds } from '../src/kinds/loader';
 import { openStore, type Store } from '../src/store';
-import { EMBEDDING_KINDS, EMBEDDING_MODEL, embeddingBatchSchema, matchConfidence } from '../src/embeddingContract';
-import { embeddingStats, nextEmbeddingWork, relatedTopics, semanticSearch, submitEmbeddings } from '../src/topicEmbeddings';
+import { EMBEDDING_KINDS, EMBEDDING_MODEL, embeddingBatchSchema, matchConfidence, relatedTopicsSchema } from '../src/embeddingContract';
+import { embeddingStats, nextEmbeddingWork, selectEmbeddingWork, relatedTopics, semanticSearch, submitEmbeddings, vector, similarity } from '../src/topicEmbeddings';
 import { getKind } from '../src/kinds/registry';
 import { ControlPlaneClient, startServer } from '../../tests/authenticatedFixture';
 import { InstanceFeatureStore } from '../src/instanceFeatures';
 import { instanceToolPermissions } from '../src/instanceAuthorization';
+import { topicPlacementSchema } from '../src/topicPlacementContract';
 
 const stores: Store[] = [];
 beforeAll(async () => { await loadKinds(); });
@@ -20,6 +21,148 @@ function submit(store: Store, direction = 0) {
 }
 
 describe('topic embeddings', () => {
+  it('selects oldest pending updates first and does not repeat completed or stale work', () => {
+    const store = fixture();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const first = store.createDocument({ kind: 'Topic', spec: { title: 'First saved' } });
+      vi.setSystemTime(new Date('2026-01-01T00:00:01Z'));
+      const second = store.createDocument({ kind: 'Topic', spec: { title: 'Second saved' } });
+      vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
+      const third = store.createDocument({ kind: 'Topic', spec: { title: 'Third saved' } });
+      store.updateDocument({ id: first.metadata.id, expectedResourceVersion: first.metadata.resourceVersion,
+        spec: { ...first.spec, body: 'Newer pending change in the same second.' } });
+      const stale = selectEmbeddingWork(store.db).work!;
+      expect(stale.id).toBe(second.metadata.id);
+      store.updateDocument({ id: second.metadata.id, expectedResourceVersion: second.metadata.resourceVersion,
+        spec: { ...second.spec, body: 'Changed while inference was running.' } });
+      expect(submitEmbeddings(store.db, { id: stale.id, sourceVersion: stale.sourceVersion, contentHash: stale.contentHash,
+        model: EMBEDDING_MODEL, vectors: stale.passages.map(() => unit()) })).toEqual({ accepted: false });
+      const processed: string[] = [];
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const { work, pending } = selectEmbeddingWork(store.db);
+        if (!work) {
+          expect(pending).toBe(false);
+          break;
+        }
+        processed.push(work.id);
+        expect(submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+          model: EMBEDDING_MODEL, vectors: work.passages.map(() => unit()) })).toEqual({ accepted: true });
+      }
+      expect(processed).toEqual([third.metadata.id, first.metadata.id, second.metadata.id]);
+      expect(selectEmbeddingWork(store.db)).toEqual({ work: null, pending: false });
+      expect(embeddingStats(store.db)).toMatchObject({ indexed: 3, pending: 0 });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps vector-byte totals permission-scoped through passage replacement and deletion', () => {
+    const store = fixture();
+    const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Long evidence', body: 'Evidence '.repeat(180) } });
+    const workstream = store.createDocument({ kind: 'Workstream', spec: { title: 'Workspace' } });
+    const passageCounts = new Map<string, number>();
+    for (;;) {
+      const work = nextEmbeddingWork(store.db).work;
+      if (!work) break;
+      passageCounts.set(work.id, work.passages.length);
+      submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+        model: EMBEDDING_MODEL, vectors: work.passages.map(() => unit()) });
+    }
+    const topicBytes = passageCounts.get(topic.metadata.id)! * 384 * 4;
+    const workstreamBytes = passageCounts.get(workstream.metadata.id)! * 384 * 4;
+    expect(embeddingStats(store.db, kind => kind === 'Topic')).toMatchObject({ total: 1, indexed: 1, vectorBytes: topicBytes });
+    expect(embeddingStats(store.db, kind => kind === 'Workstream')).toMatchObject({ total: 1, indexed: 1, vectorBytes: workstreamBytes });
+    store.updateDocument({ id: topic.metadata.id, expectedResourceVersion: topic.metadata.resourceVersion,
+      spec: { ...topic.spec, body: 'Replacement evidence' } });
+    expect(embeddingStats(store.db)).toMatchObject({ total: 2, indexed: 1, pending: 1, vectorBytes: topicBytes + workstreamBytes });
+    submit(store);
+    expect(embeddingStats(store.db)).toMatchObject({ indexed: 2, pending: 0, vectorBytes: 384 * 4 + workstreamBytes });
+    store.deleteDocument({ id: workstream.metadata.id });
+    expect(embeddingStats(store.db, kind => kind === 'Workstream')).toMatchObject({ total: 0, indexed: 0, vectorBytes: 0 });
+    expect(embeddingStats(store.db)).toMatchObject({ total: 1, indexed: 1, vectorBytes: 384 * 4 });
+  });
+
+  it.each([0, 1, 4])('decodes little-endian vectors at byte offset %s without changing cosine values', offset => {
+    const encoded = Buffer.alloc(384 * 4 + offset + 8);
+    const expected = Array.from({ length: 384 }, (_, index) => index % 2 ? -0.125 : 0.25);
+    expected.forEach((value, index) => encoded.writeFloatLE(value, offset + index * 4));
+    const decoded = vector(encoded.subarray(offset, offset + 384 * 4));
+    expect(Array.from(decoded)).toEqual(expected);
+    expect(similarity(unit(), decoded)).toBe(0.25);
+    expect(() => vector(encoded.subarray(offset, offset + 384 * 4 - 1))).toThrow('Stored embedding is invalid');
+  });
+
+  it.each(['title', 'body'] as const)('shows the shared case reference from the source %s across Related topics and placement MCP paths', async field => {
+    const store = fixture();
+    const caseId = '20261411192068475308';
+    const sourceWs = store.createDocument({ kind: 'Workstream', spec: { title: 'Email' } });
+    const targetWs = store.createDocument({ kind: 'Workstream', spec: { title: 'test' } });
+    const source = store.createDocument({ kind: 'Topic', spec: {
+      title: field === 'title' ? `Re: ${caseId}` : 'Email follow-up',
+      body: `${field === 'body' ? Array.from({ length: 4000 }, (_, index) => `distinctword${index}`).join(' ') : ''}\n${caseId} This is an email aoub tthis ticket number`,
+      workstreams: [sourceWs.metadata.id],
+    } });
+    const target = store.createDocument({ kind: 'Topic', spec: {
+      title: `jubberish topic ${caseId}`, body: 'The curious kettle collected raindrops in a thimble.',
+      workstreams: [targetWs.metadata.id],
+    } });
+    for (let index = 0; index < 41; index++) {
+      store.createDocument({ kind: 'Topic', spec: {
+        title: `jubberish topic ${String(index).padStart(20, '0')}`,
+        body: 'The blue beetle sent a postcard to a marmalade star.', workstreams: [targetWs.metadata.id],
+      } });
+    }
+    new InstanceFeatureStore(store.db).write({ search: true });
+    const server = await startServer({ port: 0, store });
+    const client = new ControlPlaneClient({ resolveUrl: () => `${server.url}/mcp` });
+    try {
+      store.db.prepare('INSERT INTO instance_embedding_settings VALUES (1, 1, 1, NULL)').run();
+      for (;;) {
+        const work = nextEmbeddingWork(store.db).work;
+        if (!work) break;
+        submitEmbeddings(store.db, { id: work.id, sourceVersion: work.sourceVersion, contentHash: work.contentHash,
+          model: EMBEDDING_MODEL, vectors: work.passages.map(() => unit(work.id === target.metadata.id ? 1 : 0)) });
+      }
+      const vocabularyCalls: (() => number)[] = [];
+      const prepare = store.db.prepare.bind(store.db);
+      const preparation = vi.spyOn(store.db, 'prepare').mockImplementation(sql => {
+        const statement = prepare(sql);
+        if (sql.includes('document_search_vocabulary')) {
+          const get = vi.spyOn(statement, 'get');
+          const all = vi.spyOn(statement, 'all');
+          vocabularyCalls.push(() => get.mock.calls.length + all.mock.calls.length);
+        }
+        return statement;
+      });
+      const placement = await client.topicSuggestPlacement(source.metadata.id);
+      expect(topicPlacementSchema.parse(placement).suggestions[0]).toMatchObject({
+        parent: { id: target.metadata.id }, workstream: { id: targetWs.metadata.id }, similarity: 0,
+        confidence: { level: 'high' },
+      });
+      const response = await client.callTool('wm-related-topics', { id: source.metadata.id, limit: 1 });
+      if (!response.ok) throw new Error(response.error);
+      expect(relatedTopicsSchema.parse(response.result)).toMatchObject({ state: 'ready', results: [{
+        id: target.metadata.id, title: target.spec.title, similarity: 0, evidence: 'keyword',
+        alreadyLinked: false, excerpt: expect.stringContaining(caseId),
+        confidence: { level: 'high', reason: expect.stringContaining('verifies the text match') },
+      }] });
+      expect(vocabularyCalls.reduce((sum, calls) => sum + calls(), 0)).toBeGreaterThan(0);
+      expect(vocabularyCalls.reduce((sum, calls) => sum + calls(), 0)).toBeLessThanOrEqual(4);
+      preparation.mockRestore();
+      expect(relatedTopics(store.db, { id: source.metadata.id, limit: 10 }, true).results[0].id).toBe(target.metadata.id);
+      expect(relatedTopics(store.db, { id: source.metadata.id, workstream: targetWs.metadata.id, limit: 1 }, true).results[0].id)
+        .toBe(target.metadata.id);
+      expect(relatedTopics(store.db, { id: source.metadata.id, workstream: sourceWs.metadata.id }, true).results).toEqual([]);
+      expect(relatedTopics(store.db, { id: source.metadata.id }, false).results).toEqual([]);
+      expect(store.getDocument({ id: source.metadata.id })).toEqual(source);
+      const pending = store.createDocument({ kind: 'Topic', spec: { title: `Re: ${caseId}` } });
+      expect(relatedTopics(store.db, { id: pending.metadata.id }, true)).toMatchObject({ state: 'pending', results: [] });
+      store.updateDocument({ id: target.metadata.id, expectedResourceVersion: target.metadata.resourceVersion,
+        spec: { ...target.spec, body: 'Updated case notes' } });
+      expect(relatedTopics(store.db, { id: source.metadata.id }, true).results.some(hit => hit.id === target.metadata.id)).toBe(false);
+    } finally { await client.dispose(); await server.close(); }
+  });
+
   it.each([
     ['BANK account', 'bank', true],
     ['Banking services', 'bank', false],
@@ -54,7 +197,24 @@ describe('topic embeddings', () => {
     expect(result.results.find(hit => hit.id === later.metadata.id)?.excerpt).toContain('bank notes');
     expect(semanticSearch(store.db, { ...input, limit: 1 }, [unit()], () => true).results[0].literalMatch).toBe(true);
     expect(semanticSearch(store.db, input, [unit()], () => false).results).toEqual([]);
-    expect(relatedTopics(store.db, { id: exact.metadata.id }, true).results[0].confidence?.level).toBe('medium');
+    expect(relatedTopics(store.db, { id: exact.metadata.id }, true).results[0].confidence?.reason).toContain('Verified lexical evidence');
+  });
+
+  it('keeps case-reference evidence inside kind permissions and current embedding versions', () => {
+    const store = fixture();
+    const query = 'Re: 20261411192068475308';
+    const topic = store.createDocument({ kind: 'Topic', spec: { title: 'Case 20261411192068475308' } });
+    submit(store, 1);
+    expect(semanticSearch(store.db, { queries: [query] }, [unit()], () => false).results).toEqual([]);
+    expect(semanticSearch(store.db, { queries: [query], kinds: ['Workstream'] }, [unit()], () => true).results).toEqual([]);
+    expect(semanticSearch(store.db, { queries: [query] }, [unit()], () => true).results)
+      .toMatchObject([{ id: topic.metadata.id, literalMatch: true, similarity: 0 }]);
+    store.updateDocument({ id: topic.metadata.id, expectedResourceVersion: topic.metadata.resourceVersion,
+      spec: { ...topic.spec, body: 'Changed case notes' } });
+    expect(semanticSearch(store.db, { queries: [query] }, [unit()], () => true).results).toEqual([]);
+    submit(store, 1);
+    store.deleteDocument({ id: topic.metadata.id });
+    expect(semanticSearch(store.db, { queries: [query] }, [unit()], () => true).results).toEqual([]);
   });
 
   it.each([
@@ -159,18 +319,21 @@ describe('topic embeddings', () => {
     expect(prepare).not.toHaveBeenCalled();
   });
 
-  it('excludes keyword-only matches and ranks only indexed semantic matches', () => {
+  it('includes verified lexical matches alongside meaning matches, but excludes unindexed sources', () => {
     const store = fixture();
     const source = store.createDocument({ kind: 'Topic', spec: { title: 'Network recovery' } });
     submit(store);
-    store.createDocument({ kind: 'Topic', spec: { title: 'Network recovery configuration' } });
+    const lexical = store.createDocument({ kind: 'Topic', spec: { title: 'Network recovery configuration' } });
     submit(store, 1);
     const match = store.createDocument({ kind: 'Topic', spec: { title: 'Restore connectivity' } });
     submit(store);
     store.createDocument({ kind: 'Topic', spec: { title: 'Network recovery not indexed' } });
     const result = relatedTopics(store.db, { id: source.metadata.id }, true);
-    expect(result.results).toHaveLength(1);
-    expect(result.results[0]).toMatchObject({ id: match.metadata.id, evidence: 'semantic', similarity: 1 });
+    expect(result.results).toHaveLength(2);
+    expect(result.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: match.metadata.id, evidence: 'semantic', similarity: 1 }),
+      expect.objectContaining({ id: lexical.metadata.id, evidence: 'keyword', similarity: 0 }),
+    ]));
   });
 
   it('rejects stale submissions, reuses metadata-only edits and removes deleted vectors', () => {
@@ -225,7 +388,7 @@ describe('topic embeddings', () => {
       parents: [source.metadata.id], workstreams: [stream.metadata.id] } });
     submit(store);
     expect(relatedTopics(store.db, { id: source.metadata.id, workstream: stream.metadata.id }, true).results[0])
-      .toMatchObject({ id: target.metadata.id, alreadyLinked: true, evidence: 'semantic' });
+      .toMatchObject({ id: target.metadata.id, alreadyLinked: true, evidence: 'both' });
     expect(relatedTopics(store.db, { id: source.metadata.id, workstream: 'missing' }, true).results).toEqual([]);
     const pending = store.createDocument({ kind: 'Topic', spec: { title: 'Network incident' } });
     expect(relatedTopics(store.db, { id: pending.metadata.id }, true))

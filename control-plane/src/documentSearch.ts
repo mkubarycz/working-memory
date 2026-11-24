@@ -127,6 +127,34 @@ type DocumentSearchInput = z.input<typeof documentSearchSchema>;
 type DocumentSearchResult = { count: number; results: DocumentSearchHit[] };
 
 export function registerDocumentSearchFunctions(db: DatabaseSync): void {
+  let lastPhrases = '';
+  let patterns: ReturnType<typeof literalPatterns> = [];
+  db.function('wm_literal_evidence', { deterministic: true }, (text, phrases, mode) => {
+    const raw = String(phrases);
+    if (raw !== lastPhrases) {
+      patterns = literalPatterns(JSON.parse(raw) as string[]);
+      lastPhrases = raw;
+    }
+    if (Number(mode) === 2) {
+      const authored = String(text);
+      let anchors: Set<string> | null = null;
+      // ASCII atom/pair membership is exact; other text and phrases retain the Unicode matcher.
+      if (/^[\x00-\x7F]*$/.test(authored)) {
+        const atoms = [...authored.toLowerCase().matchAll(atomPattern)];
+        anchors = new Set(atoms.map(atom => atom[0]));
+        for (let i = 1; i < atoms.length; i++) {
+          if (authored.slice(atoms[i - 1].index! + atoms[i - 1][0].length, atoms[i].index) === ' ') {
+            anchors.add(`${atoms[i - 1][0]} ${atoms[i][0]}`);
+          }
+        }
+      }
+      return JSON.stringify(patterns.filter(pattern => anchors && pattern.asciiAnchor !== null
+        ? anchors.has(pattern.asciiAnchor) : literalIndex(authored, pattern) >= 0).map(pattern => pattern.text));
+    }
+    if (Number(mode) !== 1) return patterns.some(pattern => literalIndex(String(text), pattern) >= 0) ? '1' : '';
+    const evidence = literalEvidence(String(text), patterns);
+    return evidence ? JSON.stringify(evidence) : '';
+  });
   db.function('wm_search_text', { deterministic: true }, (kind, id, rawSpec) => {
     const name = String(kind);
     const spec = JSON.parse(String(rawSpec)) as Record<string, unknown>;
@@ -146,6 +174,7 @@ export function ensureDocumentSearch(db: DatabaseSync): void {
         id UNINDEXED, kind UNINDEXED, title, body,
         tokenize = 'porter unicode61 remove_diacritics 2'
       );
+      CREATE VIRTUAL TABLE IF NOT EXISTS temp.document_search_vocabulary USING fts5vocab(main, document_search, row);
       CREATE TABLE IF NOT EXISTS document_search_dirty (row_id INTEGER PRIMARY KEY);
       DROP TRIGGER IF EXISTS document_search_insert;
       DROP TRIGGER IF EXISTS document_search_update;
@@ -206,6 +235,194 @@ export function refreshDocumentSearch(db: DatabaseSync): void {
     db.exec('ROLLBACK TO document_search_refresh; RELEASE document_search_refresh;');
     throw error;
   }
+}
+
+export interface LexicalEvidence { excerpt: string; terms: string[] }
+const atomPattern = /[\p{L}\p{N}\p{M}_]+(?:[-./:@+%?&#=]+[\p{L}\p{N}\p{M}_]+)*/gu;
+const ftsPhrase = (text: string) => `"${text.replaceAll('"', '""')}"`;
+export const HYBRID_CANDIDATE_LIMIT = 50;
+
+function literalPatterns(phrases: string[]): Array<{
+  text: string; asciiAnchor: string | null; expression: RegExp; chunks: Array<{ offset: number; length: number; expression: RegExp }> | null;
+}> {
+  return phrases.map(phrase => {
+    // Bound regex size for long source atoms; verify the entire literal separately.
+    const characters = Array.from(phrase);
+    const prefix = characters.slice(0, 256).join('');
+    const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const chunks: Array<{ offset: number; length: number; expression: RegExp }> | null = prefix.length < phrase.length ? [] : null;
+    let offset = 0;
+    if (chunks) {
+      for (let i = 0; i < characters.length; i += 256) {
+        const text = characters.slice(i, i + 256).join('');
+        chunks.push({ offset, length: text.length, expression: new RegExp(`^${escape(text)}$`, 'iu') });
+        offset += text.length;
+      }
+    }
+    const suffix = '(?![\\p{L}\\p{N}\\p{M}_])(?![-./:@+%?&#=]+[\\p{L}\\p{N}\\p{M}_])';
+    const expression = new RegExp(`(?<![\\p{L}\\p{N}\\p{M}_])(?<![\\p{L}\\p{N}\\p{M}_][-./:@+%?&#=]+)${escape(prefix)}${chunks ? '' : suffix}`, chunks ? 'giu' : 'iu');
+    const atoms = [...phrase.matchAll(atomPattern)];
+    const asciiAnchor = /^[\x00-\x7F]*$/.test(phrase) && atoms.length >= 1 && atoms.length <= 2
+      && atoms[0].index === 0 && atoms.at(-1)!.index! + atoms.at(-1)![0].length === phrase.length
+      && (atoms.length === 1 || phrase.slice(atoms[0][0].length, atoms[1].index) === ' ')
+      ? phrase.toLowerCase() : null;
+    return { text: phrase, asciiAnchor, expression, chunks };
+  });
+}
+
+const literalSuffix = /^(?:[\p{L}\p{N}\p{M}_]|[-./:@+%?&#=]+[\p{L}\p{N}\p{M}_])/u;
+function literalIndex(text: string, pattern: ReturnType<typeof literalPatterns>[number]): number {
+  pattern.expression.lastIndex = 0;
+  for (let match = pattern.expression.exec(text); match; match = pattern.expression.exec(text)) {
+    if (!pattern.chunks) return match.index;
+    const start = match.index;
+    const end = start + pattern.text.length;
+    if (pattern.chunks.every(chunk => chunk.expression.test(text.slice(start + chunk.offset, start + chunk.offset + chunk.length)))
+      && !literalSuffix.test(text.slice(end))) return match.index;
+  }
+  return -1;
+}
+
+function literalEvidence(text: string, patterns: ReturnType<typeof literalPatterns>): LexicalEvidence | undefined {
+  const terms: string[] = [];
+  let first = -1;
+  for (const pattern of patterns) {
+    const index = literalIndex(text, pattern);
+    if (index >= 0) {
+      terms.push(pattern.text);
+      if (first < 0) first = index;
+    }
+  }
+  if (first < 0) return;
+  let start = Math.max(0, first - 160);
+  if (start && /[\uDC00-\uDFFF]/.test(text[start])) start--;
+  return { terms, excerpt: Array.from(text.slice(start, start + 1200)).slice(0, 600).join('') };
+}
+
+export function lexicalCandidates(
+  db: DatabaseSync, eligible: ReadonlySet<string>,
+  input: { sourceId: string } | { queries: string[]; literalQuery?: string },
+): Map<string, LexicalEvidence> {
+  const matches = new Map<string, LexicalEvidence>();
+  if (!eligible.size) return matches;
+  refreshDocumentSearch(db);
+  const allowed = JSON.stringify([...eligible]);
+  const phrases = new Map<string, { text: string; weight: number; explicit: boolean }>();
+  const add = (text: string, weight: number, explicit = false) => {
+    const key = text.toLowerCase();
+    if (weight > 0 && (text.match(/[\p{L}\p{N}]+/gu) ?? []).length && weight > (phrases.get(key)?.weight ?? -Infinity)) {
+      phrases.set(key, { text, weight, explicit });
+    }
+  };
+  if ('sourceId' in input) {
+    const source = db.prepare(`SELECT s.rowid, s.title,
+      CASE WHEN r.kind = 'Topic' AND json_type(r.spec, '$.body') IS NOT 'text' THEN s.title ELSE s.body END AS body
+      FROM document_search s JOIN resources r ON r.rowid = s.rowid WHERE r.id = ?`).get(input.sourceId);
+    if (!source) throw new Error('The document search projection is unavailable. Retry after indexing.');
+    const weights = new Map<string, { text: string; weight: number }>();
+    const total = Number(db.prepare('SELECT count(*) AS count FROM document_search').get()?.count);
+    const normalize = (part: string) => part.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+    const prefixes = new Map<string, number | null>();
+    const words = new Map<string, number | null>();
+    for (const column of ['title', 'body'] as const) {
+      for (const atom of String(source[column]).matchAll(atomPattern)) {
+        for (const part of atom[0].match(/[\p{L}\p{N}\p{M}]+/gu) ?? []) words.set(normalize(part), null);
+      }
+    }
+    for (const row of db.prepare(`SELECT term, doc FROM json_each(?) requested
+      CROSS JOIN document_search_vocabulary ON term = requested.value`).all(JSON.stringify([...words.keys()]))) {
+      words.set(String(row.term), Number(row.doc));
+    }
+    for (const [word, exact] of words) {
+      if (exact !== null) continue;
+      const characters = Array.from(word);
+      prefixes.set(characters.slice(0, 3).join(''), null);
+      prefixes.set(characters[0], null);
+    }
+    for (const row of db.prepare(`SELECT value AS prefix,
+      (SELECT min(doc) FROM document_search_vocabulary
+        WHERE term >= requested.value AND term < requested.value || char(65535) AND doc > 1) AS frequency
+      FROM json_each(?) requested`).all(JSON.stringify([...prefixes.keys()]))) {
+      prefixes.set(String(row.prefix), row.frequency == null ? null : Number(row.frequency));
+    }
+    const rarity = (part: string) => {
+      // Stem-prefix frequency only proposes anchors; authored text establishes identity below.
+      const normalized = normalize(part);
+      const prefix = Array.from(normalized).slice(0, 3).join('');
+      const exact = words.get(normalized);
+      if (exact === 1) return -Infinity;
+      const estimate = exact ?? prefixes.get(prefix) ?? prefixes.get(Array.from(prefix)[0]) ?? total;
+      return Math.log((total + 1) / (estimate + 0.5));
+    };
+    for (const column of ['title', 'body'] as const) {
+      const atoms = [...String(source[column]).matchAll(atomPattern)];
+      for (const atom of atoms) {
+        const key = atom[0].toLowerCase();
+        const parts = (atom[0].match(/[\p{L}\p{N}\p{M}]+/gu) ?? []).map(rarity);
+        const weight = (parts.includes(-Infinity) ? -Infinity : Math.max(0, ...parts)) * (column === 'title' ? 3 : 1);
+        if (weight > (weights.get(key)?.weight ?? -Infinity)) weights.set(key, { text: atom[0], weight });
+      }
+    }
+    for (const atom of weights.values()) add(atom.text, atom.weight);
+    for (const column of ['title', 'body'] as const) {
+      const text = String(source[column]);
+      const atoms = [...text.matchAll(atomPattern)];
+      for (let i = 1; i < atoms.length; i++) {
+        const left = weights.get(atoms[i - 1][0].toLowerCase());
+        const right = weights.get(atoms[i][0].toLowerCase());
+        if (!left || !right) continue;
+        if (!text.slice(atoms[i - 1].index! + atoms[i - 1][0].length, atoms[i].index).trim()) {
+          add(`${left.text} ${right.text}`, Math.max(left.weight, right.weight) * 1.01);
+        }
+      }
+    }
+  } else {
+    for (const text of [input.literalQuery ?? '', ...input.queries]) {
+      add(text, 2, text === input.literalQuery);
+      for (const atom of text.matchAll(atomPattern)) add(atom[0], 1);
+    }
+  }
+  const authoredText = `document_search.title || char(10) ||
+    CASE WHEN r.kind = 'Topic' AND json_type(r.spec, '$.body') IS NOT 'text' THEN '' ELSE document_search.body END`;
+  const proposals = [...phrases.values()].sort((a, b) => b.weight - a.weight || a.text.localeCompare(b.text)).slice(0, 128);
+  if (!proposals.length) return matches;
+  const frequencies = new Map<string, number>();
+  for (const row of db.prepare(`SELECT wm_literal_evidence(${authoredText}, ?, 2) AS matched_terms
+    FROM document_search JOIN resources r ON r.rowid = document_search.rowid
+    WHERE document_search MATCH ? AND document_search.id IN (SELECT value FROM json_each(?))`)
+    .iterate(JSON.stringify(proposals.map(phrase => phrase.text)), proposals.map(phrase => ftsPhrase(phrase.text)).join(' OR '), allowed)) {
+    for (const term of JSON.parse(String(row.matched_terms)) as string[]) {
+      frequencies.set(term, (frequencies.get(term) ?? 0) + 1);
+    }
+  }
+  const candidates = proposals
+    .map(phrase => ({ ...phrase, frequency: frequencies.get(phrase.text) ?? 0 }))
+    .filter(phrase => phrase.frequency > 0 && (phrase.explicit || eligible.size < 3 || phrase.frequency / eligible.size < 0.5))
+    .sort((a, b) => a.frequency - b.frequency || b.weight - a.weight || a.text.localeCompare(b.text))
+    .slice(0, 12).map(phrase => phrase.text);
+  if (!candidates.length) return matches;
+  const rawTerms = JSON.stringify(candidates);
+  for (const row of db.prepare(`SELECT document_search.id, wm_literal_evidence(${authoredText}, ?, 1) AS evidence
+    FROM document_search JOIN resources r ON r.rowid = document_search.rowid WHERE document_search MATCH ?
+    AND document_search.id IN (SELECT value FROM json_each(?)) AND evidence != ''
+    ORDER BY bm25(document_search, 0, 0, 6, 1), document_search.id LIMIT ?`)
+    .iterate(rawTerms, candidates.map(ftsPhrase).join(' OR '), allowed, HYBRID_CANDIDATE_LIMIT)) {
+    matches.set(String(row.id), JSON.parse(String(row.evidence)) as LexicalEvidence);
+  }
+  return matches;
+}
+
+export function hybridRanks(semantic: ReadonlyMap<string, number>, lexical: ReadonlyMap<string, LexicalEvidence>): Map<string, number> {
+  const ranks = new Map<string, number>();
+  const meaning = [...semantic].filter(([, score]) => score >= 0.35)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, HYBRID_CANDIDATE_LIMIT);
+  meaning.forEach(([id], index) => ranks.set(id, 1 / (61 + index)));
+  [...lexical.keys()].forEach((id, index) => ranks.set(id, (ranks.get(id) ?? 0) + 1.25 / (61 + index)));
+  return ranks;
+}
+
+export function lexicalConfidence(evidence: LexicalEvidence): MatchConfidence {
+  return { level: 'high', reason: `Verified lexical evidence: ${evidence.terms.slice(0, 3).map(term => JSON.stringify(term)).join(', ')}. This verifies the text match, not its intended meaning.` };
 }
 
 export function searchDocuments(

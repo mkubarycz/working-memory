@@ -7,15 +7,20 @@ export interface InstanceFeatures {
   hostTasks: boolean;
   search: boolean;
   observability?: boolean;
+  topicPlacementAutoLoad?: boolean;
 }
 
 const legacyFeatureUpdateSchema = z.object({ hostTasks: z.boolean().optional(), search: z.boolean().optional() })
   .strict().refine(flags => flags.hostTasks !== undefined || flags.search !== undefined);
-export const instanceFeatureUpdateSchema = z.object({
+const featureUpdateV3Schema = z.object({
   hostTasks: z.boolean().optional(), search: z.boolean().optional(), observability: z.boolean().optional(),
-}).strict().refine(flags => Object.values(flags).some(value => value !== undefined));
+}).strict();
+export const instanceFeatureUpdateSchema = featureUpdateV3Schema.extend({
+  topicPlacementAutoLoad: z.boolean().optional(),
+}).refine(flags => Object.values(flags).some(value => value !== undefined));
 export const instanceFeaturesSchema = z.object({ hostTasks: z.boolean(), search: z.boolean().default(false) }).strict();
 export const instanceFeaturesV3Schema = instanceFeaturesSchema.extend({ observability: z.boolean().default(false) });
+export const instanceFeaturesV4Schema = instanceFeaturesV3Schema.extend({ topicPlacementAutoLoad: z.boolean() });
 export type InstanceFeatureUpdate = z.infer<typeof instanceFeatureUpdateSchema>;
 
 export class InstanceFeatureStore {
@@ -33,16 +38,18 @@ export class InstanceFeatureStore {
     const enabled = (feature: string) => this.db.prepare('SELECT enabled FROM instance_features WHERE feature=?').get(feature)?.enabled === 1;
     this.cachedObservability = enabled('observability');
     return { hostTasks: enabled('hostTasks'), search: enabled('search'),
+      topicPlacementAutoLoad: this.db.prepare('SELECT enabled FROM instance_features WHERE feature=?').get('topicPlacementAutoLoad')?.enabled !== 0,
       ...(this.cachedObservability ? { observability: true } : {}) };
   }
 
   write(input: unknown): InstanceFeatures {
     const flags = instanceFeatureUpdateSchema.parse(input);
     const current = this.read();
-    this.db.prepare(`INSERT INTO instance_features(feature,enabled) VALUES('hostTasks',?),('search',?),('observability',?)
+    this.db.prepare(`INSERT INTO instance_features(feature,enabled) VALUES('hostTasks',?),('search',?),('observability',?),('topicPlacementAutoLoad',?)
       ON CONFLICT(feature) DO UPDATE SET enabled=excluded.enabled`)
       .run(Number(flags.hostTasks ?? current.hostTasks), Number(flags.search ?? current.search),
-        Number(flags.observability ?? current.observability ?? false));
+        Number(flags.observability ?? current.observability ?? false),
+        Number(flags.topicPlacementAutoLoad ?? current.topicPlacementAutoLoad));
     return this.read();
   }
 
@@ -55,7 +62,9 @@ export class InstanceFeatureStore {
     const response = (flags: InstanceFeatures) => url.pathname === '/features/v1'
       ? { hostTasks: flags.hostTasks } : url.pathname === '/features/v2'
         ? { hostTasks: flags.hostTasks, search: flags.search }
-        : { ...flags, observability: flags.observability ?? false };
+        : url.pathname === '/features/v3'
+          ? { hostTasks: flags.hostTasks, search: flags.search, observability: flags.observability ?? false }
+          : { ...flags, observability: flags.observability ?? false };
     try {
       if (req.headers.origin || url.search) throw new IdentityError(400, 'Origins and query parameters are not allowed.');
       if (req.method === 'GET') { authorize(); send(200, response(this.read())); return; }
@@ -78,6 +87,7 @@ export class InstanceFeatureStore {
       authorize();
       if (url.pathname === '/features/v1') input = z.object({ hostTasks: z.boolean() }).strict().parse(input);
       else if (url.pathname === '/features/v2') input = legacyFeatureUpdateSchema.parse(input);
+      else if (url.pathname === '/features/v3') input = featureUpdateV3Schema.parse(input);
       const flags = instanceFeatureUpdateSchema.parse(input);
       beforeWrite?.(flags);
       send(200, response(this.write(flags)));

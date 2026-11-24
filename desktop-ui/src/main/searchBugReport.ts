@@ -3,7 +3,7 @@ import type { ChatBugReportDependencies } from './chatBugReport';
 import { bugReportSection, bugReportTitle } from './chatBugReport';
 import type { ChatBugReportDraft } from '../shared/contracts';
 
-const inputSchema = z.object({
+export const searchBugReportInputSchema = z.object({
   description: z.string().trim().min(1, 'Describe what went wrong.').max(8000),
   search: z.object({
     prompt: z.string().max(2000),
@@ -14,6 +14,7 @@ const inputSchema = z.object({
       partial: z.boolean().optional(), limited: z.boolean().optional(),
     }).nullable(),
     trace: z.array(z.unknown()).max(1000),
+    supportingEvidence: z.string().max(16000).optional(),
     loading: z.boolean(), error: z.string(), notice: z.string(), requestId: z.string().nullable(),
   }),
 });
@@ -23,13 +24,14 @@ export async function createSearchBugReport(
     client: Pick<ChatBugReportDependencies['client'], 'topicCreate'>;
   },
 ): Promise<ChatBugReportDraft> {
-  const { description, search } = inputSchema.parse(input);
+  const { description, search } = searchBugReportInputSchema.parse(input);
   dependencies.assertCurrent();
   const section = (heading: string, value: unknown, limit?: number) =>
     bugReportSection(heading, value, dependencies.secrets, limit);
   const { results = [], trace: responseTrace, ...response } = search.response ?? {};
   const body = '# Search bug report\n'
     + section('What was the bug?', description)
+    + (search.supportingEvidence ? section('Supporting evidence', search.supportingEvidence, 16000) : '')
     + section('Search request', { prompt: search.prompt, context: search.context })
     + section('Search state', { capturedAt: new Date(dependencies.now?.() ?? Date.now()).toISOString(),
       requestId: search.requestId, loading: search.loading, error: search.error, notice: search.notice })

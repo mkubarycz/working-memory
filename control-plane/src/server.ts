@@ -58,6 +58,8 @@ import { documentQuerySchema, documentSearchSchema, queryDocuments, searchDocume
 import { embeddingConfigureSchema, embeddingDashboardInputSchema, embeddingSubmitSchema, relatedTopicsInputSchema, semanticSearchSchema } from './embeddingContract.js';
 import { EmbeddingIndexer } from './embeddingIndexer.js';
 import { embeddingStats, nextEmbeddingWork, relatedTopics, submitEmbeddings } from './topicEmbeddings.js';
+import { topicPlacementInputSchema, topicPlacementApplySchema } from './topicPlacementContract.js';
+import { suggestTopicPlacement, applyTopicPlacement } from './topicPlacement.js';
 import type { PermissionSelection } from './instancePermissions.js';
 import { registerInstanceTaskTools } from './instanceToolsMcp.js';
 import { topicSpecWithDefaults, validateTopicReferences } from './kinds/topic/references.js';
@@ -439,20 +441,12 @@ export function createMcpServer(
       if (kind && !canReadKind(kind === 'Alert' ? 'AgentMessage' : kind)) {
         return asText({ count: 0, documents: [] });
       }
-      const bounded = !!kind && (query === undefined || query.trim() === '');
-      const paging = bounded ? { limit, offset } : {};
-      let documents = kind === 'Alert' || kind === 'AgentMessage'
-        ? store.listDocumentsByCreation({ kind, includeDeleted, ...paging }).map(({ document }) => document)
-        : store.listDocuments({ kind, includeDeleted, ...paging });
-      documents = documents.filter(doc => canReadKind(doc.kind));
-      if (query !== undefined && query.trim() !== '') {
-        // Basic placeholder search: case-insensitive substring over the whole
-        // envelope's JSON (covers ID, spec title/body, labels). Real FTS is a
-        // separate story and deliberately not built here.
-        const needle = query.toLowerCase();
-        documents = documents.filter((doc) => JSON.stringify(doc).toLowerCase().includes(needle));
-      }
-      if (!bounded) documents = documents.slice(offset, limit === undefined ? undefined : offset + limit);
+      const kinds = kind ? undefined : store.db.prepare('SELECT DISTINCT kind FROM resources').all()
+        .map(row => String(row.kind)).filter(canReadKind);
+      const input = { kind, kinds, includeDeleted, query, limit, offset };
+      const documents = kind === 'Alert' || kind === 'AgentMessage'
+        ? store.listDocumentsByCreation(input).map(({ document }) => document)
+        : store.listDocuments(input);
       return asText({ count: documents.length, documents });
     },
   );
@@ -499,12 +493,31 @@ export function createMcpServer(
   }, async input => features.read().search
     ? asText(submitEmbeddings(store.db, input)) : asError('Search is turned off.'));
   server.registerTool('wm-related-topics', {
-    title: 'Topics: Related Topics', description: 'Read semantic suggestions with evidence when Embeddings is enabled. Similarity is not an authored relationship.',
+    title: 'Topics: Related Topics', description: 'Read hybrid lexical/semantic suggestions from saved topic text when Embeddings is enabled. Ranking fuses bounded lexical and semantic lists; similarity remains measured cosine. Verified lexical confidence proves occurrence, not meaning or an authored relationship.',
     inputSchema: relatedTopicsInputSchema, annotations: { readOnlyHint: true },
   }, async input => {
     if (!features.read().search || !canReadKind('Topic')) return asError('Search is disabled or Topic read permission is unavailable.');
     if (!embeddings) return asError('Background indexing is unavailable.');
     return asText(relatedTopics(store.db, input, embeddings.isEnabled()));
+  });
+  server.registerTool('wm-topic-suggest-placement', {
+    title: 'Topic: Suggest Placement',
+    description: 'Suggest eligible parent/workstream pairs using hybrid lexical/semantic retrieval from saved topic text without changing authored relationships. Rank fusion is not cosine or calibrated confidence; similarity remains measured cosine. Disabled or pending indexing is explicit.',
+    inputSchema: topicPlacementInputSchema, annotations: { readOnlyHint: true },
+  }, async input => {
+    try {
+      return asText(suggestTopicPlacement(store, input, features.read().search && !!embeddings?.isEnabled()));
+    } catch (error) { return asError((error as Error).message); }
+  });
+  server.registerTool('wm-topic-apply-placement', {
+    title: 'Topic: Apply Placement',
+    description: 'Explicitly add a selected parent and workstream, preserving existing memberships, content, focus and lifecycle. Reject stale versions and cyclic parents.',
+    inputSchema: topicPlacementApplySchema,
+  }, async input => {
+    try {
+      if (!features.read().search) throw new Error('Search is turned off. Enable it in Settings > Features.');
+      return asText(applyTopicPlacement(store, input));
+    } catch (error) { return asError((error as Error).message); }
   });
   server.registerTool('wm-semantic-status', {
     title: 'Search: Semantic Readiness', description: 'Read whether Embeddings is enabled and all searchable WM documents are indexed.',
@@ -512,7 +525,7 @@ export function createMcpServer(
   }, async () => embeddings ? asText(embeddings.readiness(canReadKind)) : asError('Background indexing is unavailable.'));
   server.registerTool('wm-semantic-search', {
     title: 'Search: Semantic Documents',
-    description: 'Find WM documents by meaning using local embeddings. Requires Embeddings enabled and complete indexing. Similarity is not confidence or proof of a relationship. Config and connected-app data are excluded.',
+    description: 'Find WM documents using bounded lexical and local semantic candidate lists with rank fusion. Score is fusion relevance, not cosine or calibrated confidence; similarity is measured cosine. Lexical evidence verifies whole words, phrases or references of any format. Requires Embeddings enabled and complete indexing. Config and connected-app data are excluded.',
     inputSchema: semanticSearchSchema, annotations: { readOnlyHint: true },
   }, async (input, ctx) => {
     if (!features.read().search) return asError('Search is turned off.');
@@ -1065,7 +1078,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       }
       return;
     }
-    if (['/features/v1', '/features/v2', '/features/v3'].includes(url.pathname)) {
+    if (['/features/v1', '/features/v2', '/features/v3', '/features/v4'].includes(url.pathname)) {
       const principal = access.authenticate(token);
       const beforeWrite = (flags: import('./instanceFeatures.js').InstanceFeatureUpdate) => {
         if (flags.observability === undefined) return;
