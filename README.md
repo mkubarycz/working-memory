@@ -1755,7 +1755,7 @@ does not retry the upgrade, stop containers, change ports, or modify storage.
 Backend reports are previewed in the desktop session rather than written to
 the affected backend, so they can be sent while that backend is offline.
 Canceling discards the session report; explicit **Send bug report** submits through
-Feedback. LAN delivery provides a status link; public uploads provide a queued
+Feedback. Approved-device HTTPS uploads provide a queued
 confirmation only. No source topic is created or edited.
 
 Podman connection discovery and engine probes allow up to 30 seconds per command
@@ -1790,92 +1790,39 @@ append/finalization requests as well as model and tool calls.
 Not finding a run on this desktop does not prove a run on another computer has
 stopped. Reporting does not automatically fail, interrupt or unblock it.
 
-The optional report preview's **Send Feedback** dialog discovers Feedback servers
-on the local network. Review the desktop version/build timestamp and the selected
-backend's version (explicitly unknown for session snapshots), then click **Send**.
-One server is preselected; multiple servers require a choice. Preparing or choosing
-a server does not transmit topic content. After success, **Send** becomes **Done**.
-No receiver URL or secret is required. Discovery probes IPv4 LAN broadcasts and
-loopback using UDP 7721; topic content travels only over HTTPS on TCP 7720.
+Feedback uses an automatically configured HTTPS service; direct LAN discovery,
+self-signed receiving endpoints and manual sender SAS setup have been removed.
+In **Settings > Feedback**, select **Connect this computer**, give the one-time
+code to the owner, and wait for approval. The page shows pending, connected,
+expired and revoked states. **Disconnect and revoke** invalidates the device
+before forgetting its protected credentials. Unapproved uploads explicitly direct
+the user to approval; there is no fallback to another destination.
 
-The Feedback transport can copy a topic's title, Markdown and referenced
-screenshot images, but relationships,
-Agent Messages, history, and lifecycle status are not. The receiver creates an open
-topic in its **Inbox** workstream and remaps image IDs into that environment.
-After delivery, the source topic receives an appended, dated **Sent as feedback
-to Working Memory platform** note with a **Click to check status** link. Its
-authored content and lifecycle status are otherwise preserved. The note uses
-the latest source body and a resource-version guard, so concurrent edits are
-not overwritten. Keep the dialog open when retrying an uncertain delivery:
-retries use the same request ID and do not create duplicate topics. If delivery
-succeeds but the note cannot save, the error says so; clicking **Send** again
-retries the note without reposting the feedback.
-An uncertain public-inbox upload retains its encrypted bytes and request ID for
-retry while the dialog remains open, including after five minutes. Prepared
-snapshots with no upload attempt still expire after five minutes.
-The incoming copy includes a **Feedback environment** section with the desktop
-version, exact build timestamp, and version reported by the selected backend's
-`wm-ping` response, not the bundled image or update-channel target. These details
-are captured with the topic snapshot and remain stable across retries.
+The service URL ships with the desktop. It supplies the existing receiver's RSA
+public key, never Azure credentials. Reports are encrypted with AES-256-GCM and
+RSA-OAEP-SHA256 before upload. Device credentials are high entropy, encrypted in
+the desktop vault and hashed server-side. The service checks revocation and
+atomic shared quotas on each upload. Owner approval/revocation uses an Azure-login
+CLI, not an unauthenticated public approval endpoint. See
+[Feedback service deployment and administration](feedback-service/README.md).
 
-The receiver is an independent **Feedback** container/repository, registered
-using a ContainerClaim rather than application-specific code. Its primary
-HTTP status UI is loopback-only on 7722. Generic Docker runtime `additionalPorts`
-publish the receiving TCP port and discovery UDP port with explicit
-`hostIp: "0.0.0.0"`; omitted host IPs default to loopback. The existing primary
-UI/health port remains loopback-only for all apps.
+Review the report and included desktop/backend versions before sending. Copies
+include title, Markdown and referenced screenshots, not relationships, Agent
+Messages, history or lifecycle status. Sending preserves the authored source
+body; no fabricated tracking receipt or note is appended. Upload confirmation
+means **queued**, not imported or resolved. Keep the dialog open after an uncertain
+upload: retries retain identical encrypted bytes and request ID, even beyond five
+minutes. Prepared snapshots without an upload attempt expire after five minutes.
 
-#### Public write-only inbox
-
-**Settings > Feedback** accepts a sender configuration for a private Azure Blob
-container exposed over public HTTPS. It contains only a create-only container
-SAS (`c`, HTTPS-only, with an expiry) and the receiver's RSA public key. The desktop
-encrypts the complete report with AES-256-GCM and wraps its key with
-RSA-OAEP-SHA256 before upload. The sender credential cannot read, list, overwrite
-or delete blobs; its configuration is encrypted in the desktop credential vault.
-Configured public delivery replaces LAN discovery, so the receiving computer
-does not need an inbound connection from the sending network.
-
-Uploads say **queued**, not imported or resolved, and do not invent a topic/status
-receipt. The existing Feedback container polls every 15 seconds using a separate
-read/delete/list credential, decrypts and validates each report, imports through
-its existing Inbox/User Story path, and deletes the blob only after a successful
-import. Failed imports remain queued; retries reuse request/content identity.
-Its loopback `/health` includes polling/error state without credentials.
-
-Build/start the updated Feedback receiver first, then provision with:
-
-```bash
-node scripts/setup-public-feedback.mjs --resource-group <existing-group> \
-  --account <unique-storage-account> --location eastus2 \
-  --sender-output <private-path-outside-repository>/feedback-sender.json
-```
-
-This creates a Standard LRS account and private `reports` container in the selected
-Azure subscription, saves receiver configuration in its existing `/data` volume,
-and creates a private sender setup file. Azure storage/transaction charges apply.
-Restart Feedback to activate polling, and paste the sender setup into
-**Settings > Feedback** on each sending computer. Credentials expire after one
-year; renew them before expiry using a new sender-output path and redistribute
-the configuration. Back up `/data/public-inbox/private.pem`: TLS certificate
-renewal does not rotate this separate inbox key. Losing it makes queued reports
-undecryptable. Never expose the LAN TCP/UDP receiving ports publicly.
-
-The receiver persists its self-signed certificate in its own named volume.
-Only the feedback request accepts that self-signed certificate, and it verifies
-the fingerprint advertised in discovery before transmitting content. Normal
-TLS verification elsewhere is unchanged. **Trusted LAN only:** discovery and
-senders are unauthenticated, so encryption does not establish a trusted server
-identity or prevent malicious LAN impersonation. Do not expose it to the
-internet or transfer work content without authorization.
-
-The Feedback app lists previously submitted items with their live titles and
-statuses, and topic links open in a new tab. It uses the receipt marker already
-persisted on imported topics rather than duplicating topic data or owning a
-second database. Monitoring links remain on the receiver's HTTPS API and show
-the latest status, refreshing every 15 seconds. Browsers may require trusting
-the receiver's self-signed certificate when opening these links externally;
-the sender's scoped certificate acceptance does not change browser trust.
+The independent Feedback receiver polls the private inbox every 15 seconds,
+decrypts and validates reports, imports them as User Story in Inbox, remaps image
+IDs, and deletes blobs only after successful import. Failures remain queued with
+explicit polling/error status on its loopback-only management port 7722. Its local
+app lists imported submissions and live statuses; no cross-network status URL is
+fabricated. Preserve and privately back up the existing `/data/public-inbox`
+receiver key/configuration: losing the private key makes queued reports
+undecryptable. The receiver has no direct receiving/discovery listeners or LAN
+port mappings. Old distributed SAS must be revoked during migration.
 
 Read-only MCP tools run directly, while app tools not explicitly annotated
 read-only require confirmation. Command journals record the provider-safe

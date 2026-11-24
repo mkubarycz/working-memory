@@ -91,20 +91,19 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           },
           getPublicFeedbackSettings:async()=>{
             if(test.routeError) throw new Error('Feedback settings unavailable');
-            return {enabled:!!test.publicDelivery,destination:test.publicDelivery?'https://fixture.blob.core.windows.net/feedback':null};
+            return {enabled:true,state:'connected',destination:'https://feedback.example/api'};
           },
           prepareFeedback:async(id,requestId)=>{
             test.preparations.push({id,requestId});
-            if(test.discoveryUnavailable) throw new Error('No Feedback servers found.');
-            return {servers:[{id:'feedback',name:'Local feedback',address:'127.0.0.1',port:7720}],
+            if(test.discoveryUnavailable) throw new Error('Feedback service unavailable.');
+            return {destination:'feedback.example',
               context:{desktop:{version:'1.11.0-dev',build:'fixture'},backend:{version:'fixture'}}};
           },
-          sendFeedback:async(id,requestId,serverId)=>{
-            test.sends.push({id,requestId,serverId});
+          sendFeedback:async(id,requestId)=>{
+            test.sends.push({id,requestId});
             if(!test.deliveries.includes(requestId)) test.deliveries.push(requestId);
-            if(test.fail) throw new Error('Feedback was delivered, but its tracking note could not be saved. Click Send again to retry saving the note without resending.');
-            if(test.queue) return {status:'queued',requestId,uploadedAt:new Date().toISOString(),destination:'test.blob.core.windows.net'};
-            return {status:'sent',receipt:{statusUrl:'http://localhost:7722/status/report-1',topicId:'received',title:'Stalled',duplicate:false}};
+            if(test.fail) throw new Error('Feedback upload could not be confirmed. Retry the same report.');
+            return {status:'queued',requestId,uploadedAt:new Date().toISOString(),destination:'feedback.example'};
           },
         };
         const noop=()=>{};
@@ -192,10 +191,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert(await evaluate('document.body.innerText.includes("What was the bug?")'));
           assert.equal(await evaluate('document.querySelector("dialog .report-details").open'), false);
           assert.equal(await evaluate('document.querySelectorAll("dialog > p").length'), 0);
-          assert.equal(await evaluate('document.querySelector("dialog").innerText.includes("Trusted LAN only.")'), true);
-          await wait('document.querySelector("dialog .warning").innerText.includes("Public delivery is disabled")');
-          assert(await evaluate('document.querySelector("dialog").innerText.includes("Trusted LAN only.")'));
-          assert(await evaluate('document.querySelector("dialog").innerText.includes("servers and senders are not authenticated.")'));
+          await wait('document.querySelector("dialog .warning").innerText.includes("reports are uploaded to Azure")');
+          assert(await evaluate('document.querySelector("dialog").innerText.includes("no local-network fallback")'));
           assert.equal(await evaluate(button('Send bug report')+'.disabled'),true);
           await evaluate('window.__reportTest.remountSurface()');
           await wait('window.__reportTest.surfaceMounted');
@@ -218,7 +215,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('window.__reportTest.captures[0].run.status'),'running');
           assert.equal(await evaluate('window.__reportTest.captures[0].renderer.conversationBlocked'),true);
           assert.equal(await evaluate('window.__reportTest.captures[0].renderer.localRequestActive'),false);
-          await wait('document.querySelector("[role=alert]")?.textContent.includes("tracking note could not be saved")');
+          await wait('document.querySelector("[role=alert]")?.textContent.includes("upload could not be confirmed")');
           await evaluate('window.__reportTest.fail=false;window.__reportTest.discoveryUnavailable=true');
           await click('Send bug report');
           await wait(button('Done'));
@@ -226,7 +223,6 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(sends.length,2);
           assert.equal(sends[0].requestId,sends[1].requestId);
           assert.equal(sends[0].id,'report-1');
-          assert.equal(sends[0].serverId,sends[1].serverId);
           assert.equal(await evaluate('window.__reportTest.captures.length'),1);
           assert.equal(await evaluate('window.__reportTest.preparations.length'),1);
           assert.equal(await evaluate('window.__reportTest.deliveries.length'),1);
@@ -300,10 +296,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate('window.__reportTest.routeError=false');
           await click('Retry delivery settings');
           await wait('document.querySelector("dialog .warning").innerText.includes("reports are uploaded to Azure")');
-          assert(await evaluate('document.querySelector("dialog .warning").innerText.includes("https://fixture.blob.core.windows.net/feedback")'));
+          assert(await evaluate('document.querySelector("dialog .warning").innerText.includes("https://feedback.example/api")'));
           assert(await evaluate('document.querySelector("dialog .warning").innerText.includes("encrypted for the configured recipient")'));
           await click('Send bug report');
-          await wait('document.querySelector("[role=alert]")?.textContent.includes("tracking note could not be saved")');
+          await wait('document.querySelector("[role=alert]")?.textContent.includes("upload could not be confirmed")');
           await evaluate('window.__reportTest.fail=false;window.__reportTest.discoveryUnavailable=true');
           await click('Preview report');
           await wait('document.querySelector("#share-topic-title")');
@@ -316,7 +312,6 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('window.__reportTest.deliveries.length'),deliveriesBeforeRetry+1);
           const retries=await evaluate('window.__reportTest.sends.slice(-2)');
           assert.equal(retries[0].requestId,retries[1].requestId);
-          assert.equal(retries[0].serverId,retries[1].serverId);
           await click('Done');
           await wait('!document.querySelector("dialog")');
           console.log('CHAT_REPORT_UI_OK'); win.destroy(); app.exit(0);

@@ -63,9 +63,9 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           state.reports.push(input);
           return { id: 'report', title: 'Placement bug report', body: 'Supporting evidence: ' + input.search.supportingEvidence };
         },
-        async getPublicFeedbackSettings() { return { enabled: false, destination: null }; },
-        async prepareFeedback() { return { servers: [{ id: 'feedback', name: 'Feedback', address: '127.0.0.1', port: 7720 }] }; },
-        async sendFeedback() { return { status: 'sent', receipt: { title: 'Placement bug report', statusUrl: 'https://localhost/report' } }; }
+        async getPublicFeedbackSettings() { return { enabled: true, state: 'connected', destination: 'https://feedback.example/api' }; },
+        async prepareFeedback() { return { destination: 'feedback.example', context: { desktop: { version: 'fixture', build: 'fixture' }, backend: { version: 'fixture' } } }; },
+        async sendFeedback(_id, requestId) { return { status: 'queued', requestId, destination: 'feedback.example', uploadedAt: new Date().toISOString() }; }
       };
     </script>
     {#if state.fullView}
@@ -200,7 +200,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             assert.ok(await evaluate('document.querySelector("dialog .supporting-evidence").innerText.includes("Recommended parent")'));
             assert.equal(await evaluate('document.querySelector("dialog .report-details").open'), false);
             assert.equal(await evaluate('document.querySelectorAll("dialog > p").length'), 0);
-            assert.equal(await evaluate('document.querySelector("dialog .warning").innerText.includes("servers and senders are not authenticated")'), true);
+            assert.equal(await evaluate('document.querySelector("dialog .warning").innerText.includes("no local-network fallback")'), true);
             await evaluate('(()=>{const t=document.querySelector("dialog textarea");t.value="Wrong parent recommendation";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
             await evaluate(button('Send bug report') + '.click()');
             await wait('window.__placementTest.reports.length === 1 && document.querySelector("dialog [role=status]")');
@@ -276,7 +276,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             await wait('window.innerWidth >= 720');
             await evaluate(button('Bug Report') + '.click()');
             await wait('document.querySelector("dialog:modal .supporting-evidence")');
-            assert.equal(await evaluate('document.querySelector("dialog:modal .warning").innerText.includes("Trusted LAN only.")'), true);
+            assert.equal(await evaluate('document.querySelector("dialog:modal .warning").innerText.includes("no local-network fallback")'), true);
             await evaluate('(()=>{const t=document.querySelector("dialog textarea");t.value="Inline placement evidence";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
             await evaluate(button('Send bug report') + '.click()');
             await wait('window.__placementTest.reports.length === 2 && document.querySelector("dialog [role=status]")');
@@ -315,7 +315,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             await wait('window.innerWidth >= 720');
             await evaluate(button('Bug Report') + '.click()');
             await wait('document.querySelector("dialog:not(.placement-dialog):modal .supporting-evidence")');
-            assert.equal(await evaluate('document.querySelector("dialog:not(.placement-dialog) .warning").innerText.includes("Trusted LAN only.")'), true);
+            assert.equal(await evaluate('document.querySelector("dialog:not(.placement-dialog) .warning").innerText.includes("no local-network fallback")'), true);
             await evaluate('(()=>{const t=document.querySelector("dialog:not(.placement-dialog) textarea");t.value="Popup placement evidence";t.dispatchEvent(new Event("input",{bubbles:true}));})()');
             await evaluate(button('Send bug report') + '.click()');
             await wait('window.__placementTest.reports.length === 3 && document.querySelector("dialog:not(.placement-dialog) [role=status]")');

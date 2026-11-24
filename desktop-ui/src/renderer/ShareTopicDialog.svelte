@@ -1,131 +1,74 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { TopicVM } from './documents/types';
-  import type { FeedbackContext, FeedbackPreparation, FeedbackServer } from '../shared/contracts';
-
-  let { topic, beforeShare, onClose, preview, sessionOnly = false, requestId = crypto.randomUUID(),
-    preparation = null, preferredServerId = '' }: {
+  import type { FeedbackPreparation } from '../shared/contracts';
+  let { topic, beforeShare, onClose, preview, sessionOnly = false, requestId = crypto.randomUUID(), preparation = null }: {
     topic: Pick<TopicVM, 'id' | 'title'>; beforeShare: () => Promise<void>; onClose: () => void; preview?: string;
-    sessionOnly?: boolean;
-    requestId?: string;
-    preparation?: FeedbackPreparation | null;
-    preferredServerId?: string;
+    sessionOnly?: boolean; requestId?: string; preparation?: FeedbackPreparation | null;
   } = $props();
   let dialog: HTMLDialogElement;
-  let servers = $state<FeedbackServer[]>([]);
-  let context = $state<FeedbackContext | null>(null);
-  let selectedServerId = $state('');
-  let phase = $state<'preparing' | 'sending' | null>(null);
-  const busy = $derived(phase !== null);
+  let prepared = $state<FeedbackPreparation | null>(null);
+  let busy = $state(false);
   let error = $state('');
   let message = $state('');
   let sent = $state(false);
-  let queued = $state(false);
-  let receiptUrl = $state('');
-
   onMount(() => {
     dialog.showModal();
-    if (preparation) {
-      servers = preparation.servers;
-      context = preparation.context;
-      selectedServerId = servers.some(server => server.id === preferredServerId) ? preferredServerId
-        : servers.length === 1 ? servers[0].id : '';
-    } else void prepare();
+    if (preparation) prepared = preparation;
+    else void prepare();
   });
-
   async function prepare(): Promise<void> {
-    if (!topic.id || busy || sent) return;
-    const previousServerId = selectedServerId;
-    selectedServerId = '';
-    servers = [];
-    phase = 'preparing';
+    busy = true;
     error = '';
     try {
       await beforeShare();
-      const result = await window.workingMemory.prepareFeedback(topic.id, requestId);
-      servers = result.servers;
-      context = result.context;
-      selectedServerId = servers.length === 1 ? servers[0].id
-        : servers.some(server => server.id === previousServerId) ? previousServerId : '';
-    } catch (reason) {
-      error = reason instanceof Error ? reason.message : String(reason);
-    } finally { phase = null; }
+      prepared = await window.workingMemory.prepareFeedback(topic.id, requestId);
+    } catch (reason) { error = reason instanceof Error ? reason.message : String(reason); }
+    finally { busy = false; }
   }
-
   async function send(): Promise<void> {
-    if (!topic.id || busy || sent || !selectedServerId) return;
-    phase = 'sending';
+    if (busy || sent || !prepared) return;
+    busy = true;
     error = '';
-    message = '';
     try {
-      const result = await window.workingMemory.sendFeedback(topic.id, requestId, selectedServerId);
-      if (result.status === 'choose') { servers = result.servers; selectedServerId = ''; return; }
+      const result = await window.workingMemory.sendFeedback(topic.id, requestId);
       sent = true;
-      if (result.status === 'queued') {
-        queued = true;
-        message = `Report uploaded to ${result.destination}. Queued for the Feedback receiver; import and topic status are not confirmed.`;
-        return;
-      }
-      receiptUrl = result.receipt.statusUrl;
-      message = `${result.receipt.duplicate ? 'Already received' : 'Feedback sent'} to Inbox: ${result.receipt.title}`;
-    } catch (reason) {
-      error = reason instanceof Error ? reason.message : String(reason);
-    } finally { phase = null; }
+      message = `Report uploaded to ${result.destination}. Queued for the Feedback receiver; import and topic status are not confirmed.`;
+    } catch (reason) { error = reason instanceof Error ? reason.message : String(reason); }
+    finally { busy = false; }
   }
 </script>
 
-<dialog bind:this={dialog} aria-labelledby="share-topic-title" oncancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
+<dialog bind:this={dialog} aria-labelledby="share-topic-title" oncancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
   <h2 id="share-topic-title">Send Feedback</h2>
   <p><strong>{topic.title}</strong></p>
-  {#if preview}
-    <details><summary>Review the report before sharing</summary><pre>{preview}</pre></details>
-  {/if}
-  <p>{phase === 'preparing' ? 'Preparing screenshots and discovering Feedback servers...'
-    : phase === 'sending' ? 'Sending feedback over encrypted HTTPS...'
-    : queued ? 'The encrypted report is queued in the public inbox. No tracking link is available.'
-    : sessionOnly ? sent ? 'The report was delivered. No topic was created on the affected backend.' : 'Click Send to publish this report. Nothing is written to the affected backend.'
-    : sent ? 'A copy was sent and a dated tracking link was added to the original topic.'
-    : 'Click Send to send a copy. A dated tracking link will be added to the original topic after delivery.'}</p>
-  {#if context}
+  {#if preview}<details><summary>Review the report before sharing</summary><pre>{preview}</pre></details>{/if}
+  <p>{busy ? 'Preparing or uploading encrypted feedback...' : 'A copy is encrypted for the receiver and queued over HTTPS. The original topic is not changed.'}</p>
+  {#if prepared}
     <dl aria-label="Included version details">
-      <dt>Working Memory</dt><dd>{context.desktop.version}</dd>
-      <dt>Desktop build</dt><dd>{context.desktop.build}</dd>
-      <dt>{sessionOnly ? 'Backend version before operation' : 'Selected backend version'}</dt><dd>{context.backend.version}</dd>
+      <dt>Working Memory</dt><dd>{prepared.context.desktop.version}</dd>
+      <dt>Desktop build</dt><dd>{prepared.context.desktop.build}</dd>
+      <dt>{sessionOnly ? 'Backend version before operation' : 'Selected backend version'}</dt><dd>{prepared.context.backend.version}</dd>
     </dl>
   {/if}
-  {#if !sent && servers.length > 1}
-    <p>Choose a Feedback server:</p>
-    {#each servers as server (server.id)}
-      <label><input type="radio" bind:group={selectedServerId} value={server.id} disabled={busy} /> {server.name} — {server.address}</label>
-    {/each}
-  {/if}
-  <p class="warning">{servers.some(server => server.delivery === 'public-inbox')
-    ? 'Public inbox uploads are encrypted for the configured recipient. The upload credential cannot read, list, overwrite or delete reports. The receiving computer must be running to import them.'
-    : 'Trusted LAN only. Traffic is encrypted with the discovered server’s self-signed certificate; servers and senders are not authenticated.'}</p>
+  <p>One-time device approval is managed in Settings &gt; Feedback. No local-network fallback is used.</p>
+  {#if sessionOnly}<p>No topic is written to the affected backend.</p>{/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
-  {#if sessionOnly && sent && receiptUrl}<p><a href={receiptUrl} target="_blank" rel="noreferrer">Check report status</a></p>{/if}
   <footer>
     {#if !sent}<button onclick={onClose} disabled={busy}>Cancel</button>{/if}
-    {#if error}<button onclick={() => void prepare()} disabled={busy}>Refresh servers</button>{/if}
-    <button class="primary" onclick={() => sent ? onClose() : void send()} disabled={busy || (!sent && !selectedServerId)}>
-      {sent ? 'Done' : phase === 'sending' ? 'Sending...' : 'Send'}
-    </button>
+    {#if error && !prepared}<button onclick={() => void prepare()} disabled={busy}>Retry preparation</button>{/if}
+    <button onclick={() => sent ? onClose() : void send()} disabled={busy || (!sent && !prepared)}>{sent ? 'Done' : 'Send'}</button>
   </footer>
 </dialog>
 
 <style>
   dialog { width: min(480px, 85vw); border: 1px solid #bcb7bc; border-radius: 8px; padding: 22px; color: #29252a; background: #faf9f7; }
   dialog::backdrop { background: #0006; }
-  h2 { margin-top: 0; }
   p { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
-  .warning { color: #765014; }
   .error { color: #91251f; }
   footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
   button { padding: 7px 14px; }
-  .primary { background: var(--desktop-accent-strong, #51465c); color: white; border: 1px solid transparent; border-radius: 4px; }
-  .primary:disabled { opacity: 0.5; }
-  label { display: block; margin: 8px 0; font-size: 13px; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 12px; }
   dd { margin: 0; overflow-wrap: anywhere; }
   pre { max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }

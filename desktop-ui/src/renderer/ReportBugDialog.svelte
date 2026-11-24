@@ -21,9 +21,8 @@
   const busy = $derived(creating || copying);
   let error = $state('');
   let report = $state<ChatBugReportDraft | null>(null);
-  let result = $state<Exclude<FeedbackSendResult, { status: 'choose' }> | null>(null);
-  let chooseServer = $state(false);
-  let preparedServerId = $state('');
+  let result = $state<FeedbackSendResult | null>(null);
+  let showPreview = $state(false);
   let preparation = $state<FeedbackPreparation | null>(null);
   let deliverySettings = $state<PublicFeedbackSettings | null>(null);
   let deliveryError = $state('');
@@ -72,28 +71,17 @@
       if (!mounted) return;
       report = captured;
       if (previewOnly) {
-        chooseServer = true;
+        showPreview = true;
         return;
       }
-      if (!preparedServerId) {
+      if (!preparation) {
         const prepared = await window.workingMemory.prepareFeedback(captured.id, requestId);
         if (!mounted) return;
         preparation = prepared;
-        if (prepared.servers.length !== 1) {
-          chooseServer = true;
-          return;
-        }
-        preparedServerId = prepared.servers[0].id;
       }
-      const sent = await window.workingMemory.sendFeedback(captured.id, requestId, preparedServerId);
+      const sent = await window.workingMemory.sendFeedback(captured.id, requestId);
       if (!mounted) return;
-      if (sent.status === 'choose') {
-        if (!preparation) throw new Error('The report delivery route is unavailable. Retry sending the report.');
-        preparation = { ...preparation, servers: sent.servers };
-        preparedServerId = '';
-        chooseServer = true;
-      }
-      else result = sent;
+      result = sent;
     } catch (reason) {
       if (mounted) error = reason instanceof Error ? reason.message : String(reason);
     } finally { if (mounted) creating = false; }
@@ -116,12 +104,7 @@
 
 {#snippet reportContent()}
     {#if result && !compact}
-      <p role="status">{result.status === 'queued'
-        ? `Report uploaded to ${result.destination}. Queued for the Feedback receiver; import and topic status are not confirmed.`
-        : `Bug report sent to Inbox: ${result.receipt.title}`}</p>
-      {#if result.status === 'sent'}
-        <p><a href={result.receipt.statusUrl} target="_blank" rel="noreferrer">Check report status</a></p>
-      {/if}
+      <p role="status">Report uploaded to {result.destination}. Queued for the Feedback receiver; import and topic status are not confirmed.</p>
       {#if sessionOnly}<p>No topic was created on the affected backend.</p>{/if}
     {:else}
     <label for="bug-description">What was the bug?</label>
@@ -141,7 +124,7 @@
         {#if deliverySettings?.enabled}
           Encrypted public inbox: {deliverySettings.destination}
         {:else if deliverySettings}
-          Trusted LAN only. Servers and senders are not authenticated.
+          Connect this computer in Settings &gt; Feedback and ask the owner to approve it.
         {:else}
           Checking delivery route…
         {/if}
@@ -149,26 +132,16 @@
       {#if deliverySettings?.enabled}
         Public delivery is enabled: reports are uploaded to Azure at {deliverySettings.destination},
         encrypted for the configured recipient, and queued until the receiver imports them.
-        The LAN route below applies only when public delivery is disabled in Settings &gt; Feedback.
       {:else if deliverySettings}
-        Public delivery is disabled; this report uses the trusted-LAN route.
+        Connect this computer in Settings &gt; Feedback and ask the owner to approve it before sending.
       {:else}
         Checking the configured report delivery route…
       {/if}
-      Trusted LAN only. Traffic is encrypted with the discovered server's self-signed certificate;
-      servers and senders are not authenticated.
+      Reports use approved-device HTTPS upload only. There is no local-network fallback.
       {/if}
     </div>
     {#if deliveryError}<p class="error" role="alert">{deliveryError}
       <button onclick={() => void loadDeliverySettings()}>Retry delivery settings</button></p>{/if}
-    {#if compact && chooseServer && preparation}
-      <fieldset disabled={busy || !!result}>
-        <legend>Feedback server</legend>
-        {#each preparation.servers as server (server.id)}
-          <label><input type="radio" bind:group={preparedServerId} value={server.id} /> {server.name} — {server.address}</label>
-        {/each}
-      </fieldset>
-    {/if}
     {#if !compact}<details class="report-details">
       <summary>Report details</summary>
       <div>{evidenceDescription}</div>
@@ -183,7 +156,7 @@
       <details><summary>Collected report</summary><pre>{report.body}</pre></details>
     {/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
-    {#if compact && result}<p role="status">{result.status === 'queued' ? 'Bug report queued.' : 'Bug report sent.'}</p>{/if}
+    {#if compact && result}<p role="status">Bug report queued.</p>{/if}
     {#if compact && copied}<p role="status">Copied to clipboard.</p>{/if}
     {#if !compact}<footer>
       {#if result}
@@ -207,15 +180,15 @@
   </button>
   <button class="popup-action-button" onclick={() => void createReport()} aria-label="Send bug report"
     title={creating ? 'Sending bug report…' : 'Send bug report'} aria-busy={creating}
-    disabled={busy || !!result || !description.trim() || !deliverySettings || !captureReady || (chooseServer && !preparedServerId)}>
+    disabled={busy || !!result || !description.trim() || !deliverySettings || !captureReady}>
     <span class="codicon" class:codicon-loading={creating} class:codicon-send={!creating}
       class:codicon-modifier-spin={creating} aria-hidden="true"></span>
   </button>
 {/snippet}
 
-{#if report && chooseServer && !compact}
+{#if report && showPreview && !compact}
   <ShareTopicDialog topic={report} preview={report.body} {requestId}
-    {preparation} preferredServerId={preparedServerId}
+    {preparation}
     sessionOnly={report.sessionOnly ?? false} beforeShare={() => Promise.resolve()} {onClose} />
 {:else}
   <dialog bind:this={dialog} aria-labelledby="report-bug-title"

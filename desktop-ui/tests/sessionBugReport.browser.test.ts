@@ -34,7 +34,7 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
       import '/src/renderer/style.css';
       const connected=new URL(location.href).searchParams.has('connected');
       const environment={id:'session-test',port:7717,displayName:'Session test',mcpUrl:'http://127.0.0.1:7717/mcp',source:'sandbox'};
-      const test=window.__sessionTest={captures:[],descriptions:[],preparations:[],sends:[],copies:[],failCopy:false,blockCopy:false,failSend:false,blockSend:false,captureError:false,settingsError:false,multipleServers:false,saves:[]};
+      const test=window.__sessionTest={captures:[],descriptions:[],preparations:[],sends:[],copies:[],failCopy:false,blockCopy:false,failSend:false,blockSend:false,captureError:false,settingsError:false,unapproved:false,saves:[]};
       Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{
         if(test.blockCopy)await new Promise(resolve=>{test.finishCopy=resolve;});
         if(test.failCopy)throw new Error('Clipboard unavailable');test.copies.push(text);
@@ -62,18 +62,16 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
         openResource:async()=>model,
         saveTopic:async(id,patch)=>{test.saves.push({id,patch});await new Promise(resolve=>{test.finishSave=()=>resolve(model);});return model;},
         onDocumentSearchTrace:()=>()=>{},onDocumentSearchResults:()=>()=>{},
-        getPublicFeedbackSettings:async()=>{if(test.settingsError)throw new Error('Settings unavailable');return {enabled:!test.multipleServers,destination:test.multipleServers?null:'https://fixture.blob.core.windows.net/feedback'};},
+        getPublicFeedbackSettings:async()=>{if(test.settingsError)throw new Error('Settings unavailable');return {enabled:!test.unapproved,state:test.unapproved?'pending':'connected',destination:'https://feedback.example/api'};},
         captureSessionBugReport:async input=>{
           test.captures.push(input);
           if(test.captureError)throw new Error('Diagnostic capture unavailable');
           return window.sessionReportBridge.capture(input);
         },
         describeSessionBugReport:async(id,text)=>{const draft=await window.sessionReportBridge.describe(id,text);test.descriptions.push(draft);return draft;},
-        prepareFeedback:async(id,requestId)=>{test.preparations.push({id,requestId});return {servers:test.multipleServers
-          ? [{id:'lan-1',name:'First receiver',address:'first.local'},{id:'lan-2',name:'Second receiver',address:'second.local'}]
-          : [{id:'public',name:'Feedback',address:'fixture.blob.core.windows.net',delivery:'public-inbox'}],
+        prepareFeedback:async(id,requestId)=>{test.preparations.push({id,requestId});if(test.unapproved)throw new Error('Connect this computer in Settings > Feedback and ask the owner to approve it.');return {destination:'feedback.example',
           context:{desktop:{version:'fixture',build:'fixture'},backend:{version:'Unknown'}}};},
-        sendFeedback:async(id,requestId,serverId)=>{test.sends.push({id,requestId,serverId});if(test.blockSend)await new Promise(resolve=>{test.finishSend=resolve;});if(test.failSend)throw new Error('Upload unavailable');return {status:'queued',requestId,uploadedAt:new Date().toISOString(),destination:'fixture.blob.core.windows.net'};},
+        sendFeedback:async(id,requestId)=>{test.sends.push({id,requestId});if(test.blockSend)await new Promise(resolve=>{test.finishSend=resolve;});if(test.failSend)throw new Error('Upload unavailable');return {status:'queued',requestId,uploadedAt:new Date().toISOString(),destination:'feedback.example'};},
       };
       mount(App,{target:document.body});
     `;
@@ -214,23 +212,18 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate('document.querySelector("#share-topic-title")'),null);
           await evaluate('document.querySelector("dialog").dispatchEvent(new Event("cancel",{cancelable:true}))');
           await wait('!document.querySelector("dialog")');
-          await evaluate('window.__sessionTest.multipleServers=true');
+          await evaluate('window.__sessionTest.unapproved=true');
           await click('Report Bug');
-          await wait('document.querySelector("dialog .warning")?.textContent.includes("Trusted LAN only")');
-          await describe('Choose the correct receiver');
+          await wait('document.querySelector("dialog .warning")?.textContent.includes("Connect this computer")');
+          await describe('Request approval');
           await wait('!'+button('Send bug report')+'.disabled');
           const sendsBeforeSelection=await evaluate('window.__sessionTest.sends.length');
           await click('Send bug report');
-          await wait('document.querySelectorAll("dialog input[type=radio]").length===2');
+          await wait('document.querySelector("dialog [role=alert]")?.textContent.includes("Connect this computer")');
           assert.equal(await evaluate('window.__sessionTest.sends.length'),sendsBeforeSelection);
           assert.equal(await evaluate('document.querySelector("#share-topic-title")'),null);
           assert.equal(await evaluate('document.querySelector("dialog details, dialog pre")'),null);
-          await evaluate('document.querySelectorAll("dialog input[type=radio]")[1].click()');
-          await wait('!'+button('Send bug report')+'.disabled');
-          await click('Send bug report');
-          await wait('window.__sessionTest.sends.length==='+String(sendsBeforeSelection+1));
-          assert.equal(await evaluate('window.__sessionTest.sends.at(-1).serverId'),'lan-2');
-          await wait('document.querySelector("dialog [role=status]")?.textContent==="Bug report queued."');
+          assert.equal(await evaluate('document.querySelectorAll("dialog input[type=radio]").length'),0);
           await click('Close bug report');await wait('!document.querySelector("dialog")');
           await win.loadURL('http://127.0.0.1:${address.port}/session-test.html?connected=1');
           await wait('document.querySelector("#document-search-prompt")');

@@ -1,4 +1,4 @@
-import type { ChatBugReportDraft, FeedbackContext, SharedTopicReceipt } from '../shared/contracts';
+import type { ChatBugReportDraft, FeedbackContext } from '../shared/contracts';
 
 export class TransientBugReports {
   protected latest: { draft: ChatBugReportDraft; sourceUrl: string; context: FeedbackContext } | undefined;
@@ -13,11 +13,6 @@ export class TransientBugReports {
     if (!report || report.draft.id !== id) return undefined;
     return {
       topic: { title: report.draft.title, body: report.draft.body }, sourceUrl: report.sourceUrl, context: report.context,
-      recordReceipt: async (receipt: SharedTopicReceipt) => {
-        if (!report.draft.body.includes(receipt.statusUrl)) {
-          report.draft.body += `\n\nFeedback sent on ${receipt.submittedAt}. [Check status](${receipt.statusUrl})`;
-        }
-      },
     };
   }
 }
