@@ -40,11 +40,7 @@ it('captures upgrade evidence and prepares Feedback without contacting the offli
   expect(payload.topic.body).toContain('Selected backend version: "1.0.0"');
   expect(payload.attachments).toEqual([]);
   expect(fetcher).not.toHaveBeenCalled();
-  const receipt = { id: draft.id, title: draft.title, duplicate: false,
-    statusUrl: 'https://feedback.invalid/submissions/report', submittedAt: '2026-11-19T15:00:00.000Z' };
-  await source.recordReceipt(receipt);
-  await source.recordReceipt(receipt);
-  expect(reports.feedbackSource(draft.id)?.topic.body.split(receipt.statusUrl)).toHaveLength(2);
+  expect(reports.feedbackSource(draft.id)?.topic.body).toBe(draft.body);
 });
 
 it('redacts known credentials and secret fields, neutralizes attachment references, and bounds command output', () => {

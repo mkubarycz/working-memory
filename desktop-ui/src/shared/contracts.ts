@@ -405,19 +405,19 @@ export type DocumentChangeEvent = { mcpUrl: string } & (
   | { error: string }
 );
 
-export interface SharedTopicReceipt {
-  id: string;  title: string; duplicate: boolean; statusUrl: string; submittedAt: string;
+export interface PublicFeedbackSettings {
+  enabled: boolean;
+  destination: string | null;
+  state: 'disconnected' | 'pending' | 'connected' | 'revoked' | 'expired';
+  pairingCode?: string;
+  expiresAt?: string;
 }
-export interface FeedbackServer { id: string; name: string; address: string; delivery?: 'public-inbox' }
-export interface PublicFeedbackSettings { enabled: boolean; destination: string | null }
 export interface FeedbackContext {
   desktop: { version: string; build: string };
   backend: { version: string };
 }
-export interface FeedbackPreparation { servers: FeedbackServer[]; context: FeedbackContext }
-export type FeedbackSendResult = { status: 'sent'; receipt: SharedTopicReceipt }
-  | { status: 'queued'; requestId: string; uploadedAt: string; destination: string }
-  | { status: 'choose'; servers: FeedbackServer[] };
+export interface FeedbackPreparation { destination: string; context: FeedbackContext }
+export type FeedbackSendResult = { status: 'queued'; requestId: string; uploadedAt: string; destination: string };
 
 export interface ChatBugReportInput {
   description: string;
@@ -518,9 +518,9 @@ export interface DesktopApi extends HostTaskDesktopApi, InstanceIdentityApi {
   setContainerProvider(provider: 'docker' | 'podman'): Promise<void>;
   getDesktopBuildInfo(): Promise<DesktopBuildInfo>;
   prepareFeedback(id: string, requestId: string): Promise<FeedbackPreparation>;
-  sendFeedback(id: string, requestId: string, serverId?: string): Promise<FeedbackSendResult>;
+  sendFeedback(id: string, requestId: string): Promise<FeedbackSendResult>;
   getPublicFeedbackSettings(): Promise<PublicFeedbackSettings>;
-  savePublicFeedbackSettings(configuration: unknown): Promise<PublicFeedbackSettings>;
+  connectPublicFeedback(): Promise<PublicFeedbackSettings>;
   clearPublicFeedbackSettings(): Promise<PublicFeedbackSettings>;
   createChatBugReport(input: ChatBugReportInput): Promise<ChatBugReportDraft>;
   createSearchBugReport(input: SearchBugReportInput): Promise<ChatBugReportDraft>;

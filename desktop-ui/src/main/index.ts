@@ -39,7 +39,7 @@ import {
 } from './config';
 import { checkConfiguredModel } from './modelHealth';
 import { LocalCopilotProvider } from './copilotProvider';
-import { FeedbackSender, recordFeedbackReceipt } from './topicSharing';
+import { FeedbackSender } from './topicSharing';
 import { PublicFeedbackConfigStore } from './publicFeedbackConfig';
 import { createChatBugReport } from './chatBugReport';
 import { SessionBugReports, sessionBugReportInputSchema } from './sessionBugReport';
@@ -1316,10 +1316,10 @@ function registerIpc(): void {
     if (!publicFeedbackConfig) throw new Error('Feedback is not initialized.');
     return publicFeedbackConfig.status();
   });
-  ipcMain.handle('feedback:public-save', (event, configuration: unknown) => {
+  ipcMain.handle('feedback:public-connect', event => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
     if (!publicFeedbackConfig) throw new Error('Feedback is not initialized.');
-    return publicFeedbackConfig.save(configuration);
+    return publicFeedbackConfig.connect();
   });
   ipcMain.handle('feedback:public-clear', event => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
@@ -1331,10 +1331,10 @@ function registerIpc(): void {
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
     return feedbackSender.prepare(id, requestId);
   });
-  ipcMain.handle('feedback:send', (event, id: string, requestId: string, serverId?: string) => {
+  ipcMain.handle('feedback:send', (event, id: string, requestId: string) => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
     if (!feedbackSender) throw new Error('Feedback is not initialized.');
-    return feedbackSender.send(id, requestId, serverId);
+    return feedbackSender.send(id, requestId);
   });
   ipcMain.handle('session:report-bug-capture', async (event, input: unknown) => {
     assertHostTaskSender(event, mainWindow, rendererUrl);
@@ -2322,7 +2322,6 @@ if (!ownsSingleInstanceLock) {
       }
       return {
         topic, sourceUrl, fetcher: client.fetch.bind(client),
-        recordReceipt: receipt => recordFeedbackReceipt(client, topic.id, receipt),
         context: { desktop: { version: desktopVersion(), build: __WM_BUILD_TIMESTAMP__ }, backend: { version: result.version } },
       };
     }, () => {

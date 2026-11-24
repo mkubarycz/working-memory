@@ -28,6 +28,11 @@ jobs:
       - name: Install desktop UI dependencies
         run: npm ci --prefix desktop-ui
 
+      - name: Test Feedback service
+        run: |
+          npm ci --prefix feedback-service --ignore-scripts
+          npm test --prefix feedback-service
+
       - name: Compile
         run: npm run compile
 

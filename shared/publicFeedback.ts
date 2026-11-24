@@ -4,28 +4,43 @@ export interface PublicFeedbackConfiguration {
   version: 1;
   uploadUrl: string;
   publicKey: string;
+  deviceId?: string;
+  deviceToken?: string;
 }
 
 export const MAX_PUBLIC_FEEDBACK_BYTES = 40 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function readFeedbackResponse(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Feedback service returned an empty response.');
+  const chunks: Buffer[] = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 16_384) { await reader.cancel(); throw new Error('Feedback service response is too large.'); }
+      chunks.push(Buffer.from(value));
+    }
+  } finally { reader.releaseLock(); }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { throw new Error('Feedback service returned invalid JSON; no upload or connection is confirmed.'); }
+}
 
 export function validatePublicFeedbackConfiguration(input: unknown): PublicFeedbackConfiguration {
   if (!input || typeof input !== 'object' || !('version' in input) || input.version !== 1
     || !('uploadUrl' in input) || typeof input.uploadUrl !== 'string' || input.uploadUrl.length > 8192
     || !('publicKey' in input) || typeof input.publicKey !== 'string' || input.publicKey.length > 8192
     || !input.publicKey.startsWith('-----BEGIN PUBLIC KEY-----')) {
-    throw new Error('Paste the public inbox sender configuration, including its upload URL and recipient public key.');
+    throw new Error('The Feedback service returned invalid public configuration.');
   }
   let url: URL;
   try { url = new URL(input.uploadUrl); }
   catch { throw new Error('The public inbox upload URL is invalid.'); }
-  if (url.protocol !== 'https:' || !/^[a-z0-9]{3,24}\.blob\.core\.windows\.net$/.test(url.hostname)
-    || url.port || url.username || url.password || url.hash || !/^\/[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\/?$/.test(url.pathname)
-    || url.searchParams.get('sp') !== 'c' || url.searchParams.get('sr') !== 'c'
-    || url.searchParams.get('spr') !== 'https' || !url.searchParams.get('sig')
-    || !Number.isFinite(Date.parse(url.searchParams.get('se') ?? ''))
-    || Date.parse(url.searchParams.get('se')!) <= Date.now()) {
-    throw new Error('The public inbox needs an unexpired HTTPS Azure container SAS with create-only permission (c), not read, list, write or delete.');
+  if (url.protocol !== 'https:' || url.port || url.username || url.password || url.hash || url.search) {
+    throw new Error('Feedback requires a credential-free HTTPS service URL.');
   }
   let key: ReturnType<typeof createPublicKey>;
   try { key = createPublicKey(input.publicKey); }
@@ -58,25 +73,34 @@ export function encryptPublicFeedback(body: string, requestId: string, configura
   const blobName = `${requestId.toLowerCase()}-${createHash('sha256').update(body).digest('hex')}.json`;
   const url = new URL(configuration.uploadUrl);
   url.pathname = `${url.pathname.replace(/\/$/, '')}/${blobName}`;
-  return { envelope, url: url.href };
+  return { envelope, url: url.href, deviceId: configuration.deviceId, deviceToken: configuration.deviceToken };
 }
 
 export async function uploadPublicFeedback(
-  payload: { envelope: string; url: string },
+  payload: { envelope: string; url: string; deviceId?: string; deviceToken?: string },
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
+  if (!payload.deviceId || !payload.deviceToken) throw new Error('Connect this computer in Settings > Feedback and ask the owner to approve it.');
+  const url = new URL(payload.url);
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Invalid Feedback upload URL.');
   let response: Response;
   try {
     response = await fetcher(payload.url, {
       method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(120_000),
-      headers: { 'content-type': 'application/json', 'x-ms-blob-type': 'BlockBlob',
-        'x-ms-version': '2023-11-03', 'if-none-match': '*' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${payload.deviceToken}`, 'x-feedback-device': payload.deviceId },
       body: payload.envelope,
     });
   } catch {
     throw new Error('Public inbox upload could not be confirmed. Retry to check the same report without creating another submission.');
   }
-  if (response.status === 201 || response.status === 409 && response.headers.get('x-ms-error-code') === 'BlobAlreadyExists'
-    || response.status === 412 && response.headers.get('x-ms-error-code') === 'ConditionNotMet') return;
-  throw new Error(`Public inbox upload failed (HTTP ${response.status}). Check the sender configuration and SAS expiry, then retry.`);
+  if (response.status === 201 || response.status === 200) {
+    const receipt = await readFeedbackResponse(response);
+    if (!receipt || typeof receipt !== 'object' || !('queued' in receipt) || receipt.queued !== true
+      || !('requestId' in receipt) || receipt.requestId !== JSON.parse(payload.envelope).requestId) {
+      throw new Error('Feedback returned an invalid upload confirmation. Retry the same report; nothing is confirmed queued.');
+    }
+    return;
+  }
+  if (response.status === 401 || response.status === 403) throw new Error('Feedback device is unapproved or revoked. Open Settings > Feedback to connect this computer.');
+  throw new Error(`Feedback upload failed (HTTP ${response.status}). ${response.status === 429 ? 'Upload limit reached; wait before retrying.' : 'Retry the same report; nothing is confirmed queued.'}`);
 }

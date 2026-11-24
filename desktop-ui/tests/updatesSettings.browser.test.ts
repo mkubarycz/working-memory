@@ -123,16 +123,24 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             if (probe.failReport) { probe.failReport = false; throw new Error('Report capture failed. Retry.'); }
             return { id: 'report-id', title: 'Backend settings bug', body: JSON.stringify(input), sessionOnly: true };
           },
-          async getPublicFeedbackSettings() { return { enabled: false, destination: null }; },
+          async getPublicFeedbackSettings() {
+            const state = probe.feedbackState ?? 'connected';
+            return { enabled: state === 'connected', state, destination: 'https://feedback.example/api',
+              ...(state === 'pending' ? { pairingCode: 'ABCDEF123456', expiresAt: '2099-01-01T00:00:00Z' } : {}) };
+          },
+          async connectPublicFeedback() { probe.feedbackState = 'pending'; return this.getPublicFeedbackSettings(); },
+          async clearPublicFeedbackSettings() {
+            if (probe.failDisconnect) throw new Error('Revocation unavailable. Retry disconnect.');
+            probe.feedbackState = 'disconnected'; return this.getPublicFeedbackSettings();
+          },
           async prepareFeedback(id, requestId) {
             probe.preparations.push({ id, requestId });
-            return { servers: [{ id: 'feedback', name: 'Feedback', address: '127.0.0.1' }],
+            return { destination: 'feedback.example',
               context: { desktop: { version: '1.4.1', build: 'fixture' }, backend: { version: '1.4.0' } } };
           },
-          async sendFeedback(id, requestId, serverId) {
-            probe.sends.push({ id, requestId, serverId });
-            return { status: 'sent', receipt: { title: 'Backend settings bug', duplicate: false,
-              statusUrl: 'https://feedback.invalid/submissions/report' } };
+          async sendFeedback(id, requestId) {
+            probe.sends.push({ id, requestId });
+            return { status: 'queued', requestId, destination: 'feedback.example', uploadedAt: new Date().toISOString() };
           },
           onDesktopUpdate(listener) {
             probe.subscriptions++; probe.listener = listener;
@@ -264,7 +272,8 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           assert.equal(await evaluate("document.querySelector('dialog pre').textContent.includes('bind: address already in use')"), true);
           assert.equal(await evaluate("window.__updatesTest.sends.length"), 1);
           assert.equal(await evaluate("window.__updatesTest.sends[0].requestId === window.__updatesTest.preparations[0].requestId"), true);
-          assert.equal(await evaluate("document.querySelector('dialog a').href"), 'https://feedback.invalid/submissions/report');
+          assert.equal(await evaluate("document.querySelector('dialog a')"), null);
+          assert.equal(await evaluate("document.querySelector('dialog [role=status]').textContent.includes('Queued for the Feedback receiver')"), true);
           assert.equal(await evaluate("document.querySelector('dialog').innerText.includes('No topic was created')"), true);
           await evaluate(button('Done') + '.click()');
           await evaluate("window.__updatesTest.restoreUpgrade(); window.__updatesTest.advance()");
@@ -334,6 +343,27 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
           await evaluate(button('Recover…') + '.click()');
           await wait("window.__updatesTest.operations.includes('recover') && !document.querySelector('.instances-note[role=alert]')");
           assert.equal(await evaluate(button('Recover…') + ' === undefined'), true);
+          await evaluate("window.__updatesTest.feedbackState = 'disconnected'; " + button('Feedback') + '.click()');
+          await wait(button('Connect this computer') + "?.disabled === false");
+          assert.equal(await evaluate("document.querySelector('section[aria-label^=Feedback] textarea')"), null);
+          await evaluate(button('Connect this computer') + '.click()');
+          await wait("document.querySelector('section[aria-label^=Feedback]').textContent.includes('ABCDEF123456')");
+          assert.equal(await evaluate(button('Connect this computer') + '.disabled'), true);
+          assert.equal(await evaluate("document.querySelector('section[aria-label^=Feedback]').textContent.includes('Approval pending')"), true);
+          assert.equal(await evaluate("document.querySelector('section[aria-label^=Feedback]').textContent.includes('Feedback app > Device approvals')"), true);
+          assert.equal(await evaluate("document.querySelector('section[aria-label^=Feedback]').textContent.includes('receiving Working Memory owner password')"), true);
+          await evaluate("window.__updatesTest.feedbackState = 'connected'; " + button('Check approval') + '.click()');
+          await wait("document.querySelector('section[aria-label^=Feedback] [role=status]').textContent.includes('Connected.')");
+          await evaluate("window.__updatesTest.feedbackState = 'revoked'; " + button('Check approval') + '.click()');
+          await wait("document.querySelector('section[aria-label^=Feedback]').textContent.includes('approval was revoked')");
+          await evaluate(button('Connect this computer') + '.click()');
+          await wait("document.querySelector('section[aria-label^=Feedback]').textContent.includes('Approval pending')");
+          await evaluate("window.__updatesTest.failDisconnect = true; " + button('Disconnect and revoke') + '.click()');
+          await wait("document.querySelector('section[aria-label^=Feedback] [role=alert]').textContent.includes('Revocation unavailable')");
+          assert.equal(await evaluate("document.querySelector('section[aria-label^=Feedback]').textContent.includes('Approval pending')"), true);
+          await evaluate("window.__updatesTest.failDisconnect = false; " + button('Disconnect and revoke') + '.click()');
+          await wait(button('Connect this computer') + "?.disabled === false");
+          assert.equal(await evaluate("document.querySelector('section[aria-label^=Feedback]').textContent.includes('no local-network delivery fallback')"), true);
           console.log('updates-settings-browser: subtabs, actions, selection and subscriptions passed');
           window.destroy(); app.exit(0);
         }).catch(error => { console.error(error); app.exit(1); });

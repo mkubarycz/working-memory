@@ -29,6 +29,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Test Feedback service
+        run: |
+          npm ci --prefix feedback-service --ignore-scripts
+          npm test --prefix feedback-service
       - name: Resolve version
         id: version
         run: node scripts/release-version.mjs

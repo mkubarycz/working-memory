@@ -54,10 +54,10 @@ it.skipIf(process.platform === 'linux' && !process.env.DISPLAY)(
             if(test.failReport)throw new Error('Report storage unavailable');
             return {id:'search-report',title:'Search bug: wrong confidence',body:'Captured search and result diagnostics'};
           },
-          getPublicFeedbackSettings:async()=>({enabled:false,destination:null}),
-          prepareFeedback:async()=>({servers:[{id:'local',name:'Feedback',address:'127.0.0.1',port:7720}],
+          getPublicFeedbackSettings:async()=>({enabled:true,state:'connected',destination:'https://feedback.example/api'}),
+          prepareFeedback:async()=>({destination:'feedback.example',
             context:{desktop:{version:'fixture',build:'fixture'},backend:{version:'fixture'}}}),
-          sendFeedback:async(...args)=>{test.sends.push(args);return {status:'sent',receipt:{title:'Search report',duplicate:false}};},
+          sendFeedback:async(...args)=>{test.sends.push(args);return {status:'queued',requestId:args[1],destination:'feedback.example',uploadedAt:new Date().toISOString()};},
           onDocumentSearchTrace: listener => {test.traceListener=listener;return ()=>{test.traceListener=null;};},
           onDocumentSearchResults: listener => {test.resultsListener=listener;return ()=>{test.resultsListener=null;};},
           cancelDocumentSearch: async () => {},
